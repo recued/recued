@@ -26,12 +26,16 @@ import {
   type ServerRpcRegistry,
   type UpdateApplyResponse,
   type UpdateMode,
+  type UpdateOperationClosureResponse,
+  type UpdateOperationStatusResponse,
   type UpdateRollbackResponse,
 } from '@recued/contracts';
 import { runReleaseCheck, type ReleaseCheckDeps, type ResolveForApplyResult } from './update/release-check.js';
 import {
   runApply,
   runRollback,
+  closeUnresolvedUpdateOperation,
+  resolveUpdateOperationOutcome,
   type ApplyOrchestratorPorts,
   type RollbackContext,
 } from './update/apply-orchestrator.js';
@@ -78,7 +82,9 @@ export type UpdateMethods =
   | 'update.mode'
   | 'update.set_mode'
   | 'update.apply'
-  | 'update.rollback';
+  | 'update.rollback'
+  | 'update.operation_status'
+  | 'update.operation_close';
 
 /** Map a non-applyable resolve outcome to the apply wire status. */
 const NOT_APPLYABLE: Record<Exclude<ResolveForApplyResult['status'], 'applyable'>, UpdateApplyResponse['status']> = {
@@ -99,6 +105,7 @@ const requireRegisteredClient = (client: WsClient): void => {
 };
 
 const VALID_MODES: readonly UpdateMode[] = ['auto', 'notify', 'off'];
+const UPDATE_OPERATION_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 
 export const makeUpdateHandlers = (
   deps: UpdateHandlerDeps | undefined,
@@ -113,7 +120,15 @@ export const makeUpdateHandlers = (
     });
   const applyDeps = deps.applyDeps;
   return {
-    methods: ['update.check', 'update.mode', 'update.set_mode', 'update.apply', 'update.rollback'],
+    methods: [
+      'update.check',
+      'update.mode',
+      'update.set_mode',
+      'update.apply',
+      'update.rollback',
+      'update.operation_status',
+      'update.operation_close',
+    ],
     handlers: {
       'update.check': async (_args, client) => {
         requireRegisteredClient(client);
@@ -159,6 +174,7 @@ export const makeUpdateHandlers = (
           channel: resolved.channel,
           migration: resolved.migration,
           artifact: resolved.artifact,
+          libArtifact: resolved.libArtifact,
           webclientArtifact: resolved.webclientArtifact,
           // Owner-initiated UI/CLI apply — proceeds without the quiesce wait
           // (the caller forces quiesce); auto/housekeeping defers separately.
@@ -167,7 +183,11 @@ export const makeUpdateHandlers = (
         const base = { release_identity: resolved.releaseIdentity, to_version: resolved.toVersion };
         switch (result.status) {
           case 'restarting':
-            return { status: 'restarting', ...base };
+            return {
+              status: 'restarting',
+              operation_id: result.operationId,
+              ...base,
+            };
           case 'deferred':
             return { status: 'deferred', ...base, detail: result.reason };
           case 'busy':
@@ -191,12 +211,82 @@ export const makeUpdateHandlers = (
         const result = runRollback(applyDeps.ports, ctx);
         switch (result.status) {
           case 'rolled-back':
-            return { status: 'rolled-back', restored_snapshot: result.restored_snapshot };
+            return {
+              status: 'rolled-back',
+              operation_id: result.operationId,
+              restored_snapshot: result.restored_snapshot,
+            };
           case 'refused':
             return { status: 'refused', detail: result.reason };
           case 'busy':
             return { status: 'busy' };
         }
+      },
+      'update.operation_status': async (
+        args,
+        client,
+      ): Promise<UpdateOperationStatusResponse> => {
+        requireRegisteredClient(client);
+        if (
+          !args
+          || typeof args.operation_id !== 'string'
+          || !UPDATE_OPERATION_ID.test(args.operation_id)
+          || (
+            args.include_closed !== undefined
+            && typeof args.include_closed !== 'boolean'
+          )
+        ) {
+          throw new RpcError(
+            'invalid_args',
+            'operation_id must be an opaque update receipt; include_closed must be boolean when provided',
+            400,
+          );
+        }
+        if (!applyDeps) return { status: 'unknown' };
+        const outcome = resolveUpdateOperationOutcome(
+          applyDeps.ports.ledger,
+          args.operation_id,
+          deps.releaseCheckDeps.currentVersion,
+        );
+        // Backward-compatible fail-closed projection: pre-closure clients treat
+        // every unfamiliar non-waiting status as terminal. They must keep
+        // seeing `unknown`; only an explicitly closure-aware client may receive
+        // the durable `closed_unresolved` state and expose Finish recovery.
+        return outcome.status === 'closed_unresolved'
+          && args.include_closed !== true
+          ? { status: 'unknown' }
+          : outcome;
+      },
+      'update.operation_close': async (
+        args,
+        client,
+      ): Promise<UpdateOperationClosureResponse> => {
+        requireRegisteredClient(client);
+        if (
+          !args
+          || typeof args.operation_id !== 'string'
+          || !UPDATE_OPERATION_ID.test(args.operation_id)
+          || (
+            args.expected_operation !== 'update'
+            && args.expected_operation !== 'rollback'
+          )
+        ) {
+          throw new RpcError(
+            'invalid_args',
+            'operation_id and expected_operation must identify an opaque update receipt',
+            400,
+          );
+        }
+        if (!applyDeps) {
+          return { status: 'refused', reason: 'not_supported' };
+        }
+        return closeUnresolvedUpdateOperation(
+          applyDeps.ports,
+          args.operation_id,
+          args.expected_operation,
+          deps.releaseCheckDeps.currentVersion,
+          deps.releaseCheckDeps.channel,
+        );
       },
     },
   };

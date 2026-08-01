@@ -282,3 +282,58 @@ describe('step-level foreach', () => {
     } as unknown as Parameters<typeof runStep>[0], ctx)).rejects.toThrow(/step context is/);
   });
 });
+
+describe('a foreach reports how many items it refused', () => {
+  /** ⛔⛔ Why this exists. A `foreach` is continue-on-error: a failed item lands
+   *  in that item's `{ ok: false }` and the STEP returns `error: null`, so
+   *  `errors[]` stays empty and `success` stays true. That is right — a partial
+   *  write is not a failed run — but it made "every item refused" and "every
+   *  item written" identical at every surface above the step output. Three
+   *  defects shipped in one pack that way, each reporting success having written
+   *  nothing. */
+  const mk = async (outcomes: ReadonlyArray<'ok' | 'fail'>) => {
+    const ctx = mkCtx();
+    (ctx.stores.step as Record<string, unknown>).arr = outcomes.map((o, i) => ({ id: String(i), o }));
+    ctx.ingredientExecutor = async (_slug, input) => {
+      const resolved = resolveDeep(input, ctx.stores) as { o?: string };
+      if (resolved.o === 'fail') throw new Error('records_invalid');
+      return { ok: true };
+    };
+    return runStep({
+      id: 'write_each', ingredient: 'shared-write',
+      input: { o: '{{item.o}}' }, foreach: '{{step.arr}}',
+    } as unknown as Parameters<typeof runStep>[0], ctx);
+  };
+
+  it('counts the failures alongside the total', async () => {
+    expect((await mk(['ok', 'fail', 'ok', 'fail', 'fail'])).foreach)
+      .toEqual({ items: 5, failed: 3 });
+  });
+
+  it('reports the TOTAL wipe-out that used to look like success', async () => {
+    const log = await mk(['fail', 'fail']);
+    expect(log.foreach).toEqual({ items: 2, failed: 2 });
+    // …and the step itself still succeeds, which is the point: the tally is the
+    // ONLY thing that distinguishes this run from one that wrote both.
+    expect(log.error).toBeNull();
+  });
+
+  it('reports zero failures on a clean run, and a clean EMPTY one', async () => {
+    // ⚠ Both numbers, not a ratio: 0 of 0 is "there was nothing to do", which is
+    // a different thing from 0 of 5 — and a ratio cannot tell them apart.
+    expect((await mk(['ok', 'ok'])).foreach).toEqual({ items: 2, failed: 0 });
+    expect((await mk([])).foreach).toEqual({ items: 0, failed: 0 });
+  });
+
+  it('is ABSENT on a step that is not a foreach', async () => {
+    // A surface tests `foreach !== undefined` to decide whether to say anything
+    // at all; a `{ items: 0, failed: 0 }` on every ordinary step would make that
+    // check meaningless.
+    const ctx = mkCtx();
+    ctx.ingredientExecutor = async () => ({ ok: true });
+    const log = await runStep({
+      id: 'once', ingredient: 'shared-write', input: {},
+    } as unknown as Parameters<typeof runStep>[0], ctx);
+    expect(log.foreach).toBeUndefined();
+  });
+});

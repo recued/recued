@@ -10,7 +10,7 @@
 
 import type Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, existsSync, statSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { arch, platform as osPlatform } from 'node:os';
 import { dirname, join } from 'node:path';
 import { assertReleaseKeyValid, type ChannelName, type Platform } from '@recued/release';
@@ -46,8 +46,35 @@ import type { UpdateApplyDeps, UpdateModeDeps } from '../update-handler.js';
 export { TRUSTED_RELEASE_PUBKEY } from './trusted-release-pubkey.js';
 import { TRUSTED_RELEASE_PUBKEY } from './trusted-release-pubkey.js';
 
-/** Default manifest location (overridable for staging via env). */
-export const DEFAULT_MANIFEST_URL = 'https://releases.recued.com/manifest.json';
+/** Release feed root (overridable for staging via `RECUED_RELEASE_MANIFEST_URL`,
+ *  which pins a FULL url and bypasses the per-channel derivation below). */
+export const RELEASE_BASE_URL = 'https://releases.recued.com';
+
+/** The manifest is served at a PER-CHANNEL path, and the bytes at every path are
+ *  IDENTICAL — one signature, one `sequence`, every channel inside it. The split
+ *  is not a content split; it exists so the CDN's own request counts can tell a
+ *  stable fleet from an edge one.
+ *
+ *  Why it has to be a path: `stage-gates.md` §2 ① counts weekly-active servers as
+ *  requests to this url, and §2a divides by the check cadence to get servers —
+ *  7 req/server/week on stable (24h), 28 on edge (6h). A single flat
+ *  `/manifest.json` merges both fleets into one number that no divisor can split,
+ *  so the population estimate carries a 4× error bar. Path-splitting moves the
+ *  division into Cloudflare's path breakdown, where it costs nothing.
+ *
+ *  ⚠ This must be settled BEFORE launch. The mix is only recoverable for traffic
+ *  that arrives after the split — servers that check against a flat path are
+ *  merged forever, and no later change repairs that cohort.
+ *
+ *  The flat `DEFAULT_MANIFEST_URL` stays published as a compat path (below). */
+export const manifestUrlFor = (baseUrl: string, channel: ChannelName): string =>
+  `${baseUrl.replace(/\/+$/, '')}/${channel}/manifest.json`;
+
+/** LEGACY flat manifest location — still published, no longer the default the
+ *  server derives. Nothing should fetch this after the split; traffic on it is a
+ *  DIAGNOSTIC (an un-migrated consumer — a stale runbook, a hand-rolled script),
+ *  not a fallback anyone is expected to use. Watch it, don't rely on it. */
+export const DEFAULT_MANIFEST_URL = `${RELEASE_BASE_URL}/manifest.json`;
 
 /** Map the Node runtime's os/arch to a release `Platform` triple, or null on an
  *  unsupported target (a check on such a host resolves to up-to-date — no
@@ -116,11 +143,45 @@ export interface BuildReleaseCheckDepsOptions {
   fetchText?: (url: string) => Promise<string>;
 }
 
-const defaultFetchText = async (url: string): Promise<string> => {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-  return res.text();
-};
+/** The update-check User-Agent — the ONLY thing this fetch says about itself.
+ *
+ *  `recued/<version> (<platform>; <distribution-channel>)`
+ *
+ *  Every field is already computed for the check itself, so nothing new is
+ *  collected and no extra request is made: this is what the REQUIRED request can
+ *  carry, and nothing else. There is no id, no install token, no salt, no
+ *  counter — two servers on the same version / platform / channel emit BYTE-
+ *  IDENTICAL requests and are indistinguishable in the log, which is the
+ *  property that keeps this inside `stage-gates.md` §2's identifier-free rule and
+ *  anti-drift signal ⑦ (which forbids a PER-INSTANCE identifier — a version
+ *  shared by every server on it is not one).
+ *
+ *  What it buys, all as aggregate counts in Cloudflare zone analytics:
+ *    - version adoption: the v(N) cohort growing while v(N-1) drains;
+ *    - release HEALTH — the signal a bare count cannot give. A version whose
+ *      cohort stops checking after apply is a version that bricked its servers.
+ *      Local boot-failure auto-revert (`boot-failure-counter.ts`) already
+ *      handles the incident per-server; this is how the FLEET-wide shape of it
+ *      becomes visible at all;
+ *    - platform + distribution mix: what to build for, and which install path
+ *      people actually use (binary vs docker-thin vs source).
+ *
+ *  ⚠ Deliberately absent: anything per-instance, anything about the user, and
+ *  any field that would make the string unique. If a future field cannot be
+ *  shared by thousands of servers at once, it does not belong here. */
+export const updateCheckUserAgent = (
+  version: string,
+  platform: Platform,
+  distributionChannel: DistributionChannel,
+): string => `recued/${version} (${platform}; ${distributionChannel})`;
+
+const makeFetchText =
+  (userAgent: string) =>
+  async (url: string): Promise<string> => {
+    const res = await fetch(url, { headers: { 'user-agent': userAgent } });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    return res.text();
+  };
 
 /** Channels whose binary lives on a writable volume and self-applies (I-8):
  *  `binary` (GA host binary) + `docker-thin` (the `:managed` self-updating
@@ -177,6 +238,16 @@ export const buildApplyOrchestratorDeps = (opts: BuildApplyOrchestratorOptions):
   const dataDir = opts.dataDir ?? dirname(opts.db.name);
   const oldPath = `${binaryPath}.old`;
   const stagedPath = `${binaryPath}.staged`;
+  // D-178 S1 rev 2 item 4 — the native addon the SEA loads at its first database
+  // open. Keyed off `binaryDir`, NOT `process.execPath`: on `docker-thin` the
+  // seed boot runs under Node, so execPath is the Node runtime, but the file the
+  // NEXT boot resolves is `dirname(<the binary we are swapping>)/lib/…`. Honour
+  // the same `RECUED_NATIVE_BINDING` override `open-database.ts` reads, or the
+  // update would swap a file the new binary never looks at.
+  const libLivePath = env.RECUED_NATIVE_BINDING ?? join(binaryDir, 'lib', 'better_sqlite3.node');
+  const libOldPath = `${libLivePath}.old`;
+  const libStagedPath = `${libLivePath}.staged`;
+  const sidecarPaths = { stagedPath: libStagedPath, livePath: libLivePath, oldPath: libOldPath };
   const snapshotPath = join(dataDir, 'update-snapshot.db');
   const dbPath = opts.db.name;
   // Per-install override for the self-update storage preflight (bytes); unset /
@@ -198,12 +269,30 @@ export const buildApplyOrchestratorDeps = (opts: BuildApplyOrchestratorOptions):
   const ports: ApplyOrchestratorPorts = {
     ledger,
     bootFailureCounter,
-    download: defaultDownload,
+    // The addon stages into `<binDir>/lib/`, which need not exist yet on an
+    // install predating the sidecar (or a docker-thin data volume seeded before
+    // the lib was baked). Create it here rather than in `defaultDownload` — the
+    // path composition is this module's job, and a `createWriteStream` into a
+    // missing dir is an ENOENT that reads like a network failure.
+    download: async (url, destPath) => {
+      mkdirSync(dirname(destPath), { recursive: true });
+      await defaultDownload(url, destPath);
+    },
     verifyArtifact: verifyArtifactFile,
-    preserveAndSwap: () => preserveAndSwap(stagedPath, binaryPath, oldPath),
-    rollbackSwap: () => rollbackSwap(oldPath, binaryPath),
-    discardStaged: () => discardStaged(stagedPath),
+    preserveAndSwap: (swapSidecar) =>
+      preserveAndSwap(stagedPath, binaryPath, oldPath, swapSidecar ? sidecarPaths : undefined),
+    // Rollback ALWAYS passes the paths: the executor no-ops when no preserved
+    // addon exists, and the addon that needs restoring was preserved by a
+    // PREVIOUS apply — there is no `ctx` here to consult, and inferring "this
+    // install has a sidecar" from anything else would skip the restore exactly
+    // when it matters.
+    rollbackSwap: () => rollbackSwap(oldPath, binaryPath, sidecarPaths),
+    discardStaged: () => {
+      discardStaged(stagedPath);
+      discardStaged(libStagedPath);
+    },
     persistStagedSig: (sig) => writeStagedSig(stagedPath, sig),
+    persistStagedLibSig: (sig) => writeStagedSig(libStagedPath, sig),
     takeSnapshot: () => takeSnapshot(
       (dest) => copyDatabaseForSnapshot(opts.db, dest),
       snapshotPath,
@@ -276,6 +365,7 @@ export const buildApplyOrchestratorDeps = (opts: BuildApplyOrchestratorOptions):
     now: () => Date.now(),
     trustedPubkey: opts.releaseCheckDeps.trustedPubkey,
     stagedPath,
+    stagedLibPath: libStagedPath,
   };
 
   return {
@@ -303,11 +393,21 @@ export const buildReleaseCheckDeps = (opts: BuildReleaseCheckDepsOptions): Relea
   // running, notifies recreate-from-digest). Absent (binary channel / no
   // launcher) → undefined → the resolve skips the launcher gate entirely.
   const launcherVersion = parseLauncherVersion(env.RECUED_LAUNCHER_VERSION);
+  // One channel value feeds BOTH the fetch path and the in-manifest resolve, so
+  // a server can never count itself as one fleet and update as the other.
+  const channel = resolveChannel(env);
   return {
     trustedPubkey: opts.trustedPubkey ?? TRUSTED_RELEASE_PUBKEY,
-    manifestUrl: env.RECUED_RELEASE_MANIFEST_URL ?? DEFAULT_MANIFEST_URL,
-    fetchText: opts.fetchText ?? defaultFetchText,
-    channel: resolveChannel(env),
+    // An explicit `RECUED_RELEASE_MANIFEST_URL` wins VERBATIM — a self-hoster or
+    // staging feed pinned a full url and we do not append a channel segment to
+    // it. Only the derived default is per-channel.
+    manifestUrl: env.RECUED_RELEASE_MANIFEST_URL ?? manifestUrlFor(RELEASE_BASE_URL, channel),
+    fetchText:
+      opts.fetchText
+      ?? makeFetchText(
+        updateCheckUserAgent(opts.currentVersion, platform, resolveDistributionChannel(env)),
+      ),
+    channel,
     currentVersion: opts.currentVersion,
     platform,
     ...(launcherVersion !== undefined ? { launcherVersion } : {}),

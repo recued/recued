@@ -8,10 +8,17 @@
  *  - Chat: unsupported (no browser) — throws INGREDIENT_ADAPTER_ALL_FAILED
  *
  *  Vault resolution:
- *  Server-side vault is populated from three sources (highest priority first):
+ *  Server-side vault is populated from two sources, merged over the encrypted
+ *  VaultStore (highest priority first):
  *  1. Per-request overrides (vault field in POST /execute body)
  *  2. Environment variables: RECUED_VAULT_{key}=value
- *  3. Vault file: --vault-file path/to/vault.json
+ *
+ *  There is no vault-file source. `--vault-file` was specified to carry
+ *  publisher-scoped credentials at startup -- the one thing env cannot express,
+ *  since a variable name is a single flat token -- but it was never implemented
+ *  and no argument parser reads it. `mergeVault`'s first parameter is still
+ *  named `fileVault` from that design; both production call sites pass the
+ *  VaultStore-loaded credentials into it.
  */
 
 import { createConnectionAdapter, createConnectionApiHandler, createConnectionMcpHandler, createConnectionNotificationHandler, createIngredientExecutor, createKernelAdapter, executeHTTP, executeMCP, withIngredientCache } from '@recued/ingredients';
@@ -24,7 +31,7 @@ import {
   type ContentPart, type LLMConfig, type QuotaTracker,
 } from '@recued/llm';
 import { isBatchCapableAISlug, isTempFileRef } from '@recued/contracts';
-import type { ConnectionKind, ExecutionSource, GatewayCallAudit, TempFileRef, WebChatTab } from '@recued/contracts';
+import type { ChunkedUploadAuditInfo, ConnectionKind, ExecutionSource, GatewayCallAudit, TempFileRef, WebChatTab } from '@recued/contracts';
 import type { CacheStore } from '@recued/cache';
 import type { NamespaceStores } from '@recued/contracts';
 import { CONNECTION_GATEWAY_AUDIT_SOURCE, resolveDeep } from '@recued/contracts';
@@ -195,6 +202,19 @@ export interface ConnectionAuditDetail {
   duration_ms: number;
   bytes_in?: number;
   bytes_out?: number;
+  /** SHA-256 of one-shot upload content; bytes are never logged. */
+  content_sha256?: string;
+  /** D-217 § 6.3 — partial-egress honesty for a MULTI-REQUEST act. Present only
+   *  on a chunked upload.
+   *
+   *  ⛔ A failed upload is not a no-op: a walk that stopped at chunk k already
+   *  sent k chunks to a third party. `bytes_out` carries the volume; this
+   *  carries the shape around it, without which a reader cannot tell a complete
+   *  upload from an abandoned one that moved the same bytes. ⚠ And `outcome` is
+   *  what keeps § 8.1 alive past this boundary — `committed` and
+   *  `committed_unconfirmed` are both `status: 'ok'`, so the distinction the
+   *  poll ruling turns on exists only in this field. */
+  chunked_upload?: ChunkedUploadAuditInfo;
   error?: { code: string; message: string };
   intent: string;
   /** D-117 follow-on (post-D-127) — engine-supplied recipe identity.
@@ -274,6 +294,12 @@ export const createConnectionAuditEmitter = (
       duration_ms: emission.duration_ms,
       ...(emission.bytes_in !== undefined ? { bytes_in: emission.bytes_in } : {}),
       ...(emission.bytes_out !== undefined ? { bytes_out: emission.bytes_out } : {}),
+      ...(emission.content_sha256 !== undefined
+        ? { content_sha256: emission.content_sha256 }
+        : {}),
+      ...(emission.chunked_upload !== undefined
+        ? { chunked_upload: emission.chunked_upload }
+        : {}),
       ...(emission.error !== undefined ? { error: emission.error } : {}),
       intent,
       ...(recipe_id !== undefined ? { recipe_id } : {}),

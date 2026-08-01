@@ -27,7 +27,8 @@ import { applyAutoPiiProtection, type AutoPiiResidualOutcome } from './apply-pii
 import { validateRecipePii, type PiiIssue } from './validate-pii.js';
 
 export interface SummarizePiiOptions {
-  /** False when the dispatch seam will NOT rewrite (the `RECUED_AUTO_PII=off`
+  /** False when the dispatch seam will NOT rewrite (the owner's
+   *  `privacy.auto_pii_protection`
    *  operator hatch) — the summary then claims no auto-protection and every
    *  identifier leak stays a warning. Default true. */
   autoProtection?: boolean;

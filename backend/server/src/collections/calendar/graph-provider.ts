@@ -63,7 +63,6 @@ import {
   requireProviderConfig,
   type HttpFetcher,
   type OAuthAccountStore,
-  type OAuthProviderConfig,
   type OAuthProviderConfigSource,
 } from '../mail/oauth.js';
 
@@ -1014,12 +1013,11 @@ export const createGraphCalAdapterFactory = (
 // Shipped OAuth client config
 // ────────────────────────────────────────────────────────────────
 
-/** OAuth constants shipped in the server binary. Intentionally share
- *  the `RECUED_GRAPH_*` env vars with the mail adapter — one Graph
- *  registration covers both surfaces via scope-differentiated
- *  consents. */
-export const GRAPH_CAL_OAUTH_CONFIG: OAuthProviderConfig = {
-  tokenUrl: MICROSOFT_TOKEN_URL,
-  clientId: process.env.RECUED_GRAPH_CLIENT_ID ?? '',
-  clientSecret: process.env.RECUED_GRAPH_CLIENT_SECRET ?? undefined,
-};
+/** Graph calendar's token endpoint — a PROTOCOL constant, not a credential.
+ *
+ *  This used to be `GRAPH_CAL_OAUTH_CONFIG`, which deliberately SHARED the
+ *  `RECUED_GRAPH_*` env pair with the mail adapter so one Graph registration
+ *  covered both surfaces via scope-differentiated consents. That sharing now
+ *  happens properly: both read the same `OAuthAppConfigStore` record under
+ *  issuer `microsoft`. The env pair was DELETED (2026-07-28). */
+export const GRAPH_CAL_TOKEN_URL = MICROSOFT_TOKEN_URL;

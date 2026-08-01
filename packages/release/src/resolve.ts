@@ -13,6 +13,7 @@
  */
 
 import { createHash } from 'node:crypto';
+import { libKeyFor } from './manifest.js';
 import type { BinaryArtifact, ChannelName, ChannelRelease, DockerArtifact, Platform, ReleaseManifest } from './manifest.js';
 
 /** Default freshness grace past `expires_at` before a manifest reads as a
@@ -61,6 +62,15 @@ export type ReleaseResolution =
       /** The platform binary artifact, or null (docker installs pick a docker
        *  artifact off `release.artifacts` themselves). */
       artifact: BinaryArtifact | null;
+      /** D-178 S1 rev 2 — the native `lib/` sidecar for the SAME triple, or
+       *  null when the release carries none.
+       *
+       *  ⛔ A non-null `artifact` with a null `libArtifact` is an
+       *  exe-without-its-native-module: it installs and then cannot open its
+       *  database. Consumers that ACT on the binary must treat the pair as
+       *  all-or-nothing; consumers that merely REPORT (the check card, the CLI)
+       *  should still surface the release. */
+      libArtifact: BinaryArtifact | null;
       /** This release migrates the schema on boot (rollback-rule input). */
       migration: boolean;
       /** Major bump from current — notify-only, never auto-apply (I-4). */
@@ -159,6 +169,16 @@ export const resolveRelease = (input: ResolveInput): ReleaseResolution => {
   const belowMinSupported = compareVersions(currentVersion, release.min_supported) < 0;
   const cohort = inRolloutCohort(salt, release.rollout_pct);
   const artifact = release.artifacts[platform] ?? null;
+  // D-178 S1 rev 2 — the native sidecar for THIS triple. Resolved here, beside
+  // the binary, so no consumer has to know the key naming; `libKeyFor` is the
+  // single source of that.
+  //
+  // ⚠ Returned as `null` when absent rather than throwing, because a release
+  // MAY legitimately have no sidecar (a docker-only channel, or a pre-sidecar
+  // manifest). The pairing requirement is enforced where the binary is APPLIED
+  // — refusing there is recoverable, refusing here would make the whole check
+  // fail and hide an available release from the owner.
+  const libArtifact = release.artifacts[libKeyFor(platform)] ?? null;
 
   return {
     status: 'update-available',
@@ -168,6 +188,7 @@ export const resolveRelease = (input: ResolveInput): ReleaseResolution => {
     targetVersion: release.version,
     release,
     artifact,
+    libArtifact,
     migration: release.migration,
     isMajor,
     belowMinSupported,

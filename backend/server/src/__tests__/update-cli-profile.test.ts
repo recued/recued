@@ -26,21 +26,39 @@ describe('runUpdateProfile (recued update)', () => {
     runUpdateProfile({
       args: ['update', ...(sub ? [sub] : []), '--db', join(dir, 'recued.db')],
       serverVersion: '1.4.0',
-      // No env override → default empty trusted key → not-configured (no fetch).
-      env: { ...process.env, RECUED_DISTRIBUTION_CHANNEL: 'binary' },
+      env: {
+        ...process.env,
+        RECUED_DISTRIBUTION_CHANNEL: 'binary',
+        // ⛔ MUST stay pointed at a dead local port. Before the release key was
+        // pinned (2026-07-31) the empty key short-circuited every check, so this
+        // profile could not reach the network no matter what. With a real key
+        // pinned the check RUNS — and without this override these cases would
+        // make live HTTPS calls to releases.recued.com on every suite run.
+        RECUED_RELEASE_MANIFEST_URL: 'http://127.0.0.1:1/manifest.json',
+      },
     });
 
-  it('default subcommand runs the check (pre-GA → not-configured, never throws/fetches)', async () => {
+  it('default subcommand runs the check and reports the failure honestly, never throwing', async () => {
+    // ⚠ REWRITTEN 2026-07-31 with the key pin. This asserted
+    // `not available on this build yet` — the pre-GA `not-configured`
+    // short-circuit, which a pinned build no longer takes.
+    //
+    // The INTENT is unchanged and is the whole point of the profile: the check
+    // runs on EVERY install, prints the version/channel head, and reports what
+    // happened instead of throwing. An unreachable feed is the cleanest way to
+    // prove the reporting path offline.
     await expect(run()).resolves.toBeUndefined();
     const out = logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
     expect(out).toMatch(/recued 1\.4\.0 \(stable channel\)/);
-    expect(out).toMatch(/not available on this build yet/);
+    expect(out).toMatch(/could not reach the release feed/);
     expect(process.exitCode).toBeUndefined();
   });
 
   it('`update check` is the explicit form of the default', async () => {
     await run('check');
-    expect(logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')).toMatch(/not available on this build yet/);
+    expect(logSpy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n')).toMatch(
+      /could not reach the release feed/,
+    );
   });
 
   it('`update apply` points at the server surface (does not apply from the CLI) + exit 2', async () => {

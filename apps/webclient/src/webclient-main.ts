@@ -44,11 +44,10 @@
  *  intentionally to inspect the static shell.
  *
  *  DD#2 — Init failures upgrade the splash, not throw. A WebCrypto-less
- *  environment, an IDB-blocked-by-private-mode error, a `WebSocket`-
- *  less environment — every init failure surfaces as a visible message
- *  in the splash slot rather than a console error the user never sees.
- *  Production browsers all have the APIs; the visible-failure path
- *  exists so a misconfigured / restricted environment is loud.
+ *  environment, unavailable persistent storage, a `WebSocket`-less
+ *  environment — every init failure surfaces visibly rather than only in
+ *  the console. Persistent-storage failures get a reason-aware live retry;
+ *  other restricted environments retain actionable failure copy.
  *
  *  DD#3 — The entrypoint does NOT import from `@recued/engine`,
  *  `@recued/recipes`, `@recued/storage`, `@recued/cache`,
@@ -64,29 +63,56 @@
  *
  *  Spec: D-148 § A.4 (Thin Webclient). */
 
-import {
-  WEBCLIENT_INDEXED_DB_NAME,
-  WEBCLIENT_OBJECT_STORES,
-} from '@recued/contracts';
-
 import type { WebclientHandle } from './webclient-bootstrap.js';
-import { parsePairDeeplink } from './auth/pair-deeplink.js';
+import { parsePairEntryHandoff } from './boot/secure-access-resume.js';
 import {
+  armRecoveryReentry,
+  armReplacementServerRecoveryReentry,
+  armSafeStopRecoveryReentry,
+  consumeRecoveryReentryState,
+  retireRecoveryReentry,
+  scrubRecoveryReentryAddress,
+} from './boot/recovery-reentry.js';
+import {
+  queueStartupRecoveryForNextAttempt,
   removeBootSplashWrapper,
   runBootstrapWithPairFallback,
   setSplashMessage,
+  type PairFallbackBootstrapDeps,
 } from './boot/pair-fallback-bootstrap.js';
 import {
+  COLD_START_CREDENTIAL_SETTLE_MS,
+  announceColdStartCredentialCheck,
+  inspectColdStartCredentials,
+  startColdStartCredentialRepair,
+  type ColdStartCredentialHealth,
+} from './boot/cold-start-credential-repair.js';
+import { createBrowserPairTabConvergence } from './boot/pair-tab-convergence.js';
+import {
   readSecureContextEnv,
-  resolveInsecureContextMessage,
+  resolveSecureContextIssue,
 } from './boot/secure-context-guard.js';
+import { mountSecureAccessHandoff } from './boot/secure-access-handoff.js';
+import {
+  closeAbandonedPersistentStorageOpen,
+  openPersistentStorageWithRecovery,
+  openWebclientDatabase,
+  WEBCLIENT_LOCAL_STORE_NAME,
+  WEBCLIENT_TOKEN_KEY_STORE_NAME,
+} from './boot/persistent-storage-startup.js';
+import { recoverStartupTaskWithTriage } from './boot/startup-failure-triage.js';
+import {
+  consumeStartupReloadRecovery,
+  requestStartupRecoveryReload,
+} from './boot/startup-reload-recovery.js';
 import { createBrowserWebclientTransport } from './realtime/browser-transport.js';
 import { WebclientReauthRequiredError } from './realtime/ws-client.js';
 import { registerServiceWorker } from './runtime/service-worker.js';
 import {
-  createIndexedDbWebclientLocalStore,
-  type IndexedDbKeyValue,
-} from './storage/local-store.js';
+  buildIndexedDbKeyValue,
+  runIndexedDbStoreRequest,
+} from './storage/indexed-db-key-value.js';
+import { createIndexedDbWebclientLocalStore } from './storage/local-store.js';
 import {
   createWebclientTokenStore,
   WebclientTokenCorruptError,
@@ -99,6 +125,19 @@ import {
 
 const ROOT_ID = 'webclient-root';
 
+/** Broadcast a credential-free hint from a pre-shell repair. Pair fallback
+ * owns a persistent observer once the shell mounts; cold-start repair has no
+ * shell yet, so this short-lived channel posts once and immediately retires. */
+const notifySiblingCredentialsRemoved = (): void => {
+  const convergence = createBrowserPairTabConvergence({ pollMs: null });
+  if (convergence === null) return;
+  try {
+    convergence.notifyCredentialStateChanged();
+  } finally {
+    convergence.close();
+  }
+};
+
 // `setSplashMessage` + `removeBootSplashWrapper` live in
 // `./boot/pair-fallback-bootstrap.js` (D-169 P1.5 NEXT-#1 extraction) —
 // both the entry's init-failure paths below and the pair-fallback loop
@@ -109,79 +148,7 @@ const ROOT_ID = 'webclient-root';
 // IndexedDB plumbing
 // ════════════════════════════════════════════════════════════════
 
-const [LOCAL_STORE_NAME, TOKEN_KEY_STORE_NAME] = WEBCLIENT_OBJECT_STORES;
 const TOKEN_KEY_ID = 'webclient.aes_gcm_key' as const;
-
-/** Open the webclient's IDB database, creating both documented object
- *  stores on the first run. Idempotent — `onupgradeneeded` only fires
- *  when the version changes or the DB is new. */
-const openWebclientDatabase = (): Promise<IDBDatabase> => {
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(WEBCLIENT_INDEXED_DB_NAME, 1);
-    request.onupgradeneeded = (): void => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(LOCAL_STORE_NAME)) {
-        db.createObjectStore(LOCAL_STORE_NAME);
-      }
-      if (!db.objectStoreNames.contains(TOKEN_KEY_STORE_NAME)) {
-        db.createObjectStore(TOKEN_KEY_STORE_NAME);
-      }
-    };
-    request.onsuccess = (): void => resolve(request.result);
-    request.onerror = (): void =>
-      reject(request.error ?? new Error('indexedDB.open rejected'));
-    request.onblocked = (): void =>
-      reject(new Error('indexedDB.open blocked by another open connection'));
-  });
-};
-
-/** Wrap a single IDB operation in a fresh transaction. Each call is
- *  self-contained: open the transaction, hit the request, resolve on
- *  success / reject on error. We don't pool transactions because the
- *  webclient's IDB traffic is rare (boot + Settings → Privacy actions).
- *  The promise resolves with the request result (unknown shape — the
- *  local-store wrapper casts back to its typed shape). */
-const runStoreRequest = <T = unknown>(
-  db: IDBDatabase,
-  storeName: string,
-  mode: IDBTransactionMode,
-  operate: (store: IDBObjectStore) => IDBRequest<T>,
-): Promise<T> => {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, mode);
-    const store = tx.objectStore(storeName);
-    const request = operate(store);
-    request.onsuccess = (): void => resolve(request.result);
-    request.onerror = (): void =>
-      reject(request.error ?? new Error('idb request rejected'));
-    tx.onerror = (): void => reject(tx.error ?? new Error('idb tx rejected'));
-    tx.onabort = (): void => reject(tx.error ?? new Error('idb tx aborted'));
-  });
-};
-
-const buildIdbKeyValue = (db: IDBDatabase, storeName: string): IndexedDbKeyValue => ({
-  async get(key) {
-    const v = await runStoreRequest(db, storeName, 'readonly', (s) => s.get(key));
-    return v;
-  },
-  async set(key, value) {
-    await runStoreRequest(db, storeName, 'readwrite', (s) =>
-      s.put(value as unknown as Parameters<IDBObjectStore['put']>[0], key),
-    );
-  },
-  async delete(key) {
-    await runStoreRequest(db, storeName, 'readwrite', (s) => s.delete(key));
-  },
-  async clear() {
-    await runStoreRequest(db, storeName, 'readwrite', (s) => s.clear());
-  },
-  async keys() {
-    const raw = await runStoreRequest<IDBValidKey[]>(db, storeName, 'readonly', (s) =>
-      s.getAllKeys(),
-    );
-    return raw.map((k) => String(k));
-  },
-});
 
 // ════════════════════════════════════════════════════════════════
 // AES-GCM key resolver
@@ -197,9 +164,9 @@ const buildIdbKeyValue = (db: IDBDatabase, storeName: string): IndexedDbKeyValue
  *  in unwrapped form — every `unwrap` call is paired with an immediate
  *  use of the resulting bearer (per the token-store contract). */
 const resolveTokenKey = async (db: IDBDatabase): Promise<CryptoKey> => {
-  const existing = await runStoreRequest<CryptoKey | undefined>(
+  const existing = await runIndexedDbStoreRequest<CryptoKey | undefined>(
     db,
-    TOKEN_KEY_STORE_NAME,
+    WEBCLIENT_TOKEN_KEY_STORE_NAME,
     'readonly',
     (s) => s.get(TOKEN_KEY_ID),
   );
@@ -209,8 +176,11 @@ const resolveTokenKey = async (db: IDBDatabase): Promise<CryptoKey> => {
     false,
     ['encrypt', 'decrypt'],
   );
-  await runStoreRequest(db, TOKEN_KEY_STORE_NAME, 'readwrite', (s) =>
-    s.put(fresh, TOKEN_KEY_ID),
+  await runIndexedDbStoreRequest(
+    db,
+    WEBCLIENT_TOKEN_KEY_STORE_NAME,
+    'readwrite',
+    (s) => s.put(fresh, TOKEN_KEY_ID),
   );
   return fresh;
 };
@@ -278,9 +248,20 @@ const wrapTokenStoreWithReauthMapping = (
  *  bootstrap's handle through) and clears the
  *  `recued.webclient.token_key` object store. */
 export const wipeWebclientCryptoKeyStore = async (): Promise<void> => {
-  const db = await openWebclientDatabase();
+  let db: IDBDatabase;
   try {
-    await runStoreRequest(db, TOKEN_KEY_STORE_NAME, 'readwrite', (s) => s.clear());
+    db = await openWebclientDatabase();
+  } catch (error) {
+    closeAbandonedPersistentStorageOpen(error);
+    throw error;
+  }
+  try {
+    await runIndexedDbStoreRequest(
+      db,
+      WEBCLIENT_TOKEN_KEY_STORE_NAME,
+      'readwrite',
+      (s) => s.clear(),
+    );
   } finally {
     db.close();
   }
@@ -291,6 +272,12 @@ export const wipeWebclientCryptoKeyStore = async (): Promise<void> => {
 // ════════════════════════════════════════════════════════════════
 
 const main = async (): Promise<void> => {
+  // Consume before any early-returning startup guard. Only this next document
+  // may claim the explicit reload; a storage, credential, or environment
+  // failure retires it instead of leaking success into a later ordinary load.
+  const startupReloadRecoveryRequested =
+    consumeStartupReloadRecovery();
+
   // Secure-context guard (DD#2 — init failures upgrade the splash, not throw).
   // Web Crypto (`crypto.subtle`) is only available in a secure context: https,
   // or plain http on a loopback origin (localhost / 127.0.0.1). Loaded over
@@ -299,13 +286,25 @@ const main = async (): Promise<void> => {
   // server-key verify, key generation — throws a cryptic "reading 'subtle' of
   // undefined". Detect it BEFORE any of that (even before the service-worker
   // registration, which also needs a secure context) and render an actionable
-  // message. Companion to the server's bare-`/` → `/webclient/` LAN redirect:
+  // handoff. Companion to the server's bare-`/` → `/webclient/` LAN redirect:
   // that makes the same-machine localhost path work (loopback is secure); a
-  // load from another device over http still needs HTTPS, and this is where
-  // the user learns that instead of hitting a dead splash.
-  const insecureMessage = resolveInsecureContextMessage(readSecureContextEnv());
-  if (insecureMessage) {
-    setSplashMessage(insecureMessage);
+  // load from another device over http still needs HTTPS. Keep the exact path,
+  // pairing query, and hash intact across either route instead of leaving the
+  // owner to reconstruct them from a dead splash.
+  const secureContextIssue = resolveSecureContextIssue(
+    readSecureContextEnv(),
+  );
+  if (secureContextIssue) {
+    try {
+      mountSecureAccessHandoff({
+        issue: secureContextIssue,
+        location: window.location,
+        document,
+      });
+    } catch (error) {
+      setSplashMessage(secureContextIssue.message);
+      console.error('webclient: secure-access handoff mount failed', error);
+    }
     console.error(
       'webclient: aborting boot — Web Crypto unavailable (insecure context / no crypto.subtle)',
     );
@@ -327,57 +326,127 @@ const main = async (): Promise<void> => {
     return;
   }
 
-  // Open the IDB database BEFORE the bootstrap call so a private-mode
-  // restriction (Firefox PB blocks IDB) surfaces as a clean splash
-  // upgrade rather than a deep-stack unhandled rejection.
+  // Open IDB BEFORE bootstrap. A blocked upgrade, storage denial, quota
+  // failure, or unknown platform error becomes an actionable live recovery
+  // surface. A successful in-place retry resumes this exact boot and route.
   let db: IDBDatabase;
   try {
-    db = await openWebclientDatabase();
+    db = await openPersistentStorageWithRecovery({
+      openStorage: openWebclientDatabase,
+      document,
+      reloadAttempted: startupReloadRecoveryRequested,
+      reload: () => requestStartupRecoveryReload(),
+      onFailure: (error, kind) => {
+        console.error(`webclient: IDB open failed (${kind})`, error);
+      },
+    });
   } catch (err) {
     setSplashMessage(
-      'IndexedDB unavailable — Recued needs persistent storage. Disable Private Browsing or grant storage access, then reload.',
+      'Recued could not open browser-storage recovery. Reload this tab and try again.',
     );
-    console.error('webclient: IDB open failed', err);
+    console.error('webclient: persistent-storage recovery mount failed', err);
     return;
   }
 
-  const localStore = createIndexedDbWebclientLocalStore(
-    buildIdbKeyValue(db, LOCAL_STORE_NAME),
+  const localKeyValue = buildIndexedDbKeyValue(
+    db,
+    WEBCLIENT_LOCAL_STORE_NAME,
   );
+  const localStore = createIndexedDbWebclientLocalStore(localKeyValue);
   const tokenStore = wrapTokenStoreWithReauthMapping(buildTokenStore(db));
 
-  // Codex P2 fold — pre-unwrap the stored bearer BEFORE the bootstrap
-  // mounts the route. If the unwrap fails (lost AES key, AAD mismatch,
-  // ciphertext tamper), the route would otherwise mount on top of the
-  // splash + the ws-client would silently spin its reconnect loop.
-  // Failing fast here renders the re-pair UX cleanly instead. We swallow
-  // any `WebclientUnpairedError`-equivalent state (missing fields) so
-  // the bootstrap's own unpaired-error path handles the not-paired UX.
-  try {
-    const wt = await localStore.get('webclient_token');
-    const su = await localStore.get('server_url');
-    const spk = await localStore.get('server_public_key');
-    if (wt && su && spk) {
-      // Throws `WebclientReauthRequiredError` (mapped above) when the
-      // stored ciphertext can no longer be decrypted.
-      await tokenStore.unwrap(wt, {
-        token_id: wt.token_id,
-        server_url: su,
-        server_public_key: spk,
-      });
+  // Consume only after persistent storage opens: a storage/secure-context
+  // failure must not erase the last recovery document's continuity. The
+  // marker contains no context; the live URL below remains the exact-route
+  // authority, and every old pairing input is retired before inspection.
+  const recoveryReentryState = consumeRecoveryReentryState();
+  const recoveryReentryRequested = recoveryReentryState !== null;
+  const safeStopReentryRequested = recoveryReentryState === 'safe_stop';
+  const replacementServerReentryRequested =
+    recoveryReentryState === 'replacement_server';
+  if (recoveryReentryRequested) {
+    scrubRecoveryReentryAddress({ document });
+    // Keep continuity live while credential inspection or its startup triage
+    // is pending. A verified healthy pair below is the only reason to retire.
+    if (safeStopReentryRequested) {
+      armSafeStopRecoveryReentry();
+    } else if (replacementServerReentryRequested) {
+      armReplacementServerRecoveryReentry();
+    } else {
+      armRecoveryReentry();
     }
-  } catch (err) {
-    if (err instanceof WebclientReauthRequiredError) {
+  }
+
+  // Inspect the full five-field record BEFORE a route mounts. Only an entirely
+  // empty store is first run. Interrupted partial writes and typed local
+  // decrypt failures become explicit, context-preserving repair choices below.
+  const inspectCredentialsAtColdStart = async (
+    announce: boolean,
+  ): Promise<ColdStartCredentialHealth> => {
+    const credentialConvergence = createBrowserPairTabConvergence({
+      pollMs: null,
+    });
+    const stopAnnouncement = announce
+      ? announceColdStartCredentialCheck()
+      : (): void => undefined;
+    try {
+      return await inspectColdStartCredentials({
+        localStore,
+        tokenStore,
+        credentialConvergence,
+        settleMs: COLD_START_CREDENTIAL_SETTLE_MS,
+      });
+    } finally {
+      stopAnnouncement();
+      credentialConvergence?.close();
+    }
+  };
+
+  let credentialHealth: ColdStartCredentialHealth;
+  try {
+    credentialHealth = await inspectCredentialsAtColdStart(true);
+  } catch (initialFailure) {
+    try {
+      credentialHealth = await recoverStartupTaskWithTriage({
+        initialFailure,
+        task: () => inspectCredentialsAtColdStart(false),
+        savedAccessVerified: false,
+        repeated: startupReloadRecoveryRequested,
+        reloadAttempted: startupReloadRecoveryRequested,
+        document,
+        onReload: () => requestStartupRecoveryReload(),
+        onFailure: (failure, kind) => {
+          console.error(
+            `webclient: saved-access check failed (${kind})`,
+            failure,
+          );
+        },
+      });
+    } catch (triageError) {
       setSplashMessage(
-        'Stored credentials cannot be read on this browser. Clear this browser and re-pair from your recued-server to recover.',
+        'Recued could not open startup recovery. Reload this tab to try again; no saved access was cleared.',
+      );
+      console.error(
+        'webclient: saved-access check recovery unavailable',
+        triageError,
       );
       return;
     }
-    setSplashMessage(
-      'Recued failed to start while checking stored credentials. Check the browser console for details.',
-    );
-    console.error('webclient: bearer pre-unwrap failed', err);
-    return;
+  }
+
+  const healthyPairAvailable =
+    credentialHealth.kind === 'continue'
+    && credentialHealth.healthyPairAvailable === true;
+  const recoveryReentryUnresolved =
+    recoveryReentryRequested
+    && !healthyPairAvailable;
+  if (
+    recoveryReentryRequested
+    && healthyPairAvailable
+  ) {
+    // A sibling may have completed while this document was closed. Durable
+    // healthy access wins silently and prevents reconnect framing or receipts.
+    retireRecoveryReentry();
   }
 
   let transport;
@@ -402,23 +471,115 @@ const main = async (): Promise<void> => {
   // bootstrap handle for inspection / future re-entry.
   const handleRef: { current: WebclientHandle | null } = { current: null };
 
-  // D-156 P4 — boot-time deeplink parse. The CLI's `recued-server pair`
-  // command prints `app.recued.com/pair?code=<8-char>`; the static
-  // shell's `/pair` path is a deployment alias mapping to the same SPA
-  // entry as `/` (Vercel rewrites / nginx `try_files` — the rewrite
-  // lives in the deploy config, not this repo). Either path lands here;
-  // we dispatch on the query alone, so the path mapping is invisible
-  // to the SPA. The bootstrap's normal paired-path is unaffected:
-  // parsing the deeplink is free + the seed only takes effect on the
-  // `WebclientUnpairedError` fallback branch below. NOTE: only `?code=`
-  // is honoured — Codex 2026-05-18 P4 critical fold dropped `?url=`
-  // pre-fill (attacker-controlled URL would exfiltrate the recovery
-  // key on submit).
-  const deeplink = parsePairDeeplink(globalThis.location?.search ?? '');
+  // Boot-time pair-entry parse. The CLI's safe `?code=` is retained, while an
+  // insecure-context handoff may also resume with the destination page's own
+  // HTTPS/loopback origin. Query-supplied server URLs remain ignored. Parse
+  // before cold repair so either safe seed survives that guided handoff too.
+  const pairEntry = parsePairEntryHandoff(
+    globalThis.location?.href ?? '',
+  );
 
-  const outcome = await runBootstrapWithPairFallback({
+  if (credentialHealth.kind !== 'continue') {
+    // The bounded startup observer is intentionally short-lived. Keep a fresh
+    // poll/focus-capable observer with the explicit repair surface so a source
+    // tab that finishes its interrupted save can dismiss this stale diagnosis
+    // without making the user clear or re-pair anything here.
+    const repairCredentialConvergence =
+      createBrowserPairTabConvergence();
+    try {
+      // True when the repair has at most the one profile to remove — the
+      // point at which a whole-store wipe and a profile-scoped one are the
+      // same act. Read BEFORE anything is removed, so both wipers agree.
+      const repairWouldEmptyRoster = async (): Promise<boolean> => {
+        try {
+          return (await localStore.listProfiles()).length <= 1;
+        } catch {
+          // A roster read that fails is itself a broken store; fall back to
+          // the historic whole-store wipe rather than leaving a half-repaired
+          // browser that cannot pair.
+          return true;
+        }
+      };
+      startColdStartCredentialRepair({
+        root,
+        localStore,
+        profileStore: localStore,
+        tokenStore,
+        transport,
+        handleRef,
+        // PROFILE-SCOPED repair wipes.
+        //
+        // Cold-start repair fires when the ACTIVE server's stored generation
+        // is partial or unreadable. The unscoped wipes below it are correct
+        // for a browser paired to one server and destructive for a browser
+        // paired to several: `localKeyValue.clear()` takes the whole roster,
+        // and the AES-GCM key is ONE per origin (`TOKEN_KEY_ID`) wrapping
+        // every profile's bearer — so wiping it while other profiles still
+        // hold tokens would leave them undecryptable. One broken server must
+        // not cost the owner the servers that still work.
+        //
+        // So both wipes stay whole-store ONLY when this repair would empty
+        // the roster anyway (the single-server case, i.e. every install that
+        // predates profiles); otherwise the repair drops just the active
+        // profile and leaves the key alone.
+        cryptoKeysWiper: async () => {
+          if (await repairWouldEmptyRoster()) await wipeWebclientCryptoKeyStore();
+        },
+        credentialStoreWiper: async () => {
+          if (await repairWouldEmptyRoster()) {
+            await localKeyValue.clear();
+            return;
+          }
+          const activeId = await localStore.activeProfileId();
+          if (activeId !== null) await localStore.removeProfile(activeId);
+        },
+        onCredentialsRemoved: notifySiblingCredentialsRemoved,
+        credentialConvergence: repairCredentialConvergence,
+        target: credentialHealth.kind === 'unreadable'
+          ? { kind: 'unreadable', pair: credentialHealth.pair }
+          : { kind: 'partial', partial: credentialHealth.partial },
+        returnHash: globalThis.location?.hash || '#chat',
+        reloadAttempted: startupReloadRecoveryRequested,
+        ...(recoveryReentryUnresolved
+          ? { recoveryReentry: true as const }
+          : {}),
+        ...(recoveryReentryUnresolved && safeStopReentryRequested
+          ? { safeStopReentry: true as const }
+          : {}),
+        ...(recoveryReentryUnresolved && replacementServerReentryRequested
+          ? { replacementServerReentry: true as const }
+          : {}),
+        reload: () => requestStartupRecoveryReload(),
+        ...(pairEntry.active && !recoveryReentryRequested
+          ? { deeplinkSeed: pairEntry.seed }
+          : {}),
+        document,
+        onRepairError: (error) => {
+          console.error('webclient: cold-start local-access reset failed', error);
+        },
+        onHandoffError: (error) => {
+          console.error('webclient: cold-start credential repair handoff failed', error);
+        },
+      });
+    } catch (err) {
+      repairCredentialConvergence?.close();
+      setSplashMessage(
+        'Recued could not open the local-access repair. Reload and try again.',
+      );
+      console.error('webclient: cold-start credential repair mount failed', err);
+    }
+    return;
+  }
+
+  const bootstrapDeps: PairFallbackBootstrapDeps = {
     root,
     localStore,
+    // Same object, both surfaces: `createIndexedDbWebclientLocalStore` returns
+    // a `WebclientProfileAwareStore`. The five-key half is what the rest of
+    // the boot speaks; the roster half is what lets the shell mount the server
+    // switcher — the one server control that keeps working when the paired
+    // server does not answer.
+    profileStore: localStore,
     tokenStore,
     transport,
     handleRef,
@@ -426,14 +587,40 @@ const main = async (): Promise<void> => {
     // `recued.webclient.token_key` object store, so it supplies the
     // AES-GCM key wiper the bootstrap threads into Settings → Privacy.
     cryptoKeysWiper: wipeWebclientCryptoKeyStore,
-    ...(deeplink.active ? { deeplinkSeed: deeplink.seed } : {}),
-  });
+    ...(pairEntry.active && !recoveryReentryRequested
+      ? { deeplinkSeed: pairEntry.seed }
+      : {}),
+    ...(recoveryReentryUnresolved
+      ? {
+          reauthRecovery: {
+            returnHash: globalThis.location?.hash || '#chat',
+            recoveryReentry: true as const,
+            ...(safeStopReentryRequested
+              ? { safeStopReentry: true as const }
+              : {}),
+            ...(replacementServerReentryRequested
+              ? { replacementServerReentry: true as const }
+              : {}),
+          },
+        }
+      : {}),
+    ...(credentialHealth.pairCompletedInAnotherTab === true
+      ? { silentCredentialConvergence: true }
+      : {}),
+  };
+  if (
+    startupReloadRecoveryRequested
+    && credentialHealth.pairCompletedInAnotherTab !== true
+  ) {
+    queueStartupRecoveryForNextAttempt(bootstrapDeps, 'reload');
+  }
+  const outcome = await runBootstrapWithPairFallback(bootstrapDeps);
   // On a cold-start paired boot the reception route APPENDS to
   // `#webclient-root` (it does not clear it), and the boot splash is
   // `min-height:100vh` in normal flow — so a leftover splash would sit
   // on top of / above the mounted app. Drop it once the route is up.
   // On a `pair-form` (unpaired) or `failed` outcome the splash is the
-  // live surface (form / error copy) and must stay. Codex 2026-05-28
+  // live surface (form / startup recovery) and must stay. Codex 2026-05-28
   // NEXT-#1 finding #1. The post-pair re-entry path tears the splash
   // down symmetrically inside `onAfterPair`.
   if (outcome.kind === 'mounted') {

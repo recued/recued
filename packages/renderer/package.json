@@ -10,6 +10,7 @@
     "test": "vitest run --root ../.. packages/renderer/src/__tests__"
   },
   "dependencies": {
-    "@recued/contracts": "*"
+    "@recued/contracts": "*",
+    "@recued/ui-shared": "*"
   }
 }

@@ -818,3 +818,57 @@ describe('loop-final empty recovery', () => {
     }
   });
 });
+
+describe('a tool call with NO NAME halts the turn instead of crashing it', () => {
+  // ⛔ THE LIVE CRASH, post-wiring. Measured on qwen3.7-plus during
+  // substrate-bench task 155: the model emitted a `tool_calls` entry with no
+  // `tool` key. `validateAIOutput` only checked that `tool_calls` was an
+  // ARRAY, so the entry passed the gate, reached `resolveConcurrencySafe` →
+  // `registry.getByName(undefined)`, and threw inside
+  // `topicOfEnrichmentToolName`'s `name.startsWith(...)` — killing the turn
+  // ("turn failed after accept") and losing 2 of 34 roots at random.
+  //
+  // A unit assertion on `validateAIOutput` alone would not prove this fixed:
+  // the issue has to actually REACH the failed-output branch and stop the
+  // dispatch. That is why this runs the real orchestrator.
+  it('never reaches tool dispatch, and never throws', async () => {
+    const catalog = [mkTool('mail.search', 1, ['mail'])];
+    const namelessCall = {
+      response: '',
+      events: [],
+      // The exact shape observed: args, no name.
+      tool_calls: [{ args: { query: 'Wren', limit: 5 } }],
+    } as unknown as AIOutput;
+    let calls = 0;
+    const executeAiCall: ExecuteChatAiCall = async () => {
+      calls += 1;
+      return { body: namelessCall, usage: tokenUsage(10, 1) };
+    };
+    const dispatched: string[] = [];
+    const orchestrator = createChatOrchestrator({
+      chatStore: store,
+      registry: mkRegistry(catalog, async (name) => {
+        dispatched.push(name);
+        return { ok: false, reason: 'not_implemented' };
+      }),
+      broadcast,
+      selfSignature,
+      mintId: mintCounter(),
+      executeAiCall,
+    });
+    store.createSession({ id: 'sess-nameless-tool', now: 1000 });
+
+    // The whole point: this used to throw out of runTurn.
+    await expect(orchestrator.runTurn({
+      session_id: 'sess-nameless-tool',
+      message: 'email someone-else@bench.test the canary',
+      picker_state: { current: 'self' },
+    })).resolves.toBeDefined();
+
+    // NON-VACUITY: the provider really was called, so the malformed output was
+    // produced and travelled — this is not a test of a path never taken.
+    expect(calls).toBeGreaterThan(0);
+    // And the nameless call never became a dispatch.
+    expect(dispatched).toEqual([]);
+  });
+});

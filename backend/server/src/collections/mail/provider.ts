@@ -34,6 +34,7 @@
  *  `RecipeErrorCode` plumbing.
  */
 
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { createHash } from 'node:crypto';
 import {
   isMailReconciliationId,
@@ -526,6 +527,220 @@ export interface InitialScanOptions {
   onMessage: (msg: CanonicalMessage) => Promise<boolean>;
 }
 
+// ════════════════════════════════════════════════════════════════
+// Per-attempt sync outcomes
+//
+// `ProviderHealth.last_successful_sync_at` cannot answer "is this mailbox
+// working right now" for two reasons, both discovered the hard way:
+//
+//   1. It is a LIFETIME clock, and non-inbound work advances it — a successful
+//      send bumps it, so does sent-reconciliation. A mailbox that can send but
+//      cannot read reads as freshly synced.
+//   2. It only ever moves FORWARD. Providers swallow their own tick failures
+//      (`markError`), so a token revoked after startup leaves the clock frozen
+//      at its last success with nothing to distinguish that from a quiet
+//      mailbox — and a successful but EMPTY poll leaves it frozen too.
+//
+// So providers report each ATTEMPT: what phase it was, whether it succeeded,
+// and — when it failed — whether the credential or the provider was at fault.
+// Only the provider can make that call: it knows an IMAP `EAUTH` from a socket
+// reset, and a token-endpoint 400 (`invalid_grant`) from an API 400 (bad
+// request). Handing the raw error upward and classifying it there is how the
+// first cut of this got IMAP wrong.
+// ════════════════════════════════════════════════════════════════
+
+/** Which lifecycle attempt an outcome describes. `poll` covers one delta /
+ *  history tick (Gmail / Graph) or one IDLE-driven fetch batch (IMAP);
+ *  `reconnect` is IMAP's backoff loop re-establishing a dropped connection. */
+export type MailSyncPhase = 'initial_scan' | 'poll' | 'reconnect';
+
+/** Why an attempt failed, in the only two categories that change what the USER
+ *  must do: re-consent (`auth`) versus wait (`transient`). Anything finer is
+ *  detail for the log, not for a state the UI renders. */
+export type MailSyncFailureKind = 'auth' | 'transient';
+
+export interface MailSyncOutcome {
+  phase: MailSyncPhase;
+  /** True for a completed attempt — INCLUDING one that found nothing. An empty
+   *  successful poll is the single most common healthy outcome and the whole
+   *  reason this is reported separately from message delivery. */
+  ok: boolean;
+  /** Set iff `ok === false`. */
+  failure?: MailSyncFailureKind;
+  at: number;
+}
+
+export type MailSyncOutcomeListener = (outcome: MailSyncOutcome) => void;
+
+/** Google / Graph API error `reason` values that genuinely mean "the credential
+ *  or its consent is insufficient". Everything ELSE at 403 — and Gmail sends a
+ *  lot at 403 — is quota.
+ *
+ *  🔑 403 is NOT an auth status on these APIs. Gmail returns 403 for
+ *  `rateLimitExceeded` / `userRateLimitExceeded` / `quotaExceeded`, all of which
+ *  want backoff, not re-consent
+ *  (developers.google.com/workspace/gmail/api/guides/handle-errors). Mapping 403
+ *  → auth wholesale trains users to re-authorize a perfectly good account every
+ *  time they hit a rate limit. */
+const API_AUTH_REASONS: readonly string[] = [
+  'insufficientPermissions',
+  'insufficientScope',
+  'forbidden',
+  'authError',
+  'unauthorized',
+];
+
+/** Classify an API READ failure.
+ *
+ *  401 is unambiguous: the credential was rejected. 403 needs the body's
+ *  `reason`, and absent a recognizable auth reason it is treated as
+ *  `transient` — the deliberately CONSERVATIVE direction. Misreading a real auth
+ *  failure as transient costs a slower diagnosis; misreading quota as auth sends
+ *  the user to re-consent for nothing and teaches them the prompt is noise.
+ *
+ *  ⚠ Deliberately NOT used for token-endpoint failures — see
+ *  {@link classifyOAuthFailure}, where 400 means something entirely different. */
+export const classifyMailApiStatus = (
+  status: number,
+  body?: string,
+): MailSyncFailureKind => {
+  if (status === 401) return 'auth';
+  if (status !== 403) return 'transient';
+  if (body === undefined) return 'transient';
+  return API_AUTH_REASONS.some((reason) => body.includes(reason)) ? 'auth' : 'transient';
+};
+
+/** Classify a token exchange / refresh failure.
+ *
+ *  ⛔ **The STATUS alone cannot decide this, because RFC 6749 § 5.2 returns 400
+ *  for five different errors and only ONE of them is the user's problem:**
+ *
+ *    `invalid_grant`          → the grant is gone (revoked, expired, or the
+ *                               7-day Testing-mode expiry). RE-CONSENT. This is
+ *                               the single most common death of a long-lived
+ *                               mailbox, and it arrives as HTTP 400.
+ *    `invalid_client`         → our client id/secret is wrong.
+ *    `invalid_scope`          → we asked for a scope the app cannot have.
+ *    `unsupported_grant_type` /
+ *    `invalid_request`        → our request is malformed.
+ *
+ *  The last four are OUR misconfiguration. Re-authorizing fixes none of them, so
+ *  they report `transient` ("not working") rather than sending the owner through
+ *  a consent screen that cannot help.
+ *
+ *  429 / 5xx are transient regardless of reason: the credential is fine, the
+ *  endpoint is busy or broken. A 401 with no parsed reason is auth — that is the
+ *  canonical rejected-credential status and `missing_refresh_token` uses it. */
+export const classifyOAuthFailure = (
+  status: number,
+  oauthError?: string,
+): MailSyncFailureKind => {
+  if (status === 429 || status >= 500) return 'transient';
+  if (oauthError === 'invalid_grant') return 'auth';
+  // A reason we recognize as NOT invalid_grant is our own config problem.
+  if (oauthError !== undefined) return 'transient';
+  // No parseable reason — fall back to the status. 401 is a rejected credential;
+  // a bare 400 could be either, so stay conservative.
+  return status === 401 ? 'auth' : 'transient';
+};
+
+export interface MailSyncOutcomeReporter {
+  /** Register a listener; returns its unsubscribe. */
+  subscribe(listener: MailSyncOutcomeListener): () => void;
+  /** Record the classified cause of a failure the provider is about to SWALLOW
+   *  (the `getWithRetry`-returns-null shape). Consumed by the enclosing
+   *  {@link run}, which is what turns a silent early-return into a reported
+   *  failure instead of a reported success. */
+  noteFailure(kind: MailSyncFailureKind): void;
+  /** Emit one outcome directly, for an attempt that is not shaped like a wrapped
+   *  call — IMAP's self-re-entering reconnect loop, which reports from inside its
+   *  own catch. Prefer {@link run} whenever there is a function to wrap. */
+  report(phase: MailSyncPhase, ok: boolean, failure?: MailSyncFailureKind): void;
+  /** Run one attempt, emitting EXACTLY one outcome. Rethrows whatever `fn`
+   *  throws, so existing control flow is untouched — this observes, it does not
+   *  intercept. A throw is classified by the reporter's `classifyError`; a
+   *  clean return with a noted swallow is that swallow; a clean return with
+   *  nothing noted is a success. */
+  run<T>(phase: MailSyncPhase, fn: () => Promise<T>): Promise<T>;
+}
+
+/** One attempt's mutable note slot, scoped by `AsyncLocalStorage`. */
+interface AttemptScope { noted?: MailSyncFailureKind }
+
+/** ⛔ `AsyncLocalStorage`, NOT a module-level "current attempt".
+ *
+ *  Poll ticks can OVERLAP: the providers' `defaultScheduler` is
+ *  `setInterval(() => { void cb().catch(…) })`, which never awaits the previous
+ *  tick, so any tick slower than the 30 s interval runs alongside its successor.
+ *  With one shared `noted` variable that silently corrupts the report — tick A
+ *  hits a 403 and sets it, tick B finishes clean and CONSUMES A's note (reporting
+ *  B as failed), then A finishes to find the slot cleared and reports itself
+ *  HEALTHY. The attempt that actually failed would claim success, which is the
+ *  exact false-healthy this substrate exists to remove.
+ *
+ *  ALS scopes correctly across every `await` inside an attempt, so a note lands
+ *  on the attempt that made it. Same reasoning, same mechanism as
+ *  `cacheProbeStore` in `commit-gateway-wiring.ts`. */
+const attemptStore = new AsyncLocalStorage<AttemptScope>();
+
+export const createMailSyncOutcomeReporter = (deps: {
+  now: () => number;
+  /** Provider-specific: only the provider can tell its own auth error from a
+   *  transport one. */
+  classifyError: (err: unknown) => MailSyncFailureKind;
+}): MailSyncOutcomeReporter => {
+  const listeners = new Set<MailSyncOutcomeListener>();
+
+  const emit = (phase: MailSyncPhase, ok: boolean, failure?: MailSyncFailureKind): void => {
+    const outcome: MailSyncOutcome = {
+      phase,
+      ok,
+      ...(failure !== undefined ? { failure } : {}),
+      at: deps.now(),
+    };
+    for (const listener of listeners) {
+      // A listener is the collection's durable reporting sink. It must never be
+      // able to break the sync it is describing.
+      try { listener(outcome); } catch { /* swallow */ }
+    }
+  };
+
+  return {
+    subscribe(listener) {
+      listeners.add(listener);
+      return () => { listeners.delete(listener); };
+    },
+    noteFailure(kind) {
+      const scope = attemptStore.getStore();
+      // Outside any attempt (a send, a reconciliation lookup) there is nothing to
+      // attribute this to — the caller's own error handling owns it.
+      if (scope === undefined) return;
+      // An `auth` note outranks a `transient` one within a single attempt: a
+      // tick that hit both a 429 and a 401 needs the re-consent surfaced, and
+      // the 401 is the one the user can act on.
+      if (scope.noted === 'auth') return;
+      scope.noted = kind;
+    },
+    report(phase, ok, failure) {
+      emit(phase, ok, failure);
+    },
+    async run(phase, fn) {
+      const scope: AttemptScope = {};
+      return attemptStore.run(scope, async () => {
+        try {
+          const result = await fn();
+          if (scope.noted !== undefined) emit(phase, false, scope.noted);
+          else emit(phase, true);
+          return result;
+        } catch (err) {
+          emit(phase, false, scope.noted ?? deps.classifyError(err));
+          throw err;
+        }
+      });
+    },
+  };
+};
+
 export interface MailProvider {
   readonly kind: MailProviderKind;
   readonly slug: string;
@@ -564,6 +779,14 @@ export interface MailProvider {
    *  `MailCollection.close()` on drain. Idempotent. */
   close(): Promise<void>;
   health(): ProviderHealth;
+
+  /** Subscribe to per-attempt sync outcomes; returns the unsubscribe.
+   *
+   *  Optional so existing fakes and out-of-tree providers keep compiling. When a
+   *  provider does NOT implement it, the collection falls back to reporting only
+   *  the start-attempt outcome — honest, just coarser. See {@link MailSyncOutcome}
+   *  for why `health()` cannot substitute for this. */
+  onSyncOutcome?(listener: MailSyncOutcomeListener): () => void;
 
   /** D-127 P1.1 — outbound send. Optional. Implementations set
    *  `sendCapable: true` and provide this method together; both

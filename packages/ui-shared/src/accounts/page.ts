@@ -269,10 +269,39 @@ const IMAP_PROVIDER: AccountProvider = {
   },
 };
 
+/** The Microsoft-only "connect calendar too" opt-in.
+ *
+ *  Offered here and NOT on Gmail because Microsoft is the one issuer where mail
+ *  and calendar genuinely share a grant: both adapters are named `graph`, so one
+ *  consent's tokens live at the one prefix both lanes read. Google's `gmail` and
+ *  `gcal` prefixes differ, so the same box there would need a second consent or a
+ *  token fan-out — a separate change, deliberately not faked with a checkbox
+ *  that behaves differently per provider.
+ *
+ *  ⚠ Unchecked by default, and the help text NAMES the write authority. Mail is
+ *  read-only by default with send as its own opt-in; `Calendars.ReadWrite` is a
+ *  strictly larger ask, so it must be a decision the owner makes rather than a
+ *  default they discover on the consent screen. */
+const CALENDAR_TOO_FIELD: AccountField = {
+  key: 'calendar_enabled',
+  label: 'Also connect Calendar',
+  type: 'boolean',
+  optional: true,
+  default: 'false',
+  help:
+    'Adds the Calendars.ReadWrite scope to this one sign-in, so no second consent '
+    + 'is needed. It grants read AND write access to your calendar. Also improves '
+    + 'your contact graph, which is built from mail and calendar together. You can '
+    + 'still decline it on the Microsoft consent screen.',
+};
+
 /** Shared field set for the mail OAuth providers — a slug for the mailbox
  *  instance + an opt-in send toggle (widens the OAuth scopes). The `code`
  *  comes from the consent popup, not the form. */
-const mailOAuthFields = (sendHelp: string): readonly AccountField[] => [
+const mailOAuthFields = (
+  sendHelp: string,
+  extra: readonly AccountField[] = [],
+): readonly AccountField[] => [
   {
     key: 'name',
     label: 'Mailbox name',
@@ -288,13 +317,19 @@ const mailOAuthFields = (sendHelp: string): readonly AccountField[] => [
     default: 'false',
     help: sendHelp,
   },
+  ...extra,
 ];
 
 /** OAuth providers carry slug + send toggle as form values; the mount reads
- *  them to build the authorize URL + the enrollOAuth call. */
+ *  them to build the authorize URL + the enrollOAuth call.
+ *
+ *  `calendar_enabled` is present for every mail provider but only ever TRUE for
+ *  Microsoft, whose form is the only one carrying the field. The authorize-URL
+ *  builder ignores it for Google rather than widening that consent. */
 const projectMailOAuth = (v: AccountFormValues): Record<string, unknown> => ({
   account_slug: (v['name'] ?? '').trim(),
   send_enabled: v['send_enabled'] === 'true',
+  calendar_enabled: v['calendar_enabled'] === 'true',
 });
 
 const GMAIL_PROVIDER: AccountProvider = {
@@ -316,6 +351,7 @@ const MICROSOFT_MAIL_PROVIDER: AccountProvider = {
   transport: 'mail-oauth',
   fields: mailOAuthFields(
     'Requests the Mail.Send scope so recipes can send on your behalf. You can still decline it on the Microsoft consent screen.',
+    [CALENDAR_TOO_FIELD],
   ),
   project: projectMailOAuth,
 };
@@ -561,6 +597,11 @@ export type AccountsPanelStage =
   | 'form'
   | 'detail';
 
+export type AccountsOAuthProgressStage =
+  | 'preparing'
+  | 'waiting_for_consent'
+  | 'finishing';
+
 /** The BYO OAuth-app credential fields (client_id + client_secret) rendered
  *  INLINE on the OAuth provider form, alongside the account name / send
  *  toggle. Held separately from the account-form `values` so the secret never
@@ -577,6 +618,51 @@ export interface OAuthCredValues {
 export interface AccountConnectionSuccess {
   slug: string;
   providerId: string;
+  /** A partial-outcome note for a connect that mostly worked.
+   *
+   *  Today: the Microsoft "Also connect Calendar" opt-in, whose calendar half
+   *  can fail after the mail half has already succeeded. The mailbox IS
+   *  connected, so this must not render as a failure — but it must not be
+   *  swallowed into a plain "connected" card either, because the owner ticked a
+   *  box that did not happen. */
+  note?: string;
+}
+
+/** An open "really remove this account?" prompt.
+ *
+ *  Account removal was INSTANT: one click on a row's Remove button and the
+ *  account was gone. It is not catastrophic — already-synced mail/events stay in
+ *  the warehouse, the server only stops syncing and drops the sign-in — but it
+ *  is irreversible without re-running the whole OAuth consent, and the button
+ *  sits inline in a list where a mis-click is easy.
+ *
+ *  The generic `connection.*` lane has confirmed deletes since D-192; this is the
+ *  foundational Mail / Calendar / Files lanes catching up, with the same shape so
+ *  the two surfaces do not teach different habits. */
+export interface AccountsDeleteConfirm {
+  slug: string;
+  /** Provider label for the prompt title, resolved when the prompt opens (the
+   *  row may leave `rows` while a delete is in flight). */
+  providerLabel: string;
+  /** True once Remove is pressed — disables both buttons so a double-click
+   *  cannot fire two deletes. */
+  deleting: boolean;
+}
+
+/** Recovery for a reload that landed after the OAuth provider returned but
+ * before the browser observed the enrollment result. The account list is the
+ * authority: never label this connected, or offer another consent, until that
+ * read resolves. Repeated clean misses plus a short grace make an explicit
+ * restart available. */
+export interface AccountsOAuthReloadRecovery {
+  providerLabel: string;
+  slug: string;
+  status: 'checking' | 'check_again' | 'ready_to_retry';
+  /** A failed verification read, kept inside the recovery card so the stale
+   * account list is not presented as an authoritative empty result. */
+  error?: string;
+  /** Rounded wait remaining before a fresh consent can be offered. */
+  retryAfterSeconds?: number;
 }
 
 export interface AccountsPanelState {
@@ -601,14 +687,20 @@ export interface AccountsPanelState {
   formError: string | null;
   /** Add-form submit in flight. */
   saving: boolean;
-  /** OAuth flow — true during the post-consent code-exchange (the consent
-   *  popup has closed; the server is exchanging the code + the list hasn't
-   *  refreshed yet). Renders a "Finishing sign-in…" card with an immediate
-   *  "Back to accounts" escape so the brief wait never feels stuck. */
+  /** OAuth flow — true from popup-open through the server exchange. The
+   *  boot-scoped transaction can outlive this route presentation. */
   oauthFinishing: boolean;
+  /** Truthful phase within the visible OAuth progress card. `null` outside the
+   *  flow. Preparing covers credential/config work before popup navigation;
+   *  finishing begins once the server owns the authorization code. */
+  oauthProgressStage: AccountsOAuthProgressStage | null;
+  /** Ambiguous post-reload exchange outcome, verified before retry. */
+  oauthReloadRecovery: AccountsOAuthReloadRecovery | null;
   /** Post-connect confirmation. Persists while the refreshed list moves from
    *  "saved" to a first successful sync, or until the user dismisses it. */
   connectionSuccess: AccountConnectionSuccess | null;
+  /** Open removal prompt, or null. */
+  deleteConfirm: AccountsDeleteConfirm | null;
   /** BYO OAuth-app status per issuer (`server.getOAuthAppConfig`), mount-
    *  hydrated on the Mail / Calendar lanes. `null` = not loaded (or the
    *  caller is absent on this mount) → the OAuth form falls back to the
@@ -640,7 +732,10 @@ export const initialAccountsPanelState = (
   formError: null,
   saving: false,
   oauthFinishing: false,
+  oauthProgressStage: null,
+  oauthReloadRecovery: null,
   connectionSuccess: null,
+  deleteConfirm: null,
   oauthAppConfig: null,
   oauthCredValues: { client_id: '', client_secret: '' },
   detailSlug: null,
@@ -884,9 +979,10 @@ const renderOAuthAppSection = (
   `;
 
   if (reusable) {
-    const sourceCopy = status?.source === 'env'
-      ? 'Provided by this server. No app credentials are needed here.'
-      : 'Saved securely on this server. No app credentials are needed here.';
+    // One source since the `RECUED_*` OAuth env vars were deleted (2026-07-28):
+    // `reusable` implies `source === 'stored'`, so there is no longer an
+    // "provided by this server" (env) variant of this line.
+    const sourceCopy = 'Saved securely on this server. No app credentials are needed here.';
     return `
       <section class="accounts-oauth-app accounts-oauth-app--ready"
         data-oauth-app-state="ready" aria-label="${e(label)} sign-in status">
@@ -911,9 +1007,13 @@ const renderOAuthAppSection = (
   }
 
   if (configKnown) {
-    const setupCopy = status?.source === 'env'
-      ? `${label} sign-in is only partly configured on this server. Add the matching secret to finish setup.`
-      : `This server needs a ${label} OAuth app before it can connect ${label} accounts.`;
+    // The old `source === 'env'` arm read "only partly configured — add the
+    // matching secret", covering an env client_id whose secret was unset. With
+    // the six `RECUED_*` OAuth vars deleted (2026-07-28) `configKnown &&
+    // !reusable` means `source === null` — genuinely unconfigured. (`hasSecret`
+    // is presence-only, so a LOCKED server holding stored creds still reports
+    // `has_secret: true` and takes the `reusable` branch above, not this one.)
+    const setupCopy = `This server needs a ${label} OAuth app before it can connect ${label} accounts.`;
     return `
       <section class="accounts-oauth-app accounts-oauth-app--setup"
         data-oauth-app-state="setup" aria-labelledby="accounts-${e(issuer)}-setup-title">
@@ -1168,6 +1268,9 @@ const renderConnectionSuccess = (
           <p class="accounts-success-identity">${e(identity)}</p>
           <p class="accounts-success-desc">${e(description)}</p>
           ${detail ? `<p class="accounts-success-detail">${e(detail)}</p>` : ''}
+          ${success.note
+            ? `<p class="accounts-success-note" data-accounts-success-note>${e(success.note)}</p>`
+            : ''}
         </div>
         <div class="accounts-success-actions">
           ${primary}
@@ -1180,6 +1283,59 @@ const renderConnectionSuccess = (
             action: 'accounts-dismiss-success',
           })}
         </div>
+      </div>
+    </section>
+  `;
+};
+
+const renderOAuthReloadRecovery = (state: AccountsPanelState): string => {
+  const recovery = state.oauthReloadRecovery;
+  if (recovery === null) return '';
+  const checking = recovery.status === 'checking';
+  const ready = recovery.status === 'ready_to_retry';
+  const title = checking
+    ? `Checking ${recovery.providerLabel} connection`
+    : ready
+      ? 'Safe to restart sign-in'
+      : 'Connection not confirmed yet';
+  const description = checking
+    ? `This tab reloaded while Recued may have been saving ${recovery.slug}. Checking the server before another sign-in…`
+    : ready
+      ? `Repeated checks did not find ${recovery.slug}. The interrupted code will not be reused; start a fresh sign-in when you are ready.`
+      : recovery.error !== undefined
+        ? 'Recued could not verify the server result. Do not repeat sign-in yet; check again when the connection is available.'
+        : recovery.retryAfterSeconds !== undefined
+          ? `Recued did not find ${recovery.slug} yet. Do not repeat sign-in yet; wait about ${recovery.retryAfterSeconds} seconds, then check again.`
+          : `Recued did not find ${recovery.slug} yet. Do not repeat sign-in yet; give the server a moment, then check once more.`;
+
+  return `
+    <section class="accounts-oauth-recovery"
+      data-accounts-oauth-recovery data-recovery-state="${e(recovery.status)}"
+      aria-labelledby="accounts-oauth-recovery-title">
+      <div class="accounts-oauth-recovery-icon" aria-hidden="true">↻</div>
+      <div class="accounts-oauth-recovery-content">
+        <div role="status" aria-live="polite" aria-atomic="true">
+          <p class="accounts-oauth-recovery-eyebrow">Sign-in interrupted</p>
+          <h2 class="accounts-oauth-recovery-title" id="accounts-oauth-recovery-title">${e(title)}</h2>
+          <p class="accounts-oauth-recovery-desc">${e(description)}</p>
+          ${recovery.error !== undefined
+            ? `<p class="accounts-oauth-recovery-error">${e(recovery.error)}</p>`
+            : ''}
+        </div>
+        ${checking ? '' : `<div class="accounts-oauth-recovery-actions">
+          ${ready ? button({
+            label: 'Restart sign-in',
+            size: 'sm',
+            variant: 'primary',
+            action: 'accounts-oauth-recovery-restart',
+          }) : ''}
+          ${button({
+            label: 'Check again',
+            size: 'sm',
+            variant: ready ? 'link' : 'primary',
+            action: 'accounts-oauth-recovery-check',
+          })}
+        </div>`}
       </div>
     </section>
   `;
@@ -1235,13 +1391,15 @@ const renderEmptyState = (lane: AccountLane): string => `
 
 const renderList = (lane: AccountLane, state: AccountsPanelState): string => {
   const hasSuccess = state.connectionSuccess !== null;
+  const hasRecovery = state.oauthReloadRecovery !== null;
   const isEmpty = !hasSuccess
+    && !hasRecovery
     && !state.loading
     && state.error === null
     && state.rows.length === 0;
   let body: string;
   if (state.loading) {
-    body = hasSuccess ? '' : `
+    body = hasSuccess || hasRecovery ? '' : `
       <div class="accounts-loading-state" role="status" aria-live="polite">
         <span class="accounts-loading-dot" aria-hidden="true"></span>
         <span>Loading ${e(lane.label.toLowerCase())}…</span>
@@ -1270,6 +1428,7 @@ const renderList = (lane: AccountLane, state: AccountsPanelState): string => {
     : '';
   const pending = lane.pending ? inlineHint(lane.pending) : '';
   return `
+    ${renderOAuthReloadRecovery(state)}
     ${renderConnectionSuccess(lane, state)}
     ${isEmpty || state.rows.length === 0 ? '' : `<p class="accounts-blurb">${e(lane.blurb)}</p>`}
     ${body}
@@ -1354,22 +1513,39 @@ const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
   `;
 };
 
-/** "Signing in…" waiting card. Shown for the WHOLE connect span — from the
- *  moment Connect is pressed (the consent popup is open) through the
- *  post-consent code exchange — so the wait never reads as a stuck form (the
- *  mount sets `oauthFinishing` at popup-open, not just post-consent). The
- *  "Back to accounts" escape is available immediately: the flow continues
- *  fire-and-forget (the account appears on success, an error surfaces on
- *  failure), so leaving never strands it. */
-const renderOAuthFinishing = (provider: AccountProvider | undefined): string => {
+/** Route presentation for a boot-owned OAuth transaction. The owner may leave
+ *  without interrupting it; explicit cancellation remains available only
+ *  until the authorization code is accepted. */
+const renderOAuthFinishing = (
+  provider: AccountProvider | undefined,
+  progress: AccountsOAuthProgressStage | null,
+): string => {
   const who = provider ? `your ${provider.label} account` : 'your account';
+  const stage = progress ?? 'finishing';
+  const canCancel = stage !== 'finishing';
+  const title = stage === 'preparing'
+    ? 'Preparing sign-in…'
+    : stage === 'waiting_for_consent'
+      ? 'Waiting for sign-in…'
+      : 'Finishing connection…';
+  const description = stage === 'preparing'
+    ? `Recued is getting sign-in for ${who} ready. Keep the popup open; you can work elsewhere.`
+    : stage === 'waiting_for_consent'
+      ? `Complete sign-in for ${who} in the popup. You can keep working elsewhere; Recued will keep this connection in progress.`
+      : `Sign-in for ${who} is complete. Recued is saving the connection; you can keep working elsewhere.`;
   return `
-    <div class="accounts-finishing" role="status" aria-live="polite">
-      <div class="accounts-finishing-spinner" aria-hidden="true"></div>
-      <h3 class="accounts-finishing-title">Signing in…</h3>
-      <p class="accounts-finishing-desc">Connecting ${e(who)}. Complete the sign-in in the popup window.</p>
+    <div class="accounts-finishing">
+      <div class="accounts-finishing-progress"
+           role="status" aria-live="polite" aria-atomic="true">
+        <div class="accounts-finishing-spinner" aria-hidden="true"></div>
+        <h3 class="accounts-finishing-title">${title}</h3>
+        <p class="accounts-finishing-desc">${e(description)}</p>
+      </div>
       <div class="accounts-form-actions">
-        ${button({ label: 'Back to accounts', size: 'sm', action: 'accounts-oauth-dismiss' })}
+        ${button({ label: 'Keep working', size: 'sm', action: 'accounts-oauth-dismiss' })}
+        ${canCancel
+          ? button({ label: 'Cancel sign-in', size: 'sm', action: 'accounts-oauth-cancel' })
+          : ''}
       </div>
     </div>
   `;
@@ -1388,7 +1564,8 @@ const oauthAppGuide = (
       ? [
           'Open the Google Cloud Console and create (or pick) a project.',
           'Under APIs &amp; Services → Library, enable the Gmail API (and the Google Calendar API if you will sync calendars).',
-          'Configure the OAuth consent screen. If your account is Google Workspace, choose Internal — it needs no Google verification and issues long-lived refresh tokens. Otherwise choose External and add your own Google account under Test users (note: unverified External apps expire refresh tokens after 7 days, and gmail.readonly is a restricted scope that needs verification before going live).',
+          'Configure the OAuth consent screen. Google Workspace account: choose Internal — no verification needed, and refresh tokens are long-lived. Personal Google account: choose External.',
+          'External only — set Publishing status to <strong>In production</strong> (OAuth consent screen → Publish app). Do NOT leave it in Testing: apps in Testing status issue refresh tokens that <strong>expire after 7 days</strong>, so your mail sync would stop every week. Publishing does not require Google verification for your own use — you will see a "Google hasn&rsquo;t verified this app" screen at sign-in, where Advanced → Go to (unsafe) proceeds. Unverified apps are capped at 100 users, which is ample for a personal server.',
           'Go to Credentials → Create credentials → OAuth client ID → Web application.',
           'Under Authorized redirect URIs, add the exact callback URL shown in step 2 below.',
           'Create it, then copy the Client ID and Client secret into step 3 below.',
@@ -1396,7 +1573,7 @@ const oauthAppGuide = (
       : [
           'Open the Azure portal → Microsoft Entra ID → App registrations → New registration. Under "Supported account types" choose "Accounts in any organizational directory and personal Microsoft accounts" — Recued signs in via the /common endpoint, so a single-tenant or org-only app is rejected with "not enabled for consumers".',
           'Under "Redirect URI" pick the Web platform (NOT "Single-page application" — Web uses the client-secret flow Recued needs), paste the exact callback URL shown in step 2 below, then Register.',
-          'Open API permissions → Add a permission → Microsoft Graph → Delegated permissions, and add Mail.Read, offline_access, and User.Read (add Calendars.ReadWrite if you will sync calendars).',
+          'Open API permissions → Add a permission → Microsoft Graph → Delegated permissions. Add <strong>Mail.Read</strong>, <strong>offline_access</strong> and <strong>User.Read</strong> — all three are required, and without offline_access there is no refresh token, so syncing stops about an hour after you connect. Then add <strong>Mail.Send</strong> if you want Recued to send mail, and <strong>Calendars.ReadWrite</strong> if you tick "Also connect Calendar". Entra only issues a scope the app registration lists, so a permission missing here cannot be granted at sign-in no matter what you tick on the form.',
           'Open Certificates &amp; secrets → New client secret, then copy its Value immediately (it is shown only once).',
           'From the Overview page copy the Application (client) ID, and paste it plus the secret Value into step 3 below.',
         ];
@@ -1426,6 +1603,49 @@ export interface AccountsPanelProps {
  *  `[Mail · Calendar · Files · Apps & APIs]` tab bar lives in the
  *  webclient route (it spans this panel + the separate `connection.*`
  *  enroll panel), so this renderer draws lane content only. */
+/** Removal prompt. Mirrors the `connection.*` lane's dialog (same modal shape,
+ *  same Cancel / danger-Remove pair) so the two Connections surfaces behave
+ *  identically.
+ *
+ *  The copy states what removal ACTUALLY does, which is narrower than "delete":
+ *  the server stops syncing and forgets the sign-in, but everything already
+ *  pulled into the warehouse stays (`onDeleted` only stops the live collection —
+ *  it does not drop the collection's table). Saying "this deletes your mail"
+ *  would be a scarier lie; saying nothing leaves people guessing. */
+const renderAccountsDeleteConfirm = (state: AccountsPanelState): string => {
+  const dc = state.deleteConfirm;
+  if (dc === null) return '';
+  return `
+    <div class="accounts-delete-backdrop" data-accounts-delete-backdrop>
+      <div class="accounts-delete-confirm" role="dialog" aria-modal="true"
+           aria-label="Remove account ${e(dc.slug)}">
+        <h3 class="accounts-delete-title">Remove ${e(dc.slug)}?</h3>
+        <p class="accounts-delete-body">
+          Recued stops syncing this ${e(dc.providerLabel)} account and forgets its
+          sign-in. Everything already synced stays in your warehouse. Reconnecting
+          means signing in again.
+        </p>
+        <div class="accounts-delete-actions">
+          ${button({
+            label: 'Cancel',
+            size: 'sm',
+            action: 'accounts-delete-cancel',
+            disabled: dc.deleting,
+          })}
+          ${button({
+            label: dc.deleting ? 'Removing…' : 'Remove',
+            size: 'sm',
+            variant: 'danger',
+            action: 'accounts-delete-confirm',
+            data: { slug: dc.slug },
+            disabled: dc.deleting,
+          })}
+        </div>
+      </div>
+    </div>
+  `;
+};
+
 export const renderAccountsPanel = (props: AccountsPanelProps): string => {
   const { state } = props;
   const lane = findAccountLane(state.lane) ?? ACCOUNT_LANES[0]!;
@@ -1436,7 +1656,7 @@ export const renderAccountsPanel = (props: AccountsPanelProps): string => {
     // the code-exchange) — see `renderOAuthFinishing`.
     const provider =
       state.providerId !== null ? findAccountProvider(lane, state.providerId) : undefined;
-    stageHtml = renderOAuthFinishing(provider);
+    stageHtml = renderOAuthFinishing(provider, state.oauthProgressStage);
   } else if (state.stage === 'provider-picker') {
     stageHtml = renderProviderPicker(lane);
   } else if (state.stage === 'form') {
@@ -1455,6 +1675,7 @@ export const renderAccountsPanel = (props: AccountsPanelProps): string => {
   return `
     <div class="accounts-panel" data-accounts-lane="${e(state.lane)}">
       <div class="accounts-stage">${stageHtml}</div>
+      ${renderAccountsDeleteConfirm(state)}
     </div>
   `;
 };
@@ -1465,6 +1686,21 @@ export const renderAccountsPanel = (props: AccountsPanelProps): string => {
 
 export const ACCOUNTS_PANEL_STYLES = `
 .accounts-panel { display: grid; gap: 14px; }
+.accounts-delete-backdrop {
+  position: fixed; inset: 0; z-index: 40;
+  display: grid; place-items: center;
+  padding: 24px; background: rgba(24, 24, 27, 0.45);
+}
+.accounts-delete-confirm {
+  width: min(420px, 100%);
+  display: grid; gap: 12px; padding: 20px;
+  border: 1px solid var(--border); border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 12px 32px rgba(24, 24, 27, 0.18);
+}
+.accounts-delete-title { margin: 0; font-size: 15px; }
+.accounts-delete-body { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.accounts-delete-actions { display: flex; gap: 8px; justify-content: flex-end; }
 .accounts-stage { min-width: 0; }
 .accounts-blurb { margin: 0; color: var(--muted); font-size: 13px; }
 .accounts-empty {
@@ -1517,6 +1753,39 @@ export const ACCOUNTS_PANEL_STYLES = `
 @keyframes accounts-loading-pulse {
   0%, 100% { opacity: 0.35; transform: scale(0.86); }
   50% { opacity: 1; transform: scale(1); }
+}
+.accounts-oauth-recovery {
+  position: relative; overflow: hidden;
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 14px;
+  margin-bottom: 16px; padding: 18px 20px;
+  border: 1px solid var(--border-strong); border-radius: 14px;
+  background: var(--surface-sunk);
+}
+.accounts-oauth-recovery::before {
+  content: ''; position: absolute; inset: 0 auto 0 0; width: 3px;
+  background: var(--warn, #ef6c00);
+}
+.accounts-oauth-recovery-icon {
+  display: grid; place-items: center; width: 34px; height: 34px;
+  border-radius: 50%; background: var(--surface); color: var(--warn, #ef6c00);
+  font-size: 20px; font-weight: 750; line-height: 1;
+}
+.accounts-oauth-recovery-content { min-width: 0; }
+.accounts-oauth-recovery-eyebrow {
+  margin: 0; color: var(--muted); font-size: 10px; line-height: 1.3;
+  font-weight: 750; letter-spacing: 0.075em; text-transform: uppercase;
+}
+.accounts-oauth-recovery-title {
+  margin: 4px 0 0; color: var(--fg-strong, var(--fg));
+  font-size: 16px; line-height: 1.35; font-weight: 700;
+}
+.accounts-oauth-recovery-desc,
+.accounts-oauth-recovery-error {
+  margin: 7px 0 0; color: var(--fg); font-size: 13px; line-height: 1.5;
+}
+.accounts-oauth-recovery-error { color: var(--danger); }
+.accounts-oauth-recovery-actions {
+  display: flex; align-items: center; gap: 9px; flex-wrap: wrap; margin-top: 13px;
 }
 .accounts-success {
   position: relative; overflow: hidden;
@@ -1622,6 +1891,7 @@ export const ACCOUNTS_PANEL_STYLES = `
 .accounts-form-fields { display: grid; gap: 12px; }
 .accounts-form-actions { display: flex; gap: 8px; margin-top: 14px; flex-wrap: wrap; }
 .accounts-finishing { display: grid; gap: 12px; justify-items: center; text-align: center; padding: 28px 0; }
+.accounts-finishing-progress { display: grid; gap: 12px; justify-items: center; }
 .accounts-finishing-spinner {
   width: 28px; height: 28px; border-radius: 50%;
   border: 3px solid var(--border); border-top-color: var(--accent);
@@ -1728,6 +1998,8 @@ export const ACCOUNTS_PANEL_STYLES = `
   .accounts-empty-action .rx-btn { width: 100%; justify-content: center; }
   .accounts-success { padding: 17px 16px 17px 18px; }
   .accounts-success-actions .rx-btn-primary { flex: 1 1 100%; }
+  .accounts-oauth-recovery { padding: 17px 16px 17px 18px; }
+  .accounts-oauth-recovery-actions .rx-btn-primary { flex: 1 1 100%; }
   .accounts-oauth-app-header { flex-wrap: wrap; }
   .accounts-oauth-callback-row { grid-template-columns: minmax(0, 1fr); }
   .accounts-oauth-callback-row .rx-btn { width: 100%; }

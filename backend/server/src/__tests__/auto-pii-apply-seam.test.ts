@@ -1,20 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { RecipeDefinition } from '@recued/contracts';
 
-import { applyAutoPiiForExecution } from '../auto-pii-apply.js';
+import { applyAutoPiiForExecution, configureAutoPiiProtection } from '../auto-pii-apply.js';
 
 type Step = Record<string, unknown>;
 
-let previousAutoPiiEnv: string | undefined;
 
 beforeEach(() => {
-  previousAutoPiiEnv = process.env.RECUED_AUTO_PII;
-  delete process.env.RECUED_AUTO_PII;
+  configureAutoPiiProtection(() => true); // protection ON (the default)
 });
 
 afterEach(() => {
-  if (previousAutoPiiEnv === undefined) delete process.env.RECUED_AUTO_PII;
-  else process.env.RECUED_AUTO_PII = previousAutoPiiEnv;
+  configureAutoPiiProtection(() => true); // restore the safe default
   vi.restoreAllMocks();
 });
 
@@ -47,8 +44,8 @@ const leakingRecipe = (): RecipeDefinition => recipeWith([
 const stepsOf = (recipe: RecipeDefinition): Step[] => recipe.steps as unknown as Step[];
 
 describe('applyAutoPiiForExecution', () => {
-  it('passes recipes through unchanged when RECUED_AUTO_PII is off', () => {
-    process.env.RECUED_AUTO_PII = 'off';
+  it('passes recipes through unchanged when privacy.auto_pii_protection is off', () => {
+    configureAutoPiiProtection(() => false);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const recipe = leakingRecipe();
 

@@ -43,7 +43,15 @@
         display: flex; flex-direction: column; align-items: center; justify-content: center;
         min-height: 100vh; gap: 12px; color: var(--fg-muted); font-size: 13px;
       }
+      /* A fast paired refresh should move straight into the shell without a
+         one-frame Loading flash. The inline timer removes this marker; the
+         animation is a no-script fallback so slow/error boots stay visible. */
+      .webclient-boot-splash[data-recued-boot-pending] {
+        visibility: hidden;
+        animation: recued-boot-splash-reveal 0s linear 160ms forwards;
+      }
       .webclient-boot-splash-brand { font-size: 18px; font-weight: 700; color: var(--brand); }
+      @keyframes recued-boot-splash-reveal { to { visibility: visible; } }
     </style>
   </head>
   <body>
@@ -53,11 +61,17 @@
          fallback script below upgrades the splash to a visible error
          so the user isn't stranded on "Loading…" indefinitely. -->
     <div id="webclient-root">
-      <div class="webclient-boot-splash" id="webclient-boot-splash">
+      <div class="webclient-boot-splash" id="webclient-boot-splash" data-recued-boot-pending>
         <div class="webclient-boot-splash-brand">Recued</div>
         <div id="webclient-boot-splash-message">Loading…</div>
       </div>
     </div>
+    <script>
+      setTimeout(function () {
+        var splash = document.getElementById('webclient-boot-splash');
+        if (splash) splash.removeAttribute('data-recued-boot-pending');
+      }, 160);
+    </script>
     <!-- D-148 § A.4 — service-worker registration. Inline so the
          registration starts as soon as the HTML parses, independent of
          the (larger) ESM bundle landing. The bundle re-imports

@@ -39,6 +39,7 @@ import type { ClientTokenRecord, ClientTokenStore } from '../../pairing/client-t
 import type { ChatInboundTokenStore } from '../../storage/chat-inbound-token-store.js';
 import type { McpBodyVisibilityStore } from '../../storage/mcp-body-visibility-store.js';
 import type { McpBearerVerifier, McpDispatch } from '../../ports/mcp/handler.js';
+import type { FormDefinitionReader } from '../../form-contract-gate.js';
 import { createMcpHttpDispatch, type McpDeps } from '../../mcp-server.js';
 import type { LoadCollectionRecord } from '../../mcp/timeline.js';
 import type { ContactEngagementsResolveDeps } from '../../contact-engagements-rpc-handler.js';
@@ -75,6 +76,9 @@ export interface ComposeMcpHttpTransportDeps {
    *  remain unchanged while an authoritatively classified customer instance
    *  fails closed. */
   readonly sellerStore?: SellerCustomerAccessAdmissionStore & SellerCustomerUsageStore;
+  /** D-220 — the live intake-form reader, so `recued_saveRecipe` is gated by the
+   *  SAME form-field contract as the `recipe.save` rpc. Absent ⇒ inert gate. */
+  readonly formDefinitionReader?: FormDefinitionReader;
   /** D-139 P5 — engagement-evidence resolver bundle for the
    *  `recued_contactEngagementsList` MCP read. Optional/absent ⇒ the tool
    *  returns "not configured" (db-less harness / no engagement+contact
@@ -178,6 +182,9 @@ export const composeMcpHttpTransport = (
       : {}),
     ...(deps.loadCollectionRecord
       ? { loadCollectionRecord: deps.loadCollectionRecord }
+      : {}),
+    ...(deps.formDefinitionReader
+      ? { formDefinitionReader: deps.formDefinitionReader }
       : {}),
   };
   const sellerUsageGate = deps.sellerStore
@@ -347,9 +354,18 @@ export const composeMcpHttpTransport = (
         // Owner identity — admit-all, no per-tool gate, no contract
         // binding (the synthetic 1-contract-per-token id keeps the
         // policy overlay INERT — pre-D-166 behavior).
+        //
+        // ⛔⛔ D-228 slice 6 — `ownerAdmitAll` STATES that positively, and this
+        // is the only production caller entitled to say it. It reaches here
+        // only after `clientTokens.verify` returned ok with
+        // `client_kind === 'cli'`, so the claim rests on a verified credential
+        // rather than on the ABSENCE of a checklist — which used to be shared
+        // with a token-less stdio caller and with the `!resolved` branch above,
+        // and admitted all three alike.
         return {
           ...baseMcpDeps,
           mcpTokenId: resolved.mcp_token_id,
+          ownerAdmitAll: true,
         };
       }
       // D-171 external-door dispatch. The record was re-resolved for

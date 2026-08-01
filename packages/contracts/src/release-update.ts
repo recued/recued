@@ -94,6 +94,10 @@ export type UpdateApplyStatus =
 
 export interface UpdateApplyResponse {
   status: UpdateApplyStatus;
+  /** Opaque server-ledger receipt, present only when the restart was accepted.
+   * The webclient may persist/share this identifier to verify the exact
+   * operation after reconnect; it contains no version, endpoint, or error. */
+  operation_id?: string;
   /** The release the apply targeted, when one resolved (`<channel>:<version>`). */
   release_identity?: string;
   /** Target version, when a release resolved (UI confirmation copy). */
@@ -110,8 +114,37 @@ export type UpdateRollbackStatus = 'rolled-back' | 'refused' | 'busy' | 'not-con
 
 export interface UpdateRollbackResponse {
   status: UpdateRollbackStatus;
+  /** Opaque server-ledger receipt, present only when the restart was accepted. */
+  operation_id?: string;
   /** True when the rollback also restored a pre-migration SQLite snapshot. */
   restored_snapshot?: boolean;
   /** A short, non-secret diagnostic (refusal reason). */
   detail?: string;
 }
+
+/** Owner-only, read-only resolution of one accepted update/rollback receipt.
+ * No version or ledger detail is exposed: the browser learns only whether the
+ * exact operation awaits restart, completed, reverted, or has a durable
+ * owner-reviewed unresolved closure. */
+export type UpdateOperationStatusResponse =
+  | { status: 'unknown' }
+  | {
+      status:
+        | 'waiting_for_restart'
+        | 'completed'
+        | 'reverted'
+        | 'closed_unresolved';
+      operation: 'update' | 'rollback';
+    };
+
+/** Owner-reviewed, server-authoritative retirement of a receipt that the
+ * selected server can no longer resolve. `closed_unresolved` is deliberately
+ * not a success/failure claim: it proves only that the server durably recorded
+ * the recovery closure while no release transition was in flight. A known
+ * receipt races safely to its ordinary status instead. */
+export type UpdateOperationClosureResponse =
+  | UpdateOperationStatusResponse
+  | {
+      status: 'refused';
+      reason: 'operation_in_flight' | 'not_supported';
+    };

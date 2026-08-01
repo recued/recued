@@ -1,0 +1,106 @@
+/** D-228 slice 2 (2nd attempt) — kernel MCP exposure is an AUTHORED field,
+ *  `IngredientManifest.mcp_exposed`, not a hand-list and not a derivation.
+ *
+ *  ⛔⛔ WHY NOT DERIVED, pinned here because it is the whole reason this file
+ *  replaced `d-228-kernel-exposure-derived.test.ts` (attempt 1, reverted) and
+ *  then `…-whitelist.test.ts` (the revert). Attempt 1 used
+ *  `risk_tier === 'read'`, which promoted a presentation hint to an
+ *  authorization input; a Codex review found four `read`-tier kernel manifests
+ *  that are not safe reads. But RE-AUTHORING `risk_tier` would not have rescued
+ *  the derivation, and that is the finding that forced a field:
+ *
+ *    data-file-read          kind: storage   risk_tier: read   MUST be exposed
+ *    webhook-watcher         kind: storage   risk_tier: read   must NOT be
+ *    time-relative-watcher   kind: storage   risk_tier: read   must NOT be
+ *    file-watcher            kind: storage   risk_tier: read   must NOT be
+ *    recipe-watcher          kind: storage   risk_tier: read   must NOT be
+ *
+ *  Identical on every authored field that could have carried the decision. The
+ *  judgement was never written down — it lived in a `new Set([...])` in one
+ *  server file's private scope — and a derivation cannot recover a decision that
+ *  was never recorded. So it is recorded, on the manifest.
+ *
+ *  ⚠ GRANTABLE, NOT EXPOSED: clearing this fence makes an ingredient possible to
+ *  grant. Since slice 6 a caller with no per-tool checklist is offered nothing. */
+
+import { describe, expect, it } from 'vitest';
+import type { IngredientManifest } from '@recued/contracts';
+
+import { _testing } from '../mcp-server.js';
+import { KERNEL_MANIFESTS } from '../kernel-manifests.js';
+
+const kernel = (over: Record<string, unknown>): IngredientManifest =>
+  ({ author: 'recued', kind: 'storage', risk_tier: 'read', ...over } as unknown as IngredientManifest);
+
+const community = (over: Record<string, unknown>): IngredientManifest =>
+  ({ author: 'acme', kind: 'api', risk_tier: 'write', ...over } as unknown as IngredientManifest);
+
+const exposed = (m: IngredientManifest): boolean =>
+  (_testing as { isMcpExposedKernelIngredient: (m: IngredientManifest) => boolean })
+    .isMcpExposedKernelIngredient(m);
+
+describe('the kernel fence reads the AUTHORED field', () => {
+  /** ⛔⛔ FAIL-CLOSED BY OMISSION — the property the hand-list could not have.
+   *  A kernel ingredient added tomorrow and never considered ships FENCED. */
+  it('a kernel ingredient with no `mcp_exposed` is fenced', () => {
+    expect(exposed(kernel({ slug: 'brand-new-kernel-thing' }))).toBe(false);
+  });
+
+  /** ⚠ THE PERMITTING WITNESS. Without it, "fenced" is indistinguishable from a
+   *  predicate that returns false for every kernel manifest — which would
+   *  silently un-expose the D-172 file-content read surface. */
+  it('`mcp_exposed: true` clears the fence', () => {
+    expect(exposed(kernel({ slug: 'data-file-read', mcp_exposed: true }))).toBe(true);
+  });
+
+  it('`mcp_exposed: false` is fenced, explicitly', () => {
+    expect(exposed(kernel({ slug: 'x', mcp_exposed: false }))).toBe(false);
+  });
+
+  /** ⛔⛔ THE ANTI-DERIVATION GUARD. Every one of these is `(storage, read)` —
+   *  the exact shape `data-file-read` has. If exposure is ever re-derived from
+   *  `risk_tier` (or from kind, or from both), these flip to `true` and this
+   *  test reds. That is its only job. */
+  it('the (storage, read) manifests that must stay fenced, do', () => {
+    for (const slug of [
+      'webhook-watcher', 'time-relative-watcher', 'file-watcher', 'recipe-watcher',
+    ]) {
+      expect(exposed(kernel({ slug })), `${slug} must stay fenced`).toBe(false);
+    }
+    // …and the two whose danger is ambient authority rather than damage class,
+    // which is exactly why `risk_tier` was never going to express it.
+    expect(exposed(kernel({ slug: 'http-watcher', kind: 'http' }))).toBe(false);
+    expect(exposed(kernel({ slug: 'connection-mcp-read', kind: 'connection' }))).toBe(false);
+  });
+
+  /** ⛔ THE PERMITTING WITNESS for the `author !== 'recued'` half — otherwise this
+   *  suite could not tell a KERNEL rule from a blanket fence applied to everyone.
+   *  Community ingredients clear THIS fence at every tier; the KIND fence and the
+   *  grant gate govern them. */
+  it('a community ingredient clears the KERNEL fence regardless of the field', () => {
+    expect(exposed(community({ slug: 'acme-writer' }))).toBe(true);
+    expect(exposed(community({ slug: 'acme-thing', mcp_exposed: false }))).toBe(true);
+  });
+});
+
+describe('the REAL kernel manifests', () => {
+  /** ⛔⛔ CORPUS SWEEP, not a fixture. The per-manifest tests above would all
+   *  pass while the shipped `data-file-read` quietly lost its opt-in — the
+   *  reverted attempt taught exactly that lesson at the other end (a derived
+   *  rule nobody re-read). This asserts the SHIPPED set. */
+  it('exposes EXACTLY the intended set', () => {
+    const flagged = KERNEL_MANIFESTS
+      .filter((m) => (m as { mcp_exposed?: boolean }).mcp_exposed === true)
+      .map((m) => m.slug)
+      .sort();
+    // ⚠ Asserts the sweep FOUND something first — an empty result would satisfy
+    // a `toEqual([])`-shaped expectation while meaning the probe was broken.
+    expect(flagged.length).toBeGreaterThan(0);
+    expect(flagged).toEqual(['data-file-read']);
+  });
+
+  it('and reproduces the retired whitelist\'s outcome over the real manifests', () => {
+    const reachable = KERNEL_MANIFESTS.filter((m) => m.author === 'recued' && exposed(m));
+    expect(reachable.map((m) => m.slug)).toEqual(['data-file-read']);
+  });
+});

@@ -23,7 +23,13 @@
  *  server floor is untouched), so this route no longer hosts it. */
 
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
-import { CONNECTIONS_PAGE_STYLES, ACCOUNTS_PANEL_STYLES } from '@recued/ui-shared';
+import {
+  CONNECTION_NAME_REGEX,
+  CONNECTIONS_PAGE_STYLES,
+  ACCOUNTS_PANEL_STYLES,
+  type ConnectionsPostSafeStopProfileHandoff,
+  type ServerUpdateReceiptVerificationState,
+} from '@recued/ui-shared';
 
 import {
   mountAccountsLanePanel,
@@ -31,8 +37,14 @@ import {
   type CalendarLaneCallers,
   type FileLaneCallers,
   type MailLaneCallers,
+  type AccountsOAuthEnv,
   type OAuthClientConfigResult,
 } from './accounts-lane-panel.js';
+import type { FoundationalOAuthContinuity } from './foundational-oauth-continuity.js';
+import type { ProviderSetupContinuityStore } from './provider-setup-continuity.js';
+import type { CredentialRotationContinuityStore } from './credential-rotation-continuity.js';
+import type { CredentialRotationTabConvergence } from './credential-rotation-tab-convergence.js';
+import type { CredentialRotationServerUpdateContinuity } from './credential-rotation-server-update-continuity.js';
 import {
   mountConnectionsEnrollPanel,
   type ConnectionsDeleteCaller,
@@ -43,12 +55,21 @@ import {
   type ConnectionsMailListCaller,
   type ConnectionsPreviewPurgeCaller,
   type ConnectionsProbeCaller,
+  type ConnectionsMcpPackPreviewCaller,
+  type ConnectionsMcpPackCommitCaller,
   type ConnectionsReprobeEngagementCapabilitiesCaller,
   type ConnectionsStartVendorOAuthCaller,
   type ConnectionsTakeVendorOAuthResultCaller,
+  type ConnectionsRotateCredentialsCaller,
+  type ConnectionsCredentialRotationStatusCaller,
+  type ConnectionsCredentialRotationActivityCaller,
+  type ConnectionsAcknowledgeCredentialRotationSafeStopCaller,
+  type ConnectionsCredentialRotationServerUpdateTriageCaller,
   type ConnectionsUpdateCaller,
   type ConnectionsGetMatchPatternsCaller,
   type ConnectionsSetMatchPatternsCaller,
+  type ConnectionsSuggestSetupCaller,
+  type CredentialRotationServerUpdateTarget,
 } from '../settings/connections-enroll-panel.js';
 import { serializeShellRoute } from '../shell/route.js';
 import { serializeChatConnectedSource } from '../chat/connected-source-handoff.js';
@@ -93,6 +114,127 @@ export const CONNECTIONS_ROUTE_CONTENT_ATTR =
   'data-recued-connections-route-content';
 export const CONNECTIONS_ROUTE_UNAVAILABLE_ATTR =
   'data-recued-connections-route-unavailable';
+export const CONNECTIONS_CREDENTIAL_ROTATION_RETRY_SEGMENT =
+  'retry-credential-rotation';
+export const CONNECTIONS_POST_SAFE_STOP_RECOVERY_SEGMENT =
+  'finish-recovery';
+const CONNECTIONS_POST_SAFE_STOP_PROFILE_SEGMENT = 'profile';
+const MAX_SERVER_PROFILE_ID_LENGTH = 256;
+
+const validServerProfileId = (value: unknown): value is string =>
+  typeof value === 'string'
+  && value.trim().length > 0
+  && value.length <= MAX_SERVER_PROFILE_ID_LENGTH;
+
+/** A post-ack recovery identity is meaningful only inside the local server
+ * profile whose authenticated boot produced it. The opaque browser-local
+ * profile id is safe to route; labels, URLs, credentials, and form values are
+ * deliberately excluded. */
+export interface ProfileBoundPostSafeStopRecoveryTarget
+  extends CredentialRotationServerUpdateTarget {
+  serverProfileId: string;
+}
+
+/** Address carried by Account's server-update guide. It intentionally contains
+ * only the existing connection identity; provider credentials and form values
+ * never enter the URL. */
+export const serializeConnectionsCredentialRotationRetry = (
+  target: CredentialRotationServerUpdateTarget,
+): string => serializeShellRoute(
+  'connections',
+  'others',
+  CONNECTIONS_CREDENTIAL_ROTATION_RETRY_SEGMENT,
+  target.kind,
+  target.name,
+);
+
+export const parseConnectionsCredentialRotationRetry = (
+  segments: readonly string[],
+): CredentialRotationServerUpdateTarget | null => {
+  if (
+    segments.length !== 4
+    || segments[0] !== 'others'
+    || segments[1] !== CONNECTIONS_CREDENTIAL_ROTATION_RETRY_SEGMENT
+    || !CONNECTION_NAME_REGEX.test(segments[3] ?? '')
+  ) return null;
+  const kind = segments[2];
+  if (kind !== 'api' && kind !== 'mcp' && kind !== 'notification') return null;
+  return { kind, name: segments[3]! };
+};
+
+/** Exact Attention handoff for an unresolved post-ack check/reopen. The
+ * address carries only browser-local profile id + connection identity; the
+ * Connections panel still re-lists that profile's server authority before
+ * presenting any action. */
+export const serializeConnectionsPostSafeStopRecovery = (
+  target: ProfileBoundPostSafeStopRecoveryTarget,
+): string => serializeShellRoute(
+  'connections',
+  'others',
+  CONNECTIONS_POST_SAFE_STOP_RECOVERY_SEGMENT,
+  CONNECTIONS_POST_SAFE_STOP_PROFILE_SEGMENT,
+  target.serverProfileId,
+  target.kind,
+  target.name,
+);
+
+export const parseConnectionsPostSafeStopRecovery = (
+  segments: readonly string[],
+): ProfileBoundPostSafeStopRecoveryTarget | null => {
+  if (
+    segments.length !== 6
+    || segments[0] !== 'others'
+    || segments[1] !== CONNECTIONS_POST_SAFE_STOP_RECOVERY_SEGMENT
+    || segments[2] !== CONNECTIONS_POST_SAFE_STOP_PROFILE_SEGMENT
+    || !validServerProfileId(segments[3])
+    || !CONNECTION_NAME_REGEX.test(segments[5] ?? '')
+  ) return null;
+  const kind = segments[4];
+  if (kind !== 'api' && kind !== 'mcp' && kind !== 'notification') return null;
+  return {
+    serverProfileId: segments[3],
+    kind,
+    name: segments[5]!,
+  };
+};
+
+export type ProfileBoundPostSafeStopRecoveryResolution =
+  | { status: 'none' }
+  | { status: 'unbound' }
+  | {
+      status: 'profile_mismatch';
+      target: ProfileBoundPostSafeStopRecoveryTarget;
+    }
+  | {
+      status: 'matched';
+      target: ProfileBoundPostSafeStopRecoveryTarget;
+    };
+
+/** Resolve a temporary post-ack address against the profile that actually
+ * completed this boot. A malformed legacy address is an explicit unbound
+ * handoff, not permission to reuse its kind/name against the current server. */
+export const resolveProfileBoundPostSafeStopRecovery = (
+  segments: readonly string[],
+  activeProfileId: string | null,
+): ProfileBoundPostSafeStopRecoveryResolution => {
+  const attempted = segments[0] === 'others'
+    && segments[1] === CONNECTIONS_POST_SAFE_STOP_RECOVERY_SEGMENT;
+  if (!attempted) return { status: 'none' };
+  const parsed = parseConnectionsPostSafeStopRecovery(segments);
+  if (parsed === null || !validServerProfileId(activeProfileId)) {
+    return { status: 'unbound' };
+  }
+  if (parsed.serverProfileId !== activeProfileId) {
+    return {
+      status: 'profile_mismatch',
+      target: parsed,
+    };
+  }
+  return {
+    status: 'matched',
+    target: parsed,
+  };
+};
 
 /** The five top-level lanes. `'others'` remains the stable deep-link id for
  *  the user-facing Apps & APIs lane; the other non-webhook tabs are
@@ -245,6 +387,47 @@ export interface BootstrapConnectionsRouteOptions {
    *  the Apps & APIs enroll panel as its `initialVendor` so the enroll form
    *  opens pre-selected for that vendor. Ignored on foundational lanes. */
   initialEnrollVendor?: string;
+  /** One-shot exact return from Account's server-update guide. */
+  initialCredentialRotationServerUpdateRetry?:
+    CredentialRotationServerUpdateTarget;
+  /** Identity-only exact handoff from Attention into an unresolved post-ack
+   * check/reopen. The panel selects it only if the current list still does. */
+  initialPostSafeStopRecovery?: CredentialRotationServerUpdateTarget;
+  /** Presentation-only identity of the booted profile whose current server
+   * supplies the post-ack sidecar. */
+  postSafeStopProfileLabel?: string;
+  /** Safe landing for a legacy or cross-profile recovery address. */
+  postSafeStopProfileHandoff?: ConnectionsPostSafeStopProfileHandoff;
+  /** Opens Account's local server-profile roster from that safe landing. */
+  onOpenPostSafeStopServerProfiles?: () => void;
+  /** The owner dismissed the cross-profile handoff or explicitly chose this
+   * profile's queue, so boot can retire the bound address for this mount. */
+  onPostSafeStopProfileHandoffSettled?: () => void;
+  /** One-shot memory-only completion transferred from boot before the exact
+   * return consumes it. */
+  initialCredentialRotationServerUpdateCompletion?:
+    ServerUpdateReceiptVerificationState;
+  /** Exact return is consumed only after the panel reaches a stable landing;
+   * in-flight/waiting preflight state remains reload-safe. */
+  onCredentialRotationServerUpdateRetrySettled?: (
+    target: CredentialRotationServerUpdateTarget,
+  ) => void;
+  /** Exact preflight opened an untouched clean editor. */
+  onCredentialRotationCleanEditorReady?: (
+    target: CredentialRotationServerUpdateTarget,
+  ) => void;
+  /** First actual clean-editor field change retires its target-only resume. */
+  onCredentialRotationCleanEditorChanged?: (
+    target: CredentialRotationServerUpdateTarget,
+  ) => void;
+  /** Exact return route unmounted before its authoritative preflight settled. */
+  onCredentialRotationServerUpdateRetryInterrupted?: (
+    target: CredentialRotationServerUpdateTarget,
+  ) => void;
+  /** Opens the route-independent Account/server-profile guide. */
+  onOpenCredentialRotationServerUpdateGuide?: (
+    target: CredentialRotationServerUpdateTarget,
+  ) => void;
   // ── Apps & APIs (`others` route id; generic connection.*) callers ──
   connectionsEnrollListCaller?: ConnectionsEnrollListCaller;
   /** Fork 1 B — `packs.list` caller; lights up the editable vendor-scope
@@ -252,11 +435,29 @@ export interface BootstrapConnectionsRouteOptions {
   connectionsPacksListCaller?: () => Promise<{ packs: ReadonlyArray<PackListEntry> }>;
   connectionsEnrollCaller?: ConnectionsEnrollCaller;
   connectionsUpdateCaller?: ConnectionsUpdateCaller;
+  connectionsRotateCredentialsCaller?: ConnectionsRotateCredentialsCaller;
+  connectionsCredentialRotationStatusCaller?: ConnectionsCredentialRotationStatusCaller;
+  connectionsCredentialRotationActivityCaller?: ConnectionsCredentialRotationActivityCaller;
+  connectionsAcknowledgeCredentialRotationSafeStopCaller?:
+    ConnectionsAcknowledgeCredentialRotationSafeStopCaller;
+  connectionsCredentialRotationServerUpdateTriageCaller?:
+    ConnectionsCredentialRotationServerUpdateTriageCaller;
+  credentialRotationContinuity?: CredentialRotationContinuityStore;
+  credentialRotationTabConvergence?: CredentialRotationTabConvergence;
+  credentialRotationServerUpdateContinuity?: Pick<
+    CredentialRotationServerUpdateContinuity,
+    'beginExactReturn' | 'read' | 'resumeResolvedRetry' | 'subscribe'
+  >;
+  onReconnect?: (listener: () => void) => () => void;
   connectionsDeleteCaller?: ConnectionsDeleteCaller;
   /** D-192 slice 5 — removal-preview "[N] item(s)" count for the delete-confirm
    *  dialog. Optional (absent → the confirm shows no checkbox). */
   connectionsPreviewPurgeCaller?: ConnectionsPreviewPurgeCaller;
   connectionsProbeCaller?: ConnectionsProbeCaller;
+  /** D-225 Slice 2 — the generated-pack review + install. Optional; absent →
+   *  the review is never offered, which beats a button that fails. */
+  connectionsMcpPackPreviewCaller?: ConnectionsMcpPackPreviewCaller;
+  connectionsMcpPackCommitCaller?: ConnectionsMcpPackCommitCaller;
   /** D-192 M4c-UI — messenger trigger read + merge-write for the slack/telegram
    *  "Message triggers" editor. */
   connectionsGetMatchPatternsCaller?: ConnectionsGetMatchPatternsCaller;
@@ -264,6 +465,9 @@ export interface BootstrapConnectionsRouteOptions {
   connectionsEngagementHealthCaller?: ConnectionsEngagementHealthCaller;
   connectionsReprobeEngagementCapabilitiesCaller?: ConnectionsReprobeEngagementCapabilitiesCaller;
   connectionsMailListCaller?: ConnectionsMailListCaller;
+  connectionsSuggestSetupCaller?: ConnectionsSuggestSetupCaller;
+  /** Boot-owned safe guide carrier shared by route remounts. */
+  providerSetupContinuity?: ProviderSetupContinuityStore;
   connectionsStartVendorOAuthCaller?: ConnectionsStartVendorOAuthCaller;
   connectionsTakeVendorOAuthResultCaller?: ConnectionsTakeVendorOAuthResultCaller;
   subscribe?: BroadcastSubscriber['on'];
@@ -293,6 +497,13 @@ export interface BootstrapConnectionsRouteOptions {
    *  credentials on the account forms (forwarded to the foundational panel). */
   getOAuthAppConfig?: () => Promise<OAuthAppConfigSnapshot>;
   setOAuthAppConfig?: (args: SetOAuthAppConfigArgs) => Promise<{ ok: true }>;
+  /** Boot-owned foundational OAuth transaction. Keeping this above the route
+   *  mount is what lets hash navigation detach and reattach its presentation. */
+  foundationalOAuthContinuity?: FoundationalOAuthContinuity;
+  /** Deterministic direct-route test seam; production uses the browser env. */
+  accountsOAuthEnv?: AccountsOAuthEnv;
+  /** Shared clock for interrupted-OAuth retry grace. */
+  now?: () => number;
 }
 
 export interface ConnectionsRoute {
@@ -304,8 +515,25 @@ export interface ConnectionsRoute {
   /** The generic connection.* enroll panel (mounted only on the Apps & APIs
    *  tab), else null. */
   connectionsEnrollPanel(): ConnectionsEnrollPanelMount | null;
+  /** Re-labels profile-bound recovery copy after a local roster refresh. */
+  setPostSafeStopProfileContext(context: {
+    activeProfileLabel: string;
+    sourceProfileLabel?: string;
+  }): void;
   /** Inbound webhook setup panel (mounted only on the Webhooks tab). */
   webhooksPanel(): WebhooksPanelMount | null;
+  /** Active lane's initial authoritative read. */
+  whenLoaded(): Promise<void>;
+  getRecoveryContextFreshness(): 'current' | 'unavailable';
+  /** Re-read the active lane without reopening an editor or restoring its
+   * credential-bearing draft. Absent when the lane has no readable panel. */
+  retryRecoveryContext?(): Promise<void>;
+  /** The generic connection editor has a memory-only draft that would be lost
+   * if this route unmounted. */
+  hasUnsavedChanges(): boolean;
+  /** Exact, privacy-safe leave warning for the active connection draft. */
+  unsavedChangesPrompt(): string | null;
+  hasInFlightWork(): boolean;
   dispose(): void;
 }
 
@@ -397,6 +625,7 @@ export const bootstrapConnectionsRoute = (
       host: content,
       document: doc,
       initialLane: activeTab,
+      oauthReturnHref: serializeShellRoute('connections', activeTab),
       onGoToChat: (source) => navigate(serializeChatConnectedSource(source)),
       onOpenLane: (lane) => navigate(serializeShellRoute('connections', lane)),
       ...(opts.initialDetailSlug !== undefined
@@ -414,6 +643,13 @@ export const bootstrapConnectionsRoute = (
       ...(opts.setOAuthAppConfig !== undefined
         ? { setOAuthAppConfig: opts.setOAuthAppConfig }
         : {}),
+      ...(opts.foundationalOAuthContinuity !== undefined
+        ? { oauthContinuity: opts.foundationalOAuthContinuity }
+        : {}),
+      ...(opts.accountsOAuthEnv !== undefined
+        ? { oauthEnv: opts.accountsOAuthEnv }
+        : {}),
+      ...(opts.now !== undefined ? { now: opts.now } : {}),
     });
   } else if (activeTab === 'webhooks') {
     const canMountWebhooks = opts.webhooksListCaller !== undefined
@@ -480,8 +716,69 @@ export const bootstrapConnectionsRoute = (
         runList: opts.connectionsEnrollListCaller as ConnectionsEnrollListCaller,
         runEnroll: opts.connectionsEnrollCaller as ConnectionsEnrollCaller,
         runUpdate: opts.connectionsUpdateCaller as ConnectionsUpdateCaller,
+        ...(opts.connectionsRotateCredentialsCaller !== undefined
+          ? { runRotateCredentials: opts.connectionsRotateCredentialsCaller }
+          : {}),
+        ...(opts.connectionsCredentialRotationStatusCaller !== undefined
+          ? {
+              runCredentialRotationStatus:
+                opts.connectionsCredentialRotationStatusCaller,
+            }
+          : {}),
+        ...(opts.connectionsCredentialRotationActivityCaller !== undefined
+          ? {
+              runCredentialRotationActivity:
+                opts.connectionsCredentialRotationActivityCaller,
+            }
+          : {}),
+        ...(opts.connectionsAcknowledgeCredentialRotationSafeStopCaller
+          !== undefined
+          ? {
+              runAcknowledgeCredentialRotationSafeStop:
+                opts.connectionsAcknowledgeCredentialRotationSafeStopCaller,
+            }
+          : {}),
+        ...(opts.connectionsCredentialRotationServerUpdateTriageCaller
+          !== undefined
+          ? {
+              runCredentialRotationServerUpdateTriage:
+                opts.connectionsCredentialRotationServerUpdateTriageCaller,
+            }
+          : {}),
+        ...(opts.credentialRotationContinuity !== undefined
+          ? { credentialRotationContinuity: opts.credentialRotationContinuity }
+          : {}),
+        ...(opts.credentialRotationTabConvergence !== undefined
+          ? {
+              credentialRotationTabConvergence:
+                opts.credentialRotationTabConvergence,
+            }
+          : {}),
+        ...(opts.credentialRotationServerUpdateContinuity !== undefined
+          ? {
+              credentialRotationServerUpdateContinuity:
+                opts.credentialRotationServerUpdateContinuity,
+            }
+          : {}),
+        ...(opts.onReconnect !== undefined
+          ? { onReconnect: opts.onReconnect }
+          : {}),
+        ...(opts.onOpenCredentialRotationServerUpdateGuide !== undefined
+          ? {
+              onOpenCredentialRotationServerUpdateGuide:
+                opts.onOpenCredentialRotationServerUpdateGuide,
+            }
+          : {}),
         runDelete: opts.connectionsDeleteCaller as ConnectionsDeleteCaller,
         runProbe: opts.connectionsProbeCaller as ConnectionsProbeCaller,
+        // D-225 Slice 2 — absent → the review is not offered at all, which
+        // beats rendering a button that fails.
+        ...(opts.connectionsMcpPackPreviewCaller !== undefined
+          ? { runMcpPackPreview: opts.connectionsMcpPackPreviewCaller }
+          : {}),
+        ...(opts.connectionsMcpPackCommitCaller !== undefined
+          ? { runMcpPackCommit: opts.connectionsMcpPackCommitCaller }
+          : {}),
         ...(opts.connectionsPreviewPurgeCaller !== undefined
           ? { runPreviewPurge: opts.connectionsPreviewPurgeCaller }
           : {}),
@@ -501,6 +798,12 @@ export const bootstrapConnectionsRoute = (
             }
           : {}),
         runMailList: opts.connectionsMailListCaller,
+        ...(opts.connectionsSuggestSetupCaller !== undefined
+          ? { runSuggestSetup: opts.connectionsSuggestSetupCaller }
+          : {}),
+        ...(opts.providerSetupContinuity !== undefined
+          ? { providerSetupContinuity: opts.providerSetupContinuity }
+          : {}),
         ...(opts.connectionsStartVendorOAuthCaller !== undefined
           ? { runStartVendorOAuth: opts.connectionsStartVendorOAuthCaller }
           : {}),
@@ -513,6 +816,66 @@ export const bootstrapConnectionsRoute = (
           : {}),
         ...(opts.initialEnrollVendor !== undefined
           ? { initialVendor: opts.initialEnrollVendor }
+          : {}),
+        ...(opts.initialCredentialRotationServerUpdateRetry !== undefined
+          ? {
+              initialCredentialRotationServerUpdateRetry:
+                opts.initialCredentialRotationServerUpdateRetry,
+            }
+          : {}),
+        ...(opts.initialPostSafeStopRecovery !== undefined
+          ? {
+              initialPostSafeStopRecovery:
+                opts.initialPostSafeStopRecovery,
+            }
+          : {}),
+        ...(opts.postSafeStopProfileLabel !== undefined
+          ? { postSafeStopProfileLabel: opts.postSafeStopProfileLabel }
+          : {}),
+        ...(opts.postSafeStopProfileHandoff !== undefined
+          ? { postSafeStopProfileHandoff: opts.postSafeStopProfileHandoff }
+          : {}),
+        ...(opts.onOpenPostSafeStopServerProfiles !== undefined
+          ? {
+              onOpenPostSafeStopServerProfiles:
+                opts.onOpenPostSafeStopServerProfiles,
+            }
+          : {}),
+        ...(opts.onPostSafeStopProfileHandoffSettled !== undefined
+          ? {
+              onPostSafeStopProfileHandoffSettled:
+                opts.onPostSafeStopProfileHandoffSettled,
+            }
+          : {}),
+        ...(opts.initialCredentialRotationServerUpdateCompletion !== undefined
+          ? {
+              initialCredentialRotationServerUpdateCompletion:
+                opts.initialCredentialRotationServerUpdateCompletion,
+            }
+          : {}),
+        ...(opts.onCredentialRotationServerUpdateRetrySettled !== undefined
+          ? {
+              onCredentialRotationServerUpdateRetrySettled:
+                opts.onCredentialRotationServerUpdateRetrySettled,
+            }
+          : {}),
+        ...(opts.onCredentialRotationCleanEditorReady !== undefined
+          ? {
+              onCredentialRotationCleanEditorReady:
+                opts.onCredentialRotationCleanEditorReady,
+            }
+          : {}),
+        ...(opts.onCredentialRotationCleanEditorChanged !== undefined
+          ? {
+              onCredentialRotationCleanEditorChanged:
+                opts.onCredentialRotationCleanEditorChanged,
+            }
+          : {}),
+        ...(opts.onCredentialRotationServerUpdateRetryInterrupted !== undefined
+          ? {
+              onCredentialRotationServerUpdateRetryInterrupted:
+                opts.onCredentialRotationServerUpdateRetryInterrupted,
+            }
           : {}),
       });
     } else {
@@ -531,7 +894,54 @@ export const bootstrapConnectionsRoute = (
     activeTab: () => activeTab,
     accountsPanel: () => accountsPanel,
     connectionsEnrollPanel: () => connectionsEnroll,
+    setPostSafeStopProfileContext: (context) => {
+      connectionsEnroll?.setPostSafeStopProfileContext(context);
+    },
     webhooksPanel: () => webhooksPanel,
+    whenLoaded: () => accountsPanel?.whenLoaded()
+      ?? connectionsEnroll?.whenLoaded()
+      ?? webhooksPanel?.whenLoaded()
+      ?? Promise.resolve(),
+    getRecoveryContextFreshness: () => {
+      if (accountsPanel !== null) {
+        return accountsPanel.getState().error === null
+          ? 'current'
+          : 'unavailable';
+      }
+      if (connectionsEnroll !== null) {
+        return connectionsEnroll.getState().error === null
+          ? 'current'
+          : 'unavailable';
+      }
+      if (webhooksPanel !== null) {
+        return webhooksPanel.getLoadError() === null
+          ? 'current'
+          : 'unavailable';
+      }
+      return 'unavailable';
+    },
+    ...(accountsPanel !== null
+      || connectionsEnroll !== null
+      || webhooksPanel !== null
+      ? {
+          retryRecoveryContext: async (): Promise<void> => {
+            await (
+              accountsPanel?.refresh()
+              ?? connectionsEnroll?.refresh()
+              ?? webhooksPanel?.refresh()
+              ?? Promise.resolve()
+            );
+          },
+        }
+      : {}),
+    hasUnsavedChanges: () =>
+      connectionsEnroll?.hasUnsavedChanges() ?? false,
+    unsavedChangesPrompt: () =>
+      connectionsEnroll?.unsavedChangesPrompt() ?? null,
+    hasInFlightWork: () => accountsPanel?.hasInFlightWork()
+      ?? connectionsEnroll?.hasInFlightWork()
+      ?? webhooksPanel?.hasInFlightWork()
+      ?? false,
     dispose: () => {
       if (disposed) return;
       disposed = true;

@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   MESSENGER_PROBE_TOKEN_PLACEHOLDER,
+  RpcError,
   getMessengerVendorDeclaration,
   listMessengerVendors,
 } from '@recued/contracts';
@@ -13,9 +14,17 @@ import type {
 } from '@recued/ingredients';
 
 import {
+  decodeAuthFromStorage,
   encodeAuthForStorage,
+  credentialSafeStopAcknowledgementToken,
+  handleConnectionAcknowledgeCredentialRotationSafeStop,
   handleConnectionEnroll,
+  handleConnectionList,
   handleConnectionProbe,
+  handleConnectionCredentialRotationActivity,
+  handleConnectionCredentialRotationStatus,
+  handleConnectionRotateCredentials,
+  handleConnectionUpdate,
 } from '../connection-handler.js';
 import type { HttpFetcher } from '../connection-vendor-oauth.js';
 import {
@@ -170,6 +179,92 @@ describe('handleConnectionProbe real health probes', () => {
     expect(health.last_error).toBe('http_status_401');
   });
 
+  it('binds an auth rejection to the checked row and returns only closed-list correction fields', async () => {
+    const name = await enroll('api', {
+      name: 'revision-bound-rejection',
+      auth: { type: 'basic', username: 'owner', password: 'private-password' },
+    });
+    const before = store.get('api', name)!;
+
+    const result = await handleConnectionProbe(
+      {
+        store,
+        now: () => NOW + 1_000,
+        getEncryptionKey,
+        fetcher: async () => jsonResponse(401),
+      },
+      {
+        kind: 'api',
+        name,
+        expected_updated_at: before.updated_at,
+      },
+    );
+
+    expect(result).toMatchObject({
+      health: {
+        status: 'auth_failed',
+        last_probed_at: NOW + 1_000,
+      },
+      connection_updated_at: NOW + 1_000,
+      credential_correction: {
+        auth_type: 'basic',
+        field_keys: ['auth.username', 'auth.password'],
+      },
+    });
+    expect(store.get('api', name)?.updated_at).toBe(result.connection_updated_at);
+    expect(JSON.stringify(result)).not.toContain('owner');
+    expect(JSON.stringify(result)).not.toContain('private-password');
+  });
+
+  it('preserves a newer row when it changes while the provider check is in flight', async () => {
+    const name = await enroll('api', { name: 'probe-race' });
+    const before = store.get('api', name)!;
+    let releaseProvider!: () => void;
+    let markStarted!: () => void;
+    const providerStarted = new Promise<void>((resolve) => { markStarted = resolve; });
+    const providerRelease = new Promise<void>((resolve) => { releaseProvider = resolve; });
+    const fetcher = vi.fn<HttpFetcher>(async () => {
+      markStarted();
+      await providerRelease;
+      return jsonResponse(204);
+    });
+
+    const pending = handleConnectionProbe(
+      {
+        store,
+        now: () => NOW + 2_000,
+        getEncryptionKey,
+        fetcher,
+      },
+      {
+        kind: 'api',
+        name,
+        expected_updated_at: before.updated_at,
+      },
+    );
+    const rejected = expect(pending).rejects.toMatchObject({
+      code: 'conflict',
+      details: { existing_credential_preserved: true },
+    });
+    await providerStarted;
+    await handleConnectionUpdate(
+      { store, now: () => NOW + 1_500, getEncryptionKey },
+      {
+        kind: 'api',
+        name,
+        expected_updated_at: before.updated_at,
+        patch: { display_name: 'Newer saved version' },
+      },
+    );
+    const newer = store.get('api', name)!;
+    releaseProvider();
+
+    await rejected;
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(store.get('api', name)).toEqual(newer);
+    expect(store.get('api', name)?.display_name).toBe('Newer saved version');
+  });
+
   it('mints an OAuth2 client-credentials token before probing an api connection', async () => {
     const name = await enroll('api', {
       name: 'airbyte',
@@ -297,6 +392,44 @@ describe('handleConnectionProbe real health probes', () => {
     expect(health.tools).toEqual(['search', 'write-note']);
     expect(storedHealth('mcp', name).tools).toEqual(['search', 'write-note']);
     expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it('D-225 — PERSISTS descriptor hashes beside the names, and they track the SCHEMA', async () => {
+    // ⛔ Without this the drift substrate has nothing to compare against, and a
+    // tool MUTATED IN PLACE — same name, new argument schema — is invisible:
+    // the names are identical, so a name-based check reports no change while
+    // the installed pack keeps dispatching under a grant issued for a shape the
+    // server no longer has.
+    const schemaOf = (required: string[]) => ({
+      jsonrpc: '2.0',
+      id: 2,
+      result: {
+        tools: [{ name: 'search', inputSchema: { type: 'object', required } }],
+      },
+    });
+    const probeWithSchema = async (required: string[]) => {
+      const nm = await enroll('mcp', { subtype: 'sse' });
+      const f = vi.fn<HttpFetcher>(async (_url, init) => {
+        const body = JSON.parse(init?.body ?? '{}') as { method?: string };
+        if (body.method === 'initialize') {
+          return jsonResponse(200, { jsonrpc: '2.0', id: 1, result: { protocolVersion: '2024-11-05' } });
+        }
+        return jsonResponse(200, schemaOf(required));
+      });
+      return { health: await probe('mcp', nm, f), nm };
+    };
+
+    const first = await probeWithSchema(['q']);
+    expect(first.health.tool_hashes).toHaveLength(1);
+    expect(first.health.tool_hashes![0]).toMatch(/^[a-f0-9]{64}$/);
+    // Persisted, not just returned.
+    expect(storedHealth('mcp', first.nm).tool_hashes).toEqual(first.health.tool_hashes);
+
+    const second = await probeWithSchema(['q', 'limit']);
+    // The NAME is unchanged — which is exactly what makes this case invisible
+    // to a name check — but the hash moved.
+    expect(second.health.tools).toEqual(first.health.tools);
+    expect(second.health.tool_hashes).not.toEqual(first.health.tool_hashes);
   });
 
   it('drains every paginated SSE tools/list page, including an empty-string cursor', async () => {
@@ -541,6 +674,206 @@ describe('handleConnectionProbe real health probes', () => {
     expect(storedHealth('mcp', name).last_error).toBe(health.last_error);
   });
 
+  it('⛔ D-218 — an API probe redacts a BEARER token too (pre-existing leak)', async () => {
+    // ⚠ **Not a new-type problem.** `probeApi`'s catch never called the
+    // redactor — it lived inside `probeMcp` — so every api auth type has been
+    // returning raw transport errors into persisted `health_json`. Found while
+    // wiring a type whose stored credential is an app password; fixed for all
+    // of them. This pins the general case so the hoist cannot be undone.
+    const token = 'bearer-token-abc123';
+    const name = await enroll('api', {
+      name: 'bearer-leak-probe',
+      auth: { type: 'bearer', token },
+    });
+    const fetcher = vi.fn<HttpFetcher>(async () => {
+      throw new Error(`connect failed sending Authorization: Bearer ${token}`);
+    });
+
+    const health = await probe('api', name, fetcher);
+
+    expect(health.status).toBe('unreachable');
+    expect(health.last_error).not.toContain(token);
+    expect(health.last_error).toContain('***');
+  });
+
+  it('⛔ D-218 — never echoes an atproto APP PASSWORD in a probe error', async () => {
+    // ⛔ **This is the site the widened union walked straight past.** The
+    // redaction switch has no `default`, so a new auth type collects NOTHING
+    // and its credentials reach `last_error` verbatim — and for this type the
+    // stored credential is an APP PASSWORD, a reusable account credential that
+    // outlives every token derived from it. The compiler reported nothing.
+    const appPassword = 'abcd-efgh-ijkl-mnop';
+    const accessJwt = 'access-jwt-value';
+    const refreshJwt = 'refresh-jwt-value';
+    const name = await enroll('api', {
+      name: 'bsky-probe',
+      config: { base_url: 'https://bsky.social' },
+      auth: {
+        type: 'atproto_session',
+        identifier: 'alice.bsky.social',
+        app_password: appPassword,
+        current_access_token: accessJwt,
+        refresh_token: refreshJwt,
+      } as ConnectionAuth,
+    });
+    const fetcher = vi.fn<HttpFetcher>(async () => {
+      // A target that echoes every credential it was handed — the worst case a
+      // redactor exists for, and not far-fetched for a service that logs the
+      // request it rejected.
+      throw new Error(
+        `probe failed: ${appPassword} / ${accessJwt} / ${refreshJwt}`,
+      );
+    });
+
+    const health = await probe('api', name, fetcher);
+
+    // ⚠ All THREE, not just the access token: the refresh JWT is a live
+    // credential of its own, and the app password survives revoking the rest.
+    expect(health.last_error).not.toContain(appPassword);
+    expect(health.last_error).not.toContain(accessJwt);
+    expect(health.last_error).not.toContain(refreshJwt);
+    expect(health.last_error).toContain('***');
+    expect(storedHealth('api', name).last_error).toBe(health.last_error);
+  });
+
+  it('D-218 creates and persists an AT Protocol session before the first probe', async () => {
+    const name = await enroll('api', {
+      name: 'bsky-create-probe',
+      config: { base_url: 'https://bsky.social' },
+      auth: {
+        type: 'atproto_session',
+        identifier: 'alice.bsky.social',
+        app_password: 'app-pass',
+      },
+    });
+    const resolveFetch = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe(
+        'https://bsky.social/xrpc/com.atproto.server.createSession',
+      );
+      expect(JSON.parse(String(init?.body))).toEqual({
+        identifier: 'alice.bsky.social', password: 'app-pass',
+      });
+      return new Response(JSON.stringify({ accessJwt: 'access-1', refreshJwt: 'refresh-1' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    const fetcher = vi.fn<HttpFetcher>(async (url, init) => {
+      expect(url).toBe(
+        'https://bsky.social/xrpc/com.atproto.server.getSession',
+      );
+      expect(init?.method).toBe('GET');
+      expect(init?.headers?.Authorization).toBe('Bearer access-1');
+      return jsonResponse(204);
+    });
+
+    const { health } = await handleConnectionProbe({
+      store,
+      now: () => NOW + 1_000,
+      getEncryptionKey,
+      fetcher,
+      resolveFetch,
+    }, { kind: 'api', name });
+
+    expect(health.status).toBe('ok');
+    expect(resolveFetch).toHaveBeenCalledTimes(1);
+    const saved = store.get('api', name)!;
+    expect(await decodeAuthFromStorage(
+      saved.auth_ciphertext, { kind: 'api', name }, getEncryptionKey,
+    )).toMatchObject({ current_access_token: 'access-1', refresh_token: 'refresh-1' });
+  });
+
+  it('D-218 refreshes and persists an opaque AT Protocol session after probe 401', async () => {
+    const name = await enroll('api', {
+      name: 'bsky-refresh-probe',
+      config: { base_url: 'https://bsky.social' },
+      auth: {
+        type: 'atproto_session',
+        identifier: 'alice.bsky.social',
+        app_password: 'app-pass',
+        current_access_token: 'stale-access',
+        refresh_token: 'refresh-old',
+      },
+    });
+    const resolveFetch = vi.fn<typeof fetch>(async (input, init) => {
+      expect(String(input)).toBe(
+        'https://bsky.social/xrpc/com.atproto.server.refreshSession',
+      );
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer refresh-old');
+      return new Response(JSON.stringify({ accessJwt: 'access-2', refreshJwt: 'refresh-2' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      });
+    });
+    let probes = 0;
+    const fetcher = vi.fn<HttpFetcher>(async (url, init) => {
+      probes += 1;
+      expect(url).toBe(
+        'https://bsky.social/xrpc/com.atproto.server.getSession',
+      );
+      expect(init?.method).toBe('GET');
+      expect(init?.headers?.Authorization).toBe(
+        probes === 1 ? 'Bearer stale-access' : 'Bearer access-2',
+      );
+      return jsonResponse(probes === 1 ? 401 : 204);
+    });
+
+    const { health } = await handleConnectionProbe({
+      store,
+      now: () => NOW + 1_000,
+      getEncryptionKey,
+      fetcher,
+      resolveFetch,
+    }, { kind: 'api', name });
+
+    expect(health.status).toBe('ok');
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(resolveFetch).toHaveBeenCalledTimes(1);
+    const saved = store.get('api', name)!;
+    expect(await decodeAuthFromStorage(
+      saved.auth_ciphertext, { kind: 'api', name }, getEncryptionKey,
+    )).toMatchObject({ current_access_token: 'access-2', refresh_token: 'refresh-2' });
+  });
+
+  it('D-218 does not rotate an AT Protocol session after an authenticated 403', async () => {
+    const name = await enroll('api', {
+      name: 'bsky-forbidden-probe',
+      config: { base_url: 'https://bsky.social' },
+      auth: {
+        type: 'atproto_session',
+        identifier: 'alice.bsky.social',
+        app_password: 'app-pass',
+        current_access_token: 'access-current',
+        refresh_token: 'refresh-current',
+      },
+    });
+    const resolveFetch = vi.fn<typeof fetch>();
+    const fetcher = vi.fn<HttpFetcher>(async (url, init) => {
+      expect(url).toBe(
+        'https://bsky.social/xrpc/com.atproto.server.getSession',
+      );
+      expect(init?.headers?.Authorization).toBe('Bearer access-current');
+      return jsonResponse(403);
+    });
+
+    const { health } = await handleConnectionProbe({
+      store,
+      now: () => NOW + 1_000,
+      getEncryptionKey,
+      fetcher,
+      resolveFetch,
+    }, { kind: 'api', name });
+
+    expect(health).toMatchObject({ status: 'auth_failed', last_error: 'http_status_403' });
+    expect(resolveFetch).not.toHaveBeenCalled();
+    const saved = store.get('api', name)!;
+    expect(await decodeAuthFromStorage(
+      saved.auth_ciphertext, { kind: 'api', name }, getEncryptionKey,
+    )).toMatchObject({
+      current_access_token: 'access-current', refresh_token: 'refresh-current',
+    });
+  });
+
   it('reports an unavailable stream capability honestly instead of not_implemented', async () => {
     const name = await enroll('mcp', {
       subtype: 'websocket',
@@ -708,6 +1041,1322 @@ describe('handleConnectionProbe real health probes', () => {
     expect(result.health.last_error).toBe('vault_locked');
     expect(fetcher).not.toHaveBeenCalled();
     expect(storedHealth('api', name).last_error).toBe('vault_locked');
+  });
+});
+
+describe('handleConnectionRotateCredentials', () => {
+  const attempt_id = 'rotation-attempt-test-0001';
+
+  it('rejects a stale editor revision before claiming an attempt or contacting the provider', async () => {
+    const name = await enroll('api', { name: 'stale-editor' });
+    const before = store.get('api', name)!;
+    const fetcher = vi.fn<HttpFetcher>();
+
+    await expect(handleConnectionRotateCredentials(
+      { store, now: () => NOW + 500, getEncryptionKey, fetcher },
+      {
+        attempt_id,
+        name,
+        kind: 'api',
+        expected_updated_at: before.updated_at - 1,
+        patch: { auth: { type: 'bearer', token: 'must-not-be-checked' } },
+      },
+    )).rejects.toMatchObject({
+      code: 'conflict',
+      details: { existing_credential_preserved: true },
+    });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(store.get('api', name)).toEqual(before);
+    await expect(handleConnectionCredentialRotationStatus(
+      { store },
+      { attempt_id, kind: 'api', name },
+    )).resolves.toEqual({ outcome: { status: 'not_found' } });
+  });
+
+  it('keeps the exact durable row when the provider rejects a replacement', async () => {
+    const name = await enroll('api', { name: 'kept-working' });
+    const before = store.get('api', name)!;
+    const observed = vi.fn();
+    const unsubscribe = store.addOnUpsert(observed);
+    const fetcher = vi.fn<HttpFetcher>(async (_url, init) => {
+      expect(init?.headers?.Authorization).toBe('Bearer rejected-replacement');
+      return jsonResponse(401);
+    });
+
+    let thrown: unknown;
+    try {
+      await handleConnectionRotateCredentials(
+        { store, now: () => NOW + 1_000, getEncryptionKey, fetcher },
+        {
+          attempt_id,
+          name,
+          kind: 'api',
+          patch: {
+            display_name: 'Should not land',
+            config: { base_url: 'https://replacement.example.test' },
+            auth: { type: 'bearer', token: 'rejected-replacement' },
+          },
+          match_patterns: [{ kind: 'tag', value: 'must_not_land' }],
+        },
+      );
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(RpcError);
+    expect(thrown).toMatchObject({
+      code: 'credential_verification_failed',
+      details: {
+        verification_status: 'auth_failed',
+        reason: 'http_status_401',
+        existing_credential_preserved: true,
+        correction: {
+          auth_type: 'bearer',
+          field_keys: ['auth.token'],
+        },
+      },
+    });
+    expect(store.get('api', name)).toEqual(before);
+    await expect(handleConnectionCredentialRotationStatus(
+      { store },
+      { attempt_id, kind: 'api', name },
+    )).resolves.toEqual({
+      outcome: {
+        status: 'failed',
+        started_at: NOW + 1_000,
+        finished_at: NOW + 1_000,
+        reason: 'auth_failed',
+        correction: {
+          auth_type: 'bearer',
+          field_keys: ['auth.token'],
+        },
+      },
+    });
+    await expect(handleConnectionRotateCredentials(
+      { store, now: () => NOW + 2_000, getEncryptionKey, fetcher },
+      {
+        attempt_id,
+        name,
+        kind: 'api',
+        patch: {
+          auth: {
+            type: 'basic',
+            username: 'must-not-replay',
+            password: 'must-not-replay',
+          },
+        },
+      },
+    )).rejects.toMatchObject({
+      code: 'credential_verification_failed',
+      details: {
+        verification_status: 'auth_failed',
+        correction: {
+          auth_type: 'bearer',
+          field_keys: ['auth.token'],
+        },
+      },
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+    expect(observed).not.toHaveBeenCalled();
+    const storedAuth = await decodeAuthFromStorage(
+      before.auth_ciphertext,
+      { kind: 'api', name },
+      getEncryptionKey,
+    );
+    expect(storedAuth).toEqual({ type: 'bearer', token: 'secret' });
+    unsubscribe();
+  });
+
+  it('triages only a consecutive provider rejection and preserves it for status and replay', async () => {
+    const name = await enroll('api', { name: 'rejected-again' });
+    const before = store.get('api', name)!;
+    const fetcher = vi.fn<HttpFetcher>(async () => jsonResponse(401));
+    const rotate = (attemptId: string) => handleConnectionRotateCredentials(
+      { store, now: () => NOW + 1_500, getEncryptionKey, fetcher },
+      {
+        attempt_id: attemptId,
+        name,
+        kind: 'api' as const,
+        patch: {
+          config: { base_url: 'https://api.example.test' },
+          auth: { type: 'bearer' as const, token: 'rejected-again' },
+        },
+      },
+    );
+
+    let first: unknown;
+    try {
+      await rotate('rotation-rejected-again-0001');
+    } catch (error) {
+      first = error;
+    }
+    expect(first).toBeInstanceOf(RpcError);
+    expect((first as RpcError).details?.correction).not.toHaveProperty('triage');
+
+    await expect(rotate('rotation-rejected-again-0002')).rejects.toMatchObject({
+      code: 'credential_verification_failed',
+      details: {
+        verification_status: 'auth_failed',
+        existing_credential_preserved: true,
+        correction: {
+          auth_type: 'bearer',
+          field_keys: ['auth.token'],
+          triage: {
+            reason: 'repeated_auth_rejection',
+            stage: 'provider_probe',
+            endpoint_field_keys: ['config.base_url', 'config.endpoint'],
+          },
+        },
+      },
+    });
+    expect(store.get('api', name)).toEqual(before);
+
+    await expect(handleConnectionCredentialRotationStatus(
+      { store },
+      {
+        attempt_id: 'rotation-rejected-again-0002',
+        kind: 'api',
+        name,
+      },
+    )).resolves.toMatchObject({
+      outcome: {
+        status: 'failed',
+        correction: {
+          triage: {
+            stage: 'provider_probe',
+            endpoint_field_keys: ['config.base_url', 'config.endpoint'],
+          },
+        },
+      },
+    });
+
+    await expect(rotate('rotation-rejected-again-0002')).rejects.toMatchObject({
+      details: {
+        correction: {
+          triage: { stage: 'provider_probe' },
+        },
+      },
+    });
+    expect(
+      store.getCredentialRotationAttempt?.('rotation-rejected-again-0002'),
+    ).not.toHaveProperty('auth_rejection_resolution');
+
+    await expect(rotate('rotation-rejected-again-0003')).rejects.toMatchObject({
+      code: 'credential_verification_failed',
+      details: {
+        verification_status: 'auth_failed',
+        existing_credential_preserved: true,
+        correction: {
+          auth_type: 'bearer',
+          field_keys: ['auth.token'],
+          triage: {
+            reason: 'repeated_auth_rejection',
+            stage: 'provider_probe',
+            endpoint_field_keys: ['config.base_url', 'config.endpoint'],
+            resolution: 'regenerate_credential_or_contact_admin',
+          },
+        },
+      },
+    });
+    expect(store.get('api', name)).toEqual(before);
+
+    await expect(handleConnectionCredentialRotationStatus(
+      { store },
+      {
+        attempt_id: 'rotation-rejected-again-0003',
+        kind: 'api',
+        name,
+      },
+    )).resolves.toMatchObject({
+      outcome: {
+        status: 'failed',
+        correction: {
+          triage: {
+            stage: 'provider_probe',
+            resolution: 'regenerate_credential_or_contact_admin',
+          },
+        },
+      },
+    });
+
+    const siblingActivity = await handleConnectionCredentialRotationActivity(
+      { store },
+      { kind: 'api', name },
+    );
+    const safeStopAttempt = store.getLatestCredentialRotationAttempt!(
+      'api',
+      name,
+    )!;
+    const acknowledgementToken = credentialSafeStopAcknowledgementToken(
+      safeStopAttempt,
+    );
+    expect(siblingActivity).toEqual({
+      activity: {
+        status: 'idle',
+        safe_stop: {
+          finished_at: NOW + 1_500,
+          acknowledgement_token: acknowledgementToken,
+          correction: {
+            auth_type: 'bearer',
+            field_keys: ['auth.token'],
+            triage: {
+              reason: 'repeated_auth_rejection',
+              stage: 'provider_probe',
+              endpoint_field_keys: ['config.base_url', 'config.endpoint'],
+              resolution: 'regenerate_credential_or_contact_admin',
+            },
+          },
+        },
+      },
+    });
+    expect(JSON.stringify(siblingActivity)).not.toMatch(
+      /rejected-again|api\.example|provider-authored|attempt_id|token.*value/i,
+    );
+
+    const coldList = await handleConnectionList({ store }, { kind: 'api' });
+    expect(coldList.credential_rotation_safe_stops).toEqual([{
+      kind: 'api',
+      name,
+      ...(siblingActivity.activity.status === 'idle'
+        ? siblingActivity.activity.safe_stop
+        : {}),
+    }]);
+    expect(JSON.stringify(coldList.credential_rotation_safe_stops)).not.toMatch(
+      /api\.example|provider-authored|attempt_id|rejected-again-0003/i,
+    );
+
+    await expect(handleConnectionAcknowledgeCredentialRotationSafeStop(
+      { store },
+      {
+        kind: 'api',
+        name,
+        acknowledgement_token: 'not-a-token',
+      },
+    )).rejects.toMatchObject({ code: 'bad_request' });
+    await expect(handleConnectionAcknowledgeCredentialRotationSafeStop(
+      { store, now: () => NOW + 2_000 },
+      {
+        kind: 'api',
+        name,
+        acknowledgement_token: 'b'.repeat(64),
+      },
+    )).resolves.toEqual({ acknowledgement: { status: 'superseded' } });
+    await expect(handleConnectionAcknowledgeCredentialRotationSafeStop(
+      { store, now: () => NOW + 2_000 },
+      { kind: 'api', name, acknowledgement_token: acknowledgementToken },
+    )).resolves.toEqual({
+      acknowledgement: {
+        status: 'acknowledged',
+        acknowledged_at: NOW + 2_000,
+      },
+    });
+    await expect(handleConnectionAcknowledgeCredentialRotationSafeStop(
+      { store, now: () => NOW + 3_000 },
+      { kind: 'api', name, acknowledgement_token: acknowledgementToken },
+    )).resolves.toEqual({
+      acknowledgement: {
+        status: 'already_acknowledged',
+        acknowledged_at: NOW + 2_000,
+      },
+    });
+    await expect(handleConnectionCredentialRotationStatus(
+      { store },
+      {
+        attempt_id: 'rotation-rejected-again-0003',
+        kind: 'api',
+        name,
+      },
+    )).resolves.toEqual({
+      outcome: {
+        status: 'failed',
+        started_at: NOW + 1_500,
+        finished_at: NOW + 1_500,
+        reason: 'auth_failed',
+        correction: {
+          auth_type: 'bearer',
+          field_keys: ['auth.token'],
+          triage: {
+            reason: 'repeated_auth_rejection',
+            stage: 'provider_probe',
+            endpoint_field_keys: ['config.base_url', 'config.endpoint'],
+          },
+        },
+        safe_stop_acknowledged_at: NOW + 2_000,
+      },
+    });
+    await expect(handleConnectionCredentialRotationActivity(
+      { store },
+      { kind: 'api', name },
+    )).resolves.toEqual({
+      activity: { status: 'idle', safe_stop: null },
+    });
+    const awaitingPostAckCheck = await handleConnectionList(
+      { store, getEncryptionKey },
+      { kind: 'api' },
+    );
+    expect(awaitingPostAckCheck).not.toHaveProperty(
+      'credential_rotation_safe_stops',
+    );
+    expect(
+      awaitingPostAckCheck.credential_post_safe_stop_verifications,
+    ).toEqual([{
+      kind: 'api',
+      name,
+      status: 'pending',
+      acknowledged_at: NOW + 2_000,
+    }]);
+
+    const postAckRejection = await handleConnectionProbe(
+      {
+        store,
+        // Deliberate clock rollback: lineage, not timestamp ordering, proves
+        // this check follows the acknowledgement at NOW + 2_000.
+        now: () => NOW + 1_000,
+        getEncryptionKey,
+        fetcher: async () => jsonResponse(401),
+      },
+      { kind: 'api', name },
+    );
+    expect(postAckRejection.health).toMatchObject({ status: 'auth_failed' });
+    expect(postAckRejection.health).not.toHaveProperty(
+      'post_safe_stop_verification',
+    );
+    const rejectedSavedCredential = await handleConnectionList(
+      { store, getEncryptionKey },
+      { kind: 'api' },
+    );
+    expect(
+      rejectedSavedCredential.credential_post_safe_stop_verifications,
+    ).toEqual([{
+      kind: 'api',
+      name,
+      status: 'auth_failed',
+      acknowledged_at: NOW + 2_000,
+      checked_at: NOW + 1_000,
+      connection_updated_at: NOW + 1_000,
+      credential_correction: {
+        auth_type: 'bearer',
+        field_keys: ['auth.token'],
+      },
+    }]);
+
+    const originalAcknowledgedList =
+      store.listAcknowledgedCredentialRotationSafeStops!;
+    let injectedConcurrentEdit = false;
+    store.listAcknowledgedCredentialRotationSafeStops = (query) => {
+      if (!injectedConcurrentEdit) {
+        injectedConcurrentEdit = true;
+        const current = store.get('api', name)!;
+        store.upsert({
+          ...current,
+          display_name: 'Edited while the list decoded auth',
+          updated_at: current.updated_at + 1,
+        });
+      }
+      return originalAcknowledgedList.call(store, query);
+    };
+    try {
+      await expect(handleConnectionList(
+        { store, getEncryptionKey },
+        { kind: 'api' },
+      )).resolves.toMatchObject({
+        credential_post_safe_stop_verifications: [{
+          kind: 'api',
+          name,
+          status: 'pending',
+          acknowledged_at: NOW + 2_000,
+        }],
+      });
+    } finally {
+      store.listAcknowledgedCredentialRotationSafeStops =
+        originalAcknowledgedList;
+    }
+
+    await handleConnectionProbe(
+      {
+        store,
+        now: () => NOW + 500,
+        getEncryptionKey,
+        fetcher: async () => jsonResponse(204),
+      },
+      { kind: 'api', name },
+    );
+    await expect(handleConnectionList(
+      { store, getEncryptionKey },
+      { kind: 'api' },
+    )).resolves.toMatchObject({
+      credential_post_safe_stop_verifications: [],
+    });
+
+    await expect(rotate('rotation-rejected-again-0004')).rejects
+      .toMatchObject({
+        details: {
+          correction: {
+            triage: {
+              resolution: 'regenerate_credential_or_contact_admin',
+            },
+          },
+        },
+      });
+    const collidingSafeStop = store.getLatestCredentialRotationAttempt!(
+      'api',
+      name,
+    )!;
+    const collidingAcknowledgementToken =
+      credentialSafeStopAcknowledgementToken(collidingSafeStop);
+    expect(collidingAcknowledgementToken).not.toBe(acknowledgementToken);
+    await expect(handleConnectionAcknowledgeCredentialRotationSafeStop(
+      { store, now: () => NOW + 2_000 },
+      {
+        kind: 'api',
+        name,
+        acknowledgement_token: collidingAcknowledgementToken,
+      },
+    )).resolves.toMatchObject({
+      acknowledgement: {
+        status: 'acknowledged',
+        acknowledged_at: NOW + 2_000,
+      },
+    });
+    await expect(handleConnectionList(
+      { store, getEncryptionKey },
+      { kind: 'api' },
+    )).resolves.toMatchObject({
+      credential_post_safe_stop_verifications: [{
+        kind: 'api',
+        name,
+        status: 'pending',
+        acknowledged_at: NOW + 2_000,
+      }],
+    });
+
+    let releasePostAckProbe!: () => void;
+    let markPostAckProbeStarted!: () => void;
+    const postAckProbeStarted = new Promise<void>((resolve) => {
+      markPostAckProbeStarted = resolve;
+    });
+    const releasePostAckProvider = new Promise<void>((resolve) => {
+      releasePostAckProbe = resolve;
+    });
+    const supersededProbe = handleConnectionProbe(
+      {
+        store,
+        now: () => NOW + 5_000,
+        getEncryptionKey,
+        fetcher: async () => {
+          markPostAckProbeStarted();
+          await releasePostAckProvider;
+          return jsonResponse(204);
+        },
+      },
+      { kind: 'api', name },
+    );
+    const supersededProbeRejection = expect(supersededProbe).rejects
+      .toMatchObject({
+        code: 'conflict',
+        details: { existing_credential_preserved: true },
+      });
+    await postAckProbeStarted;
+    const rowBeforeSuccessor = store.get('api', name)!;
+    store.claimCredentialRotationAttempt!({
+      attempt_id: 'rotation-rejected-again-reset-0004',
+      kind: 'api',
+      name,
+      started_at: NOW + 1_600,
+    });
+    releasePostAckProbe();
+    await supersededProbeRejection;
+    expect(store.get('api', name)).toEqual(rowBeforeSuccessor);
+    store.failCredentialRotationAttempt!({
+      attempt_id: 'rotation-rejected-again-reset-0004',
+      finished_at: NOW + 1_601,
+      reason: 'unreachable',
+    });
+    await expect(handleConnectionCredentialRotationActivity(
+      { store },
+      { kind: 'api', name },
+    )).resolves.toEqual({
+      activity: { status: 'idle', safe_stop: null },
+    });
+
+    let replayAfterClosure: unknown;
+    try {
+      await rotate('rotation-rejected-again-0003');
+    } catch (error) {
+      replayAfterClosure = error;
+    }
+    expect(replayAfterClosure).toMatchObject({
+      details: {
+        correction: { triage: { stage: 'provider_probe' } },
+      },
+    });
+    expect((replayAfterClosure as RpcError).details?.correction)
+      .not.toMatchObject({
+        triage: { resolution: 'regenerate_credential_or_contact_admin' },
+      });
+    expect(fetcher).toHaveBeenCalledTimes(4);
+  });
+
+  it('does not resurrect an older safe stop after a newer terminal attempt', async () => {
+    const name = await enroll('api', { name: 'superseded-safe-stop' });
+    const fail = (
+      attemptId: string,
+      reason: 'auth_failed' | 'unreachable',
+      at: number,
+    ): void => {
+      store.claimCredentialRotationAttempt!({
+        attempt_id: attemptId,
+        kind: 'api',
+        name,
+        started_at: at,
+      });
+      store.failCredentialRotationAttempt!({
+        attempt_id: attemptId,
+        finished_at: at + 1,
+        reason,
+        ...(reason === 'auth_failed'
+          ? {
+              auth_type: 'bearer',
+              auth_rejection_stage: 'provider_probe',
+            }
+          : {}),
+      });
+    };
+
+    fail('rotation-safe-stop-seed-0001', 'auth_failed', NOW + 100);
+    fail('rotation-safe-stop-triaged-0002', 'auth_failed', NOW + 200);
+    fail('rotation-safe-stop-current-0003', 'auth_failed', NOW + 300);
+    await expect(handleConnectionCredentialRotationStatus(
+      { store },
+      {
+        attempt_id: 'rotation-safe-stop-current-0003',
+        kind: 'api',
+        name,
+      },
+    )).resolves.toMatchObject({
+      outcome: {
+        status: 'failed',
+        correction: {
+          triage: {
+            resolution: 'regenerate_credential_or_contact_admin',
+          },
+        },
+      },
+    });
+    const currentAttempt = store.getLatestCredentialRotationAttempt!(
+      'api',
+      name,
+    )!;
+    await expect(handleConnectionAcknowledgeCredentialRotationSafeStop(
+      { store, now: () => NOW + 350 },
+      {
+        kind: 'api',
+        name,
+        acknowledgement_token:
+          credentialSafeStopAcknowledgementToken(currentAttempt),
+      },
+    )).resolves.toMatchObject({
+      acknowledgement: { status: 'acknowledged' },
+    });
+
+    // A later terminal attempt can leave the connection row revision exactly
+    // unchanged. The old exact receipt remains readable, but it is no longer
+    // allowed to project the connection-current safe-stop resolution.
+    fail('rotation-safe-stop-reset-0004', 'unreachable', NOW + 400);
+    const superseded = await handleConnectionCredentialRotationStatus(
+      { store },
+      {
+        attempt_id: 'rotation-safe-stop-current-0003',
+        kind: 'api',
+        name,
+      },
+    );
+    expect(superseded).toMatchObject({
+      outcome: {
+        status: 'failed',
+        correction: { triage: { stage: 'provider_probe' } },
+      },
+    });
+    expect(superseded.outcome).not.toMatchObject({
+      correction: {
+        triage: { resolution: 'regenerate_credential_or_contact_admin' },
+      },
+    });
+    expect(superseded.outcome).not.toHaveProperty(
+      'safe_stop_acknowledged_at',
+    );
+    await expect(handleConnectionCredentialRotationActivity(
+      { store },
+      { kind: 'api', name },
+    )).resolves.toEqual({
+      activity: { status: 'idle', safe_stop: null },
+    });
+  });
+
+  it('does not infer correction fields from a replay when a legacy failed receipt lacks its auth shape', async () => {
+    const name = await enroll('api', { name: 'legacy-failed-receipt' });
+    store.claimCredentialRotationAttempt!({
+      attempt_id,
+      kind: 'api',
+      name,
+      started_at: NOW + 1_100,
+    });
+    store.failCredentialRotationAttempt!({
+      attempt_id,
+      finished_at: NOW + 1_200,
+      reason: 'auth_failed',
+    });
+    const fetcher = vi.fn<HttpFetcher>();
+
+    let replayError: unknown;
+    try {
+      await handleConnectionRotateCredentials(
+        { store, now: () => NOW + 2_000, getEncryptionKey, fetcher },
+        {
+          attempt_id,
+          name,
+          kind: 'api',
+          patch: {
+            auth: {
+              type: 'basic',
+              username: 'must-not-be-trusted',
+              password: 'must-not-be-trusted',
+            },
+          },
+        },
+      );
+    } catch (error) {
+      replayError = error;
+    }
+
+    expect(replayError).toBeInstanceOf(RpcError);
+    expect(replayError).toMatchObject({
+      code: 'credential_verification_failed',
+      details: {
+        verification_status: 'auth_failed',
+        existing_credential_preserved: true,
+      },
+    });
+    expect((replayError as RpcError).details).not.toHaveProperty('correction');
+    expect(fetcher).not.toHaveBeenCalled();
+  });
+
+  it('keeps recovery mandatory when a terminal failure receipt cannot be closed', async () => {
+    const name = await enroll('api', { name: 'receipt-write-fails' });
+    const before = store.get('api', name)!;
+    store.failCredentialRotationAttempt = () => {
+      throw new Error('simulated receipt write failure');
+    };
+
+    await expect(handleConnectionRotateCredentials(
+      {
+        store,
+        now: () => NOW + 1_250,
+        getEncryptionKey,
+        fetcher: async () => jsonResponse(401),
+      },
+      {
+        attempt_id,
+        name,
+        kind: 'api',
+        patch: { auth: { type: 'bearer', token: 'rejected-replacement' } },
+      },
+    )).rejects.toMatchObject({
+      code: 'credential_rotation_outcome_unknown',
+    });
+    expect(store.get('api', name)).toEqual(before);
+    await expect(handleConnectionCredentialRotationStatus(
+      { store },
+      { attempt_id, kind: 'api', name },
+    )).resolves.toEqual({
+      outcome: { status: 'pending', started_at: NOW + 1_250 },
+    });
+  });
+
+  it('does not mistake a merely reachable provider error for credential verification', async () => {
+    const name = await enroll('api', { name: 'reachable-but-unverified' });
+    const before = store.get('api', name)!;
+
+    await expect(handleConnectionRotateCredentials(
+      {
+        store,
+        now: () => NOW + 1_500,
+        getEncryptionKey,
+        // Ordinary row health intentionally calls this reachable/ok, but a
+        // 500 says nothing affirmative about the replacement credential.
+        fetcher: async () => jsonResponse(500),
+      },
+      {
+        attempt_id,
+        name,
+        kind: 'api',
+        patch: { auth: { type: 'bearer', token: 'not-proven' } },
+      },
+    )).rejects.toMatchObject({
+      code: 'credential_verification_failed',
+      details: {
+        verification_status: 'unknown',
+        reason: 'http_status_500',
+        existing_credential_preserved: true,
+      },
+    });
+    expect(store.get('api', name)).toEqual(before);
+  });
+
+  it('preserves the current row when a public endpoint accepts an invalid control credential too', async () => {
+    const name = await enroll('api', { name: 'public-health-endpoint' });
+    const before = store.get('api', name)!;
+    const fetcher = vi.fn<HttpFetcher>(async () => jsonResponse(204));
+
+    await expect(handleConnectionRotateCredentials(
+      { store, now: () => NOW + 1_750, getEncryptionKey, fetcher },
+      {
+        attempt_id,
+        name,
+        kind: 'api',
+        patch: { auth: { type: 'bearer', token: 'cannot-be-proven-here' } },
+      },
+    )).rejects.toMatchObject({
+      code: 'credential_verification_failed',
+      details: {
+        verification_status: 'unknown',
+        reason: 'credential_check_did_not_require_auth',
+        existing_credential_preserved: true,
+      },
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(store.get('api', name)).toEqual(before);
+  });
+
+  it('writes once only after verification and returns a secret-free receipt', async () => {
+    const name = await enroll('api', { name: 'rotate-me' });
+    const before = store.get('api', name)!;
+    const observed = vi.fn();
+    const unsubscribe = store.addOnUpsert(observed);
+    const result = await handleConnectionRotateCredentials(
+      {
+        store,
+        now: () => NOW + 2_000,
+        getEncryptionKey,
+        fetcher: async (_url, init) => {
+          const authorization = init?.headers?.Authorization;
+          if (authorization === 'Bearer recued-intentionally-invalid-credential') {
+            return jsonResponse(401);
+          }
+          expect(authorization).toBe('Bearer verified-new-secret');
+          return jsonResponse(204);
+        },
+      },
+      {
+        attempt_id,
+        name,
+        kind: 'api',
+        expected_updated_at: before.updated_at,
+        patch: {
+          display_name: 'Rotated API',
+          config: { base_url: 'https://api.example.test/rotated' },
+          auth: { type: 'bearer', token: 'verified-new-secret' },
+        },
+        match_patterns: [{ kind: 'tag', value: 'rotated' }],
+      },
+    );
+
+    expect(result.verification).toEqual({
+      status: 'verified',
+      verified_at: NOW + 2_000,
+      auth_type: 'bearer',
+    });
+    expect(JSON.stringify(result)).not.toContain('verified-new-secret');
+    expect(observed).toHaveBeenCalledTimes(1);
+    const row = store.get('api', name)!;
+    expect(row.updated_at).toBeGreaterThan(before.updated_at);
+    expect(row.display_name).toBe('Rotated API');
+    expect(JSON.parse(row.config_json)).toEqual({
+      base_url: 'https://api.example.test/rotated',
+      match_patterns: [{ kind: 'tag', value: 'rotated' }],
+    });
+    expect(JSON.parse(row.health_json!)).toMatchObject({ status: 'ok' });
+    expect(row.granted_scopes_json).toBeUndefined();
+    expect(await decodeAuthFromStorage(
+      row.auth_ciphertext,
+      { kind: 'api', name },
+      getEncryptionKey,
+    )).toEqual({ type: 'bearer', token: 'verified-new-secret' });
+
+    await expect(handleConnectionCredentialRotationStatus(
+      { store },
+      { attempt_id, kind: 'api', name },
+    )).resolves.toEqual({
+      outcome: {
+        status: 'succeeded',
+        started_at: NOW + 2_000,
+        verification: result.verification,
+      },
+    });
+    const replayFetch = vi.fn<HttpFetcher>();
+    const replay = await handleConnectionRotateCredentials(
+      { store, now: () => NOW + 99_000, getEncryptionKey, fetcher: replayFetch },
+      {
+        attempt_id,
+        name,
+        kind: 'api',
+        // Replaying the same attempt remains idempotent even though this is now
+        // intentionally older than the committed row revision.
+        expected_updated_at: before.updated_at,
+        patch: { auth: { type: 'bearer', token: 'must-not-replace-again' } },
+      },
+    );
+    expect(replay.verification).toEqual(result.verification);
+    expect(replayFetch).not.toHaveBeenCalled();
+    expect(await decodeAuthFromStorage(
+      store.get('api', name)!.auth_ciphertext,
+      { kind: 'api', name },
+      getEncryptionKey,
+    )).toEqual({ type: 'bearer', token: 'verified-new-secret' });
+    unsubscribe();
+  });
+
+  it('exchanges an OAuth refresh credential before the provider probe and persists its rotation metadata', async () => {
+    const name = await enroll('api', { name: 'oauth-rotate' });
+    const tokenFetch = vi.fn<typeof fetch>(async (_input, init) => {
+      expect(Object.fromEntries(new URLSearchParams(String(init?.body)))).toMatchObject({
+        grant_type: 'refresh_token',
+        refresh_token: 'replacement-refresh',
+        client_id: 'replacement-client',
+      });
+      return new Response(JSON.stringify({
+        access_token: 'fresh-access',
+        refresh_token: 'rotated-refresh',
+        token_type: 'Bearer',
+        expires_in: 300,
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    });
+    const apiFetch = vi.fn<HttpFetcher>(async (_url, init) => {
+      expect(init?.headers?.Authorization).toBe('Bearer fresh-access');
+      return jsonResponse(204);
+    });
+
+    const result = await handleConnectionRotateCredentials(
+      {
+        store,
+        now: () => NOW + 3_000,
+        getEncryptionKey,
+        fetcher: apiFetch,
+        resolveFetch: tokenFetch,
+      },
+      {
+        attempt_id,
+        name,
+        kind: 'api',
+        patch: {
+          auth: {
+            type: 'oauth2_refresh',
+            refresh_token: 'replacement-refresh',
+            client_id: 'replacement-client',
+            token_endpoint: 'https://oauth.example.test/token',
+          },
+        },
+        granted_scopes: [' read ', 'write', 'read'],
+      },
+    );
+
+    expect(tokenFetch).toHaveBeenCalledTimes(1);
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+    expect(result.verification).toMatchObject({
+      status: 'verified',
+      auth_type: 'oauth2_refresh',
+      verified_at: NOW + 3_000,
+      access_expires_at: NOW + 303_000,
+    });
+    const stored = await decodeAuthFromStorage(
+      store.get('api', name)!.auth_ciphertext,
+      { kind: 'api', name },
+      getEncryptionKey,
+    );
+    expect(stored).toMatchObject({
+      type: 'oauth2_refresh',
+      refresh_token: 'rotated-refresh',
+      current_access_token: 'fresh-access',
+      expires_at: NOW + 303_000,
+    });
+    expect(JSON.parse(store.get('api', name)!.granted_scopes_json!)).toEqual([
+      'read',
+      'write',
+    ]);
+  });
+
+  it('ignores a caller-supplied OAuth cache and verifies the durable refresh credential', async () => {
+    const name = await enroll('api', { name: 'oauth-cache-bypass' });
+    const before = store.get('api', name)!;
+    const tokenFetch = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({ error: 'invalid_grant' }),
+      { status: 400, headers: { 'content-type': 'application/json' } },
+    ));
+    const apiFetch = vi.fn<HttpFetcher>(async () => jsonResponse(204));
+
+    await expect(handleConnectionRotateCredentials(
+      {
+        store,
+        now: () => NOW + 3_500,
+        getEncryptionKey,
+        fetcher: apiFetch,
+        resolveFetch: tokenFetch,
+      },
+      {
+        attempt_id,
+        name,
+        kind: 'api',
+        patch: {
+          auth: {
+            type: 'oauth2_refresh',
+            refresh_token: 'rejected-durable-refresh',
+            client_id: 'replacement-client',
+            token_endpoint: 'https://oauth.example.test/token',
+            current_access_token: 'caller-injected-cache',
+            expires_at: NOW + 86_400_000,
+          },
+        },
+      },
+    )).rejects.toMatchObject({
+      code: 'credential_verification_failed',
+      details: {
+        verification_status: 'auth_failed',
+        reason: 'token_exchange_failed',
+        existing_credential_preserved: true,
+        correction: {
+          auth_type: 'oauth2_refresh',
+          field_keys: [
+            'auth.refresh_token',
+            'auth.client_id',
+            'auth.client_secret',
+            'auth.token_endpoint',
+          ],
+        },
+      },
+    });
+    expect(tokenFetch).toHaveBeenCalledTimes(1);
+    expect(apiFetch).not.toHaveBeenCalled();
+    expect(store.get('api', name)).toEqual(before);
+  });
+
+  it('routes a repeated OAuth exchange rejection to the token endpoint without provider prose', async () => {
+    const name = await enroll('api', { name: 'oauth-exchange-triage' });
+    store.claimCredentialRotationAttempt!({
+      attempt_id: 'rotation-oauth-prior-failure-0001',
+      kind: 'api',
+      name,
+      started_at: NOW + 3_540,
+    });
+    store.failCredentialRotationAttempt!({
+      attempt_id: 'rotation-oauth-prior-failure-0001',
+      finished_at: NOW + 3_550,
+      reason: 'auth_failed',
+      auth_type: 'oauth2_refresh',
+      auth_rejection_stage: 'provider_probe',
+    });
+    const tokenFetch = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({ error: 'provider-authored-secret-bearing-prose' }),
+      { status: 400, headers: { 'content-type': 'application/json' } },
+    ));
+
+    await expect(handleConnectionRotateCredentials(
+      {
+        store,
+        now: () => NOW + 3_600,
+        getEncryptionKey,
+        fetcher: vi.fn<HttpFetcher>(),
+        resolveFetch: tokenFetch,
+      },
+      {
+        attempt_id: 'rotation-oauth-repeat-failure-0002',
+        name,
+        kind: 'api',
+        patch: {
+          auth: {
+            type: 'oauth2_refresh',
+            refresh_token: 'replacement-refresh',
+            client_id: 'replacement-client',
+            token_endpoint: 'https://oauth.example.test/token',
+          },
+        },
+      },
+    )).rejects.toMatchObject({
+      code: 'credential_verification_failed',
+      details: {
+        verification_status: 'auth_failed',
+        correction: {
+          triage: {
+            reason: 'repeated_auth_rejection',
+            stage: 'credential_exchange',
+            endpoint_field_keys: ['auth.token_endpoint'],
+          },
+        },
+      },
+    });
+
+    const receipt = store.getCredentialRotationAttempt!(
+      'rotation-oauth-repeat-failure-0002',
+    );
+    expect(receipt).toMatchObject({
+      status: 'failed',
+      auth_rejection_triage_stage: 'credential_exchange',
+    });
+    expect(JSON.stringify(receipt)).not.toContain(
+      'provider-authored-secret-bearing-prose',
+    );
+  });
+
+  it('classifies a credential-exchange network failure as unreachable, not rejected auth', async () => {
+    const name = await enroll('api', { name: 'oauth-network-failure' });
+    const before = store.get('api', name)!;
+
+    await expect(handleConnectionRotateCredentials(
+      {
+        store,
+        now: () => NOW + 3_625,
+        getEncryptionKey,
+        fetcher: vi.fn<HttpFetcher>(),
+        resolveFetch: async () => { throw new Error('network offline'); },
+      },
+      {
+        attempt_id,
+        name,
+        kind: 'api',
+        patch: {
+          auth: {
+            type: 'oauth2_refresh',
+            refresh_token: 'replacement-refresh',
+            client_id: 'replacement-client',
+            token_endpoint: 'https://oauth.example.test/token',
+          },
+        },
+      },
+    )).rejects.toMatchObject({
+      code: 'credential_verification_failed',
+      details: {
+        verification_status: 'unreachable',
+        reason: 'token_exchange_failed',
+        existing_credential_preserved: true,
+      },
+    });
+    expect(store.get('api', name)).toEqual(before);
+  });
+
+  it('ignores caller-supplied AT Protocol sessions and verifies the app password', async () => {
+    const name = await enroll('api', {
+      name: 'atproto-cache-bypass',
+      config: { base_url: 'https://bsky.social' },
+    });
+    const before = store.get('api', name)!;
+    const sessionFetch = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({ error: 'AuthenticationRequired' }),
+      { status: 401, headers: { 'content-type': 'application/json' } },
+    ));
+    const apiFetch = vi.fn<HttpFetcher>(async () => jsonResponse(204));
+
+    await expect(handleConnectionRotateCredentials(
+      {
+        store,
+        now: () => NOW + 3_750,
+        getEncryptionKey,
+        fetcher: apiFetch,
+        resolveFetch: sessionFetch,
+      },
+      {
+        attempt_id,
+        name,
+        kind: 'api',
+        patch: {
+          auth: {
+            type: 'atproto_session',
+            identifier: 'alice.bsky.social',
+            app_password: 'rejected-app-password',
+            current_access_token: 'caller-injected-access',
+            refresh_token: 'caller-injected-refresh',
+          },
+        },
+      },
+    )).rejects.toMatchObject({
+      code: 'credential_verification_failed',
+      details: {
+        verification_status: 'auth_failed',
+        reason: 'atproto_session_exchange_failed',
+        existing_credential_preserved: true,
+        correction: {
+          auth_type: 'atproto_session',
+          field_keys: ['auth.identifier', 'auth.app_password'],
+        },
+      },
+    });
+    expect(sessionFetch).toHaveBeenCalledTimes(1);
+    expect(apiFetch).not.toHaveBeenCalled();
+    expect(store.get('api', name)).toEqual(before);
+  });
+
+  it('drops a verified candidate when the real row changes during the network check', async () => {
+    const name = await enroll('api', { name: 'contended' });
+    let release!: (response: Awaited<ReturnType<HttpFetcher>>) => void;
+    const gate = new Promise<Awaited<ReturnType<HttpFetcher>>>((resolve) => {
+      release = resolve;
+    });
+    const rotation = handleConnectionRotateCredentials(
+      {
+        store,
+        now: () => NOW + 4_000,
+        getEncryptionKey,
+        fetcher: async (_url, init) =>
+          init?.headers?.Authorization === 'Bearer recued-intentionally-invalid-credential'
+            ? jsonResponse(401)
+            : gate,
+      },
+      {
+        attempt_id,
+        name,
+        kind: 'api',
+        patch: { auth: { type: 'bearer', token: 'stale-candidate' } },
+      },
+    );
+    await vi.waitFor(() => {
+      // The candidate has reached the awaited provider check.
+      expect(store.get('api', name)?.display_name).toBe(name);
+    });
+    await handleConnectionUpdate(
+      { store, now: () => NOW + 4_000, getEncryptionKey },
+      {
+        name,
+        kind: 'api',
+        patch: { display_name: 'Newer edit wins' },
+      },
+    );
+    release(jsonResponse(204));
+
+    await expect(rotation).rejects.toMatchObject({ code: 'conflict' });
+    const row = store.get('api', name)!;
+    expect(row.display_name).toBe('Newer edit wins');
+    expect(await decodeAuthFromStorage(
+      row.auth_ciphertext,
+      { kind: 'api', name },
+      getEncryptionKey,
+    )).toEqual({ type: 'bearer', token: 'secret' });
+  });
+
+  it('rejects a stale contender after its claim and before duplicate provider work', async () => {
+    const name = await enroll('api', { name: 'claim-race' });
+    const before = store.get('api', name)!;
+    const claim = store.claimCredentialRotationAttempt!.bind(store);
+    let advanced = false;
+    const racingStore: ConnectionStoreSqlite = {
+      ...store,
+      claimCredentialRotationAttempt(input) {
+        if (!advanced) {
+          advanced = true;
+          store.upsert({
+            ...before,
+            display_name: 'Prior owner already won',
+            updated_at: before.updated_at + 1,
+          });
+        }
+        return claim(input);
+      },
+    };
+    const fetcher = vi.fn<HttpFetcher>(async () => jsonResponse(204));
+
+    await expect(handleConnectionRotateCredentials(
+      { store: racingStore, now: () => NOW + 4_250, getEncryptionKey, fetcher },
+      {
+        attempt_id,
+        name,
+        kind: 'api',
+        expected_updated_at: before.updated_at,
+        patch: { auth: { type: 'bearer', token: 'queued-stale-candidate' } },
+      },
+    )).rejects.toMatchObject({
+      code: 'conflict',
+      details: { existing_credential_preserved: true },
+    });
+
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(store.get('api', name)).toMatchObject({
+      display_name: 'Prior owner already won',
+      updated_at: before.updated_at + 1,
+    });
+    expect(store.getCredentialRotationAttempt!(attempt_id)).toMatchObject({
+      status: 'failed',
+      failure_reason: 'conflict',
+    });
+  });
+
+  it('reports an in-flight claim without replaying provider work', async () => {
+    const name = await enroll('api', { name: 'pending-rotation' });
+    let release!: (response: Awaited<ReturnType<HttpFetcher>>) => void;
+    const gate = new Promise<Awaited<ReturnType<HttpFetcher>>>((resolve) => {
+      release = resolve;
+    });
+    const fetcher = vi.fn<HttpFetcher>(async (_url, init) =>
+      init?.headers?.Authorization === 'Bearer recued-intentionally-invalid-credential'
+        ? jsonResponse(401)
+        : gate);
+    const first = handleConnectionRotateCredentials(
+      { store, now: () => NOW + 4_500, getEncryptionKey, fetcher },
+      {
+        attempt_id,
+        name,
+        kind: 'api',
+        patch: { auth: { type: 'bearer', token: 'first-candidate' } },
+      },
+    );
+    await vi.waitFor(() => expect(fetcher).toHaveBeenCalledTimes(1));
+
+    await expect(handleConnectionCredentialRotationStatus(
+      { store },
+      { attempt_id, kind: 'api', name },
+    )).resolves.toEqual({
+      outcome: { status: 'pending', started_at: NOW + 4_500 },
+    });
+    await expect(handleConnectionCredentialRotationActivity(
+      { store },
+      { kind: 'api', name },
+    )).resolves.toEqual({
+      activity: { status: 'pending', started_at: NOW + 4_500 },
+    });
+    await expect(handleConnectionCredentialRotationStatus(
+      { store },
+      { attempt_id, kind: 'api', name: 'different-connection' },
+    )).resolves.toEqual({ outcome: { status: 'not_found' } });
+    await expect(handleConnectionRotateCredentials(
+      { store, now: () => NOW + 4_600, getEncryptionKey, fetcher },
+      {
+        attempt_id,
+        name,
+        kind: 'api',
+        patch: { auth: { type: 'bearer', token: 'must-not-run' } },
+      },
+    )).rejects.toMatchObject({ code: 'credential_rotation_in_progress' });
+    await expect(handleConnectionRotateCredentials(
+      { store, now: () => NOW + 4_700, getEncryptionKey, fetcher },
+      {
+        attempt_id: 'rotation-probe-test-contender-0002',
+        name,
+        kind: 'api',
+        patch: { auth: { type: 'bearer', token: 'must-not-run-either' } },
+      },
+    )).rejects.toMatchObject({
+      code: 'credential_rotation_owned_elsewhere',
+      details: { existing_credential_preserved: true },
+    });
+    expect(fetcher).toHaveBeenCalledTimes(1);
+
+    release(jsonResponse(204));
+    await expect(first).resolves.toMatchObject({
+      verification: { status: 'verified', auth_type: 'bearer' },
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    await expect(handleConnectionCredentialRotationActivity(
+      { store },
+      { kind: 'api', name },
+    )).resolves.toEqual({
+      activity: { status: 'idle', safe_stop: null },
+    });
   });
 });
 

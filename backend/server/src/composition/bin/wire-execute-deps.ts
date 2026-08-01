@@ -59,6 +59,7 @@ import type { ExecuteHandlerDeps } from '../../execute-handler.js';
 import type { WorkEntitySourceWriteExecutor } from '../../work-entity-write-executor.js';
 import type { EventBus } from '../../events/bus.js';
 import type { RecipeStore } from '../../recipe-store.js';
+import type { RecordsStore } from '../../records/index.js';
 import type { ServerExecutorConfig } from '../../server-executor.js';
 import type { SharedStore } from '../../storage/shared-store.js';
 import type { EnrichmentStore } from '../../storage/enrichment-store.js';
@@ -82,6 +83,7 @@ import {
   type ToolOutputIngestInput,
 } from '../../cli-invocation-executor.js';
 import type { InboundFileCollection } from '../../collections/file/inbound-file-collection.js';
+import type { UploadStagingRegistry } from '../../collections/file/upload-staging.js';
 import { composeNotificationBlock } from './wire-notification-block.js';
 import {
   createInMemoryConnectionOperationProfileStore,
@@ -128,6 +130,9 @@ export interface ComposeExecuteDepsDeps {
    *  layer). */
   askAnswerLink?: (ask_id: string) => string;
   recipeStore: RecipeStore;
+  /** D-221 — server-local Records authority. The engine reaches it only after
+   * the ordinary catalog policy, operation-grant, and approval gates admit. */
+  recordsStore?: RecordsStore;
   executorConfig: ServerExecutorConfig;
   baseVault: Record<string, unknown>;
   serverInstanceId: string;
@@ -273,6 +278,12 @@ export interface ComposeExecuteDepsDeps {
    *  becomes `result.file_ref`. Absent (dbless / no-CAS harness) ⇒ an
    *  output_capture op fails closed in the executor. */
   inboundFileCollection?: InboundFileCollection;
+  /** D-217 slice 2b-ii — staged plaintext for a chunked upload's egress. The
+   *  engine stages once per walk and disposes in a `finally`; the connection
+   *  adapter reads one range per APPEND against the same registry, addressed by
+   *  the token the engine put on the wire. Absent (dbless / no-CAS harness) ⇒ a
+   *  chunked upload fails closed before any byte leaves. */
+  uploadStagingRegistry?: UploadStagingRegistry;
   /** D-188 — the master "Pause server" flag (server-state `isPaused`).
    *  When provided, the op-admission gate FREEZES every governed dispatch
    *  (owner-AI + doors) with a `server_paused` deny while paused; the
@@ -712,6 +723,27 @@ export const composeExecuteDeps = (
         return { record_id: record.record_id };
       }
     : undefined;
+  // D-217 slice 2b-ii-β2 — the engine's half of a chunked upload is METADATA
+  // ONLY: the plaintext size that fixes the request count, and the content hash
+  // that pins which bytes that count was computed for. Neither decrypts.
+  //
+  // ⛔ Staging is deliberately NOT here. It used to be — the engine staged and
+  // put the token on the dispatch input — but the action-identity hash covers
+  // that input, so a per-attempt token gave every honest repeat a different
+  // `canonical_payload_hash` and no D-177 grant could match. `stage` / `dispose`
+  // now live with the connection adapter (`compose-execution-context.ts`),
+  // below the commit boundary, where the owner's plaintext also stops existing
+  // across hashing, admission and any approval hold.
+  const describeUploadSource = deps.inboundFileCollection
+    ? async (file_ref: string) => {
+        const record = deps.inboundFileCollection!.get(file_ref);
+        if (record === null) return undefined;
+        return {
+          size_bytes: record.hot_fields.size,
+          content_hash: record.hot_fields.content_hash,
+        };
+      }
+    : undefined;
 
   const executeDeps: ExecuteHandlerDeps = {
     // D-210 Phase C — the device-fanout branch reads this at each preflight
@@ -720,12 +752,14 @@ export const composeExecuteDeps = (
       ? { resolveInboxFanoutMode: deps.resolveInboxFanoutMode }
       : {}),
     recipeStore: deps.recipeStore,
+    ...(deps.recordsStore ? { recordsStore: deps.recordsStore } : {}),
     executorConfig: deps.executorConfig,
     laneGovernor,
     opDurationClassifier,
     inFlightRegistry,
     cliInvocationExecutor,
     ...(ingestFileDownload ? { ingestFileDownload } : {}),
+    ...(describeUploadSource ? { describeUploadSource } : {}),
     baseVault: deps.baseVault,
     auditLog: deps.auditLog,
     instanceId: deps.serverInstanceId,

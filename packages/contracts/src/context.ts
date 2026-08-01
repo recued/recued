@@ -1,3 +1,9 @@
+import {
+  executionSourceContractId,
+  type Actor,
+  type ExecutionSource,
+} from './commits.js';
+
 /** Typed shapes for fields the engine injects into the `context.*`
  *  namespace at recipe-execution start.
  *
@@ -28,6 +34,66 @@ export interface ContextServer {
   available: boolean;
   name?: string;
 }
+
+/** `context.caller` — the trusted, minimal recipe-visible projection of
+ *  the server-authenticated execution source.
+ *
+ *  Unlike the open caller-provided `context.*` namespace (and unlike
+ *  `context.server`, where a caller snapshot may win), this root is
+ *  host-owned. The server strips any supplied `context.caller` and derives
+ *  it from `ExecuteRequest.execution_source`; when no source exists the root
+ *  is absent. Recipes may use the stable contract identifier for local
+ *  participant/role lookup, but it is an identifier, never a bearer secret.
+ *
+ *      "contract_id": "{{context.caller.contract_id}}"
+ */
+export interface ContextCaller {
+  /** Authenticated dispatch channel (`mcp`, `chat`, `user`, ...). */
+  readonly channel: ExecutionSource['channel'];
+  /** Authenticated actor class carried by the execution source. */
+  readonly actor: Actor;
+  /** Contract in force, absent for an unrestricted/source-without-contract run. */
+  readonly contract_id?: string;
+}
+
+/** Project an authenticated execution source into the deliberately-minimal
+ *  recipe-visible caller shape. Channel-specific ids and bearer/token material
+ *  stay inside the execution source and are never copied into `context.*`. */
+export const contextCallerFromExecutionSource = (
+  source: ExecutionSource,
+): ContextCaller => {
+  const contract_id = executionSourceContractId(source);
+  // Exact-object resolver refs preserve identity (`{{context.caller}}` returns
+  // this object, not a clone). Freeze the authority projection at its source so
+  // an in-process consumer cannot rewrite what a later recipe condition reads.
+  return Object.freeze({
+    channel: source.channel,
+    actor: source.actor,
+    ...(contract_id !== undefined ? { contract_id } : {}),
+  });
+};
+
+/** Install the host-owned caller projection on an otherwise-open runtime
+ *  context object. The property itself is non-writable/non-configurable so an
+ *  exact `{{context}}` ref cannot replace or delete it; the projected value is
+ *  frozen by {@link contextCallerFromExecutionSource}. A source-less run gets
+ *  a non-enumerable `undefined` reservation: recipes still observe the root as
+ *  absent, while an in-process consumer cannot add a forged value mid-run. */
+export const installContextCaller = (
+  context: Record<string, unknown>,
+  source?: ExecutionSource,
+): ContextCaller | undefined => {
+  const caller = source === undefined
+    ? undefined
+    : contextCallerFromExecutionSource(source);
+  Object.defineProperty(context, 'caller', {
+    value: caller,
+    enumerable: caller !== undefined,
+    writable: false,
+    configurable: false,
+  });
+  return caller;
+};
 
 /** D-148 § A.3.6 — `context.bridge` snapshot at recipe-execution
  *  start. The server populates from its connected-bridges registry;
@@ -78,16 +144,33 @@ export interface ContextBridge {
  *  The engine snapshots referenced step outputs at run end and re-
  *  injects on the next run start — for MANUAL + CRON runs only.
  *
- *  ⛔ NOT BACKED FOR `auto_run` (audited 2026-07-17, d-120-spec.md
- *  § context.recipe.* durability → AS BUILT). The design's "reactive
- *  recipes snapshot at process boundaries (`ProcessRetireReason`)"
- *  was never implemented: `ProcessRetireReason` has no handler, and
- *  `auto-run-handler.ts` holds `Pick<DishContextStore, 'clear'>` — it
- *  cannot `set`. The host write is gated `trigger_source !==
- *  'auto_run'`. Reads still resolve (the store is re-injected), so a
- *  reactive read returns `undefined` FOREVER and any gate on it is
- *  always true — silently. Use `data.shared` for a reactive cursor;
- *  the authoring path rejects the pattern (`context_recipe_in_auto_run`).
+ *  ⛔ MANUAL + CRON ONLY, and `auto_run` is now CLOSED — deliberately
+ *  out of scope, not pending (2026-07-27; d-120-spec.md
+ *  § context.recipe.* durability, AMENDED). The original design's
+ *  "reactive recipes snapshot at process boundaries
+ *  (`ProcessRetireReason`)" was never built, and will not be:
+ *   - the host write is gated `trigger_source !== 'auto_run'`
+ *     (`execute-handler.ts`) — deliberate, per-tick writes would thrash;
+ *   - `auto-run-handler.ts` holds `Pick<DishContextStore, 'clear'>`, so
+ *     the handler the design named cannot `set` at all;
+ *   - `ProcessRetireReason` records why a process was rotated. It is NOT
+ *     a continuity boundary and never was one in code.
+ *
+ *  Why closed rather than finished: a snapshot is RESUMPTION ("where was
+ *  I?"), and when resumption state is missing the recipe silently redoes
+ *  or silently skips work at `success: true` — the read resolves
+ *  `undefined`, `coalesce` makes every tick look like a first run, and a
+ *  cursor gate is unconditionally true. The seller pack carries the
+ *  highest-stakes continuity in the codebase (paid access across billing
+ *  cycles) with ZERO engine continuity, by pairing a procedural recipe
+ *  with a CONVERGENT write — which has no silent-redo mode, because
+ *  re-derivation is the recovery path. That is the sanctioned shape.
+ *
+ *  ⇒ Reactive continuity: a paired recipe over a convergent write
+ *  ({@link ConvergentWriteResult}); a `data.shared` cursor only when the
+ *  source has no stable per-record identity to converge on. The authoring
+ *  path enforces this (`context_recipe_in_auto_run`, error). Full
+ *  guidance: internal design notes.
  *
  *  Field naming convention: keys match recipe step ids. Static
  *  analysis at install extracts the referenced ids from the recipe;

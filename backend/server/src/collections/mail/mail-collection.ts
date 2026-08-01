@@ -24,6 +24,7 @@ import type Database from 'better-sqlite3';
 import type { StorageGate } from '@recued/storage-gate';
 import type { ActivityEntry, AuditLogStore } from '@recued/storage';
 import type {
+  CollectionAuthState,
   CollectionHealth,
   CollectionListQuery,
   CollectionRecord,
@@ -57,6 +58,12 @@ import type {
   InboundFileIngestInput,
 } from '../file/inbound-file-collection.js';
 import { createBackfillAuditRecorder } from '../../triggers/backfill-audit.js';
+// `classifyOAuthStatus` is shared with the providers so the token-endpoint
+// status policy (notably 400 = invalid_grant = auth) cannot drift between them.
+import { classifyOAuthFailure, type MailSyncOutcome } from './provider.js';
+// The auth-vs-transient discriminant for `classifySyncFailure`. Same module the
+// providers throw from, so the classification cannot drift from the thrower.
+import { OAuthError } from './oauth.js';
 import {
   createCollectionTable,
   INLINE_CUTOFF_BYTES,
@@ -455,11 +462,121 @@ export const createMailCollection = (
   let lastIndexedAt = 0;
   let localErrorCount = 0;
   let stopSync: (() => Promise<void>) | undefined;
+  /** Unsubscribe for the provider's per-attempt outcome stream. */
+  let stopOutcomes: (() => void) | undefined;
   let starting = false;
 
   const bumpError = (msg: string, err: unknown): void => {
     localErrorCount++;
     log?.('warn', msg, { err: err instanceof Error ? err.message : String(err) });
+  };
+
+  // ────────────────────────────────────────────────────────────────
+  // Durable sync-outcome reporting
+  //
+  // Mail had NO writer for `auth_state` / `last_synced_at` at all. Enroll
+  // stamped `auth_state: 'healthy'` optimistically — before any fetch had
+  // happened — and nothing ever revised it, so an instance that ingested zero
+  // messages (sealed vault, dead refresh token, wrong scope) reported healthy
+  // with no last-synced time for as long as it existed. There was no way, from
+  // the rpc surface, to tell a working mailbox from a broken one. `file`
+  // already reports through this same narrow store write (`file/compose.ts`,
+  // `file/enroll.ts`); this is mail's missing half.
+  //
+  // ⚠ REPORTING ONLY, and that is load-bearing. `file` / `calendar` derive
+  // effective caps as `caps AND auth_state === 'healthy'`, so a non-healthy
+  // value there DISABLES writes. Mail has no such caps/dispatcher gate today,
+  // which is why it is safe to report honestly here. If mail ever gains one,
+  // re-check this: a sealed-vault instance must NOT lose `send` (the vault-
+  // deferred path in `compose.ts` explicitly keeps `send` working while
+  // sealed), which is why "deferred, never synced" is represented by a NULL
+  // `last_synced_at` rather than by a non-healthy `auth_state`.
+  const reportSyncOutcome = (
+    auth_state: CollectionAuthState,
+    last_synced_at?: number,
+  ): void => {
+    try {
+      opts.instances?.updateAuthState('mail', slug, {
+        auth_state,
+        ...(last_synced_at !== undefined ? { last_synced_at } : {}),
+      });
+    } catch (err) {
+      // A reporting write must never break a sync that otherwise worked.
+      bumpError('mail updateAuthState failed', err);
+    }
+  };
+
+  /** An expired credential and a flaky network need DIFFERENT things from the
+   *  user — a re-consent versus patience — so they must not collapse into one
+   *  state. Connections renders `'expired'` as "Needs re-auth", so mislabelling
+   *  a 429 sends the user to re-consent for nothing.
+   *
+   *  ⚠ `err instanceof OAuthError` is NOT the discriminant, even though the name
+   *  suggests it. `refreshAccessToken` wraps EVERY non-2xx from the token
+   *  endpoint — 429 and 5xx included — in an `OAuthError` (`oauth.ts`: `if
+   *  (!res.ok) throw new OAuthError('token_refresh_failed', res.status, …)`).
+   *  The type only says "this came from the OAuth layer"; the STATUS says what
+   *  happened. Same thresholds as `classifyHttpError` in `@recued/transport`
+   *  (401/403 → auth, 429 → rate-limited, 5xx → server), remapped onto
+   *  `CollectionAuthState` rather than importing a transport-shaped enum.
+   *
+   *  ⛔ This is the FALLBACK path, for a provider that does not implement
+   *  `onSyncOutcome` (older fakes, out-of-tree providers). When one does — all
+   *  three shipped providers do — its own typed outcome wins, because only the
+   *  provider can tell an IMAP `AUTHENTICATIONFAILED` from a socket reset, or a
+   *  token-endpoint 400 (`invalid_grant`) from an API 400 (bad request). */
+  const classifySyncFailure = (err: unknown): CollectionAuthState => {
+    if (!(err instanceof OAuthError)) return 'degraded';
+    // No stored refresh token — there is no credential to retry with.
+    if (err.code === 'missing_refresh_token') return 'expired';
+    // Classified on the token endpoint's own `error` field, not the status —
+    // RFC 6749 § 5.2 answers five different problems with HTTP 400 and only
+    // `invalid_grant` is fixed by re-consenting. Shared with the providers via
+    // `classifyOAuthFailure` so the two cannot drift; mapping onto
+    // `CollectionAuthState` is this layer's job.
+    return classifyOAuthFailure(err.status, err.oauth_error) === 'auth'
+      ? 'expired'
+      : 'degraded';
+  };
+
+  /** Map a provider's typed per-attempt outcome onto the durable row.
+   *
+   *  This is what closes the swallowed-tick gap: a scheduled poll that fails
+   *  after startup now DOWNGRADES the row (a token revoked mid-life surfaces as
+   *  "needs re-auth" instead of a mailbox that silently stops), and a poll that
+   *  succeeds while finding NOTHING still advances the clock (a quiet mailbox no
+   *  longer looks stale). Both run through the same throttle as message ingest,
+   *  so a 30 s poll loop costs at most one row write a minute. */
+  const onProviderOutcome = (outcome: MailSyncOutcome): void => {
+    if (outcome.ok) {
+      touchSyncClock(outcome.at);
+      return;
+    }
+    // A failure is reported immediately, un-throttled: the throttle exists to
+    // bound redundant SUCCESS writes, and delaying bad news is the opposite of
+    // the point. `reportSyncOutcome` is idempotent on an unchanged row.
+    reportSyncOutcome(outcome.failure === 'auth' ? 'expired' : 'degraded');
+  };
+
+  /** Minimum gap between two `last_synced_at` writes driven by successful sync
+   *  evidence. One row write per backfilled message — or per 30 s poll — would be
+   *  thousands of redundant writes for no added truth; a minute's granularity is
+   *  far finer than any surface that renders this ("synced 2 minutes ago"). */
+  const SYNC_CLOCK_WRITE_INTERVAL_MS = 60_000;
+  let lastSyncClockWriteAt = 0;
+
+  /** Advance the durable sync clock, at most once per interval. Reports
+   *  `'healthy'` alongside it: evidence that a fetch worked — a message landing,
+   *  or a provider reporting a clean poll — means a stale `'expired'` from an
+   *  earlier failed attempt must not outlive the recovery.
+   *
+   *  `at` lets a provider outcome stamp its own attempt time; message ingest
+   *  passes nothing and takes the current clock. */
+  const touchSyncClock = (at?: number): void => {
+    const now = at ?? nowOf();
+    if (now - lastSyncClockWriteAt < SYNC_CLOCK_WRITE_INTERVAL_MS) return;
+    lastSyncClockWriteAt = now;
+    reportSyncOutcome('healthy', now);
   };
 
   const materializeInboundAttachments = async (
@@ -517,6 +634,14 @@ export const createMailCollection = (
       if (prev) emitter.updated(record.record_id, prev.hot_fields);
       else emitter.created(record.record_id);
       lastIndexedAt = record.modified_at;
+      // A message landing is the strongest possible proof that this mailbox is
+      // syncing, so it is the honest anchor for `last_synced_at`. Writing the
+      // clock ONLY at sync-lifecycle transitions would leave it frozen at boot
+      // time while a healthy 30 s poll loop kept working — "last synced 6 h
+      // ago" on a mailbox that is fine, which is a fresh lie in place of the
+      // old one. Throttled, because this runs once per ingested message and a
+      // 30-day backfill is thousands of them.
+      touchSyncClock();
       await materializeInboundAttachments(msg, record.record_id);
       if (opts.onMessageUpserted) {
         try { opts.onMessageUpserted(msg); }
@@ -542,15 +667,31 @@ export const createMailCollection = (
   };
 
   const sync: CollectionSyncAdapter = {
+    /** Durable state reporting spans the whole sync lifetime, not just this call:
+     *  the provider's `onSyncOutcome` stream (subscribed below) carries every
+     *  later scan / poll / reconnect attempt, so a token revoked mid-life
+     *  downgrades the row and a clean-but-empty poll keeps the clock moving.
+     *
+     *  A provider that does not implement `onSyncOutcome` still gets the
+     *  start-attempt reporting inline below — honest, just coarser. */
     async start() {
       if (starting || stopSync) return;
       starting = true;
       state = 'syncing';
+      // Subscribe BEFORE connect so the very first attempt is observed. Idempotent
+      // across restarts: a prior subscription is dropped first, so a
+      // stop→start cycle cannot accumulate duplicate listeners (which would
+      // multiply row writes and defeat the throttle).
+      stopOutcomes?.();
+      stopOutcomes = provider.onSyncOutcome?.(onProviderOutcome);
       try {
         await provider.connect();
       } catch (err) {
         state = 'error';
         bumpError('mail provider connect failed', err);
+        // Report BEFORE rethrowing. `startLive` catches this and only logs, so
+        // this write is the sole durable trace the caller ever sees.
+        reportSyncOutcome(classifySyncFailure(err));
         starting = false;
         throw err;
       }
@@ -599,20 +740,50 @@ export const createMailCollection = (
         // it. Audit row carries `'failed'` so the activity feed shows
         // the user the drain didn't complete.
         await backfillRecorder.finish('failed');
+        // The 30-day history is missing or partial. Live sync still starts
+        // below, so this may be overwritten by a healthy tick — which is
+        // correct: "new mail arrives, history is short" is a live mailbox.
+        reportSyncOutcome(classifySyncFailure(err));
       }
       try {
         stopSync = await provider.startSync(onSyncEvent);
         state = 'connected';
         lastIndexedAt = nowOf();
+        // ⛔ Deliberately NOT reporting `'healthy'` here.
+        //
+        // `startSync` resolving does not prove an inbound fetch worked: the
+        // immediate first tick swallows its own errors via `markError`, and
+        // IMAP's `startSync` only installs listeners. The tempting proxy —
+        // `provider.health().last_successful_sync_at > 0` — is worse than
+        // nothing, because that clock is a LIFETIME clock advanced by
+        // non-inbound activity: a successful SEND bumps it
+        // (`gmail-provider.ts` in `sendImpl`) and so does sent-reconciliation.
+        // A mailbox that can send but cannot read would therefore report
+        // healthy — precisely the "everything looks fine, no mail appears"
+        // failure this whole change exists to end.
+        //
+        // The only claim worth making is one backed by evidence, so `'healthy'`
+        // is reported from exactly one place: `touchSyncClock()`, on a message
+        // actually reaching the warehouse. An empty-but-working mailbox
+        // therefore keeps enroll's `'healthy'` with a NULL `last_synced_at` —
+        // no worse than before this change, and not a fresh lie.
       } catch (err) {
         state = 'error';
         bumpError('mail startSync failed', err);
+        reportSyncOutcome(classifySyncFailure(err));
       } finally {
         starting = false;
       }
     },
     async stop() {
       state = 'disconnected';
+      // Drop the outcome subscription first: a provider tearing down can emit a
+      // reconnect failure on the way out, and a stopped collection reporting
+      // 'expired' would blame the credential for our own shutdown.
+      if (stopOutcomes) {
+        try { stopOutcomes(); } catch { /* best-effort detach */ }
+        stopOutcomes = undefined;
+      }
       if (stopSync) {
         const s = stopSync;
         stopSync = undefined;

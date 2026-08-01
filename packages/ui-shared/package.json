@@ -16,6 +16,7 @@
     "./icon-render": "./src/icon-render.ts",
     "./icons.generated": "./src/icons.generated.ts",
     "./variable-widgets": "./src/variable-widgets.ts",
+    "./output-filter": "./src/output-filter.ts",
     "./action-dispatcher": "./src/action-dispatcher.ts",
     "./field-dispatcher": "./src/field-dispatcher.ts",
     "./recovery-grid-field-handler": "./src/recovery-grid-field-handler.ts",

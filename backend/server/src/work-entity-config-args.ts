@@ -4,15 +4,17 @@
  *  One resolver for every consumer of a `WorkEntityConfigArgBinding` set:
  *   - the sync runner's LIST walk (`op_arg_bindings.list` — Asana `workspace`,
  *     Google Tasks `tasklist`);
- *   - the targeted READ (`op_arg_bindings.read` — Google Tasks `tasklist`);
+ *   - targeted READ / UPDATE / DELETE / COMPLETE operations
+ *     (`op_arg_bindings.<slot>` — a connection-scoped project or container);
  *   - the write executor's create args (`create_arg_bindings` — Linear `teamId`).
  *
  *  Keeping the resolution in ONE place is deliberate: the own-property guard and
- *  the unset check must be identical across list / read / create so a
+ *  the unset check must be identical across list / targeted operations / create so a
  *  per-connection scoping arg can never resolve differently on one path than
  *  another. A bound-but-unset (or inherited-only) key returns a STRUCTURED
- *  failure; each caller formats its own message (a sync cycle degrades, a read
- *  config-fails, a create config-refuses) and never issues the bad request. */
+ *  failure; each caller formats its own message (a sync cycle degrades, a
+ *  targeted operation config-fails, a create config-refuses) and never issues
+ *  the bad request. */
 
 import type { WorkEntityConfigArgBinding } from '@recued/contracts';
 

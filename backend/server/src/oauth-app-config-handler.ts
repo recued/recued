@@ -1,10 +1,11 @@
 /** `server.{get,set,clear}OAuthAppConfig` handlers — BYO OAuth app credentials.
  *
  *  Lets the owner enter their own Google / Microsoft OAuth app `client_id` +
- *  `client_secret` in the UI instead of `RECUED_*` env vars. Backed by
- *  `OAuthAppConfigStore` (encrypted secret); the env vars stay a fallback,
- *  surfaced here as `source: 'env'`. Mirrors the `server.{get,set}LLMConfig`
- *  shape (`config-schema.ts`): a paired get/set (+ clear) with `RpcError`
+ *  `client_secret` in the UI. Backed by `OAuthAppConfigStore` (encrypted
+ *  secret), which is the ONLY credential source — the `RECUED_{GMAIL,GCAL,
+ *  GRAPH}_CLIENT_ID/_SECRET` env fallback and its `source: 'env'` status were
+ *  deleted 2026-07-28. Mirrors the `server.{get,set}LLMConfig` shape
+ *  (`config-schema.ts`): a paired get/set (+ clear) with `RpcError`
  *  `bad_request` / `locked` codes.
  *
  *  The `getOAuthAppConfig` read NEVER returns a `client_secret` — only
@@ -24,9 +25,6 @@ import type { OAuthAppConfigStore } from './oauth-app-config-store.js';
 
 export interface OAuthAppConfigHandlerDeps {
   store: OAuthAppConfigStore;
-  /** Env-var fallback status for an issuer (derived from the `RECUED_*`
-   *  consts). Consulted only when nothing is stored. */
-  envConfigFor(issuer: OAuthAppIssuer): { client_id: string | null; has_secret: boolean };
 }
 
 export type OAuthAppConfigMethods =
@@ -52,16 +50,12 @@ export const makeOAuthAppConfigHandlers = (
   deps: OAuthAppConfigHandlerDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, OAuthAppConfigMethods, WsClient> | undefined => {
   if (!deps) return undefined;
-  const { store, envConfigFor } = deps;
+  const { store } = deps;
 
   const statusFor = (issuer: OAuthAppIssuer): OAuthAppConfigStatus => {
     const storedId = store.getClientId(issuer);
     if (storedId) {
       return { client_id: storedId, has_secret: store.hasSecret(issuer), source: 'stored' };
-    }
-    const env = envConfigFor(issuer);
-    if (env.client_id) {
-      return { client_id: env.client_id, has_secret: env.has_secret, source: 'env' };
     }
     return { client_id: null, has_secret: false, source: null };
   };

@@ -102,6 +102,10 @@ export const shouldPatchConnectionAuth = (
     if (!field.key.startsWith('auth.')) return false;
     if (AUTH_INTENT_EXCLUDED_KEYS.has(field.key)) return false;
     if (field.showWhen && !field.showWhen(values)) return false;
+    if (field.type === 'header-list') {
+      return collectHeaderRows(values, field.key).some((row) =>
+        row.header_name.trim().length > 0 || row.value.trim().length > 0);
+    }
     return (values[field.key] ?? '').trim().length > 0;
   });
 
@@ -120,9 +124,9 @@ export const projectConnectionPayload = (
     if (field.showWhen && !field.showWhen(values)) continue;
     // D-192 M4c-UI — the messenger triggers are NOT projected into the
     // enroll/update `config`: they are stripped from `ConnectionView` (a config
-    // replace can't round-trip them) and persisted by the dedicated
-    // `setMatchPatterns` merge-write the submit handler fires alongside. Skip
-    // the flat `<key>.<i>.*` row values here so they never leak into `config`.
+    // replace can't round-trip them) and persisted either by the dedicated
+    // `setMatchPatterns` merge-write or atomically inside credential rotation.
+    // Skip the flat `<key>.<i>.*` rows here so they never leak into `config`.
     if (field.type === 'match-pattern-list') continue;
     // header-list — gather the credential-header rows, DROP fully-blank ones,
     // and RE-INDEX contiguously (0..N-1) so the array-aware `setDeep` builds a
@@ -191,7 +195,22 @@ export const flattenConnectionViewIntoValues = (
   // loop below would mis-file it as `config.subresource_path`.
   if (typeof view.subresource_path === 'string') values.subresource_path = view.subresource_path;
   for (const [k, v] of Object.entries(view)) {
-    if (k === 'name' || k === 'kind' || k === 'subtype' || k === 'display_name' || k === 'subresource_path') continue;
+    if (
+      k === 'name'
+      || k === 'kind'
+      || k === 'subtype'
+      || k === 'display_name'
+      || k === 'subresource_path'
+      // Server-projected connection metadata guides the edit surface but is
+      // not provider config. In particular, `auth_type` is consumed below to
+      // restore the right credential family; flattening it as
+      // `config.auth_type` would misclassify it as owner configuration.
+      || k === 'auth_type'
+      || k === 'updated_at'
+      || k === 'granted_scopes'
+      || k === 'bound_pack_slugs'
+      || k === 'supports_engagement_health'
+    ) continue;
     if (v === null || v === undefined) continue;
     if (typeof v === 'object') {
       values[`config.${k}`] = JSON.stringify(v);
@@ -241,7 +260,15 @@ export const buildConnectionEditDialogPatch = (
   );
   if (schema) {
     const authField = schema.fields.find((f) => f.key === 'auth.type');
-    if (authField?.options?.[0]) values['auth.type'] = authField.options[0];
+    const storedAuthType = view.auth_type;
+    if (
+      typeof storedAuthType === 'string'
+      && authField?.options?.includes(storedAuthType)
+    ) {
+      values['auth.type'] = storedAuthType;
+    } else if (authField?.options?.[0]) {
+      values['auth.type'] = authField.options[0];
+    }
   }
 
   return {

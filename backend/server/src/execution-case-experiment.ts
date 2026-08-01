@@ -49,6 +49,39 @@ export interface CaseExperimentRate {
   };
 }
 
+/** Spread of a per-root count, alongside the mean it belongs to.
+ *
+ * A mean with no dispersion cannot carry an interval, so an arm difference in
+ * counts can never be distinguished from noise by a reader of the report. That
+ * is not a presentational gap: it is the difference between a measurement and
+ * an anecdote. Every field here is an aggregate over roots — no root ids, and
+ * nothing that identifies which root contributed which count. */
+export interface CaseExperimentCountDispersion {
+  /** Roots contributing a count. Always equal to the companion mean's
+   * `denominator_roots`, so the interval and the mean describe one cohort. */
+  denominator_roots: number;
+  /** Sample variance on the n−1 basis. Null below two roots, where spread is
+   * undefined rather than zero. */
+  variance: number | null;
+  std_dev: number | null;
+  /** 95% interval on the per-root MEAN by normal approximation. Absent below
+   * two roots. Named for its method because the approximation is optimistic
+   * at small n and for counts that cluster by root; `histogram` reconstructs
+   * the distribution exactly, so a t- or bootstrap interval can be computed
+   * from the report rather than estimated from this one. */
+  mean_uncertainty_95?: {
+    low: number;
+    high: number;
+    method: 'normal_sample_mean';
+  };
+  /** Per-root counts, ascending. Reconstructs the distribution exactly, which
+   * is what shows clustering and skew that a variance alone hides. */
+  histogram: Array<{
+    count: number;
+    roots: number;
+  }>;
+}
+
 export interface CaseExperimentArmReport {
   cohort_roots: number;
   /** Root-level outcome observability for this exact cohort. Axis rates below
@@ -60,12 +93,14 @@ export interface CaseExperimentArmReport {
       total: number;
       denominator_roots: number;
       mean_per_root: number | null;
+      dispersion: CaseExperimentCountDispersion;
     };
     planner_rounds: {
       available: boolean;
       total: number;
       denominator_roots: number;
       mean_per_root: number | null;
+      dispersion: CaseExperimentCountDispersion;
     };
   };
 }
@@ -407,6 +442,53 @@ const wilson = (
   };
 };
 
+const Z_95 = 1.959963984540054;
+
+/** Dispersion of a per-root count over exactly the roots that contributed it.
+ * The caller passes the same root set its mean is divided by, so the interval
+ * and the mean can never describe different cohorts. */
+const countDispersion = (
+  counts: readonly number[],
+): CaseExperimentCountDispersion => {
+  const denominator_roots = counts.length;
+  const histogram = new Map<number, number>();
+  for (const count of counts) {
+    histogram.set(count, (histogram.get(count) ?? 0) + 1);
+  }
+  const asHistogram = [...histogram.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([count, roots]) => ({ count, roots }));
+  if (denominator_roots < 2) {
+    return {
+      denominator_roots,
+      variance: null,
+      std_dev: null,
+      histogram: asHistogram,
+    };
+  }
+  const mean = counts.reduce((total, count) => total + count, 0)
+    / denominator_roots;
+  const variance = counts.reduce(
+    (total, count) => total + (count - mean) ** 2,
+    0,
+  ) / (denominator_roots - 1);
+  const std_dev = Math.sqrt(variance);
+  const margin = Z_95 * std_dev / Math.sqrt(denominator_roots);
+  return {
+    denominator_roots,
+    variance,
+    std_dev,
+    mean_uncertainty_95: {
+      // A count mean cannot be negative, so the lower bound clamps at zero
+      // exactly as the Wilson bound does for a rate.
+      low: Math.max(0, mean - margin),
+      high: mean + margin,
+      method: 'normal_sample_mean',
+    },
+    histogram: asHistogram,
+  };
+};
+
 const rateFor = (
   facts: readonly RootFacts[],
   axis: CaseExperimentOutcomeAxis,
@@ -514,16 +596,20 @@ const armReport = (facts: readonly RootFacts[]): CaseExperimentArmReport => {
   // progress rather than a final operational outcome. Keep them in attrition,
   // not in a denominator that would bias the mean downward.
   const closedFacts = facts.filter((fact) => fact.span_closed);
-  const governedCalls = closedFacts.reduce(
-    (total, fact) => total + fact.governed_calls,
+  const governedCallCounts = closedFacts.map((fact) => fact.governed_calls);
+  const governedCalls = governedCallCounts.reduce(
+    (total, count) => total + count,
     0,
   );
   const plannerRoundFacts = closedFacts.filter(
     (fact): fact is RootFacts & { planner_rounds: number } =>
       fact.planner_rounds !== undefined,
   );
-  const plannerRounds = plannerRoundFacts.reduce(
-    (total, fact) => total + fact.planner_rounds,
+  const plannerRoundCounts = plannerRoundFacts.map(
+    (fact) => fact.planner_rounds,
+  );
+  const plannerRounds = plannerRoundCounts.reduce(
+    (total, count) => total + count,
     0,
   );
   return {
@@ -541,6 +627,7 @@ const armReport = (facts: readonly RootFacts[]): CaseExperimentArmReport => {
           closedFacts.length === 0
             ? null
             : governedCalls / closedFacts.length,
+        dispersion: countDispersion(governedCallCounts),
       },
       planner_rounds: {
         available: plannerRoundFacts.length > 0,
@@ -550,6 +637,7 @@ const armReport = (facts: readonly RootFacts[]): CaseExperimentArmReport => {
           plannerRoundFacts.length === 0
             ? null
             : plannerRounds / plannerRoundFacts.length,
+        dispersion: countDispersion(plannerRoundCounts),
       },
     },
   };

@@ -69,11 +69,14 @@ import type {
   RecipeDefinition,
   RecipeError,
   RecipeStep,
+  RecordsExecutionBinding,
   RunDegradation,
   ScanFn,
   ScopedSenderCandidate,
 } from '@recued/contracts';
 import {
+  entityFieldsFromMetaFields,
+  entityFieldsFromRecordsSnapshot,
   isContainerPickDetail,
   isCreatePlanDetail,
   collectOperationAuthorityPaths,
@@ -82,6 +85,7 @@ import {
   operationPathTemplate,
   deriveDispatchScope,
   computeOpenProjection,
+  installContextCaller,
   deriveHeavyOpErrorCategory,
   deriveRunTermination,
   executionSourceContractId,
@@ -94,6 +98,7 @@ import {
   isOwnerDefaultOnlyEntry,
   isOpenProjectionRefusal,
   isOutboundSendSlug,
+  isRecordsExecutionBinding,
   kernelOpForBackingSlug,
   originProvenanceFromOptionalSource,
   runAttentionForTriggerSource,
@@ -102,13 +107,23 @@ import {
   readOwnerOperationOverride,
   resolveValue,
   RpcError,
+  FILTER_CONFIG_KEY_NOT_ALLOWED,
+  FILTER_INVOCATION_FORBIDDEN,
+  FILTER_INVOCATION_STALE,
   SESSION_GRANT_RISK_TIERS,
+  UNDECLARED_CONFIG_ARGUMENT,
+  undeclaredConfigArgumentMessage,
+  undeclaredConfigArguments,
+  recipeOutputSections,
   WIRE_AUTHORITY_ARG_PATHS,
   type HandlerSlice,
   type RiskTier,
   type ServerRpcRegistry,
+  type UndeclaredConfigArgumentDetails,
 } from '@recued/contracts';
 import { ephemeralDishId } from '@recued/contracts';
+import type { RecordsStore } from './records/index.js';
+import { readRootProjections } from './records/root-projection.js';
 import { emitRunOutcome, originTriggerIdFromContext } from './run-outcome-events.js';
 import type { DishStore } from './dish-store.js';
 import type { DishContextStore } from './dish-context-store.js';
@@ -141,6 +156,10 @@ import {
   type PolicyGateDenial,
 } from './policy-gate.js';
 import { applyAutoPiiForExecution } from './auto-pii-apply.js';
+import {
+  describeBreakingIngredientPin,
+  findBreakingIngredientPins,
+} from './pre-run-version-check.js';
 // D-157 Part C — held-action idempotency. Collapse a re-sent identical
 // action onto an existing live hold (no second checkpoint + ask + pending
 // write) so an agent loop that resends a held action is harmless.
@@ -507,6 +526,9 @@ type CommitSubstrateFields = {
 
 export interface ExecuteHandlerDeps {
   recipeStore: RecipeStore;
+  /** D-221 — namespaced Records storage and execution authority. Optional for
+   * old/dbless harnesses; a Records catalog call fails closed when absent. */
+  recordsStore?: RecordsStore;
   executorConfig: ServerExecutorConfig;
   /** D-181 Slice 2 — the server's singleton two-lane long-op governor. When
    *  provided, the engine acquires a `local-heavy` / `external-io` slot before
@@ -537,6 +559,11 @@ export interface ExecuteHandlerDeps {
    *  `file_ref`. Omitted ⇒ a `response_capture` op fails closed
    *  (`no_file_ingestor`). */
   ingestFileDownload?: ExecutionContext['ingestFileDownload'];
+  /** D-217 slice 2b-ii — chunked-upload staging (stage once / dispose once).
+   *  Threaded onto the engine ctx so the catalog gateway's chunk walk can put
+   *  a staging TOKEN on each APPEND's wire input instead of the bytes. Omitted
+   *  ⇒ a chunked upload fails closed before the first request. */
+  describeUploadSource?: ExecutionContext['describeUploadSource'];
   /** D-201 Slice 6B3 — server-only operation-bound callback resolver. The
    *  catalog gateway invokes it only for an operation carrying the trusted
    *  logical-binding declaration; absent means those operations fail closed. */
@@ -1011,6 +1038,45 @@ const customerControlledD162ExtraUnits = (input: {
   return Math.max((input.resolvedInput['llm.data'] as unknown[]).length - 1, 0);
 };
 
+/** D-222 § 6.3 — "the unrestricted local owner": the audience a resolved filter
+ *  descriptor may reach AT ALL.
+ *
+ *  ⛔ ONE COPY, TWO CALLERS — and they were already drifting. The audience
+ *  projection below tested `actor` plus contract-in-source; filter ADMISSION
+ *  tested those AND `contract_snapshot`. So a `user_self` caller carrying a
+ *  snapshot was refused the submit and still handed the block's declarations and
+ *  effective values: half of one rule enforced on each side, which is how a fence
+ *  ends up guarding one surface and forgotten on the other.
+ *
+ *  Admission narrows FURTHER, by channel (`'user'`), and that stays at its call
+ *  site on purpose: it is a fact about the SUBMIT path, not about the audience. An
+ *  owner on another channel may legitimately receive the declarative block and
+ *  simply have nothing to submit it with. */
+const isUnrestrictedLocalOwner = (
+  source: ExecuteRequest['execution_source'],
+  contractSnapshot: ExecuteRequest['contract_snapshot'],
+): boolean =>
+  source !== undefined
+  && source.actor === 'user_self'
+  && !executionSourceHasContract(source)
+  && contractSnapshot === undefined;
+
+/** D-222 audience projection. Resolved filter metadata can contain effective
+ *  owner config, so a contracted/agent/system caller receives no filter block
+ *  at all. An unrestricted owner caller may receive the declarative block even
+ *  on a non-interactive channel; only the `user` channel can submit it. */
+const outputForExecutionSource = (
+  output: ExecuteResponse['output'],
+  source: ExecuteRequest['execution_source'],
+  contractSnapshot: ExecuteRequest['contract_snapshot'],
+): ExecuteResponse['output'] => {
+  if (isUnrestrictedLocalOwner(source, contractSnapshot)) return output;
+  return {
+    render: output.render.filter((section) => section.type !== 'filter'),
+    sidebar: output.sidebar.filter((section) => section.type !== 'filter'),
+  };
+};
+
 /** Handle recipe execution. Pure handler — takes parsed request,
  *  returns the ExecuteResponse on success or throws `RpcError` for
  *  request-shape problems (missing recipe, recipe_id not found).
@@ -1027,6 +1093,24 @@ export const handleExecute = async (
    *  could otherwise overwrite an unrelated run's audit anchor. */
   internal: InternalExecuteOverrides = {},
 ): Promise<ExecuteResponse> => {
+  // `context.caller` is host-owned and therefore has ZERO caller-input
+  // semantics. Strip it before *any* request consumer—not only before namespace
+  // construction—so a discarded value cannot affect targeting, customer-usage
+  // lineage, held-action dedup/ask eligibility, trigger attribution, or the
+  // paused anchor's replay snapshot. Collapse an empty remainder to `undefined`
+  // so `{ caller: <forgery> }` is byte-for-byte equivalent to no context for
+  // those consumers. Reassign locally; the caller's request object stays intact.
+  if (request.context !== undefined) {
+    const sanitizedContext = { ...request.context };
+    delete sanitizedContext.caller;
+    request = {
+      ...request,
+      context: Object.keys(sanitizedContext).length > 0
+        ? sanitizedContext
+        : undefined,
+    };
+  }
+
   // Capture WIRE ownership before dish/install overlays mutate `request.config`.
   // An inline recipe supplied by a direct MCP customer is itself caller-owned;
   // a stored recipe's batch multiplicity is caller-owned only where its ref
@@ -1039,7 +1123,9 @@ export const handleExecute = async (
   const customerUsageInlineRecipe = request.recipe !== undefined;
   // Resolve recipe: inline > by id
   let recipe: RecipeDefinition | null = null;
+  let authoredRecipeHash = '';
   let operationBoundWebhookConsumer: ExecutionContext['operationBoundWebhookConsumer'];
+  let storedRecipeCallerPack: string | undefined;
 
   if (request.recipe) {
     recipe = request.recipe as RecipeDefinition;
@@ -1060,6 +1146,7 @@ export const handleExecute = async (
         ? deps.recipeStore.getStored(request.recipe_id)
         : null;
       if (stored) {
+        storedRecipeCallerPack = stored.pack_slug ?? `local:${stored.recipe_id}`;
         operationBoundWebhookConsumer = stored.pack_slug === null
           ? { kind: 'local_recipe', id: stored.recipe_id }
           : { kind: 'pack_install', id: stored.pack_slug };
@@ -1069,6 +1156,105 @@ export const handleExecute = async (
     }
   } else {
     throw new RpcError('bad_request', 'Either recipe_id or recipe is required', 400);
+  }
+
+  // D-222 Slice 3 — a filter submit is narrower than an ordinary owner run.
+  // Re-resolve the immutable authored block before ANY overlay or dispatch
+  // lowering can affect the request. The caller supplies only its stored hash
+  // + section index; fields, hidden definitions, and the allowlist all come
+  // from the recipe store.
+  authoredRecipeHash = hashRecipe(recipe);
+  if (request.invocation !== undefined) {
+    const invocation = request.invocation !== null
+      && typeof request.invocation === 'object'
+      && !Array.isArray(request.invocation)
+      ? request.invocation as unknown as Record<string, unknown>
+      : null;
+    const source = request.execution_source;
+    // The audience half is the SHARED predicate (see `isUnrestrictedLocalOwner`);
+    // the `'user'` channel is the extra requirement the SUBMIT path adds, because
+    // only that surface renders an interactive filter to submit from.
+    if (
+      source === undefined
+      || source.channel !== 'user'
+      || !isUnrestrictedLocalOwner(source, request.contract_snapshot)
+    ) {
+      throw new RpcError(
+        FILTER_INVOCATION_FORBIDDEN,
+        'An output filter can be submitted only by the unrestricted local owner.',
+        403,
+      );
+    }
+    if (request.recipe !== undefined) {
+      throw new RpcError(
+        FILTER_INVOCATION_FORBIDDEN,
+        'An inline recipe has no stored immutable output section; install it before submitting its filter.',
+        403,
+      );
+    }
+    // Two interactive kinds share this gate, deliberately rather than by
+    // copy: an editable `table` submits its rows the same way a `filter`
+    // submits its values, and the proof is identical — the config came from a
+    // section the INSTALLED recipe declares, at a section index whose hash
+    // still matches. Duplicating the block is how one of them silently stops
+    // checking something the other gained.
+    const kind = invocation?.kind;
+    const isTableEdit = kind === 'output.table_edit';
+    if (
+      invocation === null
+      || (kind !== 'output.filter' && !isTableEdit)
+      || typeof invocation.recipe_hash !== 'string'
+      || !Number.isInteger(invocation.section_index)
+      || (invocation.section_index as number) < 0
+      || invocation.recipe_hash !== authoredRecipeHash
+    ) {
+      throw new RpcError(
+        FILTER_INVOCATION_STALE,
+        'This filter view no longer matches the installed recipe. Refresh the result and try again.',
+        409,
+      );
+    }
+    const section = recipeOutputSections(recipe)[invocation.section_index as number];
+    // ⛔ An editable grid admits the variable it declared `into` plus the ones
+    // it declared `hidden` — read off the INSTALLED section, never from the
+    // caller. A grid whose section carries no `edit` admits nothing at all, so a
+    // section that lost its `edit` between render and submit cannot be submitted
+    // to. Widening `hidden` in the recipe therefore widens the boundary only
+    // after an install, which is the whole point of reading it from here.
+    let allowed: Set<string>;
+    if (isTableEdit) {
+      if (section === undefined || section.type !== 'table' || section.edit === undefined) {
+        throw new RpcError(
+          FILTER_INVOCATION_STALE,
+          'This editable table no longer exists at the rendered section index. Refresh the result and try again.',
+          409,
+        );
+      }
+      allowed = new Set([section.edit.into, ...(section.edit.hidden ?? [])]);
+    } else {
+      if (section === undefined || section.type !== 'filter') {
+        throw new RpcError(
+          FILTER_INVOCATION_STALE,
+          'This filter block no longer exists at the rendered section index. Refresh the result and try again.',
+          409,
+        );
+      }
+      allowed = new Set([...section.fields, ...section.hidden]);
+    }
+    const rejected = Object.keys(request.config ?? {}).filter((key) => !allowed.has(key));
+    if (rejected.length > 0) {
+      throw new RpcError(
+        FILTER_CONFIG_KEY_NOT_ALLOWED,
+        `This filter block does not allow config ${rejected.length === 1 ? 'key' : 'keys'}: ${rejected.join(', ')}.`,
+        400,
+        undefined,
+        {
+          rejected: rejected.sort(),
+          allowed: [...allowed].sort(),
+          section_index: invocation.section_index,
+        },
+      );
+    }
   }
 
   // Entity-targeting guard (design § 8) — a caller-initiated run of a
@@ -1416,6 +1602,55 @@ export const handleExecute = async (
   const vault = mergeVault(deps.baseVault, {}, request.vault);
   const config = request.config ?? {};
 
+  // ── D-222 Slice A — declaration-bounded config ──────────────────────
+  // `variables` is the argument boundary, and until this check existed it was
+  // a claim about a DIFFERENT check: `undeclared_variable_ref` walks the recipe
+  // document at install and proves an authored `{{config.X}}` points at a
+  // declaration. It says nothing about the keys a CALLER supplies. So an
+  // undeclared key rode into the namespace store, resolved for nobody, and the
+  // run reported success having silently ignored the caller's intent.
+  //
+  // Placed HERE, at the point `config` is derived, for two reasons: every
+  // contributor has already merged into `request.config` by now (wire, then the
+  // dish/group/install overlays above), so one check covers all of them; and it
+  // is ~100 lines ahead of `createNamespaceStores`, so a rejected key cannot
+  // reach `config.*` even transiently.
+  //
+  // Origin comes from the wire key set captured before those overlays merged
+  // (`customerUsageCallerRootKeys.config`): a mistyped argument and a stale
+  // stored overlay present identically and need different fixes.
+  //
+  // ⛔ EXEMPT ON RESUME, for the reason the dish binding above already gives:
+  // a resume's config is the anchor's `config_snapshot` — values the owner
+  // ALREADY APPROVED — not input a caller is supplying now. Re-checking replayed
+  // state against a declaration that may have changed during the pause would
+  // wedge an approved run permanently: edit the recipe to drop a variable while
+  // an approval sits pending, and the resume could never complete. That is the
+  // same hazard line ~1130 guards ("must not wedge an approved resume") and the
+  // same reason `assertRunTargets` is skipped on resume above. § 6.1 lists the
+  // covered contributors — request config, install-dish, group, schedule/trigger,
+  // webhook, failure-handler — and a replayed snapshot is deliberately not one:
+  // it was already checked when the original run started.
+  const undeclaredConfig = internal.resume_from === undefined
+    ? undeclaredConfigArguments(
+        recipe.variables,
+        config,
+        customerUsageCallerRootKeys.config,
+      )
+    : [];
+  if (undeclaredConfig.length > 0) {
+    throw new RpcError(
+      UNDECLARED_CONFIG_ARGUMENT,
+      undeclaredConfigArgumentMessage(undeclaredConfig),
+      400,
+      undefined,
+      {
+        undeclared: undeclaredConfig,
+        declared: Object.keys(recipe.variables ?? {}).sort(),
+      } satisfies UndeclaredConfigArgumentDetails,
+    );
+  }
+
   // ── D-157 Part C — held-action idempotency ──────────────────────────
   // Before doing any work, collapse a re-sent identical action onto an
   // existing LIVE hold. Parts A/B tell an agent a held action is queued
@@ -1500,9 +1735,23 @@ export const handleExecute = async (
   // value wins (extension WS-relayed runs may want to forward their
   // own snapshot rather than the server self-reporting).
   const baseContext = (request.context ?? {}) as Record<string, unknown>;
-  const context = Object.prototype.hasOwnProperty.call(baseContext, 'server')
-    ? baseContext
-    : { ...baseContext, server: { available: true, name: deps.serverName ?? 'recued' } };
+  // D-221 prerequisite — `context.caller` is an authority-bearing projection,
+  // not another caller-extensible context value. Entry normalization above has
+  // already stripped it from every pre-run consumer; copy + delete again at the
+  // resolver boundary as defense in depth, then re-add the root solely from the
+  // authenticated execution source. A source-less run gets no caller root; a
+  // forged request value is never preserved as a fallback or replay snapshot.
+  const context: Record<string, unknown> = { ...baseContext };
+  delete context.caller;
+  if (!Object.prototype.hasOwnProperty.call(context, 'server')) {
+    context.server = { available: true, name: deps.serverName ?? 'recued' };
+  }
+  // Seal the property itself as well as the projection: exact `{{context}}`
+  // refs preserve the parent object's identity, so freezing only the nested
+  // value would still allow a consumer to replace `context.caller`. A
+  // source-less run receives a non-enumerable undefined reservation, which is
+  // recipe-visible as absent but cannot be filled mid-run.
+  installContextCaller(context, request.execution_source);
 
   // Build namespace stores
   const stores = createNamespaceStores(vault, config, context);
@@ -1630,7 +1879,7 @@ export const handleExecute = async (
           ...(annotationStore ? { annotationStore } : {}),
         })
       : undefined;
-  const sharedResolvers: SharedResolvers | undefined = sharedStore || annotationStore
+  const sharedResolvers: SharedResolvers | undefined = sharedStore || annotationStore || deps.recordsStore
     ? {
         ...(sharedStore
           ? {
@@ -1654,6 +1903,31 @@ export const handleExecute = async (
                 direction === 'outbound'
                   ? annotationStore.outboundLinks(collection, id)
                   : annotationStore.inboundLinks(collection, id),
+            }
+          : {}),
+        ...(deps.recordsStore
+          ? {
+              // D-226 — `{{data.contact.<email>.rollups.<pack>.<output>}}`.
+              // Computed from each pack's LIVE rows at read time; nothing is
+              // stored, so there is nothing to invalidate. Only `contact` is a
+              // declared root today, and a non-root collection answers with an
+              // empty group rather than a resolver error — the ref is simply
+              // not one this surface serves.
+              rollupsForRecord: async (collection: string, id: string) =>
+                collection === 'contact'
+                  ? readRootProjections(deps.recordsStore!, 'contact', id).map(
+                      (projection) => ({
+                        publisher: projection.publisher,
+                        pack_slug: projection.pack_slug,
+                        ...(projection.label === undefined ? {} : { label: projection.label }),
+                        value: projection.value,
+                        complete: projection.complete,
+                        ...(projection.incomplete_reason === undefined
+                          ? {}
+                          : { incomplete_reason: projection.incomplete_reason }),
+                      }),
+                    )
+                  : [],
             }
           : {}),
       }
@@ -1834,6 +2108,56 @@ export const handleExecute = async (
     && (executionSource === undefined || executionSourceHasContract(executionSource))
   ) {
     commitFields.contract_snapshot = request.contract_snapshot;
+  }
+
+  // ── D-067 — pre-run ingredient compatibility check ──────────────────
+  //
+  // Reject a recipe whose pinned `ingredient_version` is below the installed
+  // manifest's `min_version` BEFORE the executor is built, so no step runs and
+  // no API call or token is spent. Until now D-067 was declared in the
+  // decisions log but never implemented: the only version check lived in the
+  // STEP RUNNER and fired mid-run, after earlier steps had already executed —
+  // exactly the partial-execution failure the decision claimed to remove.
+  //
+  // Placed OUTSIDE the policy-gate block below on purpose: that walk only runs
+  // for gated channels, while an incompatible pin is wrong on every dispatch
+  // path — cron, reactive, housekeeping, chat, MCP alike.
+  //
+  // Same in-memory manifest store the policy gate consults one block down; the
+  // whole check is a step walk plus a sync map read per unique slug.
+  const breakingPins = findBreakingIngredientPins(
+    recipe,
+    (slug) => deps.executorConfig.manifests.get(slug) ?? undefined,
+  );
+  if (breakingPins.length > 0) {
+    const first = breakingPins[0]!;
+    return {
+      success: false,
+      output: { render: [], sidebar: [] },
+      steps: [],
+      errors: [{
+        error_id: `ingredient-version-${Date.now().toString(36)}-${recipe.recipe_id}`,
+        // Declared in the closed error vocabulary since D-0xx and never emitted
+        // until now — this check is its first producer.
+        code: 'INGREDIENT_VERSION_MISMATCH' as const,
+        // Every break, not just the first: an author fixing a stale recipe
+        // wants the whole list rather than one re-run per broken step.
+        message: breakingPins.map(describeBreakingIngredientPin).join(' '),
+        severity: 'error' as const,
+        source: {
+          recipe_id: recipe.recipe_id,
+          step_id: first.step_id,
+          ingredient_slug: first.ingredient,
+        },
+        details: { breaking_pins: breakingPins },
+        timestamp: new Date().toISOString(),
+        // Re-running changes nothing — the recipe or the install has to move.
+        retryable: false,
+      }],
+      duration_ms: 0,
+      recipe_id: recipe.recipe_id,
+      recipe_hash: hashRecipe(recipe),
+    };
   }
 
   if (executionSource !== undefined) {
@@ -3219,6 +3543,43 @@ export const handleExecute = async (
       ? deps.contractOverlay?.resolveReadGrantChecker?.(executionSource)
       : undefined;
 
+  // D-221 §10.6 — acquire namespace-stamped leases before the engine can run
+  // any step. A first-dispatch hook is too late: a foreign pack may read this
+  // namespace and then perform an external side effect before touching it
+  // again. Catalog manifests are already fully resolved at this boundary.
+  const recordsLeaseBindings = new Map<string, RecordsExecutionBinding>();
+  for (const rawStep of [
+    ...(recipe.steps ?? []),
+    ...(recipe.prefetch_steps ?? []),
+    ...(recipe.trigger_steps ?? []),
+  ]) {
+    const step = rawStep as unknown as Record<string, unknown>;
+    if (typeof step.ingredient !== 'string' || step.ingredient.length === 0) continue;
+    const requestedVersion = Number.isSafeInteger(step.ingredient_version)
+      ? step.ingredient_version as number
+      : undefined;
+    const manifest = deps.executorConfig.manifests.get(step.ingredient, requestedVersion);
+    const rawBindings = Object.values(manifest?.surfaces?.records?.executes ?? {});
+    if (rawBindings.length === 0) continue;
+    const bindings = rawBindings.filter(isRecordsExecutionBinding);
+    if (bindings.length !== rawBindings.length) {
+      throw new RpcError(
+        'execution_error',
+        `Records catalog '${step.ingredient}' contains an unstamped execution binding.`,
+        500,
+      );
+    }
+    for (const binding of bindings) {
+      const key = JSON.stringify([binding.owner.publisher, binding.owner.pack_slug]);
+      const prior = recordsLeaseBindings.get(key);
+      if (prior !== undefined && prior.pack_version !== binding.pack_version) {
+        throw new RpcError('execution_error', 'one recipe resolved conflicting Records versions', 500);
+      }
+      recordsLeaseBindings.set(key, binding);
+    }
+  }
+  let recordsExecutionLease: ReturnType<RecordsStore['acquireExecutionLease']> | undefined;
+
   // D-181 slice 4 — register the run on the in-flight active-list (when a
   // registry + execution_source are wired) and mint its kill signal. The
   // owner's `execution.kill` aborts this controller (rejecting the run's queued
@@ -3227,6 +3588,15 @@ export const handleExecute = async (
   // attended origin mirrors the slice-3 stall monitor (trigger-source derived).
   const killController = new AbortController();
   const registerLiveRun = deps.inFlightRegistry !== undefined && executionSource !== undefined;
+  let liveRunRegistered = false;
+  // D-185 Slice 2 — a DURABLE pause (a preflight `ask` that wrote a checkpoint)
+  // resumes later as a fresh process invocation under the SAME `run_id`, so the
+  // run's `storage:'temp'` files must SURVIVE the pause (a paused-then-resumed
+  // run is ONE run). Set only when a checkpoint persisted (below); the run-end
+  // `finally` then skips the temp sweep on a resumable pause and lets the
+  // terminal invocation reclaim the scratch root.
+  let resumablePause = false;
+  try {
   if (registerLiveRun) {
     const sessionId = deriveChannelSessionId(executionSource);
     deps.inFlightRegistry!.registerRun({
@@ -3239,15 +3609,9 @@ export const handleExecute = async (
       started_at: Date.now(),
       abort: () => killController.abort(),
     });
+    liveRunRegistered = true;
   }
 
-  // D-185 Slice 2 — a DURABLE pause (a preflight `ask` that wrote a checkpoint)
-  // resumes later as a fresh process invocation under the SAME `run_id`, so the
-  // run's `storage:'temp'` files must SURVIVE the pause (a paused-then-resumed
-  // run is ONE run). Set only when a checkpoint persisted (below); the run-end
-  // `finally` then skips the temp sweep on a resumable pause and lets the
-  // terminal invocation reclaim the scratch root.
-  let resumablePause = false;
   // R2 step 6 — the checkpoint's `recipe_snapshot` (below) must hash-match
   // this run's audit anchor `recipe_hash` so the resumer can prove the paused
   // recipe was not tampered with. The anchor is stamped from `result.recipe_hash`
@@ -3260,14 +3624,29 @@ export const handleExecute = async (
   // (`request.recipe !== undefined`) persist a snapshot, so only they clone.
   const preEngineRecipeSnapshot =
     request.recipe !== undefined ? structuredClone(recipe) : undefined;
-  try {
+  // Acquire only after every potentially-throwing pre-engine setup step. From
+  // this point the encompassing finally owns the lease, so a registry/clone
+  // failure cannot strand an invisible blocker until process restart.
+  if (recordsLeaseBindings.size > 0) {
+    if (!deps.recordsStore) {
+      throw new RpcError('execution_error', 'Records runtime is unavailable for this recipe.', 503);
+    }
+    recordsExecutionLease = deps.recordsStore.acquireExecutionLease({
+      lease_id: run_id,
+      recipe_id: recipe.recipe_id,
+      caller_pack: storedRecipeCallerPack ?? `inline:${recipe.recipe_id}`,
+      targets: [...recordsLeaseBindings.values()].map((binding) => ({ binding })),
+    });
+  }
     const result = await executeRecipe({
       recipe,
+      outputRecipeHash: authoredRecipeHash,
       stores,
       ...(contextRecipeSnapshot !== null ? { contextRecipeSnapshot } : {}),
       ingredientExecutor: engineExecutor,
       cliInvocationExecutor: deps.cliInvocationExecutor ?? CLI_INVOCATION_EXECUTOR,
       ...(deps.ingestFileDownload ? { ingestFileDownload: deps.ingestFileDownload } : {}),
+      ...(deps.describeUploadSource ? { describeUploadSource: deps.describeUploadSource } : {}),
       ...(deps.operationBoundWebhook
         ? { operationBoundWebhook: deps.operationBoundWebhook }
         : {}),
@@ -3286,6 +3665,44 @@ export const handleExecute = async (
       ...(deps.opDurationClassifier ? { opDurationClassifier: deps.opDurationClassifier } : {}),
       manifestGetter: (slug, requestedVersion) =>
         deps.executorConfig.manifests.get(slug, requestedVersion),
+      // A `record_fields` output block names an entity kind, never a catalog
+      // slug (an install-internal an author has no business knowing), so the
+      // lookup scans installed packs for the one declaring it. Deliberately
+      // NOT derived from `manifestGetter` above: supplying that getter arms the
+      // D-165 catalog gateway, which would make a field's LABEL depend on
+      // whether the recipe holds an operation grant.
+      //
+      // TWO declaration paths, because decomposition splits one authored cell
+      // by ingredient kind: a storage (Records) ingredient lands in the catalog
+      // manifest's `surfaces.records.schema.entities`, an http one in the local
+      // manifest store's `entity_schemas[].meta_fields` under scope
+      // `connection.api.<vendor>.<entity>`. Records is checked first only
+      // because it needs no store — neither is privileged, and the 221 http
+      // ingredients that declare entities outnumber the 11 storage ones 20:1.
+      //
+      // First declaration wins. Two installed packs claiming one entity kind is
+      // a namespace collision the install coordinator refuses; arbitrating it
+      // here would paper over that refusal.
+      entityFields: (entity) => {
+        for (const slug of deps.executorConfig.manifests.slugs()) {
+          const snapshot = deps.executorConfig.manifests
+            .get(slug)?.surfaces?.records?.schema?.entities?.[entity];
+          if (snapshot !== undefined) return entityFieldsFromRecordsSnapshot(snapshot);
+        }
+        const store = deps.localManifestStore;
+        if (store === undefined) return null;
+        // The scope's LAST segment is the entity id (`connection.api.calcom.
+        // booking_attendee`). Matching on the whole suffix rather than
+        // `endsWith(entity)` keeps `attendee` from matching `booking_attendee`.
+        for (const slug of store.listManifests().map((m) => m.slug)) {
+          for (const schema of store.getEntitySchemas(slug)) {
+            if (schema.scope.slice(schema.scope.lastIndexOf('.') + 1) !== entity) continue;
+            const fields = entityFieldsFromMetaFields(schema.meta_fields ?? []);
+            if (fields.length > 0) return fields;
+          }
+        }
+        return null;
+      },
       stepCache,
       sharedResolvers,
       ...(linkSink ? { linkSink } : {}),
@@ -3317,6 +3734,67 @@ export const handleExecute = async (
       // `cli_reachability_disabled` (reachability defaults OFF).
       ...(deps.cliReachabilityResolver
         ? { cliReachabilityResolver: deps.cliReachabilityResolver }
+        : {}),
+      // D-221 — Records is connectionless, but it is not policyless. These
+      // hooks are consumed by the catalog gateway only after the same ordinary
+      // op-admission / grant / approval path used by provider operations. The
+      // first hook is an activation-stamp preflight; `RecordsStore.execute`
+      // repeats the full binding comparison inside its transaction.
+      ...(deps.recordsStore
+        ? {
+            recordsReachabilityResolver: (
+              principal,
+              ingredientId,
+              operationId,
+              binding,
+            ) => {
+              if (principal === null) return false;
+              const namespace = deps.recordsStore!.getNamespace(binding.owner);
+              if (!(namespace?.state.state === 'ready'
+                && namespace.state.version === binding.pack_version
+                && namespace.state.storage_schema_hash === binding.storage_schema_hash
+                && namespace.state.declaration_hash === binding.declaration_hash)) {
+                return false;
+              }
+
+              // The D-221 catalog is its own internal installed-pack id and
+              // connectionless grant target. Authorize only through the exact
+              // pack-owned operation-group rows written by the atomic install
+              // coordinator. This keeps an install_scope selection (and a live
+              // revoke) authoritative at the actual-proceed point; namespace
+              // readiness alone must never synthesize an all-operations grant.
+              const manifest = deps.executorConfig.manifests.get(ingredientId);
+              const operation = manifest?.operations?.[operationId];
+              const groups = operation?.groups ?? [];
+              if (manifest?.surfaces?.records === undefined
+                || groups.length === 0
+                || deps.contractScan === undefined) {
+                return false;
+              }
+              const declaredGroups = manifest.operation_groups ?? {};
+              const grantedGroups = new Set(
+                deps.contractScan('grant', [ingredientId, ingredientId, ingredientId])
+                  .filter((row) => row.segments.length === 4
+                    && row.segments[0] === ingredientId
+                    && row.segments[1] === ingredientId
+                    && row.segments[2] === ingredientId
+                    && row.value.allowed === true)
+                  .map((row) => row.segments[3]),
+              );
+              return groups.some((groupId) =>
+                declaredGroups[groupId]?.operations.includes(operationId) === true
+                && grantedGroups.has(groupId));
+            },
+            recordsOperationExecutor: (call) => deps.recordsStore!.execute(call),
+            ...(recordsExecutionLease || internal.records_event
+              ? { recordsMutationContext: {
+                  ...(recordsExecutionLease
+                    ? { execution_lease_id: recordsExecutionLease.lease_id }
+                    : {}),
+                  ...(internal.records_event ?? {}),
+                } }
+              : {}),
+          }
         : {}),
       // D-165 P3.path-picker (Slice 3b) — resolve a connection's stored
       // `subresource_path` so the catalog gateway can enforce an operation's
@@ -3461,7 +3939,7 @@ export const handleExecute = async (
     const consumedTermination = registerLiveRun
       ? deps.inFlightRegistry!.takeTermination(run_id)
       : undefined;
-    if (registerLiveRun) deps.inFlightRegistry!.completeRun(run_id);
+    if (liveRunRegistered) deps.inFlightRegistry!.completeRun(run_id);
     // D-181 §7c — derive the run's owner-control termination from the authoritative
     // signals: the registry's `killed` marker (deliberate kill — always honored,
     // even on a run that finished before the abort was observed), OR a genuine
@@ -3769,6 +4247,9 @@ export const handleExecute = async (
               : {}),
             ...(awaitingApproval.reason !== undefined
               ? { reason: awaitingApproval.reason }
+              : {}),
+            ...(awaitingApproval.egress_bound !== undefined
+              ? { egress_bound: awaitingApproval.egress_bound }
               : {}),
             ...(awaitingApproval.owner_override_offer !== undefined
               ? { owner_override_offer: awaitingApproval.owner_override_offer }
@@ -4603,13 +5084,21 @@ export const handleExecute = async (
       // a durable pause is faithful (the run didn't complete) and
       // the response leaves it at that.
       success: result.success && pauseFailureError === undefined,
-      output: result.output,
+      output: outputForExecutionSource(
+        result.output,
+        request.execution_source,
+        request.contract_snapshot,
+      ),
+      // ⚠ An ENUMERATING copier: a field added to `StepLog` reaches no client
+      // until it is listed HERE. `result` is omitted on purpose (it can be
+      // megabytes); everything else a surface needs must be named.
       steps: result.steps.map((s) => ({
         id: s.id,
         type: s.type,
         skipped: s.skipped,
         duration_ms: s.duration_ms,
         error: s.error,
+        ...(s.foreach === undefined ? {} : { foreach: s.foreach }),
       })),
       errors: pauseFailureError ? [pauseFailureError] : result.errors,
       duration_ms: result.duration_ms,
@@ -4673,6 +5162,7 @@ export const handleExecute = async (
     // also clears any unconsumed termination marker). The run's heavy-call
     // slots already released on settle via the governor's `finally`.
     if (registerLiveRun) deps.inFlightRegistry!.completeRun(run_id);
+    recordsExecutionLease?.release();
     // D-185 Slice 2 — reclaim this run's `storage:'temp'` cli output at the
     // TERMINAL run end (success, throw, killed, or pause-downgraded-to-failure).
     // Every `temp` ref the run produced lives under `runScratchRoot(run_id)`;
@@ -4915,6 +5405,7 @@ const buildRpcExecuteRequest = (
   recipe_id: args.recipe_id as string | undefined,
   recipe: args.recipe,
   config: args.config as Record<string, unknown> | undefined,
+  invocation: args.invocation as ExecuteRequest['invocation'],
   context: args.context as Record<string, unknown> | undefined,
   vault: args.vault as Record<string, unknown> | undefined,
   // D-179 P1 — standing-dish dispatch over the rpc wire (overlay merge

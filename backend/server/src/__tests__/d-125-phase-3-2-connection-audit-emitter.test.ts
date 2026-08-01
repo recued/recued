@@ -71,6 +71,8 @@ const mkAuditLog = (): MockSink => {
     listByChannelSession: async () => [],
     listByCognitionSession: async () => [],
     listByCorrelation: async () => [],
+    listByDish: async () => [],
+    latestByDishes: async () => new Map(),
     get: async () => null,
     clearOlderThan: async () => 0,
     clearByRecipe: async () => 0,
@@ -101,8 +103,19 @@ const mkEmission = (overrides: Partial<ConnectionAuditEmission> = {}): Connectio
   ...(overrides.subtype !== undefined ? { subtype: overrides.subtype } : {}),
   ...(overrides.bytes_in !== undefined ? { bytes_in: overrides.bytes_in } : {}),
   ...(overrides.bytes_out !== undefined ? { bytes_out: overrides.bytes_out } : {}),
+  ...(overrides.content_sha256 !== undefined
+    ? { content_sha256: overrides.content_sha256 }
+    : {}),
+  ...(overrides.chunked_upload !== undefined
+    ? { chunked_upload: overrides.chunked_upload }
+    : {}),
   ...(overrides.error !== undefined ? { error: overrides.error } : {}),
 });
+// ⚠ This helper REBUILDS its input from a fixed field list rather than
+// spreading `overrides`, so a field added to `ConnectionAuditEmission` is
+// silently dropped here and the test asserts the HELPER, not the emitter.
+// (D-217 § 6.3 hit exactly that — it failed loudly, but a test written to
+// assert ABSENCE would have passed vacuously.) Add new fields above.
 
 // ────────────────────────────────────────────────────────────────
 // Tests
@@ -242,8 +255,58 @@ describe('createConnectionAuditEmitter (D-125 P3.2)', () => {
     const detail = JSON.parse(rows[0]?.detail ?? '{}') as ConnectionAuditDetail;
     expect(detail).not.toHaveProperty('bytes_in');
     expect(detail).not.toHaveProperty('bytes_out');
+    expect(detail).not.toHaveProperty('content_sha256');
     expect(detail).not.toHaveProperty('error');
     expect(detail).not.toHaveProperty('subtype');
+  });
+
+  it('D-216 carries the one-shot upload content hash onto the durable row', async () => {
+    const { log, rows } = mkAuditLog();
+    const registry = mkRegistry([mkManifest({ slug: 'wrapper', permission: 'p' })]);
+    const emit = createConnectionAuditEmitter(registry, log);
+    const hash = 'a'.repeat(64);
+
+    await emit(mkEmission({ slug: 'wrapper', bytes_out: 6, content_sha256: hash }));
+
+    const detail = JSON.parse(rows[0]?.detail ?? '{}') as ConnectionAuditDetail;
+    expect(detail.content_sha256).toBe(hash);
+  });
+
+  it('D-217 § 6.3 — carries chunked-walk telemetry onto the DURABLE row', async () => {
+    // ⛔ The point of the field is that it survives to disk. `bytes_out` alone
+    // cannot tell a complete upload from an abandoned one that moved the same
+    // volume, and `committed_unconfirmed` is an `ok` row like `committed` — so
+    // the forensic question "did this act finish, and how far did it get" is
+    // answerable ONLY from here.
+    const { log, rows } = mkAuditLog();
+    const registry = mkRegistry([mkManifest({ slug: 'wrapper', permission: 'p' })]);
+    const emit = createConnectionAuditEmitter(registry, log);
+
+    await emit(mkEmission({
+      slug: 'wrapper',
+      status: 'error',
+      bytes_out: 32,
+      chunked_upload: {
+        outcome: 'failed', chunks_sent: 2, chunk_count: 4, requests: 4,
+      },
+    }));
+
+    const detail = JSON.parse(rows[0]?.detail ?? '{}') as ConnectionAuditDetail;
+    expect(detail.chunked_upload).toEqual({
+      outcome: 'failed', chunks_sent: 2, chunk_count: 4, requests: 4,
+    });
+    expect(detail.bytes_out).toBe(32);
+  });
+
+  it('omits chunked_upload for an ordinary single-request call', async () => {
+    const { log, rows } = mkAuditLog();
+    const registry = mkRegistry([mkManifest({ slug: 'wrapper', permission: 'p' })]);
+    const emit = createConnectionAuditEmitter(registry, log);
+
+    await emit(mkEmission({ slug: 'wrapper', bytes_out: 32 }));
+
+    const detail = JSON.parse(rows[0]?.detail ?? '{}') as ConnectionAuditDetail;
+    expect(detail).not.toHaveProperty('chunked_upload');
   });
 
   it('produces unique activity_id per emission', async () => {

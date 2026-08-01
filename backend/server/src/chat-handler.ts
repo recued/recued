@@ -69,6 +69,8 @@ import {
   type ChatSessionSummary,
   type ChatToolCatalogScopeState,
   type ConnectionMcpAnnotationState,
+  type ExecutionCaseLearnedEntry,
+  type RecipeDefinition,
   type HandlerSlice,
   type IngredientKind,
   type IssuedMcpInboundToken,
@@ -78,6 +80,9 @@ import {
   type ServerRpcRegistry,
   type ToolEntry,
 } from '@recued/contracts';
+import type {
+  CaseRecipeDraftOutcome,
+} from './execution-case-recipe-draft.js';
 import { planApproval as planApprovalModule } from '@recued/gateway';
 import type { AuditLogStore } from '@recued/storage';
 import type { WsClient } from './ws-server.js';
@@ -123,8 +128,12 @@ export interface ChatRpcDeps {
    *  store; the verifier swap-in at the MCP HTTP port handler also
    *  consults the same instance via `verifyBearer`. Optional — when
    *  undefined every `chat.inbound_token.*` rpc surfaces
-   *  `not_configured` (501) and the MCP HTTP transport falls back to
-   *  the v1 `RECUED_MCP_HTTP_TOKEN` env-var path. */
+   *  `not_configured` (501) and door bearers are simply REJECTED.
+   *  ⚠ There is no env fallback: this used to say the transport "falls
+   *  back to the v1 `RECUED_MCP_HTTP_TOKEN` env-var path", which stopped
+   *  being true when that path was retired — `wire-mcp-http-transport.ts`
+   *  now 401s old env values, so an absent store means no door access at
+   *  all, not degraded access. */
   inboundTokenStore?: ChatInboundTokenStore;
   /** D-214 owner-only typed completion-feedback lifecycle. */
   executionCaseFeedbackRecorder?: ExecutionCaseFeedbackRecorder;
@@ -139,6 +148,30 @@ export interface ChatRpcDeps {
   /** D-214 owner-only aggregate diagnostics. The producer returns no raw
    * intervention or model-facing records. */
   executionCaseDiagnostics?: () => Promise<unknown>;
+  /** D-219 item 2 — what Recued has learned, projected for the owner through
+   *  the SAME renderer the model-bound card uses. */
+  executionCaseLearned?: () => Promise<ExecutionCaseLearnedEntry[]>;
+  /** D-219 item 2 — unlearn one case: its source reports and the owner verdicts
+   *  recorded against their roots, then a rebuild. */
+  executionCaseForget?: (
+    case_id: string,
+  ) => Promise<{ removed: boolean; cases_remaining: number }>;
+  /** D-219 — record that the owner saved a recipe drafted from a case. The
+   *  server resolves the durable key and hashes the recipe; the caller asserts
+   *  neither. */
+  executionCaseAuthored?: (input: {
+    case_id: string;
+    recipe_id: string;
+  }) => Promise<{ recorded: boolean }>;
+  /** D-219 item 2b — draft a recipe from a case with the owner's own model.
+   *  ⛔ Drafts, never saves: the Kitchen is where a person decides. */
+  executionCaseDraftRecipe?: (input: {
+    /** D-219 — the draft being refined. Shape-stripped before it reaches the
+     *  model; never trusted as a recipe. */
+    previous_recipe?: unknown;
+    case_id: string;
+    prompt: string;
+  }) => Promise<CaseRecipeDraftOutcome>;
   /** D-171 slice 2c — the live self tool catalog source backing
    *  `chat.inbound_token.tool_catalog`. Wired at composition as a thin
    *  closure over the chat orchestrator's `InternalToolRegistry.list()` so
@@ -152,6 +185,10 @@ export interface ChatRpcDeps {
    *  when undefined the rpc surfaces `not_configured` (501), the same posture
    *  as the stores above. */
   catalogProvider?: () => ReadonlyArray<ToolEntry>;
+  /** D-221 §3.3.3 — preflight one newly allowed external MCP tool before
+   * token issuance/grant replacement commits. Production resolves Tier 2
+   * recipe tools against the live Records operation inventory. */
+  preflightExternalToolGrant?: (toolName: string) => void;
   orchestrator: ChatOrchestrator;
   broadcast?: ChatBroadcastEmitter;
   auditLog?: AuditLogStore;
@@ -188,6 +225,10 @@ type ChatMethods =
   | 'chat.execution.feedback'
   | 'chat.execution.feedback.retract'
   | 'chat.execution.diagnostics'
+  | 'chat.execution.learned'
+  | 'chat.execution.forget'
+  | 'chat.execution.draft_recipe'
+  | 'chat.execution.authored'
   | 'chat.session.set_picker'
   | 'chat.session.set_model_pref'
   | 'chat.session.clear_model_pref'
@@ -1229,6 +1270,117 @@ export const handleExecutionCaseDiagnostics = async (
   return deps.executionCaseDiagnostics();
 };
 
+export const handleExecutionCaseLearned = async (
+  deps: ChatRpcDeps,
+): Promise<{ cases: ExecutionCaseLearnedEntry[] }> => {
+  const method = 'chat.execution.learned';
+  if (!deps.executionCaseLearned) {
+    throw new RpcError(
+      'not_configured',
+      `${method}: execution cases are not wired`,
+      501,
+    );
+  }
+  return { cases: await deps.executionCaseLearned() };
+};
+
+export const handleExecutionCaseForget = async (
+  deps: ChatRpcDeps,
+  args: unknown,
+): Promise<{ removed: boolean; cases_remaining: number }> => {
+  const method = 'chat.execution.forget';
+  if (!deps.executionCaseForget) {
+    throw new RpcError(
+      'not_configured',
+      `${method}: execution cases are not wired`,
+      501,
+    );
+  }
+  const safe = ensureRecordArgs(method, args);
+  const caseId = safe.case_id;
+  if (typeof caseId !== 'string' || caseId.trim().length === 0) {
+    throw new RpcError('bad_request', `${method}: case_id is required`, 400);
+  }
+  // ⚠ An unknown id resolves to `removed: false` rather than an error. The
+  // owner may be forgetting a case a concurrent turn already superseded, and a
+  // failure there would read as "forgetting is broken" for an outcome that is
+  // exactly what they asked for.
+  return deps.executionCaseForget(caseId);
+};
+
+export const handleExecutionCaseAuthored = async (
+  deps: ChatRpcDeps,
+  args: unknown,
+): Promise<{ recorded: boolean }> => {
+  const method = 'chat.execution.authored';
+  if (!deps.executionCaseAuthored) {
+    throw new RpcError(
+      'not_configured',
+      `${method}: execution cases are not wired`,
+      501,
+    );
+  }
+  const safe = ensureRecordArgs(method, args);
+  const caseId = safe.case_id;
+  const recipeId = safe.recipe_id;
+  if (typeof caseId !== 'string' || caseId.trim().length === 0) {
+    throw new RpcError('bad_request', `${method}: case_id is required`, 400);
+  }
+  if (typeof recipeId !== 'string' || recipeId.trim().length === 0) {
+    throw new RpcError('bad_request', `${method}: recipe_id is required`, 400);
+  }
+  return deps.executionCaseAuthored({ case_id: caseId, recipe_id: recipeId });
+};
+
+export const handleExecutionCaseDraftRecipe = async (
+  deps: ChatRpcDeps,
+  args: unknown,
+): Promise<{
+  ok: boolean;
+  recipe?: RecipeDefinition;
+  issues: string[];
+  reason?: string;
+  request_aliased?: boolean;
+}> => {
+  const method = 'chat.execution.draft_recipe';
+  if (!deps.executionCaseDraftRecipe) {
+    throw new RpcError(
+      'not_configured',
+      `${method}: recipe drafting is not wired`,
+      501,
+    );
+  }
+  const safe = ensureRecordArgs(method, args);
+  const caseId = safe.case_id;
+  if (typeof caseId !== 'string' || caseId.trim().length === 0) {
+    throw new RpcError('bad_request', `${method}: case_id is required`, 400);
+  }
+  const prompt = typeof safe.prompt === 'string' ? safe.prompt : '';
+  // ⛔ REFINEMENT, and it is only ever a HINT to the model. Whatever arrives
+  // here is shape-stripped and re-validated downstream exactly like a first
+  // pass, so a caller cannot smuggle a recipe into existence through it — it
+  // shortens the model's work, it does not bypass anything.
+  const previousRecipe = safe.previous_recipe;
+  const result = await deps.executionCaseDraftRecipe({
+    case_id: caseId,
+    prompt,
+    ...(previousRecipe !== undefined && previousRecipe !== null
+      ? { previous_recipe: previousRecipe }
+      : {}),
+  });
+  // ⚠ A model that wrote something unusable is not an rpc FAILURE — the owner
+  // asked for a draft, and the validator's findings are a better answer than a
+  // thrown error with nothing to look at. Only an unwired surface throws.
+  return result.ok
+    ? {
+        ok: true,
+        recipe: result.recipe,
+        issues: result.issues,
+        request_aliased: result.request_aliased,
+      }
+    : { ok: false, issues: result.issues, reason: result.reason };
+};
+
 export const handleSetPicker = (
   deps: ChatRpcDeps,
   args: { session_id: string; picker_state: { current: string } },
@@ -1885,6 +2037,18 @@ export const handleInboundTokenIssue = async (
       400,
     );
   }
+  for (const [toolName, allowed] of Object.entries(validation.value.grants)) {
+    if (!allowed) continue;
+    try {
+      deps.preflightExternalToolGrant?.(toolName);
+    } catch (error) {
+      throw new RpcError(
+        'bad_request',
+        `chat.inbound_token.issue: ${error instanceof Error ? error.message : String(error)}`,
+        400,
+      );
+    }
+  }
   const now = deps.now ?? Date.now;
   let issued: IssuedMcpInboundToken;
   try {
@@ -2060,6 +2224,20 @@ export const handleInboundTokenUpdateGrants = async (
       `chat.inbound_token.update_grants: token_id '${token_id}' not found`,
       404,
     );
+  }
+  if (grants !== undefined) {
+    for (const [toolName, allowed] of Object.entries(grants)) {
+      if (!allowed) continue;
+      try {
+        deps.preflightExternalToolGrant?.(toolName);
+      } catch (error) {
+        throw new RpcError(
+          'bad_request',
+          `chat.inbound_token.update_grants: ${error instanceof Error ? error.message : String(error)}`,
+          400,
+        );
+      }
+    }
   }
   const now = deps.now ?? Date.now;
   const updated = deps.inboundTokenStore.updateTokenGrants({
@@ -2418,6 +2596,10 @@ export const makeChatHandlers = (
       'chat.execution.feedback',
       'chat.execution.feedback.retract',
       'chat.execution.diagnostics',
+      'chat.execution.learned',
+      'chat.execution.forget',
+      'chat.execution.draft_recipe',
+      'chat.execution.authored',
       'chat.session.set_picker',
       'chat.session.set_model_pref',
       'chat.session.clear_model_pref',
@@ -2471,6 +2653,14 @@ export const makeChatHandlers = (
         handleExecutionCaseFeedbackRetract(deps, args),
       'chat.execution.diagnostics': async () =>
         handleExecutionCaseDiagnostics(deps),
+      'chat.execution.learned': async () =>
+        handleExecutionCaseLearned(deps),
+      'chat.execution.forget': async (args) =>
+        handleExecutionCaseForget(deps, args),
+      'chat.execution.draft_recipe': async (args) =>
+        handleExecutionCaseDraftRecipe(deps, args),
+      'chat.execution.authored': async (args) =>
+        handleExecutionCaseAuthored(deps, args),
       'chat.session.set_picker': async (args) =>
         handleSetPicker(
           deps,

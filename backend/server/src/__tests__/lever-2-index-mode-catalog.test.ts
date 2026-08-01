@@ -152,10 +152,14 @@ describe('Lever-2 truncateForIndex', () => {
 describe('Lever-2 resolveCatalogModeForSource (per-slot precedence)', () => {
   const smart = CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE;
 
-  it('smart-default map: free_pool thins (index), BYOK slots stay full', () => {
-    // Rationale lock: 0%-cache-harvest free pool thins; cache-harvesting BYOK
-    // keeps full (the prefix is nearly free after the first call).
-    expect(smart).toEqual({ free_pool: 'index', slot_1: 'full', slot_2: 'full' });
+  it('smart-default map: every source thins to index', () => {
+    // Rationale lock (2026-07-26): the old split kept BYOK on `full` because
+    // "the prefix is nearly free after call 1" — true, but that compares
+    // full-cached to full-UNCACHED, never to `index`, which ALSO caches. A
+    // same-bundle A/B over the 33-task llm lane measured index at 98%
+    // cache-served on a BYOK slot (36,852 input/call vs full's ~82,014),
+    // −49.9% input lane-wide, with discovery holding and `tools.search` at 0.
+    expect(smart).toEqual({ free_pool: 'index', slot_1: 'index', slot_2: 'index' });
   });
 
   it('explicit per-source override wins over everything', () => {
@@ -179,7 +183,13 @@ describe('Lever-2 resolveCatalogModeForSource (per-slot precedence)', () => {
     ).toBe('full'); // flag off → env-global, NOT the smart default
     expect(
       resolveCatalogModeForSource('slot_1', undefined, { smartDefaults: true }),
-    ).toBe('full'); // BYOK smart default is full anyway
+    ).toBe('index'); // BYOK now thins too — a REAL assertion since 2026-07-26
+    expect(
+      resolveCatalogModeForSource('slot_1', undefined, {
+        smartDefaults: false,
+        envGlobalMode: 'full',
+      }),
+    ).toBe('full'); // flag off → env-global, NOT the smart default
   });
 
   it('falls to env-global then full when no override / no smart default', () => {
@@ -218,9 +228,18 @@ describe('Lever-2 resolveCatalogProjectionForSource', () => {
         indexDescriptionMaxChars: 120,
       }),
     ).toEqual({ mode: 'index', indexDescriptionMaxChars: 120 });
-    // full / lean-core carry no desc cap even if one is passed.
+    // A BYOK slot now ALSO smart-defaults to index, cap included.
     expect(
       resolveCatalogProjectionForSource('slot_1', undefined, {
+        smartDefaults: true,
+        indexDescriptionMaxChars: 120,
+      }),
+    ).toEqual({ mode: 'index', indexDescriptionMaxChars: 120 });
+    // full / lean-core carry no desc cap even if one is passed. `full` is no
+    // longer any source's default, so reach it through an explicit override —
+    // otherwise this stops asserting the cap rule at all.
+    expect(
+      resolveCatalogProjectionForSource('slot_1', { slot_1: 'full' }, {
         smartDefaults: true,
         indexDescriptionMaxChars: 120,
       }),

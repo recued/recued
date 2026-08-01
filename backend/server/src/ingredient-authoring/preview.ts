@@ -37,6 +37,7 @@ import {
   walkPath,
   INGREDIENT_PREVIEW_MAX_OUTPUT_BYTES,
   type ApiExecutionBinding,
+  type McpExecutionBinding,
   type CompositionAuthModel,
   type CompositionIngredient,
   type CompositionSurface,
@@ -318,6 +319,13 @@ type BindingClass =
   | 'graphql_query'
   | 'graphql_mutation'
   | 'connector'
+  // D-225 Slice 1 — its OWN class, not folded into `realtime`. An mcp binding
+  // is a one-shot request, so calling it a subscription would be false; and it
+  // is not previewable for a reason the other classes don't share — a tool name
+  // carries no read/write signal (see `validateApiBindingRiskConsistency`), so
+  // the preview cannot establish that dispatching it is safe. Non-dispatchable
+  // for a stated reason beats non-dispatchable under a wrong label.
+  | 'mcp'
   | 'realtime';
 
 /** The only HTTP methods a preview will ever dispatch — RFC-safe / read-only.
@@ -339,6 +347,7 @@ const classifyBinding = (
         ? 'graphql_mutation'
         : 'realtime'; // subscription — needs a stream substrate, not a one-shot
   }
+  if (binding.kind === 'mcp') return 'mcp';
   if (binding.kind === 'method_call' || binding.kind === 'cli_invocation') return 'connector';
   // webhook_subscription / queue_subscription / push_channel — realtime, not a
   // one-shot request the preview can dispatch.
@@ -448,6 +457,18 @@ const realtimeRequestDescriptor = (
 ): { verb: string; request: string } => ({
   verb: binding.kind,
   request: `${binding.kind} (realtime subscription — not previewable)`,
+});
+
+/** D-225 Slice 1 — descriptor for an mcp binding. Described, never dispatched:
+ *  the reason is NOT that it lacks a one-shot shape (it has one) but that a
+ *  tool name carries no read/write signal, so a preview cannot establish the
+ *  call is safe to make. Says exactly that rather than borrowing the realtime
+ *  wording, which would be false. */
+const mcpRequestDescriptor = (
+  binding: McpExecutionBinding,
+): { verb: string; request: string } => ({
+  verb: 'tools/call',
+  request: `tools/call ${binding.tool} (mcp — not previewable: a tool name carries no read/write signal)`,
 });
 
 // ───────────────────────── mapping preview ─────────────────────────
@@ -573,6 +594,8 @@ export const runIngredientPreview = async (
   const descriptor =
     binding.kind === 'rest' || binding.kind === 'graphql'
       ? apiRequestDescriptor(binding, callerArgs, baseUrl)
+      : binding.kind === 'mcp'
+      ? mcpRequestDescriptor(binding)
       : binding.kind === 'cli_invocation' || binding.kind === 'method_call'
         ? connectorRequestDescriptor(binding)
         : realtimeRequestDescriptor(binding);
@@ -640,6 +663,7 @@ const decideExecution = async (d: ExecutionDecision): Promise<IngredientPreviewE
     case 'rest_write':
     case 'graphql_mutation':
       return { executed: false, reason: 'mutation' };
+    case 'mcp':
     case 'realtime':
       return { executed: false, reason: 'unsupported_binding' };
     case 'rest_read':

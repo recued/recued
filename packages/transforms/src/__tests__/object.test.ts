@@ -1,8 +1,52 @@
 import { describe, it, expect } from 'vitest';
-import { merge, pick, omit, rename, set } from '../object.js';
+import {
+  json_byte_length, json_parse, json_stringify, merge, omit, pick, rename, set,
+  sha256, utf8_byte_length,
+} from '../object.js';
 import { ctx } from './helpers.js';
 
 const c = ctx();
+
+describe('json_byte_length', () => {
+  it('counts the exact serialized UTF-8 bytes, including JSON escapes', () => {
+    const value = { ascii: 'x', multilingual: '界', control: '\u0000' };
+    expect(json_byte_length({ input: value }, c)).toBe(
+      new TextEncoder().encode(JSON.stringify(value)).byteLength,
+    );
+  });
+
+  it('returns null for an unserializable value', () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(json_byte_length({ input: cyclic }, c)).toBeNull();
+    expect(json_byte_length({ input: undefined }, c)).toBeNull();
+  });
+});
+
+describe('file-artifact JSON primitives', () => {
+  it('canonicalizes, parses, measures, and hashes exact UTF-8 JSON bytes', () => {
+    const value = { z: '界', a: [1, true] };
+    const serialized = json_stringify({ input: value }, c);
+    expect(serialized).toBe('{"a":[1,true],"z":"界"}');
+    expect(json_parse({ input: serialized }, c)).toEqual(value);
+    expect(utf8_byte_length({ input: serialized }, c)).toBe(
+      Buffer.byteLength(serialized as string, 'utf8'),
+    );
+    expect(sha256({ input: serialized }, c)).toMatch(/^[a-f0-9]{64}$/);
+    expect(sha256({ input: serialized }, c)).toBe(sha256({ input: serialized }, c));
+  });
+
+  it('fails closed on invalid or non-JSON-clean values', () => {
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    expect(json_stringify({ input: cyclic }, c)).toBeNull();
+    expect(json_stringify({ input: { nope: Number.NaN } }, c)).toBeNull();
+    expect(json_parse({ input: '{' }, c)).toBeNull();
+    expect(json_parse({ input: null }, c)).toBeNull();
+    expect(utf8_byte_length({ input: null }, c)).toBeNull();
+    expect(sha256({ input: {} }, c)).toBeNull();
+  });
+});
 
 describe('merge', () => {
   it('merges two objects', () => expect(merge({ sources: [{ a: 1 }, { b: 2 }] }, c)).toEqual({ a: 1, b: 2 }));

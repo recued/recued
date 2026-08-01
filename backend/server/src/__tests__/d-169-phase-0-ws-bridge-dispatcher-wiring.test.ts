@@ -663,5 +663,40 @@ describe('D-169 P0 follow-on - WS bridge dispatcher production wiring', () => {
     expect(bridgeRegistry.get(bridge.token_id)).not.toBeNull();
   });
 
-  it.todo('queue_full at transport-level is not wired for the WS transport - bridge surfaces via result frame');
+  it('retries queue_full results received through the production WS transport', async () => {
+    const bridge = await connectStructured('bridge', 'Backpressured bridge');
+    await waitForRegistrySize(1);
+    await seedBridgeEligibility(bridge.token_id);
+
+    const firstCommandP = waitForBridgeCommand(bridge.ws);
+    const dispatch_p = dispatcher().dispatch(buildRequest({
+      recipe_run_id: 'run-ws-backpressure',
+      step_id: 'step-ws-backpressure',
+      idempotency_key: 'idem-ws-backpressure',
+    }));
+    const first = await firstCommandP;
+
+    const retryCommandP = waitForBridgeCommand(bridge.ws);
+    sendBridgeResult(bridge.ws, {
+      command_id: first.command.command_id,
+      status: 'rejected',
+      error: { code: 'queue_full', message: 'bridge queue full' },
+      duration_ms: 0,
+      bridge_version: 'bridge-test-1',
+      idempotency_key_seen: false,
+    });
+    const retry = await retryCommandP;
+    expect(retry.command.command_id).toBe(first.command.command_id);
+    expect(retry.command.idempotency_key).toBe(first.command.idempotency_key);
+
+    const result = okResult(retry.command.command_id, { text: 'after backoff' });
+    sendBridgeResult(bridge.ws, result);
+
+    await expect(dispatch_p).resolves.toEqual({
+      kind: 'completed',
+      result,
+      bridge_client_token_id: bridge.token_id,
+      attempts: 2,
+    });
+  });
 });

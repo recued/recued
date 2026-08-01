@@ -214,6 +214,89 @@ describe('composeExecutionContext', () => {
     }
   });
 
+  it('hands the chat substrate its notification block for the D-219 offer', async () => {
+    // ⛔ THE LAST LINK, and the only one the unit tests cannot reach. The offer
+    // lifecycle is composed with the chat substrate (APP context) but needs the
+    // notification block (EXECUTION context, composed after it), so this call is
+    // what makes the owner-facing ask reachable at all. Asserted on the REAL
+    // composition rather than by reading the source: a call site named in a file
+    // is not a wired seam.
+    const dir = makeTmp();
+    const dbPath = join(dir, 'server.db');
+    const runtimeConfig = createRuntimeConfigStore({});
+    const storageContext = await composeStorageContext({
+      dbPath,
+      bootTrace: createBootTrace({
+        entrypoint: 'serve-entry',
+        profile: 'serve',
+        command: 'serve',
+        env: {},
+      }),
+      runtimeConfig,
+      vaultQuotas: { perPublisherBytes: 1_234_000, totalBytes: 5_678_000 },
+    });
+
+    try {
+      const lateBound = createExecutionLateBoundRefs();
+      const app = composeAppContext({
+        db: storageContext.db,
+        dbPath,
+        envLlmConfig: storageContext.envLlmConfig,
+        gateRegistry: storageContext.gateRegistry,
+        auditLog: storageContext.auditLog,
+        eventBus: storageContext.eventBus,
+        serverInstanceId: storageContext.serverInstanceId,
+        recipeStore: storageContext.recipeStore,
+        pairedInstances: storageContext.pairedInstances,
+        workEntityStore: storageContext.workEntityStoreRef,
+        chatLateBound: lateBound,
+      });
+      const collection = composeCollectionContext({
+        db: storageContext.db,
+        dbPath,
+        runtimeConfig,
+        manifests: storageContext.manifests,
+        baseVault: storageContext.baseVault,
+        auditLog: storageContext.auditLog,
+        cacheBlobs: app.cacheBlobs,
+        warehouseBus: app.warehouseBus,
+        contactStore: app.contactStoreRef,
+        gateRegistry: storageContext.gateRegistry,
+        accountStore: storageContext.accountStore,
+        eventBus: storageContext.eventBus,
+        keys: app.keys,
+        connectionStore: app.connectionStoreRef,
+        workEntityStore: storageContext.workEntityStoreRef,
+        enrichmentCascade: app.enrichmentCascadeRef,
+      });
+      const published: unknown[] = [];
+      const realPublish = app.publishExecutionCaseOfferNotifier;
+      expect(realPublish).toBeDefined();
+
+      const context = await composeExecutionContext({
+        storage: storageContext,
+        app: {
+          ...app,
+          publishExecutionCaseOfferNotifier: (notifier) => {
+            published.push(notifier);
+            realPublish?.(notifier);
+          },
+        },
+        collection,
+        baseVault: storageContext.baseVault,
+        lateBound,
+        env: { RECUED_SERVER_NAME: 'Offer Wiring Test Server' },
+      });
+
+      // Exactly once, with the LIVE block — the same instance the preflight
+      // handlers were registered on, so an answered offer re-dispatches through
+      // the same store the boot sweep recovers from.
+      expect(published).toEqual([context.notificationBlock]);
+    } finally {
+      storageContext.db.close();
+    }
+  });
+
   it('keeps execution context out of listener, scheduler, lifecycle, shutdown, and MCP imports', () => {
     const source = readFileSync(executionContextPath, 'utf8');
 

@@ -754,6 +754,216 @@ export const ERROR_MESSAGES: Record<RecipeErrorCode, string> = {
 /** Return a default user-facing message for the code, never empty.
  *  Falls back to the code itself when an unknown value sneaks in
  *  (forward-compatibility for codes added after this UI build). */
+/** D-214 admission input — WHO or WHAT the failure is attributable to.
+ *
+ *  Attribution is what decides whether a failure is EVIDENCE about the approach
+ *  at all. ⚠ This paragraph used to lean on a lower negative candidacy floor
+ *  ("choosing the wrong single tool is exactly what users correct"); D-219 slice
+ *  7 retired that clause and `execution-case.ts` now states the opposite — the
+ *  bar is the same in both directions. The attribution point never depended on
+ *  the floor and stands on its own: a failure is evidence only when it is
+ *  attributable to the CHOICE. A stopwatch (`RECIPE_BUDGET_EXCEEDED`), a lost ack
+ *  (`ACTION_DELIVERY_UNCERTAIN`) or a rate limit says nothing about whether the
+ *  tool suited the ask — it says something about the moment. Filing those as
+ *  precedent is how an LLM bench run produced a corpus that was two-thirds
+ *  stopwatch noise.
+ *
+ *    `choice`      — the tool, scope, arguments or recipe were wrong for this ask.
+ *                    "For this ask, not tool A" is a real lesson.
+ *    `environment` — transient or external to the decision. Retrying later, or
+ *                    elsewhere, could succeed. NOT evidence against the choice.
+ *    `owner`       — the owner or their policy refused. A judgement about a
+ *                    moment, never a capability fact; surface it, never file it
+ *                    as "this does not work".
+ *    `conditional` — the recipe DECIDED NOT TO ACT, and was right to. A guard
+ *                    tripped, a fail-on matched, a prerequisite was absent.
+ *                    Nothing broke and nothing was chosen badly: the flow worked
+ *                    exactly as written. Treating a by-design stop as a failure
+ *                    would teach a model to avoid a recipe for doing its job.
+ *
+ *  ⛔ **The tie-break is `environment`.** When a code could be either, the
+ *  conservative direction is to REFUSE to file: a missing lesson costs nothing,
+ *  a false lesson is durable and shown to a model.
+ *
+ *  ⚠ This is a judgement made ONCE, in the open, in a typed table — not
+ *  re-guessed per observation. `Record<RecipeErrorCode, _>` makes the typechecker
+ *  demand an entry for every new code, so the judgement cannot be skipped.
+ *  Whether a case is USEFUL remains the owner's call at the chat boundary; this
+ *  table only decides what is eligible to be offered. */
+export type ErrorAttribution =
+  | 'choice'
+  | 'environment'
+  | 'owner'
+  | 'conditional';
+
+export const ERROR_ATTRIBUTION: Record<RecipeErrorCode, ErrorAttribution> = {
+  RECIPE_NOT_FOUND: 'choice',
+  RECIPE_VALIDATION_FAILED: 'choice',
+  RECIPE_GUARD_TRIGGERED: 'conditional',
+  RECIPE_FAIL_ON_TRIGGERED: 'conditional',
+  RECIPE_PREREQUISITE_NOT_MET: 'conditional',
+  RECIPE_APPROVAL_TIMEOUT: 'owner',
+  RECIPE_APPROVAL_DENIED: 'owner',
+  RECIPE_BUDGET_EXCEEDED: 'environment',
+  CHECKPOINT_STEP_NOT_FOUND: 'environment',
+  CHECKPOINT_STORE_UNAVAILABLE: 'environment',
+  CHECKPOINT_WRITE_FAILED: 'environment',
+  RECIPE_POLICY_DENIED: 'owner',
+  INGREDIENT_NOT_FOUND: 'choice',
+  INGREDIENT_VERSION_MISMATCH: 'choice',
+  INGREDIENT_SCOPE_INSUFFICIENT: 'choice',
+  INGREDIENT_ENDPOINT_BLOCKED: 'owner',
+  INGREDIENT_OUTPUT_VALIDATION_FAILED: 'choice',
+  INGREDIENT_ADAPTER_ALL_FAILED: 'environment',
+  CONNECTION_NOT_BOUND: 'choice',
+  CONNECTION_NOT_FOUND: 'choice',
+  CONNECTION_AUTH_EXPIRED: 'environment',
+  CONNECTION_REFUSED: 'environment',
+  CONNECTION_TIMEOUT: 'environment',
+  VAULT_KEY_MISSING: 'choice',
+  VAULT_CROSS_PUBLISHER: 'owner',
+  OAUTH_EXPIRED: 'environment',
+  OAUTH_REVOKED: 'environment',
+  TOKEN_REFRESH_FAILED: 'environment',
+  MCP_TOOL_NOT_FOUND: 'choice',
+  MCP_TOOL_NOT_CLASSIFIED: 'owner',
+  MCP_TRANSPORT_NOT_IMPLEMENTED: 'choice',
+  NOTIFICATION_TRANSPORT_NOT_IMPLEMENTED: 'choice',
+  NOTIFICATION_SEND_FAILED: 'environment',
+  NETWORK_ERROR: 'environment',
+  API_RATE_LIMITED: 'environment',
+  API_SERVER_ERROR: 'environment',
+  API_NOT_FOUND: 'environment',
+  API_FORBIDDEN: 'choice',
+  STEP_TIMEOUT: 'environment',
+  ACTION_DELIVERY_UNCERTAIN: 'environment',
+  TRANSFORM_ERROR: 'choice',
+  TRANSFORM_INVALID_INPUT: 'choice',
+  TRANSFORM_TIMEOUT: 'environment',
+  CONDITION_PARSE_ERROR: 'choice',
+  AI_LLM_UNAVAILABLE: 'environment',
+  AI_MODEL_REFUSED: 'environment',
+  AI_OUTPUT_INVALID: 'environment',
+  AI_TIMEOUT: 'environment',
+  AI_TOKEN_BUDGET_EXCEEDED: 'environment',
+  AI_RESPONSE_PARSE_FAILED: 'environment',
+  AI_RESPONSE_VALIDATION_FAILED: 'environment',
+  DOM_SELECTOR_MISSING: 'choice',
+  DOM_SELECTOR_NOT_FOUND: 'choice',
+  DOM_CROSS_ORIGIN: 'choice',
+  DOM_WRITE_FAILED: 'environment',
+  DOM_PAGE_NOT_MATCHING: 'choice',
+  CACHE_MISS: 'environment',
+  CONTEXT_SIZE_EXCEEDED: 'choice',
+  ATTESTATION_VIOLATION: 'owner',
+  ROLE_RESTRICTION: 'choice',
+  STORAGE_PRESSURE: 'environment',
+  QUOTA_EXCEEDED: 'environment',
+  DATA_NAMESPACE_READONLY: 'choice',
+  ACCOUNT_MISMATCH: 'environment',
+  TIER_LIMIT_EXCEEDED: 'environment',
+  SHARED_KEY_INVALID: 'choice',
+  SERVER_NOT_REACHABLE: 'environment',
+  VALUE_TOO_LARGE: 'choice',
+  DRAINING: 'environment',
+  NOT_READY: 'environment',
+  LOCK_HELD: 'environment',
+  CRASH_LOOP_ACTIVE: 'environment',
+  COLLECTION_NOT_FOUND: 'choice',
+  COLLECTION_SOURCE_UNREACHABLE: 'environment',
+  WEBHOOK_UNAVAILABLE: 'environment',
+  TRIGGER_PATTERN_INVALID: 'choice',
+  TRIGGER_RECIPE_NOT_INSTALLED: 'choice',
+  ARCHIVE_JOB_UNKNOWN: 'environment',
+  ARCHIVE_IMPORT_IN_PROGRESS: 'environment',
+  COLLECTION_RECORD_NOT_FOUND: 'environment',
+  EVENT_TRIGGER_BACKPRESSURE: 'environment',
+  ON_FAILURE_HANDLER_UNKNOWN: 'choice',
+  ON_FAILURE_HANDLER_NOT_REACTIVE: 'choice',
+  ON_FAILURE_HANDLER_MISSING_WATCHER: 'choice',
+  SERVICE_NOT_FOUND: 'choice',
+  SERVICE_TEMPLATE_UNAVAILABLE: 'choice',
+  SERVICE_PLATFORM_MISMATCH: 'choice',
+  SERVICE_INSTALL_UNAVAILABLE: 'choice',
+  SERVICE_INSTALL_FAILED: 'environment',
+  SERVICE_UPGRADE_FAILED: 'environment',
+  SERVICE_UNINSTALL_FAILED: 'environment',
+  SERVICE_ALREADY_RUNNING: 'environment',
+  SERVICE_NOT_RUNNING: 'environment',
+  SERVICE_PERMANENTLY_CRASHED: 'environment',
+  SERVICE_OP_NOT_SUPPORTED: 'choice',
+  SERVICE_INPUT_INVALID: 'choice',
+  SERVICE_STORAGE_PRESSURE: 'environment',
+  SERVICE_INVOKE_CONCURRENCY: 'environment',
+  SERVICE_HEALTH_TIMEOUT: 'environment',
+  SERVICE_CHECK_FAILED: 'environment',
+  SERVICE_DOWNLOAD_SHA_MISMATCH: 'owner',
+  EXECUTION_SCOPE_TOO_WIDE: 'choice',
+  EXECUTION_SCOPE_INCOMPATIBLE: 'choice',
+  KIND_NOT_YET_IMPLEMENTED: 'choice',
+  INGREDIENT_KIND_MISSING: 'choice',
+  INGREDIENT_KIND_INVALID: 'choice',
+  INGREDIENT_KIND_MISSING_FIELD: 'choice',
+  INGREDIENT_KIND_FIELD_FORBIDDEN: 'choice',
+  INGREDIENT_KIND_TIER_MISMATCH: 'choice',
+  CONNECTION_KIND_INVALID: 'choice',
+  CONNECTION_KIND_MISSING_FIELD: 'choice',
+  CONNECTION_PICKER_INVALID: 'choice',
+  MAIL_SEND_NOT_CAPABLE: 'choice',
+  MAIL_SEND_AUTH_FAILED: 'environment',
+  MAIL_SEND_RECIPIENT_INVALID: 'choice',
+  MAIL_SEND_NETWORK_FAILED: 'environment',
+  MAIL_SEND_SELF_LOOP_TO: 'choice',
+  MAIL_SEND_APPEND_FAILED: 'environment',
+  MAIL_SEND_ATTACHMENT_UNRESOLVABLE: 'choice',
+  MAIL_INSTANCE_NOT_FOUND: 'choice',
+  DISPATCH_DEPTH_EXCEEDED: 'owner',
+  CLI_TOOL_NOT_FOUND: 'choice',
+  CLI_TOOL_FAILED: 'environment',
+  CONTAINER_PICK_REQUIRED: 'owner',
+  CREATE_PLAN_REQUIRED: 'owner',
+};
+
+/** Codes attributable to the owner's own refusal. Derived from the one table
+ *  above rather than hand-listed — a second copy of a closed vocabulary rots
+ *  silently, because a SUBSET still typechecks. */
+export const OWNER_ATTRIBUTED_ERROR_CODES: ReadonlySet<string> = new Set(
+  (Object.keys(ERROR_ATTRIBUTION) as RecipeErrorCode[])
+    .filter((code) => ERROR_ATTRIBUTION[code] === 'owner'),
+);
+
+/** True when a failure carries a lesson about the CHOICE. */
+export const isChoiceAttributableFailure = (
+  codes: readonly string[],
+): boolean => codes.some(
+  (code) => ERROR_ATTRIBUTION[code as RecipeErrorCode] === 'choice',
+);
+
+/** True when EVERY recorded code is environmental — the only case where a
+ *  failure is positively known to carry no lesson about the choice.
+ *
+ *  ⛔ THE POLARITY IS DELIBERATE, and the inverse was tried first. Gating
+ *  admission on "is positively choice-attributable" refuses every failure whose
+ *  cause was not recorded — including an activity-level error with no run and no
+ *  code — which broke 9 existing tests whose claims were about pairing, not
+ *  attribution. That is too aggressive: it would silently stop filing whenever a
+ *  code is missing or unmapped.
+ *
+ *  This predicate refuses only what we can POSITIVELY attribute to the moment:
+ *
+ *    []                                    -> false  (no information; unchanged)
+ *    ['RECIPE_BUDGET_EXCEEDED']            -> TRUE   (a stopwatch; refuse)
+ *    ['INGREDIENT_NOT_FOUND']              -> false  (a real lesson)
+ *    ['NETWORK_ERROR','INGREDIENT_NOT_...'] -> false  (mixed: a lesson survives)
+ *    ['SOME_UNMAPPED_STRING']              -> false  (unknown; unchanged)
+ *
+ *  Status quo for everything unknown, removal of what is known to be noise. */
+export const isEnvironmentOnlyFailure = (
+  codes: readonly string[],
+): boolean => codes.length > 0 && codes.every(
+  (code) => ERROR_ATTRIBUTION[code as RecipeErrorCode] === 'environment',
+);
+
 export function defaultErrorMessage(code: RecipeErrorCode | string): string {
   const known = ERROR_MESSAGES[code as RecipeErrorCode];
   if (known) return known;

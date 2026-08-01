@@ -501,6 +501,34 @@ const syntheticProvider = (overrides: Partial<ConnectionVendorProvider['oauth']>
 });
 
 describe('completeVendorOAuth helper', () => {
+  it('refuses an unsafe provider token endpoint before sending the code or client secret', async () => {
+    const { fetcher, calls } = makeFetcher([]);
+    let rejected: unknown;
+    try {
+      await completeVendorOAuth({
+        provider: syntheticProvider({
+          token_endpoint:
+            'https://owner:PROVIDER-ENDPOINT-PASSWORD@auth.synthetic.example/token',
+        }),
+        code: 'AUTHORIZATION-CODE',
+        redirect_uri: 'https://example.com/cb',
+        client_id: 'CID',
+        client_secret: 'CLIENT-SECRET',
+        fetcher,
+      });
+    } catch (error) {
+      rejected = error;
+    }
+
+    expect(rejected).toMatchObject({
+      code: 'token_exchange_failed',
+      status: 400,
+    });
+    expect(`${String(rejected)} ${JSON.stringify(rejected)}`)
+      .not.toContain('PROVIDER-ENDPOINT-PASSWORD');
+    expect(calls).toHaveLength(0);
+  });
+
   it('uses scope from token response when vendor declares no introspect URL (RFC-compliant path)', async () => {
     const { fetcher, calls } = makeFetcher([
       {
@@ -618,6 +646,29 @@ describe('completeVendorOAuth helper', () => {
     });
     expect(result.refresh_token).toBe('R');
     expect(result.granted_scopes).toEqual([]);
+  });
+
+  it('soft-fails an unsafe introspection endpoint without sending the access token', async () => {
+    const { fetcher, calls } = makeFetcher([
+      {
+        status: 200,
+        body: { access_token: 'ACCESS-TOKEN', refresh_token: 'R', expires_in: 60 },
+      },
+    ]);
+    const result = await completeVendorOAuth({
+      provider: syntheticProvider({
+        access_token_introspect_url:
+          'https://owner:password@introspect.synthetic.example/at',
+      }),
+      code: 'C',
+      redirect_uri: 'https://example.com/cb',
+      client_id: 'CID',
+      fetcher,
+    });
+
+    expect(result).toEqual({ refresh_token: 'R', granted_scopes: [] });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe('https://auth.synthetic.example/token');
   });
 
   it('encodes the access token in the introspect URL path', async () => {

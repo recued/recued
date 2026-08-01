@@ -25,6 +25,7 @@ export {
   type AccountLaneId,
   type AccountProvider,
   type AccountRow,
+  type AccountsOAuthReloadRecovery,
   type AccountsPanelProps,
   type AccountsPanelStage,
   type AccountsPanelState,

@@ -29,7 +29,12 @@ declare const __RECUED_SERVER_VERSION__: string | undefined;
 
 const versionFromPackageJson = (): string | null => {
   try {
-    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), '..', 'package.json');
+    // `import.meta.url` is undefined in the CJS/SEA bundle (esbuild replaces
+    // `import.meta` with `{}`), which would make this throw into the catch and
+    // silently report no version. The build-time define normally wins before we
+    // get here; `__filename` keeps the FALLBACK honest rather than dead.
+    const self = import.meta.url ? fileURLToPath(import.meta.url) : __filename;
+    const pkgPath = join(dirname(self), '..', 'package.json');
     const version = (JSON.parse(readFileSync(pkgPath, 'utf8')) as { version?: unknown }).version;
     return typeof version === 'string' && version.length > 0 ? version : null;
   } catch {

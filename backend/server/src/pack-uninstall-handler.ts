@@ -87,11 +87,17 @@ import {
   retireWebhookDoors,
   snapshotDoorContractIds,
 } from './webhook-door-enroll.js';
+import { looksLikeGeneratedMcpPackSlug } from '@recued/ingredient-authoring';
 import type { ContractStore } from './storage/contract-store.js';
 import type { ChatInboundTokenStore } from './storage/chat-inbound-token-store.js';
 import { createContractGrantStore } from './storage/contract-grant-store.js';
 import { createConnectionCatalogBindingStore } from './storage/connection-catalog-binding-store.js';
 import type { WsClient } from './ws-server.js';
+import {
+  uninstallRecordsPackAtomic,
+  type RecordsUninstallDisposition,
+} from './records/install-coordinator.js';
+import type { RecordsStore } from './records/store.js';
 
 /** D-145 PA10 follow-on Slice B — narrow broadcast emitter for the
  *  uninstall handler. Same shape rationale as
@@ -168,6 +174,15 @@ export interface PackUninstallRpcDeps {
    *  failure never fails the uninstall). Optional so dbless / pre-contract-
    *  store boot harnesses keep working. */
   contractStore?: ContractStore;
+  /** D-225 Slice 2 — remove the MCP connection a GENERATED pack was minted
+   *  from, and report its name so the surface can say what it did. Returns null
+   *  when no enrolled connection derives this slug — which is every pack that
+   *  is not a generated one.
+   *
+   *  ⛔ The cycle with `ConnectionRpcDeps.teardownGeneratedPack` is broken
+   *  STRUCTURALLY: the deps this closure hands the connection delete omit that
+   *  hook, so coming back here is not possible rather than merely not done. */
+  removeGeneratedPackConnection?: (pack_slug: string) => Promise<string | null>;
   /** D-196 install-audience customer rows and their existing bearer snapshots.
    *  Together these let uninstall revoke pack-owned grants from both durable
    *  halves of a customer instance without touching ordinary MCP tokens. */
@@ -186,6 +201,9 @@ export interface PackUninstallRpcDeps {
    *  composition without these either). */
   localManifestStore?: LocalManifestStore;
   registry?: Pick<ManifestRegistry, 'unregister'>;
+  /** D-221 fixed Records store. Together with contract/local-manifest/registry
+   * this enables the full-ref atomic uninstall path. */
+  recordsStore?: RecordsStore;
   /** D-170 gap #2 live-reconcile — (re)derive a connection's operation profile by
    *  name. Called AFTER this pack's connection→catalog bindings are dropped, for each
    *  connection the pack had bound, so the now-orphan local profile is removed at once
@@ -208,6 +226,10 @@ export interface PackUninstallRpcDeps {
 
 type PacksUninstallArgs = {
   pack_slug: string;
+  publisher?: string;
+  records_disposition?: RecordsUninstallDisposition;
+  expected_records_state_generation?: number;
+  records_purge_confirmation?: string;
 };
 
 /** Default community/packs directory resolution. Mirrors
@@ -286,6 +308,118 @@ export const handlePacksUninstall = async (
 
   const packDir = deps.packDir ?? findCommunityPackDir();
   const manifest = resolveBundledManifest(packDir, pack_slug);
+  // D-221 — Records inventory/capability identity is full-ref-derived rather
+  // than public-slug keyed. Resolve it before the legacy slug existence proof,
+  // then run the dedicated all-or-nothing data-first coordinator.
+  const matchingRecords = deps.recordsStore?.listNamespaces()
+    .filter((namespace) => namespace.owner.pack_slug === pack_slug) ?? [];
+  const requestedPublisher = typeof args.publisher === 'string' && args.publisher.trim().length > 0
+    ? args.publisher.trim()
+    : manifest?.publisher;
+  if (requestedPublisher === undefined && matchingRecords.length > 1) {
+    throw new RpcError(
+      'bad_request',
+      'packs.uninstall: publisher is required for same-slug Records packs',
+      400,
+    );
+  }
+  const recordsNamespace = requestedPublisher !== undefined
+    ? matchingRecords.find((namespace) => namespace.owner.publisher === requestedPublisher)
+    : matchingRecords[0];
+  if (args.records_disposition !== undefined && recordsNamespace === undefined) {
+    throw new RpcError(
+      'bad_request',
+      'packs.uninstall: Records disposition requires an installed/retained full-ref namespace',
+      400,
+    );
+  }
+  if (recordsNamespace !== undefined) {
+    if (!deps.contractStore || !deps.localManifestStore || !deps.registry || !deps.recordsStore) {
+      return {
+        result: {
+          ok: false,
+          removed: emptyRemoved(),
+          failure: {
+            code: 'unexpected',
+            message: 'packs.uninstall: Records lifecycle dependencies are not configured',
+          },
+        },
+      };
+    }
+    try {
+      const removed = await uninstallRecordsPackAtomic({
+        recipeStore: deps.recipeStore,
+        recordsStore: deps.recordsStore,
+        localManifestStore: deps.localManifestStore,
+        contractStore: deps.contractStore,
+        registry: deps.registry,
+        applyAudience: (operationIds, sourcePack, selection) => {
+          applyInstallAudienceGrantIds(
+            {
+              contractStore: deps.contractStore!,
+              ...(deps.sellerStore ? { sellerStore: deps.sellerStore } : {}),
+              ...(deps.inboundTokenStore ? { inboundTokenStore: deps.inboundTokenStore } : {}),
+              now: deps.now ?? Date.now,
+            },
+            operationIds,
+            sourcePack,
+            selection,
+          );
+        },
+      }, {
+        owner: recordsNamespace.owner,
+        ...(args.records_disposition !== undefined
+          ? { disposition: args.records_disposition }
+          : {}),
+        ...(args.expected_records_state_generation !== undefined
+          ? { expected_state_generation: args.expected_records_state_generation }
+          : {}),
+        ...(args.records_purge_confirmation !== undefined
+          ? { confirmation: args.records_purge_confirmation }
+          : {}),
+      });
+      try {
+        const version = recordsNamespace.state.state === 'ready'
+          ? recordsNamespace.state.version
+          : recordsNamespace.state.state === 'orphaned'
+            ? recordsNamespace.state.last_version
+            : 0;
+        deps.broadcast?.emit({
+          kind: 'pack_uninstalled',
+          pack_slug,
+          pack_name: manifest?.name ?? pack_slug,
+          pack_version: version,
+          removed_recipe_count: removed.removed_recipes.length,
+        });
+      } catch {
+        // Best-effort UI convergence; durable uninstall already committed.
+      }
+      deps.recipeRunnabilityBroadcast?.recomputeAndEmit();
+      return {
+        result: {
+          ok: true,
+          removed: { recipes: removed.removed_recipes, body_grants: [] },
+          records: {
+            owner: removed.owner,
+            disposition: removed.disposition,
+            retired_event_count: removed.retired_events.length,
+            ...(removed.export !== undefined ? { export: removed.export } : {}),
+          },
+        },
+      };
+    } catch (error) {
+      return {
+        result: {
+          ok: false,
+          removed: emptyRemoved(),
+          failure: {
+            code: 'unexpected',
+            message: error instanceof Error ? error.message : String(error),
+          },
+        },
+      };
+    }
+  }
   // Existence proof, cheapest-first + MANIFEST-SAFE: a bundled manifest, else a
   // MARKETPLACE pack's `installed_pack` inventory row, else (an inventory-write-
   // FAILED install — the install path records that row best-effort AFTER recipes
@@ -686,6 +820,33 @@ export const handlePacksUninstall = async (
   // Best-effort (the broadcaster swallows), after the reconcile loop.
   deps.recipeRunnabilityBroadcast?.recomputeAndEmit();
 
+  // D-225 Slice 2 — the reverse half of destroy. A GENERATED MCP pack and its
+  // connection are one thing to the owner: the pack's every operation
+  // dispatches through that connection, and a connection whose pack is gone is
+  // back to the raw path. Removing one and leaving the other is a half state
+  // neither surface explains.
+  //
+  // ⚠ It deletes the enrolled CREDENTIAL, which reads smaller than it is from a
+  // button labelled "remove pack". The removed connection NAME is returned so
+  // the surface can say what actually happened rather than leaving the owner to
+  // discover it.
+  //
+  // ⛔ Only for a pack an enrolled MCP connection actually derives — the
+  // recomputed derivation is the authority, never the slug's shape, and a
+  // marketplace pack can never reach this. The cycle back to here is broken at
+  // the composition site: the deps this closure hands the connection delete
+  // OMIT its pack-teardown hook, so the capability to recurse is absent rather
+  // than merely unused.
+  let removedConnection: string | undefined;
+  if (deps.removeGeneratedPackConnection && looksLikeGeneratedMcpPackSlug(pack_slug)) {
+    try {
+      removedConnection = (await deps.removeGeneratedPackConnection(pack_slug)) ?? undefined;
+    } catch {
+      // Best-effort — the pack is already gone and a throw would leave the
+      // owner unable to retry.
+    }
+  }
+
   return {
     result: {
       ok: true,
@@ -693,6 +854,9 @@ export const handlePacksUninstall = async (
         recipes: removedRecipes,
         body_grants: removedBodyGrants,
       },
+      ...(removedConnection !== undefined
+        ? { removed_connection: removedConnection }
+        : {}),
       // R2 build step 4c.3 + §1.6 follow-on — the pre-mutation prediction of which
       // surviving recipes this uninstall blocks / degrades. Non-empty only
       // (omitted otherwise, matching the install born-disclosure rule).

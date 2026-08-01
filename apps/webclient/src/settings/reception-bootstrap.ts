@@ -195,6 +195,7 @@ export interface BootstrapReceptionRoute {
   /** Forward a redraw to the active section's mount (no-op if the section
    *  has no `update`). */
   update(): void;
+  hasInFlightWork(): boolean;
   /** Tear down the active section mount + remove the route chrome.
    *  Idempotent. */
   dispose(): void;
@@ -325,7 +326,11 @@ export const bootstrapReceptionRoute = (
   };
 
   // ── Mount the active section into the content host ──
-  let mount: { update?: () => void; dispose: () => void };
+  let mount: {
+    update?: () => void;
+    hasInFlightWork?: () => boolean;
+    dispose: () => void;
+  };
 
   // R19 Slice 2 — a `new` / `edit` segment-1 on the endpoints section
   // routes the full-page authoring form; `status_link` is create-hidden,
@@ -511,6 +516,7 @@ export const bootstrapReceptionRoute = (
       if (disposed) return;
       mount.update?.();
     },
+    hasInFlightWork: () => mount.hasInFlightWork?.() ?? false,
     dispose: () => {
       if (disposed) return;
       disposed = true;

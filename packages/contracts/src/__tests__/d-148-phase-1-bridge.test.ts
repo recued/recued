@@ -67,6 +67,10 @@ describe('D-148 P1 — BRIDGE_ERROR_CODES', () => {
     expect(BRIDGE_ERROR_CODES).toContain('mv3_lifecycle_killed');
   });
 
+  it('contains the transient queue backpressure code', () => {
+    expect(BRIDGE_ERROR_CODES).toContain('queue_full');
+  });
+
   it('codes are unique', () => {
     expect(new Set(BRIDGE_ERROR_CODES).size).toBe(BRIDGE_ERROR_CODES.length);
   });

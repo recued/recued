@@ -25,7 +25,6 @@
 import {
   buildMailAuthorizeUrl,
   buildCalendarAuthorizeUrl,
-  buildOpenerRelayRedirectUri,
   oauthAppIssuerForProvider,
   type CollectionInstanceRow,
   type MailOAuthProvider,
@@ -54,12 +53,17 @@ import {
   type ActionHandlers,
 } from '@recued/ui-shared/action-dispatcher';
 import {
-  runOAuthPopup,
   openOAuthPopup,
   defaultFoundationalOAuthEnv,
   type FoundationalOAuthEnv,
   type FoundationalOAuthPopupHandle,
 } from './foundational-oauth-popup.js';
+import {
+  createFoundationalOAuthContinuity,
+  type FoundationalOAuthContinuity,
+  type FoundationalOAuthContinuityState,
+  type FoundationalOAuthTerminalState,
+} from './foundational-oauth-continuity.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
 // ════════════════════════════════════════════════════════════════
@@ -130,6 +134,11 @@ export interface CalendarLaneCallers {
     oauth_code: string;
     oauth_redirect_uri: string;
   }) => Promise<{ slug: string }>;
+  /** Microsoft-only — adopt the calendar lane onto the `graph` grant the mail
+   *  enroll just persisted, with no second consent. Optional so older mounts
+   *  still type; absent, the "Also connect Calendar" box degrades to
+   *  mail-only + a warning rather than silently pretending it worked. */
+  attachGraphGrant?: (args: { slug: string }) => Promise<{ slug: string }>;
   /** CalDAV basic-auth enrollment (field form, Slice 2a backend). */
   enrollBasic?: (args: Record<string, unknown>) => Promise<{ slug: string }>;
 }
@@ -184,6 +193,11 @@ export interface MountAccountsLanePanelOptions {
   setOAuthAppConfig?: (args: SetOAuthAppConfigArgs) => Promise<{ ok: true }>;
   /** Test seam for the OAuth popup; production uses the real browser env. */
   oauthEnv?: AccountsOAuthEnv;
+  /** Boot-owned OAuth transaction. When omitted, a mount owns a private
+   * controller and disposal retains the legacy cancel-on-unmount behavior. */
+  oauthContinuity?: FoundationalOAuthContinuity;
+  /** Exact lane route exposed through route-independent Account chrome. */
+  oauthReturnHref?: string;
   /** Test seam for the callback-URI Copy action. Production uses the active
    *  document's Clipboard API; absence degrades to manual selection. */
   copyText?: (value: string) => Promise<void>;
@@ -194,6 +208,10 @@ export interface MountAccountsLanePanelOptions {
   firstSyncPollIntervalMs?: number;
   /** Bounded by default to 24 checks (about one minute). */
   firstSyncPollMaxAttempts?: number;
+  /** Clock + short grace used by reload recovery before a second clean miss
+   * may unlock fresh consent. Production waits five seconds from dispatch. */
+  now?: () => number;
+  oauthReloadRetryGraceMs?: number;
 }
 
 export interface AccountsLanePanelMount {
@@ -202,6 +220,8 @@ export interface AccountsLanePanelMount {
   refresh(): Promise<void>;
   /** Initial / most-recent load promise. */
   whenLoaded(): Promise<void>;
+  /** Enrollment, OAuth, resync, reauth, or removal is awaiting authority. */
+  hasInFlightWork(): boolean;
   dispose(): void;
 }
 
@@ -217,12 +237,17 @@ type AccountsAction =
   | 'accounts-oauth-connect'
   | 'accounts-copy-oauth-redirect'
   | 'accounts-oauth-dismiss'
+  | 'accounts-oauth-cancel'
+  | 'accounts-oauth-recovery-check'
+  | 'accounts-oauth-recovery-restart'
   | 'accounts-success-go-chat'
   | 'accounts-success-open-lane'
   | 'accounts-success-refresh'
   | 'accounts-dismiss-success'
   | 'accounts-open-detail'
   | 'accounts-delete'
+  | 'accounts-delete-cancel'
+  | 'accounts-delete-confirm'
   | 'accounts-resync'
   | 'accounts-reauth';
 
@@ -277,12 +302,18 @@ export const mountAccountsLanePanel = (
   // still settling (server CAS is the real cross-client guard; this fences
   // one mounted panel).
   let submitInFlight = false;
-  // OAuth "Back to accounts" escape: true once the user dismissed the
-  // post-consent "Finishing sign-in…" card while the code-exchange was still
-  // in flight. Routes the eventual result to the list (success → the account
-  // appears via refresh; failure → a lane-level error) instead of back to the
-  // form. Reset at the start of each OAuth attempt.
+  const ownsOAuthContinuity = opts.oauthContinuity === undefined;
+  const oauthContinuity = opts.oauthContinuity
+    ?? createFoundationalOAuthContinuity();
+  let detachOAuthContinuity = (): void => undefined;
+  // OAuth "Keep working" escape: true once the owner dismisses the transaction
+  // presentation. The boot-scoped flow keeps running and routes its eventual
+  // result to the list instead of pulling the owner back into the form.
   let oauthDismissed = false;
+  let oauthReloadVerificationInFlight = false;
+  let oauthReloadVerificationMisses = 0;
+  const now = opts.now ?? Date.now;
+  const oauthReloadRetryGraceMs = opts.oauthReloadRetryGraceMs ?? 5_000;
   const timerWindow = doc.defaultView;
   const firstSyncPoll = opts.firstSyncPoll
     ?? (timerWindow === undefined || timerWindow === null
@@ -683,28 +714,85 @@ export const mountAccountsLanePanel = (
     microsoft: { client_id: null, has_secret: false, source: null },
   });
 
+  /** Turn a raw OAuth `error` code from the provider into the ACTION that fixes
+   *  it.
+   *
+   *  The relay forwards the provider's `error` query param verbatim, so without
+   *  this the owner is shown `unauthorized_client` and nothing else — a string
+   *  that names a condition rather than a remedy, and that they cannot act on
+   *  without already knowing what it means. Every entry here maps to a specific
+   *  setting in a specific console page.
+   *
+   *  Only codes with a KNOWN, single remedy are mapped. Anything else falls
+   *  through to the raw code: inventing a confident explanation for an error we
+   *  have not diagnosed would send people to change settings that were fine. */
+  const oauthErrorRemedy = (
+    code: string,
+    issuer: OAuthAppIssuer | null,
+  ): string | null => {
+    switch (code) {
+      case 'unauthorized_client':
+        // ⚠ Microsoft's text — "The client does not exist or is not enabled for
+        // consumers" — is genuinely TWO different faults sharing one code, and
+        // they are indistinguishable from outside the app's home tenant (both
+        // surface as AADSTS700016 against any other tenant). So this names BOTH,
+        // cheapest check first. Asserting only the account-type cause sends
+        // someone with a mistyped Client ID to change a setting that was
+        // already correct — which is exactly the wrong-diagnosis loop this
+        // mapping exists to prevent.
+        return issuer === 'microsoft'
+          ? 'Microsoft rejected the app itself, which means one of two things. '
+            + '(1) The Client ID is not a real app — check it matches the '
+            + '"Application (client) ID" on your app registration\'s Overview page. '
+            + 'It is easy to paste the Secret ID by mistake; both are GUIDs. '
+            + '(2) The app does not accept this account type — under Authentication '
+            + '→ Supported account types choose "Accounts in any organizational '
+            + 'directory and personal Microsoft accounts", which is required '
+            + 'because Recued signs in via /common. Personal (outlook.com / '
+            + 'hotmail.com) accounts fail here if the app is organization-only.'
+          : null;
+      case 'invalid_client':
+        return 'The Client ID or secret is wrong. Re-copy them from the app — for '
+          + 'Microsoft the Client ID is the Application (client) ID on the Overview '
+          + 'page, NOT the Secret ID shown beside the secret.';
+      case 'invalid_scope':
+        return issuer === 'microsoft'
+          ? 'The app registration is missing a permission Recued asked for. Add it under '
+            + 'API permissions → Microsoft Graph → Delegated permissions, then retry.'
+          : 'The app is missing a scope Recued asked for. Enable the matching API in the '
+            + 'Google Cloud console, then retry.';
+      case 'access_denied':
+        return 'You declined the consent screen. Retry and accept to continue.';
+      default:
+        return null;
+    }
+  };
+
   const oauthFailureMessage = (
     reason: 'popup_blocked' | 'denied' | 'timeout' | 'closed' | 'error',
     detail?: string,
+    issuer: OAuthAppIssuer | null = null,
   ): string => {
+    const remedy = detail ? oauthErrorRemedy(detail, issuer) : null;
     switch (reason) {
       case 'popup_blocked':
         return 'Popup blocked — allow popups for this site and try again.';
       case 'denied':
+        if (remedy) return remedy;
         return detail ? `Sign-in was declined: ${detail}` : 'Sign-in was declined.';
       case 'timeout':
         return 'Sign-in timed out. Please try again.';
       case 'closed':
         return 'Sign-in window closed before finishing.';
       default:
+        if (remedy) return remedy;
         return detail ?? 'Sign-in failed.';
     }
   };
 
   // Per-lane wiring of the otherwise-identical popup→code→enroll flow. The
-  // mail/calendar arg shapes, builders, and config keys differ; everything
-  // else (sync popup open, config fetch, byte-matched redirect, error +
-  // dispose handling) is shared in `completeOAuth`.
+  // mail/calendar arg shapes, builders, and config keys differ; boot-scoped
+  // continuity owns everything after the synchronous popup open.
   interface OAuthLaneSpec {
     providerId: string;
     providerLabel: string;
@@ -714,7 +802,10 @@ export const mountAccountsLanePanel = (
     issuer: OAuthAppIssuer;
     clientId: (cfg: OAuthClientConfigResult) => string | null;
     authorizeUrl: (args: { client_id: string; redirect_uri: string; state: string }) => string;
-    enroll: (args: { code: string; redirect_uri: string }) => Promise<unknown>;
+    enroll: (args: {
+      code: string;
+      redirect_uri: string;
+    }) => Promise<{ note?: string } | void>;
   }
 
   const mailOAuthSpec = (provider: AccountProvider): OAuthLaneSpec | null => {
@@ -722,20 +813,51 @@ export const mountAccountsLanePanel = (
     const p = provider.id as MailOAuthProvider;
     const slug = (state.values['name'] ?? '').trim();
     const sendEnabled = state.values['send_enabled'] === 'true';
+    // Microsoft ONLY — `graph` mail and calendar share one grant + one token
+    // prefix, so one consent can serve both. The field is absent from the Gmail
+    // form and the authorize builder ignores it there regardless.
+    const calendarToo = p === 'graph' && state.values['calendar_enabled'] === 'true';
     return {
       providerId: provider.id,
       providerLabel: provider.label,
       slug,
       issuer: oauthAppIssuerForProvider(p),
       clientId: (cfg) => (p === 'gmail' ? cfg.gmail : cfg.graph)?.client_id ?? null,
-      authorizeUrl: (a) => buildMailAuthorizeUrl(p, { ...a, send_enabled: sendEnabled }),
-      enroll: (a) =>
-        opts.mail!.enrollOAuth!({
+      authorizeUrl: (a) =>
+        buildMailAuthorizeUrl(p, {
+          ...a,
+          send_enabled: sendEnabled,
+          calendar_enabled: calendarToo,
+        }),
+      enroll: async (a) => {
+        await opts.mail!.enrollOAuth!({
           provider: p,
           account_slug: slug,
           code: a.code,
           redirect_uri: a.redirect_uri,
-        }),
+        });
+        if (!calendarToo) return;
+        // The code is spent, so the calendar lane ADOPTS the stored grant
+        // instead of exchanging again. Deliberately non-fatal: the mailbox the
+        // owner asked for is already connected and working, so a calendar
+        // failure must not roll it back or read as "nothing happened". They can
+        // add the calendar from its own lane, reusing this same grant.
+        const attach = opts.calendar?.attachGraphGrant;
+        if (attach === undefined) {
+          return {
+            note: 'Mail connected. Calendar could not be added on this client.',
+          };
+        }
+        try {
+          await attach({ slug });
+        } catch (err) {
+          return {
+            note:
+              `Mail connected. Calendar was not added: ${errMessage(err)}. `
+              + 'You can add it from the Calendar lane — this sign-in already covers it.',
+          };
+        }
+      },
     };
   };
 
@@ -750,20 +872,346 @@ export const mountAccountsLanePanel = (
       issuer: oauthAppIssuerForProvider(adapter),
       clientId: (cfg) => (adapter === 'gcal' ? cfg.gcal : cfg.graph)?.client_id ?? null,
       authorizeUrl: (a) => buildCalendarAuthorizeUrl(adapter, a),
-      enroll: (a) =>
-        opts.calendar!.enrollOAuth!({
+      enroll: async (a) => {
+        await opts.calendar!.enrollOAuth!({
           slug,
           adapter,
           oauth_code: a.code,
           oauth_redirect_uri: a.redirect_uri,
-        }),
+        });
+      },
     };
   };
 
+  const applySavedOAuthAppConfig = (
+    flow: Exclude<FoundationalOAuthContinuityState, { status: 'idle' }>,
+  ): void => {
+    const saved = flow.savedAppConfig;
+    if (saved === undefined) return;
+    state.oauthAppConfig = {
+      ...(state.oauthAppConfig ?? emptyOAuthAppConfig()),
+      [saved.issuer]: {
+        client_id: saved.clientId,
+        has_secret: true,
+        source: 'stored' as const,
+      },
+    };
+  };
+
+  const safeOAuthClientId = (
+    flow: Exclude<FoundationalOAuthContinuityState, { status: 'idle' }>,
+  ): string => flow.savedAppConfig?.clientId
+    || flow.clientId
+    || state.oauthAppConfig?.[flow.issuer].client_id
+    || '';
+
+  const applyPendingOAuth = (
+    flow: Extract<FoundationalOAuthContinuityState, { status: 'pending' }>,
+  ): void => {
+    if (flow.lane !== state.lane) return;
+    applySavedOAuthAppConfig(flow);
+    submitInFlight = true;
+    state.stage = 'form';
+    state.providerId = flow.providerId;
+    state.values = { ...flow.accountValues };
+    // The write-only secret is never restored into a remount. If saving it
+    // failed, the correction loop asks for it again instead of retaining it in
+    // route-independent state.
+    state.oauthCredValues = {
+      client_id: safeOAuthClientId(flow),
+      client_secret: '',
+    };
+    state.saving = true;
+    state.oauthFinishing = true;
+    state.oauthProgressStage = flow.stage;
+    state.oauthReloadRecovery = null;
+    state.formError = null;
+    render(true);
+  };
+
+  const restoreInterruptedOAuthForm = (
+    terminal: Extract<FoundationalOAuthTerminalState, { status: 'failed' }>,
+    message: string,
+  ): void => {
+    applySavedOAuthAppConfig(terminal);
+    submitInFlight = false;
+    state.saving = false;
+    state.oauthFinishing = false;
+    state.oauthProgressStage = null;
+    state.oauthReloadRecovery = null;
+    state.connectionSuccess = null;
+    state.stage = 'form';
+    state.providerId = terminal.providerId;
+    state.values = { ...terminal.accountValues };
+    state.oauthCredValues = {
+      client_id: safeOAuthClientId(terminal),
+      client_secret: '',
+    };
+    state.error = null;
+    state.formError = message;
+    render();
+  };
+
+  /** A reload after code delivery has an ambiguous server outcome. Query the
+   * lane directly before consuming the recovery result. One miss can race a
+   * still-settling request; repeated clean reads plus a short dispatch grace
+   * unlock fresh consent. */
+  const verifyInterruptedOAuth = async (
+    flow: Extract<FoundationalOAuthTerminalState, { status: 'failed' }>,
+  ): Promise<void> => {
+    if (oauthReloadVerificationInFlight || flow.lane !== state.lane) return;
+    const current = oauthContinuity.snapshot();
+    if (current.status !== 'failed' || current.id !== flow.id) return;
+    const callers = laneCallers(flow.lane);
+    oauthReloadVerificationInFlight = true;
+    const gen = ++loadGeneration;
+    state.stage = 'list';
+    state.providerId = null;
+    state.values = {};
+    state.oauthCredValues = { client_id: '', client_secret: '' };
+    state.saving = false;
+    state.oauthFinishing = false;
+    state.oauthProgressStage = null;
+    state.connectionSuccess = null;
+    state.loading = true;
+    state.error = null;
+    state.oauthReloadRecovery = {
+      providerLabel: flow.providerLabel,
+      slug: flow.slug,
+      status: 'checking',
+    };
+    render(true);
+
+    try {
+      if (callers === undefined) {
+        throw new Error('This account lane is not available on this server yet.');
+      }
+      // App-config hydration is useful if recovery returns to the form, but it
+      // is not authority for whether enrollment committed. Do not let a slow
+      // optional config read hold the verify-before-retry decision hostage.
+      void loadOAuthAppConfig(gen, true);
+      const { instances } = await callers.list();
+      if (disposed || gen !== loadGeneration) return;
+      const snapshot = oauthContinuity.snapshot();
+      if (snapshot.status !== 'failed' || snapshot.id !== flow.id) return;
+      state.rows = normalizeRows(flow.lane, instances);
+      state.loading = false;
+      state.error = null;
+      const sameSlug = state.rows.find((row) => row.slug === flow.slug);
+      if (sameSlug !== undefined && sameSlug.adapterType === flow.providerId) {
+        const alsoRequestedCalendar = flow.lane === 'mail'
+          && flow.providerId === 'graph'
+          && flow.accountValues['calendar_enabled'] === 'true';
+        const terminal = oauthContinuity.takeTerminal(flow.id);
+        if (terminal === null) return;
+        applySavedOAuthAppConfig(terminal);
+        state.oauthReloadRecovery = null;
+        state.connectionSuccess = {
+          slug: terminal.slug,
+          providerId: terminal.providerId,
+          ...(alsoRequestedCalendar
+            ? {
+                note: opts.calendar === undefined
+                  ? 'Mail connected. This client could not verify the requested calendar; check the Calendar lane. You do not need to repeat mail sign-in.'
+                  : 'Mail connected. Checking the requested calendar; you do not need to repeat mail sign-in.',
+              }
+            : {}),
+        };
+        firstSyncPollAttempts = 0;
+        render(true);
+        focusConnectionSuccess();
+        scheduleFirstSyncPoll();
+        // Mail is already authoritative and useful, so an optional secondary
+        // calendar read cannot hold its recovery receipt open. Refine the note
+        // in the background when that lane is available.
+        if (alsoRequestedCalendar && opts.calendar !== undefined) {
+          void (async () => {
+            let note: string | undefined;
+            try {
+              const calendar = await opts.calendar!.list();
+              const calendarFound = calendar.instances.some(
+                (row) => row.slug === flow.slug && row.adapter_type === 'graph',
+              );
+              if (!calendarFound) {
+                note = 'Mail connected. The requested calendar is not visible yet; check the Calendar lane. You do not need to repeat mail sign-in.';
+              }
+            } catch {
+              note = 'Mail connected. Recued could not verify the requested calendar; check the Calendar lane. You do not need to repeat mail sign-in.';
+            }
+            if (
+              disposed
+              || state.connectionSuccess?.slug !== terminal.slug
+              || state.connectionSuccess.providerId !== terminal.providerId
+            ) return;
+            state.connectionSuccess = {
+              slug: terminal.slug,
+              providerId: terminal.providerId,
+              ...(note !== undefined ? { note } : {}),
+            };
+            render(true);
+          })();
+        }
+        return;
+      }
+      if (sameSlug !== undefined) {
+        const terminal = oauthContinuity.takeTerminal(flow.id);
+        if (terminal === null || terminal.status !== 'failed') return;
+        restoreInterruptedOAuthForm(
+          terminal,
+          `An account named ${flow.slug} already exists with another provider. Go back to open it, or choose another name before restarting sign-in.`,
+        );
+        return;
+      }
+
+      oauthReloadVerificationMisses += 1;
+      const retryGraceRemainingMs = flow.reloadInterruption === undefined
+        ? oauthReloadRetryGraceMs
+        : Math.max(
+            0,
+            flow.reloadInterruption.phaseStartedAt
+              + oauthReloadRetryGraceMs
+              - now(),
+          );
+      const pastRetryGrace = retryGraceRemainingMs === 0;
+      state.oauthReloadRecovery = {
+        providerLabel: flow.providerLabel,
+        slug: flow.slug,
+        status: oauthReloadVerificationMisses >= 2 && pastRetryGrace
+          ? 'ready_to_retry'
+          : 'check_again',
+        ...(retryGraceRemainingMs > 0
+          ? { retryAfterSeconds: Math.ceil(retryGraceRemainingMs / 1_000) }
+          : {}),
+      };
+      render(true);
+    } catch (error) {
+      if (disposed || gen !== loadGeneration) return;
+      state.loading = false;
+      state.error = null;
+      state.oauthReloadRecovery = {
+        providerLabel: flow.providerLabel,
+        slug: flow.slug,
+        status: 'check_again',
+        error: errMessage(error),
+      };
+      render(true);
+    } finally {
+      oauthReloadVerificationInFlight = false;
+    }
+  };
+
+  const applyTerminalOAuth = (
+    flow: FoundationalOAuthTerminalState,
+  ): void => {
+    if (flow.lane !== state.lane) return;
+    if (
+      flow.status === 'failed'
+      && flow.reloadInterruption?.phase === 'during_exchange'
+    ) {
+      pendingLoad = verifyInterruptedOAuth(flow);
+      void pendingLoad;
+      return;
+    }
+    const terminal = oauthContinuity.takeTerminal(flow.id);
+    if (terminal === null) return;
+    applySavedOAuthAppConfig(terminal);
+    submitInFlight = false;
+    state.saving = false;
+    state.oauthFinishing = false;
+    state.oauthProgressStage = null;
+    state.oauthReloadRecovery = null;
+    if (terminal.status === 'succeeded') {
+      state.connectionSuccess = {
+        slug: terminal.slug,
+        providerId: terminal.providerId,
+        ...(terminal.note !== undefined ? { note: terminal.note } : {}),
+      };
+      state.error = null;
+      state.formError = null;
+      state.stage = 'list';
+      state.providerId = null;
+      state.values = {};
+      state.oauthCredValues = { client_id: '', client_secret: '' };
+      firstSyncPollAttempts = 0;
+      const refresh = doRefresh(false, true);
+      if (!oauthDismissed && !disposed) focusConnectionSuccess();
+      void refresh;
+      return;
+    }
+
+    state.connectionSuccess = null;
+    if (
+      terminal.reloadInterruption?.phase === 'before_exchange'
+      && !oauthDismissed
+    ) {
+      restoreInterruptedOAuthForm(terminal, terminal.error);
+      return;
+    }
+    if (oauthDismissed) {
+      state.stage = 'list';
+      state.providerId = null;
+      state.values = {};
+      state.oauthCredValues = { client_id: '', client_secret: '' };
+      state.formError = null;
+      state.error = terminal.error;
+    } else {
+      state.stage = 'form';
+      state.providerId = terminal.providerId;
+      state.values = { ...terminal.accountValues };
+      state.oauthCredValues = {
+        client_id: safeOAuthClientId(terminal),
+        client_secret: '',
+      };
+      state.error = null;
+      state.formError = terminal.error;
+    }
+    render();
+  };
+
+  const onOAuthContinuity = (
+    flow: FoundationalOAuthContinuityState,
+  ): void => {
+    if (disposed || flow.status === 'idle' || flow.lane !== state.lane) return;
+    if (flow.status === 'pending') {
+      submitInFlight = true;
+      // A stage transition (consent → exchange) must not pull an owner who
+      // chose Keep working back into the waiting card on the same mount.
+      if (!oauthDismissed) applyPendingOAuth(flow);
+    } else {
+      applyTerminalOAuth(flow);
+    }
+  };
+
+  /** Route-independent state needs only enough information to reconstruct the
+   * foundational OAuth form. Keep this allowlist narrow so a future provider
+   * field cannot silently become boot-lived (credentials already live in the
+   * separate write-only OAuth-app structure). */
+  const continuityAccountValues = (): AccountFormValues => {
+    const safe: AccountFormValues = {};
+    for (const key of ['name', 'send_enabled', 'calendar_enabled'] as const) {
+      const value = state.values[key];
+      if (value !== undefined) safe[key] = key === 'name' ? value.trim() : value;
+    }
+    return safe;
+  };
+
   const driveOAuth = (): void => {
-    if (submitInFlight || state.saving) return;
+    if (state.saving) return;
     const provider = activeProvider();
     if (provider === undefined || !isOAuthAccountTransport(provider.transport)) return;
+    // "Keep working" deliberately returns to an interactive account list. If
+    // the owner opens another OAuth form while the first consent is still
+    // boot-owned, explain the conflict instead of leaving an enabled Connect
+    // button that appears to do nothing.
+    const existingOAuth = oauthContinuity.snapshot();
+    if (existingOAuth.status !== 'idle') {
+      state.formError = existingOAuth.status === 'pending'
+        ? `Finish the ${existingOAuth.providerLabel} sign-in already in progress.`
+        : `Review the ${existingOAuth.providerLabel} sign-in result before starting another.`;
+      render();
+      return;
+    }
+    if (submitInFlight) return;
     const invalid = validateAccountForm(provider, state.values);
     if (invalid !== null) {
       state.formError = invalid;
@@ -780,6 +1228,11 @@ export const mountAccountsLanePanel = (
             : null;
     if (spec === null) {
       state.formError = 'Sign-in is not available.';
+      render();
+      return;
+    }
+    if (state.rows.some((row) => row.slug === spec.slug)) {
+      state.formError = `An account named ${spec.slug} already exists. Go back to open it, or choose another name.`;
       render();
       return;
     }
@@ -848,114 +1301,53 @@ export const mountAccountsLanePanel = (
     submitInFlight = true;
     state.saving = true;
     state.formError = null;
-    // Show the "Signing in…" overlay for the WHOLE connect span (popup open →
-    // consent → code-exchange), not just post-consent, so the wait never reads
+    // Show truthful progress for the WHOLE connect span (popup preparation →
+    // consent → code exchange), not just post-consent, so the wait never reads
     // as a stuck form.
     state.oauthFinishing = true;
+    state.oauthProgressStage = 'preparing';
     render();
-    void completeOAuth(spec, oenv, popup, saveArgs);
-  };
-
-  const completeOAuth = async (
-    spec: OAuthLaneSpec,
-    oenv: AccountsOAuthEnv,
-    popup: FoundationalOAuthPopupHandle,
-    saveArgs: SetOAuthAppConfigArgs | null,
-  ): Promise<void> => {
-    try {
-      // Persist any entered BYO credentials first — the server reads the
-      // client_secret during the token exchange, so it must be stored before
-      // enroll. (The popup is already open + blank, so this await is safe.)
-      if (saveArgs !== null) {
-        await opts.setOAuthAppConfig!(saveArgs);
-        if (disposed) return;
-        // Reflect the save locally so a later return-to-form (e.g. consent
-        // declined) shows the app as configured, and drop the now-persisted
-        // secret from form state (keep the client_id pre-filled).
-        state.oauthAppConfig = {
-          ...(state.oauthAppConfig ?? emptyOAuthAppConfig()),
-          [saveArgs.issuer]: {
-            client_id: saveArgs.client_id,
-            has_secret: true,
-            source: 'stored' as const,
-          },
-        };
-        state.oauthCredValues = { client_id: saveArgs.client_id, client_secret: '' };
-      }
-      const cfg = await opts.getOAuthClientConfig!();
-      const clientId = spec.clientId(cfg);
-      if (clientId === null || clientId.length === 0) {
-        throw new Error(
-          `Couldn't load your ${spec.providerLabel} app credentials. Re-enter the Client ID and secret and try again.`,
-        );
-      }
-      // Microsoft Entra rejects query strings in redirect URIs, so the graph
-      // flow omits the `recued_relay` marker (the loopback relay page gates on
-      // the `frelay_` state prefix instead). The SAME value is registered, used
-      // in the authorize URL, and passed to enrollOAuth — byte-match holds.
-      const redirectUri = buildOpenerRelayRedirectUri(
-        oenv.env.origin,
-        spec.issuer === 'microsoft',
-      );
-      const result = await runOAuthPopup(oenv.env, {
-        popup,
-        // The callback posts FROM the redirect_uri's host (the cloud callback),
-        // which is cross-origin from a self-served PWA — so trust THAT origin,
-        // not the PWA's own (R26.2).
-        expectedSenderOrigin: new URL(redirectUri).origin,
-        buildAuthorizeUrl: (oauthState) =>
-          spec.authorizeUrl({ client_id: clientId, redirect_uri: redirectUri, state: oauthState }),
-      });
-      if (!result.ok) {
-        throw new Error(oauthFailureMessage(result.reason, result.detail));
-      }
-      // Don't initiate the server enroll after the panel was torn down
-      // mid-flight (the consent window can be long). The "Signing in…" overlay
-      // is already up (set at popup-open), so no extra render here.
-      if (disposed) return;
-      await spec.enroll({ code: result.code, redirect_uri: redirectUri });
-      if (disposed) return;
-      state.connectionSuccess = {
-        slug: spec.slug,
-        providerId: spec.providerId,
-      };
-      firstSyncPollAttempts = 0;
-      state.oauthFinishing = false;
-      state.stage = 'list';
-      state.providerId = null;
-      state.values = {};
-      state.oauthCredValues = { client_id: '', client_secret: '' };
-      state.saving = false;
-      const focusSuccess = !oauthDismissed;
-      // Paint + focus the confirmation immediately, then preserve that focus
-      // while the authoritative list read turns checking into pending/ready.
-      // A slow server should not leave keyboard focus on the removed form.
-      const refresh = doRefresh(false, true);
-      if (focusSuccess && !disposed) focusConnectionSuccess();
-      await refresh;
-    } catch (err) {
-      // Close the popup on any failure. For failures BEFORE runOAuthPopup
-      // takes ownership (save / config fetch reject) this is the only cleanup;
-      // after, runOAuthPopup already closed it. Skip when already closed to
-      // avoid a COOP `window.close` warning on the cross-origin case.
-      try { if (!popup.closed) popup.close(); } catch { /* cross-origin close may throw */ }
-      if (disposed) return;
-      state.oauthFinishing = false;
-      state.saving = false;
-      if (oauthDismissed) {
-        // The user already left to the list via "Back to accounts"; surface
-        // the failure there as a lane-level error rather than yanking them
-        // back to a form they walked away from.
-        state.error = errMessage(err);
-      } else {
-        // Still on the form / finishing card — show the error on the form
-        // (its values are intact) so the user can retry.
-        state.stage = 'form';
-        state.formError = errMessage(err);
-      }
-      render();
-    } finally {
+    const appConfigToSave = saveArgs;
+    const started = oauthContinuity.start({
+      lane: state.lane as Extract<AccountLaneId, 'mail' | 'calendar'>,
+      providerId: spec.providerId,
+      providerLabel: spec.providerLabel,
+      slug: spec.slug,
+      issuer: spec.issuer,
+      returnHref: opts.oauthReturnHref ?? `#connections/${state.lane}`,
+      accountValues: continuityAccountValues(),
+      clientId,
+      popup,
+      env: oenv.env,
+      ...(appConfigToSave !== null
+        ? {
+            saveAppConfig: {
+              issuer: appConfigToSave.issuer,
+              clientId: appConfigToSave.client_id,
+              run: () => opts.setOAuthAppConfig!(appConfigToSave),
+            },
+          }
+        : {}),
+      resolveClientId: async () =>
+        spec.clientId(await opts.getOAuthClientConfig!()),
+      buildAuthorizeUrl: spec.authorizeUrl,
+      enroll: spec.enroll,
+      missingClientIdMessage:
+        `Couldn't load your ${spec.providerLabel} app credentials. `
+        + 'Re-enter the Client ID and secret and try again.',
+      popupFailureMessage: (reason, detail) =>
+        oauthFailureMessage(reason, detail, spec.issuer),
+      errorMessage: errMessage,
+    });
+    if (!started.ok) {
       submitInFlight = false;
+      state.saving = false;
+      state.oauthFinishing = false;
+      state.oauthProgressStage = null;
+      state.formError = started.reason === 'busy'
+        ? 'Another sign-in is already in progress. Finish or cancel it first.'
+        : 'Sign-in is no longer available in this tab.';
+      render();
     }
   };
 
@@ -1014,10 +1406,51 @@ export const mountAccountsLanePanel = (
     }
   };
 
-  const deleteAccount = (slug: string): void => {
+  /** Open the removal prompt. Removal used to fire straight from the row button;
+   *  it is irreversible without re-running the whole OAuth consent, and the
+   *  button sits inline in a list where a mis-click is easy. */
+  const askDeleteAccount = (slug: string): void => {
+    if (laneCallers(state.lane) === undefined) return;
+    const lane = findAccountLane(state.lane);
+    const row = state.rows.find((r) => r.slug === slug);
+    // Resolve the label NOW: the row can leave `rows` while the delete is in
+    // flight, and the prompt must not go blank mid-removal.
+    const providerLabel = (lane !== undefined && row !== undefined
+      ? findAccountProvider(lane, row.adapterType)?.label
+      : undefined) ?? 'account';
+    state.deleteConfirm = { slug, providerLabel, deleting: false };
+    render();
+  };
+
+  const cancelDeleteAccount = (): void => {
+    // Ignore Cancel once the delete is in flight — the rpc cannot be recalled,
+    // so closing the prompt would only hide an action that is still happening.
+    if (state.deleteConfirm === null || state.deleteConfirm.deleting) return;
+    state.deleteConfirm = null;
+    render();
+  };
+
+  const confirmDeleteAccount = async (): Promise<void> => {
+    const dc = state.deleteConfirm;
+    // ⚠ `dc.deleting` here is defence-in-depth, not the double-submit guard —
+    // `runRowAction` already refuses a second call for a busy (op, slug) via
+    // `rowBusy`, and removing this check leaves every test green. Its LOAD-
+    // BEARING job is the flag it sets below: the disabled buttons + "Removing…"
+    // label, and gating Cancel.
+    if (dc === null || dc.deleting) return;
     const callers = laneCallers(state.lane);
     if (callers === undefined) return;
-    void runRowAction('delete', slug, () => callers.delete({ slug }), 'reload-list');
+    dc.deleting = true;
+    render();
+    try {
+      await runRowAction('delete', dc.slug, () => callers.delete({ slug: dc.slug }), 'reload-list');
+    } finally {
+      // Cleared on BOTH paths: `runRowAction` surfaces its own row-level error,
+      // and leaving the prompt up over a failed delete would strand the panel
+      // behind a modal with no way back.
+      state.deleteConfirm = null;
+      render();
+    }
   };
 
   const resyncAccount = (slug: string): void => {
@@ -1115,12 +1548,12 @@ export const mountAccountsLanePanel = (
       copyOAuthRedirect(dataset.copyValue, element);
     },
     'accounts-oauth-dismiss': () => {
-      // Immediate escape from the "Signing in…" overlay. The in-flight connect
-      // keeps running (submitInFlight still fences it); its result lands on the
-      // list (success → refresh shows the account; failure → lane error) via
-      // the oauthDismissed branch in completeOAuth.
+      // Immediate escape from the OAuth progress card. The boot-owned flow
+      // keeps running and stays discoverable through Account; its one-shot
+      // result returns here instead of being lost with this presentation.
       oauthDismissed = true;
       state.oauthFinishing = false;
+      state.oauthProgressStage = null;
       state.saving = false;
       state.stage = 'list';
       state.providerId = null;
@@ -1129,6 +1562,41 @@ export const mountAccountsLanePanel = (
       state.detailSlug = null;
       render();
       opts.onNavigate?.(state.lane, null);
+    },
+    'accounts-oauth-cancel': () => {
+      const flow = oauthContinuity.snapshot();
+      if (
+        flow.status !== 'pending'
+        || flow.lane !== state.lane
+        || flow.stage === 'finishing'
+      ) return;
+      oauthDismissed = false;
+      oauthContinuity.cancel(flow.id);
+    },
+    'accounts-oauth-recovery-check': () => {
+      const flow = oauthContinuity.snapshot();
+      if (
+        flow.status !== 'failed'
+        || flow.lane !== state.lane
+        || flow.reloadInterruption?.phase !== 'during_exchange'
+      ) return;
+      pendingLoad = verifyInterruptedOAuth(flow);
+      void pendingLoad;
+    },
+    'accounts-oauth-recovery-restart': () => {
+      if (state.oauthReloadRecovery?.status !== 'ready_to_retry') return;
+      const flow = oauthContinuity.snapshot();
+      if (
+        flow.status !== 'failed'
+        || flow.lane !== state.lane
+        || flow.reloadInterruption?.phase !== 'during_exchange'
+      ) return;
+      const terminal = oauthContinuity.takeTerminal(flow.id);
+      if (terminal === null || terminal.status !== 'failed') return;
+      restoreInterruptedOAuthForm(
+        terminal,
+        'Repeated checks did not find this connection. Start a fresh sign-in; the interrupted authorization code will not be reused.',
+      );
     },
     'accounts-success-go-chat': () => {
       const success = state.connectionSuccess;
@@ -1159,7 +1627,13 @@ export const mountAccountsLanePanel = (
     },
     'accounts-delete': (dataset) => {
       if (dataset.slug === undefined) return;
-      deleteAccount(dataset.slug);
+      askDeleteAccount(dataset.slug);
+    },
+    'accounts-delete-cancel': () => {
+      cancelDeleteAccount();
+    },
+    'accounts-delete-confirm': () => {
+      void confirmDeleteAccount();
     },
     'accounts-resync': (dataset) => {
       if (dataset.slug === undefined) return;
@@ -1232,15 +1706,23 @@ export const mountAccountsLanePanel = (
 
   render();
   void doRefresh();
+  detachOAuthContinuity = oauthContinuity.subscribe(onOAuthContinuity);
 
   return {
     getState: () => state,
     refresh: () => doRefresh(false, true),
     whenLoaded: () => pendingLoad,
+    hasInFlightWork: () => submitInFlight
+      || state.saving
+      || oauthReloadVerificationInFlight
+      || state.rowBusy.size > 0
+      || state.deleteConfirm?.deleting === true,
     dispose: () => {
       if (disposed) return;
       disposed = true;
       cancelFirstSyncPoll();
+      detachOAuthContinuity();
+      if (ownsOAuthContinuity) oauthContinuity.dispose();
       detachActions();
       host.removeEventListener('input', onFieldEvent);
       host.removeEventListener('change', onFieldEvent);

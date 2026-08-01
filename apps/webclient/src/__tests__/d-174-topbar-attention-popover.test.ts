@@ -1,18 +1,36 @@
 /** D-174 - global top-bar approval attention popover. */
 
 import { describe, expect, it, vi } from 'vitest';
-import type { ServerPendingApproval, ServerPendingAsk } from '@recued/contracts';
+import type {
+  ConnectionCredentialPostSafeStopVerificationSummary,
+  ConnectionView,
+  ServerPendingApproval,
+  ServerPendingAsk,
+} from '@recued/contracts';
 
 import {
+  ATTENTION_CLOSE_BUTTON_ATTR,
   ATTENTION_CHAT_PLAN_LINK_ATTR,
   ATTENTION_CHAT_PLAN_RESOLUTION_ATTR,
   ATTENTION_CHAT_PLAN_RESOLUTION_ANNOUNCER_ATTR,
+  ATTENTION_CONNECTION_RECOVERY_REVIEW_ATTR,
+  ATTENTION_CONNECTION_RECOVERY_LINK_ATTR,
+  ATTENTION_CONNECTIONS_LINK_ATTR,
+  ATTENTION_DIALOG_ATTR,
+  ATTENTION_ERROR_ANNOUNCER_ATTR,
   ATTENTION_GATEWAY_ASK_ROW_ATTR,
+  ATTENTION_INACTIVE_PROFILE_RECOVERY_ATTR,
+  ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR,
+  ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+  ATTENTION_RECOVERY_INTENT_CONTINUATION_ATTR,
   ATTENTION_SEE_ALL_LINK_ATTR,
   ATTENTION_TOPBAR_HOST_ATTR,
   ATTENTION_TOPBAR_STYLES,
   ATTENTION_TOPBAR_STYLES_MARKER,
   mountApprovalAttentionPopover,
+  type AttentionInactiveConnectionRecoveryHint,
+  type AttentionRecoveryExcursionReturn,
+  type AttentionRecoveryIntentContinuation,
   type ApprovalAttentionPopoverMount,
 } from '../attention/approval-attention-popover.js';
 import type {
@@ -25,6 +43,7 @@ import type {
   AsksListCaller,
   AsksSubmitAnswerCaller,
 } from '../approvals/asks-panel.js';
+import type { ConnectionsEnrollListCaller } from '../settings/connections-enroll-panel.js';
 import type {
   PendingChatPlan,
   PendingChatPlanResolution,
@@ -43,7 +62,11 @@ interface FakeEl extends HTMLElement {
 interface FakeDoc {
   head: HTMLHeadElement;
   styleElements: FakeEl[];
+  listeners: Map<string, Set<(event: Event) => void>>;
   createElement(tag: string): FakeEl;
+  addEventListener(type: string, listener: (event: Event) => void): void;
+  removeEventListener(type: string, listener: (event: Event) => void): void;
+  fire(type: string, event: Event): void;
 }
 
 const makeFakeEl = (tag: string): FakeEl => {
@@ -78,6 +101,10 @@ const makeFakeEl = (tag: string): FakeEl => {
     },
     hasAttribute(name) {
       return attrs.has(name);
+    },
+    contains(candidate: Node | null) {
+      if (candidate === (el as FakeEl)) return true;
+      return childList.some((child) => child.contains(candidate));
     },
     appendChild: ((child: FakeEl): FakeEl => {
       childList.push(child);
@@ -127,6 +154,7 @@ const makeFakeEl = (tag: string): FakeEl => {
 
 const makeFakeDocument = (): FakeDoc => {
   const styleElements: FakeEl[] = [];
+  const listeners = new Map<string, Set<(event: Event) => void>>();
   const matchSelector = (sel: string): { tag: string; attr: string } | null => {
     const m = sel.match(/^([\w-]+)\[([\w-]+)\]$/);
     return m === null ? null : { tag: m[1]!.toUpperCase(), attr: m[2]! };
@@ -149,7 +177,19 @@ const makeFakeDocument = (): FakeDoc => {
   return {
     head: head as HTMLHeadElement,
     styleElements,
+    listeners,
     createElement: (tag: string): FakeEl => makeFakeEl(tag),
+    addEventListener: (type, listener): void => {
+      const byType = listeners.get(type) ?? new Set();
+      byType.add(listener);
+      listeners.set(type, byType);
+    },
+    removeEventListener: (type, listener): void => {
+      listeners.get(type)?.delete(listener);
+    },
+    fire: (type, event): void => {
+      for (const listener of [...(listeners.get(type) ?? [])]) listener(event);
+    },
   };
 };
 
@@ -191,6 +231,18 @@ const ask = (
     { id: 'reject', label: 'Reject' },
   ],
   created_at: 1_700_000_000_500,
+  ...overrides,
+});
+
+const connection = (
+  name: string,
+  overrides: Partial<ConnectionView> = {},
+): ConnectionView => ({
+  kind: 'api',
+  name,
+  display_name: name,
+  updated_at: 1,
+  auth_type: 'bearer',
   ...overrides,
 });
 
@@ -250,6 +302,20 @@ const makeFakeReconnect = () => {
   };
 };
 
+const makeFakeRecoverySubscribe = () => {
+  const listeners = new Set<() => void>();
+  return {
+    subscribe: (listener: () => void): (() => void) => {
+      listeners.add(listener);
+      return () => listeners.delete(listener);
+    },
+    fire: (): void => {
+      for (const listener of [...listeners]) listener();
+    },
+    listenerCount: (): number => listeners.size,
+  };
+};
+
 const tick = async (n = 6): Promise<void> => {
   for (let i = 0; i < n; i += 1) await Promise.resolve();
 };
@@ -263,6 +329,40 @@ const mountFor = (
     runApprovalSubscribe?: ApprovalSubscribeCaller;
     runPendingAsksList?: AsksListCaller;
     runPendingAskSubmitAnswer?: AsksSubmitAnswerCaller;
+    runConnectionRecoveryList?: ConnectionsEnrollListCaller;
+    connectionRecoveryProfile?: { id: string; label: string };
+    inactiveConnectionRecoveryHints?: ReadonlyArray<
+      AttentionInactiveConnectionRecoveryHint
+    >;
+    onReviewInactiveConnectionRecovery?: (
+      profileId: string,
+    ) => 'opened' | 'missing' | 'unavailable';
+    initialConnectionRecoveryReview?: { serverProfileId: string };
+    onConnectionRecoverySnapshot?: (snapshot: {
+      serverProfileId: string;
+      hasRecoveries: boolean;
+      observedAt: number;
+    }) => void;
+    onConnectionRecoveryReviewSettled?: (profileId: string) => void;
+    onConnectionRecoveryReviewDismissed?: (profileId: string) => void;
+    initialRecoveryExcursionReturn?: AttentionRecoveryExcursionReturn;
+    onReviewRecoveryExcursionReturn?: (
+      profileId: string,
+    ) => 'opened' | 'missing' | 'unavailable';
+    onDismissRecoveryExcursionReturn?: (profileId: string) => void;
+    initialRecoveryIntentContinuation?: AttentionRecoveryIntentContinuation;
+    onResumeRecoveryIntentContinuation?: (
+      continuation: AttentionRecoveryIntentContinuation,
+    ) => 'started' | 'missing' | 'unavailable';
+    onReviewRecoveryIntentContinuation?: (
+      continuation: AttentionRecoveryIntentContinuation,
+    ) => 'started' | 'missing' | 'unavailable';
+    onRemediateRecoveryIntentConnection?: (
+      continuation: AttentionRecoveryIntentContinuation,
+    ) => 'started' | 'missing' | 'unavailable';
+    onDismissRecoveryIntentContinuation?: () => void;
+    now?: () => number;
+    recoverySubscription?: ReturnType<typeof makeFakeRecoverySubscribe>;
     chatPlans?: {
       list(): ReadonlyArray<PendingChatPlan>;
       subscribe(listener: () => void): () => void;
@@ -283,6 +383,7 @@ const mountFor = (
   runApprovalSubscribe: ApprovalSubscribeCaller;
   runPendingAsksList: AsksListCaller;
   runPendingAskSubmitAnswer: AsksSubmitAnswerCaller;
+  runConnectionRecoveryList?: ConnectionsEnrollListCaller;
   approvalChanged: ReturnType<typeof makeFakeApprovalChanged>;
   sub: ReturnType<typeof makeFakeSubscriber>;
 } => {
@@ -323,6 +424,105 @@ const mountFor = (
       ? { runChatPlanResolve: opts.runChatPlanResolve }
       : {}),
     ...(opts.reconnect ? { reconnect: opts.reconnect.subscribe } : {}),
+    ...(opts.runConnectionRecoveryList
+      ? {
+          runConnectionRecoveryList: opts.runConnectionRecoveryList,
+          connectionRecoveryProfile: opts.connectionRecoveryProfile ?? {
+            id: 'profile-home',
+            label: 'Home server',
+          },
+          connectionRecoveryHref: ({ serverProfileId, kind, name }) =>
+            `#connections/others/finish-recovery/profile/${serverProfileId}/${kind}/${name}`,
+        }
+      : {}),
+    ...(opts.recoverySubscription
+      ? {
+          subscribeConnectionRecovery:
+            opts.recoverySubscription.subscribe,
+        }
+      : {}),
+    ...(opts.inactiveConnectionRecoveryHints !== undefined
+      ? {
+          inactiveConnectionRecoveryHints:
+            opts.inactiveConnectionRecoveryHints,
+        }
+      : {}),
+    ...(opts.onReviewInactiveConnectionRecovery !== undefined
+      ? {
+          onReviewInactiveConnectionRecovery:
+            opts.onReviewInactiveConnectionRecovery,
+        }
+      : {}),
+    ...(opts.initialConnectionRecoveryReview !== undefined
+      ? {
+          initialConnectionRecoveryReview:
+            opts.initialConnectionRecoveryReview,
+        }
+      : {}),
+    ...(opts.onConnectionRecoverySnapshot !== undefined
+      ? { onConnectionRecoverySnapshot: opts.onConnectionRecoverySnapshot }
+      : {}),
+    ...(opts.onConnectionRecoveryReviewSettled !== undefined
+      ? {
+          onConnectionRecoveryReviewSettled:
+            opts.onConnectionRecoveryReviewSettled,
+        }
+      : {}),
+    ...(opts.onConnectionRecoveryReviewDismissed !== undefined
+      ? {
+          onConnectionRecoveryReviewDismissed:
+            opts.onConnectionRecoveryReviewDismissed,
+        }
+      : {}),
+    ...(opts.initialRecoveryExcursionReturn !== undefined
+      ? {
+          initialRecoveryExcursionReturn:
+            opts.initialRecoveryExcursionReturn,
+        }
+      : {}),
+    ...(opts.onReviewRecoveryExcursionReturn !== undefined
+      ? {
+          onReviewRecoveryExcursionReturn:
+            opts.onReviewRecoveryExcursionReturn,
+        }
+      : {}),
+    ...(opts.onDismissRecoveryExcursionReturn !== undefined
+      ? {
+          onDismissRecoveryExcursionReturn:
+            opts.onDismissRecoveryExcursionReturn,
+        }
+      : {}),
+    ...(opts.initialRecoveryIntentContinuation !== undefined
+      ? {
+          initialRecoveryIntentContinuation:
+            opts.initialRecoveryIntentContinuation,
+        }
+      : {}),
+    ...(opts.onResumeRecoveryIntentContinuation !== undefined
+      ? {
+          onResumeRecoveryIntentContinuation:
+            opts.onResumeRecoveryIntentContinuation,
+        }
+      : {}),
+    ...(opts.onReviewRecoveryIntentContinuation !== undefined
+      ? {
+          onReviewRecoveryIntentContinuation:
+            opts.onReviewRecoveryIntentContinuation,
+        }
+      : {}),
+    ...(opts.onRemediateRecoveryIntentConnection !== undefined
+      ? {
+          onRemediateRecoveryIntentConnection:
+            opts.onRemediateRecoveryIntentConnection,
+        }
+      : {}),
+    ...(opts.onDismissRecoveryIntentContinuation !== undefined
+      ? {
+          onDismissRecoveryIntentContinuation:
+            opts.onDismissRecoveryIntentContinuation,
+        }
+      : {}),
+    ...(opts.now !== undefined ? { now: opts.now } : {}),
   });
   const topbar = firstByAttr(root, ATTENTION_TOPBAR_HOST_ATTR);
   if (topbar === undefined) throw new Error('topbar not mounted');
@@ -336,13 +536,16 @@ const mountFor = (
     runApprovalSubscribe,
     runPendingAsksList,
     runPendingAskSubmitAnswer,
+    ...(opts.runConnectionRecoveryList
+      ? { runConnectionRecoveryList: opts.runConnectionRecoveryList }
+      : {}),
     approvalChanged,
     sub,
   };
 };
 
 describe('D-174 - approval attention top-bar adapter', () => {
-  it('mounts the shared slot, badge, popover, and #approvals see-all link', async () => {
+  it('mounts a bell, one plain-language queue, and the full-queue handoff', async () => {
     const rows = [approval('ap-1'), approval('ap-2')];
     const { doc, topbar, handle, runApprovalList, runApprovalSubscribe } =
       mountFor({ rows: () => rows });
@@ -351,6 +554,8 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(runApprovalList).toHaveBeenCalledTimes(1);
     expect(runApprovalSubscribe).toHaveBeenCalledTimes(1);
     expect(topbar.innerHTML).toContain('top-bar-attention-badge');
+    expect(topbar.innerHTML).toContain('top-bar-attention-bell');
+    expect(topbar.innerHTML).not.toContain('⚠');
     expect(topbar.innerHTML).toContain('>2<');
     expect(doc.styleElements).toHaveLength(1);
     expect(doc.styleElements[0]!.attrs.has(ATTENTION_TOPBAR_STYLES_MARKER))
@@ -360,9 +565,51 @@ describe('D-174 - approval attention top-bar adapter', () => {
     topbar.fireAction({ 'data-action': 'open-attention' });
 
     expect(handle.isOpen()).toBe(true);
-    expect(topbar.innerHTML).toContain('attention-popover');
+    expect(topbar.innerHTML).toContain(ATTENTION_DIALOG_ATTR);
+    expect(topbar.innerHTML).toContain(ATTENTION_CLOSE_BUTTON_ATTR);
+    expect(topbar.innerHTML).toContain('2 items are waiting for you.');
+    expect(topbar.innerHTML).not.toContain('Other notifications');
+    expect(topbar.innerHTML).not.toContain('role="tablist"');
     expect(topbar.innerHTML).toContain('data-action="approval-decide-server"');
-    expect(topbar.innerHTML).toContain(`href="#approvals" ${ATTENTION_SEE_ALL_LINK_ATTR}`);
+    expect(topbar.innerHTML).toContain('Approval &middot; Mail send &middot; Changes data');
+    expect(topbar.innerHTML).toContain(
+      'aria-label="Approve: Send follow-up ap-1"',
+    );
+    expect(topbar.innerHTML).toContain('data-action="open-approvals"');
+    expect(topbar.innerHTML).toContain(ATTENTION_SEE_ALL_LINK_ATTR);
+    expect(topbar.innerHTML).toContain('Open approvals');
+    handle.dispose();
+  });
+
+  it('closes from the header, Escape, outside click, and full-queue handoff', async () => {
+    const { doc, root, topbar, handle } = mountFor();
+    await handle.whenLoaded();
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    topbar.fireAction({ 'data-action': 'close-attention' });
+    expect(handle.isOpen()).toBe(false);
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    const preventDefault = vi.fn();
+    const stopPropagation = vi.fn();
+    doc.fire('keydown', {
+      key: 'Escape',
+      preventDefault,
+      stopPropagation,
+    } as unknown as KeyboardEvent);
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(stopPropagation).toHaveBeenCalledTimes(1);
+    expect(handle.isOpen()).toBe(false);
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    doc.fire('click', { target: root } as unknown as MouseEvent);
+    expect(handle.isOpen()).toBe(false);
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    topbar.fireAction({ 'data-action': 'open-approvals' });
+    await tick();
+    expect(handle.isOpen()).toBe(false);
+    expect(topbar.innerHTML).not.toContain(ATTENTION_DIALOG_ATTR);
     handle.dispose();
   });
 
@@ -378,6 +625,829 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(handle.getAsks().map((row) => row.ask_id)).toEqual(['gw-1']);
     expect(topbar.innerHTML).toContain('top-bar-attention-badge');
     expect(topbar.innerHTML).toContain('>1<');
+    handle.dispose();
+  });
+
+  it('surfaces every authoritative post-ack recovery with exact, privacy-safe Connections handoffs', async () => {
+    const reconnect = makeFakeReconnect();
+    const recoverySubscription = makeFakeRecoverySubscribe();
+    const connections = [
+      connection('billing-crm', {
+        display_name: 'Billing CRM',
+        updated_at: 11,
+      }),
+      connection('research-bridge', {
+        kind: 'mcp',
+        display_name: 'Research bridge',
+        updated_at: 22,
+      }),
+    ];
+    let recoveries: ConnectionCredentialPostSafeStopVerificationSummary[] = [
+      {
+        kind: 'mcp',
+        name: 'research-bridge',
+        status: 'auth_failed',
+        // The server puts this causally newer row first even though both wall
+        // clocks moved backwards. Attention must preserve that lineage order.
+        acknowledged_at: 1_700_000_001_000,
+        checked_at: 1_700_000_000_500,
+        connection_updated_at: 22,
+        credential_correction: {
+          auth_type: 'bearer',
+          field_keys: ['auth.token'],
+        },
+      },
+      {
+        kind: 'api',
+        name: 'billing-crm',
+        status: 'pending',
+        acknowledged_at: 1_700_000_002_000,
+      },
+    ];
+    const runConnectionRecoveryList = vi.fn(async () => ({
+      connections,
+      credential_post_safe_stop_verifications: recoveries,
+    }));
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      runConnectionRecoveryList,
+      recoverySubscription,
+      reconnect,
+    });
+    await handle.whenLoaded();
+
+    expect(handle.getConnectionRecoveries()).toHaveLength(2);
+    expect(handle.getConnectionRecoveries()[0]).toMatchObject({
+      serverProfileId: 'profile-home',
+      serverProfileLabel: 'Home server',
+    });
+    expect(topbar.innerHTML).toContain('>2<');
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain('Finish recovery for Billing CRM');
+    expect(topbar.innerHTML).toContain(
+      'Research bridge still needs sign-in attention',
+    );
+    expect(topbar.innerHTML).toContain(
+      '#connections/others/finish-recovery/profile/profile-home/api/billing-crm',
+    );
+    expect(topbar.innerHTML).toContain(
+      '#connections/others/finish-recovery/profile/profile-home/mcp/research-bridge',
+    );
+    expect(topbar.innerHTML).toContain('Server profile: Home server');
+    expect(topbar.innerHTML.indexOf(
+      'Research bridge still needs sign-in attention',
+    )).toBeLessThan(topbar.innerHTML.indexOf(
+      'Finish recovery for Billing CRM',
+    ));
+    expect(topbar.innerHTML).toContain(ATTENTION_CONNECTION_RECOVERY_LINK_ATTR);
+    expect(topbar.innerHTML).toContain(ATTENTION_CONNECTIONS_LINK_ATTR);
+    expect(topbar.innerHTML).not.toContain('auth.token');
+    expect(topbar.innerHTML).not.toContain('1700000000500');
+
+    handle.setConnectionRecoveryProfileLabel('Renamed home');
+    expect(topbar.innerHTML).toContain('Server profile: Renamed home');
+    expect(topbar.innerHTML).toContain(
+      '#connections/others/finish-recovery/profile/profile-home/api/billing-crm',
+    );
+
+    topbar.fireAction({
+      'data-action': 'open-connection-recovery',
+      'data-connection-kind': 'api',
+      'data-connection-name': 'billing-crm',
+    });
+    await tick();
+    expect(handle.isOpen()).toBe(false);
+
+    recoveries = [recoveries[0]!];
+    recoverySubscription.fire();
+    await tick();
+    expect(handle.getConnectionRecoveries().map((item) => item.name)).toEqual([
+      'research-bridge',
+    ]);
+    expect(topbar.innerHTML).toContain('>1<');
+
+    reconnect.fire();
+    await tick();
+    expect(runConnectionRecoveryList.mock.calls.length).toBeGreaterThanOrEqual(3);
+
+    // A newly malformed authoritative snapshot must revoke the older exact
+    // action instead of leaving a stale recovery link clickable.
+    recoveries = [{
+      kind: 'mcp',
+      name: 'research-bridge',
+      status: 'auth_failed',
+      acknowledged_at: 1_700_000_004_000,
+      checked_at: 1_700_000_004_100,
+      connection_updated_at: 21,
+    }];
+    recoverySubscription.fire();
+    await tick();
+    expect(handle.getConnectionRecoveries()).toEqual([]);
+    expect(topbar.innerHTML).not.toContain(
+      'Research bridge still needs sign-in attention',
+    );
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      'The server returned an invalid connection recovery queue.',
+    );
+    handle.dispose();
+    expect(recoverySubscription.listenerCount()).toBe(0);
+  });
+
+  it('keeps a stale or malformed post-ack projection out of Attention', async () => {
+    const runConnectionRecoveryList = vi.fn(async () => ({
+      connections: [connection('changed-row', { updated_at: 8 })],
+      credential_post_safe_stop_verifications: [{
+        kind: 'api' as const,
+        name: 'changed-row',
+        status: 'auth_failed' as const,
+        acknowledged_at: 5,
+        checked_at: 6,
+        connection_updated_at: 7,
+      }],
+    }));
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      runConnectionRecoveryList,
+    });
+    await handle.whenLoaded();
+
+    expect(handle.getConnectionRecoveries()).toEqual([]);
+    expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      'The server returned an invalid connection recovery queue.',
+    );
+    expect(topbar.innerHTML).not.toContain('Finish recovery for changed-row');
+    handle.dispose();
+  });
+
+  it('shows an inactive profile as a stale identity-free reminder and opens its deliberate switch review', async () => {
+    const reviewInactive = vi.fn(() => 'opened' as const);
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      runConnectionRecoveryList: async () => ({ connections: [] }),
+      inactiveConnectionRecoveryHints: [{
+        serverProfileId: 'profile-office',
+        serverProfileLabel: 'Office <shared>',
+        observedAt: 2 * 60 * 60_000,
+      }],
+      onReviewInactiveConnectionRecovery: reviewInactive,
+      now: () => 4 * 60 * 60_000,
+    });
+    await handle.whenLoaded();
+
+    expect(handle.getInactiveConnectionRecoveryHints()).toEqual([{
+      serverProfileId: 'profile-office',
+      serverProfileLabel: 'Office <shared>',
+      observedAt: 2 * 60 * 60_000,
+    }]);
+    expect(topbar.innerHTML).toContain('>1<');
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain(ATTENTION_INACTIVE_PROFILE_RECOVERY_ATTR);
+    expect(topbar.innerHTML).toContain('Office &lt;shared&gt; may still need');
+    expect(topbar.innerHTML).toContain('Last confirmed while active 2 hours ago');
+    expect(topbar.innerHTML).toContain('not a live result');
+    expect(topbar.innerHTML).toContain('Open Account to review the profile switch');
+    expect(topbar.innerHTML).toContain('Review switch');
+    expect(topbar.innerHTML).not.toContain('api/');
+    expect(topbar.innerHTML).not.toContain('connection-name');
+
+    handle.setInactiveConnectionRecoveryHints([{
+      serverProfileId: 'profile-office',
+      serverProfileLabel: 'Renamed office',
+      observedAt: 2 * 60 * 60_000,
+    }]);
+    expect(topbar.innerHTML).toContain('Renamed office may still need');
+
+    topbar.fireAction({
+      'data-action': 'review-inactive-connection-recovery',
+      'data-server-profile-id': 'profile-office',
+    });
+    expect(reviewInactive).toHaveBeenCalledWith('profile-office');
+    expect(handle.isOpen()).toBe(false);
+    handle.dispose();
+  });
+
+  it('keeps an inactive reminder actionable when Account is temporarily unavailable', async () => {
+    const reviewInactive = vi.fn(() => 'unavailable' as const);
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      runConnectionRecoveryList: async () => ({ connections: [] }),
+      inactiveConnectionRecoveryHints: [{
+        serverProfileId: 'profile-office',
+        serverProfileLabel: 'Office server',
+        observedAt: 1_000,
+      }],
+      onReviewInactiveConnectionRecovery: reviewInactive,
+      now: () => 2_000,
+    });
+    await handle.whenLoaded();
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    topbar.fireAction({
+      'data-action': 'review-inactive-connection-recovery',
+      'data-server-profile-id': 'profile-office',
+    });
+
+    expect(handle.isOpen()).toBe(true);
+    expect(handle.getInactiveConnectionRecoveryHints()).toHaveLength(1);
+    expect(topbar.innerHTML).toContain('can’t be opened from Account right now');
+    expect(topbar.innerHTML).toContain('profile action already in progress');
+    expect(topbar.innerHTML).toContain('Review switch');
+
+    handle.setInactiveConnectionRecoveryHints([]);
+    expect(topbar.innerHTML).not.toContain('can’t be opened from Account right now');
+    expect(handle.getInactiveConnectionRecoveryHints()).toEqual([]);
+    handle.dispose();
+  });
+
+  it('auto-opens a destination review and replaces the stale hint with fresh authoritative rows', async () => {
+    const snapshot = vi.fn();
+    const settled = vi.fn();
+    const dismissed = vi.fn();
+    const saved = connection('fresh-check', { updated_at: 10 });
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      connectionRecoveryProfile: {
+        id: 'profile-office',
+        label: 'Office server',
+      },
+      runConnectionRecoveryList: async () => ({
+        connections: [saved],
+        credential_post_safe_stop_verifications: [{
+          kind: 'api',
+          name: 'fresh-check',
+          status: 'pending',
+          acknowledged_at: 9,
+        }],
+      }),
+      initialConnectionRecoveryReview: {
+        serverProfileId: 'profile-office',
+      },
+      onConnectionRecoverySnapshot: snapshot,
+      onConnectionRecoveryReviewSettled: settled,
+      onConnectionRecoveryReviewDismissed: dismissed,
+      now: () => 50_000,
+    });
+
+    expect(handle.isOpen()).toBe(true);
+    await handle.whenLoaded();
+    expect(topbar.innerHTML).toContain(ATTENTION_CONNECTION_RECOVERY_REVIEW_ATTR);
+    expect(topbar.innerHTML).toContain('A fresh check found 1 connection recovery');
+    expect(topbar.innerHTML).toContain('Finish recovery for fresh-check');
+    expect(topbar.innerHTML).toContain('fresh authoritative list');
+    expect(snapshot).toHaveBeenCalledWith({
+      serverProfileId: 'profile-office',
+      hasRecoveries: true,
+      observedAt: 50_000,
+    });
+    expect(settled).toHaveBeenCalledOnce();
+
+    topbar.fireAction({
+      'data-action': 'dismiss-connection-recovery-review',
+    });
+    expect(handle.isOpen()).toBe(false);
+    expect(dismissed).not.toHaveBeenCalled();
+    handle.dispose();
+  });
+
+  it('keeps a failed destination review retryable, then retires it only after an authoritative all-clear', async () => {
+    let unavailable = true;
+    const settled = vi.fn();
+    const dismissed = vi.fn();
+    const runConnectionRecoveryList = vi.fn(async () => {
+      if (unavailable) throw new Error('offline');
+      return { connections: [] };
+    });
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      connectionRecoveryProfile: {
+        id: 'profile-office',
+        label: 'Office server',
+      },
+      runConnectionRecoveryList,
+      initialConnectionRecoveryReview: {
+        serverProfileId: 'profile-office',
+      },
+      onConnectionRecoveryReviewSettled: settled,
+      onConnectionRecoveryReviewDismissed: dismissed,
+      now: () => 50_000,
+    });
+    await handle.whenLoaded();
+
+    expect(topbar.innerHTML).toContain('Couldn’t confirm Office server yet');
+    expect(topbar.innerHTML).toContain('no stale connection details were shown');
+    expect(topbar.innerHTML).toContain('Office server still needs a fresh recovery check');
+    expect(topbar.innerHTML).toContain('Retry check');
+    expect(topbar.innerHTML).not.toContain('You&rsquo;re all caught up');
+    expect(topbar.innerHTML).not.toContain("Couldn't refresh connection recovery");
+    expect(settled).not.toHaveBeenCalled();
+    expect(dismissed).not.toHaveBeenCalled();
+
+    unavailable = false;
+    topbar.fireAction({
+      'data-action': 'retry-connection-recovery-review',
+    });
+    await handle.whenLoaded();
+    expect(topbar.innerHTML).toContain('Office server is clear');
+    expect(topbar.innerHTML).toContain('fresh authoritative check found no');
+    expect(topbar.innerHTML).toContain('fresh Office server recovery check is complete');
+    expect(topbar.innerHTML).not.toContain('You&rsquo;re all caught up');
+    expect(settled).toHaveBeenCalledWith('profile-office');
+    expect(dismissed).not.toHaveBeenCalled();
+    handle.dispose();
+  });
+
+  it('keeps a reload-safe neutral return discoverable without replaying the all-clear receipt', async () => {
+    const reviewReturn = vi.fn(() => 'opened' as const);
+    const { root, topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      connectionRecoveryProfile: {
+        id: 'profile-office',
+        label: 'Office server',
+      },
+      runConnectionRecoveryList: async () => ({ connections: [] }),
+      initialRecoveryExcursionReturn: {
+        serverProfileId: 'profile-home',
+        serverProfileLabel: 'Home <private>',
+      },
+      onReviewRecoveryExcursionReturn: reviewReturn,
+    });
+    await handle.whenLoaded();
+
+    expect(handle.isOpen()).toBe(false);
+    expect(handle.getRecoveryExcursionReturn()).toEqual({
+      serverProfileId: 'profile-home',
+      serverProfileLabel: 'Home <private>',
+    });
+    const returnAnnouncer = firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    );
+    expect(ATTENTION_TOPBAR_STYLES).toContain(
+      `[${ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR}]`,
+    );
+    expect(returnAnnouncer?.getAttribute('role')).toBe('status');
+    expect(returnAnnouncer?.getAttribute('aria-live')).toBe('polite');
+    expect(returnAnnouncer?.textContent).toBe('');
+    expect(topbar.innerHTML).toContain('>1<');
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(returnAnnouncer?.textContent).toBe(
+      'A saved return to Home <private> is ready to review.',
+    );
+    expect(topbar.innerHTML).toContain(ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR);
+    expect(topbar.innerHTML).toContain('Return to Home &lt;private&gt; when you’re ready');
+    expect(topbar.innerHTML).toContain('normal server-switch review');
+    expect(topbar.innerHTML).toContain('not record details');
+    expect(topbar.innerHTML).not.toContain('is clear');
+    expect(topbar.innerHTML).not.toContain('fresh authoritative check');
+    expect(topbar.innerHTML).not.toContain('You&rsquo;re all caught up');
+
+    topbar.fireAction({
+      'data-action': 'review-recovery-excursion-return',
+      'data-server-profile-id': 'profile-home',
+    });
+    expect(reviewReturn).toHaveBeenCalledWith('profile-home');
+    expect(handle.isOpen()).toBe(false);
+    // Opening Account reviews the switch; it does not consume the return.
+    expect(handle.getRecoveryExcursionReturn()?.serverProfileId)
+      .toBe('profile-home');
+    handle.dispose();
+  });
+
+  it('announces a newly ready return and lets the owner explicitly stay', async () => {
+    const stay = vi.fn();
+    const { root, topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      connectionRecoveryProfile: {
+        id: 'profile-office',
+        label: 'Office server',
+      },
+      runConnectionRecoveryList: async () => ({ connections: [] }),
+      onReviewRecoveryExcursionReturn: () => 'opened',
+      onDismissRecoveryExcursionReturn: stay,
+    });
+    await handle.whenLoaded();
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    handle.setRecoveryExcursionReturn({
+      serverProfileId: 'profile-home',
+      serverProfileLabel: 'Renamed home',
+    });
+    expect(topbar.innerHTML).toContain('Return to Renamed home');
+    expect(firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe(
+      'A saved return to Renamed home is ready to review.',
+    );
+
+    topbar.fireAction({
+      'data-action': 'dismiss-recovery-excursion-return',
+      'data-server-profile-id': 'profile-home',
+    });
+    expect(stay).toHaveBeenCalledWith('profile-home');
+    expect(handle.getRecoveryExcursionReturn()).toBeNull();
+    expect(firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe('');
+    expect(topbar.innerHTML).toContain('You&rsquo;re all caught up');
+    expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
+    handle.dispose();
+  });
+
+  it('offers a quiet paused-return recheck without claiming readiness or replaying a receipt', async () => {
+    const continuation: AttentionRecoveryIntentContinuation = {
+      serverProfileId: 'profile-home',
+      serverProfileLabel: 'Home <private>',
+      landingHash: '#contracts',
+      areaLabel: 'Contracts',
+      intent: 'continue',
+      phase: 'ready',
+      remediation: null,
+    };
+    const resume = vi.fn(() => 'started' as const);
+    const { root, topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentContinuation: continuation,
+      onResumeRecoveryIntentContinuation: resume,
+    });
+    const triggerFocus = vi.fn();
+    (topbar as unknown as {
+      querySelector: (selector: string) => HTMLElement | null;
+    }).querySelector = (selector) => selector === '[data-action="open-attention"]'
+      ? { focus: triggerFocus } as unknown as HTMLElement
+      : null;
+    await handle.whenLoaded();
+
+    expect(handle.isOpen()).toBe(false);
+    expect(handle.getRecoveryIntentContinuation()).toEqual(continuation);
+    expect(topbar.innerHTML).toContain('>1<');
+    const announcer = firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    );
+    expect(announcer?.textContent).toBe('');
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      ATTENTION_RECOVERY_INTENT_CONTINUATION_ATTR,
+    );
+    expect(topbar.innerHTML).toContain('Finish returning to Contracts');
+    expect(topbar.innerHTML).toContain(
+      'Recued paused this return on Home &lt;private&gt; so it wouldn’t interrupt you.',
+    );
+    expect(topbar.innerHTML).not.toContain('Home <private>');
+    expect(topbar.innerHTML).toContain('Recheck area');
+    expect(topbar.innerHTML).toContain(
+      'aria-label="Recheck Contracts on Home &lt;private&gt;"',
+    );
+    expect(topbar.innerHTML).not.toContain('Contracts is ready');
+    expect(topbar.innerHTML).not.toContain('Back on');
+    expect(announcer?.textContent).toBe(
+      'A paused return to Contracts is saved for when you’re ready.',
+    );
+
+    topbar.fireAction({
+      'data-action': 'resume-recovery-intent-continuation',
+    });
+    expect(resume).toHaveBeenCalledOnce();
+    expect(resume).toHaveBeenCalledWith(continuation);
+    expect(handle.isOpen()).toBe(false);
+    expect(triggerFocus).toHaveBeenCalledOnce();
+    expect(triggerFocus).toHaveBeenCalledWith({ preventScroll: true });
+    // Starting the authoritative check is not completion. Bootstrap clears the
+    // item only after it focuses a useful current-route target.
+    expect(handle.getRecoveryIntentContinuation()).toEqual(continuation);
+    handle.setRecoveryIntentContinuation(null);
+    expect(handle.getRecoveryIntentContinuation()).toBeNull();
+    expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
+    handle.dispose();
+  });
+
+  it('keeps a failed paused recheck actionable and retires it on dismissal', async () => {
+    const dismiss = vi.fn();
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      onResumeRecoveryIntentContinuation: () => 'unavailable',
+      onDismissRecoveryIntentContinuation: dismiss,
+    });
+    await handle.whenLoaded();
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    handle.setRecoveryIntentContinuation({
+      serverProfileId: 'profile-home',
+      serverProfileLabel: 'Home server',
+      landingHash: '#connections/mail',
+      areaLabel: 'Mail',
+      intent: 'choose_again',
+      phase: 'ready',
+      remediation: null,
+    });
+
+    expect(topbar.innerHTML).toContain('Return to Mail and choose again');
+    topbar.fireAction({
+      'data-action': 'resume-recovery-intent-continuation',
+    });
+    expect(handle.isOpen()).toBe(true);
+    expect(topbar.innerHTML).toContain('can’t be rechecked right now');
+    expect(topbar.innerHTML).toContain('Recheck area');
+
+    topbar.fireAction({
+      'data-action': 'dismiss-recovery-intent-continuation',
+    });
+    expect(dismiss).toHaveBeenCalledOnce();
+    expect(handle.getRecoveryIntentContinuation()).toBeNull();
+    expect(topbar.innerHTML).not.toContain('can’t be rechecked right now');
+    expect(topbar.innerHTML).toContain('You&rsquo;re all caught up');
+    handle.dispose();
+  });
+
+  it('shows an explicit non-repeatable pending recheck when Attention is reopened', async () => {
+    const resume = vi.fn(() => 'started' as const);
+    const dismiss = vi.fn();
+    const { root, topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentContinuation: {
+        serverProfileId: 'profile-home',
+        serverProfileLabel: 'Home server',
+        landingHash: '#contracts',
+        areaLabel: 'Contracts',
+        intent: 'continue',
+        phase: 'checking',
+        remediation: null,
+      },
+      onResumeRecoveryIntentContinuation: resume,
+      onDismissRecoveryIntentContinuation: dismiss,
+    });
+    await handle.whenLoaded();
+
+    const announcer = firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    );
+    expect(announcer?.textContent).toBe('');
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="checking"');
+    expect(topbar.innerHTML).toContain('aria-busy="true"');
+    expect(topbar.innerHTML).toContain('Rechecking Contracts');
+    expect(topbar.innerHTML).toContain('Rechecking&hellip;');
+    expect(topbar.innerHTML).toContain('disabled');
+    expect(topbar.innerHTML).toMatch(
+      /<button[^>]*aria-busy="true"[^>]*disabled[^>]*>\s*Rechecking&hellip;/s,
+    );
+    expect(topbar.innerHTML).not.toContain(
+      'data-action="resume-recovery-intent-continuation"',
+    );
+    expect(announcer?.textContent).toBe(
+      'Rechecking Contracts on Home server.',
+    );
+
+    // A stale/synthetic activation cannot start a duplicate request even if
+    // it bypasses the browser's disabled-button behavior.
+    topbar.fireAction({
+      'data-action': 'resume-recovery-intent-continuation',
+    });
+    expect(resume).not.toHaveBeenCalled();
+    expect(handle.isOpen()).toBe(true);
+    topbar.fireAction({
+      'data-action': 'dismiss-recovery-intent-continuation',
+    });
+    expect(dismiss).toHaveBeenCalledOnce();
+    handle.dispose();
+  });
+
+  it('turns a failed recheck into explicit Review and Try again choices', async () => {
+    const continuation: AttentionRecoveryIntentContinuation = {
+      serverProfileId: 'profile-home',
+      serverProfileLabel: 'Home <private>',
+      landingHash: '#contracts',
+      areaLabel: 'Contracts',
+      intent: 'choose_again',
+      phase: 'failed',
+      remediation: 'retry',
+    };
+    const review = vi.fn(() => 'started' as const);
+    const resume = vi.fn(() => 'started' as const);
+    const { root, topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentContinuation: continuation,
+      onResumeRecoveryIntentContinuation: resume,
+      onReviewRecoveryIntentContinuation: review,
+    });
+    const triggerFocus = vi.fn();
+    (topbar as unknown as {
+      querySelector: (selector: string) => HTMLElement | null;
+    }).querySelector = (selector) => selector === '[data-action="open-attention"]'
+      ? { focus: triggerFocus } as unknown as HTMLElement
+      : null;
+    await handle.whenLoaded();
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="failed"');
+    expect(topbar.innerHTML).toContain('Contracts couldn’t be refreshed');
+    expect(topbar.innerHTML).toContain('Review Contracts');
+    expect(topbar.innerHTML).toContain('Try again');
+    expect(ATTENTION_TOPBAR_STYLES).toContain(
+      '.attention-recovery-intent-continuation[data-phase="failed"]',
+    );
+    expect(topbar.innerHTML).toContain(
+      'aria-label="Review Contracts on Home &lt;private&gt;"',
+    );
+    expect(topbar.innerHTML).not.toContain('Home <private>');
+    expect(firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe(
+      'Contracts couldn’t be refreshed. Review the area or try again.',
+    );
+
+    topbar.fireAction({
+      'data-action': 'review-recovery-intent-continuation',
+    });
+    expect(review).toHaveBeenCalledWith(continuation);
+    expect(resume).not.toHaveBeenCalled();
+    expect(handle.isOpen()).toBe(false);
+    expect(triggerFocus).toHaveBeenCalledWith({ preventScroll: true });
+    handle.dispose();
+  });
+
+  it('routes a disconnected recheck through Account without exposing failure detail', async () => {
+    const continuation: AttentionRecoveryIntentContinuation = {
+      serverProfileId: 'profile-home',
+      serverProfileLabel: 'Home <private>',
+      landingHash: '#contracts',
+      areaLabel: 'Contracts',
+      intent: 'choose_again',
+      phase: 'failed',
+      remediation: 'connection',
+    };
+    const remediate = vi.fn(() => 'started' as const);
+    const review = vi.fn(() => 'started' as const);
+    const resume = vi.fn(() => 'started' as const);
+    const { root, topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentContinuation: continuation,
+      onResumeRecoveryIntentContinuation: resume,
+      onReviewRecoveryIntentContinuation: review,
+      onRemediateRecoveryIntentConnection: remediate,
+    });
+    await handle.whenLoaded();
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-remediation="connection"');
+    expect(topbar.innerHTML).toContain(
+      'Reconnect before returning to Contracts',
+    );
+    expect(topbar.innerHTML).toContain(
+      'return you to the exact place to choose again',
+    );
+    expect(topbar.innerHTML).toContain('Review connection');
+    expect(topbar.innerHTML).toContain('Review Contracts');
+    expect(topbar.innerHTML).not.toContain('Try again');
+    expect(ATTENTION_TOPBAR_STYLES).toContain(
+      '[data-phase="failed"][data-remediation="connection"]',
+    );
+    expect(ATTENTION_TOPBAR_STYLES).toContain(
+      '.attention-plan-resolution-actions > :first-child:nth-last-child(3)',
+    );
+    expect(topbar.innerHTML).toContain(
+      'aria-label="Review the Home &lt;private&gt; connection before returning to Contracts"',
+    );
+    expect(topbar.innerHTML).not.toContain('Home <private>');
+    expect(firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe(
+      'Contracts needs Home <private> connected. Review the connection to retry the exact return after reconnect.',
+    );
+
+    topbar.fireAction({
+      'data-action': 'remediate-recovery-intent-connection',
+    });
+    expect(remediate).toHaveBeenCalledWith(continuation);
+    expect(review).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
+    expect(handle.isOpen()).toBe(false);
+    handle.dispose();
+  });
+
+  it('makes the armed reconnect retry explicit and non-repeatable', async () => {
+    const continuation: AttentionRecoveryIntentContinuation = {
+      serverProfileId: 'profile-home',
+      serverProfileLabel: 'Home server',
+      landingHash: '#connections/mail',
+      areaLabel: 'Mail',
+      intent: 'continue',
+      phase: 'waiting_for_connection',
+      remediation: 'connection',
+    };
+    const remediate = vi.fn(() => 'started' as const);
+    const resume = vi.fn(() => 'started' as const);
+    const dismiss = vi.fn();
+    const { root, topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentContinuation: continuation,
+      onResumeRecoveryIntentContinuation: resume,
+      onRemediateRecoveryIntentConnection: remediate,
+      onDismissRecoveryIntentContinuation: dismiss,
+    });
+    await handle.whenLoaded();
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="waiting_for_connection"');
+    expect(topbar.innerHTML).toContain('data-remediation="connection"');
+    expect(topbar.innerHTML).toContain('Waiting to recheck Mail');
+    expect(topbar.innerHTML).toContain('Waiting for connection&hellip;');
+    expect(topbar.innerHTML).toContain('aria-busy="true"');
+    expect(topbar.innerHTML).toContain('Stop waiting');
+    expect(topbar.innerHTML).not.toContain(
+      'data-action="resume-recovery-intent-continuation"',
+    );
+    expect(firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe(
+      'Waiting for Home server. Mail will be rechecked after it reconnects.',
+    );
+
+    // A synthetic resume activation cannot race the reconnect-owned retry.
+    topbar.fireAction({
+      'data-action': 'resume-recovery-intent-continuation',
+    });
+    expect(resume).not.toHaveBeenCalled();
+    topbar.fireAction({
+      'data-action': 'dismiss-recovery-intent-continuation',
+    });
+    expect(dismiss).toHaveBeenCalledOnce();
+    expect(handle.getRecoveryIntentContinuation()).toBeNull();
+    expect(remediate).not.toHaveBeenCalled();
+    handle.dispose();
+  });
+
+  it('fails closed to route review when no authoritative retry exists', async () => {
+    const continuation: AttentionRecoveryIntentContinuation = {
+      serverProfileId: 'profile-home',
+      serverProfileLabel: 'Home server',
+      landingHash: '#settings',
+      areaLabel: 'Settings',
+      intent: 'continue',
+      phase: 'failed',
+      remediation: 'review',
+    };
+    const review = vi.fn(() => 'started' as const);
+    const resume = vi.fn(() => 'unavailable' as const);
+    const { root, topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentContinuation: continuation,
+      onResumeRecoveryIntentContinuation: resume,
+      onReviewRecoveryIntentContinuation: review,
+    });
+    await handle.whenLoaded();
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-remediation="review"');
+    expect(topbar.innerHTML).toContain('Review Settings before continuing');
+    expect(topbar.innerHTML).toContain('Review Settings');
+    expect(topbar.innerHTML).not.toContain('Try again');
+    expect(topbar.innerHTML).not.toContain('Review connection');
+    expect(ATTENTION_TOPBAR_STYLES).toContain(
+      '[data-phase="failed"][data-remediation="review"]',
+    );
+    expect(firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe(
+      'Settings cannot be safely rechecked here. Review the current area before continuing.',
+    );
+
+    // A stale/synthetic retry activation cannot bypass the closed-list
+    // review-only remediation selected by bootstrap.
+    topbar.fireAction({
+      'data-action': 'resume-recovery-intent-continuation',
+    });
+    expect(resume).not.toHaveBeenCalled();
+    expect(handle.isOpen()).toBe(true);
+    topbar.fireAction({
+      'data-action': 'review-recovery-intent-continuation',
+    });
+    expect(review).toHaveBeenCalledWith(continuation);
+    expect(resume).not.toHaveBeenCalled();
+    expect(handle.isOpen()).toBe(false);
     handle.dispose();
   });
 
@@ -409,7 +1479,9 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(topbar.innerHTML).toContain(
       'gateway.preflight ask for a reception inbox awaiting_approval hold',
     );
-    expect(topbar.innerHTML).toContain('gateway ask');
+    expect(topbar.innerHTML).toContain(
+      'Connected action &middot; Answer to continue',
+    );
     expect(topbar.innerHTML).not.toContain('notification.pending_asks');
     expect(topbar.innerHTML).toContain(
       `${ATTENTION_GATEWAY_ASK_ROW_ATTR}="gw-reception-inbox-preflight"`,
@@ -436,13 +1508,18 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(topbar.innerHTML).toContain('class="attention-list"');
     expect(topbar.innerHTML).toContain('Review HubSpot write');
     expect(topbar.innerHTML).toContain('Allow update to HubSpot contact?');
-    expect(topbar.innerHTML).toContain('gateway ask');
+    expect(topbar.innerHTML).toContain(
+      'Connected action &middot; Answer to continue',
+    );
     expect(topbar.innerHTML).not.toContain('notification.pending_asks');
     expect(topbar.innerHTML).toContain(
       `${ATTENTION_GATEWAY_ASK_ROW_ATTR}="gw-1"`,
     );
     expect(topbar.innerHTML).toContain('data-action="gateway-ask-answer"');
-    expect(topbar.innerHTML).toContain(`href="#approvals" ${ATTENTION_SEE_ALL_LINK_ATTR}`);
+    expect(topbar.innerHTML).toContain(
+      'aria-label="Approve: Review HubSpot write"',
+    );
+    expect(topbar.innerHTML).toContain(ATTENTION_SEE_ALL_LINK_ATTR);
     handle.dispose();
   });
 
@@ -482,7 +1559,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
 
     expect(runPendingAsksList).toHaveBeenCalledTimes(3);
     expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
-    expect(topbar.innerHTML).toContain('All clear');
+    expect(topbar.innerHTML).toContain('You&rsquo;re all caught up');
     handle.dispose();
   });
 
@@ -582,32 +1659,39 @@ describe('D-174 - approval attention top-bar adapter', () => {
     });
     await tick();
     expect(runApprovalList).toHaveBeenCalledTimes(3);
-    expect(topbar.innerHTML).toContain('All clear');
+    expect(topbar.innerHTML).toContain('You&rsquo;re all caught up');
     expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
     handle.dispose();
   });
 
-  it('renders all-clear when opened with no pending approvals', async () => {
+  it('renders a calm all-caught-up state when no decision is pending', async () => {
     const { topbar, handle } = mountFor({ rows: () => [] });
     await handle.whenLoaded();
 
     topbar.fireAction({ 'data-action': 'open-attention' });
 
-    expect(topbar.innerHTML).toContain('All clear');
+    expect(topbar.innerHTML).toContain('You&rsquo;re all caught up');
+    expect(topbar.innerHTML).toContain('No items are waiting on you.');
     expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
     handle.dispose();
   });
 
   it('removes the persistent host and unsubscribes on dispose', async () => {
-    const { root, handle, approvalChanged, sub } = mountFor();
+    const { doc, root, handle, approvalChanged, sub } = mountFor();
     await handle.whenLoaded();
-    expect(root.childList).toHaveLength(2);
+    expect(root.childList).toHaveLength(4);
+    expect(firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )).toBeDefined();
 
     handle.dispose();
 
     expect(root.childList).toHaveLength(0);
     expect(approvalChanged.unsubCount()).toBe(1);
     expect(sub.unsubCount()).toBe(3);
+    expect(doc.listeners.get('click')?.size ?? 0).toBe(0);
+    expect(doc.listeners.get('keydown')?.size ?? 0).toBe(0);
   });
 });
 
@@ -766,8 +1850,12 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
     await handle.whenLoaded();
     topbar.fireAction({ 'data-action': 'open-attention' });
 
-    expect(topbar.innerHTML).toContain('Run mail-send');
-    expect(topbar.innerHTML).toContain('chat plan - tier 2');
+    expect(topbar.innerHTML).toContain('Run Mail send');
+    expect(topbar.innerHTML).toContain('Chat approval &middot; Recipe');
+    expect(topbar.innerHTML).toContain('aria-label="Approve: Mail send"');
+    expect(topbar.innerHTML).toContain(
+      'aria-label="Review Mail send in Chat"',
+    );
     expect(topbar.innerHTML).toContain('data-action="chat-plan-decide"');
 
     topbar.fireAction({
@@ -792,7 +1880,7 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
     expect(topbar.innerHTML).toContain(
       'href="#chat/session/s1/plan/pl-1/answer/message-review"',
     );
-    expect(topbar.innerHTML).not.toContain('All clear');
+    expect(topbar.innerHTML).not.toContain('You&rsquo;re all caught up');
     const announcer = firstByAttr(
       root,
       ATTENTION_CHAT_PLAN_RESOLUTION_ANNOUNCER_ATTR,
@@ -808,7 +1896,7 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
     handle.dispose();
   });
 
-  it('announces a resolution only when its blocking-tab handoff is visible', async () => {
+  it('announces a resolution only when the attention handoff is visible', async () => {
     const chatPlans = makeFakeChatPlans([
       plan('pl-tab', { message_id: 'message-tab' }),
     ]);
@@ -819,12 +1907,6 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
       runChatPlanResolve: vi.fn(async () => ({ ok: true })),
     });
     await handle.whenLoaded();
-    topbar.fireAction({ 'data-action': 'open-attention' });
-    topbar.fireAction({
-      'data-action': 'set-attention-tab',
-      'data-attention-tab': 'notifications',
-    });
-
     const announcer = firstByAttr(
       root,
       ATTENTION_CHAT_PLAN_RESOLUTION_ANNOUNCER_ATTR,
@@ -835,10 +1917,7 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
     );
     expect(announcer.textContent).toBe('');
 
-    topbar.fireAction({
-      'data-action': 'set-attention-tab',
-      'data-attention-tab': 'blocking',
-    });
+    topbar.fireAction({ 'data-action': 'open-attention' });
     expect(topbar.innerHTML).toContain(ATTENTION_CHAT_PLAN_RESOLUTION_ATTR);
     expect(announcer.textContent).toContain(
       'Approved once for these exact details. The action has not run.',
@@ -874,9 +1953,7 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
     topbar.fireAction({ 'data-action': 'open-attention' });
 
     expect(topbar.innerHTML).toContain(ATTENTION_CHAT_PLAN_RESOLUTION_ATTR);
-    expect(topbar.innerHTML).toContain(
-      "Pending decisions couldn't be verified.",
-    );
+    expect(topbar.innerHTML).toContain('We couldn&rsquo;t verify the queue');
     handle.dispose();
   });
 
@@ -893,10 +1970,8 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
     await handle.whenLoaded();
     topbar.fireAction({ 'data-action': 'open-attention' });
 
-    expect(topbar.innerHTML).toContain('Fresh review: mail-send');
-    expect(topbar.innerHTML).toContain(
-      'new permission after uncertain outcome - tier 2',
-    );
+    expect(topbar.innerHTML).toContain('Review again: Mail send');
+    expect(topbar.innerHTML).toContain('Fresh approval &middot; Recipe');
     expect(topbar.innerHTML).toContain(
       'Earlier permission was used; review this action again before approving.',
     );
@@ -963,7 +2038,7 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
     const chatPlans = makeFakeChatPlans([
       plan('pl-remote-resolve', { message_id: 'message-remote' }),
     ]);
-    const { topbar, handle } = mountFor({
+    const { root, topbar, handle } = mountFor({
       rows: () => [],
       asks: () => [],
       chatPlans: chatPlans.store,
@@ -981,12 +2056,20 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
     });
     await tick();
     expect(topbar.innerHTML).toContain('temporary resolve failure');
+    const errorAnnouncer = firstByAttr(
+      root,
+      ATTENTION_ERROR_ANNOUNCER_ATTR,
+    )!;
+    expect(errorAnnouncer.getAttribute('role')).toBe('status');
+    expect(errorAnnouncer.getAttribute('aria-live')).toBe('polite');
+    expect(errorAnnouncer.textContent).toContain('temporary resolve failure');
     expect(chatPlans.refresh).toHaveBeenCalledTimes(1);
 
     // Production equivalent: chat.plan_resolved arrives from another paired
     // client and the shared store removes the row + retains its outcome.
     chatPlans.resolve('pl-remote-resolve', 'cancelled');
     expect(topbar.innerHTML).not.toContain('temporary resolve failure');
+    expect(errorAnnouncer.textContent).toBe('');
     expect(topbar.innerHTML).toContain('Rejected mail-send');
     expect(topbar.innerHTML).toContain(
       'The action will not run. Return to Chat if you want to adjust the request.',
@@ -994,14 +2077,14 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
     expect(topbar.innerHTML).toContain(
       'href="#chat/session/s1/plan/pl-remote-resolve/answer/message-remote"',
     );
-    expect(topbar.innerHTML).not.toContain('All clear');
+    expect(topbar.innerHTML).not.toContain('You&rsquo;re all caught up');
 
     topbar.fireAction({
       'data-action': 'dismiss-chat-plan-resolution',
       'data-plan-id': 'pl-remote-resolve',
     });
     expect(topbar.innerHTML).not.toContain(ATTENTION_CHAT_PLAN_RESOLUTION_ATTR);
-    expect(topbar.innerHTML).toContain('All clear');
+    expect(topbar.innerHTML).toContain('You&rsquo;re all caught up');
     handle.dispose();
   });
 
@@ -1043,7 +2126,7 @@ describe('D-174 / R20 - bell popover: chat plans + destructive confirm', () => {
 
     chatPlans.set([plan('pl-2')]);
     expect(topbar.innerHTML).toContain('data-action="chat-plan-decide"');
-    expect(topbar.innerHTML).toContain('Run mail-send');
+    expect(topbar.innerHTML).toContain('Run Mail send');
     handle.dispose();
   });
 

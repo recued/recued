@@ -41,7 +41,9 @@ const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   // verb-op (15 writes → +1 read): the domain's READ half had no grant handle at
   // all, so `work.search` / `work.read` were default-ON for every door.
   // D-210 added the 3 `core.work-entity.booking.*` CRUD ops (16 → 19).
-  'work-entity': 19,
+  // D-221 added the list/get backing ingredients for pack-owned Records
+  // reachability (19 → 21).
+  'work-entity': 21,
   // D-198 follow-on — `core.memory.audit.read` moved OUT of `memory` (13→12)
   // into its own `audit` domain: run history is not the knowledge pool.
   memory: 12,
@@ -281,6 +283,8 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // D-192 F1 — the always-held proposal surface (all-actor approval lift).
       'core.work-entity.commitment.propose|work-entity|commitment-propose|write',
       'core.work-entity.commitment.update|work-entity|commitment-update|write',
+      'core.work-entity.get|work-entity|work-entity-get|read',
+      'core.work-entity.list|work-entity|work-entity-list|read',
       'core.work-entity.note.create|work-entity|note-create|write',
       'core.work-entity.note.delete|work-entity|note-delete|destructive',
       'core.work-entity.note.update|work-entity|note-update|write',

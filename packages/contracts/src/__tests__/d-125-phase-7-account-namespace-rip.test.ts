@@ -25,6 +25,7 @@
  *  forbid (`account.slack.token`, `account.<vendor>.<field>`) outside
  *  the allowlist is a violation. */
 
+import { spawnSync } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -78,6 +79,48 @@ const walk = (dir: string, out: string[] = []): string[] => {
   return out;
 };
 
+/** Live source is TRACKED source. 57% of the walk (52 MB of 92 MB, in 13 files)
+ *  was gitignored build output — three ~13 MB `dist-bench` bundles, the
+ *  webclient and bridge builds, the marketplace SSR assets, the e2e harness
+ *  bundles. Reading them is not merely slow, it is wrong twice over: a bundle
+ *  contains whatever its sources contain, so it adds no coverage the scan does
+ *  not already have, and a STALE bundle can fire this fence for a violation
+ *  that no longer exists in any source file — a false positive indistinguishable
+ *  from the flake this test was written off as.
+ *
+ *  Directory-name skipping cannot express it: `apps/webclient/e2e/harness/`
+ *  holds tracked `.ts` harness source beside gitignored `.js` bundles, and two
+ *  tracked `.js` files elsewhere (`public/sw.js`, `functions/recipe-validator.js`)
+ *  are genuine runtime code this fence must keep covering.
+ *
+ *  One batched `git check-ignore` call. If git is unavailable the filter is a
+ *  no-op — the fence stays CORRECT and merely slow, never silently empty; the
+ *  non-empty-corpus assertion below is measured on the filtered list precisely
+ *  so an over-broad result cannot pass as green. */
+const withoutIgnored = (files: string[]): string[] => {
+  if (files.length === 0) return files;
+  let ignored: Set<string>;
+  try {
+    const out = spawnSync('git', ['check-ignore', '--stdin'], {
+      cwd: REPO_ROOT,
+      input: files.join('\n'),
+      encoding: 'utf8',
+    });
+    // Exit 0 = some paths ignored, 1 = none ignored. Anything else (git absent,
+    // not a checkout) means we learned nothing — keep every file.
+    if (out.error !== undefined || (out.status !== 0 && out.status !== 1)) return files;
+    ignored = new Set((out.stdout ?? '').split('\n').filter((p) => p !== ''));
+  } catch {
+    return files;
+  }
+  return files.filter((f) => !ignored.has(f) && !ignored.has(relative(REPO_ROOT, f)));
+};
+
+const liveSourceFiles = (): string[] =>
+  withoutIgnored(
+    SCAN_ROOTS.flatMap((root) => walk(join(REPO_ROOT, root))).filter((f) => !isTestFile(f)),
+  );
+
 const isCommentLine = (line: string): boolean => {
   const trimmed = line.trim();
   return (
@@ -120,30 +163,93 @@ const isAllowlistedLine = (file: string, line: string): boolean => {
  *  + interpolation forms are the actual runtime hooks. */
 const ACCOUNT_INTERPOLATION = /\{\{account\.[a-zA-Z]/;
 const ACCOUNT_DOTTED_PATH = /\baccount\.(slack|telegram|email|gmail|imap|caldav|graph|google|outlook)\.\w/;
+const FORBIDDEN = [ACCOUNT_INTERPOLATION, ACCOUNT_DOTTED_PATH];
+
+/** The cheap pre-filter's premise: EVERY forbidden pattern requires the literal
+ *  `account.`, so a file without that substring cannot contain a violation and
+ *  need not be split into lines at all.
+ *
+ *  ⚠ This is the whole safety of the optimisation, so it is asserted rather
+ *  than assumed (below). Add a pattern that does not contain `account.` — say a
+ *  bare `{{account}}` form — and the fast path would skip every file it lives
+ *  in, silently, while this gate kept reporting green. */
+const PREFILTER = 'account.';
+
+const violationsIn = (file: string, content: string): string[] => {
+  // 2,480 source files / ~91 MB per run, of which fewer than 100 contain the
+  // token at all. Splitting and regexing all of it took ~2s alone and blew past
+  // vitest's 5s default under parallel load — a gate that fails on machine load
+  // is a gate that gets written off as flaky, which is exactly what happened to
+  // this one (three times in one session) before anyone read the timing.
+  if (!content.includes(PREFILTER)) return [];
+  const out: string[] = [];
+  content.split('\n').forEach((line, idx) => {
+    if (isCommentLine(line)) return;
+    if (isAllowlistedLine(file, line)) return;
+    if (FORBIDDEN.some((re) => re.test(line))) {
+      out.push(`${relative(REPO_ROOT, file)}:${idx + 1} → ${line.trim()}`);
+    }
+  });
+  return out;
+};
+
+// ── The fence must BITE. A scan over a clean corpus passes vacuously the day
+//    the matcher — or the pre-filter that decides which files reach it —
+//    becomes a no-op. These cases prove it rejects, independently of what the
+//    tree happens to contain.
+describe('the fence bites', () => {
+  const check = (line: string): string[] =>
+    violationsIn(join(REPO_ROOT, 'packages/x/src/live.ts'), line);
+
+  it('every forbidden pattern requires the pre-filter substring', () => {
+    // The optimisation's premise, asserted. A pattern that can match without
+    // `account.` would be silently skipped in any file lacking the token.
+    for (const re of FORBIDDEN) {
+      expect(re.source, `${re.source} must contain the pre-filter literal`)
+        .toContain('account\\.');
+    }
+  });
+
+  it('catches the interpolation form', () => {
+    expect(check('const t = "{{account.slack.token}}";')).toHaveLength(1);
+  });
+
+  it('catches the dotted runtime path', () => {
+    expect(check('const t = stores.account.gmail.access_token;')).toHaveLength(1);
+  });
+
+  it('lets the comment, allowlist, and unrelated forms through', () => {
+    expect(check('// historical: {{account.slack.token}} was retired')).toEqual([]);
+    expect(check('const id = accountId;')).toEqual([]);
+    expect(check('const a = accounting.total;')).toEqual([]);
+  });
+
+  it('the pre-filter does not skip a file that contains a violation', () => {
+    // The case the fast path could break: a real violation must survive it.
+    const content = 'const x = 1;\nconst t = "{{account.telegram.token}}";\n';
+    expect(violationsIn(join(REPO_ROOT, 'packages/x/src/live.ts'), content))
+      .toHaveLength(1);
+  });
+});
 
 describe('D-125 P7.3 — account.* namespace runtime RIP', () => {
+  it('scans a non-empty source corpus', () => {
+    // Anti-vacuous, measured on the FILTERED list: a moved scan root, or an
+    // ignore filter that swallowed everything, must FAIL here rather than
+    // report a green "nothing to check".
+    expect(liveSourceFiles().length).toBeGreaterThan(1000);
+  });
+
   it('no source file outside the allowlist references account.* at runtime', () => {
     const violations: string[] = [];
-    for (const root of SCAN_ROOTS) {
-      const files = walk(join(REPO_ROOT, root)).filter((f) => !isTestFile(f));
-      for (const file of files) {
-        let content: string;
-        try {
-          content = readFileSync(file, 'utf8');
-        } catch {
-          continue;
-        }
-        const lines = content.split('\n');
-        lines.forEach((line, idx) => {
-          if (isCommentLine(line)) return;
-          if (isAllowlistedLine(file, line)) return;
-          if (ACCOUNT_INTERPOLATION.test(line) || ACCOUNT_DOTTED_PATH.test(line)) {
-            violations.push(
-              `${relative(REPO_ROOT, file)}:${idx + 1} → ${line.trim()}`,
-            );
-          }
-        });
+    for (const file of liveSourceFiles()) {
+      let content: string;
+      try {
+        content = readFileSync(file, 'utf8');
+      } catch {
+        continue;
       }
+      violations.push(...violationsIn(file, content));
     }
     expect(violations, violations.length > 0
       ? `account.* runtime callsites found:\n${violations.join('\n')}`

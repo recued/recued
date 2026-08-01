@@ -54,7 +54,7 @@ export const PAIR_SERVER_ERROR_COPY = {
     "That recovery key doesn't match the one your server has on file. Re-check your written copy and re-enter.",
   bad_request: 'The server rejected the request. Re-check the fields and try again.',
   server_not_configured:
-    'The server is missing its recovery-key check store. Ask your admin to run `recued-server pair` first.',
+    'This server is not ready to verify a recovery key. Ask the person who runs it to check the server logs and configuration, then restart Recued before trying again. A fresh pairing code will not fix this server setup problem.',
   // ── D-212-era codes the hand-copied lists never learned ──────────────
   instance_revoked:
     'This device was removed from your server, so it can’t re-use its old identity. Clear this browser from Settings (or use a different one) to pair again as a new device.',

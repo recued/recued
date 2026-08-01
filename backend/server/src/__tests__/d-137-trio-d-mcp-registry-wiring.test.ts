@@ -103,6 +103,9 @@ const mkDeps = (overrides: {
     recipeStore,
     executorConfig: { manifests },
     baseVault: {},
+    // D-228 slice 6 — this suite models the OWNER (no per-tool checklist);
+    // absent now DENIES, so the principal is stated positively.
+    ownerAdmitAll: true,
     ...(overrides.registry ? { internalRegistry: overrides.registry } : {}),
     ...(overrides.audit ? { auditLog: overrides.audit } : {}),
     ...(overrides.mcpTokenId !== undefined

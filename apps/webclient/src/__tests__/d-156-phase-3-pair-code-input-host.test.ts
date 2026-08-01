@@ -41,9 +41,45 @@ import {
   PAIR_CODE_INPUT_SERVER_CODE_ATTR,
   PAIR_CODE_INPUT_SUBMIT_ID,
   PAIR_CODE_INPUT_RECOVERY_PREFIX,
+  PAIR_CODE_INPUT_REAUTH_NOTICE_ATTR,
+  PAIR_CODE_INPUT_RECOVERY_HELP_ATTR,
+  PAIR_CODE_INPUT_RECOVERY_CORRECTION_ATTR,
+  PAIR_CODE_INPUT_RECOVERY_TRIAGE_ATTR,
+  PAIR_CODE_INPUT_RECOVERY_STOP_ATTR,
+  PAIR_CODE_INPUT_RECOVERY_STOP_REENTRY_ATTR,
+  PAIR_CODE_INPUT_RECOVERY_RESUME_NOTICE_ATTR,
+  PAIR_CODE_INPUT_REPLACEMENT_REVIEW_ATTR,
+  PAIR_CODE_INPUT_REPLACEMENT_CONFIRMED_ATTR,
+  PAIR_CODE_INPUT_REPLACEMENT_NOT_FRESH_ATTR,
+  PAIR_CODE_INPUT_RECOVERY_DIAGNOSTIC_ATTR,
+  PAIR_CODE_INPUT_RECOVERY_DIAGNOSTIC_SUMMARY_ATTR,
+  PAIR_CODE_INPUT_RECOVERY_DIAGNOSTIC_STATUS_ATTR,
+  PAIR_CODE_INPUT_SECURE_RESUME_NOTICE_ATTR,
+  PAIR_CODE_INPUT_CHANGE_SERVER_ACTION,
+  PAIR_CODE_INPUT_REVIEW_REJECTED_SERVER_ACTION,
+  PAIR_CODE_INPUT_REENTER_REJECTED_KEY_ACTION,
+  PAIR_CODE_INPUT_FIND_REJECTED_KEY_ACTION,
+  PAIR_CODE_INPUT_USE_SAVED_SERVER_ACTION,
+  PAIR_CODE_INPUT_COPY_RECOVERY_DIAGNOSTIC_ACTION,
+  PAIR_CODE_INPUT_RESUME_RECOVERY_KEY_ACTION,
+  PAIR_CODE_INPUT_RESUME_SERVER_REVIEW_ACTION,
+  PAIR_CODE_INPUT_CONFIRM_REPLACEMENT_SERVER_ACTION,
+  PAIR_CODE_INPUT_EDIT_REPLACEMENT_SERVER_ACTION,
+  PAIR_CODE_INPUT_USE_REPLACEMENT_EXISTING_KEY_ACTION,
+  PAIR_CODE_INPUT_INTERRUPTED_NOTICE_ATTR,
+  PAIR_CODE_INPUT_TAKEOVER_READY_ATTR,
+  PAIR_CODE_INPUT_TAKEOVER_OWNER_ATTR,
+  PAIR_CODE_INPUT_SUCCESSION_ATTR,
+  PAIR_CODE_INPUT_RECOVERY_OWNER_ATTR,
+  PAIR_CODE_INPUT_RECOVERY_OWNER_ELSEWHERE_ATTR,
+  PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ATTR,
+  PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ELSEWHERE_ATTR,
+  PAIR_CODE_INPUT_RESTART_AFTER_INTERRUPTION_ACTION,
   PAIR_CODE_INPUT_GENERATE_ALREADY_ENROLLED_COPY,
+  PAIR_CODE_INPUT_REPLACEMENT_ALREADY_ENROLLED_COPY,
   type PairCodeInputCommitResult,
 } from '../auth/pair-code-input-host.js';
+import type { PairFinalizeLockProvider } from '../auth/pair-code-success.js';
 import {
   PAIR_SERVER_ERROR_COPY,
   PAIR_SERVER_REFUSED_COPY,
@@ -66,6 +102,7 @@ interface FakeButton {
   disabled: boolean;
   textContent: string;
   dataset: Record<string, string>;
+  focus(options?: FocusOptions): void;
 }
 
 interface FakeStatus {
@@ -84,6 +121,28 @@ const makeFakeSplash = () => {
   let submitBtn: FakeButton | null = null;
   let statusEl: FakeStatus | null = null;
   let recoveryCounter: { textContent: string } | null = null;
+  let recoveryCorrectionEl: { id: string; focus(): void } | null = null;
+  let recoveryStopEl: { id: string; focus(): void } | null = null;
+  let recoveryDiagnosticSummaryEl: { focus(): void } | null = null;
+  let recoveryDiagnosticCopyEl: { focus(): void } | null = null;
+  let recoveryDiagnosticStatusEl: { focus(): void } | null = null;
+  let recoveryHelpEl: {
+    open: boolean;
+    setAttribute(name: string, value: string): void;
+    querySelector(selector: string): { focus(): void } | null;
+  } | null = null;
+  let activeElement: unknown = null;
+  const submitFocus = vi.fn();
+  const recoveryFocus = vi.fn();
+  const recoveryCorrectionFocus = vi.fn();
+  const recoveryStopFocus = vi.fn();
+  const recoveryDiagnosticSummaryFocus = vi.fn();
+  const recoveryDiagnosticCopyFocus = vi.fn();
+  const recoveryDiagnosticStatusFocus = vi.fn();
+  const recoveryHelpSummaryFocus = vi.fn();
+  const serverFocus = vi.fn();
+  const serverSelect = vi.fn();
+  const bootPendingRemove = vi.fn();
 
   // Decode the handful of HTML entities `e()` produces so test
   // assertions can compare against the original copy strings.
@@ -99,6 +158,12 @@ const makeFakeSplash = () => {
     submitBtn = null;
     statusEl = null;
     recoveryCounter = null;
+    recoveryCorrectionEl = null;
+    recoveryStopEl = null;
+    recoveryDiagnosticSummaryEl = null;
+    recoveryDiagnosticCopyEl = null;
+    recoveryDiagnosticStatusEl = null;
+    recoveryHelpEl = null;
     if (html.includes(`id="${PAIR_CODE_INPUT_SUBMIT_ID}"`)) {
       const disabled = new RegExp(
         `<button[^>]*id="${PAIR_CODE_INPUT_SUBMIT_ID}"[^>]*\\sdisabled`,
@@ -113,6 +178,10 @@ const makeFakeSplash = () => {
         disabled,
         textContent: labelMatch ? labelMatch[1] : '',
         dataset: { action: 'pair-code-input-submit' },
+        focus: (options?: FocusOptions) => {
+          activeElement = submitBtn;
+          submitFocus(options);
+        },
       };
     }
     if (html.includes(`id="${PAIR_CODE_INPUT_STATUS_ID}"`)) {
@@ -140,6 +209,61 @@ const makeFakeSplash = () => {
     if (counterMatch) {
       recoveryCounter = { textContent: counterMatch[1].trim() };
     }
+    if (html.includes(` ${PAIR_CODE_INPUT_RECOVERY_CORRECTION_ATTR}`)) {
+      recoveryCorrectionEl = {
+        id: 'webclient-pair-code-input-recovery-correction',
+        focus: () => {
+          activeElement = recoveryCorrectionEl;
+          recoveryCorrectionFocus();
+        },
+      };
+    }
+    if (html.includes(` ${PAIR_CODE_INPUT_RECOVERY_STOP_ATTR}`)) {
+      recoveryStopEl = {
+        id: 'webclient-pair-code-input-recovery-stop',
+        focus: () => {
+          activeElement = recoveryStopEl;
+          recoveryStopFocus();
+        },
+      };
+    }
+    if (html.includes(` ${PAIR_CODE_INPUT_RECOVERY_DIAGNOSTIC_SUMMARY_ATTR}`)) {
+      recoveryDiagnosticSummaryEl = {
+        focus: () => {
+          activeElement = recoveryDiagnosticSummaryEl;
+          recoveryDiagnosticSummaryFocus();
+        },
+      };
+    }
+    if (html.includes(
+      `data-action="${PAIR_CODE_INPUT_COPY_RECOVERY_DIAGNOSTIC_ACTION}"`,
+    )) {
+      recoveryDiagnosticCopyEl = {
+        focus: () => {
+          activeElement = recoveryDiagnosticCopyEl;
+          recoveryDiagnosticCopyFocus();
+        },
+      };
+    }
+    if (html.includes(` ${PAIR_CODE_INPUT_RECOVERY_DIAGNOSTIC_STATUS_ATTR}`)) {
+      recoveryDiagnosticStatusEl = {
+        focus: () => {
+          activeElement = recoveryDiagnosticStatusEl;
+          recoveryDiagnosticStatusFocus();
+        },
+      };
+    }
+    if (html.includes(` ${PAIR_CODE_INPUT_RECOVERY_HELP_ATTR}`)) {
+      const summary = { focus: recoveryHelpSummaryFocus };
+      recoveryHelpEl = {
+        open: false,
+        setAttribute: (name: string) => {
+          if (name === 'open' && recoveryHelpEl) recoveryHelpEl.open = true;
+        },
+        querySelector: (selector: string) =>
+          selector === 'summary' ? summary : null,
+      };
+    }
   };
 
   const splash = {
@@ -156,11 +280,38 @@ const makeFakeSplash = () => {
     removeEventListener: (evt: string, fn: (event: Event) => void) => {
       listeners[evt]?.delete(fn);
     },
-    contains: () => true,
+    closest: (selector: string) => selector === '[data-recued-boot-pending]'
+      ? { removeAttribute: bootPendingRemove }
+      : null,
+    contains: (candidate: unknown) => candidate === activeElement,
     querySelector: (selector: string) => {
       if (selector === `#${PAIR_CODE_INPUT_SUBMIT_ID}`) return submitBtn;
       if (selector === `#${PAIR_CODE_INPUT_STATUS_ID}`) return statusEl;
       if (selector === '.rx-recovery-word-count') return recoveryCounter;
+      if (selector === '#webclient-pair-code-input-recovery-correction') {
+        return recoveryCorrectionEl;
+      }
+      if (selector === '#webclient-pair-code-input-recovery-stop') {
+        return recoveryStopEl;
+      }
+      if (selector === `[${PAIR_CODE_INPUT_RECOVERY_DIAGNOSTIC_SUMMARY_ATTR}]`) {
+        return recoveryDiagnosticSummaryEl;
+      }
+      if (selector === `[${PAIR_CODE_INPUT_RECOVERY_DIAGNOSTIC_STATUS_ATTR}]`) {
+        return recoveryDiagnosticStatusEl;
+      }
+      if (selector === `[data-action="${PAIR_CODE_INPUT_COPY_RECOVERY_DIAGNOSTIC_ACTION}"]`) {
+        return recoveryDiagnosticCopyEl;
+      }
+      if (selector === `[${PAIR_CODE_INPUT_RECOVERY_HELP_ATTR}]`) {
+        return recoveryHelpEl;
+      }
+      if (selector === `#${PAIR_CODE_INPUT_RECOVERY_PREFIX}-0`) {
+        return { focus: recoveryFocus };
+      }
+      if (selector === `#${PAIR_CODE_INPUT_SERVER_URL_ID}`) {
+        return { focus: serverFocus, select: serverSelect };
+      }
       return null;
     },
   } as unknown as HTMLElement;
@@ -173,10 +324,31 @@ const makeFakeSplash = () => {
 
   return {
     splash,
+    document: {
+      get activeElement() {
+        return activeElement;
+      },
+    } as unknown as Document,
     getHtml: () => html,
     getSubmitBtn: () => submitBtn,
     getStatus: () => statusEl,
     getRecoveryCounter: () => recoveryCounter,
+    getRecoveryFocus: () => recoveryFocus,
+    getRecoveryCorrectionFocus: () => recoveryCorrectionFocus,
+    getRecoveryStopFocus: () => recoveryStopFocus,
+    getRecoveryDiagnosticSummaryFocus: () => recoveryDiagnosticSummaryFocus,
+    getRecoveryDiagnosticCopyFocus: () => recoveryDiagnosticCopyFocus,
+    getRecoveryDiagnosticStatusFocus: () => recoveryDiagnosticStatusFocus,
+    getRecoveryHelpSummaryFocus: () => recoveryHelpSummaryFocus,
+    isRecoveryCorrectionFocused: () => activeElement === recoveryCorrectionEl,
+    isRecoveryStopFocused: () => activeElement === recoveryStopEl,
+    isRecoveryHelpOpen: () => recoveryHelpEl?.open === true,
+    getServerFocus: () => serverFocus,
+    getServerSelect: () => serverSelect,
+    getBootPendingRemove: () => bootPendingRemove,
+    getSubmitFocus: () => submitFocus,
+    focusSubmit: () => submitBtn?.focus(),
+    isSubmitFocused: () => activeElement === submitBtn,
     listenerCount: () =>
       Object.values(listeners).reduce((total, set) => total + set.size, 0),
     fireField: (kind: 'server-url' | 'pairing-code', value: string): void => {
@@ -275,6 +447,38 @@ const buildFakeFetch = (
   return fn;
 };
 
+/** FIFO stand-in for the browser's same-origin exclusive Web Lock. Sharing one
+ * instance between mounted hosts makes their submit callbacks contend exactly
+ * as sibling tabs do, while keeping the winner deterministic for assertions. */
+const buildExclusivePairLock = (): PairFinalizeLockProvider => {
+  let tail: Promise<void> = Promise.resolve();
+  return {
+    request<T>(
+      _name: string,
+      _options: { mode: 'exclusive' },
+      callback: () => Promise<T>,
+    ): Promise<T> {
+      const run = tail.then(
+        () => callback(),
+        () => callback(),
+      );
+      tail = run.then(
+        () => undefined,
+        () => undefined,
+      );
+      return run;
+    },
+  };
+};
+
+/** Minimal complete capability set for tests focused on the earlier takeover
+ * stages rather than owner-loss election itself. A null claim means another
+ * tab would retain the successor lease if the bounded owner timer fired. */
+const recoverySuccessorTestSeams = () => ({
+  claimRecoverySuccessor: async () => null,
+  onRecoverySuccessorChosen: () => undefined,
+});
+
 describe('submitPairCodeInput — client-side guards', () => {
   it('rejects empty server URL with pair_code_input_no_server_url', async () => {
     const result = await submitPairCodeInput({ serverUrl: '   ', code: 'ABC12345' });
@@ -296,7 +500,15 @@ describe('submitPairCodeInput — client-side guards', () => {
       fetch: fetchFake as unknown as typeof fetch,
     });
     expect(result.ok).toBe(false);
-    if (!result.ok) expect(result.error).toBe('pair_code_input_invalid_recovery_key');
+    if (!result.ok) {
+      expect(result.error).toBe('pair_code_input_invalid_recovery_key');
+      expect(PAIR_CODE_INPUT_ERROR_COPY[result.error]).toContain(
+        'do not form a valid recovery key',
+      );
+      expect(PAIR_CODE_INPUT_ERROR_COPY[result.error]).not.toContain(
+        'does not match this server',
+      );
+    }
     expect(fetchFake).not.toHaveBeenCalled();
   });
 });
@@ -541,6 +753,1940 @@ describe('mountPairCodeInputHost — deeplink seed', () => {
     expect(fake.getHtml()).toContain('value="http://192.168.1.10:3001"');
     expect(fake.getHtml()).toContain('value="ABC12345"');
   });
+
+  it('confirms a same-origin resume, locks its URL, and advances to recovery', () => {
+    const fake = makeFakeSplash();
+    mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: {
+        serverUrl: 'https://alice.recued.cloud:8443',
+        pairingCode: 'PAIR5678',
+        sameOriginResume: true,
+      },
+      onPaired: () => undefined,
+    });
+
+    expect(fake.getHtml()).toContain(
+      ` ${PAIR_CODE_INPUT_SECURE_RESUME_NOTICE_ATTR}`,
+    );
+    expect(fake.getHtml()).toContain('Secure address carried over');
+    expect(fake.getHtml()).toContain(
+      "Recued will pair with this page's own address:",
+    );
+    expect(fake.getHtml()).toContain('Your pairing code is ready too.');
+    expect(fake.getHtml()).toContain('(carried over)');
+    expect(fake.getHtml()).toContain(
+      'Changing servers also clears any pairing code.',
+    );
+    expect(fake.getHtml()).not.toContain('Enter its URL');
+    expect(fake.getHtml()).toMatch(
+      new RegExp(
+        `id="${PAIR_CODE_INPUT_SERVER_URL_ID}"[\\s\\S]*?readonly[\\s\\S]*?aria-describedby="webclient-pair-code-input-secure-resume-notice"`,
+      ),
+    );
+    expect(fake.getRecoveryFocus()).toHaveBeenCalledOnce();
+
+    fake.fireAction(PAIR_CODE_INPUT_CHANGE_SERVER_ACTION);
+    expect(fake.getHtml()).not.toContain(
+      PAIR_CODE_INPUT_SECURE_RESUME_NOTICE_ATTR,
+    );
+    expect(fake.getHtml()).not.toMatch(
+      new RegExp(
+        `id="${PAIR_CODE_INPUT_SERVER_URL_ID}"[\\s\\S]*?readonly`,
+      ),
+    );
+    expect(fake.getHtml()).toContain(
+      'value="https://alice.recued.cloud:8443"',
+    );
+    expect(fake.getHtml()).toContain(`id="${PAIR_CODE_INPUT_CODE_ID}"`);
+    expect(fake.getHtml()).not.toContain('value="PAIR5678"');
+    expect(fake.getServerFocus()).toHaveBeenCalledOnce();
+    expect(fake.getServerSelect()).toHaveBeenCalledOnce();
+  });
+});
+
+describe('mountPairCodeInputHost — guided reauthorization', () => {
+  it('turns a valid-but-rejected recovery key into a focused correction loop', async () => {
+    const fake = makeFakeSplash();
+    const recoveryDiagnosticWriter = vi.fn(async (_summary: string) => undefined);
+    const fetchFake = buildFakeFetch(401, {
+      error: { code: 'recovery_key_invalid', message: 'mismatch' },
+    });
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      document: fake.document,
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: { chatDraftPreserved: true },
+      fetch: fetchFake,
+      recoveryDiagnosticWriter,
+      onPaired: () => undefined,
+    });
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+
+    expect(fake.getHtml()).not.toContain(
+      PAIR_CODE_INPUT_RECOVERY_CORRECTION_ATTR,
+    );
+    expect(fake.getHtml()).not.toContain(PAIR_CODE_INPUT_RECOVERY_TRIAGE_ATTR);
+    expect(fake.getHtml()).not.toContain(PAIR_CODE_INPUT_RECOVERY_HELP_ATTR);
+
+    await handle.submit();
+
+    expect(fetchFake.calls).toHaveLength(1);
+    expect(fake.getStatus()?.dataset.error).toBe('recovery_key_invalid');
+    expect(fake.getHtml()).toContain(
+      ` ${PAIR_CODE_INPUT_RECOVERY_CORRECTION_ATTR}`,
+    );
+    expect(fake.getHtml()).not.toContain(PAIR_CODE_INPUT_RECOVERY_TRIAGE_ATTR);
+    expect(fake.getHtml()).toContain('Check the server and recovery key');
+    expect(fake.getHtml()).toContain(
+      'The 24 words passed Recued’s format check.',
+    );
+    expect(fake.getHtml()).toContain(
+      '<code>https://alice.recued.cloud:8443</code>',
+    );
+    expect(fake.getHtml()).toContain(
+      'A fresh pairing code cannot make a different recovery key match.',
+    );
+    expect(fake.getHtml()).toContain(
+      `data-action="${PAIR_CODE_INPUT_REVIEW_REJECTED_SERVER_ACTION}"`,
+    );
+    expect(fake.getHtml()).toContain(
+      `data-action="${PAIR_CODE_INPUT_REENTER_REJECTED_KEY_ACTION}"`,
+    );
+    expect(fake.getHtml()).toContain(
+      `data-action="${PAIR_CODE_INPUT_FIND_REJECTED_KEY_ACTION}"`,
+    );
+    expect(fake.getRecoveryCorrectionFocus()).toHaveBeenCalledOnce();
+    expect(fake.isRecoveryCorrectionFocused()).toBe(true);
+    expect(fake.getSubmitBtn()?.disabled).toBe(true);
+    expect(fake.getHtml()).toContain(
+      'Review the server address or re-enter the recovery key before retrying.',
+    );
+    expect(recoveryValuesFromHtml(fake.getHtml()).join(' ')).toBe(
+      realRecoveryKey,
+    );
+
+    // A fresh one-time code cannot repair a key mismatch, so editing it must
+    // not dismiss the actual problem or imply that the form is corrected.
+    fake.fireField('pairing-code', 'FRESH-CODE');
+    expect(fake.getStatus()?.dataset.error).toBe('recovery_key_invalid');
+    expect(fake.getHtml()).toContain(
+      ` ${PAIR_CODE_INPUT_RECOVERY_CORRECTION_ATTR}`,
+    );
+    expect(fake.getSubmitBtn()?.disabled).toBe(true);
+    await handle.submit();
+    expect(fetchFake.calls).toHaveLength(1);
+
+    fake.fireAction(PAIR_CODE_INPUT_FIND_REJECTED_KEY_ACTION);
+    expect(fake.isRecoveryHelpOpen()).toBe(true);
+    expect(fake.getRecoveryHelpSummaryFocus()).toHaveBeenCalledOnce();
+    expect(recoveryValuesFromHtml(fake.getHtml()).join(' ')).toBe(
+      realRecoveryKey,
+    );
+
+    fake.fireAction(PAIR_CODE_INPUT_REVIEW_REJECTED_SERVER_ACTION);
+    expect(fake.getHtml()).toContain(
+      ` ${PAIR_CODE_INPUT_RECOVERY_CORRECTION_ATTR}`,
+    );
+    expect(fake.getStatus()?.dataset.error).toBe('recovery_key_invalid');
+    expect(fake.getServerFocus()).toHaveBeenCalledOnce();
+    expect(fake.getServerSelect()).toHaveBeenCalledOnce();
+    expect(fake.getSubmitBtn()?.disabled).toBe(true);
+    expect(recoveryValuesFromHtml(fake.getHtml()).join(' ')).toBe(
+      realRecoveryKey,
+    );
+
+    fake.fireField('server-url', 'https://alice.recued.cloud:8443');
+    expect(fake.getHtml()).not.toContain(
+      PAIR_CODE_INPUT_RECOVERY_CORRECTION_ATTR,
+    );
+    expect(fake.getStatus()?.dataset.error).toBeUndefined();
+    expect(fake.getSubmitBtn()?.disabled).toBe(false);
+
+    await handle.submit();
+    expect(fetchFake.calls).toHaveLength(2);
+    expect(fake.isRecoveryCorrectionFocused()).toBe(true);
+    expect(fake.getHtml()).toContain(` ${PAIR_CODE_INPUT_RECOVERY_TRIAGE_ATTR}`);
+    expect(fake.getHtml()).toContain('Wrong server or wrong saved key?');
+    expect(fake.getHtml()).toContain(
+      'Recued has now received 2 rejections for format-valid 24-word entries in this tab.',
+    );
+    expect(fake.getHtml()).toContain(
+      'This address matches the scheme, hostname, and port this browser used before recovery:',
+    );
+    expect(fake.getHtml()).toContain('Check the server');
+    expect(fake.getHtml()).toContain('Check the saved key');
+    expect(fake.getHtml()).toContain(
+      ` ${PAIR_CODE_INPUT_RECOVERY_DIAGNOSTIC_ATTR}`,
+    );
+    expect(fake.getHtml()).toContain(
+      'Details to share with the server owner',
+    );
+    expect(fake.getHtml()).toContain(
+      'Format-valid key rejections in this tab: 2',
+    );
+    expect(fake.getHtml()).toContain(
+      'Previously paired server origin: https://alice.recued.cloud:8443',
+    );
+    expect(fake.getHtml()).not.toContain(
+      `data-action="${PAIR_CODE_INPUT_USE_SAVED_SERVER_ACTION}"`,
+    );
+    expect(recoveryDiagnosticWriter).not.toHaveBeenCalled();
+
+    fake.fireAction(PAIR_CODE_INPUT_COPY_RECOVERY_DIAGNOSTIC_ACTION);
+    await vi.waitFor(() => {
+      expect(recoveryDiagnosticWriter).toHaveBeenCalledOnce();
+      expect(fake.getHtml()).toContain(
+        'Safe diagnostic copied. Nothing was sent automatically.',
+      );
+    });
+    const copiedDiagnostic = recoveryDiagnosticWriter.mock.calls[0]?.[0] ?? '';
+    expect(copiedDiagnostic).toContain(
+      'Latest server origin tried: https://alice.recued.cloud:8443',
+    );
+    expect(copiedDiagnostic).toContain(
+      'Origin comparison: matches previously paired origin',
+    );
+    expect(copiedDiagnostic).not.toContain(realRecoveryKey);
+    expect(copiedDiagnostic).not.toContain('FRESH-CODE');
+    expect(fake.getRecoveryDiagnosticStatusFocus()).toHaveBeenCalledOnce();
+    expect(fake.getRecoveryDiagnosticCopyFocus()).toHaveBeenCalledOnce();
+    fake.getRecoveryFocus().mockClear();
+
+    fake.fireAction(PAIR_CODE_INPUT_REENTER_REJECTED_KEY_ACTION);
+    expect(fake.getHtml()).not.toContain(
+      PAIR_CODE_INPUT_RECOVERY_CORRECTION_ATTR,
+    );
+    expect(recoveryValuesFromHtml(fake.getHtml())).toEqual(
+      Array.from({ length: 24 }, () => ''),
+    );
+    expect(fake.getRecoveryFocus()).toHaveBeenCalledOnce();
+    expect(fake.getSubmitBtn()?.disabled).toBe(true);
+    handle.dispose();
+  });
+
+  it('stops safely when no usable original key remains and resumes only by an explicit path', async () => {
+    const fake = makeFakeSplash();
+    const recoveryDiagnosticWriter = vi.fn(async (_summary: string) => undefined);
+    const fetchFake = buildFakeFetch(401, {
+      error: { code: 'recovery_key_invalid', message: 'mismatch' },
+    });
+    const serverUrl = 'https://alice.recued.cloud:8443/private?session=local';
+    const pairingCode = 'PAIR-SECRET';
+    const onRecoveryCheckpointChange = vi.fn();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      document: fake.document,
+      seed: { serverUrl, pairingCode },
+      reauthRecovery: { chatDraftPreserved: true },
+      fetch: fetchFake,
+      recoveryDiagnosticWriter,
+      onRecoveryCheckpointChange,
+      onPaired: () => undefined,
+    });
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+
+    await handle.submit();
+    handle.setFieldValue('serverUrl', serverUrl);
+    await handle.submit();
+    expect(fake.getHtml()).toContain(` ${PAIR_CODE_INPUT_RECOVERY_TRIAGE_ATTR}`);
+    expect(fake.getHtml()).toContain(
+      '>I confirmed the server — I can’t find the key</button>',
+    );
+
+    fake.fireAction(PAIR_CODE_INPUT_FIND_REJECTED_KEY_ACTION);
+    expect(onRecoveryCheckpointChange).toHaveBeenLastCalledWith('safe_stop');
+
+    const pausedHtml = fake.getHtml();
+    expect(pausedHtml).toContain(` ${PAIR_CODE_INPUT_RECOVERY_STOP_ATTR}`);
+    expect(pausedHtml).toContain('Recovery paused safely');
+    expect(pausedHtml).toContain('Ask the person who manages this server');
+    expect(pausedHtml).toContain(
+      'No pairing request is running, and this tab will not send another one unless you explicitly resume.',
+    );
+    expect(pausedHtml).toContain(
+      '<code>https://alice.recued.cloud:8443</code>',
+    );
+    expect(pausedHtml).toContain('Confirmed server origin');
+    expect(pausedHtml).toContain(
+      'This shareable origin omits any path or sign-in details.',
+    );
+    expect(pausedHtml).toContain(
+      'The rejected recovery words and pairing code were cleared from this form.',
+    );
+    expect(pausedHtml).toContain(
+      'Your exact page and unsent Chat draft are still held here.',
+    );
+    expect(pausedHtml).toContain(
+      'Do not generate a replacement key, guess words, or keep retrying.',
+    );
+    expect(pausedHtml).toContain(
+      `data-action="${PAIR_CODE_INPUT_RESUME_RECOVERY_KEY_ACTION}"`,
+    );
+    expect(pausedHtml).toContain(
+      `data-action="${PAIR_CODE_INPUT_RESUME_SERVER_REVIEW_ACTION}"`,
+    );
+    expect(pausedHtml).toMatch(
+      /class="pair-code-input-fields" hidden aria-hidden="true"/,
+    );
+    expect(pausedHtml).toMatch(
+      /class="pair-code-input-actions" hidden aria-hidden="true"/,
+    );
+    expect(pausedHtml).toMatch(
+      new RegExp(`${PAIR_CODE_INPUT_RECOVERY_DIAGNOSTIC_ATTR}[^>]*open`),
+    );
+    expect(recoveryValuesFromHtml(pausedHtml)).toEqual(
+      Array.from({ length: 24 }, () => ''),
+    );
+    expect(pausedHtml).not.toContain(pairingCode);
+    expect(pausedHtml).not.toContain('/private');
+    expect(pausedHtml).not.toContain('session=local');
+    expect(fake.getRecoveryStopFocus()).toHaveBeenCalledOnce();
+    expect(fake.isRecoveryStopFocused()).toBe(true);
+    expect(fetchFake.calls).toHaveLength(2);
+    expect(recoveryDiagnosticWriter).not.toHaveBeenCalled();
+
+    // Hidden controls and the public test seam are both inert while paused;
+    // the stop is stateful, not merely explanatory copy over a live form.
+    handle.setFieldValue('pairingCode', 'SHOULD-NOT-STICK');
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    await handle.submit();
+    expect(fetchFake.calls).toHaveLength(2);
+    expect(fake.getHtml()).not.toContain('SHOULD-NOT-STICK');
+    expect(recoveryValuesFromHtml(fake.getHtml())).toEqual(
+      Array.from({ length: 24 }, () => ''),
+    );
+
+    fake.fireAction(PAIR_CODE_INPUT_COPY_RECOVERY_DIAGNOSTIC_ACTION);
+    await vi.waitFor(() => {
+      expect(recoveryDiagnosticWriter).toHaveBeenCalledOnce();
+      expect(fake.getHtml()).toContain(
+        'Safe owner handoff copied. Nothing was sent automatically.',
+      );
+    });
+    const ownerHandoff = recoveryDiagnosticWriter.mock.calls[0]?.[0] ?? '';
+    expect(ownerHandoff).toContain(
+      'Requested owner check: confirm this server origin and whether the server was replaced or reset; do not request the recovery key',
+    );
+    expect(ownerHandoff).toContain(
+      'Latest server origin tried: https://alice.recued.cloud:8443',
+    );
+    expect(ownerHandoff).not.toContain(realRecoveryKey);
+    expect(ownerHandoff).not.toContain(pairingCode);
+    expect(ownerHandoff).not.toContain('/private');
+    expect(ownerHandoff).not.toContain('session=local');
+
+    fake.fireAction(PAIR_CODE_INPUT_RESUME_SERVER_REVIEW_ACTION);
+    expect(onRecoveryCheckpointChange).toHaveBeenLastCalledWith(
+      'replacement_server',
+    );
+    expect(fake.getHtml()).not.toContain(PAIR_CODE_INPUT_RECOVERY_STOP_ATTR);
+    expect(fake.getHtml()).toContain('Review the current server');
+    expect(fake.getHtml()).toContain(
+      ` ${PAIR_CODE_INPUT_RECOVERY_RESUME_NOTICE_ATTR}`,
+    );
+    expect(fake.getHtml()).toContain('Use a fresh code from the current server');
+    expect(fake.getHtml()).toContain(
+      'The recovery-key step stays hidden until you review the server.',
+    );
+    expect(fake.getHtml()).not.toContain(`value="${serverUrl}"`);
+    expect(fake.getHtml()).not.toContain(pairingCode);
+    expect(fake.getServerFocus()).toHaveBeenCalledOnce();
+    expect(fake.getServerSelect()).toHaveBeenCalledOnce();
+    expect(fake.getSubmitBtn()?.disabled).toBe(true);
+
+    handle.setFieldValue('serverUrl', serverUrl);
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    await handle.submit();
+    expect(fetchFake.calls).toHaveLength(2);
+    expect(recoveryValuesFromHtml(fake.getHtml())).toEqual(
+      Array.from({ length: 24 }, () => ''),
+    );
+    expect(fake.getHtml()).not.toContain(realRecoveryKey);
+    expect(fake.getSubmitBtn()?.disabled).toBe(true);
+    handle.dispose();
+  });
+
+  it('re-enters a safe stop without restoring inputs, rejection details, or a draft', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(200, {
+      token: 'must-not-be-reached',
+    });
+    const onRecoveryCheckpointChange = vi.fn();
+    const serverSecret =
+      'https://operator:secret@old.recued.cloud/private?token=old';
+    const codeSecret = 'STALE-CODE';
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      document: fake.document,
+      seed: { serverUrl: serverSecret, pairingCode: codeSecret },
+      reauthRecovery: {
+        chatDraftPreserved: false,
+        recoveryReentry: true,
+        safeStopReentry: true,
+      },
+      fetch: fetchFake,
+      onRecoveryCheckpointChange,
+      onPaired: () => undefined,
+    });
+
+    const pausedHtml = fake.getHtml();
+    expect(pausedHtml).toContain(` ${PAIR_CODE_INPUT_RECOVERY_STOP_ATTR}`);
+    expect(pausedHtml).toContain(
+      ` ${PAIR_CODE_INPUT_RECOVERY_STOP_REENTRY_ATTR}`,
+    );
+    expect(pausedHtml).toContain('Recovery still paused');
+    expect(pausedHtml).toContain('What did the server owner confirm?');
+    expect(pausedHtml).toContain('No recovery material was restored');
+    expect(pausedHtml).toContain(
+      'Leaving this page or reloading ended any in-memory Chat draft.',
+    );
+    expect(pausedHtml).toContain('The server changed or was reset');
+    expect(pausedHtml).not.toContain(PAIR_CODE_INPUT_RECOVERY_DIAGNOSTIC_ATTR);
+    expect(pausedHtml).not.toContain(PAIR_CODE_INPUT_RECOVERY_CORRECTION_ATTR);
+    expect(pausedHtml).not.toContain('Format-valid key rejections');
+    expect(pausedHtml).not.toContain(serverSecret);
+    expect(pausedHtml).not.toContain('old.recued.cloud');
+    expect(pausedHtml).not.toContain(codeSecret);
+    expect(recoveryValuesFromHtml(pausedHtml)).toEqual(
+      Array.from({ length: 24 }, () => ''),
+    );
+    expect(fake.getRecoveryStopFocus()).toHaveBeenCalledOnce();
+    expect(fake.isRecoveryStopFocused()).toBe(true);
+
+    await handle.submit();
+    expect(fetchFake.calls).toHaveLength(0);
+
+    fake.fireAction(PAIR_CODE_INPUT_RESUME_RECOVERY_KEY_ACTION);
+    const resumedHtml = fake.getHtml();
+    expect(onRecoveryCheckpointChange).toHaveBeenCalledOnce();
+    expect(onRecoveryCheckpointChange).toHaveBeenCalledWith('unresolved');
+    expect(resumedHtml).not.toContain(PAIR_CODE_INPUT_RECOVERY_STOP_ATTR);
+    expect(resumedHtml).toContain(
+      ` ${PAIR_CODE_INPUT_RECOVERY_RESUME_NOTICE_ATTR}`,
+    );
+    expect(resumedHtml).toContain('Original key ready');
+    expect(resumedHtml).toContain(
+      'Enter the current server address, then enter its original 24-word key',
+    );
+    expect(resumedHtml).not.toContain(serverSecret);
+    expect(resumedHtml).not.toContain(codeSecret);
+    expect(fake.getServerFocus()).toHaveBeenCalledOnce();
+    expect(fake.getSubmitBtn()?.disabled).toBe(true);
+    handle.dispose();
+  });
+
+  it('reviews an admin-confirmed replacement before creating a fresh key and reports verified context', async () => {
+    const fake = makeFakeSplash();
+    const freshRecoveryKey = generateRecoveryKey().mnemonic;
+    const fetchFake = buildFakeFetch(200, {
+      token: 'replacement-bearer',
+      token_id: 'replacement-token-id',
+      serverId: 'replacement-server-id',
+    });
+    const onPaired = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('replacement browser save stopped'))
+      .mockResolvedValueOnce(undefined);
+    const onAfterPair = vi.fn(async () => undefined);
+    const onRecoveryCheckpointChange = vi.fn();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      document: fake.document,
+      seed: {
+        serverUrl: 'https://old.example/private',
+        pairingCode: 'STALE-OLD-CODE',
+      },
+      reauthRecovery: {
+        chatDraftPreserved: false,
+        recoveryReentry: true,
+        replacementServerReentry: true,
+      },
+      generate: () => freshRecoveryKey,
+      fetch: fetchFake,
+      onRecoveryCheckpointChange,
+      onPaired,
+      onAfterPair,
+    });
+
+    expect(fake.getHtml()).toContain('Review the current server');
+    expect(fake.getHtml()).toContain('Use a fresh code from the current server');
+    expect(fake.getHtml()).not.toContain('old.example');
+    expect(fake.getHtml()).not.toContain('STALE-OLD-CODE');
+    expect(fake.getHtml()).not.toContain(realRecoveryKey);
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    expect(fake.getHtml()).not.toContain(realRecoveryKey);
+
+    const enteredAddress =
+      'https://operator:secret@current.example:9443/private?token=hidden';
+    handle.setFieldValue('serverUrl', enteredAddress);
+    expect(fake.getSubmitBtn()?.disabled).toBe(true);
+    expect(fake.getHtml()).toContain(
+      'Enter a fresh pairing code from the current server terminal.',
+    );
+    handle.setFieldValue('pairingCode', 'FRESH-CODE-1');
+    expect(fake.getSubmitBtn()?.disabled).toBe(false);
+
+    // Editing the destination invalidates its code so details from two
+    // different servers cannot be reviewed together.
+    handle.setFieldValue('serverUrl', `${enteredAddress}&changed=1`);
+    expect(fake.getHtml()).not.toContain('FRESH-CODE-1');
+    expect(fake.getSubmitBtn()?.disabled).toBe(true);
+    handle.setFieldValue('pairingCode', 'FRESH-CODE-2');
+    await handle.submit();
+
+    const reviewHtml = fake.getHtml();
+    expect(fetchFake.calls).toHaveLength(0);
+    expect(reviewHtml).toContain(` ${PAIR_CODE_INPUT_REPLACEMENT_REVIEW_ATTR}`);
+    expect(reviewHtml).toContain('Confirm this is the current server');
+    expect(reviewHtml).toContain('<code>https://current.example:9443</code>');
+    expect(reviewHtml).toContain(
+      'Pairing does not restore missing data.',
+    );
+    expect(reviewHtml).toContain(
+      'Recued verifies and saves the server’s signed identity',
+    );
+    expect(reviewHtml).not.toContain('operator');
+    expect(reviewHtml).not.toContain('secret');
+    expect(reviewHtml).not.toContain('/private');
+    expect(reviewHtml).not.toContain('FRESH-CODE-2');
+    expect(reviewHtml).not.toContain(realRecoveryKey);
+
+    fake.fireAction(PAIR_CODE_INPUT_CONFIRM_REPLACEMENT_SERVER_ACTION);
+    const confirmedHtml = fake.getHtml();
+    expect(onRecoveryCheckpointChange).toHaveBeenLastCalledWith(
+      'replacement_server',
+    );
+    expect(confirmedHtml).toContain(
+      ` ${PAIR_CODE_INPUT_REPLACEMENT_CONFIRMED_ATTR}`,
+    );
+    expect(confirmedHtml).toContain('Fresh start confirmed for this server');
+    expect(confirmedHtml).toContain(
+      'The old server’s key cannot be entered in this path',
+    );
+    expect(confirmedHtml).toContain('Generate a new recovery key');
+    expect(confirmedHtml).not.toContain('FRESH-CODE-2');
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    expect(fake.getSubmitBtn()?.disabled).toBe(true);
+
+    fake.fireAction('pair-code-input-generate');
+    fake.fireAction('pair-code-input-generate-ack');
+    handle.setFieldValue('recoveryKey', freshRecoveryKey);
+    expect(fake.getSubmitBtn()?.disabled).toBe(false);
+    await handle.submit();
+
+    expect(fetchFake.calls).toHaveLength(1);
+    expect(fetchFake.calls[0]?.url).toBe(
+      'https://current.example:9443/auth/pair',
+    );
+    expect(fetchFake.calls[0]?.body).toMatchObject({
+      code: 'FRESH-CODE-2',
+      recoveryKey: freshRecoveryKey,
+    });
+    expect(onPaired).toHaveBeenCalledWith(expect.objectContaining({
+      serverUrl: 'https://current.example:9443',
+      recoveryKey: freshRecoveryKey,
+      recoveryContext: 'fresh_replacement',
+    }));
+    expect(fake.getHtml()).toContain('Finish saving server access');
+    expect(fake.getSubmitBtn()?.textContent).toBe('Finish saving access');
+    expect(fake.getHtml()).toContain(
+      'The current server accepted the fresh pairing code.',
+    );
+    expect(fake.getHtml()).toContain(
+      'any visible retry finishes only this browser’s save',
+    );
+    expect(fake.getHtml()).toContain(
+      'The new recovery key already belongs to this server.',
+    );
+    expect(fake.getHtml()).toContain(
+      'Recued will not send the pairing request again.',
+    );
+    expect(fake.getHtml()).not.toContain(
+      'A fresh pairing code from that server is ready',
+    );
+
+    await handle.submit();
+    expect(fetchFake.calls).toHaveLength(1);
+    expect(onPaired).toHaveBeenCalledTimes(2);
+    expect(onPaired.mock.calls[1]?.[0]).toEqual(onPaired.mock.calls[0]?.[0]);
+    expect(onAfterPair).toHaveBeenCalledOnce();
+    handle.dispose();
+  });
+
+  it('uses an administrator-confirmed restored-realm key directly from review', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(200, {
+      token: 'restored-realm-bearer',
+      token_id: 'restored-realm-token-id',
+    });
+    const onPaired = vi.fn();
+    const onRecoveryCheckpointChange = vi.fn();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      document: fake.document,
+      reauthRecovery: {
+        chatDraftPreserved: false,
+        recoveryReentry: true,
+        replacementServerReentry: true,
+      },
+      fetch: fetchFake,
+      onRecoveryCheckpointChange,
+      onPaired,
+    });
+
+    handle.setFieldValue('serverUrl', 'https://restored.example:9443');
+    handle.setFieldValue('pairingCode', 'RESTORED-CODE');
+    await handle.submit();
+    expect(fake.getHtml()).toContain(
+      `data-action="${PAIR_CODE_INPUT_USE_REPLACEMENT_EXISTING_KEY_ACTION}"`,
+    );
+    expect(fake.getHtml()).toContain('Use a confirmed existing key');
+    expect(fetchFake.calls).toHaveLength(0);
+
+    fake.fireAction(PAIR_CODE_INPUT_USE_REPLACEMENT_EXISTING_KEY_ACTION);
+    const existingKeyHtml = fake.getHtml();
+    expect(onRecoveryCheckpointChange).toHaveBeenLastCalledWith(
+      'replacement_server',
+    );
+    expect(existingKeyHtml).toContain('Verify the current server');
+    expect(existingKeyHtml).toContain('Use only this current server’s key');
+    expect(existingKeyHtml).toContain('Current server recovery key');
+    expect(existingKeyHtml).not.toContain('Generate a new recovery key');
+    expect(fake.getRecoveryFocus()).toHaveBeenCalledOnce();
+
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    await handle.submit();
+
+    expect(fetchFake.calls).toHaveLength(1);
+    expect(fetchFake.calls[0]?.url).toBe(
+      'https://restored.example:9443/auth/pair',
+    );
+    expect(fetchFake.calls[0]?.body).toMatchObject({
+      code: 'RESTORED-CODE',
+      recoveryKey: realRecoveryKey,
+    });
+    expect(onPaired).toHaveBeenCalledWith(expect.not.objectContaining({
+      recoveryContext: 'fresh_replacement',
+    }));
+    handle.dispose();
+  });
+
+  it('stops a fresh-server branch when the current server is already enrolled', async () => {
+    const fake = makeFakeSplash();
+    const freshRecoveryKey = generateRecoveryKey().mnemonic;
+    const fetchFake = buildFakeFetch(401, {
+      error: { code: 'recovery_key_invalid', message: 'realm already bound' },
+    });
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      document: fake.document,
+      reauthRecovery: {
+        chatDraftPreserved: false,
+        recoveryReentry: true,
+        replacementServerReentry: true,
+      },
+      generate: () => freshRecoveryKey,
+      fetch: fetchFake,
+      onPaired: () => undefined,
+    });
+
+    handle.setFieldValue('serverUrl', 'https://current.example:9443');
+    handle.setFieldValue('pairingCode', 'FRESH-CODE');
+    await handle.submit();
+    fake.fireAction(PAIR_CODE_INPUT_CONFIRM_REPLACEMENT_SERVER_ACTION);
+    fake.fireAction('pair-code-input-generate');
+    fake.fireAction('pair-code-input-generate-ack');
+    handle.setFieldValue('recoveryKey', freshRecoveryKey);
+    await handle.submit();
+
+    const stoppedHtml = fake.getHtml();
+    expect(stoppedHtml).toContain(
+      ` ${PAIR_CODE_INPUT_REPLACEMENT_NOT_FRESH_ATTR}`,
+    );
+    expect(stoppedHtml).toContain(PAIR_CODE_INPUT_REPLACEMENT_ALREADY_ENROLLED_COPY);
+    expect(stoppedHtml).toContain('This server is already set up');
+    expect(stoppedHtml).toContain('I have this server’s existing key');
+    expect(stoppedHtml).not.toContain(freshRecoveryKey);
+
+    fake.fireAction(PAIR_CODE_INPUT_USE_REPLACEMENT_EXISTING_KEY_ACTION);
+    expect(fake.getHtml()).toContain('Use only this current server’s key');
+    expect(recoveryValuesFromHtml(fake.getHtml())).toEqual(
+      Array.from({ length: 24 }, () => ''),
+    );
+    handle.dispose();
+  });
+
+  it('triages a changed server separately and shares no recovery material', async () => {
+    const fake = makeFakeSplash();
+    const recoveryDiagnosticWriter = vi.fn(async (_summary: string) => {
+      throw new Error('clipboard denied');
+    });
+    const fetchFake = buildFakeFetch(401, {
+      error: {
+        code: 'recovery_key_invalid',
+        message: 'RAW SERVER DETAIL MUST STAY LOCAL',
+      },
+    });
+    const previouslyPairedAddress =
+      'https://alice.recued.cloud:8443/private?session=saved#route';
+    const currentAddress =
+      'https://operator:password@other.recued.cloud:9443/private?token=current#route';
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      document: fake.document,
+      seed: { serverUrl: previouslyPairedAddress },
+      reauthRecovery: { chatDraftPreserved: true },
+      fetch: fetchFake,
+      recoveryDiagnosticWriter,
+      onPaired: () => undefined,
+    });
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+
+    await handle.submit();
+    fake.fireField('server-url', currentAddress);
+    fake.fireField('pairing-code', 'PAIR-SECRET');
+    await handle.submit();
+
+    const html = fake.getHtml();
+    expect(html).toContain(` ${PAIR_CODE_INPUT_RECOVERY_TRIAGE_ATTR}`);
+    expect(html).toContain(
+      'This form is trying <code>https://other.recued.cloud:9443</code>',
+    );
+    expect(html).toContain(
+      'this browser previously used <code>https://alice.recued.cloud:8443</code>',
+    );
+    expect(html).toContain('The scheme, hostname, or port is different.');
+    expect(html).toContain(
+      'Using the previously paired address keeps the 24 words here and clears the pairing code because codes belong to one server.',
+    );
+    expect(html).toContain(
+      `data-action="${PAIR_CODE_INPUT_USE_SAVED_SERVER_ACTION}"`,
+    );
+
+    fake.fireAction(PAIR_CODE_INPUT_COPY_RECOVERY_DIAGNOSTIC_ACTION);
+    await vi.waitFor(() => {
+      expect(recoveryDiagnosticWriter).toHaveBeenCalledOnce();
+      expect(fake.getHtml()).toContain('Copy is unavailable here.');
+    });
+    const shared = recoveryDiagnosticWriter.mock.calls[0]?.[0] ?? '';
+    expect(shared).toContain(
+      'Latest server origin tried: https://other.recued.cloud:9443',
+    );
+    expect(shared).toContain(
+      'Previously paired server origin: https://alice.recued.cloud:8443',
+    );
+    expect(shared).toContain(
+      'Origin comparison: differs from previously paired origin',
+    );
+    expect(shared).not.toContain('operator');
+    expect(shared).not.toContain('password');
+    expect(shared).not.toContain('/private');
+    expect(shared).not.toContain('session=saved');
+    expect(shared).not.toContain('token=current');
+    expect(shared).not.toContain('PAIR-SECRET');
+    expect(shared).not.toContain(realRecoveryKey);
+    expect(shared).not.toContain('RAW SERVER DETAIL MUST STAY LOCAL');
+    expect(fake.getRecoveryDiagnosticStatusFocus()).toHaveBeenCalledOnce();
+    expect(fake.getRecoveryDiagnosticSummaryFocus()).toHaveBeenCalledOnce();
+
+    fake.fireAction(PAIR_CODE_INPUT_USE_SAVED_SERVER_ACTION);
+    expect(fake.getHtml()).not.toContain(PAIR_CODE_INPUT_RECOVERY_TRIAGE_ATTR);
+    expect(fake.getStatus()?.dataset.error).toBeUndefined();
+    expect(fake.getHtml()).toContain(`value="${previouslyPairedAddress}"`);
+    expect(fake.getHtml()).not.toContain('value="PAIR-SECRET"');
+    expect(recoveryValuesFromHtml(fake.getHtml()).join(' ')).toBe(
+      realRecoveryKey,
+    );
+    expect(fake.getServerFocus()).toHaveBeenCalledOnce();
+    expect(fake.getServerSelect()).toHaveBeenCalledOnce();
+    expect(fake.getSubmitBtn()?.disabled).toBe(false);
+    handle.dispose();
+  });
+
+  it('drops a stale diagnostic copy receipt after correction resumes', async () => {
+    const fake = makeFakeSplash();
+    let releaseWriter!: () => void;
+    let writerSettled = false;
+    const writerGate = new Promise<void>((resolve) => {
+      releaseWriter = resolve;
+    });
+    const recoveryDiagnosticWriter = vi.fn(async (_summary: string) => {
+      await writerGate;
+      writerSettled = true;
+    });
+    const fetchFake = buildFakeFetch(401, {
+      error: { code: 'recovery_key_invalid', message: 'mismatch' },
+    });
+    const serverUrl = 'https://alice.recued.cloud:8443';
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      document: fake.document,
+      seed: { serverUrl },
+      reauthRecovery: { chatDraftPreserved: true },
+      fetch: fetchFake,
+      recoveryDiagnosticWriter,
+      onPaired: () => undefined,
+    });
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+
+    await handle.submit();
+    handle.setFieldValue('serverUrl', serverUrl);
+    await handle.submit();
+    expect(fake.getHtml()).toContain(` ${PAIR_CODE_INPUT_RECOVERY_TRIAGE_ATTR}`);
+
+    fake.fireAction(PAIR_CODE_INPUT_COPY_RECOVERY_DIAGNOSTIC_ACTION);
+    expect(recoveryDiagnosticWriter).toHaveBeenCalledOnce();
+    expect(fake.getHtml()).toContain('Copying the reviewed summary…');
+
+    // Correction invalidates the reviewed summary while the clipboard is
+    // pending. Its later completion must not announce success against the
+    // corrected form or the next rejection's newly generated diagnostic.
+    fake.fireField('server-url', serverUrl);
+    expect(fake.getHtml()).not.toContain(PAIR_CODE_INPUT_RECOVERY_TRIAGE_ATTR);
+    releaseWriter();
+    await vi.waitFor(() => expect(writerSettled).toBe(true));
+    await Promise.resolve();
+    expect(fake.getHtml()).not.toContain('Safe diagnostic copied.');
+
+    await handle.submit();
+    expect(fetchFake.calls).toHaveLength(3);
+    expect(fake.getHtml()).toContain(
+      'Format-valid key rejections in this tab: 3',
+    );
+    expect(fake.getHtml()).toContain('Copy safe diagnostic');
+    expect(fake.getHtml()).not.toContain('Safe diagnostic copied.');
+    handle.dispose();
+  });
+
+  it('resumes a lost recovery document without restoring secrets or stale wait copy', () => {
+    const fake = makeFakeSplash();
+    mountPairCodeInputHost({
+      splashElement: fake.splash,
+      reauthRecovery: {
+        chatDraftPreserved: false,
+        recoveryReentry: true,
+      },
+      onPaired: () => undefined,
+    });
+
+    const html = fake.getHtml();
+    expect(html).toContain(` ${PAIR_CODE_INPUT_REAUTH_NOTICE_ATTR}`);
+    expect(html).toContain('Recovery resumed in this tab');
+    expect(html).toContain('You do not need to wait for that page.');
+    expect(html).toContain(
+      'The exact page you were returning to is still selected.',
+    );
+    expect(html).toContain(
+      'Pairing details are not restored',
+    );
+    expect(html).toContain(
+      're-enter any missing server address, pairing code, and recovery key',
+    );
+    expect(html).toContain(` ${PAIR_CODE_INPUT_RECOVERY_HELP_ATTR}`);
+    expect(html).toContain(
+      'Start with the server address, then enter your existing 24-word recovery key.',
+    );
+    expect(html).toContain('Need help finding these details?');
+    expect(html).toContain('<code>recued pair</code>');
+    expect(html).toContain('Prefer one beginning with <code>https://</code>');
+    expect(html).toContain(
+      '<code>http://localhost</code> address is only for reconnecting on that same computer',
+    );
+    expect(html).toContain('does not save a readable copy of those words');
+    expect(html).toContain('fresh pairing code cannot replace the key');
+    expect(html).toContain(
+      'Stop here instead of generating a new one for this server.',
+    );
+    expect(html).toContain('ask where the recovery key was saved');
+    expect(html).toContain(
+      'Never send the key through support, email, or Chat.',
+    );
+    expect(html).not.toContain('another tab is reconnecting');
+    expect(html).not.toContain('Waiting for other tab');
+    expect(html).not.toContain('Generate a new one');
+    expect(html).not.toContain('Restore a backup');
+    expect(fake.getServerFocus()).toHaveBeenCalledOnce();
+    expect(fake.getBootPendingRemove()).toHaveBeenCalledWith(
+      'data-recued-boot-pending',
+    );
+    expect(fake.getSubmitBtn()?.textContent).toContain(
+      'Reconnect this browser',
+    );
+  });
+
+  it('explains the interruption, preserves return context, and narrows the ceremony to an existing key', () => {
+    const fake = makeFakeSplash();
+    mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: { chatDraftPreserved: true },
+      onPaired: () => undefined,
+      onRestoreSubmit: () => undefined,
+    });
+
+    const html = fake.getHtml();
+    expect(html).toContain(` ${PAIR_CODE_INPUT_REAUTH_NOTICE_ATTR}`);
+    expect(html).toContain('Reconnect this browser');
+    expect(html).toContain('Saved access needs attention');
+    expect(html).toContain(
+      'Your current page and unsent Chat draft are held in this tab.',
+    );
+    expect(html).toContain('<code>recued pair</code>');
+    expect(html).not.toContain(PAIR_CODE_INPUT_RECOVERY_HELP_ATTR);
+    expect(html).toContain('value="https://alice.recued.cloud:8443"');
+    expect(html).toContain('(only if your server asks)');
+    expect(html).not.toContain('Generate a new one');
+    expect(html).not.toContain('Restore a backup');
+    expect(fake.getSubmitBtn()?.textContent).toContain(
+      'Reconnect this browser',
+    );
+  });
+
+  it('explains a completed local-credential reset without blaming the server', () => {
+    const fake = makeFakeSplash();
+    mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: {
+        chatDraftPreserved: false,
+        reason: 'local_credentials_unreadable',
+      },
+      onPaired: () => undefined,
+    });
+
+    const html = fake.getHtml();
+    expect(html).toContain('Unreadable local access cleared');
+    expect(html).toContain(
+      'This browser could not unlock its saved sign-in',
+    );
+    expect(html).toContain('only that local access record');
+    expect(html).toContain('Work stored on your server was not deleted.');
+    expect(html).not.toContain(
+      "Your server no longer accepts this browser's saved access",
+    );
+  });
+
+  it('explains an interrupted local setup without presenting first-run choices', () => {
+    const fake = makeFakeSplash();
+    mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: {
+        chatDraftPreserved: false,
+        reason: 'local_credentials_incomplete',
+      },
+      onPaired: () => undefined,
+    });
+
+    const html = fake.getHtml();
+    expect(html).toContain('Incomplete browser setup cleared');
+    expect(html).toContain(
+      'A previous setup stopped before every local access detail was saved.',
+    );
+    expect(html).toContain('Work stored on your server was not deleted.');
+    expect(html).not.toContain('Generate a new one');
+    expect(html).not.toContain('Restore a backup');
+    expect(html).not.toContain(
+      "Your server no longer accepts this browser's saved access",
+    );
+  });
+
+  it('explains a sibling-tab credential change without blaming the server', () => {
+    const fake = makeFakeSplash();
+    mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: {
+        chatDraftPreserved: true,
+        reason: 'credentials_changed_elsewhere',
+      },
+      onPaired: () => undefined,
+    });
+
+    const html = fake.getHtml();
+    expect(html).toContain('Saved access changed in another tab');
+    expect(html).toContain(
+      'Another Recued tab cleared or replaced this browser’s saved access.',
+    );
+    expect(html).toContain(
+      'Your current page and unsent Chat draft are held in this tab.',
+    );
+    expect(html).not.toContain(
+      "Your server no longer accepts this browser's saved access",
+    );
+  });
+
+  it('explains when sibling access changes during startup recovery', () => {
+    const fake = makeFakeSplash();
+    mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: {
+        chatDraftPreserved: true,
+        reason: 'startup_credentials_changed_elsewhere',
+      },
+      onPaired: () => undefined,
+    });
+
+    const html = fake.getHtml();
+    expect(html).toContain('Access changed while this tab was recovering');
+    expect(html).toContain(
+      'cleared or replaced the saved access this startup retry was using',
+    );
+    expect(html).toContain(
+      'stopped that stale retry before it could open your page',
+    );
+    expect(html).toContain(
+      'Your current page and unsent Chat draft are held in this tab.',
+    );
+    expect(html).not.toContain('Pairing is still complete');
+    expect(html).not.toContain(
+      "Your server no longer accepts this browser's saved access",
+    );
+  });
+
+  it('keeps a partially entered guided reconnect concise while a sibling finishes', () => {
+    const fake = makeFakeSplash();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: {
+        serverUrl: 'https://alice.recued.cloud:8443',
+        pairingCode: 'USED-ONCE',
+      },
+      reauthRecovery: {
+        chatDraftPreserved: true,
+        reason: 'credentials_changed_elsewhere',
+      },
+      onPaired: () => undefined,
+    });
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+
+    handle.showInterruptedCredentialTransition();
+
+    const html = fake.getHtml();
+    expect(html).toContain('Another tab is reconnecting');
+    expect(html).toContain(
+      'return to your current page and unsent Chat draft automatically when the other tab finishes',
+    );
+    expect(html).toContain('Your recovery-key entry stays here');
+    expect(html).not.toContain('value="USED-ONCE"');
+    expect(recoveryValuesFromHtml(html).join(' ')).toBe(realRecoveryKey);
+    expect(fake.getSubmitBtn()?.disabled).toBe(true);
+    expect(fake.getSubmitBtn()?.textContent).toBe('Waiting for other tab…');
+    handle.dispose();
+  });
+
+  it('turns a stalled guided sibling into an explicit fresh takeover', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(200, { token: 'takeover-bearer' });
+    const onPaired = vi.fn();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: {
+        serverUrl: 'https://alice.recued.cloud:8443',
+        pairingCode: 'USED-ONCE',
+      },
+      reauthRecovery: {
+        chatDraftPreserved: true,
+        reason: 'credentials_changed_elsewhere',
+      },
+      siblingTakeoverDelayMs: 20,
+      lockProvider: buildExclusivePairLock(),
+      preflightCheck: async () => ({ alreadyPaired: false }),
+      ...recoverySuccessorTestSeams(),
+      fetch: fetchFake,
+      onPaired,
+    });
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    handle.showInterruptedCredentialTransition();
+
+    await handle.submit();
+    expect(fetchFake.calls).toHaveLength(0);
+    expect(fake.getHtml()).toContain('Another tab is reconnecting');
+    expect(fake.getHtml()).not.toContain(PAIR_CODE_INPUT_TAKEOVER_READY_ATTR);
+    expect(fake.getSubmitBtn()?.disabled).toBe(true);
+
+    await vi.waitFor(() => {
+      expect(fake.getHtml()).toContain(PAIR_CODE_INPUT_TAKEOVER_READY_ATTR);
+    });
+    expect(fake.getHtml()).toContain('The other tab is taking longer');
+    expect(fake.getHtml()).toContain(
+      'Recued lets only one continue and returns the others automatically',
+    );
+    expect(fake.getHtml()).toContain(
+      'recovery key, current page, and unsent Chat draft stay here',
+    );
+    expect(recoveryValuesFromHtml(fake.getHtml()).join(' ')).toBe(
+      realRecoveryKey,
+    );
+    expect(fake.getHtml()).not.toContain('value="USED-ONCE"');
+    expect(fake.getSubmitBtn()?.disabled).toBe(false);
+    expect(fake.getSubmitBtn()?.textContent).toBe('Reconnect in this tab');
+    expect(fake.getHtml()).toContain(
+      'aria-describedby="webclient-pair-code-input-interrupted-notice"',
+    );
+
+    handle.setFieldValue('pairingCode', 'FRESH123');
+    await handle.submit();
+
+    expect(fetchFake.calls).toHaveLength(1);
+    expect(fetchFake.calls[0]?.body).toMatchObject({
+      code: 'FRESH123',
+      recoveryKey: realRecoveryKey,
+    });
+    expect(onPaired).toHaveBeenCalledOnce();
+    handle.dispose();
+  });
+
+  it('asks for one-tab-only recovery when safe cross-tab coordination is unavailable', () => {
+    const fake = makeFakeSplash();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: { chatDraftPreserved: true },
+      siblingTakeoverDelayMs: null,
+      lockProvider: buildExclusivePairLock(),
+      preflightCheck: async () => ({ alreadyPaired: false }),
+      siblingTakeoverSignalsAvailable: false,
+      onPaired: () => undefined,
+    });
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    handle.showInterruptedCredentialTransition();
+
+    expect(fake.getHtml()).toContain('continue in this tab only');
+    expect(fake.getHtml()).toContain(
+      'cannot safely choose between simultaneous reconnect attempts',
+    );
+    expect(fake.getHtml()).not.toContain(
+      'Recued lets only one continue and returns the others automatically',
+    );
+    handle.showSiblingTakeoverNeedsAttention();
+    expect(fake.getHtml()).toContain(
+      'continue in just one open reconnect tab and keep the others idle',
+    );
+    expect(fake.getHtml()).not.toContain(
+      'Recued will choose one open tab to continue',
+    );
+    handle.dispose();
+  });
+
+  it('does not promise deterministic succession without an atomic claimant', () => {
+    const fake = makeFakeSplash();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: { chatDraftPreserved: true },
+      siblingTakeoverDelayMs: null,
+      lockProvider: buildExclusivePairLock(),
+      preflightCheck: async () => ({ alreadyPaired: false }),
+      onTakeoverNeedsAttention: vi.fn(),
+      onPaired: () => undefined,
+    });
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    handle.showInterruptedCredentialTransition();
+
+    expect(fake.getHtml()).toContain('continue in this tab only');
+    expect(fake.getHtml()).toContain(
+      'cannot safely choose between simultaneous reconnect attempts',
+    );
+    expect(fake.getHtml()).not.toContain(
+      'Recued lets only one continue and returns the others automatically',
+    );
+    handle.dispose();
+  });
+
+  it('makes a lock-owning preflight failure the one recovery owner', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(200, { token: 'must-not-post' });
+    const onTakeoverNeedsAttention = vi.fn();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: { chatDraftPreserved: true },
+      siblingTakeoverDelayMs: null,
+      recoveryOwnerHeartbeatMs: null,
+      lockProvider: buildExclusivePairLock(),
+      preflightCheck: async () => {
+        throw new Error('saved access could not be read');
+      },
+      ...recoverySuccessorTestSeams(),
+      fetch: fetchFake,
+      onTakeoverNeedsAttention,
+      onPaired: () => undefined,
+    });
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    handle.showInterruptedCredentialTransition();
+    handle.setFieldValue('pairingCode', 'PREFLIGHT-OWNER');
+
+    await handle.submit();
+
+    expect(fetchFake.calls).toHaveLength(0);
+    expect(onTakeoverNeedsAttention).toHaveBeenCalledOnce();
+    expect(fake.getHtml()).toContain(PAIR_CODE_INPUT_RECOVERY_OWNER_ATTR);
+    expect(fake.getHtml()).toContain('This tab needs attention');
+    expect(fake.getHtml()).toContain(
+      'data-error="pair_code_input_server_unknown_error"',
+    );
+    expect(fake.getStatus()?.textContent).toContain(
+      'Pre-pair check failed: saved access could not be read',
+    );
+    expect(fake.getSubmitBtn()?.textContent).toBe('Retry in this tab');
+
+    handle.disableSiblingTakeoverCoordination();
+    expect(fake.getHtml()).not.toContain(PAIR_CODE_INPUT_RECOVERY_OWNER_ATTR);
+    expect(fake.getHtml()).toContain('continue in this tab only');
+    expect(fake.getSubmitBtn()?.textContent).toBe('Reconnect in this tab');
+    handle.dispose();
+  });
+
+  it('lets one simultaneous ready takeover reconnect while the contender adopts it', async () => {
+    const winnerFake = makeFakeSplash();
+    const contenderFake = makeFakeSplash();
+    const winnerFetch = buildFakeFetch(200, { token: 'winner-bearer' });
+    const contenderFetch = buildFakeFetch(200, { token: 'must-not-post' });
+    const lockProvider = buildExclusivePairLock();
+    let pairDurable = false;
+    let releaseWinner!: () => void;
+    const winnerGate = new Promise<void>((resolve) => {
+      releaseWinner = resolve;
+    });
+    const winnerOnPaired = vi.fn(async () => {
+      await winnerGate;
+      pairDurable = true;
+    });
+    const contenderOnPaired = vi.fn(async () => {
+      pairDurable = true;
+    });
+    const winnerAfterPair = vi.fn(async () => undefined);
+    const contenderAfterPair = vi.fn(async () => undefined);
+    const sharedOptions = {
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: { chatDraftPreserved: true },
+      siblingTakeoverDelayMs: null,
+      lockProvider,
+      preflightCheck: async () => ({ alreadyPaired: pairDurable }),
+      ...recoverySuccessorTestSeams(),
+    } as const;
+    const winner = mountPairCodeInputHost({
+      ...sharedOptions,
+      splashElement: winnerFake.splash,
+      fetch: winnerFetch,
+      onPaired: winnerOnPaired,
+      onAfterPair: winnerAfterPair,
+    });
+    const contender = mountPairCodeInputHost({
+      ...sharedOptions,
+      splashElement: contenderFake.splash,
+      fetch: contenderFetch,
+      onPaired: contenderOnPaired,
+      onAfterPair: contenderAfterPair,
+    });
+    for (const [handle, code] of [
+      [winner, 'FRESH-WINNER'],
+      [contender, 'FRESH-CONTENDER'],
+    ] as const) {
+      handle.setFieldValue('recoveryKey', realRecoveryKey);
+      handle.showInterruptedCredentialTransition();
+      handle.setFieldValue('pairingCode', code);
+    }
+
+    const winnerSubmission = winner.submit();
+    const contenderSubmission = contender.submit();
+
+    await vi.waitFor(() => {
+      expect(winnerFetch.calls).toHaveLength(1);
+      expect(winnerFake.getHtml()).toContain(
+        PAIR_CODE_INPUT_TAKEOVER_OWNER_ATTR,
+      );
+    });
+    expect(winnerFake.getSubmitBtn()?.textContent).toBe(
+      'Reconnecting from this tab…',
+    );
+    expect(winnerFake.getHtml()).toContain('This tab is reconnecting');
+    expect(winnerFake.getHtml()).toContain('aria-busy="true"');
+    expect(winnerFake.getHtml()).toContain('aria-disabled="true"');
+    expect(contenderFetch.calls).toHaveLength(0);
+    expect(contenderFake.getHtml()).not.toContain(
+      PAIR_CODE_INPUT_TAKEOVER_OWNER_ATTR,
+    );
+    expect(contenderFake.getSubmitBtn()?.textContent).toBe(
+      'Choosing one tab…',
+    );
+    expect(contenderFake.getHtml()).toContain('Choosing one tab safely');
+    expect(contenderFake.getHtml()).toContain(
+      'return automatically without sending its pairing code',
+    );
+    expect(contenderFake.getHtml()).toContain('aria-busy="true"');
+    expect(contenderFake.getHtml()).toContain('aria-disabled="true"');
+
+    releaseWinner();
+    await Promise.all([winnerSubmission, contenderSubmission]);
+
+    expect(winnerFetch.calls).toHaveLength(1);
+    expect(winnerFetch.calls[0]?.body).toMatchObject({
+      code: 'FRESH-WINNER',
+      recoveryKey: realRecoveryKey,
+    });
+    expect(contenderFetch.calls).toHaveLength(0);
+    expect(winnerOnPaired).toHaveBeenCalledOnce();
+    expect(contenderOnPaired).not.toHaveBeenCalled();
+    expect(winnerAfterPair).toHaveBeenCalledOnce();
+    expect(contenderAfterPair).toHaveBeenCalledOnce();
+    winner.dispose();
+    contender.dispose();
+  });
+
+  it('yields a failed owner retry as soon as its queued successor acquires the lock', async () => {
+    const failedFake = makeFakeSplash();
+    const successorFake = makeFakeSplash();
+    const lockProvider = buildExclusivePairLock();
+    let pairDurable = false;
+    let releaseFailedRequest!: () => void;
+    let releaseSuccessorRequest!: () => void;
+    const failedRequestGate = new Promise<void>((resolve) => {
+      releaseFailedRequest = resolve;
+    });
+    const successorRequestGate = new Promise<void>((resolve) => {
+      releaseSuccessorRequest = resolve;
+    });
+    const events: string[] = [];
+    const failedFetch = vi.fn(async (): Promise<Response> => {
+      events.push('failed.fetch');
+      await failedRequestGate;
+      return {
+        ok: false,
+        status: 401,
+        json: async () => ({
+          error: { code: 'recovery_key_invalid', message: 'mismatch' },
+        }),
+      } as Response;
+    }) as unknown as typeof fetch;
+    const successorFetch = vi.fn(async (): Promise<Response> => {
+      events.push('successor.fetch');
+      await successorRequestGate;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ token: 'successor-bearer' }),
+      } as Response;
+    }) as unknown as typeof fetch;
+    let failed!: ReturnType<typeof mountPairCodeInputHost>;
+    const failedTakeoverStarted = vi.fn(() => {
+      events.push('failed.started');
+    });
+    const successorTakeoverStarted = vi.fn(() => {
+      events.push('successor.started');
+      failed.showSiblingTakeoverStarted();
+    });
+    const sharedOptions = {
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: { chatDraftPreserved: true },
+      siblingTakeoverDelayMs: null,
+      lockProvider,
+      preflightCheck: async () => {
+        events.push('preflight');
+        return { alreadyPaired: pairDurable };
+      },
+      ...recoverySuccessorTestSeams(),
+    } as const;
+    failed = mountPairCodeInputHost({
+      ...sharedOptions,
+      splashElement: failedFake.splash,
+      document: failedFake.document,
+      fetch: failedFetch,
+      onTakeoverStarted: failedTakeoverStarted,
+      onPaired: () => undefined,
+    });
+    const successor = mountPairCodeInputHost({
+      ...sharedOptions,
+      splashElement: successorFake.splash,
+      fetch: successorFetch,
+      onTakeoverStarted: successorTakeoverStarted,
+      onPaired: () => {
+        pairDurable = true;
+      },
+    });
+    for (const [handle, code] of [
+      [failed, 'FAILED-OWNER'],
+      [successor, 'QUEUED-SUCCESSOR'],
+    ] as const) {
+      handle.setFieldValue('recoveryKey', realRecoveryKey);
+      handle.showInterruptedCredentialTransition();
+      handle.setFieldValue('pairingCode', code);
+    }
+    failedFake.focusSubmit();
+
+    const failedSubmission = failed.submit();
+    await vi.waitFor(() => expect(failedFetch).toHaveBeenCalledOnce());
+    const successorSubmission = successor.submit();
+    expect(successorFetch).not.toHaveBeenCalled();
+
+    releaseFailedRequest();
+    await vi.waitFor(() => {
+      expect(successorFetch).toHaveBeenCalledOnce();
+      expect(failedFake.getHtml()).toContain(PAIR_CODE_INPUT_SUCCESSION_ATTR);
+    });
+
+    expect(failedTakeoverStarted).toHaveBeenCalledOnce();
+    expect(successorTakeoverStarted).toHaveBeenCalledOnce();
+    expect(events.indexOf('successor.started')).toBeLessThan(
+      events.indexOf('successor.fetch'),
+    );
+    expect(successorFake.getHtml()).toContain(
+      PAIR_CODE_INPUT_TAKEOVER_OWNER_ATTR,
+    );
+    expect(failedFake.getHtml()).toContain('Another tab is continuing');
+    expect(failedFake.getHtml()).toContain(
+      'waiting so it will not send or save the same access twice',
+    );
+    expect(failedFake.getHtml()).toContain('your retry returns here');
+    expect(failedFake.getHtml()).not.toContain(
+      'data-error="recovery_key_invalid"',
+    );
+    expect(failedFake.getSubmitBtn()?.textContent).toBe(
+      'Continuing in another tab…',
+    );
+    expect(failedFake.getHtml()).toContain('aria-busy="true"');
+    expect(failedFake.getHtml()).toContain('aria-disabled="true"');
+    expect(failedFake.isSubmitFocused()).toBe(true);
+
+    await failed.submit();
+    expect(failedFetch).toHaveBeenCalledOnce();
+    releaseSuccessorRequest();
+    await Promise.all([failedSubmission, successorSubmission]);
+    expect(pairDurable).toBe(true);
+    failed.dispose();
+    successor.dispose();
+  });
+
+  it('restores the exact failed retry when an announced successor also stalls', async () => {
+    vi.useFakeTimers();
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(401, {
+      error: { code: 'recovery_key_invalid', message: 'mismatch' },
+    });
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: { chatDraftPreserved: true },
+      siblingTakeoverDelayMs: null,
+      siblingSuccessionDelayMs: 20,
+      lockProvider: buildExclusivePairLock(),
+      preflightCheck: async () => ({ alreadyPaired: false }),
+      fetch: fetchFake,
+      onPaired: () => undefined,
+    });
+    try {
+      handle.setFieldValue('recoveryKey', realRecoveryKey);
+      handle.showInterruptedCredentialTransition();
+      handle.setFieldValue('pairingCode', 'FAILED-OWNER');
+
+      await handle.submit();
+      expect(fake.getHtml()).toContain('data-error="recovery_key_invalid"');
+
+      handle.showSiblingTakeoverStarted();
+      expect(fake.getHtml()).toContain(PAIR_CODE_INPUT_SUCCESSION_ATTR);
+      expect(fake.getHtml()).not.toContain(
+        'data-error="recovery_key_invalid"',
+      );
+      expect(fake.getSubmitBtn()?.textContent).toBe(
+        'Continuing in another tab…',
+      );
+
+      await vi.advanceTimersByTimeAsync(15);
+      // A later server-accepted hint means the successor is still making
+      // progress. Renew the bounded wait instead of resurfacing this retry.
+      handle.showSiblingPairAccepted();
+      await vi.advanceTimersByTimeAsync(10);
+      expect(fake.getHtml()).toContain(PAIR_CODE_INPUT_SUCCESSION_ATTR);
+
+      await vi.advanceTimersByTimeAsync(11);
+      expect(fake.getHtml()).not.toContain(PAIR_CODE_INPUT_SUCCESSION_ATTR);
+      expect(fake.getHtml()).toContain('data-error="recovery_key_invalid"');
+      expect(fake.getSubmitBtn()?.textContent).toBe('Reconnect in this tab');
+      expect(recoveryValuesFromHtml(fake.getHtml()).join(' ')).toBe(
+        realRecoveryKey,
+      );
+    } finally {
+      handle.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the final failure in one recovery tab until that owner stalls', async () => {
+    vi.useFakeTimers();
+    const ownerFake = makeFakeSplash();
+    const siblingFake = makeFakeSplash();
+    const lockProvider = buildExclusivePairLock();
+    const ownerFetch = buildFakeFetch(401, {
+      error: { code: 'recovery_key_invalid', message: 'mismatch' },
+    });
+    const siblingFetch = buildFakeFetch(200, { token: 'must-not-post' });
+    let sibling!: ReturnType<typeof mountPairCodeInputHost>;
+    const onTakeoverNeedsAttention = vi.fn(() => {
+      sibling.showSiblingTakeoverNeedsAttention();
+    });
+    const sharedOptions = {
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: { chatDraftPreserved: true },
+      siblingTakeoverDelayMs: null,
+      siblingRecoveryOwnerDelayMs: 20,
+      recoveryOwnerHeartbeatMs: 5,
+      lockProvider,
+      preflightCheck: async () => ({ alreadyPaired: false }),
+      claimRecoverySuccessor: async () => ({ release: vi.fn() }),
+      onRecoverySuccessorChosen: () => undefined,
+    } as const;
+    const owner = mountPairCodeInputHost({
+      ...sharedOptions,
+      splashElement: ownerFake.splash,
+      fetch: ownerFetch,
+      onTakeoverNeedsAttention,
+      onPaired: () => undefined,
+    });
+    sibling = mountPairCodeInputHost({
+      ...sharedOptions,
+      splashElement: siblingFake.splash,
+      fetch: siblingFetch,
+      onPaired: () => undefined,
+    });
+
+    try {
+      for (const [handle, code] of [
+        [owner, 'FINAL-FAILED-OWNER'],
+        [sibling, 'PASSIVE-SIBLING'],
+      ] as const) {
+        handle.setFieldValue('recoveryKey', realRecoveryKey);
+        handle.showInterruptedCredentialTransition();
+        handle.setFieldValue('pairingCode', code);
+      }
+
+      await owner.submit();
+
+      expect(onTakeoverNeedsAttention).toHaveBeenCalledOnce();
+      expect(ownerFake.getHtml()).toContain(
+        PAIR_CODE_INPUT_RECOVERY_OWNER_ATTR,
+      );
+      expect(ownerFake.getHtml()).toContain('This tab needs attention');
+      expect(ownerFake.getHtml()).toContain(
+        'only one retry to manage',
+      );
+      expect(ownerFake.getHtml()).toContain(
+        'data-error="recovery_key_invalid"',
+      );
+      expect(ownerFake.getSubmitBtn()?.textContent).toBe('Retry in this tab');
+
+      expect(siblingFake.getHtml()).toContain(
+        PAIR_CODE_INPUT_RECOVERY_OWNER_ELSEWHERE_ATTR,
+      );
+      expect(siblingFake.getHtml()).toContain(
+        'Continue in the tab that needs attention',
+      );
+      expect(siblingFake.getHtml()).toContain(
+        'only tab offering a retry',
+      );
+      expect(siblingFake.getSubmitBtn()?.textContent).toBe(
+        'Waiting for recovery tab…',
+      );
+      expect(siblingFake.getHtml()).toContain('aria-disabled="true"');
+      expect(siblingFake.getHtml()).not.toContain(
+        'data-error="recovery_key_invalid"',
+      );
+
+      await sibling.submit();
+      expect(siblingFetch.calls).toHaveLength(0);
+
+      await vi.advanceTimersByTimeAsync(21);
+      expect(onTakeoverNeedsAttention.mock.calls.length).toBeGreaterThan(1);
+      expect(siblingFake.getHtml()).toContain(
+        PAIR_CODE_INPUT_RECOVERY_OWNER_ELSEWHERE_ATTR,
+      );
+
+      // Polling can keep rediscovering the original partial write after all
+      // contenders have failed. That is not fresh progress and must neither
+      // dislodge the owner nor extend the passive tab's bounded fallback.
+      owner.showInterruptedCredentialTransition();
+      sibling.showInterruptedCredentialTransition();
+      expect(ownerFake.getHtml()).toContain(
+        PAIR_CODE_INPUT_RECOVERY_OWNER_ATTR,
+      );
+      expect(siblingFake.getHtml()).toContain(
+        PAIR_CODE_INPUT_RECOVERY_OWNER_ELSEWHERE_ATTR,
+      );
+
+      const heartbeatCount = onTakeoverNeedsAttention.mock.calls.length;
+      owner.dispose();
+      await vi.advanceTimersByTimeAsync(21);
+      expect(onTakeoverNeedsAttention).toHaveBeenCalledTimes(heartbeatCount);
+      expect(siblingFake.getHtml()).not.toContain(
+        PAIR_CODE_INPUT_RECOVERY_OWNER_ELSEWHERE_ATTR,
+      );
+      expect(siblingFake.getHtml()).toContain(
+        PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ATTR,
+      );
+      expect(siblingFake.getHtml()).toContain('Recovery moved to this tab');
+      expect(siblingFake.getSubmitBtn()?.textContent).toBe(
+        'Continue recovery here',
+      );
+      expect(recoveryValuesFromHtml(siblingFake.getHtml()).join(' ')).toBe(
+        realRecoveryKey,
+      );
+    } finally {
+      owner.dispose();
+      sibling.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('makes a still-open prior owner yield to an atomically chosen successor', async () => {
+    const fake = makeFakeSplash();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: { chatDraftPreserved: true },
+      siblingTakeoverDelayMs: null,
+      recoveryOwnerHeartbeatMs: null,
+      lockProvider: buildExclusivePairLock(),
+      preflightCheck: async () => ({ alreadyPaired: false }),
+      ...recoverySuccessorTestSeams(),
+      fetch: buildFakeFetch(401, {
+        error: { code: 'recovery_key_invalid', message: 'mismatch' },
+      }),
+      onTakeoverNeedsAttention: vi.fn(),
+      onPaired: () => undefined,
+    });
+    try {
+      handle.setFieldValue('recoveryKey', realRecoveryKey);
+      handle.showInterruptedCredentialTransition();
+      handle.setFieldValue('pairingCode', 'PRIOR-OWNER');
+      await handle.submit();
+      expect(fake.getHtml()).toContain(PAIR_CODE_INPUT_RECOVERY_OWNER_ATTR);
+      expect(fake.getSubmitBtn()?.textContent).toBe('Retry in this tab');
+
+      // Background throttling can delay a live owner's heartbeat long enough
+      // for siblings to elect a successor. The explicit chosen signal is then
+      // authoritative and removes the stale owner's action immediately.
+      handle.showSiblingRecoverySuccessorChosen();
+      expect(fake.getHtml()).toContain(
+        PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ELSEWHERE_ATTR,
+      );
+      expect(fake.getHtml()).not.toContain(
+        'data-error="recovery_key_invalid"',
+      );
+      expect(fake.getSubmitBtn()?.textContent).toBe(
+        'Waiting for recovery tab…',
+      );
+    } finally {
+      handle.dispose();
+    }
+  });
+
+  it('elects one recovery successor and deterministically hands off again if it closes', async () => {
+    vi.useFakeTimers();
+    const firstFake = makeFakeSplash();
+    const secondFake = makeFakeSplash();
+    let leaseHeld = false;
+    const claimRecoverySuccessor = vi.fn(async () => {
+      if (leaseHeld) return null;
+      leaseHeld = true;
+      let released = false;
+      return {
+        release: () => {
+          if (released) return;
+          released = true;
+          leaseHeld = false;
+        },
+      };
+    });
+    let first!: ReturnType<typeof mountPairCodeInputHost>;
+    let second!: ReturnType<typeof mountPairCodeInputHost>;
+    const firstChosen = vi.fn(() => {
+      second.showSiblingRecoverySuccessorChosen();
+    });
+    const secondChosen = vi.fn(() => {
+      first.showSiblingRecoverySuccessorChosen();
+    });
+    const sharedOptions = {
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: { chatDraftPreserved: true },
+      siblingTakeoverDelayMs: null,
+      siblingRecoveryOwnerDelayMs: 20,
+      recoveryOwnerHeartbeatMs: 5,
+      lockProvider: buildExclusivePairLock(),
+      preflightCheck: async () => ({ alreadyPaired: false }),
+      claimRecoverySuccessor,
+      onPaired: () => undefined,
+    } as const;
+    first = mountPairCodeInputHost({
+      ...sharedOptions,
+      splashElement: firstFake.splash,
+      fetch: buildFakeFetch(200, { token: 'first-token' }),
+      onRecoverySuccessorChosen: firstChosen,
+    });
+    second = mountPairCodeInputHost({
+      ...sharedOptions,
+      splashElement: secondFake.splash,
+      fetch: buildFakeFetch(200, { token: 'second-token' }),
+      onRecoverySuccessorChosen: secondChosen,
+    });
+
+    try {
+      for (const [handle, code] of [
+        [first, 'FIRST-RETAINED'],
+        [second, 'SECOND-RETAINED'],
+      ] as const) {
+        handle.setFieldValue('recoveryKey', realRecoveryKey);
+        handle.showInterruptedCredentialTransition();
+        handle.setFieldValue('pairingCode', code);
+        handle.showSiblingTakeoverNeedsAttention();
+      }
+
+      await vi.advanceTimersByTimeAsync(21);
+
+      expect(leaseHeld).toBe(true);
+      expect(firstFake.getHtml()).toContain(
+        PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ATTR,
+      );
+      expect(firstFake.getHtml()).toContain('Recovery moved to this tab');
+      expect(firstFake.getHtml()).toContain('only safe successor');
+      expect(firstFake.getSubmitBtn()?.textContent).toBe(
+        'Continue recovery here',
+      );
+      expect(firstFake.getSubmitBtn()?.disabled).toBe(false);
+      expect(firstFake.getSubmitFocus()).toHaveBeenCalled();
+
+      expect(secondFake.getHtml()).toContain(
+        PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ELSEWHERE_ATTR,
+      );
+      expect(secondFake.getHtml()).toContain(
+        'Recovery continued in another tab',
+      );
+      expect(secondFake.getHtml()).toContain('remains safely paused');
+      expect(secondFake.getSubmitBtn()?.textContent).toBe(
+        'Waiting for recovery tab…',
+      );
+      expect(secondFake.getHtml()).toContain('aria-disabled="true"');
+      second.showSiblingTakeoverNeedsAttention();
+      expect(secondFake.getHtml()).toContain(
+        PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ELSEWHERE_ATTR,
+      );
+      expect(secondFake.getHtml()).toContain(
+        'Recovery continued in another tab',
+      );
+      expect(recoveryValuesFromHtml(secondFake.getHtml()).join(' ')).toBe(
+        realRecoveryKey,
+      );
+      expect(firstChosen).toHaveBeenCalled();
+      expect(secondChosen).not.toHaveBeenCalled();
+
+      // A delayed heartbeat from the departed owner, or even a duplicate
+      // successor announcement, cannot dislodge the tab holding the atomic
+      // lease and briefly expose two actions.
+      first.showSiblingTakeoverNeedsAttention();
+      first.showSiblingRecoverySuccessorChosen();
+      expect(firstFake.getHtml()).toContain(
+        PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ATTR,
+      );
+      expect(firstFake.getSubmitBtn()?.textContent).toBe(
+        'Continue recovery here',
+      );
+
+      first.dispose();
+      expect(leaseHeld).toBe(false);
+      await vi.advanceTimersByTimeAsync(21);
+
+      expect(secondFake.getHtml()).toContain(
+        PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ATTR,
+      );
+      expect(secondFake.getHtml()).not.toContain(
+        PAIR_CODE_INPUT_RECOVERY_SUCCESSOR_ELSEWHERE_ATTR,
+      );
+      expect(secondFake.getSubmitBtn()?.textContent).toBe(
+        'Continue recovery here',
+      );
+      expect(secondChosen).toHaveBeenCalled();
+      expect(leaseHeld).toBe(true);
+      expect(recoveryValuesFromHtml(secondFake.getHtml()).join(' ')).toBe(
+        realRecoveryKey,
+      );
+
+      await second.submit();
+      expect(leaseHeld).toBe(false);
+    } finally {
+      first.dispose();
+      second.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the chosen takeover action focused when the server rejects it', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(401, {
+      error: { code: 'recovery_key_invalid', message: 'mismatch' },
+    });
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      document: fake.document,
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: { chatDraftPreserved: true },
+      siblingTakeoverDelayMs: null,
+      lockProvider: buildExclusivePairLock(),
+      preflightCheck: async () => ({ alreadyPaired: false }),
+      ...recoverySuccessorTestSeams(),
+      fetch: fetchFake,
+      onPaired: () => undefined,
+    });
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    handle.showInterruptedCredentialTransition();
+    handle.setFieldValue('pairingCode', 'FRESH-REJECTED');
+    fake.focusSubmit();
+    fake.getSubmitFocus().mockClear();
+
+    await handle.submit();
+
+    expect(fetchFake.calls).toHaveLength(1);
+    expect(fake.getStatus()?.dataset.error).toBe('recovery_key_invalid');
+    expect(fake.getSubmitBtn()?.textContent).toBe('Retry in this tab');
+    expect(fake.getSubmitBtn()?.disabled).toBe(true);
+    expect(fake.getHtml()).toContain(PAIR_CODE_INPUT_RECOVERY_OWNER_ATTR);
+    expect(fake.getHtml()).not.toContain('aria-busy="true"');
+    expect(fake.getHtml()).not.toContain(PAIR_CODE_INPUT_TAKEOVER_OWNER_ATTR);
+    expect(fake.isSubmitFocused()).toBe(false);
+    expect(fake.isRecoveryCorrectionFocused()).toBe(true);
+    expect(fake.getRecoveryCorrectionFocus()).toHaveBeenCalledOnce();
+    expect(fake.getSubmitFocus()).toHaveBeenCalledTimes(2);
+    handle.dispose();
+  });
+
+  it('adopts a late sibling completion before a ready takeover can post', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(200, { token: 'must-not-be-used' });
+    const onPaired = vi.fn();
+    const onAfterPair = vi.fn();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: { chatDraftPreserved: true },
+      // Immediate only for this deterministic unit case: production waits for
+      // the ordinary persistence window before exposing the same action.
+      siblingTakeoverDelayMs: null,
+      fetch: fetchFake,
+      preflightCheck: async () => ({ alreadyPaired: true }),
+      onPaired,
+      onAfterPair,
+    });
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    handle.showInterruptedCredentialTransition();
+
+    expect(fake.getHtml()).toContain(PAIR_CODE_INPUT_TAKEOVER_READY_ATTR);
+    expect(fake.getSubmitBtn()?.textContent).toBe('Reconnect in this tab');
+    await handle.submit();
+
+    expect(fetchFake.calls).toHaveLength(0);
+    expect(onPaired).not.toHaveBeenCalled();
+    expect(onAfterPair).toHaveBeenCalledOnce();
+    handle.dispose();
+  });
+
+  it('turns a sibling partial write into takeover copy and clears its stale code', () => {
+    const fake = makeFakeSplash();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: {
+        serverUrl: 'https://alice.recued.cloud:8443',
+        pairingCode: 'USED-ONCE',
+      },
+      onPaired: () => undefined,
+    });
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+
+    handle.showInterruptedCredentialTransition();
+
+    const html = fake.getHtml();
+    expect(html).toContain(PAIR_CODE_INPUT_INTERRUPTED_NOTICE_ATTR);
+    expect(html).toContain('Another tab is saving access');
+    expect(html).toContain('cleared the old one-time code');
+    expect(html).not.toContain('value="USED-ONCE"');
+    expect(recoveryValuesFromHtml(html).join(' ')).toBe(realRecoveryKey);
+    expect(fake.getSubmitBtn()?.disabled).toBe(false);
+  });
+
+  it('keeps a same-origin cold repair editable without a dangling description', () => {
+    const fake = makeFakeSplash();
+    mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: {
+        serverUrl: 'https://alice.recued.cloud:8443',
+        sameOriginResume: true,
+      },
+      reauthRecovery: {
+        chatDraftPreserved: false,
+        reason: 'local_credentials_incomplete',
+      },
+      onPaired: () => undefined,
+    });
+
+    expect(fake.getHtml()).not.toContain(
+      PAIR_CODE_INPUT_SECURE_RESUME_NOTICE_ATTR,
+    );
+    expect(fake.getHtml()).toContain(
+      `data-action="${PAIR_CODE_INPUT_CHANGE_SERVER_ACTION}"`,
+    );
+    expect(fake.getHtml()).not.toContain(
+      'aria-describedby="webclient-pair-code-input-secure-resume-notice"',
+    );
+    fake.fireAction(PAIR_CODE_INPUT_CHANGE_SERVER_ACTION);
+    expect(fake.getServerFocus()).toHaveBeenCalledOnce();
+    expect(fake.getServerSelect()).toHaveBeenCalledOnce();
+  });
+
+  it('returns through the guided handoff when another tab completed the repair first', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = vi.fn();
+    const onPaired = vi.fn();
+    const onAfterPair = vi.fn(async () => undefined);
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: { chatDraftPreserved: true },
+      fetch: fetchFake as unknown as typeof fetch,
+      preflightCheck: async () => ({ alreadyPaired: true }),
+      onPaired,
+      onAfterPair,
+    });
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+
+    await handle.submit();
+
+    expect(fetchFake).not.toHaveBeenCalled();
+    expect(onPaired).not.toHaveBeenCalled();
+    expect(onAfterPair).toHaveBeenCalledTimes(1);
+    expect(fake.getStatus()?.dataset.error).toBeUndefined();
+  });
+
+  it('keeps the explicit already-paired stop for a generic first-pair form', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = vi.fn();
+    const onAfterPair = vi.fn();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      fetch: fetchFake as unknown as typeof fetch,
+      preflightCheck: async () => ({ alreadyPaired: true }),
+      onPaired: vi.fn(),
+      onAfterPair,
+    });
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+
+    await handle.submit();
+
+    expect(fetchFake).not.toHaveBeenCalled();
+    expect(onAfterPair).not.toHaveBeenCalled();
+    expect(fake.getStatus()?.dataset.error).toBe(
+      'pair_code_input_already_paired',
+    );
+  });
 });
 
 describe('mountPairCodeInputHost — submit gating', () => {
@@ -669,6 +2815,205 @@ describe('mountPairCodeInputHost — submit flow', () => {
     });
   });
 
+  it('retries an interrupted local finalize without a second pairing request', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(200, {
+      token: 'one-time-bearer',
+      token_id: 'tok-interrupted',
+    });
+    const onPaired = vi
+      .fn()
+      .mockRejectedValueOnce(new Error(
+        "Pairing succeeded, but Recued couldn't save the credentials to local storage. Reload and try again.",
+      ))
+      .mockResolvedValueOnce(undefined);
+    const onPairAccepted = vi.fn();
+    const onAfterPair = vi.fn(async () => undefined);
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      fetch: fetchFake,
+      onPairAccepted,
+      onPaired,
+      onAfterPair,
+    });
+    handle.setFieldValue('serverUrl', 'http://localhost:3001');
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    handle.setFieldValue('pairingCode', 'ONE-TIME');
+
+    await handle.submit();
+
+    expect(fetchFake.calls).toHaveLength(1);
+    expect(onPairAccepted).toHaveBeenCalledOnce();
+    expect(onPaired).toHaveBeenCalledTimes(1);
+    expect(onAfterPair).not.toHaveBeenCalled();
+    expect(fake.getStatus()?.dataset.error).toBe(
+      'pair_code_input_finalize_interrupted',
+    );
+    expect(fake.getStatus()?.textContent).not.toContain('Reload');
+    expect(fake.getStatus()?.textContent).toContain(
+      "Recued couldn't save the credentials to local storage",
+    );
+    expect(fake.getHtml()).toContain(PAIR_CODE_INPUT_INTERRUPTED_NOTICE_ATTR);
+    expect(fake.getHtml()).toContain('data-local-finalize-retry');
+    expect(fake.getHtml()).toContain('will not contact the pairing endpoint again');
+    expect(fake.getSubmitBtn()?.textContent).toBe('Finish saving access');
+    expect(fake.getSubmitBtn()?.disabled).toBe(false);
+    expect(fake.getHtml()).toMatch(
+      /id="webclient-pair-code-input-server-url"[\s\S]*?disabled/,
+    );
+
+    await handle.submit();
+
+    expect(fetchFake.calls).toHaveLength(1);
+    expect(onPairAccepted).toHaveBeenCalledOnce();
+    expect(onPaired).toHaveBeenCalledTimes(2);
+    expect(onPaired.mock.calls[1]?.[0]).toEqual(onPaired.mock.calls[0]?.[0]);
+    expect(onAfterPair).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the in-memory response recoverable when the retry lock is interrupted', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(200, { token: 'held-bearer' });
+    const onPaired = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('first local save stopped'))
+      .mockResolvedValueOnce(undefined);
+    let lockAttempt = 0;
+    const lockProvider: PairFinalizeLockProvider = {
+      request: async (_name, _options, callback) => {
+        lockAttempt += 1;
+        if (lockAttempt === 2) {
+          throw new Error('tab temporarily lost lock coordination');
+        }
+        return callback();
+      },
+    };
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      fetch: fetchFake,
+      lockProvider,
+      onPaired,
+    });
+    handle.setFieldValue('serverUrl', 'http://localhost:3001');
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+
+    await handle.submit();
+    await handle.submit();
+
+    expect(fetchFake.calls).toHaveLength(1);
+    expect(onPaired).toHaveBeenCalledTimes(1);
+    expect(fake.getStatus()?.dataset.error).toBe(
+      'pair_code_input_finalize_interrupted',
+    );
+    expect(fake.getStatus()?.textContent).toContain(
+      'still will not send another pairing request',
+    );
+    expect(fake.getSubmitBtn()?.textContent).toBe('Finish saving access');
+    expect(fake.getSubmitBtn()?.disabled).toBe(false);
+
+    await handle.submit();
+
+    expect(fetchFake.calls).toHaveLength(1);
+    expect(onPaired).toHaveBeenCalledTimes(2);
+  });
+
+  it('adopts a sibling completion while a local finalize retry is queued', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(200, { token: 'one-time-bearer' });
+    let siblingCompleted = false;
+    const onPaired = vi.fn(async () => {
+      throw new Error('first local write stopped');
+    });
+    const onAfterPair = vi.fn(async () => undefined);
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      fetch: fetchFake,
+      preflightCheck: async () => ({ alreadyPaired: siblingCompleted }),
+      onPaired,
+      onAfterPair,
+    });
+    handle.setFieldValue('serverUrl', 'http://localhost:3001');
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+
+    await handle.submit();
+    siblingCompleted = true;
+    await handle.submit();
+
+    expect(fetchFake.calls).toHaveLength(1);
+    expect(onPaired).toHaveBeenCalledTimes(1);
+    expect(onAfterPair).toHaveBeenCalledTimes(1);
+  });
+
+  it('stops a racing sibling POST once, clears its code, then takes over by recovery key', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(200, { token: 'takeover-bearer' });
+    const onPaired = vi.fn();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      fetch: fetchFake,
+      preflightCheck: async () => ({
+        alreadyPaired: false,
+        interrupted: true,
+      }),
+      onPaired,
+    });
+    handle.setFieldValue('serverUrl', 'http://localhost:3001');
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    handle.setFieldValue('pairingCode', 'POSSIBLY-USED');
+
+    await handle.submit();
+
+    expect(fetchFake.calls).toHaveLength(0);
+    expect(onPaired).not.toHaveBeenCalled();
+    expect(fake.getHtml()).toContain(PAIR_CODE_INPUT_INTERRUPTED_NOTICE_ATTR);
+    expect(fake.getHtml()).not.toContain('value="POSSIBLY-USED"');
+    expect(fake.getRecoveryFocus()).toHaveBeenCalled();
+    expect(fake.getSubmitBtn()?.disabled).toBe(false);
+
+    await handle.submit();
+
+    expect(fetchFake.calls).toHaveLength(1);
+    expect(fetchFake.calls[0]?.body).not.toHaveProperty('code');
+    expect(fetchFake.calls[0]?.body).toMatchObject({
+      recoveryKey: realRecoveryKey,
+    });
+    expect(onPaired).toHaveBeenCalledTimes(1);
+  });
+
+  it('discards a failed response and never reuses its one-time code', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = buildFakeFetch(200, { token: 'first-bearer' });
+    const onPaired = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('local save remains unavailable'))
+      .mockResolvedValueOnce(undefined);
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      fetch: fetchFake,
+      onPaired,
+    });
+    handle.setFieldValue('serverUrl', 'http://localhost:3001');
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    handle.setFieldValue('pairingCode', 'USED-ONCE');
+
+    await handle.submit();
+    fake.fireAction(PAIR_CODE_INPUT_RESTART_AFTER_INTERRUPTION_ACTION);
+
+    expect(fake.getHtml()).not.toContain('data-local-finalize-retry');
+    expect(fake.getHtml()).toContain('data-local-finalize-restarted');
+    expect(fake.getHtml()).toContain('Ready for a fresh pairing attempt');
+    expect(fake.getHtml()).not.toContain('Another tab is saving access');
+    expect(fake.getSubmitBtn()?.textContent).toBe('Pair this device');
+    await handle.submit();
+
+    expect(fetchFake.calls).toHaveLength(2);
+    expect(fetchFake.calls[0]?.body).toMatchObject({ code: 'USED-ONCE' });
+    expect(fetchFake.calls[1]?.body).not.toHaveProperty('code');
+    expect(fetchFake.calls[1]?.body).toMatchObject({
+      recoveryKey: realRecoveryKey,
+    });
+  });
+
   it('preserves slot 24 when slots 21-23 are completed after it', async () => {
     const words = realRecoveryKey.split(/\s+/).filter((w) => w.length > 0);
     const fake = makeFakeSplash();
@@ -713,7 +3058,58 @@ describe('mountPairCodeInputHost — submit flow', () => {
     const status = fake.getStatus();
     expect(status?.dataset.error).toBe('recovery_key_invalid');
     expect(status?.textContent).toBe(PAIR_CODE_INPUT_ERROR_COPY.recovery_key_invalid);
-    expect(fake.getSubmitBtn()?.disabled).toBe(false);  // re-enabled for retry
+    expect(fake.getSubmitBtn()?.disabled).toBe(true);
+    expect(fake.getHtml()).toContain(
+      'Review the server address or re-enter the recovery key before retrying.',
+    );
+  });
+
+  it('keeps a malformed recovery key actionable until its words change', async () => {
+    const fake = makeFakeSplash();
+    const fetchFake = vi.fn();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      document: fake.document,
+      fetch: fetchFake as unknown as typeof fetch,
+      onPaired: () => undefined,
+    });
+    handle.setFieldValue('serverUrl', 'http://localhost:3001');
+    handle.setFieldValue(
+      'recoveryKey',
+      Array.from({ length: 24 }, () => 'abandon').join(' '),
+    );
+
+    await handle.submit();
+
+    expect(fetchFake).not.toHaveBeenCalled();
+    expect(fake.getStatus()?.dataset.error).toBe(
+      'pair_code_input_invalid_recovery_key',
+    );
+    expect(fake.getStatus()?.textContent).toContain(
+      'do not form a valid recovery key',
+    );
+    expect(fake.getRecoveryFocus()).toHaveBeenCalledOnce();
+    expect(fake.getSubmitBtn()?.disabled).toBe(true);
+    expect(fake.getHtml()).toContain(
+      'Correct the recovery key before retrying.',
+    );
+    expect(fake.getHtml()).not.toContain(
+      PAIR_CODE_INPUT_RECOVERY_CORRECTION_ATTR,
+    );
+
+    fake.fireField('pairing-code', 'FRESH-CODE');
+    fake.fireField('server-url', 'http://localhost:3002');
+    expect(fake.getStatus()?.dataset.error).toBe(
+      'pair_code_input_invalid_recovery_key',
+    );
+    expect(fake.getSubmitBtn()?.disabled).toBe(true);
+    await handle.submit();
+    expect(fetchFake).not.toHaveBeenCalled();
+
+    fake.fireRecoveryWord(0, 'ability');
+    expect(fake.getStatus()?.dataset.error).toBeUndefined();
+    expect(fake.getSubmitBtn()?.disabled).toBe(false);
+    handle.dispose();
   });
 
   it('transport failure renders the transport-failed copy', async () => {
@@ -823,6 +3219,7 @@ describe('mountPairCodeInputHost — submit flow', () => {
     fake.fireField('server-url', 'http://localhost:3002');
     expect(fake.getStatus()?.textContent).toBe('');
     expect(fake.getStatus()?.dataset.error).toBeUndefined();
+    expect(fake.getSubmitBtn()?.disabled).toBe(false);
   });
 });
 
@@ -980,6 +3377,10 @@ describe('mountPairCodeInputHost — generate mode (R26.4 first-run recovery key
     expect(fake.getHtml()).toContain('Every pair confirms this key');
     // … and the obsolete generated phrase is gone from the grid.
     expect(recoveryValuesFromHtml(fake.getHtml()).every((v) => v === '')).toBe(true);
+    expect(fake.getHtml()).not.toContain(
+      PAIR_CODE_INPUT_RECOVERY_CORRECTION_ATTR,
+    );
+    expect(fake.getHtml()).not.toContain(PAIR_CODE_INPUT_RECOVERY_HELP_ATTR);
   });
 
   it('switching back to enter mode wipes the generated state (no leaked words)', () => {
@@ -998,15 +3399,42 @@ describe('mountPairCodeInputHost — generate mode (R26.4 first-run recovery key
 });
 
 describe('mountPairCodeInputHost — dispose', () => {
-  it('dispose clears the splash + detaches listeners', () => {
+  it('dispose clears typed pairing secrets, the splash, and listeners', () => {
     const fake = makeFakeSplash();
     const handle = mountPairCodeInputHost({
       splashElement: fake.splash,
       onPaired: () => undefined,
     });
+    const firstRecoveryWord = realRecoveryKey.split(' ')[0];
+    handle.setFieldValue('pairingCode', 'STALE999');
+    handle.setFieldValue('recoveryKey', realRecoveryKey);
+    expect(fake.getHtml()).toContain('STALE999');
+    expect(fake.getHtml()).toContain(`value="${firstRecoveryWord}"`);
     expect(fake.listenerCount()).toBeGreaterThan(0);
     handle.dispose();
     expect(fake.getHtml()).toBe('');
+    expect(fake.getHtml()).not.toContain('STALE999');
+    expect(fake.getHtml()).not.toContain(`value="${firstRecoveryWord}"`);
+    expect(fake.listenerCount()).toBe(0);
+  });
+
+  it('does not let a pending sibling-takeover timer revive a retired form', async () => {
+    const fake = makeFakeSplash();
+    const handle = mountPairCodeInputHost({
+      splashElement: fake.splash,
+      seed: { serverUrl: 'https://alice.recued.cloud:8443' },
+      reauthRecovery: { chatDraftPreserved: true },
+      siblingTakeoverDelayMs: 10,
+      onPaired: () => undefined,
+    });
+    handle.showInterruptedCredentialTransition();
+    expect(fake.getHtml()).toContain('Waiting for other tab…');
+
+    handle.dispose();
+    await new Promise<void>((resolve) => globalThis.setTimeout(resolve, 25));
+
+    expect(fake.getHtml()).toBe('');
+    expect(fake.getHtml()).not.toContain(PAIR_CODE_INPUT_TAKEOVER_READY_ATTR);
     expect(fake.listenerCount()).toBe(0);
   });
 

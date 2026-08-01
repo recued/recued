@@ -38,6 +38,7 @@ import {
   refPickerOptionDomId,
   renderRefPickerResultRows,
 } from './render.js';
+import { asRefPickerSearchPage } from './types.js';
 import type {
   RefPickerHandle,
   RefPickerSelection,
@@ -58,11 +59,13 @@ interface ElementLike {
   parentElement?: ElementLike | null;
   innerHTML?: string;
   focus?: () => void;
+  scrollIntoView?: (options?: { block?: 'nearest' }) => void;
 }
 interface EventLike {
   target?: unknown;
   key?: string;
   preventDefault?: () => void;
+  stopPropagation?: () => void;
 }
 
 export const wireRefPicker = (
@@ -103,12 +106,12 @@ export const wireRefPicker = (
           : '';
       }
       setBoolAttr(resultsEl, 'hidden', !state.open);
-    }
-    if (shellEl !== null) {
-      shellEl.setAttribute('aria-expanded', state.open ? 'true' : 'false');
+      resultsEl.setAttribute('aria-busy', state.loading ? 'true' : 'false');
     }
     if (inputEl !== null) {
       if ((inputEl.value ?? '') !== state.query) inputEl.value = state.query;
+      inputEl.setAttribute('aria-expanded', state.open ? 'true' : 'false');
+      inputEl.setAttribute('aria-busy', state.loading ? 'true' : 'false');
       if (state.open && state.activeIndex >= 0) {
         inputEl.setAttribute(
           'aria-activedescendant',
@@ -117,6 +120,11 @@ export const wireRefPicker = (
       } else {
         inputEl.removeAttribute('aria-activedescendant');
       }
+    }
+    if (state.open && state.activeIndex >= 0 && resultsEl !== null) {
+      resultsEl.querySelector(
+        `[${REF_PICKER_OPTION_INDEX_ATTR}="${state.activeIndex}"]`,
+      )?.scrollIntoView?.({ block: 'nearest' });
     }
     if (clearEl !== null) {
       setBoolAttr(clearEl, 'hidden', state.selectedId === null);
@@ -136,16 +144,28 @@ export const wireRefPicker = (
     // result even while this newer one is still waiting out its debounce.
     const seq = ++searchSeq;
     if (value.trim().length < minChars) {
-      state = setResults(state, []);
+      state = closeList(setResults(state, []));
       paint();
       return;
     }
     state = setLoading(state, true);
+    paint();
     const fire = (): void => {
-      Promise.resolve(opts.search(value)).then(
-        (options) => {
+      let pending: ReturnType<typeof opts.search>;
+      try {
+        pending = opts.search(value);
+      } catch (err: unknown) {
+        if (!destroyed && seq === searchSeq) {
+          state = setError(state, errorMessage(err));
+          paint();
+        }
+        return;
+      }
+      Promise.resolve(pending).then(
+        (result) => {
           if (destroyed || seq !== searchSeq) return;
-          state = setResults(state, options);
+          const page = asRefPickerSearchPage(result);
+          state = setResults(state, page.options, page.truncated === true);
           paint();
         },
         (err: unknown) => {
@@ -171,6 +191,9 @@ export const wireRefPicker = (
     opts.onChange?.({ id: option.id, label: option.label });
   };
   const doClear = (): void => {
+    cancelDebounce?.();
+    cancelDebounce = null;
+    searchSeq += 1;
     state = clearSelection(state);
     paint();
     opts.onChange?.(null);
@@ -209,6 +232,10 @@ export const wireRefPicker = (
       case 'Escape':
         if (!state.open) return;
         prevent(event);
+        // A combobox consumes the first Escape to dismiss its popup. Without
+        // this, the same bubbling keydown also closes a containing modal or
+        // config editor, turning a local cancel into a destructive exit.
+        event.stopPropagation?.();
         state = revertQuery(closeList(state));
         paint();
         return;
@@ -216,10 +243,10 @@ export const wireRefPicker = (
     }
   };
 
-  // Selection runs on mousedown (NOT click) with preventDefault, so the
-  // input never blurs first — the canonical fix for the
-  // option-click-vs-blur race.
-  const onMousedown = (event: EventLike): void => {
+  // Option selection runs on pointerdown (mousedown on older/test DOMs), with
+  // preventDefault, so the input never blurs first — the canonical fix for
+  // the option-click-vs-blur race. Pointer events also cover touch + pen.
+  const onPress = (event: EventLike): void => {
     const optionEl = closestWithAttr(
       event.target,
       REF_PICKER_OPTION_INDEX_ATTR,
@@ -232,10 +259,15 @@ export const wireRefPicker = (
       if (Number.isInteger(index)) select(index);
       return;
     }
-    if (closestWithAttr(event.target, REF_PICKER_CLEAR_ATTR, shellEl) !== null) {
-      prevent(event);
-      doClear();
+  };
+
+  const onClick = (event: EventLike): void => {
+    if (closestWithAttr(event.target, REF_PICKER_CLEAR_ATTR, shellEl) === null) {
+      return;
     }
+    prevent(event);
+    doClear();
+    inputEl?.focus?.();
   };
 
   const onFocusin = (event: EventLike): void => {
@@ -243,12 +275,22 @@ export const wireRefPicker = (
     hadFocus = true;
     state = openList(state);
     paint();
-    runSearch((inputEl?.value as string | undefined) ?? '', true);
+    const value = (inputEl?.value as string | undefined) ?? '';
+    // Re-opening a committed picker should show the inventory, not search its
+    // display label and usually return only itself. Empty-query inventories opt
+    // into this with minChars=0; other pickers preserve their threshold.
+    const query = minChars === 0
+      && state.selectedId !== null
+      && value === state.selectedLabel
+        ? ''
+        : value;
+    runSearch(query, true);
   };
 
   // A genuine blur (tab away / click elsewhere) closes + reverts the input
-  // text to the committed label. Option/clear mousedown keep focus, so
-  // this doesn't fire from clicking inside the picker.
+  // text to the committed label. Option pointerdown keeps focus. The clear
+  // button may take focus normally, then its click clears and returns focus —
+  // important on touch, where cancelling pointerdown can suppress click.
   const onFocusout = (): void => {
     hadFocus = false;
     state = revertQuery(closeList(state));
@@ -282,7 +324,10 @@ export const wireRefPicker = (
     mirrorEl = shellEl.querySelector(`[${REF_PICKER_VALUE_ATTR}]`);
     bind(shellEl, 'input', onInput);
     bind(shellEl, 'keydown', onKeydown);
-    bind(shellEl, 'mousedown', onMousedown);
+    const pointerEventsAvailable =
+      typeof (globalThis as { PointerEvent?: unknown }).PointerEvent === 'function';
+    bind(shellEl, pointerEventsAvailable ? 'pointerdown' : 'mousedown', onPress);
+    bind(shellEl, 'click', onClick);
     bind(shellEl, 'focusin', onFocusin);
     bind(shellEl, 'focusout', onFocusout);
     // Reconcile the freshly-rendered (resting) shell with our live state.
@@ -313,11 +358,24 @@ export const wireRefPicker = (
       state.selectedId !== null
         ? { id: state.selectedId, label: state.selectedLabel ?? '' }
         : null,
+    getQuery: () => state.query,
     setValue: (selection: RefPickerSelection | null) => {
-      state =
-        selection === null
-          ? clearSelection(state)
-          : commitOption(state, { id: selection.id, label: selection.label });
+      if (destroyed) return;
+      if (selection === null) {
+        state = clearSelection(state);
+      } else if (selection.id === state.selectedId) {
+        // Label hydration is not a new choice. Preserve an open inventory,
+        // highlight, and in-flight search; update the visible text only while
+        // it still shows the prior committed label (never clobber typing).
+        const priorLabel = state.selectedLabel ?? '';
+        state = {
+          ...state,
+          selectedLabel: selection.label,
+          query: state.query === priorLabel ? selection.label : state.query,
+        };
+      } else {
+        state = commitOption(state, { id: selection.id, label: selection.label });
+      }
       paint();
     },
     rewire: (nextRoot: ParentNode) => {
@@ -329,6 +387,7 @@ export const wireRefPicker = (
       cancelDebounce?.();
       cancelDebounce = null;
       detach();
+      shellEl = inputEl = resultsEl = clearEl = mirrorEl = null;
     },
   };
 };

@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
+  EXECUTION_CASE_CARD_NOTICE,
   RISK_TIERS,
   RISK_TIER_RANK,
   type CaseInterventionRecord,
@@ -144,6 +145,7 @@ const admittedCase = () => {
     report_id: 'report-1',
     root_request_id: 'historical-root',
     root_request: 'send the quarterly report to the customer',
+    session_id: 'session-fixture',
     governing_contract_id: 'owner',
     principal_key: 'user_self',
     policy_fingerprint: 'policy-v1',
@@ -282,7 +284,6 @@ const emptySpan = (root_request_id: string): ResolvedExecutionSpan => ({
   pending: false,
   has_substantive_flow: false,
   has_strong_signal: false,
-  has_compilable_signal: false,
 });
 
 const emptyCompiler = (): ExecutionCaseCompiler => ({
@@ -307,6 +308,32 @@ const emptyCompiler = (): ExecutionCaseCompiler => ({
 }) as unknown as ExecutionCaseCompiler;
 
 describe('D-214 bounded experiment definition', () => {
+  /** The COMPLETE valid pre-registration. Hoisted to describe scope so the
+   *  spot-checks below and the exhaustive drop-one test share ONE definition —
+   *  a duplicated 17-key fixture rots, and the copy that rots is the one that
+   *  stops testing anything. */
+  const validEnv = {
+    RECUED_D214_EXPERIMENT_ID: 'bad-exp',
+    RECUED_D214_EXPERIMENT_SURFACE: 'proposal_critique',
+    RECUED_D214_EXPERIMENT_START_MS: '10',
+    RECUED_D214_EXPERIMENT_END_MS: '50',
+    RECUED_D214_EXPERIMENT_MAX_ROOTS: '10',
+    RECUED_D214_EXPERIMENT_MAX_CRITIQUES_PER_ROOT: '2',
+    RECUED_D214_EXPERIMENT_MAX_EVIDENCE: '3',
+    RECUED_D214_EXPERIMENT_MIN_RELEVANCE_SCORE: '1',
+    RECUED_D214_EXPERIMENT_ELIGIBLE_POPULATION:
+      EXECUTION_CASE_ELIGIBLE_POPULATION.proposal_critique,
+    RECUED_D214_EXPERIMENT_DECISION_RULE: 'pre-registered rule',
+    RECUED_D214_EXPERIMENT_PLANNER_FINGERPRINT: 'planner',
+    RECUED_D214_EXPERIMENT_PROMPT_FINGERPRINT: 'prompt',
+    RECUED_D214_EXPERIMENT_RETRIEVAL_FINGERPRINT: 'retrieval',
+    RECUED_D214_EXPERIMENT_POLICY_FINGERPRINT: 'policy',
+    RECUED_D214_EXPERIMENT_PRIMARY_AXES: 'explicit_correction',
+    RECUED_D214_EXPERIMENT_MATERIAL_HARM_BOUNDS:
+      '{"execution_failure":0.1}',
+    RECUED_D214_EXPERIMENT_SECRET: 'server-owned-secret',
+  } as NodeJS.ProcessEnv;
+
   it('fails malformed pre-registration closed and keeps malformed env dark', () => {
     expect(() => validateExecutionCaseExperimentDefinition(experiment()))
       .not.toThrow();
@@ -340,27 +367,6 @@ describe('D-214 bounded experiment definition', () => {
         plan_abandoned: 0,
       },
     }))).not.toThrow();
-    const validEnv = {
-      RECUED_D214_EXPERIMENT_ID: 'bad-exp',
-      RECUED_D214_EXPERIMENT_SURFACE: 'proposal_critique',
-      RECUED_D214_EXPERIMENT_START_MS: '10',
-      RECUED_D214_EXPERIMENT_END_MS: '50',
-      RECUED_D214_EXPERIMENT_MAX_ROOTS: '10',
-      RECUED_D214_EXPERIMENT_MAX_CRITIQUES_PER_ROOT: '2',
-      RECUED_D214_EXPERIMENT_MAX_EVIDENCE: '3',
-      RECUED_D214_EXPERIMENT_MIN_RELEVANCE_SCORE: '1',
-      RECUED_D214_EXPERIMENT_ELIGIBLE_POPULATION:
-        EXECUTION_CASE_ELIGIBLE_POPULATION.proposal_critique,
-      RECUED_D214_EXPERIMENT_DECISION_RULE: 'pre-registered rule',
-      RECUED_D214_EXPERIMENT_PLANNER_FINGERPRINT: 'planner',
-      RECUED_D214_EXPERIMENT_PROMPT_FINGERPRINT: 'prompt',
-      RECUED_D214_EXPERIMENT_RETRIEVAL_FINGERPRINT: 'retrieval',
-      RECUED_D214_EXPERIMENT_POLICY_FINGERPRINT: 'policy',
-      RECUED_D214_EXPERIMENT_PRIMARY_AXES: 'explicit_correction',
-      RECUED_D214_EXPERIMENT_MATERIAL_HARM_BOUNDS:
-        '{"execution_failure":0.1}',
-      RECUED_D214_EXPERIMENT_SECRET: 'server-owned-secret',
-    } as NodeJS.ProcessEnv;
     expect(readExecutionCaseExperimentEnv(validEnv)).toMatchObject({
       experiment_id: 'bad-exp',
       surface: 'proposal_critique',
@@ -378,6 +384,34 @@ describe('D-214 bounded experiment definition', () => {
       RECUED_D214_EXPERIMENT_MATERIAL_HARM_BOUNDS:
         '{"execution_failure":0.1,"silently_dropped":"not-a-number"}',
     })).toBeUndefined();
+  });
+
+  it('stays DARK when ANY single required field is missing (all 17)', () => {
+    // The whole D-214 env cluster ships in the production bundle — 19 hits in
+    // `dist/bin.js`. What makes that acceptable is precisely this property:
+    // "incomplete config stays dark rather than inventing a population or
+    // decision rule at runtime". The spot-checks above cover 3 of the 17
+    // required fields, so someone could relax any of the other 14 and the suite
+    // would stay green while a half-configured experiment went live.
+    //
+    // The drop list is derived FROM the fixture, so a field added to the reader
+    // is covered automatically: if it is added to `validEnv` it gets dropped
+    // here, and if it is NOT, the positive assertion below fails instead.
+    const keys = Object.keys(validEnv);
+    expect(keys).toHaveLength(17);
+
+    // Positive first — without it, a reader that returned `undefined`
+    // unconditionally would satisfy every assertion in the loop.
+    expect(readExecutionCaseExperimentEnv(validEnv)).toBeDefined();
+
+    for (const dropped of keys) {
+      const partial = { ...validEnv };
+      delete partial[dropped as keyof NodeJS.ProcessEnv];
+      expect(
+        readExecutionCaseExperimentEnv(partial),
+        `dropping ${dropped} must leave the experiment dark`,
+      ).toBeUndefined();
+    }
   });
 
   it('rejects control-arm evidence exposure at the storage boundary', () => {
@@ -711,7 +745,6 @@ describe('D-214 A25 proposal-critique attribution', () => {
         ...flow,
         verified_successes: 1,
         verification_failures: 0,
-        execution_failures: 0,
         outcome_strength: {
           positive: 1,
           negative: 0,
@@ -1394,6 +1427,13 @@ describe('D-214 A25 request augmentation attribution', () => {
     } as never;
     await source.prompt!(ctx);
     expect(readExecutionCaseContext(state)?.cards).toHaveLength(1);
+    // ⛔ The governance sentence, asserted BY IDENTITY at the far end. The
+    // wording used to be a private near-duplicate in `execution-case-retrieval`
+    // ("treat this" rather than "treat this card") while the contracts constant
+    // the spec calls authoritative shipped nowhere. Comparing substrings here
+    // would pass against exactly that fork; comparing the object cannot.
+    expect(readExecutionCaseContext(state)?.notice)
+      .toBe(EXECUTION_CASE_CARD_NOTICE);
     const committed = (await f.interventionStore.listForRoot(
       definition.experiment_id,
       root,
@@ -1889,6 +1929,14 @@ describe('D-214 owner experiment reporting', () => {
       total: 0,
       denominator_roots: 0,
       mean_per_root: null,
+      // Zero roots is no spread to report, not a spread of zero, so the
+      // interval is absent rather than a point at the origin.
+      dispersion: {
+        denominator_roots: 0,
+        variance: null,
+        std_dev: null,
+        histogram: [],
+      },
     });
   });
 
@@ -1935,7 +1983,17 @@ describe('D-214 owner experiment reporting', () => {
     expect(
       open.eligibility_assignment_complete_case.treatment.operational
         .governed_calls,
-    ).toEqual({ total: 0, denominator_roots: 0, mean_per_root: null });
+    ).toEqual({
+      total: 0,
+      denominator_roots: 0,
+      mean_per_root: null,
+      dispersion: {
+        denominator_roots: 0,
+        variance: null,
+        std_dev: null,
+        histogram: [],
+      },
+    });
 
     f.interventionStore.markSpanClosed(root, 1_000);
     const closed = await reporter.report(definition);
@@ -1970,7 +2028,19 @@ describe('D-214 owner experiment reporting', () => {
     expect(
       closed.eligibility_assignment_complete_case.treatment.operational
         .governed_calls,
-    ).toEqual({ total: 0, denominator_roots: 1, mean_per_root: 0 });
+    ).toEqual({
+      total: 0,
+      denominator_roots: 1,
+      mean_per_root: 0,
+      // One root is a count, not a spread: the histogram records it and the
+      // interval stays absent.
+      dispersion: {
+        denominator_roots: 1,
+        variance: null,
+        std_dev: null,
+        histogram: [{ count: 0, roots: 1 }],
+      },
+    });
   });
 
   it('keeps execution failures out of the estimand until the span closes', async () => {
@@ -2132,7 +2202,6 @@ describe('D-214 owner experiment reporting', () => {
         pending: false,
         has_substantive_flow: true,
         has_strong_signal: true,
-        has_compilable_signal: true,
       };
     };
     const compiler = {
@@ -2207,6 +2276,12 @@ describe('D-214 owner experiment reporting', () => {
       total: 4,
       denominator_roots: 1,
       mean_per_root: 4,
+      dispersion: {
+        denominator_roots: 1,
+        variance: null,
+        std_dev: null,
+        histogram: [{ count: 4, roots: 1 }],
+      },
     });
     expect(
       report.eligibility_assignment_complete_case.treatment.operational

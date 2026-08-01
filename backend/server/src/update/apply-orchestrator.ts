@@ -29,6 +29,16 @@ export interface ApplyContext {
   channel: 'stable' | 'edge';
   migration: boolean;
   artifact: { url: string; sha256: string; sig: string };
+  /** D-178 S1 rev 2 item 4 — the native addon the target binary was built
+   *  against, staged + verified + swapped AS A SET with the exe.
+   *
+   *  ⛔ The PAIRING REQUIREMENT is enforced upstream in `resolveForApply`, which
+   *  refuses an exe-without-addon release as `no-artifact` before any ledger
+   *  entry exists. Here it is data: present → stage it; absent/null → swap the
+   *  exe alone, which is correct for a genuinely sidecar-free release and is the
+   *  shape every pre-item-4 caller and harness passes. A NEW caller that reaches
+   *  `runApply` without going through `resolveForApply` owns that check itself. */
+  libArtifact?: { url: string; sha256: string; sig: string } | null;
   /** D-152 § A.16 — the arch-neutral webclient bundle archive for this release,
    *  when the manifest carries one. Best-effort synced to RECUED_WEBCLIENT_DIR
    *  after the binary swap so the self-updated server serves a matched
@@ -45,11 +55,17 @@ export interface ApplyOrchestratorPorts {
   download: (url: string, destPath: string) => Promise<void>;
   /** Fail-closed artifact verification (binary-apply-executor.verifyArtifactFile). */
   verifyArtifact: (input: VerifyArtifactInput) => VerifyArtifactResult;
-  /** Move the verified staged file into place, preserving recued.old. */
-  preserveAndSwap: () => void;
-  /** Swap recued.old back. */
+  /** Move the verified staged file into place, preserving recued.old.
+   *
+   *  `swapSidecar` says whether THIS apply staged a native addon too (i.e.
+   *  `ctx.libArtifact` was present and its download+verify passed). It is
+   *  explicit rather than inferred from the staged file's existence on disk: a
+   *  leftover staged addon from an earlier aborted apply would otherwise be
+   *  swapped in silently, pairing a fresh exe with a stale addon. */
+  preserveAndSwap: (swapSidecar: boolean) => void;
+  /** Swap recued.old back — including the preserved addon when one exists. */
   rollbackSwap: () => void;
-  /** Best-effort staged-temp cleanup. */
+  /** Best-effort staged-temp cleanup (binary AND staged addon). */
   discardStaged: () => void;
   /** D-178 thin launcher — persist the verified artifact's detached signature
    *  beside the STAGED binary so `preserveAndSwap` carries it into place and the
@@ -57,6 +73,11 @@ export interface ApplyOrchestratorPorts {
    *  Optional: absent on harnesses / channels that don't need the sidecar (the
    *  binary self-update verifies at apply time regardless). */
   persistStagedSig?: (sig: string) => void;
+  /** D-178 item 6 — the same, for the native addon. The thin launcher
+   *  re-verifies BOTH before exec: a tampered `.node` is dlopen'd into the
+   *  server's address space, so checking only the exe would leave the easier
+   *  attack on a compromised volume entirely unguarded. */
+  persistStagedLibSig?: (sig: string) => void;
   /** Take the pre-migration SQLite snapshot (mechanism c). */
   takeSnapshot: () => Promise<void>;
   /** Restore the pre-migration snapshot over the live db. */
@@ -102,10 +123,14 @@ export interface ApplyOrchestratorPorts {
   trustedPubkey: string;
   /** The staging path the download lands at + the artifact is verified at. */
   stagedPath: string;
+  /** D-178 S1 rev 2 item 4 — the staging path for the native addon, beside its
+   *  live location so the swap is a same-filesystem rename. Absent → this
+   *  install has no managed sidecar and `ctx.libArtifact` is ignored. */
+  stagedLibPath?: string;
 }
 
 export type ApplyResult =
-  | { status: 'restarting' }
+  | { status: 'restarting'; operationId: string }
   | { status: 'deferred'; reason: string }
   | { status: 'busy' }
   | { status: 'not-configured' }
@@ -115,7 +140,11 @@ export type ApplyResult =
   | { status: 'stage-failed'; detail: string };
 
 export type RollbackResult =
-  | { status: 'rolled-back'; restored_snapshot: boolean }
+  | {
+      status: 'rolled-back';
+      restored_snapshot: boolean;
+      operationId: string;
+    }
   | { status: 'refused'; reason: string }
   | { status: 'busy' };
 
@@ -169,6 +198,133 @@ export const deriveInFlightRelease = (ledger: UpdateLedger): string | null =>
 export const deriveInFlightEntry = (ledger: UpdateLedger): UpdateLedgerEntry | null =>
   deriveInFlight(ledger)?.entry ?? null;
 
+export type UpdateOperationOutcome =
+  | { status: 'unknown' }
+  | {
+      status:
+        | 'waiting_for_restart'
+        | 'completed'
+        | 'reverted'
+        | 'closed_unresolved';
+      operation: 'update' | 'rollback';
+    };
+
+export type UpdateOperationClosureOutcome =
+  | UpdateOperationOutcome
+  | {
+      status: 'refused';
+      reason: 'operation_in_flight';
+    };
+
+/** Resolve one server-issued ledger receipt without exposing its release,
+ * versions, timestamps, or diagnostic detail. Apply receipts are the
+ * `apply_started` row and settle at their first terminal row. Rollback receipts
+ * are written before the restart, so the running version must independently
+ * prove that the restored binary actually booted. */
+export const resolveUpdateOperationOutcome = (
+  ledger: UpdateLedger,
+  operationId: string,
+  currentVersion: string,
+): UpdateOperationOutcome => {
+  const entries = ledger.readAll();
+  const operationIndex = entries.findIndex((entry) =>
+    entry.id === operationId);
+  const operation = operationIndex < 0 ? null : entries[operationIndex]!;
+
+  if (operation?.kind === 'rolled_back') {
+    return {
+      status: currentVersion === operation.from_version
+        ? 'completed'
+        : 'waiting_for_restart',
+      operation: 'rollback',
+    };
+  }
+  if (operation?.kind === 'apply_started') {
+    for (let index = operationIndex + 1; index < entries.length; index += 1) {
+      const candidate = entries[index]!;
+      if (candidate.release_identity !== operation.release_identity) continue;
+      if (candidate.kind === 'apply_committed') {
+        return { status: 'completed', operation: 'update' };
+      }
+      if (
+        candidate.kind === 'apply_reverted'
+        || candidate.kind === 'rolled_back'
+      ) {
+        return { status: 'reverted', operation: 'update' };
+      }
+    }
+    // A healthy target boot can be serving during the narrow interval before
+    // its commit row is appended. Its build-stamped version is still
+    // server-authoritative proof of the exact staged target.
+    return {
+      status: currentVersion === operation.to_version
+        ? 'completed'
+        : 'waiting_for_restart',
+      operation: 'update',
+    };
+  }
+
+  // A closure is considered only when no real operation row can resolve the
+  // receipt. Scan newest-first so a future format can supersede an older
+  // closure without mutating this append-only ledger.
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const candidate = entries[index]!;
+    if (
+      candidate.kind === 'operation_closed'
+      && candidate.closed_operation_id === operationId
+      && (
+        candidate.closed_operation === 'update'
+        || candidate.closed_operation === 'rollback'
+      )
+    ) {
+      return {
+        status: 'closed_unresolved',
+        operation: candidate.closed_operation,
+      };
+    }
+  }
+  return { status: 'unknown' };
+};
+
+/** Durably retire an unknown receipt without claiming its outcome. The exact
+ * receipt is re-resolved synchronously before append, and an unrelated
+ * in-flight release transition refuses closure. The append-only marker makes
+ * the decision survive reloads, reconnects, tabs, and database restores. */
+export const closeUnresolvedUpdateOperation = (
+  ports: ApplyOrchestratorPorts,
+  operationId: string,
+  expectedOperation: 'update' | 'rollback',
+  currentVersion: string,
+  channel: 'stable' | 'edge',
+): UpdateOperationClosureOutcome => {
+  const resolved = resolveUpdateOperationOutcome(
+    ports.ledger,
+    operationId,
+    currentVersion,
+  );
+  if (resolved.status !== 'unknown') return resolved;
+  if (deriveInFlightRelease(ports.ledger) !== null) {
+    return { status: 'refused', reason: 'operation_in_flight' };
+  }
+  ports.ledger.append({
+    id: ports.newEntryId(),
+    kind: 'operation_closed',
+    at: ports.now(),
+    from_version: currentVersion,
+    to_version: currentVersion,
+    channel,
+    trigger: 'manual',
+    release_identity: `${channel}:${currentVersion}`,
+    closed_operation_id: operationId,
+    closed_operation: expectedOperation,
+    detail: 'owner closed an unresolved operation receipt without asserting its outcome',
+  });
+  return {
+    status: 'closed_unresolved',
+    operation: expectedOperation,
+  };
+};
+
 /** The CURRENTLY-applied release, derived from the last `apply_committed` entry
  *  — the rollback context for `update.rollback`. `from_version` is the version
  *  the rollback would restore (what `recued.old` holds); `migration` flags
@@ -200,8 +356,8 @@ const appendEntry = (
   kind: UpdateLedgerKind,
   ctx: Pick<ApplyContext, 'releaseIdentity' | 'fromVersion' | 'toVersion' | 'channel' | 'migration'>,
   extra: Partial<UpdateLedgerEntry> = {},
-): void => {
-  ports.ledger.append({
+): UpdateLedgerEntry => {
+  const entry: UpdateLedgerEntry = {
     id: ports.newEntryId(),
     kind,
     at: ports.now(),
@@ -212,7 +368,9 @@ const appendEntry = (
     release_identity: ctx.releaseIdentity,
     migration: ctx.migration,
     ...extra,
-  });
+  };
+  ports.ledger.append(entry);
+  return entry;
 };
 
 /** Default free-space headroom for a self-update: covers the streamed artifact
@@ -290,7 +448,12 @@ export const runApply = async (ports: ApplyOrchestratorPorts, ctx: ApplyContext)
   const storage = checkStorageHeadroom(ports, ctx.migration);
   if (!storage.ok) return { status: 'insufficient-storage', detail: storage.detail };
 
-  appendEntry(ports, 'apply_started', ctx, { trigger: ctx.trigger });
+  const operation = appendEntry(
+    ports,
+    'apply_started',
+    ctx,
+    { trigger: ctx.trigger },
+  );
 
   try {
     await ports.download(ctx.artifact.url, ports.stagedPath);
@@ -322,6 +485,46 @@ export const runApply = async (ports: ApplyOrchestratorPorts, ctx: ApplyContext)
     /* best-effort — the binary self-update path verified at apply time already */
   }
 
+  // D-178 S1 rev 2 item 4 — stage the native addon through the SAME gate as the
+  // exe. Not best-effort and not a lesser artifact: it is loaded into the
+  // server's own address space at the first database open, so an unverified one
+  // is arbitrary code execution with the binary's full privileges. It gets its
+  // own signature check against the same pinned key.
+  //
+  // Downloaded AFTER the exe so the cheap failure (a missing/renamed URL) is hit
+  // before we have committed anything, and BEFORE the snapshot + swap so a
+  // failure here still costs nothing but a discarded temp file.
+  const swapSidecar = Boolean(ctx.libArtifact && ports.stagedLibPath);
+  if (ctx.libArtifact && ports.stagedLibPath) {
+    try {
+      await ports.download(ctx.libArtifact.url, ports.stagedLibPath);
+    } catch (err) {
+      ports.discardStaged();
+      const detail = err instanceof Error ? err.message : 'download error';
+      appendEntry(ports, 'apply_reverted', ctx, { trigger: ctx.trigger, detail: `download (native addon): ${detail}` });
+      return { status: 'download-failed', detail: `native addon: ${detail}` };
+    }
+    const lv = ports.verifyArtifact({
+      filePath: ports.stagedLibPath,
+      sha256: ctx.libArtifact.sha256,
+      sig: ctx.libArtifact.sig,
+      trustedPubkey: ports.trustedPubkey,
+    });
+    if (!lv.ok) {
+      ports.discardStaged();
+      appendEntry(ports, 'apply_reverted', ctx, { trigger: ctx.trigger, detail: `verify (native addon): ${lv.reason}` });
+      return { status: 'verify-failed', detail: `native addon: ${lv.reason}` };
+    }
+    // Persist the addon's verified signature beside it so `preserveAndSwap`
+    // carries it onto the volume for the launcher's re-verify. After verify
+    // (the bytes are trusted), before the swap — same rule as the exe's.
+    try {
+      ports.persistStagedLibSig?.(ctx.libArtifact.sig);
+    } catch {
+      /* best-effort — the apply-time verify above already gated these bytes */
+    }
+  }
+
   // Snapshot (if migrating) + swap. A failure here must RELEASE the lock
   // (append a terminal) — otherwise the `apply_started` above wedges every
   // future apply. The pre-migration snapshot goes BEFORE the swap so a later
@@ -331,7 +534,7 @@ export const runApply = async (ports: ApplyOrchestratorPorts, ctx: ApplyContext)
       await ports.takeSnapshot();
       appendEntry(ports, 'snapshot_taken', ctx, { trigger: ctx.trigger });
     }
-    ports.preserveAndSwap();
+    ports.preserveAndSwap(swapSidecar);
   } catch (err) {
     ports.discardStaged();
     const detail = err instanceof Error ? err.message : 'stage error';
@@ -355,7 +558,7 @@ export const runApply = async (ports: ApplyOrchestratorPorts, ctx: ApplyContext)
   }
 
   ports.requestRestart();
-  return { status: 'restarting' };
+  return { status: 'restarting', operationId: operation.id };
 };
 
 export interface RollbackContext {
@@ -385,14 +588,18 @@ export const runRollback = (ports: ApplyOrchestratorPorts, ctx: RollbackContext)
   const restoredSnapshot = decision.action === 'restore-snapshot';
   if (restoredSnapshot) ports.restoreSnapshot();
   ports.rollbackSwap();
-  appendEntry(
+  const operation = appendEntry(
     ports,
     'rolled_back',
     { releaseIdentity: ctx.releaseIdentity, fromVersion: ctx.fromVersion, toVersion: ctx.toVersion, channel: ctx.channel, migration: ctx.appliedMigration },
     { trigger: 'manual', detail: decision.reason },
   );
   ports.requestRestart();
-  return { status: 'rolled-back', restored_snapshot: restoredSnapshot };
+  return {
+    status: 'rolled-back',
+    restored_snapshot: restoredSnapshot,
+    operationId: operation.id,
+  };
 };
 
 /** On boot, decide the fate of a staged-but-uncommitted apply (the `boot` phase

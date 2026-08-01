@@ -665,7 +665,8 @@ describe('D-165 vendor OAuth-start rpc handler', () => {
         authorize_url: 'not-a-url',
         token_endpoint: 'https://auth.example.com/oauth/token',
       }),
-    ).rejects.toThrow(/authorize_url must be a valid URL/);
+    ).rejects.toThrow(/authorize_url must be a complete HTTPS URL/);
+    expect(h.flowStore.size()).toBe(0);
   });
 
   // Codex MED — credentials POST to token_endpoint, so plaintext is rejected.
@@ -679,7 +680,26 @@ describe('D-165 vendor OAuth-start rpc handler', () => {
         authorize_url: 'https://auth.example.com/authorize',
         token_endpoint: 'http://auth.example.com/oauth/token',
       }),
-    ).rejects.toThrow(/token_endpoint must be an https URL/);
+    ).rejects.toThrow(/token_endpoint must be a complete HTTPS URL/);
+    expect(h.flowStore.size()).toBe(0);
+  });
+
+  it.each([
+    ['embedded userinfo', 'https://owner:password@auth.example.com/oauth/token'],
+    ['parser-normalized shorthand', 'https:auth.example.com/oauth/token'],
+    ['a URL fragment', 'https://auth.example.com/oauth/token#ignored'],
+  ])('rejects a form-supplied token_endpoint with %s before creating a flow', async (_case, endpoint) => {
+    const h = makeHandlerHarness();
+    await expect(
+      h.start({
+        vendor: 'my-thing',
+        client_id: 'cid',
+        redirect_uri: OAUTH_CLOUD_CALLBACK_URL,
+        authorize_url: 'https://auth.example.com/authorize',
+        token_endpoint: endpoint,
+      }),
+    ).rejects.toThrow(/token_endpoint must be a complete HTTPS URL/);
+    expect(h.flowStore.size()).toBe(0);
   });
 
   // Codex HIGH — a REGISTERED vendor always uses its registry config; any

@@ -158,4 +158,59 @@ describe('resolveRelease', () => {
     expect(r.inRolloutCohort).toBe(false);
     expect(r.autoApplyEligible).toBe(false);
   });
+
+  // ── D-178 S1 rev 2 — the native `lib/` sidecar resolves WITH its binary ──
+  describe('libArtifact', () => {
+    const withLib = (artifacts: Record<string, unknown>) =>
+      manifest({}, {
+        stable: {
+          version: '1.4.2', released_at: '2026-07-02T10:00:00Z', min_supported: '1.2.0',
+          migration: false, rollout_pct: 100, notes_url: '',
+          artifacts,
+        },
+      });
+
+    it('resolves the sidecar for the SAME triple as the binary', () => {
+      const r = resolveRelease(base({
+        manifest: withLib({
+          'linux-x64': { url: 'https://x/l', sha256: 'aa', sig: 'ss' },
+          'lib-linux-x64': { url: 'https://x/lib-l', sha256: 'll', sig: 'lsig' },
+          // a DIFFERENT triple's sidecar must not be picked up
+          'lib-macos-arm64': { url: 'https://x/lib-m', sha256: 'mm', sig: 'msig' },
+        }),
+        platform: 'linux-x64',
+      }));
+      expect(r.status).toBe('update-available');
+      if (r.status !== 'update-available') return;
+      expect(r.artifact?.url).toBe('https://x/l');
+      expect(r.libArtifact?.url).toBe('https://x/lib-l');
+    });
+
+    it('returns null — not the wrong arch — when THIS triple has no sidecar', () => {
+      // ⛔ The failure this guards is silent and catastrophic: handing back
+      // another platform's `.node` would install an exe with a sidecar it
+      // cannot load.
+      const r = resolveRelease(base({
+        manifest: withLib({
+          'linux-x64': { url: 'https://x/l', sha256: 'aa', sig: 'ss' },
+          'lib-macos-arm64': { url: 'https://x/lib-m', sha256: 'mm', sig: 'msig' },
+        }),
+        platform: 'linux-x64',
+      }));
+      expect(r.status).toBe('update-available');
+      if (r.status !== 'update-available') return;
+      expect(r.artifact).not.toBeNull();
+      expect(r.libArtifact).toBeNull();
+    });
+
+    it('still REPORTS the release when the sidecar is missing', () => {
+      // Deliberate: the check surfaces the release; the APPLY path is where the
+      // pair is enforced. Failing the check instead would hide an available
+      // update from the owner entirely.
+      const r = resolveRelease(base());
+      expect(r.status).toBe('update-available');
+      if (r.status !== 'update-available') return;
+      expect(r.libArtifact).toBeNull();
+    });
+  });
 });

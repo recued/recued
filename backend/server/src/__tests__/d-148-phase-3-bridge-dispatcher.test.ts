@@ -295,6 +295,79 @@ describe('D-148 P3 — server-side dispatcher', () => {
     }
   });
 
+  it('retries an asynchronous queue_full result with the same command_id', async () => {
+    const { registry, listener, sent } = buildSetup([]);
+    registry.attach(buildRecord('tok-1', 1_000));
+    const sleeps: number[] = [];
+    let sends = 0;
+    const transport: BridgeTransport = {
+      async send(_client_token_id, envelope) {
+        sent.push(envelope);
+        if (envelope.kind !== 'command') return { ok: true };
+        sends++;
+        listener.resolveResult(
+          sends < 3
+            ? {
+                command_id: envelope.command.command_id,
+                status: 'rejected',
+                error: { code: 'queue_full', message: 'bridge queue full' },
+                duration_ms: 0,
+                bridge_version: '0.0.1',
+                idempotency_key_seen: false,
+              }
+            : {
+                command_id: envelope.command.command_id,
+                status: 'ok',
+                outputs: { text: 'after-backoff' },
+                duration_ms: 1,
+                bridge_version: '0.0.1',
+                idempotency_key_seen: false,
+              },
+        );
+        return { ok: true };
+      },
+      async cancel() {
+        return { ok: true };
+      },
+    };
+    const dispatcher = createBridgeDispatcher({
+      registry,
+      transport,
+      listener,
+      now: () => 1_000,
+      sleep: async (ms) => {
+        sleeps.push(ms);
+      },
+      generateCommandId: () => 'cmd-async-backpressure',
+    });
+
+    const out = await dispatcher.dispatch({
+      recipe_run_id: 'run-async-backpressure',
+      step_id: 'step-1',
+      ingredient: sample_ingredient,
+      action: 'read_dom',
+      args: {},
+      expects_output_keys: ['text'],
+      idempotency_key: 'idem-async-backpressure',
+    });
+
+    expect(out.kind).toBe('completed');
+    if (out.kind === 'completed') {
+      expect(out.result.outputs?.text).toBe('after-backoff');
+      expect(out.attempts).toBe(3);
+    }
+    expect(sleeps).toEqual([200, 400]);
+    expect(
+      sent.map((envelope) =>
+        envelope.kind === 'command' ? envelope.command.command_id : null,
+      ),
+    ).toEqual([
+      'cmd-async-backpressure',
+      'cmd-async-backpressure',
+      'cmd-async-backpressure',
+    ]);
+  });
+
   it('transport bridge_offline → capacity_gap immediately', async () => {
     const { registry, listener, transport } = buildSetup([
       { ok: false, reason: 'bridge_offline' },

@@ -249,11 +249,34 @@ export const prefetchEntities = async (
 };
 
 /** Header for CONFIDENT candidates — a single (or strictly dominant) match per
- *  reference. The "verify" framing keeps the LLM from over-trusting a wrong match
- *  (design § the one place precision doesn't vanish). */
+ *  reference.
+ *
+ *  ⛔ IT USED TO OPEN WITH "Possible entities … (speculative pre-resolution —
+ *  verify before relying)" AND THAT WAS OVER-HEDGED TO THE POINT OF BEING FALSE.
+ *  An alias is issued ONLY for a value that matched a stored record, so the
+ *  existence of `pii.Person1` is not speculative at all — the only open question
+ *  is whether the right record was matched, which is a different claim and
+ *  which the AMBIGUOUS header below already owns for the case that warrants it.
+ *
+ *  ⛔⛔ THE COST WAS MEASURED, not theorised: this header CONTRADICTED
+ *  `PII_ALIAS_NOTICE` in the same packet — the notice says an alias works as a
+ *  tool argument, the header said to verify it and resolve via tools — and the
+ *  hedge won. Observed live (bench 175, turn 4, both strings present): the model
+ *  emitted NO tool calls and replied *"The privacy aliases in your request
+ *  (pii.Person1, pii.Org1) don't resolve to actual values I can search with.
+ *  Could you share the real name or email address"* — asking the owner to undo
+ *  the privacy protection, because two model-facing strings disagreed and this
+ *  was the weaker one.
+ *
+ *  ⚠ The "wrong entity" caution SURVIVES — a confident match can still be the
+ *  wrong Sarah. What is gone is the suggestion that the entity might not be on
+ *  file, which is the part that was never true. */
 const PREFETCH_CONFIDENT_HEADER =
-  'Possible entities referenced in this message (speculative pre-resolution — '
-  + 'verify before relying, and resolve via tools if a match is wrong or missing):';
+  'Entities this message refers to, resolved from records already on file. An'
+  + ' alias is only ever issued for a record that EXISTS, so each line below is'
+  + ' real — it is not a guess about whether the entity is there. Use the alias'
+  + ' directly as a tool argument; call a tool when you need fields these lines'
+  + ' do not carry, or if a match looks like the wrong entity:';
 
 /** Header for AMBIGUOUS candidates (D-167 §2 ambiguity-gate) — 2+ stored contacts
  *  tie for the strongest match on a reference the user typed, so the prefetch must
@@ -264,6 +287,24 @@ const PREFETCH_AMBIGUOUS_HEADER =
   + 'ambiguous. Do NOT assume which one is meant: ask the user to clarify (or '
   + 'resolve via tools) before acting on any of them:';
 
+/** ⛔⛔ THE `ref` STAYS, and dropping it was a mistake worth recording. It was
+ *  removed on 2026-07-31 because a turn naming only a PERSON arrived with that
+ *  person's EMAIL in the opening packet. But the ref is `m1@d1.invalid` — an
+ *  OPAQUE handle that discloses nothing. What had made it readable was the
+ *  D-224 overlap TAIL (`m1.sarah.chen.northwind@d1.invalid`), and removing the
+ *  tail is what actually closed that; removing the ref as well fixed nothing and
+ *  gutted the block.
+ *
+ *  ⚠ MEASURED: without a ref the block spends ~89 header tokens to deliver ~6
+ *  saying `pii.Person1` is a contact — which the `pii.Person` prefix already
+ *  encodes, in a packet whose `user_message` already reads "pii.Person1 at
+ *  pii.Org1 emailed me". A pre-resolution that resolves nothing is pure cost.
+ *
+ *  ⚠ CONSEQUENCE, stated so it is not rediscovered as a surprise: with the ref
+ *  present the model can reach the contact WITHOUT a lookup, so `contact.search`
+ *  is a shortcut the prefetch enables and must NOT be counted as a dependent
+ *  step when measuring a retrieval chain. A real chain needs a value obtainable
+ *  ONLY from an earlier step. */
 const prefetchLine = (
   c: { readonly label: string; readonly kind: string; readonly ref: string },
 ): string => `- ${c.label} (${c.kind}, ref: ${c.ref})`;

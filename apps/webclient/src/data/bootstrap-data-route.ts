@@ -50,6 +50,24 @@ import type {
   MirrorSearchRequest,
   MirrorSearchResponse,
   PlatformIdEntry,
+  RecordsCsvExportEnvelope,
+  RecordsExportEnvelope,
+  RecordsExportRequest,
+  RecordsExportResponse,
+  RecordsFriendlyRecord,
+  RecordsGlobalQuotaSnapshot,
+  RecordsKindSummary,
+  RecordsNamespaceView,
+  RecordsOutboxListRequest,
+  RecordsOutboxOverview,
+  RecordsOutboxRetireRequest,
+  RecordsOwnerDeleteRequest,
+  RecordsOwnerGetRequest,
+  RecordsOwnerGetResponse,
+  RecordsOwnerSearchRequest,
+  RecordsPackRef,
+  RecordsPurgeRequest,
+  RecordsRetentionPolicy,
   SourceDropdownOption,
   SourceExtensionSchema,
   SourceRegistration,
@@ -78,6 +96,7 @@ import type {
   WorkEntityPageState,
   WorkEntityUpsertRpcRequest,
   WorkEntityUpsertRpcResponse,
+  TimelineRollup,
 } from '@recued/contracts';
 import {
   getContactSourceDeclaration,
@@ -197,6 +216,35 @@ import {
   COLLECTION_RECORD_ID_ATTR,
   type CollectionExplorerDetailState,
 } from './collection-explorer.js';
+import {
+  RECORDS_CANCEL_DELETE_ACTION,
+  RECORDS_CANCEL_PURGE_ACTION,
+  RECORDS_CANCEL_RETIRE_EVENT_ACTION,
+  RECORDS_CLOSE_RECORD_ACTION,
+  RECORDS_CONFIRM_DELETE_ACTION,
+  RECORDS_CONFIRM_PURGE_ACTION,
+  RECORDS_CONFIRM_RETIRE_EVENT_ACTION,
+  RECORDS_DELETE_RECORD_ACTION,
+  RECORDS_EXPLORER_STYLES,
+  RECORDS_EXPORT_KIND_ACTION,
+  RECORDS_EXPORT_KIND_CSV_ACTION,
+  RECORDS_EXPORT_PACK_ACTION,
+  RECORDS_EXPORT_PACK_CSV_ACTION,
+  RECORDS_EVENT_ID_ATTR,
+  RECORDS_ID_ATTR,
+  RECORDS_KIND_ATTR,
+  RECORDS_NAMESPACE_ATTR,
+  RECORDS_OPEN_REFERENCE_ACTION,
+  RECORDS_OPEN_RECORD_ACTION,
+  RECORDS_PURGE_ACTION,
+  RECORDS_PURGE_CONFIRMATION_ATTR,
+  RECORDS_REFRESH_OUTBOX_ACTION,
+  RECORDS_RETIRE_EVENT_ACTION,
+  RECORDS_SELECT_KIND_ACTION,
+  RECORDS_SELECT_NAMESPACE_ACTION,
+  renderRecordsExplorer,
+  type RecordsExplorerState,
+} from './records-explorer.js';
 import type {
   Annotation,
   CanonicalCollectionName,
@@ -226,6 +274,9 @@ export const DATA_ROUTE_VERIFICATION_NEXT_ATTR =
   'data-recued-data-route-verification-next';
 export const DATA_ROUTE_TAB_ATTR = 'data-recued-data-route-tab';
 export const DATA_ROUTE_CONTACT_ROW_ATTR = 'data-recued-data-contact-row';
+/** D-226 — a per-pack rollup chip on a contact LIST row. Value is the pack's
+ *  label, so a test can assert WHICH pack spoke, not merely that something did. */
+export const DATA_ROUTE_CONTACT_ROLLUP_ATTR = 'data-recued-data-contact-rollup';
 export const DATA_ROUTE_FORM_RESPONSE_ROW_ATTR =
   'data-recued-data-form-response-row';
 export const DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR =
@@ -343,6 +394,7 @@ export type DataTabId =
   | DataReceivedTabId
   | MirrorDataKind
   | 'webhook'
+  | 'records'
   | DataSingleCollectionTabId;
 
 export const DATA_OWN_IT_TABS: readonly DataOwnItTabId[] = [
@@ -373,6 +425,7 @@ export const DATA_PROVENANCE_TABS: readonly DataProvenanceTabId[] = [
 
 /** D-198 Phase 3 — the "Storage" cluster: the durable shared KV (`data.shared.*`). */
 export const DATA_SHARED_TABS: readonly DataTabId[] = ['shared'];
+export const DATA_RECORDS_TABS: readonly DataTabId[] = ['records'];
 
 const DATA_TABS: readonly DataTabId[] = [
   ...DATA_OWN_IT_TABS,
@@ -381,6 +434,7 @@ const DATA_TABS: readonly DataTabId[] = [
   ...DATA_MIRROR_TABS,
   ...DATA_PROVENANCE_TABS,
   ...DATA_SHARED_TABS,
+  ...DATA_RECORDS_TABS,
 ];
 
 /** The "Received" cluster's DISPLAY tabs — `form_response` (its own bespoke
@@ -424,7 +478,11 @@ export type DataContactListCaller = (args: {
   phone_exact?: string;
   limit?: number;
   offset?: number;
-}) => Promise<{ contacts: ContactRecord[]; total: number }>;
+  with_rollups?: boolean;
+}) => Promise<{
+  contacts: ContactRecord[]; total: number;
+  rollups?: Record<string, TimelineRollup[]>;
+}>;
 export type DataContactGetCaller = (
   args: { email: string },
 ) => Promise<{ contact: ContactRecord | null }>;
@@ -583,6 +641,40 @@ export type DataLinkListCaller = () => Promise<{ links: Link[] }>;
  *  browses; absent → a not-wired notice. */
 export type DataSharedListCaller = () => Promise<{ entries: SharedListEntry[] }>;
 
+/** D-221 — owner-pair control plane. Deliberately separate from `data.*` and
+ * from the grant-gated Tier-P executor used by recipes and MCP callers. */
+export type DataRecordsNamespaceListCaller = () => Promise<{
+  namespaces: RecordsNamespaceView[];
+  global_quota: RecordsGlobalQuotaSnapshot;
+}>;
+export type DataRecordsKindListCaller = (
+  args: { owner: RecordsPackRef },
+) => Promise<{ kinds: RecordsKindSummary[] }>;
+export type DataRecordsSearchCaller = (
+  args: RecordsOwnerSearchRequest,
+) => Promise<{ records: RecordsFriendlyRecord[]; next_cursor?: string; prev_cursor?: string }>;
+export type DataRecordsGetCaller = (
+  args: RecordsOwnerGetRequest,
+) => Promise<RecordsOwnerGetResponse>;
+export type DataRecordsDeleteCaller = (
+  args: RecordsOwnerDeleteRequest,
+) => Promise<{ deleted: true; id: string; revision: number }>;
+export type DataRecordsRetentionListCaller = (
+  args: { owner: RecordsPackRef },
+) => Promise<{ policies: Record<string, RecordsRetentionPolicy> }>;
+export type DataRecordsExportCaller = (
+  args: RecordsExportRequest,
+) => Promise<RecordsExportResponse>;
+export type DataRecordsOutboxListCaller = (
+  args: RecordsOutboxListRequest,
+) => Promise<RecordsOutboxOverview>;
+export type DataRecordsOutboxRetireCaller = (
+  args: RecordsOutboxRetireRequest,
+) => Promise<{ retired: boolean }>;
+export type DataRecordsPurgeCaller = (
+  args: RecordsPurgeRequest,
+) => Promise<{ rows_deleted: number; events_deleted: number }>;
+
 /** D-174 #22 — mirror-tab name→entity_id keyword search backing the
  *  drill-down combobox. Absent → the mirror tabs keep the raw-id box. */
 export type DataMirrorSearchCaller = (
@@ -700,6 +792,20 @@ export interface BootstrapDataRouteOptions {
   /** D-198 Phase 3 — the "Storage" cluster read (`shared.list` over the durable
    *  `data.shared.` prefix). Present → the Shared tab browses; absent → notice. */
   sharedListCaller?: DataSharedListCaller;
+  recordsNamespaceListCaller?: DataRecordsNamespaceListCaller;
+  recordsKindListCaller?: DataRecordsKindListCaller;
+  recordsSearchCaller?: DataRecordsSearchCaller;
+  recordsGetCaller?: DataRecordsGetCaller;
+  recordsDeleteCaller?: DataRecordsDeleteCaller;
+  recordsRetentionListCaller?: DataRecordsRetentionListCaller;
+  recordsExportCaller?: DataRecordsExportCaller;
+  recordsOutboxListCaller?: DataRecordsOutboxListCaller;
+  recordsOutboxRetireCaller?: DataRecordsOutboxRetireCaller;
+  recordsPurgeCaller?: DataRecordsPurgeCaller;
+  /** Test/non-browser seam for the friendly, generation-pinned JSON export. */
+  recordsDownload?: (filename: string, envelope: RecordsExportEnvelope) => void;
+  /** Test/non-browser seam for the self-describing CSV export. */
+  recordsCsvDownload?: (filename: string, envelope: RecordsCsvExportEnvelope) => void;
   // D-172 — Data → File upload. The four rpc callers + the binary-socket
   // connect factory (host-injected, since ui-shared can't reach the token
   // store). All five present → the Files tab renders the drag/drop widget.
@@ -876,6 +982,8 @@ export interface DataRoute {
   workEntities(): ReadonlyArray<WorkEntity>;
   timeline(): TimelineSnapshot | null;
   getLoadErrors(): DataLoadErrors;
+  /** A user-started source write, import, scan, run, or save is settling. */
+  hasInFlightWork(): boolean;
   refresh(): void;
   whenLoaded(): Promise<void>;
   selectTab(tab: DataTabId): Promise<void>;
@@ -1414,6 +1522,32 @@ const DATA_ROUTE_STYLES = `
   font-size: 13px;
   font-weight: 650;
 }
+[${DATA_ROUTE_HOST_ATTR}] .data-contact-rollup {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  margin: 3px 6px 0 0;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--surface-sunk);
+  border: 1px solid var(--border);
+  font-size: 11px;
+  line-height: 1.6;
+}
+[${DATA_ROUTE_HOST_ATTR}] .data-contact-rollup-label {
+  color: var(--text-subtle);
+}
+[${DATA_ROUTE_HOST_ATTR}] .data-contact-rollup-value {
+  color: var(--text);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+/* A bounded walk reads as bounded. The dashed edge carries the same claim as
+   the "at least" prefix, so the marker survives a narrow viewport that
+   truncates the text. */
+[${DATA_ROUTE_HOST_ATTR}] .data-contact-rollup--partial {
+  border-style: dashed;
+}
 [${DATA_ROUTE_HOST_ATTR}] .data-contact-text {
   display: flex;
   flex-direction: column;
@@ -1920,6 +2054,8 @@ const tabLabel = (tab: DataTabId): string => {
       return 'Links';
     case 'shared':
       return 'Shared';
+    case 'records':
+      return 'Pack records';
   }
 };
 
@@ -2340,6 +2476,7 @@ const renderTabs = (active: DataTabId): string => `
     ${renderTabGroup('Connected', DATA_MIRROR_TABS, active)}
     ${renderTabGroup('Provenance', DATA_PROVENANCE_TABS, active)}
     ${renderTabGroup('Storage', DATA_SHARED_TABS, active)}
+    ${renderTabGroup('Records', DATA_RECORDS_TABS, active)}
   </div>
 `;
 
@@ -3407,8 +3544,43 @@ const renderContactScanView = (
   `;
 };
 
+
+/** D-226 — what one pack says about one contact, as a row of chips.
+ *
+ *  ⛔ EXPORTED AND PURE ON PURPOSE. Rendering a rollup is where the server's
+ *  honesty can quietly be thrown away: an `incomplete` rollup drawn as a plain
+ *  number is a figure the server refused to vouch for, presented as fact. That
+ *  is a presentation bug with the blast radius of a data bug, so it is a
+ *  separately tested function rather than an expression inside a template. */
+export const contactRollupChips = (
+  rollups: readonly TimelineRollup[] | undefined,
+): { label: string; text: string; complete: boolean }[] => {
+  if (rollups === undefined) return [];
+  const out: { label: string; text: string; complete: boolean }[] = [];
+  for (const rollup of rollups) {
+    const parts: string[] = [];
+    for (const [key, value] of Object.entries(rollup.value)) {
+      // A rollup that has nothing to say is SKIPPED rather than rendered as a
+      // row of zeros — a list of "0" against every contact is noise that hides
+      // the ones that matter. `complete: false` is never skipped: see below.
+      if (value === null || value === 0 || value === '0.0000') continue;
+      parts.push(`${key.replace(/_/g, ' ')} ${String(value)}`);
+    }
+    if (parts.length === 0 && rollup.complete) continue;
+    out.push({
+      label: rollup.label ?? rollup.pack_slug,
+      // ⛔ The "at least" is the server's `complete: false` reaching the screen.
+      // Dropping it would turn a bounded walk into a confident total.
+      text: rollup.complete ? parts.join(' · ') : `at least ${parts.join(' · ')}`,
+      complete: rollup.complete,
+    });
+  }
+  return out;
+};
+
 const renderContactSurface = (
   contacts: readonly ContactRecord[],
+  contactRollups: Record<string, TimelineRollup[]> | undefined,
   total: number,
   loadingMore: boolean,
   search: string,
@@ -3482,6 +3654,12 @@ const renderContactSurface = (
                   <span class="data-row-title">${e(contactLabel(contact))}</span>
                   <span class="data-row-meta">${e(contact.email)}${contact.company ? ` - ${e(contact.company)}` : ''}</span>
                   <span class="data-row-subtle">${e(contactSourceLabel(contact.source))} - ${e(String(contact.interaction_count))} interactions</span>
+                  ${contactRollupChips(contactRollups?.[contact.email]).map((chip) => `
+                    <span class="data-contact-rollup${chip.complete ? '' : ' data-contact-rollup--partial'}"
+                      ${DATA_ROUTE_CONTACT_ROLLUP_ATTR}="${e(chip.label)}">
+                      <span class="data-contact-rollup-label">${e(chip.label)}</span>
+                      <span class="data-contact-rollup-value">${e(chip.text)}</span>
+                    </span>`).join('')}
                 </span>
               </button>
             </li>
@@ -3865,7 +4043,12 @@ const readEnrichmentTimelinePayload = (
  *  The single `data.timeline()` call is the only data source: the
  *  enrichment-source entries (D-128 P5) populate the Enrichments + meta
  *  sections; the full feed drives the Timeline section. */
-const deriveEntityDetailProps = (
+/** Exported for test. A private closure here would leave the RESPONSE→PROPS
+ *  seam unprovable, and that seam is exactly where D-226's `rollups` was
+ *  silently dropped: the derivation names the fields it forwards, so an
+ *  omitted one reaches the panel as `undefined` and the section never renders
+ *  while every unit below it stays green. */
+export const deriveEntityDetailProps = (
   response: TimelineResponse,
   // The entity's collection (`mirrorCollection(kind)` for a mirror tab, or
   // `'contact'` for the flow-20 contact drill-down) — used only as the
@@ -3915,6 +4098,11 @@ const deriveEntityDetailProps = (
     metaSnapshot,
     enrichments,
     timelineEntries: response.entries,
+    // D-226 — ⚠ ANOTHER ENUMERATING PROJECTION. This derivation names the
+    // response fields it forwards, so a field it omits reaches the panel as
+    // `undefined` and the section silently never renders. Same shape as the
+    // rpc wire projection one layer in.
+    ...(response.rollups === undefined ? {} : { rollups: response.rollups }),
     now,
     // Meta is the platform-reference compute slot (D-128 §A.2) — hide the
     // section (+ its misleading "install a pack" hint) for native scopes.
@@ -4158,6 +4346,8 @@ export const bootstrapDataRoute = (
       MEMORY_LENS_STYLES,
       // D-198 Slice 5 — the mail / calendar / files collection explorer.
       COLLECTION_EXPLORER_STYLES,
+      // D-221 — full-ref, schema-driven pack Records owner explorer.
+      RECORDS_EXPLORER_STYLES,
     ].join('\n');
     doc.head.appendChild(style);
   }
@@ -4261,6 +4451,8 @@ export const bootstrapDataRoute = (
   let workEntityTotal = 0;
   let loadingMoreWorkEntities = false;
   let contacts: ContactRecord[] = [];
+  // D-226 — keyed on canonical email, for the rows currently rendered.
+  let contactRollups: Record<string, TimelineRollup[]> | undefined;
   let contactTotal = 0;
   // R18 load-more — set while an append page (offset > 0) is in flight, so the
   // footer shows a spinner without flashing a loading state over the list.
@@ -4277,6 +4469,9 @@ export const bootstrapDataRoute = (
   let savingFormResponse = false;
   let formResponseSaveError: string | null = null;
   let exportingFormResponses = false;
+  // Mutations without their own rendered busy state (deletes and the shared
+  // run modal) still need to participate in the server-switch safety fence.
+  let opaqueMutationsInFlight = 0;
   let formResponseAutomationState: FormResponseAutomationPickerState = {
     status: 'idle',
   };
@@ -4452,6 +4647,62 @@ export const bootstrapDataRoute = (
     explorerLoading = false;
     explorerError = undefined;
     explorerSeq += 1; // abandon any in-flight explorer fetch
+  };
+
+  // D-221 — pack-owned Records state. This is intentionally independent of
+  // `explorerRecords`: its callers are `records.*` owner RPCs, never a
+  // `collection.*`/`data.*` resolver that a recipe could accidentally share.
+  let recordsSeq = 0;
+  let recordsState: RecordsExplorerState = {
+    namespaces: [],
+    globalQuota: null,
+    selectedNamespace: null,
+    kinds: [],
+    selectedKind: null,
+    records: [],
+    detail: null,
+    diagnostics: null,
+    outbox: null,
+    retention: {},
+    loading: false,
+    deletePending: false,
+    deleting: false,
+    exporting: false,
+    retiringEventId: null,
+    purgePending: false,
+    purging: false,
+    canDelete: opts.recordsDeleteCaller !== undefined,
+    canExport: opts.recordsExportCaller !== undefined,
+    canRetireEvents: opts.recordsOutboxRetireCaller !== undefined,
+    canPurge: opts.recordsPurgeCaller !== undefined,
+  };
+  const recordsOwnerKey = (owner: RecordsPackRef): string =>
+    `${owner.publisher}/${owner.pack_slug}`;
+  const resetRecordsState = (): void => {
+    recordsSeq += 1;
+    recordsState = {
+      namespaces: [],
+      globalQuota: null,
+      selectedNamespace: null,
+      kinds: [],
+      selectedKind: null,
+      records: [],
+      detail: null,
+      diagnostics: null,
+      outbox: null,
+      retention: {},
+      loading: false,
+      deletePending: false,
+      deleting: false,
+      exporting: false,
+      retiringEventId: null,
+      purgePending: false,
+      purging: false,
+      canDelete: opts.recordsDeleteCaller !== undefined,
+      canExport: opts.recordsExportCaller !== undefined,
+      canRetireEvents: opts.recordsOutboxRetireCaller !== undefined,
+      canPurge: opts.recordsPurgeCaller !== undefined,
+    };
   };
 
   /** D-200 — the same owner-trusted file inventory behind Data → Files,
@@ -4744,6 +4995,7 @@ export const bootstrapDataRoute = (
     const body = activeTab === 'contact'
       ? renderContactSurface(
           contacts,
+          contactRollups,
           contactTotal,
           loadingMoreContacts,
           contactSearch,
@@ -4795,6 +5047,8 @@ export const bootstrapDataRoute = (
             bookingManageLinkBusy,
             bookingManageLinkNotice,
           )
+        : activeTab === 'records'
+          ? renderRecordsExplorer(recordsState)
         : isExplorerTab(activeTab) || isSingleCollectionTab(activeTab)
           ? renderExplorerTab(activeTab)
         : // Only `crm` remains a `data.timeline` raw-id drill-down — mail /
@@ -5078,10 +5332,14 @@ export const bootstrapDataRoute = (
       return;
     }
     try {
-      const response = await opts.contactListCaller(contactListRequest(0));
+      const response = await opts.contactListCaller(
+        { ...contactListRequest(0), with_rollups: true });
       if (disposed || generation !== loadGeneration) return;
       contacts = [...response.contacts];
       contactTotal = response.total;
+      // ⚠ Replaced, never merged. A stale map beside fresh rows would draw the
+      // previous search's numbers against the current one's names.
+      contactRollups = response.rollups;
     } catch (err) {
       if (disposed || generation !== loadGeneration) return;
       contacts = [];
@@ -5120,10 +5378,16 @@ export const bootstrapDataRoute = (
     loadingMoreContacts = true;
     render();
     try {
-      const response = await opts.contactListCaller(contactListRequest(contacts.length));
+      const response = await opts.contactListCaller(
+        { ...contactListRequest(contacts.length), with_rollups: true });
       if (disposed || generation !== loadGeneration) return;
       contacts = [...contacts, ...response.contacts];
       contactTotal = response.total;
+      // ⛔ MERGED here, replaced on refresh — the two paths differ because the
+      // ROWS differ. Load-more appends rows and must append their rollups; not
+      // asking for them at all (the easy miss) would leave page 2 chip-less
+      // beside a chipped page 1, which reads as "these clients owe nothing".
+      contactRollups = { ...(contactRollups ?? {}), ...(response.rollups ?? {}) };
       // A recovered append clears a prior load-more error banner.
       if (errors.contacts !== undefined) {
         errors = { ...errors };
@@ -5555,6 +5819,396 @@ export const bootstrapDataRoute = (
     syncDataHash(); // back to the list → `#data/<tab>`
   };
 
+  const loadRecordsNamespace = async (
+    namespace: RecordsNamespaceView,
+    preferredKind?: string,
+  ): Promise<void> => {
+    const kindsCaller = opts.recordsKindListCaller;
+    const searchCaller = opts.recordsSearchCaller;
+    const seq = ++recordsSeq;
+    recordsState = {
+      ...recordsState,
+      selectedNamespace: namespace,
+      selectedKind: null,
+      kinds: [],
+      records: [],
+      detail: null,
+      diagnostics: null,
+      outbox: null,
+      retention: {},
+      loading: true,
+      deletePending: false,
+      deleting: false,
+      retiringEventId: null,
+      purgePending: false,
+      purging: false,
+      error: undefined,
+    };
+    render();
+    if (kindsCaller === undefined || searchCaller === undefined) {
+      if (seq !== recordsSeq || disposed) return;
+      recordsState = {
+        ...recordsState,
+        loading: false,
+        error: 'The Records owner control plane is not wired in this host.',
+      };
+      return;
+    }
+    try {
+      const [kindResponse, retentionResponse, outboxResponse] = await Promise.all([
+        kindsCaller({ owner: namespace.owner }),
+        opts.recordsRetentionListCaller?.({ owner: namespace.owner })
+          ?? Promise.resolve({ policies: {} }),
+        opts.recordsOutboxListCaller?.({ owner: namespace.owner, limit: 100 })
+          ?? Promise.resolve(null),
+      ]);
+      if (disposed || seq !== recordsSeq) return;
+      // The store normally includes zero-row schema kinds. Merge defensively so
+      // an older server cannot hide an empty kind from its installed snapshot.
+      const counts = new Map(kindResponse.kinds.map((kind) => [kind.kind, kind]));
+      const kinds = Object.keys(namespace.schema.entities).sort().map((kind) =>
+        counts.get(kind) ?? { kind, rows: 0, payload_bytes: 0 });
+      const selectedKind = preferredKind && kinds.some((kind) => kind.kind === preferredKind)
+        ? preferredKind
+        : kinds[0]?.kind ?? null;
+      recordsState = {
+        ...recordsState,
+        kinds,
+        selectedKind,
+        retention: retentionResponse.policies,
+        outbox: outboxResponse,
+      };
+      if (selectedKind === null) {
+        recordsState = { ...recordsState, loading: false };
+        return;
+      }
+      const result = await searchCaller({
+        owner: namespace.owner,
+        entity: selectedKind,
+        include_orphaned: true,
+        limit: DEFAULT_LIMIT,
+      });
+      if (disposed || seq !== recordsSeq) return;
+      recordsState = { ...recordsState, records: result.records, loading: false };
+    } catch (error) {
+      if (disposed || seq !== recordsSeq) return;
+      recordsState = {
+        ...recordsState,
+        records: [],
+        detail: null,
+        diagnostics: null,
+        loading: false,
+        error: humanizeRpcError(error),
+      };
+    }
+  };
+
+  const loadRecords = async (): Promise<void> => {
+    const caller = opts.recordsNamespaceListCaller;
+    const seq = ++recordsSeq;
+    recordsState = { ...recordsState, loading: true, error: undefined };
+    if (caller === undefined) {
+      recordsState = {
+        ...recordsState,
+        namespaces: [],
+        globalQuota: null,
+        selectedNamespace: null,
+        loading: false,
+        error: 'The Records owner control plane is not wired in this host.',
+      };
+      return;
+    }
+    try {
+      const response = await caller();
+      if (disposed || seq !== recordsSeq) return;
+      const previous = recordsState.selectedNamespace?.owner;
+      const selected = previous === undefined
+        ? response.namespaces[0] ?? null
+        : response.namespaces.find((namespace) =>
+            recordsOwnerKey(namespace.owner) === recordsOwnerKey(previous))
+          ?? response.namespaces[0]
+          ?? null;
+      recordsState = {
+        ...recordsState,
+        namespaces: response.namespaces,
+        globalQuota: response.global_quota,
+        selectedNamespace: selected,
+        loading: selected !== null,
+      };
+      if (selected === null) return;
+      await loadRecordsNamespace(selected, recordsState.selectedKind ?? undefined);
+    } catch (error) {
+      if (disposed || seq !== recordsSeq) return;
+      recordsState = {
+        ...recordsState,
+        namespaces: [],
+        globalQuota: null,
+        selectedNamespace: null,
+        records: [],
+        detail: null,
+        loading: false,
+        error: humanizeRpcError(error),
+      };
+    }
+  };
+
+  const selectRecordsNamespace = async (key: string): Promise<void> => {
+    const selected = recordsState.namespaces.find((namespace) =>
+      recordsOwnerKey(namespace.owner) === key);
+    if (selected === undefined) return;
+    await loadRecordsNamespace(selected);
+    if (!disposed) render();
+  };
+
+  const selectRecordsKind = async (kind: string): Promise<void> => {
+    const namespace = recordsState.selectedNamespace;
+    const caller = opts.recordsSearchCaller;
+    if (
+      namespace === null
+      || caller === undefined
+      || !recordsState.kinds.some((entry) => entry.kind === kind)
+    ) return;
+    const seq = ++recordsSeq;
+    recordsState = {
+      ...recordsState,
+      selectedKind: kind,
+      records: [],
+      detail: null,
+      diagnostics: null,
+      loading: true,
+      error: undefined,
+      deletePending: false,
+    };
+    render();
+    try {
+      const result = await caller({
+        owner: namespace.owner,
+        entity: kind,
+        include_orphaned: true,
+        limit: DEFAULT_LIMIT,
+      });
+      if (disposed || seq !== recordsSeq) return;
+      recordsState = { ...recordsState, records: result.records, loading: false };
+    } catch (error) {
+      if (disposed || seq !== recordsSeq) return;
+      recordsState = {
+        ...recordsState,
+        records: [],
+        loading: false,
+        error: humanizeRpcError(error),
+      };
+    }
+    render();
+  };
+
+  const openRecordsRecord = async (id: string): Promise<void> => {
+    const namespace = recordsState.selectedNamespace;
+    const entity = recordsState.selectedKind;
+    const caller = opts.recordsGetCaller;
+    if (namespace === null || entity === null || caller === undefined) return;
+    const seq = ++recordsSeq;
+    recordsState = { ...recordsState, loading: true, error: undefined, deletePending: false };
+    render();
+    try {
+      const { record, diagnostics } = await caller({ owner: namespace.owner, entity, id });
+      if (disposed || seq !== recordsSeq) return;
+      recordsState = {
+        ...recordsState,
+        detail: record,
+        diagnostics,
+        loading: false,
+        ...(record === null ? { error: 'This record no longer exists.' } : {}),
+      };
+    } catch (error) {
+      if (disposed || seq !== recordsSeq) return;
+      recordsState = { ...recordsState, loading: false, error: humanizeRpcError(error) };
+    }
+    render();
+  };
+
+  const confirmRecordsDelete = async (): Promise<void> => {
+    const namespace = recordsState.selectedNamespace;
+    const entity = recordsState.selectedKind;
+    const record = recordsState.detail;
+    const caller = opts.recordsDeleteCaller;
+    if (
+      namespace === null || entity === null || record === null
+      || caller === undefined || recordsState.deleting
+    ) return;
+    const seq = ++recordsSeq;
+    recordsState = { ...recordsState, deleting: true, error: undefined };
+    render();
+    try {
+      await caller({
+        owner: namespace.owner,
+        entity,
+        id: record.id,
+        expected_version: record._record.version,
+        expected_revision: record._record.revision,
+      });
+      if (disposed || seq !== recordsSeq) return;
+      recordsState = {
+        ...recordsState,
+        records: recordsState.records.filter((entry) => entry.id !== record.id),
+        detail: null,
+        diagnostics: null,
+        deletePending: false,
+        deleting: false,
+      };
+      // Re-read namespace quota/generations after the atomic delete.
+      await loadRecords();
+    } catch (error) {
+      if (disposed || seq !== recordsSeq) return;
+      recordsState = {
+        ...recordsState,
+        deleting: false,
+        error: humanizeRpcError(error),
+      };
+    }
+    render();
+  };
+
+  const downloadRecordsExport = (
+    filename: string,
+    envelope: RecordsExportEnvelope,
+  ): void => {
+    if (opts.recordsDownload !== undefined) {
+      opts.recordsDownload(filename, envelope);
+      return;
+    }
+    const view = doc.defaultView;
+    if (view === null || view === undefined || typeof view.URL?.createObjectURL !== 'function') {
+      throw new Error('This host cannot download files.');
+    }
+    const blob = new view.Blob([JSON.stringify(envelope, null, 2)], { type: 'application/json' });
+    const url = view.URL.createObjectURL(blob);
+    try {
+      const link = doc.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.hidden = true;
+      (doc.body ?? opts.root).appendChild(link);
+      link.click();
+      link.remove();
+    } finally {
+      view.URL.revokeObjectURL(url);
+    }
+  };
+
+  const downloadRecordsCsv = (
+    filename: string,
+    envelope: RecordsCsvExportEnvelope,
+  ): void => {
+    if (opts.recordsCsvDownload !== undefined) {
+      opts.recordsCsvDownload(filename, envelope);
+      return;
+    }
+    const view = doc.defaultView;
+    if (view === null || view === undefined || typeof view.URL?.createObjectURL !== 'function') {
+      throw new Error('This host cannot download files.');
+    }
+    const blob = new view.Blob([envelope.csv], { type: 'text/csv;charset=utf-8' });
+    const url = view.URL.createObjectURL(blob);
+    try {
+      const link = doc.createElement('a');
+      link.href = url;
+      link.download = filename;
+      link.hidden = true;
+      (doc.body ?? opts.root).appendChild(link);
+      link.click();
+      link.remove();
+    } finally {
+      view.URL.revokeObjectURL(url);
+    }
+  };
+
+  const exportRecords = async (format: 'json' | 'csv', entity?: string): Promise<void> => {
+    const namespace = recordsState.selectedNamespace;
+    const caller = opts.recordsExportCaller;
+    if (namespace === null || caller === undefined || recordsState.exporting) return;
+    recordsState = { ...recordsState, exporting: true, error: undefined };
+    render();
+    try {
+      const envelope = await caller({
+        owner: namespace.owner,
+        ...(entity !== undefined ? { entity } : {}),
+        format,
+      });
+      const safe = `${namespace.owner.publisher}-${namespace.owner.pack_slug}${entity ? `-${entity}` : ''}`
+        .replace(/[^a-zA-Z0-9._-]+/g, '-');
+      if (format === 'csv') {
+        if (envelope.format !== 'recued.records.csv.v1') throw new Error('Server returned the wrong Records export format.');
+        downloadRecordsCsv(`${safe}-records.csv`, envelope);
+      } else {
+        if (envelope.format !== 'recued.records.v1') throw new Error('Server returned the wrong Records export format.');
+        downloadRecordsExport(`${safe}-records.json`, envelope);
+      }
+    } catch (error) {
+      recordsState = { ...recordsState, error: humanizeRpcError(error) };
+    } finally {
+      recordsState = { ...recordsState, exporting: false };
+      render();
+    }
+  };
+
+  const refreshRecordsOutbox = async (): Promise<void> => {
+    const namespace = recordsState.selectedNamespace;
+    const caller = opts.recordsOutboxListCaller;
+    if (namespace === null || caller === undefined) return;
+    try {
+      const outbox = await caller({ owner: namespace.owner, limit: 100 });
+      if (disposed || recordsState.selectedNamespace === null
+        || recordsOwnerKey(recordsState.selectedNamespace.owner) !== recordsOwnerKey(namespace.owner)) return;
+      recordsState = { ...recordsState, outbox, error: undefined };
+    } catch (error) {
+      recordsState = { ...recordsState, error: humanizeRpcError(error) };
+    }
+    render();
+  };
+
+  const retireRecordsEvent = async (eventId: string): Promise<void> => {
+    const namespace = recordsState.selectedNamespace;
+    const caller = opts.recordsOutboxRetireCaller;
+    if (namespace === null || caller === undefined || recordsState.retiringEventId !== eventId) return;
+    try {
+      await caller({ owner: namespace.owner, event_id: eventId, confirmation: eventId });
+      recordsState = { ...recordsState, retiringEventId: null, error: undefined };
+      await refreshRecordsOutbox();
+      // The pending counter is part of the namespace/global quota snapshots.
+      await loadRecords();
+    } catch (error) {
+      recordsState = { ...recordsState, retiringEventId: null, error: humanizeRpcError(error) };
+      render();
+    }
+  };
+
+  const purgeRecordsNamespace = async (confirmation: string): Promise<void> => {
+    const namespace = recordsState.selectedNamespace;
+    const caller = opts.recordsPurgeCaller;
+    if (namespace === null || namespace.state.state !== 'orphaned'
+      || caller === undefined || recordsState.purging) return;
+    recordsState = { ...recordsState, purging: true, error: undefined };
+    render();
+    try {
+      await caller({ owner: namespace.owner, confirmation });
+      recordsState = { ...recordsState, purging: false, purgePending: false };
+      await loadRecords();
+    } catch (error) {
+      recordsState = { ...recordsState, purging: false, error: humanizeRpcError(error) };
+      render();
+    }
+  };
+
+  const openRecordsReference = async (entity: string, id: string): Promise<void> => {
+    const namespace = recordsState.selectedNamespace;
+    if (namespace === null || namespace.schema.entities[entity] === undefined) return;
+    if (recordsState.selectedKind !== entity) await selectRecordsKind(entity);
+    if (disposed || recordsState.selectedNamespace === null
+      || recordsOwnerKey(recordsState.selectedNamespace.owner) !== recordsOwnerKey(namespace.owner)
+      || recordsState.selectedKind !== entity) return;
+    await openRecordsRecord(id);
+  };
+
   const refreshActive = async (silent = false): Promise<void> => {
     const generation = ++loadGeneration;
     // A full refresh REPLACES the list from offset 0 — the generation bump above
@@ -5603,6 +6257,8 @@ export const bootstrapDataRoute = (
       // management slice is absent or recovering.
       await refreshSources(nextErrors, generation);
       await refreshWorkEntities(nextErrors, generation);
+    } else if (activeTab === 'records') {
+      await loadRecords();
     } else if (isExplorerTab(activeTab) || isSingleCollectionTab(activeTab)) {
       // D-198 Slice 5 — the explorer owns its own async guard (`explorerSeq`) +
       // error state; the outer generation guard below still gates the paint.
@@ -5753,6 +6409,7 @@ export const bootstrapDataRoute = (
     // D-198 Slice 5 — drop any prior explorer records/detail; `refreshActive`
     // reloads for the new tab if it's an explorer tab.
     resetExplorerState();
+    resetRecordsState();
     if (isWorkEntityTab(tab)) {
       workEntityState = selectKindTransition(workEntityState, tab);
     }
@@ -5925,6 +6582,7 @@ export const bootstrapDataRoute = (
     const deleteCaller = opts.memoryDeleteCaller;
     if (deleteCaller === undefined) return;
     memoryPendingDeleteId = undefined;
+    opaqueMutationsInFlight += 1;
     try {
       await deleteCaller({ memory_id });
       if (disposed) return;
@@ -5935,6 +6593,8 @@ export const bootstrapDataRoute = (
       if (disposed) return;
       memoryError = errMessage(err);
       render();
+    } finally {
+      opaqueMutationsInFlight -= 1;
     }
   };
 
@@ -6456,6 +7116,7 @@ export const bootstrapDataRoute = (
       render();
       return;
     }
+    opaqueMutationsInFlight += 1;
     try {
       await opts.workEntityDeleteCaller({ kind, id });
       // If the edit dialog for the just-deleted entity is open, close it (and
@@ -6481,6 +7142,8 @@ export const bootstrapDataRoute = (
     } catch (err) {
       errors = { ...errors, work_entities: errMessage(err) };
       render();
+    } finally {
+      opaqueMutationsInFlight -= 1;
     }
   };
 
@@ -6599,6 +7262,7 @@ export const bootstrapDataRoute = (
       render();
       return;
     }
+    opaqueMutationsInFlight += 1;
     try {
       await opts.contactDeleteCaller({ email });
       contactDialog = null;
@@ -6607,6 +7271,8 @@ export const bootstrapDataRoute = (
     } catch (err) {
       errors = { ...errors, contacts: errMessage(err) };
       render();
+    } finally {
+      opaqueMutationsInFlight -= 1;
     }
   };
 
@@ -6714,8 +7380,16 @@ export const bootstrapDataRoute = (
     }
   };
 
-  const confirmFormResponseAutomationRun = (): Promise<void> =>
-    formResponseRunModal?.confirmRun() ?? Promise.resolve();
+  const confirmFormResponseAutomationRun = async (): Promise<void> => {
+    const modal = formResponseRunModal;
+    if (modal === null) return;
+    opaqueMutationsInFlight += 1;
+    try {
+      await modal.confirmRun();
+    } finally {
+      opaqueMutationsInFlight -= 1;
+    }
+  };
 
   const openFormResponse = async (submission_id: string): Promise<void> => {
     if (submission_id.trim().length === 0) return;
@@ -7773,6 +8447,110 @@ export const bootstrapDataRoute = (
       else cancelMemoryDelete();
       return;
     }
+    // D-221 — pack Records owner explorer. These actions call only the
+    // `records.*` registered-pair control plane; none dispatch through a
+    // recipe `data` namespace or through the agent-facing catalog executor.
+    if (action === RECORDS_SELECT_NAMESPACE_ACTION) {
+      const key = target.getAttribute(RECORDS_NAMESPACE_ATTR);
+      if (key !== null) void selectRecordsNamespace(key);
+      return;
+    }
+    if (action === RECORDS_SELECT_KIND_ACTION) {
+      const kind = target.getAttribute(RECORDS_KIND_ATTR);
+      if (kind !== null) void selectRecordsKind(kind);
+      return;
+    }
+    if (action === RECORDS_OPEN_RECORD_ACTION) {
+      const id = target.getAttribute(RECORDS_ID_ATTR);
+      if (id !== null) void openRecordsRecord(id);
+      return;
+    }
+    if (action === RECORDS_OPEN_REFERENCE_ACTION) {
+      const kind = target.getAttribute(RECORDS_KIND_ATTR);
+      const id = target.getAttribute(RECORDS_ID_ATTR);
+      if (kind !== null && id !== null) void openRecordsReference(kind, id);
+      return;
+    }
+    if (action === RECORDS_CLOSE_RECORD_ACTION) {
+      recordsSeq += 1;
+      recordsState = {
+        ...recordsState,
+        detail: null,
+        diagnostics: null,
+        deletePending: false,
+        deleting: false,
+        error: undefined,
+      };
+      render();
+      return;
+    }
+    if (action === RECORDS_DELETE_RECORD_ACTION) {
+      recordsState = { ...recordsState, deletePending: true, error: undefined };
+      render();
+      return;
+    }
+    if (action === RECORDS_CANCEL_DELETE_ACTION) {
+      recordsState = { ...recordsState, deletePending: false, error: undefined };
+      render();
+      return;
+    }
+    if (action === RECORDS_CONFIRM_DELETE_ACTION) {
+      void confirmRecordsDelete();
+      return;
+    }
+    if (action === RECORDS_EXPORT_PACK_ACTION) {
+      void exportRecords('json');
+      return;
+    }
+    if (action === RECORDS_EXPORT_KIND_ACTION) {
+      if (recordsState.selectedKind !== null) void exportRecords('json', recordsState.selectedKind);
+      return;
+    }
+    if (action === RECORDS_EXPORT_PACK_CSV_ACTION) {
+      void exportRecords('csv');
+      return;
+    }
+    if (action === RECORDS_EXPORT_KIND_CSV_ACTION) {
+      if (recordsState.selectedKind !== null) void exportRecords('csv', recordsState.selectedKind);
+      return;
+    }
+    if (action === RECORDS_REFRESH_OUTBOX_ACTION) {
+      void refreshRecordsOutbox();
+      return;
+    }
+    if (action === RECORDS_RETIRE_EVENT_ACTION) {
+      const eventId = target.getAttribute(RECORDS_EVENT_ID_ATTR);
+      if (eventId !== null) {
+        recordsState = { ...recordsState, retiringEventId: eventId, error: undefined };
+        render();
+      }
+      return;
+    }
+    if (action === RECORDS_CANCEL_RETIRE_EVENT_ACTION) {
+      recordsState = { ...recordsState, retiringEventId: null };
+      render();
+      return;
+    }
+    if (action === RECORDS_CONFIRM_RETIRE_EVENT_ACTION) {
+      const eventId = target.getAttribute(RECORDS_EVENT_ID_ATTR);
+      if (eventId !== null) void retireRecordsEvent(eventId);
+      return;
+    }
+    if (action === RECORDS_PURGE_ACTION) {
+      recordsState = { ...recordsState, purgePending: true, error: undefined };
+      render();
+      return;
+    }
+    if (action === RECORDS_CANCEL_PURGE_ACTION) {
+      recordsState = { ...recordsState, purgePending: false, error: undefined };
+      render();
+      return;
+    }
+    if (action === RECORDS_CONFIRM_PURGE_ACTION) {
+      const input = opts.root.querySelector<HTMLInputElement>(`[${RECORDS_PURGE_CONFIRMATION_ATTR}]`);
+      void purgeRecordsNamespace(input?.value ?? '');
+      return;
+    }
     // D-198 Slice 5 — collection explorer dispatch (mail / calendar / files).
     // Fire-and-forget (NOT chained onto `pendingLoadPromise`): both read
     // `EXPLORER_TAB_PLATFORM[activeTab]` synchronously at click time, so a
@@ -8335,6 +9113,22 @@ export const bootstrapDataRoute = (
     workEntities: () => workEntities,
     timeline: () => timeline,
     getLoadErrors: () => errors,
+    hasInFlightWork: () => opaqueMutationsInFlight > 0
+      || workEntityState.dialog?.submitting === true
+      || contactDialog?.submitting === true
+      || savingFormResponse
+      || exportingFormResponses
+      || bookingManageLinkBusy
+      || memoryCompose.submitting
+      || memoryImport.submitting
+      || rescheduleForm?.submitting === true
+      || contactScan?.scanning === true
+      || contactScan?.dialog.saving === true
+      || contactImport?.promoting === true
+      || contactImport?.file?.busy === true
+      || formResponseRunModal?.getState().executing === true
+      || formResponseRunModal?.getState().mutating === true
+      || formResponseRunModal?.getState().trigger_mutating === true,
     refresh: startRefresh,
     whenLoaded: () => pendingLoadPromise,
     selectTab,

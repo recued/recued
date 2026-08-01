@@ -4,8 +4,9 @@
  *  ciphertext blob unchanged (pair clients hold the sub-DEK derivation
  *  inputs; the server is the storage authority).
  *
- *  Five methods: list / enroll / update / delete / probe. Server is
- *  authoritative — the durable SQLite row lives in `storage/
+ *  Core lifecycle methods: list / enroll / update / verified credential
+ *  rotation / delete / probe. Server is authoritative — the durable SQLite
+ *  row lives in `storage/
  *  connection-store.ts`; paired clients mirror via the pair sync wire.
  *  Pair sync rides on `contract.connection_record.*` (sync_transport:
  *  'pair' per D-166). D-168 retired cloud sync entirely — there is no
@@ -34,9 +35,12 @@
  *  replaces it. The Settings "Save and probe" host calls those rpcs in
  *  sequence so a failed check never rolls back a successfully stored row. */
 
+import { createHash } from 'node:crypto';
+
 import {
   RpcError,
   connectionViewFromRow,
+  connectionRowKey,
   getVendorProvider,
   buildGenericVendorProvider,
   vendorOAuthRedirectChoices,
@@ -47,6 +51,12 @@ import {
   describeHeaderAuthIssue,
   MESSAGE_MATCH_CONFIG_KEY,
   validateMessageMatchPatterns,
+  CONNECTION_AUTH_TYPES,
+  CONNECTION_CREDENTIAL_ROTATION_ATTEMPT_ID_REGEX,
+  CONNECTION_CREDENTIAL_SAFE_STOP_TOKEN_REGEX,
+  connectionCredentialRejectionCorrection,
+  connectionCredentialRejectionTriage,
+  isValidOAuthEndpointUrl,
   CONNECTION_INBOUND_SECRET_FIELDS,
   getMessengerVendorDeclaration,
   MESSENGER_AUTH_KIND_CONNECTION_TYPES,
@@ -57,9 +67,21 @@ import {
 } from '@recued/contracts';
 import type {
   ConnectionAuth,
+  ConnectionCredentialPostSafeStopVerificationSummary,
+  ConnectionCredentialRejectionCorrection,
+  ConnectionCredentialRejectionResolution,
+  ConnectionCredentialRotationActivity,
+  ConnectionCredentialRotationFailureReason,
+  ConnectionCredentialRotationOutcome,
+  ConnectionCredentialRotationSafeStop,
+  ConnectionCredentialRotationSafeStopAcknowledgement,
+  ConnectionCredentialRotationSafeStopSummary,
+  ConnectionCredentialRejectionTriageStage,
+  ConnectionCredentialVerification,
   ConnectionDataPurgeSummary,
   ConnectionHealth,
   ConnectionKind,
+  ConnectionRow,
   ConnectionVendorEntity,
   ConnectionView,
   HandlerSlice,
@@ -80,7 +102,12 @@ import {
 } from '@recued/crypto';
 import type { WsClient } from './ws-server.js';
 import type { RecipeRunnabilityBroadcaster } from './recipe-runnability-handler.js';
-import { resolveConnectionVendor, type ConnectionStoreSqlite } from './storage/connection-store.js';
+import {
+  resolveConnectionVendor,
+  type ConnectionCredentialRotationAttemptRow,
+  type ConnectionStoreSqlite,
+  type ConnectionUpsert,
+} from './storage/connection-store.js';
 import type { ContractGrantStore } from './storage/contract-grant-store.js';
 import type { ConnectionOperationProfileStore } from './connection-operation-profile.js';
 import { deriveAllowedOperations } from './connection-operation-profile-boot.js';
@@ -100,7 +127,8 @@ import {
 } from './connection-vendor-oauth-flow.js';
 import type { ServerIdentity } from './identity/index.js';
 import {
-  exchangeOAuth2ClientCredentials,
+  createEnsureFreshAuth,
+  composeApiUrl,
   MCP_TOOL_LIST_PROBE_MAX_PAGES,
   parseMcpToolListPage,
   probeMcpStreamTools,
@@ -108,10 +136,30 @@ import {
   resolveStdioMcpLaunchSpec,
 } from '@recued/ingredients';
 import type { StdioSpawn, WsConnect } from '@recued/ingredients';
+import type { McpToolDescriptor } from '@recued/contracts';
+// D-225 Slice 2 — descriptor hashes for drift detection, computed at probe.
+import {
+  mcpGeneratedPackSlug,
+  mcpMintedHashes,
+  mcpMintedHashesFromCatalog,
+  mcpPackManifest,
+  mcpPackReviewRows,
+  mcpToolsDriftFromHashes,
+} from '@recued/ingredient-authoring';
+import type { McpPackReviewRow } from '@recued/contracts';
 import { resolveSharePointDriveId } from './sharepoint-drive-resolver.js';
+import {
+  generateConnectionSetupGuide,
+  type ConnectionSetupGuideDeps,
+} from './connection-setup-guide.js';
 
 export interface ConnectionRpcDeps {
   store: ConnectionStoreSqlite;
+  /** Owner-triggered, read-only API setup assistant. The caller supplies the
+   *  configured-model invocation; the guide module owns request minimization,
+   *  prompt construction, and output validation. Absent → the UI receives an
+   *  honest not-configured result rather than a synthetic guide. */
+  setupGuide?: ConnectionSetupGuideDeps;
   /** Injectable clock — defaults to `Date.now`. */
   now?: () => number;
   /** Connection sub-DEK provider. Returns the unlocked key when the
@@ -144,6 +192,40 @@ export interface ConnectionRpcDeps {
    *  rows. Optional — db-less / harness paths skip cleanly; when
    *  absent the delete still removes the connection row but enrichment
    *  cleanup waits for the next housekeeping cascade fire. */
+  /** D-225 Slice 2 — install a pack the runtime generated from this
+   *  connection's `tools/list`. Supplied as a CLOSURE rather than by threading
+   *  `PackInstallRpcDeps` in here: the install surface is large, the connection
+   *  handler needs exactly one verb from it, and the composition site already
+   *  holds the whole bundle. Same shape as `cascadeForConnectionDelete`.
+   *
+   *  Absent (dbless / partial harnesses) → `mcpPackCommit` refuses rather than
+   *  half-succeeding. */
+  installGeneratedPack?: (
+    manifest: unknown,
+    /** D-228 slice 3 — the install-point grant selection, forwarded verbatim to
+     *  `packs.install`. Absent ⇒ its fail-closed default (authored read /
+     *  `approval: ask` only). */
+    install_scope?: unknown,
+  ) => Promise<void>;
+  /** D-225 Slice 2 — look up an INSTALLED generated pack's catalog manifest by
+   *  slug, for the drift badge. A closure for the same reason
+   *  `installGeneratedPack` is one: the connection handler needs a lookup, not
+   *  the manifest registry's whole surface. Absent ⇒ the badge reports
+   *  `unknown` rather than a false all-clear. */
+  getInstalledCatalog?: (slug: string) => IngredientManifest | null;
+  /** D-225 Slice 2 — tear down the generated pack when its MCP connection is
+   *  deleted. Uninstalls the pack AND purges its owner rulings.
+   *
+   *  ⛔ The reverse direction (uninstalling the pack removes the connection)
+   *  exists too, so the two could recurse. The cycle is broken STRUCTURALLY at
+   *  the composition site: the deps object this closure hands the uninstall
+   *  path OMITS the reverse hook, so the capability to come back here is not
+   *  merely unused — it is absent. A flag would be something to forget.
+   *
+   *  Best-effort, like `cascadeForConnectionDelete`: a teardown failure must not
+   *  fail the delete, because the connection row is already gone and refusing
+   *  would leave the owner unable to retry. */
+  teardownGeneratedPack?: (pack_slug: string) => Promise<void>;
   cascadeForConnectionDelete?: (
     kind: 'api' | 'mcp' | 'notification',
     name: string,
@@ -282,13 +364,7 @@ export interface ConnectionRpcDeps {
 
 const VALID_KINDS: ReadonlySet<string> = new Set(['mcp', 'api', 'notification']);
 const VALID_AUTH_TYPES: ReadonlySet<string> = new Set([
-  'none',
-  'bearer',
-  'basic',
-  'header',
-  'query',
-  'oauth2_refresh',
-  'oauth2_client_credentials',
+  ...CONNECTION_AUTH_TYPES,
 ]);
 const PROTOTYPE_SENSITIVE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 const MCP_SUBTYPES: ReadonlySet<string> = new Set(['sse', 'websocket', 'stdio']);
@@ -427,6 +503,41 @@ const ensureOptionalString = (
     );
   }
   return value.trim();
+};
+
+/** Optional optimistic-concurrency token emitted by the Settings list view.
+ * It is row metadata, never credential material. Older clients omit it and
+ * retain the pre-existing last-write-wins behavior. */
+const ensureExpectedConnectionUpdatedAt = (
+  where: string,
+  value: unknown,
+): number | undefined => {
+  if (value === undefined) return undefined;
+  if (!Number.isSafeInteger(value) || (value as number) < 0) {
+    throw new RpcError(
+      'bad_request',
+      `${where}: expected_updated_at must be a non-negative safe integer when present`,
+    );
+  }
+  return value as number;
+};
+
+const assertConnectionEditorIsCurrent = (
+  where: string,
+  expectedUpdatedAt: number | undefined,
+  existing: ConnectionRow,
+): void => {
+  if (
+    expectedUpdatedAt === undefined
+    || expectedUpdatedAt === existing.updated_at
+  ) return;
+  throw new RpcError(
+    'conflict',
+    'This connection changed after you opened it. Your unsaved values were not applied; reload the latest connection before saving.',
+    409,
+    where,
+    { existing_credential_preserved: true },
+  );
 };
 
 /** D-165 P3.path-picker — validate + canonicalize an optional
@@ -576,6 +687,24 @@ const requireSafeAuthNameField = (
   }
 };
 
+/** OAuth refreshes POST credential material to this owner-configured
+ * destination. Shape validation alone is insufficient: the RPC boundary must
+ * reject plaintext, parser shorthand, and embedded userinfo before a row can
+ * persist them. */
+const requireOAuthEndpointField = (
+  where: string,
+  obj: Record<string, unknown>,
+  field: 'token_endpoint',
+): void => {
+  requireStringField(where, obj, field);
+  if (!isValidOAuthEndpointUrl(obj[field])) {
+    throw new RpcError(
+      'bad_request',
+      `${where}: auth.${field} must be a complete HTTPS URL with no embedded username or password and no URL fragment`,
+    );
+  }
+};
+
 const ensureOptionalStringField = (
   where: string,
   obj: Record<string, unknown>,
@@ -658,7 +787,7 @@ const ensureAuth = (where: string, auth: unknown): ConnectionAuth => {
     case 'oauth2_refresh':
       requireStringField(where, auth, 'refresh_token');
       requireStringField(where, auth, 'client_id');
-      requireStringField(where, auth, 'token_endpoint');
+      requireOAuthEndpointField(where, auth, 'token_endpoint');
       ensureOptionalStringField(where, auth, 'client_secret');
       ensureOptionalTokenAuthStyleField(where, auth);
       ensureOptionalStringField(where, auth, 'current_access_token');
@@ -667,11 +796,23 @@ const ensureAuth = (where: string, auth: unknown): ConnectionAuth => {
     case 'oauth2_client_credentials':
       requireStringField(where, auth, 'client_id');
       requireStringField(where, auth, 'client_secret');
-      requireStringField(where, auth, 'token_endpoint');
+      requireOAuthEndpointField(where, auth, 'token_endpoint');
       ensureOptionalTokenAuthStyleField(where, auth);
       ensureOptionalStringField(where, auth, 'scope');
       ensureOptionalStringField(where, auth, 'current_access_token');
       ensureOptionalNumberField(where, auth, 'expires_at');
+      break;
+    // D-218 — two required fields and no endpoint. ⚠ The session URLs derive
+    // from the connection's `base_url` (§ 7.5b), so there is deliberately
+    // nothing here to validate as a destination; the tokens are optional
+    // because a freshly enrolled row has not exchanged yet. ⛔ No `expires_at`
+    // — the protocol supplies no expiry and calls its tokens opaque, so storing
+    // a number would be inventing one (§ 7.5a).
+    case 'atproto_session':
+      requireStringField(where, auth, 'identifier');
+      requireStringField(where, auth, 'app_password');
+      ensureOptionalStringField(where, auth, 'current_access_token');
+      ensureOptionalStringField(where, auth, 'refresh_token');
       break;
   }
   return auth as unknown as ConnectionAuth;
@@ -766,10 +907,11 @@ export const encodeAuthForStorage = async (
   return encodeCiphertext(ct);
 };
 
-/** Decode an at-rest ciphertext blob back to a `ConnectionAuth`. The
- *  P3 adapter calls this at invoke time — never on read-only list /
- *  view paths. Mirrors the encode policy on `getEncryptionKey`:
- *  encrypted when wired, base64-JSON when not. */
+/** Decode an at-rest ciphertext blob back to a `ConnectionAuth`. The P3
+ *  adapter calls this at invoke time; the list path also uses it narrowly to
+ *  project the non-secret `type` discriminant needed for compatible pack
+ *  reuse. No credential field enters a view. Mirrors the encode policy on
+ *  `getEncryptionKey`: encrypted when wired, base64-JSON when not. */
 export const decodeAuthFromStorage = async (
   blob: string,
   identity: { kind: ConnectionKind; name: string },
@@ -787,7 +929,12 @@ export const decodeAuthFromStorage = async (
 export const handleConnectionList = async (
   deps: ConnectionRpcDeps,
   args: { kind?: ConnectionKind } | void,
-): Promise<{ connections: ConnectionView[] }> => {
+): Promise<{
+  connections: ConnectionView[];
+  credential_rotation_safe_stops?: ConnectionCredentialRotationSafeStopSummary[];
+  credential_post_safe_stop_verifications?:
+    ConnectionCredentialPostSafeStopVerificationSummary[];
+}> => {
   const a = args === undefined
     ? {}
     : ensureRecordArgs('collection.connection.list', args);
@@ -802,9 +949,28 @@ export const handleConnectionList = async (
   // D-192 S5 — resolve the live merged registry once per list call (built-ins +
   // installed packs). Unwired (dbless) → the engagement stamp is skipped.
   const engagementRegistry = deps.resolveVendorRegistry?.();
-  return {
-    connections: rows.map((row) => {
+  const listedKey = deps.getEncryptionKey?.();
+  const canReadAuthType = deps.getEncryptionKey === undefined || listedKey !== null;
+  const connections = await Promise.all(rows.map(async (row) => {
       const view = connectionViewFromRow(row);
+      // Settings-only, non-secret revision. Keep it out of the shared resolver
+      // projection so recipes cannot accidentally depend on storage metadata.
+      view.updated_at = row.updated_at;
+      if (canReadAuthType) {
+        try {
+          const auth = await decodeAuthFromStorage(
+            row.auth_ciphertext,
+            { kind: row.kind, name: row.name },
+            deps.getEncryptionKey === undefined
+              ? undefined
+              : () => listedKey as Uint8Array,
+          );
+          view.auth_type = auth.type;
+        } catch {
+          // Keep a corrupt/legacy row visible. Omitting auth_type makes pack
+          // reuse matching fail closed instead of guessing from the endpoint.
+        }
+      }
       // D-194 #6 — stamp the connection-precise "Used by packs" set from the
       // grant store (api rows only — pack grants are on api connections). The
       // resolver-shared `connectionViewFromRow` never sets this; it lives only on
@@ -822,7 +988,112 @@ export const handleConnectionList = async (
         view.supports_engagement_health = vendorHasEngagement(vendor, engagementRegistry);
       }
       return view;
-    }),
+    }));
+  const safeStopRows = deps.store.listCredentialRotationSafeStops?.(
+    a.kind === undefined ? {} : { kind: a.kind as ConnectionKind },
+  ) ?? [];
+  const credentialRotationSafeStops = safeStopRows.flatMap((attempt) => {
+    const safeStop = credentialSafeStopFromAttempt(attempt);
+    return safeStop === null
+      ? []
+      : [{ kind: attempt.kind, name: attempt.name, ...safeStop }];
+  });
+  const acknowledgedSafeStopRows =
+    deps.store.listAcknowledgedCredentialRotationSafeStops?.(
+      a.kind === undefined ? {} : { kind: a.kind as ConnectionKind },
+    );
+  const rowByKey = new Map(rows.map((row) => [
+    connectionRowKey(row.kind, row.name),
+    row,
+  ]));
+  const viewByKey = new Map(connections.map((connection) => [
+    connectionRowKey(connection.kind, connection.name),
+    connection,
+  ]));
+  const credentialPostSafeStopVerifications = acknowledgedSafeStopRows
+    ?.flatMap((attempt): ConnectionCredentialPostSafeStopVerificationSummary[] => {
+      const acknowledgedAt = attempt.safe_stop_acknowledged_at;
+      const pending = (): ConnectionCredentialPostSafeStopVerificationSummary[] => [{
+        kind: attempt.kind,
+        name: attempt.name,
+        status: 'pending',
+        acknowledged_at: acknowledgedAt,
+      }];
+      const key = connectionRowKey(attempt.kind, attempt.name);
+      const row = rowByKey.get(key);
+      const view = viewByKey.get(key);
+      if (row === undefined || view === undefined) return [];
+      const currentRow = deps.store.get(attempt.kind, attempt.name);
+      if (
+        currentRow === null
+        || connectionRowFingerprint(currentRow)
+          !== connectionRowFingerprint(row)
+      ) {
+        // Auth-type projection above is asynchronous. A connection can change
+        // while that decryption is in flight, so recheck the complete durable
+        // row before an old success clears work or an old rejection targets a
+        // correction. A later list will project the new row exactly.
+        return pending();
+      }
+      let health: ConnectionHealth | null = null;
+      let exactPostSafeStopLineage = false;
+      try {
+        const parsed: unknown = JSON.parse(row.health_json ?? 'null');
+        if (
+          isRecord(parsed)
+          && (
+            parsed.status === 'ok'
+            || parsed.status === 'auth_failed'
+            || parsed.status === 'unreachable'
+            || parsed.status === 'unknown'
+          )
+          && typeof parsed.last_probed_at === 'number'
+          && Number.isSafeInteger(parsed.last_probed_at)
+          && parsed.last_probed_at >= 0
+        ) {
+          health = parsed as unknown as ConnectionHealth;
+          const lineage = parsed.post_safe_stop_verification;
+          exactPostSafeStopLineage = isRecord(lineage)
+            && lineage.acknowledged_at === acknowledgedAt
+            && lineage.lineage_hash
+              === credentialSafeStopAcknowledgementToken(attempt)
+            && lineage.connection_updated_at === row.updated_at;
+        }
+      } catch {
+        // A malformed/legacy health snapshot means the promised check is still
+        // pending; it never becomes a fabricated success or rejection.
+      }
+      if (health === null || !exactPostSafeStopLineage) {
+        return pending();
+      }
+      if (health.status === 'ok') return [];
+      const correction = health.status === 'auth_failed'
+        && view.auth_type !== undefined
+        ? connectionCredentialRejectionCorrection(view.auth_type)
+        : null;
+      return [{
+        kind: attempt.kind,
+        name: attempt.name,
+        status: health.status,
+        acknowledged_at: acknowledgedAt,
+        checked_at: health.last_probed_at!,
+        connection_updated_at: row.updated_at,
+        ...(correction !== null
+          ? { credential_correction: correction }
+          : {}),
+      }];
+    });
+  return {
+    connections,
+    ...(credentialRotationSafeStops.length > 0
+      ? { credential_rotation_safe_stops: credentialRotationSafeStops }
+      : {}),
+    ...(credentialPostSafeStopVerifications !== undefined
+      ? {
+          credential_post_safe_stop_verifications:
+            credentialPostSafeStopVerifications,
+        }
+      : {}),
   };
 };
 
@@ -1008,7 +1279,9 @@ export const handleConnectionUpdate = async (
       config?: Record<string, unknown>;
       auth?: ConnectionAuth;
     };
+    expected_updated_at?: number;
   },
+  internal: { allowCredentialCandidate?: boolean } = {},
 ): Promise<{ connection: ConnectionView }> => {
   const a = ensureRecordArgs('collection.connection.update', args);
   const name = ensureName('collection.connection.update', a.name);
@@ -1020,6 +1293,19 @@ export const handleConnectionUpdate = async (
       'collection.connection.update: patch must be an object',
     );
   }
+  // Credential replacement has a stricter lifecycle than ordinary metadata:
+  // accepting it here would let a paired/direct caller bypass the provider
+  // verification and durable-swap guarantee. Only the rotation handler may run
+  // this updater against its isolated candidate store.
+  if (patch.auth !== undefined && internal.allowCredentialCandidate !== true) {
+    throw new RpcError(
+      'credential_verification_required',
+      'Replacement credentials must be verified before they can be saved. Update your client and try again; your current credentials were not changed.',
+      409,
+      'collection.connection.update',
+      { existing_credential_preserved: true },
+    );
+  }
   const existing = deps.store.get(kind, name);
   if (!existing) {
     throw new RpcError(
@@ -1027,7 +1313,23 @@ export const handleConnectionUpdate = async (
       `collection.connection.update: no ${kind} connection named '${name}'`,
     );
   }
-  const now = deps.now?.() ?? Date.now();
+  const expectedUpdatedAt = ensureExpectedConnectionUpdatedAt(
+    'collection.connection.update',
+    a.expected_updated_at,
+  );
+  if (internal.allowCredentialCandidate !== true) {
+    assertConnectionEditorIsCurrent(
+      'collection.connection.update',
+      expectedUpdatedAt,
+      existing,
+    );
+  }
+  // A revision must advance even when two writes share a millisecond or a
+  // deterministic test clock. This keeps the next editor CAS meaningful.
+  const now = Math.max(
+    deps.now?.() ?? Date.now(),
+    existing.updated_at + 1,
+  );
   const display_name =
     patch.display_name !== undefined
       ? patch.display_name
@@ -1180,6 +1482,18 @@ export const handleConnectionDelete = async (
     }
   }
   const deleted = deps.store.delete(kind, name);
+  // D-225 Slice 2 — a generated MCP pack is an artifact OF this connection: its
+  // every operation dispatches through a connection that no longer exists, so
+  // leaving it installed leaves a pack that is dead in every op. Runs AFTER the
+  // row is deleted, which is also what makes the reverse cascade terminate.
+  if (deleted && kind === 'mcp' && deps.teardownGeneratedPack) {
+    try {
+      await deps.teardownGeneratedPack(await mcpGeneratedPackSlug({ kind, name }));
+    } catch {
+      // Best-effort — the connection is already gone and a throw here would
+      // leave the owner unable to retry the delete.
+    }
+  }
   if (deleted && deps.cascadeForConnectionDelete) {
     try {
       deps.cascadeForConnectionDelete(kind, name, vendor);
@@ -1254,8 +1568,17 @@ export const handleConnectionPreviewPurge = async (
 
 export const handleConnectionProbe = async (
   deps: ConnectionRpcDeps,
-  args: { name: string; kind: ConnectionKind },
-): Promise<{ health: ConnectionHealth }> => {
+  args: {
+    name: string;
+    kind: ConnectionKind;
+    expected_updated_at?: number;
+  },
+): Promise<{
+  health: ConnectionHealth;
+  connection_updated_at: number;
+  credential_correction?: ConnectionCredentialRejectionCorrection;
+  descriptors?: McpToolDescriptor[];
+}> => {
   const a = ensureRecordArgs('collection.connection.probe', args);
   const name = ensureName('collection.connection.probe', a.name);
   const kind = ensureKind('collection.connection.probe', a.kind);
@@ -1266,7 +1589,35 @@ export const handleConnectionProbe = async (
       `collection.connection.probe: no ${kind} connection named '${name}'`,
     );
   }
+  const expectedUpdatedAt = ensureExpectedConnectionUpdatedAt(
+    'collection.connection.probe',
+    a.expected_updated_at,
+  );
+  assertConnectionEditorIsCurrent(
+    'collection.connection.probe',
+    expectedUpdatedAt,
+    existing,
+  );
+  const latestAttemptAtProbeStart =
+    deps.store.getLatestCredentialRotationAttempt?.(kind, name) ?? null;
+  const postSafeStopLineage = latestAttemptAtProbeStart?.status === 'failed'
+    && latestAttemptAtProbeStart.safe_stop_acknowledged_at !== undefined
+    && credentialSafeStopFromAttempt(latestAttemptAtProbeStart, true) !== null
+    ? {
+        attemptId: latestAttemptAtProbeStart.attempt_id,
+        acknowledgedAt:
+          latestAttemptAtProbeStart.safe_stop_acknowledged_at,
+        lineageHash: credentialSafeStopAcknowledgementToken(
+          latestAttemptAtProbeStart,
+        ),
+      }
+    : null;
+  const probeSnapshot = connectionRowFingerprint(existing);
   const now = deps.now?.() ?? Date.now();
+  // A probe is a durable row write. Keep the row revision strictly monotonic
+  // without changing the provider-check timestamp used by token expiry and
+  // the verification receipt.
+  const connectionUpdatedAt = Math.max(now, existing.updated_at + 1);
   const maxErrorLen = 256;
   const probeTimeoutMs = 10_000;
   const fetcher: HttpFetcher = deps.fetcher ?? (async (url, init) => {
@@ -1280,18 +1631,66 @@ export const handleConnectionProbe = async (
   });
   const truncateError = (message: string): string =>
     message.length > maxErrorLen ? message.slice(0, maxErrorLen) : message;
+  // D-225 Slice 2 — the full descriptors behind `health.tool_hashes`, surfaced
+  // so the pack-preview handler reuses THIS probe rather than running a second
+  // one. `health` is unchanged; a caller that ignores this sees no difference.
+  let capturedDescriptors: McpToolDescriptor[] | undefined;
+  type PersistedProbeHealth = ConnectionHealth & {
+    /** Server-private causal marker. It is stripped from the probe response;
+     * list recovery uses it to bind one acknowledged attempt to the exact row
+     * revision checked, even across clock rollback or timestamp collision. */
+    post_safe_stop_verification?: {
+      acknowledged_at: number;
+      lineage_hash: string;
+      connection_updated_at: number;
+    };
+  };
   const healthOf = (
     status: ConnectionHealth['status'],
     last_error?: string,
     tools?: string[],
-  ): ConnectionHealth => ({
+    tool_hashes?: string[],
+  ): PersistedProbeHealth => ({
     status,
     last_probed_at: now,
+    ...(postSafeStopLineage !== null
+      ? {
+          post_safe_stop_verification: {
+            acknowledged_at: postSafeStopLineage.acknowledgedAt,
+            lineage_hash: postSafeStopLineage.lineageHash,
+            connection_updated_at: connectionUpdatedAt,
+          },
+        }
+      : {}),
     ...(last_error ? { last_error: truncateError(last_error) } : {}),
     ...(tools !== undefined ? { tools } : {}),
+    ...(tool_hashes !== undefined ? { tool_hashes } : {}),
   });
   const errorMessage = (err: unknown): string =>
     err instanceof Error ? err.message : String(err);
+  /** Keep a rejected credential distinct from a provider/network failure. The
+   * exchange helpers carry only non-secret status/cause metadata; malformed
+   * successful responses remain `unknown` because neither the credential nor
+   * reachability is the proven cause. */
+  const credentialExchangeFailureHealth = (
+    err: unknown,
+    reason: string,
+  ): ConnectionHealth => {
+    const details = isRecord(err) && isRecord(err.details) ? err.details : {};
+    const status = details.status;
+    if (typeof status === 'number') {
+      if (status === 408 || status === 429 || status >= 500) {
+        return healthOf('unreachable', reason);
+      }
+      if (status >= 400 && status < 500) {
+        return healthOf('auth_failed', reason);
+      }
+    }
+    if (details.cause === 'network') {
+      return healthOf('unreachable', reason);
+    }
+    return healthOf('unknown', reason);
+  };
   const fetchTimed = async (
     url: string,
     init?: { method?: string; headers?: Record<string, string>; body?: string },
@@ -1356,10 +1755,95 @@ export const handleConnectionProbe = async (
         return;
       case 'oauth2_refresh':
       case 'oauth2_client_credentials':
+      // D-218 — the exchanged `accessJwt` is an ordinary bearer on the wire.
+      // ⚠ A row that has never exchanged has none, so the probe reports
+      // `auth_failed` rather than succeeding against an unauthenticated
+      // endpoint — which is the honest answer until slice 1 can mint one.
+      case 'atproto_session':
         headers.Authorization = `Bearer ${authString(auth, 'current_access_token')}`;
         return;
     }
   };
+  /** Strip every credential this connection holds out of a probe error before
+   *  it is persisted to `health_json` and rendered in Settings.
+   *
+   *  ⚠ **Hoisted out of `probeMcp` by D-218.** It lived inside the MCP probe,
+   *  so `probeApi` could not reach it and returned raw transport errors — a
+   *  bearer token or a basic password quoted by a failing target went straight
+   *  into durable storage. `auth` is a parameter now rather than a closure
+   *  capture, which is what let it move. */
+    const redactProbeSecrets = (
+    auth: ConnectionAuth,
+    message: string,
+    extraSecrets: readonly string[] = [],
+  ): string => {
+    const authRecord = auth as unknown as Record<string, unknown>;
+    const secrets = [...extraSecrets];
+    const add = (value: unknown): void => {
+      if (typeof value === 'string' && value.length > 0) secrets.push(value);
+    };
+    switch (auth.type) {
+      case 'bearer':
+        add(authRecord.token);
+        break;
+      case 'basic': {
+        add(authRecord.username);
+        add(authRecord.password);
+        if (typeof authRecord.username === 'string' && typeof authRecord.password === 'string') {
+          add(btoa(`${authRecord.username}:${authRecord.password}`));
+        }
+        break;
+      }
+      case 'header':
+        if (Array.isArray(authRecord.headers)) {
+          for (const entry of authRecord.headers) {
+            if (entry && typeof entry === 'object') {
+              add((entry as Record<string, unknown>).value);
+            }
+          }
+        }
+        break;
+      case 'query':
+        add(authRecord.value);
+        break;
+      case 'oauth2_refresh':
+      case 'oauth2_client_credentials':
+        add(authRecord.current_access_token);
+        break;
+      // D-218 — ⛔ **the site that would have leaked.** This switch has no
+      // `default`, so a new auth type falls through collecting NOTHING and
+      // its credentials go unredacted into probe output. For this type that
+      // means the APP PASSWORD — a reusable account credential, not a
+      // short-lived token. Nothing in the compiler says so; the widened union
+      // produced no error here at all.
+      //
+      // ⚠ All three are added, not just the access token: the refresh JWT is
+      // a live credential in its own right, and the app password is the one
+      // that survives revoking everything else.
+      case 'atproto_session':
+        add(authRecord.app_password);
+        add(authRecord.current_access_token);
+        add(authRecord.refresh_token);
+        break;
+      case 'none':
+        break;
+    }
+    const renderings = new Set<string>();
+    for (const secret of secrets) {
+      renderings.add(secret);
+      try { renderings.add(encodeURI(secret)); } catch { /* malformed surrogate */ }
+      try { renderings.add(encodeURIComponent(secret)); } catch { /* malformed surrogate */ }
+      try {
+        renderings.add(new URLSearchParams({ value: secret }).toString().slice('value='.length));
+      } catch { /* defensive — URLSearchParams accepts strings */ }
+    }
+    let redacted = message;
+    for (const rendering of renderings) {
+      if (rendering !== '') redacted = redacted.split(rendering).join('***');
+    }
+    return redacted;
+  };
+
   const classifyHttpReachability = (status: number): ConnectionHealth => {
     // API probe table: 2xx/3xx => ok; 401/403 => auth_failed; any
     // other HTTP response proves reachability, so keep ok + stamp the
@@ -1388,16 +1872,28 @@ export const handleConnectionProbe = async (
     }
     return { httpStatus: response.status };
   };
-  const probeApi = async (auth: ConnectionAuth): Promise<ConnectionHealth> => {
+  const probeApi = async (
+    auth: ConnectionAuth,
+    authenticatedPath?: string,
+  ): Promise<ConnectionHealth> => {
     const config = readConfig();
     const base = config.base_url;
     if (typeof base !== 'string' || base.trim() === '') {
       return healthOf('unknown', 'missing_base_url');
     }
-    const url = new URL(base);
+    const url = authenticatedPath === undefined
+      ? new URL(base)
+      : composeApiUrl(base, authenticatedPath);
     const headers: Record<string, string> = {};
     applyAuth(auth, headers, url);
     try {
+      // A vendor-specific path names an authenticated query, so call it as
+      // GET directly. The generic endpoint probe retains its cheap HEAD → GET
+      // fallback for APIs without a declared health resource.
+      if (authenticatedPath !== undefined) {
+        const get = await fetchTimed(url.toString(), { method: 'GET', headers });
+        return classifyHttpReachability(get.status);
+      }
       const head = await fetchTimed(url.toString(), { method: 'HEAD', headers });
       if (head.status === 405 || head.status === 501) {
         const get = await fetchTimed(url.toString(), { method: 'GET', headers });
@@ -1405,7 +1901,20 @@ export const handleConnectionProbe = async (
       }
       return classifyHttpReachability(head.status);
     } catch (err) {
-      return healthOf('unreachable', errorMessage(err));
+      // ⛔ **D-218 — this catch did NOT redact, and had not since it was
+      // written.** `last_error` is PERSISTED to `health_json` and rendered in
+      // Settings, and a transport error frequently quotes the request it
+      // failed on. Every other probe path (mcp / stream / notification) routes
+      // its raw message through `redactProbeSecrets`; the api path returned it
+      // verbatim, so a `bearer` token, a `basic` password or a `query` value
+      // could land in durable storage and on screen.
+      //
+      // ⚠ **Pre-existing, and found only because a NEW auth type made it
+      // matter more** — this one stores an APP PASSWORD, a reusable account
+      // credential that outlives every token derived from it. The
+      // status-classified paths above are unaffected: they emit
+      // `http_status_<n>`, which carries nothing.
+      return healthOf('unreachable', redactProbeSecrets(auth, errorMessage(err)));
     }
   };
   const probeMcp = async (auth: ConnectionAuth): Promise<ConnectionHealth> => {
@@ -1423,69 +1932,16 @@ export const handleConnectionProbe = async (
       if (remaining <= 0) throw new Error('probe_timeout');
       return remaining;
     };
-    const streamHealth = (
+    const streamHealth = async (
       result: Awaited<ReturnType<typeof probeMcpStreamTools>>,
-    ): ConnectionHealth => {
-      if (result.ok) return healthOf('ok', undefined, result.tools);
+    ): Promise<ConnectionHealth> => {
+      const streamHashes = result.ok ? await mcpMintedHashes(result.descriptors) : undefined;
+      if (result.ok) capturedDescriptors = result.descriptors;
+      if (result.ok) return healthOf('ok', undefined, result.tools, streamHashes);
       const suffix = result.stage === 'tools_list' ? 'tools_list' : 'initialize';
       return result.reason === 'jsonrpc_error'
         ? healthOf('auth_failed', `jsonrpc_${suffix}_error`)
         : healthOf('unreachable', `jsonrpc_${suffix}_${result.reason}`);
-    };
-    const redactProbeSecrets = (
-      message: string,
-      extraSecrets: readonly string[] = [],
-    ): string => {
-      const authRecord = auth as unknown as Record<string, unknown>;
-      const secrets = [...extraSecrets];
-      const add = (value: unknown): void => {
-        if (typeof value === 'string' && value.length > 0) secrets.push(value);
-      };
-      switch (auth.type) {
-        case 'bearer':
-          add(authRecord.token);
-          break;
-        case 'basic': {
-          add(authRecord.username);
-          add(authRecord.password);
-          if (typeof authRecord.username === 'string' && typeof authRecord.password === 'string') {
-            add(btoa(`${authRecord.username}:${authRecord.password}`));
-          }
-          break;
-        }
-        case 'header':
-          if (Array.isArray(authRecord.headers)) {
-            for (const entry of authRecord.headers) {
-              if (entry && typeof entry === 'object') {
-                add((entry as Record<string, unknown>).value);
-              }
-            }
-          }
-          break;
-        case 'query':
-          add(authRecord.value);
-          break;
-        case 'oauth2_refresh':
-        case 'oauth2_client_credentials':
-          add(authRecord.current_access_token);
-          break;
-        case 'none':
-          break;
-      }
-      const renderings = new Set<string>();
-      for (const secret of secrets) {
-        renderings.add(secret);
-        try { renderings.add(encodeURI(secret)); } catch { /* malformed surrogate */ }
-        try { renderings.add(encodeURIComponent(secret)); } catch { /* malformed surrogate */ }
-        try {
-          renderings.add(new URLSearchParams({ value: secret }).toString().slice('value='.length));
-        } catch { /* defensive — URLSearchParams accepts strings */ }
-      }
-      let redacted = message;
-      for (const rendering of renderings) {
-        if (rendering !== '') redacted = redacted.split(rendering).join('***');
-      }
-      return redacted;
     };
     const streamFailure = (
       err: unknown,
@@ -1495,7 +1951,7 @@ export const handleConnectionProbe = async (
       const authStatus = /\bHTTP (401|403)\b/i.exec(rawMessage)?.[1];
       return authStatus
         ? healthOf('auth_failed', `http_status_${authStatus}`)
-        : healthOf('unreachable', redactProbeSecrets(rawMessage, extraSecrets));
+        : healthOf('unreachable', redactProbeSecrets(auth, rawMessage, extraSecrets));
     };
 
     if (transport === 'stdio') {
@@ -1576,6 +2032,9 @@ export const handleConnectionProbe = async (
         return healthOf('auth_failed', 'jsonrpc_initialize_error');
       }
       const tools = new Set<string>();
+      // D-225 Slice 2 — deduped on NAME like the name set, so a tool repeated
+      // across pages cannot produce two hashes that later read as drift.
+      const descriptors = new Map<string, McpToolDescriptor>();
       const seenCursors = new Set<string>();
       let cursor: string | undefined;
       for (let pageIndex = 0; pageIndex < MCP_TOOL_LIST_PROBE_MAX_PAGES; pageIndex += 1) {
@@ -1599,8 +2058,15 @@ export const handleConnectionProbe = async (
           return healthOf('unreachable', 'jsonrpc_tools_list_invalid_response');
         }
         for (const tool of page.tools) tools.add(tool);
+        for (const d of page.descriptors) if (!descriptors.has(d.name)) descriptors.set(d.name, d);
         if (page.nextCursor === undefined) {
-          return healthOf('ok', undefined, [...tools]);
+          capturedDescriptors = [...descriptors.values()];
+          return healthOf(
+            'ok',
+            undefined,
+            [...tools],
+            await mcpMintedHashes(capturedDescriptors),
+          );
         }
         if (seenCursors.has(page.nextCursor)) {
           return healthOf('unreachable', 'jsonrpc_tools_list_pagination_cycle');
@@ -1610,7 +2076,7 @@ export const handleConnectionProbe = async (
       }
       return healthOf('unreachable', 'jsonrpc_tools_list_pagination_limit');
     } catch (err) {
-      return healthOf('unreachable', redactProbeSecrets(errorMessage(err)));
+      return healthOf('unreachable', redactProbeSecrets(auth, errorMessage(err)));
     }
   };
   const probeJsonNotification = async (
@@ -1788,7 +2254,9 @@ export const handleConnectionProbe = async (
         return healthOf('unknown', `subtype_${String(subtype ?? 'missing')}_probe_not_implemented`);
     }
   };
-  let health: ConnectionHealth;
+  let health: PersistedProbeHealth;
+  let authCiphertext = existing.auth_ciphertext;
+  let probedAuthType: ConnectionAuth['type'] | undefined;
   if (!deps.getEncryptionKey) {
     health = healthOf('unknown');
   } else {
@@ -1803,36 +2271,131 @@ export const handleConnectionProbe = async (
           { kind, name },
           checkedKey,
         );
+        probedAuthType = auth.type;
+        const ensureFreshAuth = createEnsureFreshAuth({
+          fetchImpl: deps.resolveFetch ?? globalThis.fetch.bind(globalThis),
+          now: () => now,
+          persistAuth: async (_row, newAuth) => {
+            authCiphertext = await encodeAuthForStorage(
+              newAuth,
+              { kind, name },
+              checkedKey,
+            );
+          },
+        });
         switch (kind) {
           case 'api': {
-            if (auth.type === 'oauth2_client_credentials') {
+            if (auth.type === 'atproto_session') {
               try {
-                const liveAuth = await exchangeOAuth2ClientCredentials(
-                  auth,
-                  deps.resolveFetch ?? globalThis.fetch.bind(globalThis),
-                  () => now,
+                let liveAuth = await ensureFreshAuth(existing, auth);
+                health = await probeApi(
+                  liveAuth,
+                  '/xrpc/com.atproto.server.getSession',
                 );
+                // AT Protocol tokens are opaque and carry no honest local
+                // expiry. A 401 is therefore the freshness signal: force one
+                // refresh/login through the same production gate, persist the
+                // rotated pair, and probe once more.
+                if (health.status === 'auth_failed'
+                  && health.last_error === 'http_status_401') {
+                  if (liveAuth.type !== 'atproto_session') {
+                    throw new Error('atproto_session_exchange_changed_auth_type');
+                  }
+                  const retryAuth = { ...liveAuth };
+                  delete retryAuth.current_access_token;
+                  liveAuth = await ensureFreshAuth(existing, retryAuth);
+                  health = await probeApi(
+                    liveAuth,
+                    '/xrpc/com.atproto.server.getSession',
+                  );
+                }
+              } catch (err) {
+                health = credentialExchangeFailureHealth(
+                  err,
+                  'atproto_session_exchange_failed',
+                );
+              }
+              break;
+            }
+            if (
+              auth.type === 'oauth2_refresh'
+              || auth.type === 'oauth2_client_credentials'
+            ) {
+              try {
+                // A stored refresh token is not itself usable at the API. Run
+                // the same freshness/exchange gate as live execution so a
+                // manual probe—and credential rotation in particular—verifies
+                // the provider-issued replacement rather than failing on a
+                // missing cached access token. The gate's persist callback
+                // restamps the rotated token pair in the row written below.
+                const liveAuth = await ensureFreshAuth(existing, auth);
                 health = await probeApi(liveAuth);
-              } catch {
-                // Credential exchange failures are authentication failures, not
-                // generic reachability failures. Keep the message non-secret.
-                health = healthOf('auth_failed', 'token_exchange_failed');
+              } catch (err) {
+                health = credentialExchangeFailureHealth(err, 'token_exchange_failed');
               }
               break;
             }
             health = await probeApi(auth);
             break;
           }
-          case 'mcp':
-            health = await probeMcp(auth);
+          case 'mcp': {
+            if (
+              auth.type === 'oauth2_refresh'
+              || auth.type === 'oauth2_client_credentials'
+            ) {
+              try {
+                health = await probeMcp(await ensureFreshAuth(existing, auth));
+              } catch (err) {
+                health = credentialExchangeFailureHealth(err, 'token_exchange_failed');
+              }
+            } else {
+              health = await probeMcp(auth);
+            }
             break;
-          case 'notification':
+          }
+          case 'notification': {
+            // Declared messenger auth kinds currently resolve only to directly
+            // usable bearer credentials; an OAuth-shaped notification row is
+            // unreachable through enrollment and must keep the fail-closed
+            // `auth_type_*` result rather than attempting an exchange.
             health = await probeNotification(auth);
             break;
+          }
         }
       } catch (err) {
         health = healthOf('unknown', errorMessage(err));
       }
+    }
+  }
+  const currentBeforeWrite = deps.store.get(kind, name);
+  if (
+    currentBeforeWrite === null
+    || connectionRowFingerprint(currentBeforeWrite) !== probeSnapshot
+  ) {
+    throw new RpcError(
+      'conflict',
+      'This connection changed while Recued was checking it. The newer saved connection was preserved; check that current version again.',
+      409,
+      'collection.connection.probe',
+      { existing_credential_preserved: true },
+    );
+  }
+  if (postSafeStopLineage !== null) {
+    const latestAttemptBeforeWrite =
+      deps.store.getLatestCredentialRotationAttempt?.(kind, name) ?? null;
+    if (
+      latestAttemptBeforeWrite?.attempt_id !== postSafeStopLineage.attemptId
+      || latestAttemptBeforeWrite.status !== 'failed'
+      || latestAttemptBeforeWrite.safe_stop_acknowledged_at
+        !== postSafeStopLineage.acknowledgedAt
+    ) {
+      throw new RpcError(
+        'conflict',
+        'Credential recovery changed while Recued was checking this connection. The saved connection was preserved; reload its current recovery state before checking again.',
+        409,
+        'collection.connection.probe',
+        { existing_credential_preserved: true },
+      );
     }
   }
   deps.store.upsert({
@@ -1842,9 +2405,9 @@ export const handleConnectionProbe = async (
     display_name: existing.display_name,
     ...(existing.publisher_id !== undefined ? { publisher_id: existing.publisher_id } : {}),
     config_json: existing.config_json,
-    auth_ciphertext: existing.auth_ciphertext,
+    auth_ciphertext: authCiphertext,
     enrolled_at: existing.enrolled_at,
-    updated_at: now,
+    updated_at: connectionUpdatedAt,
     ...(existing.last_used_at !== undefined ? { last_used_at: existing.last_used_at } : {}),
     health_json: JSON.stringify(health),
     // D-165 P3.path-picker — preserve the scope across a probe re-stamp.
@@ -1852,7 +2415,1168 @@ export const handleConnectionProbe = async (
     // granted-scopes — preserve the coverage set across a probe re-stamp.
     ...(existing.granted_scopes_json !== undefined ? { granted_scopes_json: existing.granted_scopes_json } : {}),
   });
-  return { health };
+  const credentialCorrection = health.status === 'auth_failed'
+    && probedAuthType !== undefined
+    ? connectionCredentialRejectionCorrection(probedAuthType)
+    : null;
+  const {
+    post_safe_stop_verification: _privatePostSafeStopLineage,
+    ...publicHealth
+  } = health;
+  return {
+    health: publicHealth,
+    connection_updated_at: connectionUpdatedAt,
+    ...(credentialCorrection !== null
+      ? { credential_correction: credentialCorrection }
+      : {}),
+    ...(capturedDescriptors !== undefined ? { descriptors: capturedDescriptors } : {}),
+  };
+};
+
+/** D-225 Slice 2 — is this connection's generated pack still current?
+ *
+ *  🔑 **Runs with NO probe.** Both sides are already at rest: the current side
+ *  is `ConnectionHealth.tool_hashes` (persisted at the last probe), the minted
+ *  side derives from the installed pack's own bindings. So a connections list
+ *  can render a badge per row without touching the network — a badge that cost
+ *  a live probe per row would either not exist or would be stale anyway.
+ *
+ *  ⛔ **`unknown` is a distinct status, and that is the point.** A connection
+ *  never probed since `tool_hashes` landed has NO current side to compare, and
+ *  reporting `current` for it would be a false all-clear on exactly the
+ *  connections most likely to have drifted — the ones nobody has looked at.
+ *  Absent evidence is not evidence of absence, so it gets its own answer.
+ *
+ *  ⚠ Drift is reported as HASH COUNTS, not tool names. The hashes name nothing
+ *  a caller can act on directly; resolving them to tools requires a probe, and
+ *  that is `mcpPackPreview`'s job. The badge says "something changed, re-review"
+ *  — which is the whole decision it exists to prompt. */
+export const handleMcpPackStatus = async (
+  deps: ConnectionRpcDeps,
+  args: { name: string; kind: ConnectionKind },
+): Promise<{
+  pack_slug: string;
+  status: 'no_pack' | 'unknown' | 'current' | 'drifted';
+  added: number;
+  removed: number;
+  last_probed_at?: number;
+}> => {
+  const a = ensureRecordArgs('collection.connection.mcpPackStatus', args);
+  const name = ensureName('collection.connection.mcpPackStatus', a.name);
+  const kind = ensureKind('collection.connection.mcpPackStatus', a.kind);
+  if (kind !== 'mcp') {
+    throw new RpcError(
+      'bad_request',
+      `collection.connection.mcpPackStatus: only an mcp connection can back a generated pack (got '${kind}')`,
+    );
+  }
+  const existing = deps.store.get(kind, name);
+  if (!existing) {
+    throw new RpcError(
+      'not_found',
+      `collection.connection.mcpPackStatus: no ${kind} connection named '${name}'`,
+    );
+  }
+  const pack_slug = await mcpGeneratedPackSlug({ kind, name });
+  // ⛔ "cannot look up" and "looked up, found nothing" are DIFFERENT FACTS.
+  // Collapsing them would make a host with no manifest registry report
+  // `no_pack` for connections that DO have one — the same false-negative
+  // mistake as reporting `current` for a connection never probed, just
+  // pointing the other way.
+  if (deps.getInstalledCatalog === undefined) {
+    return { pack_slug, status: 'unknown', added: 0, removed: 0 };
+  }
+  const catalog = deps.getInstalledCatalog(pack_slug);
+  if (catalog === null) {
+    // Looked, found none — the resting state after an enrollment where the
+    // owner never finished the chain. A real answer, and not drift.
+    return { pack_slug, status: 'no_pack', added: 0, removed: 0 };
+  }
+
+  let health: { tool_hashes?: unknown; last_probed_at?: unknown } = {};
+  try {
+    health = JSON.parse(existing.health_json ?? '{}') as typeof health;
+  } catch {
+    health = {};
+  }
+  const current = health.tool_hashes;
+  const last_probed_at = typeof health.last_probed_at === 'number'
+    ? health.last_probed_at
+    : undefined;
+  if (!Array.isArray(current) || current.some((h) => typeof h !== 'string')) {
+    return {
+      pack_slug,
+      status: 'unknown',
+      added: 0,
+      removed: 0,
+      ...(last_probed_at !== undefined ? { last_probed_at } : {}),
+    };
+  }
+
+  const minted = await mcpMintedHashesFromCatalog(catalog);
+  const drift = mcpToolsDriftFromHashes(minted, current as string[]);
+  const drifted = drift.added.length > 0 || drift.removed.length > 0;
+  return {
+    pack_slug,
+    status: drifted ? 'drifted' : 'current',
+    added: drift.added.length,
+    removed: drift.removed.length,
+    ...(last_probed_at !== undefined ? { last_probed_at } : {}),
+  };
+};
+
+/** D-225 Slice 2 — install the generated pack. The **Save** of the owner's
+ *  enrollment chain.
+ *
+ *  ⛔ **It does NOT write risk/approval rulings, deliberately.** Those go
+ *  through the existing `contract.ownerOperation.*` rpc, which enforces
+ *  `isApprovalBelowRiskFloor` and refuses a risk downgrade without
+ *  `confirm_risk_downgrade` — and whose refusal payload enumerates what the
+ *  downgrade unlocks. A commit path that wrote rulings itself would either
+ *  duplicate those gates (and drift from them) or bypass them, and bypassing is
+ *  exactly how a third-party server's tools would end up auto-running without
+ *  anyone having confirmed it. So: this installs a pack whose every op is
+ *  `write` + `ask` with `grant_default: off` — inert until the owner tunes it in
+ *  pack detail, through the gated path built for that.
+ *
+ *  ⛔ **`reviewed_ops` is a TOCTOU guard, not bookkeeping.** The owner reviewed
+ *  ONE tool set and is authorizing THAT one; between preview and Save the server
+ *  can add, remove or reshape a tool. Because an op id is a hash of
+ *  `{name, input_schema}`, comparing the freshly-probed id set against what the
+ *  client reviewed is exactly "is this still the server state I showed you" —
+ *  no extra machinery. A divergence REFUSES and asks for a re-review rather
+ *  than installing something the owner never saw. */
+export const handleMcpPackCommit = async (
+  deps: ConnectionRpcDeps,
+  args: {
+    name: string;
+    kind: ConnectionKind;
+    reviewed_ops: string[];
+    /** D-228 slice 3 — the install-point grant selection, forwarded verbatim to
+     *  `packs.install`. Absent ⇒ its fail-closed default. */
+    install_scope?: unknown;
+  },
+): Promise<{ pack_slug: string; operations: number }> => {
+  const a = ensureRecordArgs('collection.connection.mcpPackCommit', args);
+  const name = ensureName('collection.connection.mcpPackCommit', a.name);
+  const kind = ensureKind('collection.connection.mcpPackCommit', a.kind);
+  if (kind !== 'mcp') {
+    throw new RpcError(
+      'bad_request',
+      `collection.connection.mcpPackCommit: only an mcp connection can back a generated pack (got '${kind}')`,
+    );
+  }
+  const reviewed = a.reviewed_ops;
+  if (!Array.isArray(reviewed) || reviewed.some((op) => typeof op !== 'string')) {
+    throw new RpcError(
+      'bad_request',
+      'collection.connection.mcpPackCommit: reviewed_ops must be an array of operation ids',
+    );
+  }
+  if (!deps.installGeneratedPack) {
+    throw new RpcError(
+      'unavailable',
+      'collection.connection.mcpPackCommit: no pack installer is wired on this host',
+    );
+  }
+
+  const { health, descriptors } = await handleConnectionProbe(deps, { name, kind });
+  if (health.status !== 'ok' || descriptors === undefined) {
+    throw new RpcError(
+      'unavailable',
+      `collection.connection.mcpPackCommit: probe did not return a tool list `
+        + `(status '${health.status}'${health.last_error ? `: ${health.last_error}` : ''})`,
+    );
+  }
+
+  const rows = await mcpPackReviewRows(descriptors);
+  const fresh = rows.map((r) => r.op).sort();
+  const seen = [...(reviewed as string[])].sort();
+  if (fresh.length !== seen.length || fresh.some((op, i) => op !== seen[i])) {
+    throw new RpcError(
+      'conflict',
+      `collection.connection.mcpPackCommit: the server's tools changed since you reviewed them `
+        + `(${fresh.length} now, ${seen.length} reviewed). Re-open the review so you are `
+        + 'authorizing what the server actually offers.',
+    );
+  }
+
+  const manifest = await mcpPackManifest({ connection: { kind, name }, descriptors });
+  // D-228 slice 3 — the install-point grant selection rides through to
+  // `packs.install`. Absent ⇒ unchanged behaviour (authored read defaults only);
+  // present ⇒ the owner's choice at the moment they are looking at the tool
+  // list, which is the same consent step an ordinary pack install has.
+  //
+  // ⚠ GRANTS, NOT RULINGS. D-225 slice 2f settled that `mcpPackCommit` writes
+  // no RULINGS — risk/approval tuning stays in the gated editor so it cannot
+  // duplicate or bypass `confirm_risk_downgrade`. This is the other axis: a
+  // grant says *may you ever*, a ruling says *does THIS call hold*. Threading
+  // one does not reopen the other.
+  await deps.installGeneratedPack(manifest, a.install_scope);
+  return { pack_slug: String(manifest.slug), operations: rows.length };
+};
+
+/** D-225 Slice 2 — the pack-detail review screen's data source.
+ *
+ *  The owner's chain is: `#connections → mcp → create → success` → THIS →
+ *  adjust risk & approval → Save. Nothing is installed here; this is the form.
+ *
+ *  🔑 It PROBES rather than reading a stored snapshot. The owner is about to
+ *  classify what a server can do, so they must be classifying what it says NOW —
+ *  a cached list could be older than the last time the server changed, and the
+ *  whole point of the screen is that the owner saw what they consented to.
+ *
+ *  ⛔ Every returned row's `stored` value is `write` / `ask`, whatever the
+ *  server claims about itself. See `mcpPackReviewRows`: a hint that reached the
+ *  stored value would let a Save-without-reading hand a third party auto-run
+ *  permission, chosen by the server. */
+export const handleMcpPackPreview = async (
+  deps: ConnectionRpcDeps,
+  args: { name: string; kind: ConnectionKind },
+): Promise<{
+  pack_slug: string;
+  connection: { kind: string; name: string };
+  rows: McpPackReviewRow[];
+}> => {
+  const a = ensureRecordArgs('collection.connection.mcpPackPreview', args);
+  const name = ensureName('collection.connection.mcpPackPreview', a.name);
+  const kind = ensureKind('collection.connection.mcpPackPreview', a.kind);
+  if (kind !== 'mcp') {
+    throw new RpcError(
+      'bad_request',
+      `collection.connection.mcpPackPreview: only an mcp connection can back a generated pack (got '${kind}')`,
+    );
+  }
+  const { health, descriptors } = await handleConnectionProbe(deps, { name, kind });
+  if (health.status !== 'ok' || descriptors === undefined) {
+    // ⛔ Fail rather than offer an empty form. A probe that did not succeed
+    // tells us nothing about the server's tools, and a review screen showing
+    // zero rows would read as "this server has no tools" — an owner could Save
+    // that and believe they had reviewed something.
+    throw new RpcError(
+      'unavailable',
+      `collection.connection.mcpPackPreview: probe did not return a tool list `
+        + `(status '${health.status}'${health.last_error ? `: ${health.last_error}` : ''})`,
+    );
+  }
+  return {
+    pack_slug: await mcpGeneratedPackSlug({ kind, name }),
+    connection: { kind, name },
+    rows: await mcpPackReviewRows(descriptors),
+  };
+};
+
+const connectionUpsertFromRow = (row: ConnectionRow): ConnectionUpsert => ({
+  name: row.name,
+  kind: row.kind,
+  ...(row.subtype !== undefined ? { subtype: row.subtype } : {}),
+  display_name: row.display_name,
+  ...(row.publisher_id !== undefined ? { publisher_id: row.publisher_id } : {}),
+  config_json: row.config_json,
+  auth_ciphertext: row.auth_ciphertext,
+  enrolled_at: row.enrolled_at,
+  updated_at: row.updated_at,
+  ...(row.last_used_at !== undefined ? { last_used_at: row.last_used_at } : {}),
+  ...(row.health_json !== undefined ? { health_json: row.health_json } : {}),
+  ...(row.subresource_path !== undefined ? { subresource_path: row.subresource_path } : {}),
+  ...(row.granted_scopes_json !== undefined
+    ? { granted_scopes_json: row.granted_scopes_json }
+    : {}),
+});
+
+/** An in-memory, one-row store used to run the ordinary update validator and
+ * the production probe without firing a durable write or any store observer.
+ * Only a verified candidate is copied into the real store. */
+const isolatedConnectionStore = (
+  seed: ConnectionRow,
+): { store: ConnectionStoreSqlite; current: () => ConnectionRow } => {
+  let row = { ...seed };
+  const matches = (kind: ConnectionKind, name: string): boolean =>
+    row.kind === kind && row.name === name;
+  const store: ConnectionStoreSqlite = {
+    upsert: (input) => {
+      row = { pk: connectionRowKey(input.kind, input.name), ...input };
+      return row;
+    },
+    get: (kind, name) => (matches(kind, name) ? { ...row } : null),
+    list: (query) => (query?.kind === undefined || query.kind === row.kind ? [{ ...row }] : []),
+    listSince: (since) => (row.updated_at > since ? [{ ...row }] : []),
+    delete: () => false,
+    count: () => 1,
+    addOnUpsert: () => () => {},
+    addOnDelete: () => () => {},
+    addBeforeDelete: () => () => {},
+  };
+  return { store, current: () => ({ ...row }) };
+};
+
+/** Compare every durable field, not only `updated_at`: injected clocks and
+ * same-millisecond writes can legitimately share a timestamp. This closes the
+ * verify-await-write race without requiring the SQLite store to grow a CAS API. */
+const connectionRowFingerprint = (row: ConnectionRow): string => JSON.stringify([
+  row.pk,
+  row.kind,
+  row.name,
+  row.subtype,
+  row.display_name,
+  row.publisher_id,
+  row.config_json,
+  row.auth_ciphertext,
+  row.enrolled_at,
+  row.updated_at,
+  row.last_used_at,
+  row.health_json,
+  row.subresource_path,
+  row.granted_scopes_json,
+]);
+
+const assertCredentialRotationSnapshotIsCurrent = (
+  method: string,
+  store: ConnectionStoreSqlite,
+  kind: ConnectionKind,
+  name: string,
+  snapshot: string,
+): void => {
+  const current = store.get(kind, name);
+  if (current !== null && connectionRowFingerprint(current) === snapshot) return;
+  throw new RpcError(
+    'conflict',
+    'This connection changed while Recued was preparing or verifying the replacement. Nothing from this attempt was saved; review the latest connection and try again.',
+    409,
+    method,
+    { existing_credential_preserved: true },
+  );
+};
+
+/** Project an owner-supplied replacement down to durable credential material.
+ * Cached access/session tokens are server-derived state, not proof that the
+ * submitted refresh token, client secret, or app password still works. Letting
+ * a caller supply them would allow a fresh-looking cache to skip the exchange
+ * and make an invalid durable replacement appear verified. Rebuilding every
+ * variant also drops unknown surplus fields before encryption. */
+const credentialCandidateFromOwnerInput = (auth: ConnectionAuth): ConnectionAuth => {
+  switch (auth.type) {
+    case 'none':
+      return { type: 'none' };
+    case 'bearer':
+      return { type: 'bearer', token: auth.token };
+    case 'basic':
+      return { type: 'basic', username: auth.username, password: auth.password };
+    case 'header':
+      return {
+        type: 'header',
+        headers: auth.headers.map(({ header_name, value }) => ({ header_name, value })),
+      };
+    case 'query':
+      return { type: 'query', param_name: auth.param_name, value: auth.value };
+    case 'oauth2_refresh':
+      return {
+        type: 'oauth2_refresh',
+        refresh_token: auth.refresh_token,
+        client_id: auth.client_id,
+        ...(auth.client_secret !== undefined ? { client_secret: auth.client_secret } : {}),
+        token_endpoint: auth.token_endpoint,
+        ...(auth.token_auth_style !== undefined
+          ? { token_auth_style: auth.token_auth_style }
+          : {}),
+      };
+    case 'oauth2_client_credentials':
+      return {
+        type: 'oauth2_client_credentials',
+        client_id: auth.client_id,
+        client_secret: auth.client_secret,
+        token_endpoint: auth.token_endpoint,
+        ...(auth.token_auth_style !== undefined
+          ? { token_auth_style: auth.token_auth_style }
+          : {}),
+        ...(auth.scope !== undefined ? { scope: auth.scope } : {}),
+      };
+    case 'atproto_session':
+      return {
+        type: 'atproto_session',
+        identifier: auth.identifier,
+        app_password: auth.app_password,
+      };
+  }
+};
+
+/** A negative-control credential for generic API/MCP probes. A successful
+ * candidate request is not proof when the configured endpoint is public and
+ * ignores authentication; only a matching request with an intentionally wrong
+ * static credential being rejected establishes that the check discriminates.
+ * Renewable credentials are already proven by their token/session exchange. */
+const invalidCredentialControlFor = (auth: ConnectionAuth): ConnectionAuth | null => {
+  const invalid = 'recued-intentionally-invalid-credential';
+  switch (auth.type) {
+    case 'bearer':
+      return { type: 'bearer', token: invalid };
+    case 'basic':
+      return { type: 'basic', username: invalid, password: invalid };
+    case 'header':
+      return {
+        type: 'header',
+        headers: auth.headers.map(({ header_name }) => ({ header_name, value: invalid })),
+      };
+    case 'query':
+      return { type: 'query', param_name: auth.param_name, value: invalid };
+    case 'none':
+    case 'oauth2_refresh':
+    case 'oauth2_client_credentials':
+    case 'atproto_session':
+      return null;
+  }
+};
+
+const credentialVerificationFailureMessage = (
+  status: ConnectionHealth['status'],
+): string => {
+  if (status === 'auth_failed') {
+    return 'The provider rejected the replacement credentials. Your saved connection was not changed.';
+  }
+  if (status === 'unreachable') {
+    return "Recued couldn't complete the provider check for the replacement credentials. Your saved connection was not changed.";
+  }
+  return "Recued couldn't confirm the replacement credentials. Your saved connection was not changed.";
+};
+
+type CredentialRotationRecoveryStore = Required<Pick<
+  ConnectionStoreSqlite,
+  | 'claimCredentialRotationAttempt'
+  | 'getCredentialRotationAttempt'
+  | 'completeCredentialRotationAttempt'
+  | 'failCredentialRotationAttempt'
+>>;
+
+const ensureCredentialRotationAttemptId = (
+  method: string,
+  value: unknown,
+): string => {
+  if (
+    typeof value !== 'string'
+    || !CONNECTION_CREDENTIAL_ROTATION_ATTEMPT_ID_REGEX.test(value)
+  ) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: attempt_id must be an opaque 16-128 character id`,
+      400,
+      method,
+    );
+  }
+  return value;
+};
+
+const credentialRotationRecoveryStore = (
+  method: string,
+  store: ConnectionStoreSqlite,
+): CredentialRotationRecoveryStore => {
+  if (
+    store.claimCredentialRotationAttempt === undefined
+    || store.getCredentialRotationAttempt === undefined
+    || store.completeCredentialRotationAttempt === undefined
+    || store.failCredentialRotationAttempt === undefined
+  ) {
+    throw new RpcError(
+      'not_configured',
+      'Durable credential-rotation recovery is unavailable on this server. Nothing was sent to the provider.',
+      503,
+      method,
+    );
+  }
+  return store as ConnectionStoreSqlite & CredentialRotationRecoveryStore;
+};
+
+const credentialRotationFailureReason = (
+  error: unknown,
+): ConnectionCredentialRotationFailureReason => {
+  if (error instanceof RpcError) {
+    const verificationStatus = error.details?.verification_status;
+    if (verificationStatus === 'auth_failed') return 'auth_failed';
+    if (verificationStatus === 'unreachable') return 'unreachable';
+    if (error.code === 'credential_verification_failed') return 'inconclusive';
+    if (error.code === 'conflict') return 'conflict';
+  }
+  return 'server_error';
+};
+
+/** Reduce an authoritative auth failure to the only diagnostic distinction
+ * the server can prove without retaining or parsing provider prose. */
+const credentialRejectionStage = (
+  error: unknown,
+): ConnectionCredentialRejectionTriageStage | undefined => {
+  if (
+    !(error instanceof RpcError)
+    || error.details?.verification_status !== 'auth_failed'
+  ) return undefined;
+  return error.details.reason === 'token_exchange_failed'
+    || error.details.reason === 'atproto_session_exchange_failed'
+    ? 'credential_exchange'
+    : 'provider_probe';
+};
+
+const credentialRejectionCorrectionForAttempt = (
+  kind: ConnectionKind,
+  authType: ConnectionAuth['type'],
+  triageStage?: ConnectionCredentialRejectionTriageStage,
+  resolution?: ConnectionCredentialRejectionResolution,
+) => {
+  const correction = connectionCredentialRejectionCorrection(authType);
+  if (correction === null || triageStage === undefined) return correction;
+  const triage = connectionCredentialRejectionTriage(
+    kind,
+    authType,
+    triageStage,
+    resolution,
+  );
+  if (triage === null) return correction;
+  return {
+    ...correction,
+    triage,
+  };
+};
+
+/** Derive a stable opaque CAS capability without exposing the browser-minted
+ * attempt id. The input id is already high-entropy; binding kind/name prevents
+ * moving a token between connection identities. */
+export const credentialSafeStopAcknowledgementToken = (
+  attempt: Pick<
+    ConnectionCredentialRotationAttemptRow,
+    'attempt_id' | 'kind' | 'name'
+  >,
+): string => createHash('sha256')
+  .update(JSON.stringify([
+    'recued.connection-credential-safe-stop.v1',
+    attempt.kind,
+    attempt.name,
+    attempt.attempt_id,
+  ]))
+  .digest('hex');
+
+const credentialSafeStopFromAttempt = (
+  attempt: ConnectionCredentialRotationAttemptRow | null,
+  includeAcknowledged = false,
+): ConnectionCredentialRotationSafeStop | null => {
+  if (
+    attempt?.status !== 'failed'
+    || attempt.failure_reason !== 'auth_failed'
+    || attempt.auth_type === undefined
+    || attempt.auth_rejection_resolution
+      !== 'regenerate_credential_or_contact_admin'
+    || (
+      !includeAcknowledged
+      && attempt.safe_stop_acknowledged_at !== undefined
+    )
+  ) return null;
+  const correction = credentialRejectionCorrectionForAttempt(
+    attempt.kind,
+    attempt.auth_type,
+    attempt.auth_rejection_triage_stage,
+    attempt.auth_rejection_resolution,
+  );
+  if (
+    correction?.triage?.resolution
+      !== 'regenerate_credential_or_contact_admin'
+  ) return null;
+  return {
+    finished_at: attempt.finished_at,
+    correction,
+    acknowledgement_token: credentialSafeStopAcknowledgementToken(attempt),
+  };
+};
+
+const recordedCredentialRotationError = (
+  method: string,
+  reason: ConnectionCredentialRotationFailureReason,
+  kind?: ConnectionKind,
+  authType?: ConnectionAuth['type'],
+  triageStage?: ConnectionCredentialRejectionTriageStage,
+  resolution?: ConnectionCredentialRejectionResolution,
+): RpcError => {
+  if (reason === 'auth_failed') {
+    const correction = kind === undefined || authType === undefined
+      ? null
+      : credentialRejectionCorrectionForAttempt(
+          kind,
+          authType,
+          triageStage,
+          resolution,
+        );
+    return new RpcError(
+      'credential_verification_failed',
+      credentialVerificationFailureMessage('auth_failed'),
+      422,
+      method,
+      {
+        verification_status: 'auth_failed',
+        existing_credential_preserved: true,
+        ...(correction !== null ? { correction } : {}),
+      },
+    );
+  }
+  if (reason === 'unreachable') {
+    return new RpcError(
+      'credential_verification_failed',
+      credentialVerificationFailureMessage('unreachable'),
+      422,
+      method,
+      { verification_status: 'unreachable', existing_credential_preserved: true },
+    );
+  }
+  if (reason === 'inconclusive') {
+    return new RpcError(
+      'credential_verification_failed',
+      credentialVerificationFailureMessage('unknown'),
+      422,
+      method,
+      { verification_status: 'unknown', existing_credential_preserved: true },
+    );
+  }
+  if (reason === 'conflict') {
+    return new RpcError(
+      'conflict',
+      'This connection changed while Recued was verifying the replacement. Nothing from this attempt was saved; review the latest connection and try again.',
+      409,
+      method,
+      { existing_credential_preserved: true },
+    );
+  }
+  return new RpcError(
+    'credential_rotation_failed',
+    'The replacement did not complete. Your saved connection was not changed; review it before trying again.',
+    500,
+    method,
+    { existing_credential_preserved: true },
+  );
+};
+
+const credentialRotationOutcomeFromAttempt = (
+  attempt: ConnectionCredentialRotationAttemptRow | null,
+  safeStopStillCurrent: boolean,
+): ConnectionCredentialRotationOutcome => {
+  if (attempt === null) return { status: 'not_found' };
+  if (attempt.status === 'pending') {
+    return { status: 'pending', started_at: attempt.started_at };
+  }
+  if (attempt.status === 'succeeded') {
+    return {
+      status: 'succeeded',
+      started_at: attempt.started_at,
+      verification: attempt.verification,
+    };
+  }
+  const correction = attempt.failure_reason === 'auth_failed'
+    && attempt.auth_type !== undefined
+    ? credentialRejectionCorrectionForAttempt(
+        attempt.kind,
+        attempt.auth_type,
+        attempt.auth_rejection_triage_stage,
+        attempt.safe_stop_acknowledged_at === undefined
+          && safeStopStillCurrent
+          ? attempt.auth_rejection_resolution
+          : undefined,
+      )
+    : null;
+  return {
+    status: 'failed',
+    started_at: attempt.started_at,
+    finished_at: attempt.finished_at,
+    reason: attempt.failure_reason,
+    ...(correction !== null ? { correction } : {}),
+    ...(attempt.safe_stop_acknowledged_at !== undefined
+      && safeStopStillCurrent
+      ? { safe_stop_acknowledged_at: attempt.safe_stop_acknowledged_at }
+      : {}),
+  };
+};
+
+/** Verify-before-swap credential rotation.
+ *
+ * The ordinary update and probe handlers run against an isolated candidate row,
+ * so their validation, OAuth exchange, transport behavior, and secret redaction
+ * remain the single source of truth. The real row is written exactly once—and
+ * only after a green probe and an unchanged-snapshot check. */
+export const handleConnectionRotateCredentials = async (
+  deps: ConnectionRpcDeps,
+  args: {
+    attempt_id: string;
+    name: string;
+    kind: ConnectionKind;
+    patch: {
+      display_name?: string;
+      config?: Record<string, unknown>;
+      auth: ConnectionAuth;
+    };
+    expected_updated_at?: number;
+    granted_scopes?: string[];
+    /** Optional companion trigger edit from the same form. It is applied to
+     * the isolated candidate and commits in the credential's single swap. */
+    match_patterns?: MessageMatchPattern[];
+  },
+): Promise<{
+  connection: ConnectionView;
+  verification: ConnectionCredentialVerification;
+}> => {
+  const method = 'collection.connection.rotateCredentials';
+  const a = ensureRecordArgs(method, args);
+  const attemptId = ensureCredentialRotationAttemptId(method, a.attempt_id);
+  const name = ensureName(method, a.name);
+  const kind = ensureKind(method, a.kind);
+  if (!isRecord(a.patch) || a.patch.auth === undefined) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: patch.auth is required`,
+      400,
+      method,
+    );
+  }
+  // Validate before constructing the candidate so malformed auth and unsafe
+  // OAuth destinations fail without ever entering a network path.
+  const auth = credentialCandidateFromOwnerInput(ensureAuth(method, a.patch.auth));
+  const expectedUpdatedAt = ensureExpectedConnectionUpdatedAt(
+    method,
+    a.expected_updated_at,
+  );
+  const grantedScopes = ensureGrantedScopes(method, a.granted_scopes);
+  const existing = deps.store.get(kind, name);
+  if (!existing) {
+    throw new RpcError(
+      'not_found',
+      `${method}: no ${kind} connection named '${name}'`,
+      404,
+      method,
+    );
+  }
+  let candidateConfig = a.patch.config;
+  if (a.match_patterns !== undefined) {
+    ensureValidMatchPatterns(method, {
+      [MESSAGE_MATCH_CONFIG_KEY]: a.match_patterns,
+    });
+    const baseConfig = candidateConfig === undefined
+      ? parseStoredConfig(existing.config_json)
+      : ensureConfig(method, candidateConfig);
+    // Keep `[]` explicit: ordinary update preserves an omitted reserved field,
+    // while an explicit empty list is the atomic "clear triggers" instruction.
+    candidateConfig = {
+      ...baseConfig,
+      [MESSAGE_MATCH_CONFIG_KEY]: a.match_patterns,
+    };
+  }
+  const snapshot = connectionRowFingerprint(existing);
+  const recoveryStore = credentialRotationRecoveryStore(method, deps.store);
+  // A repeated attempt id resolves its durable outcome even though a
+  // successful first attempt necessarily advanced the row revision beyond the
+  // editor's original expectation. Only a genuinely new attempt is CAS-gated.
+  if (recoveryStore.getCredentialRotationAttempt(attemptId) === null) {
+    assertConnectionEditorIsCurrent(method, expectedUpdatedAt, existing);
+  }
+  const startedAt = deps.now?.() ?? Date.now();
+  const claim = recoveryStore.claimCredentialRotationAttempt({
+    attempt_id: attemptId,
+    kind,
+    name,
+    started_at: startedAt,
+  });
+  if (!claim.claimed) {
+    if (claim.attempt.attempt_id !== attemptId) {
+      throw new RpcError(
+        'credential_rotation_owned_elsewhere',
+        `Another credential replacement for ${kind}/${name} is already being checked. Wait for that outcome before taking over.`,
+        409,
+        method,
+        { existing_credential_preserved: true },
+      );
+    }
+    if (claim.attempt.kind !== kind || claim.attempt.name !== name) {
+      throw new RpcError(
+        'conflict',
+        'This credential-replacement attempt id has already been used. Start a fresh replacement.',
+        409,
+        method,
+      );
+    }
+    if (claim.attempt.status === 'succeeded') {
+      return {
+        connection: connectionViewFromRow(existing),
+        verification: claim.attempt.verification,
+      };
+    }
+    if (claim.attempt.status === 'failed') {
+      const latestAttempt = deps.store.getLatestCredentialRotationAttempt?.(
+        claim.attempt.kind,
+        claim.attempt.name,
+      );
+      const safeStopStillCurrent =
+        claim.attempt.safe_stop_acknowledged_at === undefined
+        && latestAttempt?.attempt_id === claim.attempt.attempt_id;
+      throw recordedCredentialRotationError(
+        method,
+        claim.attempt.failure_reason,
+        claim.attempt.kind,
+        claim.attempt.auth_type,
+        claim.attempt.auth_rejection_triage_stage,
+        safeStopStillCurrent
+          ? claim.attempt.auth_rejection_resolution
+          : undefined,
+      );
+    }
+    throw new RpcError(
+      'credential_rotation_in_progress',
+      'This credential replacement is still being checked. Wait for its outcome instead of retrying it.',
+      409,
+      method,
+    );
+  }
+
+  let committed = false;
+  try {
+    // The first editor check happens before claiming. A prior owner can finish
+    // between that read and this claim; revalidate after the serialized claim
+    // so a queued stale contender never sends a second credential to the
+    // provider merely to discover the conflict at the final commit fence.
+    assertCredentialRotationSnapshotIsCurrent(
+      method,
+      deps.store,
+      kind,
+      name,
+      snapshot,
+    );
+    const isolated = isolatedConnectionStore(existing);
+    await handleConnectionUpdate(
+      { ...deps, store: isolated.store },
+      {
+        name,
+        kind,
+        patch: {
+          ...(a.patch.display_name !== undefined
+            ? { display_name: a.patch.display_name as string }
+            : {}),
+          ...(candidateConfig !== undefined
+            ? { config: candidateConfig as Record<string, unknown> }
+            : {}),
+          auth,
+        },
+      },
+      { allowCredentialCandidate: true },
+    );
+    const { health } = await handleConnectionProbe(
+      { ...deps, store: isolated.store },
+      { name, kind },
+    );
+    // Ordinary health treats any non-auth HTTP response as "reachable" and
+    // records e.g. `http_status_500` alongside status=ok. That is useful for a
+    // row probe but is not strong enough to authorize a credential swap: only a
+    // clean provider check counts as verified.
+    const verificationStatus = health.status === 'ok' && health.last_error !== undefined
+      ? 'unknown'
+      : health.status;
+    if (verificationStatus !== 'ok') {
+      const correction = verificationStatus === 'auth_failed'
+        ? credentialRejectionCorrectionForAttempt(kind, auth.type)
+        : null;
+      throw new RpcError(
+        'credential_verification_failed',
+        credentialVerificationFailureMessage(verificationStatus),
+        422,
+        method,
+        {
+          verification_status: verificationStatus,
+          ...(health.last_error !== undefined ? { reason: health.last_error } : {}),
+          existing_credential_preserved: true,
+          ...(correction !== null ? { correction } : {}),
+        },
+      );
+    }
+
+    const controlAuth = kind === 'api' || kind === 'mcp'
+      ? invalidCredentialControlFor(auth)
+      : null;
+    if (controlAuth !== null) {
+      const control = isolatedConnectionStore(isolated.current());
+      await handleConnectionUpdate(
+        { ...deps, store: control.store },
+        { name, kind, patch: { auth: controlAuth } },
+        { allowCredentialCandidate: true },
+      );
+      const { health: controlHealth } = await handleConnectionProbe(
+        { ...deps, store: control.store },
+        { name, kind },
+      );
+      if (controlHealth.status !== 'auth_failed') {
+        throw new RpcError(
+          'credential_verification_failed',
+          "This connection's check also accepts an invalid credential, so Recued cannot safely replace the current one. Your saved connection was not changed. Use an endpoint that requires authentication, then try again.",
+          422,
+          method,
+          {
+            verification_status: 'unknown',
+            reason: 'credential_check_did_not_require_auth',
+            existing_credential_preserved: true,
+          },
+        );
+      }
+    }
+
+    let candidate = isolated.current();
+    if (grantedScopes !== undefined) {
+      candidate = {
+        ...candidate,
+        granted_scopes_json: JSON.stringify(grantedScopes),
+      };
+    }
+    candidate = {
+      ...candidate,
+      // The verification probe can share the original row's deterministic
+      // millisecond. A successful replacement is still a new editor revision.
+      updated_at: Math.max(candidate.updated_at, existing.updated_at + 1),
+    };
+    // Decode the already-verified candidate only to project non-secret lifecycle
+    // metadata into the receipt. Failure still occurs before the real write.
+    const verifiedAuth = await decodeAuthFromStorage(
+      candidate.auth_ciphertext,
+      { kind, name },
+      deps.getEncryptionKey,
+    );
+    assertCredentialRotationSnapshotIsCurrent(
+      method,
+      deps.store,
+      kind,
+      name,
+      snapshot,
+    );
+
+    const expiresAt = 'expires_at' in verifiedAuth
+      && typeof verifiedAuth.expires_at === 'number'
+      ? verifiedAuth.expires_at
+      : undefined;
+    const verification: ConnectionCredentialVerification = {
+      status: 'verified',
+      verified_at: health.last_probed_at ?? (deps.now?.() ?? Date.now()),
+      auth_type: verifiedAuth.type,
+      ...(expiresAt !== undefined ? { access_expires_at: expiresAt } : {}),
+    };
+    const row = recoveryStore.completeCredentialRotationAttempt({
+      attempt_id: attemptId,
+      connection: connectionUpsertFromRow(candidate),
+      verification,
+    });
+    committed = true;
+    if (kind === 'api') {
+      try {
+        deps.recipeRunnabilityBroadcast?.recomputeAndEmit();
+      } catch {
+        // The atomic row+receipt is already authoritative. A best-effort
+        // readiness broadcast must never turn that committed success into an
+        // error response that would tell the owner the opposite outcome.
+      }
+    }
+    return {
+      connection: connectionViewFromRow(row),
+      verification,
+    };
+  } catch (error) {
+    if (!committed) {
+      let enrichedAuthFailure: RpcError | null = null;
+      try {
+        const failureReason = credentialRotationFailureReason(error);
+        const authRejectionStage = failureReason === 'auth_failed'
+          ? credentialRejectionStage(error)
+          : undefined;
+        const failedAttempt = recoveryStore.failCredentialRotationAttempt({
+          attempt_id: attemptId,
+          finished_at: deps.now?.() ?? Date.now(),
+          reason: failureReason,
+          ...(failureReason === 'auth_failed' ? { auth_type: auth.type } : {}),
+          ...(authRejectionStage !== undefined
+            ? { auth_rejection_stage: authRejectionStage }
+            : {}),
+        });
+        if (
+          failureReason === 'auth_failed'
+          && error instanceof RpcError
+          && failedAttempt.status === 'failed'
+        ) {
+          const correction = credentialRejectionCorrectionForAttempt(
+            kind,
+            auth.type,
+            failedAttempt.auth_rejection_triage_stage,
+            failedAttempt.auth_rejection_resolution,
+          );
+          enrichedAuthFailure = new RpcError(
+            error.code,
+            error.message,
+            error.status,
+            error.method,
+            {
+              ...error.details,
+              ...(correction !== null ? { correction } : {}),
+            },
+          );
+        }
+      } catch {
+        // A process/storage interruption may leave the durable claim pending.
+        // Never forward the original (apparently terminal) provider error:
+        // the client would retire its only recovery pointer and could blindly
+        // retry while this claim remains unresolved.
+        throw new RpcError(
+          'credential_rotation_outcome_unknown',
+          'The replacement outcome could not be recorded. Check its status before trying again.',
+          503,
+          method,
+        );
+      }
+      if (enrichedAuthFailure !== null) throw enrichedAuthFailure;
+    }
+    throw error;
+  }
+};
+
+/** Read the secret-free durable outcome for one interrupted rotation. Identity
+ * must match the claimed connection; a mismatched opaque id is indistinguishable
+ * from an unknown id so this read cannot enumerate another row's activity. */
+export const handleConnectionCredentialRotationStatus = async (
+  deps: ConnectionRpcDeps,
+  args: { attempt_id: string; name: string; kind: ConnectionKind },
+): Promise<{ outcome: ConnectionCredentialRotationOutcome }> => {
+  const method = 'collection.connection.credentialRotationStatus';
+  const a = ensureRecordArgs(method, args);
+  const attemptId = ensureCredentialRotationAttemptId(method, a.attempt_id);
+  const name = ensureName(method, a.name);
+  const kind = ensureKind(method, a.kind);
+  const recoveryStore = credentialRotationRecoveryStore(method, deps.store);
+  const attempt = recoveryStore.getCredentialRotationAttempt(attemptId);
+  if (attempt !== null && (attempt.kind !== kind || attempt.name !== name)) {
+    return { outcome: { status: 'not_found' } };
+  }
+  // A receipt is exact, but its safe-stop resolution is connection-current.
+  // A later terminal attempt can leave the saved row revision unchanged, so
+  // row CAS alone cannot stop a reloaded owner from resurrecting an obsolete
+  // administrator handoff. Suppress only the resolution unless this receipt
+  // is still the latest causal claim; the underlying bounded failure remains
+  // available for ordinary correction/recovery copy.
+  const latest = attempt?.status === 'failed'
+    ? deps.store.getLatestCredentialRotationAttempt?.(kind, name) ?? null
+    : null;
+  const safeStopStillCurrent = attempt?.status === 'failed'
+    && latest?.attempt_id === attempt.attempt_id;
+  return {
+    outcome: credentialRotationOutcomeFromAttempt(
+      attempt,
+      safeStopStillCurrent,
+    ),
+  };
+};
+
+/** Connection-scoped ownership read for sibling-tab takeover. It intentionally
+ * exposes neither the opaque attempt id nor any credential/provider detail.
+ * An idle response projects the latest safe stop through the same bounded
+ * correction contract used by receipt recovery. This lets sibling tabs pause
+ * and offer the same regeneration/admin handoff from server authority rather
+ * than trusting a BroadcastChannel hint. */
+export const handleConnectionCredentialRotationActivity = async (
+  deps: ConnectionRpcDeps,
+  args: { name: string; kind: ConnectionKind },
+): Promise<{ activity: ConnectionCredentialRotationActivity }> => {
+  const method = 'collection.connection.credentialRotationActivity';
+  const a = ensureRecordArgs(method, args);
+  const name = ensureName(method, a.name);
+  const kind = ensureKind(method, a.kind);
+  const readPending = deps.store.getPendingCredentialRotationAttempt;
+  if (readPending === undefined) {
+    throw new RpcError(
+      'not_configured',
+      'Connection-scoped credential-rotation ownership is unavailable on this server.',
+      503,
+      method,
+    );
+  }
+  const pending = readPending.call(deps.store, kind, name);
+  if (pending?.status === 'pending') {
+    return { activity: { status: 'pending', started_at: pending.started_at } };
+  }
+  const readLatest = deps.store.getLatestCredentialRotationAttempt;
+  if (readLatest === undefined) {
+    // Mixed-version/narrow test stores can still answer the original ownership
+    // question, but absence of this method is not evidence that no safe stop
+    // exists. Omit the additive field so current clients stay fail-closed after
+    // an exact safe-stop hint.
+    return { activity: { status: 'idle' } };
+  }
+  const latest = readLatest.call(deps.store, kind, name);
+  if (latest?.status === 'pending') {
+    return { activity: { status: 'pending', started_at: latest.started_at } };
+  }
+  return {
+    activity: {
+      status: 'idle',
+      safe_stop: credentialSafeStopFromAttempt(latest),
+    },
+  };
+};
+
+/** Explicitly close one exact, still-current administrator/provider handoff.
+ * The token is derived from—but does not reveal—the attempt id. The store's
+ * latest-row CAS remains the final boundary if a newer paired client starts or
+ * finishes another attempt between this read and the write. */
+export const handleConnectionAcknowledgeCredentialRotationSafeStop = async (
+  deps: ConnectionRpcDeps,
+  args: {
+    name: string;
+    kind: ConnectionKind;
+    acknowledgement_token: string;
+  },
+): Promise<{
+  acknowledgement: ConnectionCredentialRotationSafeStopAcknowledgement;
+}> => {
+  const method =
+    'collection.connection.acknowledgeCredentialRotationSafeStop';
+  const a = ensureRecordArgs(method, args);
+  const name = ensureName(method, a.name);
+  const kind = ensureKind(method, a.kind);
+  const token = a.acknowledgement_token;
+  if (
+    typeof token !== 'string'
+    || !CONNECTION_CREDENTIAL_SAFE_STOP_TOKEN_REGEX.test(token)
+  ) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: acknowledgement_token must be an opaque 64-character token`,
+      400,
+      method,
+    );
+  }
+  const readLatest = deps.store.getLatestCredentialRotationAttempt;
+  const acknowledge = deps.store.acknowledgeCredentialRotationSafeStop;
+  if (readLatest === undefined || acknowledge === undefined) {
+    throw new RpcError(
+      'not_configured',
+      'Authoritative credential safe-stop closure is unavailable on this server.',
+      503,
+      method,
+    );
+  }
+  const latest = readLatest.call(deps.store, kind, name);
+  const currentSafeStop = credentialSafeStopFromAttempt(latest, true);
+  if (
+    latest === null
+    || currentSafeStop === null
+    || currentSafeStop.acknowledgement_token !== token
+  ) {
+    return { acknowledgement: { status: 'superseded' } };
+  }
+  const result = acknowledge.call(deps.store, {
+    attempt_id: latest.attempt_id,
+    kind,
+    name,
+    acknowledged_at: deps.now?.() ?? Date.now(),
+  });
+  if (result === null) {
+    return { acknowledgement: { status: 'superseded' } };
+  }
+  return {
+    acknowledgement: {
+      status: result.status,
+      acknowledged_at: result.attempt.safe_stop_acknowledged_at,
+    },
+  };
 };
 
 /** D-129 P1.2 — vendor OAuth code-exchange. The enrollment dialog
@@ -2060,25 +3784,17 @@ const handleConnectionStartVendorOAuth = async (
   const formScopes: string[] = requestedScopesArg ?? [];
   let provider;
   if (isFormSupplied) {
-    // Require https on BOTH URLs — the server POSTs the client_secret + auth
-    // code to `token_endpoint`, so plaintext is a credential-leak surface.
+    // Apply the same complete-HTTPS/no-userinfo contract used by persisted
+    // connection auth. The server POSTs the client_secret + auth code to
+    // `token_endpoint`, so this validation cannot be browser-only.
     for (const [label, raw] of [
       ['authorize_url', formAuthorizeUrl],
       ['token_endpoint', formTokenEndpoint],
     ] as const) {
-      let parsed: URL;
-      try {
-        parsed = new URL(raw);
-      } catch {
+      if (!isValidOAuthEndpointUrl(raw)) {
         throw new RpcError(
           'bad_request',
-          `collection.connection.startVendorOAuth: ${label} must be a valid URL`,
-        );
-      }
-      if (parsed.protocol !== 'https:') {
-        throw new RpcError(
-          'bad_request',
-          `collection.connection.startVendorOAuth: ${label} must be an https URL`,
+          `collection.connection.startVendorOAuth: ${label} must be a complete HTTPS URL with no embedded username or password and no URL fragment`,
         );
       }
     }
@@ -2511,10 +4227,34 @@ export const handleConnectionSetMatchPatterns = async (
   return { match_patterns: patterns };
 };
 
+/** Read-only AI setup assistance. No store access and no mutation: request
+ *  minimization + output validation live in `connection-setup-guide.ts`, while
+ *  this boundary supplies the same not-configured posture as other optional
+ *  connection capabilities. */
+export const handleConnectionSuggestSetup = async (
+  deps: ConnectionRpcDeps,
+  args: unknown,
+) => {
+  if (deps.setupGuide === undefined) {
+    throw new RpcError(
+      'not_configured',
+      'Set up an AI provider in Settings → AI before asking for a connection guide.',
+      503,
+      'collection.connection.suggestSetup',
+    );
+  }
+  return generateConnectionSetupGuide(deps.setupGuide, args);
+};
+
 type ConnectionMethods =
   | 'collection.connection.list'
+  | 'collection.connection.suggestSetup'
   | 'collection.connection.enroll'
   | 'collection.connection.update'
+  | 'collection.connection.rotateCredentials'
+  | 'collection.connection.credentialRotationStatus'
+  | 'collection.connection.credentialRotationActivity'
+  | 'collection.connection.acknowledgeCredentialRotationSafeStop'
   | 'collection.connection.delete'
   | 'collection.connection.previewPurge'
   | 'collection.connection.probe'
@@ -2525,17 +4265,29 @@ type ConnectionMethods =
   | 'collection.connection.listOperationGroups'
   | 'collection.connection.completeVendorOAuth'
   | 'collection.connection.startVendorOAuth'
-  | 'collection.connection.takeVendorOAuthResult';
+  | 'collection.connection.takeVendorOAuthResult'
+  | 'collection.connection.mcpPackPreview'
+  | 'collection.connection.mcpPackCommit'
+  | 'collection.connection.mcpPackStatus';
 
 export const makeConnectionHandlers = (
   deps: ConnectionRpcDeps | undefined,
 ): HandlerSlice<ServerRpcRegistry, ConnectionMethods, WsClient> | undefined => {
   if (!deps) return undefined;
+  // One owner-triggered guide at a time per server handler set. The webclient
+  // already prevents duplicate clicks in one tab; this closes the cross-tab /
+  // direct-paired-client cost race around a slow model call.
+  let setupGuideInFlight = false;
   return {
     methods: [
       'collection.connection.list',
+      'collection.connection.suggestSetup',
       'collection.connection.enroll',
       'collection.connection.update',
+      'collection.connection.rotateCredentials',
+      'collection.connection.credentialRotationStatus',
+      'collection.connection.credentialRotationActivity',
+      'collection.connection.acknowledgeCredentialRotationSafeStop',
       'collection.connection.delete',
       'collection.connection.previewPurge',
       'collection.connection.probe',
@@ -2547,10 +4299,29 @@ export const makeConnectionHandlers = (
       'collection.connection.completeVendorOAuth',
       'collection.connection.startVendorOAuth',
       'collection.connection.takeVendorOAuthResult',
+      'collection.connection.mcpPackPreview',
+      'collection.connection.mcpPackCommit',
+      'collection.connection.mcpPackStatus',
     ],
     handlers: {
       'collection.connection.list': async (args) =>
         handleConnectionList(deps, args as Parameters<typeof handleConnectionList>[1]),
+      'collection.connection.suggestSetup': async (args) => {
+        if (setupGuideInFlight) {
+          throw new RpcError(
+            'conflict',
+            'Another setup guide is already being created. Wait for it to finish.',
+            409,
+            'collection.connection.suggestSetup',
+          );
+        }
+        setupGuideInFlight = true;
+        try {
+          return await handleConnectionSuggestSetup(deps, args);
+        } finally {
+          setupGuideInFlight = false;
+        }
+      },
       'collection.connection.enroll': async (args) =>
         handleConnectionEnroll(
           deps,
@@ -2560,6 +4331,28 @@ export const makeConnectionHandlers = (
         handleConnectionUpdate(
           deps,
           args as Parameters<typeof handleConnectionUpdate>[1],
+        ),
+      'collection.connection.rotateCredentials': async (args) =>
+        handleConnectionRotateCredentials(
+          deps,
+          args as Parameters<typeof handleConnectionRotateCredentials>[1],
+        ),
+      'collection.connection.credentialRotationStatus': async (args) =>
+        handleConnectionCredentialRotationStatus(
+          deps,
+          args as Parameters<typeof handleConnectionCredentialRotationStatus>[1],
+        ),
+      'collection.connection.credentialRotationActivity': async (args) =>
+        handleConnectionCredentialRotationActivity(
+          deps,
+          args as Parameters<typeof handleConnectionCredentialRotationActivity>[1],
+        ),
+      'collection.connection.acknowledgeCredentialRotationSafeStop': async (args) =>
+        handleConnectionAcknowledgeCredentialRotationSafeStop(
+          deps,
+          args as Parameters<
+            typeof handleConnectionAcknowledgeCredentialRotationSafeStop
+          >[1],
         ),
       'collection.connection.delete': async (args) =>
         handleConnectionDelete(
@@ -2575,6 +4368,21 @@ export const makeConnectionHandlers = (
         handleConnectionProbe(
           deps,
           args as Parameters<typeof handleConnectionProbe>[1],
+        ),
+      'collection.connection.mcpPackPreview': async (args) =>
+        handleMcpPackPreview(
+          deps,
+          args as Parameters<typeof handleMcpPackPreview>[1],
+        ),
+      'collection.connection.mcpPackCommit': async (args) =>
+        handleMcpPackCommit(
+          deps,
+          args as Parameters<typeof handleMcpPackCommit>[1],
+        ),
+      'collection.connection.mcpPackStatus': async (args) =>
+        handleMcpPackStatus(
+          deps,
+          args as Parameters<typeof handleMcpPackStatus>[1],
         ),
       'collection.connection.getMatchPatterns': async (args) =>
         handleConnectionGetMatchPatterns(

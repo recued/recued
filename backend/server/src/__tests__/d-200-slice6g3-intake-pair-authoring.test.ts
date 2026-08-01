@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import Database from 'better-sqlite3';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   RECEPTION_RPC_METHODS,
   PAID_DOCUMENT_DIRECT_CHECKOUT_SELLER_ASSOCIATION_CONFIGURATION_VERSION,
@@ -308,6 +308,25 @@ const clearInputFromView = (
 });
 
 describe('D-200 Slice 6g.3 owner intake/recipe pair authoring', () => {
+  it('runs the non-owner exposure preflight before writing a pair or minting its door', async () => {
+    const { deps, definitions, pairs, recipes, rows, broadcasts } = buildFixture();
+    recipes.set(RECIPE_ID, recipe());
+    const preflight = vi.fn(() => {
+      throw new Error('D-221 missing first-step contract refusal');
+    });
+    const refusingDeps: ReceptionRpcDeps = {
+      ...deps,
+      preflightNonOwnerRecipeExposure: preflight,
+    };
+
+    await expect(bind(refusingDeps)).rejects.toThrow(/missing first-step contract refusal/);
+    expect(preflight).toHaveBeenCalledWith(recipes.get(RECIPE_ID), 'reception');
+    expect(pairs.findByEndpoint(ENDPOINT_ID)).toBeNull();
+    expect(definitions.size).toBe(0);
+    expect(rows).toHaveLength(0);
+    expect(broadcasts).toHaveLength(0);
+  });
+
   it('registers every reserved Reception method and dispatches bind through the live slice', async () => {
     const { deps, recipes } = buildFixture();
     recipes.set(RECIPE_ID, recipe());
@@ -1229,5 +1248,178 @@ describe('D-200 Slice 6g.3 owner intake/recipe pair authoring', () => {
       'reception.intake_recipe_pair.bound',
     ]);
     expect(broadcasts).toHaveLength(1);
+  });
+});
+
+/** D-220 Slice A2 — the form-field contract gate on `bind`.
+ *
+ *  A recipe reads named answers by STATIC path (`record.values.<name>`), so a
+ *  form that omits, renames, or hides a required field makes that read resolve
+ *  `undefined`, a `default` transform substitute its fallback, and every
+ *  submission "succeed" having stored nothing — the visitor's work lost, no
+ *  error anywhere.
+ *
+ *  The gate sits beside the D-207 door check for the same stated reason: the
+ *  answer decides whether a written pair could ever do its job, so it is asked
+ *  BEFORE the write and refuses with nothing bound. These cases pin that the
+ *  refusal lands where the OWNER is (bind), not where the visitor is (fire),
+ *  and — the half that separates a gate from a blanket refusal — that a
+ *  SATISFIED contract still binds.
+ */
+describe('D-220 Slice A2 — bind refuses a form that cannot feed the recipe', () => {
+  const JOB_FIELDS: IntakeFormConfig['form_definition']['fields'] = [
+    { name: 'item_description', type: 'textarea', label: 'What you brought in', required: true },
+    { name: 'contact_name', type: 'text', label: 'Your name', required: false },
+  ];
+
+  /** ⚠ `declare` is spread only when supplied. `requires_form_fields: undefined`
+   *  is a PRESENT key with an undefined value, which the recipe parser rejects —
+   *  it is not the same thing as an undeclared recipe, and using it as the
+   *  "absent" fixture tests the wrong shape. */
+  const declaringRecipe = (
+    declare: { readonly requires_form_fields: unknown } | null,
+    fields = JOB_FIELDS,
+  ): { deps: ReceptionRpcDeps; rows: ActivityEntry[] } => {
+    const fixture = buildFixture({
+      config: formConfig({
+        form_definition: { form_definition_id: FORM_DEFINITION_ID, fields },
+      }),
+    });
+    fixture.setRecipeRead(() => recipe({
+      metadata: {
+        name: 'Open a job',
+        description: 'Turns one accepted intake response into a job.',
+        author: 'local-author',
+        supported_platforms: [],
+        ...(declare ?? {}),
+      } as unknown as RecipeDefinition['metadata'],
+    }));
+    return { deps: fixture.deps, rows: fixture.rows };
+  };
+
+  /** ⚠ A form MUST hold at least one field (`fields_empty`), so "the form carries
+   *  neither declared name" cannot be spelled as `fields: []` — that is an invalid
+   *  form and would refuse for a different reason entirely. */
+  const UNRELATED_ONLY: IntakeFormConfig['form_definition']['fields'] = [
+    { name: 'unrelated', type: 'text', label: 'Anything', required: false },
+  ];
+
+  const SATISFIABLE = [
+    { name: 'item_description', type: 'textarea', required: true },
+    { name: 'contact_name', type: 'text', required: false },
+  ];
+
+  it('binds when the form carries every declared answer — the PERMITTING case', () => {
+    // Without this, a "gate" that refused everything would look identical.
+    const { deps } = declaringRecipe({ requires_form_fields: SATISFIABLE });
+    return expect(bind(deps)).resolves.toMatchObject({ outcome: 'created' });
+  });
+
+  it('⛔ refuses when a REQUIRED declared field is absent from the form, and writes nothing', async () => {
+    const { deps, rows } = declaringRecipe({ requires_form_fields: SATISFIABLE }, [
+      { name: 'what_they_brought', type: 'textarea', label: 'Item', required: true },
+    ]);
+    await expect(bind(deps)).rejects.toMatchObject({
+      code: 'intake_recipe_pair_form_contract_unsatisfied',
+      status: 422,
+    });
+    // Nothing bound: the pair must still read unpaired, and no audit row.
+    const view = await handleReceptionIntakeRecipePairGet(
+      deps,
+      { endpoint_id: ENDPOINT_ID },
+      CALLER,
+    );
+    expect(view.status).toBe('unpaired');
+    expect(rows.map((row) => row.action)).toEqual([]);
+  });
+
+  it('⛔ refuses when the form makes a required answer optional', async () => {
+    const { deps } = declaringRecipe({ requires_form_fields: SATISFIABLE }, [
+      { name: 'item_description', type: 'textarea', label: 'Item', required: false },
+      { name: 'contact_name', type: 'text', label: 'Name', required: false },
+    ]);
+    await expect(bind(deps)).rejects.toMatchObject({
+      code: 'intake_recipe_pair_form_contract_unsatisfied',
+    });
+  });
+
+  it('⛔ refuses when the required answer arrives in a different runtime shape', async () => {
+    const { deps } = declaringRecipe({ requires_form_fields: SATISFIABLE }, [
+      { name: 'item_description', type: 'array<text>', label: 'Item', required: true },
+      { name: 'contact_name', type: 'text', label: 'Name', required: false },
+    ]);
+    await expect(bind(deps)).rejects.toMatchObject({
+      code: 'intake_recipe_pair_form_contract_unsatisfied',
+    });
+  });
+
+  it('binds when only an OPTIONAL declared field is missing — advisory never blocks', async () => {
+    const { deps } = declaringRecipe({ requires_form_fields: SATISFIABLE }, [
+      { name: 'item_description', type: 'textarea', label: 'Item', required: true },
+    ]);
+    await expect(bind(deps)).resolves.toMatchObject({ outcome: 'created' });
+  });
+
+  it('binds a type difference inside one runtime shape — text vs textarea is not a defect', async () => {
+    const { deps } = declaringRecipe(
+      { requires_form_fields: [{ name: 'item_description', type: 'text', required: true }] },
+      [{ name: 'item_description', type: 'textarea', label: 'Item', required: true }],
+    );
+    await expect(bind(deps)).resolves.toMatchObject({ outcome: 'created' });
+  });
+
+  it('binds an UNDECLARED recipe untouched — A2 never retroactively refuses a working pair', async () => {
+    // `requires_form_fields` absent entirely: the pre-D-220 shape, and every
+    // recipe in the corpus except the one that opted in.
+    const { deps } = declaringRecipe(null, UNRELATED_ONLY);
+    await expect(bind(deps)).resolves.toMatchObject({ outcome: 'created' });
+  });
+
+  it('binds an EMPTY declaration against any form — the seller-opener shape', async () => {
+    const { deps } = declaringRecipe({ requires_form_fields: [] }, UNRELATED_ONLY);
+    await expect(bind(deps)).resolves.toMatchObject({ outcome: 'created' });
+  });
+
+  it('names the offending fields on the refusal so the owner can fix the form', async () => {
+    const { deps } = declaringRecipe({ requires_form_fields: SATISFIABLE }, UNRELATED_ONLY);
+    await expect(bind(deps)).rejects.toMatchObject({
+      code: 'intake_recipe_pair_form_contract_unsatisfied',
+      // The blocking half drives the refusal; the advisory half rides along so
+      // the owner fixes both in one pass rather than rebinding twice.
+      details: {
+        blocking: [{ code: 'field_absent', field_name: 'item_description' }],
+        advisory: [{ code: 'field_absent', field_name: 'contact_name' }],
+      },
+    });
+  });
+
+  it('refuses an owner-only field: present, but a visitor submission never carries it', async () => {
+    const fixture = buildFixture({
+      config: formConfig({
+        form_definition: {
+          form_definition_id: FORM_DEFINITION_ID,
+          // ⚠ `item_description` is deliberately NOT in `fields`: the substrate
+          // refuses a name that is both visitor-visible and owner-only, so this is
+          // the only legal shape for the case.
+          fields: [
+            { name: 'contact_name', type: 'text', label: 'Your name', required: false },
+          ],
+          user_only_field_names: ['item_description'],
+        } as unknown as IntakeFormConfig['form_definition'],
+      }),
+    });
+    fixture.setRecipeRead(() => recipe({
+      metadata: {
+        name: 'Open a job',
+        description: 'Turns one accepted intake response into a job.',
+        author: 'local-author',
+        supported_platforms: [],
+        requires_form_fields: SATISFIABLE,
+      } as unknown as RecipeDefinition['metadata'],
+    }));
+    await expect(bind(fixture.deps)).rejects.toMatchObject({
+      code: 'intake_recipe_pair_form_contract_unsatisfied',
+      details: { blocking: [{ code: 'field_owner_only', field_name: 'item_description' }] },
+    });
   });
 });

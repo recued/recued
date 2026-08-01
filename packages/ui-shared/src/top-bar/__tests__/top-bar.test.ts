@@ -79,7 +79,10 @@ describe('renderAttentionSlot', () => {
     const html = renderAttentionSlot({ blockingCount: 0 });
     expect(html).toContain('top-bar-attention--idle');
     expect(html).not.toContain('top-bar-attention-badge');
-    expect(html).toContain('No items need attention');
+    expect(html).toContain('No items need your attention');
+    expect(html).toContain('top-bar-attention-bell');
+    expect(html).toContain('<svg width="18" height="18"');
+    expect(html).not.toContain('⚠');
   });
 
   it('renders the active button with a numeric badge when blocking work exists', () => {
@@ -87,12 +90,12 @@ describe('renderAttentionSlot', () => {
     expect(html).toContain('top-bar-attention--active');
     expect(html).toContain('top-bar-attention-badge');
     expect(html).toContain('>3<');
-    expect(html).toContain('3 items need attention');
+    expect(html).toContain('3 items need your attention');
   });
 
   it('uses singular phrasing when count is exactly 1', () => {
     const html = renderAttentionSlot({ blockingCount: 1 });
-    expect(html).toContain('1 item need');
+    expect(html).toContain('1 item needs your attention');
   });
 
   it('caps the badge at 99+ so layout stays stable', () => {

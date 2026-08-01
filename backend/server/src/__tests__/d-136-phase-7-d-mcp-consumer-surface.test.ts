@@ -1174,6 +1174,10 @@ const makeMcpDeps = () => ({
   recipeStore: createRecipeStore('/nonexistent'),
   executorConfig: { manifests: createManifestRegistry('/nonexistent') },
   baseVault: {},
+  // D-228 slice 6 — this suite's subject is the enrichment CONSUMER surface,
+  // which runs only once the tool gate admits. An absent checklist now denies,
+  // so the owner principal is declared rather than implied by omission.
+  ownerAdmitAll: true,
   enrichmentStore: store,
   db,
 });

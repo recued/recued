@@ -46,6 +46,13 @@ import {
 // Add-a-pack (2026-06-30) — the embedded recipe body a self-contained static pack
 // carries. TYPE-only (recipe.ts does not import bulk-pack → no cycle).
 import type { RecipeDefinition } from './recipe.js';
+import { publisherMayDeclare } from './publisher-trust.js';
+import {
+  BULK_PACK_MAX_CONNECTION_HINTS,
+  validateConnectionHintShape,
+  type ConnectionHint,
+} from './connection-hints.js';
+
 // D-194 — pack-driven connection enrollment. The `connection_requirements[]`
 // manifest field (below) is a first-party descriptor list; its shape rules live
 // in one place (`validateConnectionRequirementShape`) shared with the seed's
@@ -306,6 +313,14 @@ export interface BulkPackManifest {
    *  seeded at compile time (`CONNECTION_REQUIREMENT_SEED`); this manifest field
    *  is the pack-carried form the seed migrates to. */
   connection_requirements?: ConnectionRequirement[];
+  /** D-223 — pre-fills for the generic connection form, declarable by ANY
+   *  publisher. A hint sets a VALUE on a visible, editable field; it never sets
+   *  schema (`hidden` / `readonly` / `showWhen`), which is what decides whether
+   *  the owner can see and change it. Values pass the same admission filter the
+   *  setup guide already applies to inferred suggestions — one implementation,
+   *  in `connection-hints.ts`. Carrying a `connection_requirements` cell is
+   *  REFUSED, not ignored. */
+  connection_hints?: ConnectionHint[];
   /** D-201 — logical inbound-webhook slots this pack needs.  Entries may name
    *  only trusted built-in profile ids and carry no verifier configuration or
    *  secret values.  Install-time binding to an ingress remains owner-approved
@@ -687,6 +702,26 @@ export interface CompositionIngredient {
    *  single-ingredient packs it equals `ingredients[0].slug`. */
   slug: string;
   catalog_kind?: CatalogKind;
+  /** D-225 Slice 2 — force the CATALOG lowering even when the composition would
+   *  otherwise qualify for the 1x1 plain-ingredient collapse.
+   *
+   *  ⛔ Not an authoring convenience. `isOneToOne` collapses a single-operation
+   *  http/connection composition into a plain wrapper ingredient, which has no
+   *  `operations` map and therefore NO OP ID — so nothing about it can be named
+   *  by a contract grant. That is a fine trade for a hand-authored one-shot
+   *  wrapper, and fatal for a GENERATED MCP pack, whose entire premise is that
+   *  every tool becomes an ordinary contract-grantable operation. An MCP server
+   *  publishing exactly one tool is an ordinary case, not an edge one.
+   *
+   *  The other levers that force the catalog branch all carry side effects a
+   *  generated pack must not have: a non-`private_byo` `catalog_kind` also flips
+   *  `marketplace_eligible` to true, and a fake `recipe_templates` entry would
+   *  compile into a shipped recipe. Hence an explicit flag that says the one
+   *  thing it means.
+   *
+   *  Set by the runtime when it mints a pack; a human authoring a pack should
+   *  leave it alone and let the lowering choose. */
+  force_catalog_lowering?: boolean;
   /** Table A — one row per ingredient: `kind` + per-kind shared config + nested
    *  vendor-surface entity schema. Single-ingredient packs carry exactly one. */
   ingredients: IngredientRow[];
@@ -950,6 +985,11 @@ export interface PackListEntry {
    * this incoming pack version. Present only for an update and only when at
    * least one changed/removed overridden operation needs review. */
   owner_operation_review?: ReadonlyArray<import('./owner-operation-override.js').OwnerOperationUpdateReviewItem>;
+  /** D-221 — exact live Records transition rendered before an update. */
+  records_review?: import('./records.js').RecordsPackUpdateReview;
+  /** Review anchor for a bundled update. For Records this binds the manifest,
+   * current namespace/policy/event state, and the exact target artifacts. */
+  manifest_review_hash?: string;
   /** `manifest.requires[]` forwarded verbatim — the Settings → Packs
    *  install dialog renders each entry as a permission checkbox. Always
    *  contains `BULK_PACK_INSTALL_PERMISSION` by manifest invariant. */
@@ -1012,6 +1052,8 @@ export interface PacksResolveResult {
   /** D-211 Slice 5 — same pre-update review projection as `PackListEntry`, for
    * marketplace manifests resolved by slug before install acceptance. */
   owner_operation_review?: ReadonlyArray<import('./owner-operation-override.js').OwnerOperationUpdateReviewItem>;
+  /** D-221 — live Records transition facts bound into manifest_review_hash. */
+  records_review?: import('./records.js').RecordsPackUpdateReview;
   /** Present iff `manifest` is null.
    *   - `unresolved`  — no published pack at this slug (a clean 404)
    *   - `fetch_error` — could not reach / read the marketplace
@@ -1070,6 +1112,24 @@ export interface BulkPackUninstallResultLike {
      *  shape forward-compat so future store wiring lands without an rpc
      *  signature bump. */
     body_grants: ReadonlyArray<string>;
+  };
+  /** D-225 Slice 2 — the MCP connection this uninstall ALSO removed, present
+   *  only for a generated pack (a pack and its connection are one thing to the
+   *  owner, so removing one removes the other).
+   *
+   *  ⚠ On the surface: the connection holds the enrolled CREDENTIAL, and
+   *  deleting it reads smaller than it is from a button labelled "remove pack".
+   *  This field exists so the surface can SAY what happened instead of leaving
+   *  the owner to discover it later — omitting it is what makes the side effect
+   *  silent. Absent for every ordinary pack. */
+  removed_connection?: string;
+  /** D-221 Records data disposition, present only when the uninstalled pack
+   * owns a Records namespace. Retain/orphan is the default. */
+  records?: {
+    owner: import('./records.js').RecordsPackRef;
+    disposition: 'retain' | 'export' | 'purge';
+    retired_event_count: number;
+    export?: import('./records.js').RecordsExportEnvelope;
   };
   /** R2 build step 4c.3 — "this disables N recipes" uninstall disclosure
    *  (recipe-identity doc §1.6). The SURVIVING recipes (NOT this pack's own
@@ -1776,7 +1836,7 @@ export const parseBulkPackManifest = (input: unknown): BulkPackParseResult => {
         'pre_install',
         'pre_install must be a boolean when present',
       );
-    } else if (obj.pre_install === true && obj.publisher !== 'recued-core') {
+    } else if (obj.pre_install === true && !publisherMayDeclare(obj.publisher, 'pre_install')) {
       add(
         'error',
         'pack_pre_install_publisher',
@@ -1800,7 +1860,10 @@ export const parseBulkPackManifest = (input: unknown): BulkPackParseResult => {
         'connection_requirements',
         'connection_requirements must be an array when present',
       );
-    } else if (obj.connection_requirements.length > 0 && obj.publisher !== 'recued-core') {
+    } else if (
+      obj.connection_requirements.length > 0
+      && !publisherMayDeclare(obj.publisher, 'connection_requirements')
+    ) {
       // Gate the meaningful assertion — DECLARING a descriptor (§2 "Only
       // `recued-core` packs may declare a connection descriptor") — not the mere
       // presence of the key. An empty array declares nothing, so it is a harmless
@@ -1824,6 +1887,37 @@ export const parseBulkPackManifest = (input: unknown): BulkPackParseResult => {
         for (const msg of validateConnectionRequirementShape(entry)) {
           add('error', 'pack_connection_requirement_invalid', path, msg);
         }
+      });
+    }
+  }
+
+  // D-223 — connection_hints[] (optional, ANY publisher). The counterpart to the
+  // gate above: a hint supplies a VALUE for a visible, editable field, so a wrong
+  // or hostile one is something the owner reads and corrects. It never sets
+  // schema — `hidden` / `readonly` / `showWhen` live in vendor schemas that ship
+  // as code, and no manifest reaches them (D-223 § 2.1). Hence no publisher gate
+  // here; the admission filter IS the control, and it is the same one the setup
+  // guide applies to inferred suggestions.
+  if (obj.connection_hints !== undefined) {
+    if (!Array.isArray(obj.connection_hints)) {
+      add(
+        'error',
+        'pack_connection_hints_shape',
+        'connection_hints',
+        'connection_hints must be an array when present',
+      );
+    } else if (obj.connection_hints.length > BULK_PACK_MAX_CONNECTION_HINTS) {
+      add(
+        'error',
+        'pack_connection_hints_too_many',
+        'connection_hints',
+        `connection_hints may contain at most ${BULK_PACK_MAX_CONNECTION_HINTS} entries; got ${obj.connection_hints.length}`,
+      );
+    } else {
+      obj.connection_hints.forEach((entry: unknown, idx: number) => {
+        validateConnectionHintShape(entry, `connection_hints[${idx}]`, (code, path, message) => {
+          add('error', code, path, message);
+        });
       });
     }
   }

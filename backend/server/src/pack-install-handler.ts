@@ -38,6 +38,7 @@ import {
   normalizeBulkPackInstallPlan,
   parseBulkPackManifest,
   parseRecipeBundleKey,
+  RECORDS_RUNTIME_CANARY_OP,
   recipeTrustStateForPureWorkflow,
   RpcError,
   validateRecipeBundlePublisher,
@@ -55,7 +56,11 @@ import {
   type RecipeTrustState,
   type ServerRpcRegistry,
 } from '@recued/contracts';
-import { validatePack } from '@recued/ingredient-authoring';
+import {
+  isRecordsComposition,
+  recordsCatalogSlug,
+  validatePack,
+} from '@recued/ingredient-authoring';
 import {
   BulkPackFetchError,
   fetchBulkPackBySlug,
@@ -65,7 +70,6 @@ import {
   type MarketplaceRecipeResult,
 } from '@recued/marketplace';
 import { hashRecipe, validateRecipe } from '@recued/recipes';
-import { canonicalJSONStringify, sha256Hex } from '@recued/crypto';
 
 import { assessRecipePiiPosture } from './auto-pii-apply.js';
 import {
@@ -91,6 +95,22 @@ import type { ChatInboundTokenStore } from './storage/chat-inbound-token-store.j
 import type { McpBodyVisibilityStore } from './storage/mcp-body-visibility-store.js';
 import type { WebhookConsumerStore } from './storage/webhook-consumer-store.js';
 import type { WsClient } from './ws-server.js';
+import {
+  classifyRecordsMigrationRecipe,
+  installRecordsPackAtomic,
+  recordsRuntimeCanaryIssue,
+  RecordsPackInstallError,
+  type RecordsMigrationArtifact,
+  type RecordsMigrationPlan,
+  type RecordsStore,
+  buildRecordsPackUpdateReview,
+  prepareRecordsReviewTarget,
+  recordsManifestReviewHash,
+  type PreparedRecordsReviewTarget,
+  type RecordsReviewRecipe,
+  type ResolvedRecordsPackRecipe,
+} from './records/index.js';
+import type { RecordsUpdateReviewFence } from '@recued/contracts';
 
 interface RecipeTrustWriter {
   set(state: RecipeTrustState): void | Promise<void>;
@@ -117,6 +137,18 @@ export interface PackInstallRpcDeps {
    *  bundled). Absent → composer returns the undefined-bundle + the
    *  rpc returns `not_configured`. */
   recipeStore: RecipeStore;
+  /** D-221 namespaced Records authority. A recognized Records composition is
+   * never deferred: absence of this store refuses before recipe mutation. */
+  recordsStore?: RecordsStore;
+  /** Provenance service for immutable historical Records pack artifacts. The
+   * by-slug composer may wire this to a version-addressed marketplace/archive
+   * source. Absent/offline means direct routes still work and skipped routes
+   * fail closed before review. */
+  resolveRecordsMigrationArtifacts?: (input: {
+    owner: { publisher: string; pack_slug: string };
+    from_version: number;
+    target_version: number;
+  }) => Promise<readonly RecordsMigrationArtifact[]>;
   /** D-201 Slice 4 — owner-approved pack webhook bindings. */
   webhookConsumerStore?: WebhookConsumerStore;
   /** D-209 #1 W2b — webhook DOOR substrate; a successful install mints one
@@ -244,6 +276,8 @@ type PacksInstallArgs = {
     binding: string;
     ingress_id: string;
   }>;
+  /** Exact review anchor returned by packs.list for a bundled Records update. */
+  expected_manifest_hash?: string;
 };
 
 type InternalInstallOutcome = {
@@ -518,6 +552,13 @@ const parsePacksInstallArgs = (args: PacksInstallArgs): { manifest: BulkPackMani
       'packs.install: chosen_connection must be a string',
     );
   }
+  if (args.expected_manifest_hash !== undefined
+    && !/^[0-9a-f]{64}$/.test(args.expected_manifest_hash)) {
+    throw new RpcError(
+      'bad_request',
+      'packs.install: expected_manifest_hash must be a lowercase SHA-256 digest',
+    );
+  }
   if (args.webhook_bindings !== undefined) {
     if (!Array.isArray(args.webhook_bindings)) {
       throw new RpcError(
@@ -573,7 +614,11 @@ const parsePacksInstallArgs = (args: PacksInstallArgs): { manifest: BulkPackMani
 const installSinglePack = async (
   deps: PackInstallRpcDeps,
   args: PacksInstallArgs,
-  options: { omitRecipeKeys?: ReadonlySet<string> } = {},
+  options: {
+    omitRecipeKeys?: ReadonlySet<string>;
+    verifiedPublisher?: string;
+    recordsReviewFence?: RecordsUpdateReviewFence;
+  } = {},
 ): Promise<{ result: BulkPackInstallResultLike }> => {
   const { manifest } = parsePacksInstallArgs(args);
   // D-165 app-pack v2 — collapse v1/v2 to one install plan. `plan.recipes`
@@ -601,11 +646,68 @@ const installSinglePack = async (
   const compositionRefs = plan.contents.filter(
     (c): c is Extract<PackContentRef, { type: 'composition' }> => c.type === 'composition',
   );
-  const canProvisionComposition =
+  // Detect Records across EVERY composition ref, not just a lone one. Keying
+  // this on `length === 1` made all three Records guards below — storage
+  // availability, verified-publisher provenance, and the sidecar refusal —
+  // structurally unreachable for a pack that simply ships a second
+  // composition. The `length > 1` refusal further down is a different rule and
+  // sits inside `canProvisionComposition`, so it is not a backstop for them.
+  const recordsComposition = compositionRefs.some(
+    (ref) => isRecordsComposition(ref.composition),
+  );
+  const genericCompositionSubstrate =
     compositionRefs.length > 0
     && deps.contractStore !== undefined
     && deps.localManifestStore !== undefined
     && deps.registry !== undefined;
+  const canProvisionComposition = genericCompositionSubstrate
+    && (!recordsComposition || deps.recordsStore !== undefined);
+  if (recordsComposition && !canProvisionComposition) {
+    return {
+      result: {
+        ok: false,
+        installed: [],
+        rolled_back: [],
+        failure: {
+          code: 'validator_rejected',
+          message: 'packs.install: Records runtime/storage is unavailable; Records compositions are never deferred',
+        },
+      },
+    };
+  }
+  if (recordsComposition && options.verifiedPublisher !== manifest.publisher) {
+    return {
+      result: {
+        ok: false,
+        installed: [],
+        rolled_back: [],
+        failure: {
+          code: 'validator_rejected',
+          message: 'packs.install: Records requires marketplace or bundled verified publisher provenance; by-value publisher strings are not authority',
+        },
+      },
+    };
+  }
+  if (
+    recordsComposition
+    && (
+      (manifest.webhook_requirements?.length ?? 0) > 0
+      || (manifest.mcp_body_visibility_grants?.length ?? 0) > 0
+      || (args.webhook_bindings?.length ?? 0) > 0
+    )
+  ) {
+    return {
+      result: {
+        ok: false,
+        installed: [],
+        rolled_back: [],
+        failure: {
+          code: 'validator_rejected',
+          message: 'packs.install: Records v1 refuses webhook/body-visibility sidecars because they cannot join its atomic promotion',
+        },
+      },
+    };
+  }
   if (canProvisionComposition) {
     if (compositionRefs.length > 1) {
       return {
@@ -708,7 +810,7 @@ const installSinglePack = async (
       ...(recipeVersion !== ref.version ? { failure: 'version_drift' as const } : {}),
     });
   }
-  const ready = resolved.every((r) => r.recipe != null && r.failure == null);
+  let ready = resolved.every((r) => r.recipe != null && r.failure == null);
 
   // Pure-workflow trust is a property of the AUTHORED recipe (an all-entity-op
   // recipe is pure-workflow — D-170 N.18), but the A3 rewrite below replaces an
@@ -717,6 +819,144 @@ const installSinglePack = async (
   // `resolved`) BEFORE the rewrite so trust is classified from what the author
   // wrote, then applied to the persisted (resolved) recipe id/version.
   const authoredRecipeDefs = resolved.map((r) => r.recipe?.recipe ?? null);
+  const recordsMigrationPlans: RecordsMigrationPlan[] = [];
+  let recordsMigrationArtifacts: readonly RecordsMigrationArtifact[] = [];
+  let recordsReviewSourceRecipes: readonly ResolvedRecordsPackRecipe[] | undefined;
+
+  // D-221 compatibility canary — classify and remove it from the runnable set
+  // before generic op lowering. The immediately preceding runtime sees the
+  // unknown Tier-K op and fails closed; this runtime alone recognizes the exact
+  // inert whole-recipe shape. It is never persisted or executed.
+  if (recordsComposition && ready) {
+    const canaryIndexes = resolved.flatMap((entry, index) => {
+      const steps = entry.recipe?.recipe.steps;
+      return Array.isArray(steps)
+        && steps.some((step) => (
+          step !== null
+          && typeof step === 'object'
+          && 'op' in step
+          && step.op === RECORDS_RUNTIME_CANARY_OP
+        ))
+        ? [index]
+        : [];
+    });
+    if (canaryIndexes.length !== 1) {
+      return {
+        result: {
+          ok: false,
+          installed: [],
+          rolled_back: [],
+          failure: {
+            code: 'validator_rejected',
+            message: 'packs.install: a Records artifact requires exactly one generated runtime canary',
+          },
+        },
+      };
+    }
+    const canaryIndex = canaryIndexes[0]!;
+    const canary = resolved[canaryIndex]!;
+    const canaryRef = plan.contents.find((content): content is Extract<PackContentRef, { type: 'recipe' }> =>
+      content.type === 'recipe'
+      && content.slug === canary.slug
+      && content.version === canary.pinned_version);
+    const canaryIssue = canaryRef === undefined || canary.recipe === null
+      ? 'runtime canary has no exact resolved content ref/body'
+      : recordsRuntimeCanaryIssue(
+          canaryRef,
+          canary.recipe.recipe,
+          `${manifest.publisher}/${manifest.slug}`,
+        );
+    if (canaryIssue !== null) {
+      return {
+        result: {
+          ok: false,
+          installed: [],
+          rolled_back: [],
+          failure: {
+            code: 'validator_rejected',
+            message: `packs.install: invalid Records runtime canary — ${canaryIssue}`,
+          },
+        },
+      };
+    }
+    resolved.splice(canaryIndex, 1);
+    authoredRecipeDefs.splice(canaryIndex, 1);
+    for (let index = resolved.length - 1; index >= 0; index -= 1) {
+      const entry = resolved[index]!;
+      const body = entry.recipe?.recipe;
+      const ref = plan.contents.find((content): content is Extract<PackContentRef, { type: 'recipe' }> =>
+        content.type === 'recipe'
+        && content.slug === entry.slug
+        && content.version === entry.pinned_version);
+      if (body === undefined || ref === undefined) continue;
+      const classification = classifyRecordsMigrationRecipe(
+        ref,
+        body,
+        `${manifest.publisher}/${manifest.slug}`,
+      );
+      if (classification.kind === 'invalid') {
+        return {
+          result: {
+            ok: false,
+            installed: [],
+            rolled_back: [],
+            failure: {
+              code: 'validator_rejected',
+              message: `packs.install: invalid Records migration '${entry.slug}' — ${classification.issue}`,
+            },
+          },
+        };
+      }
+      if (classification.kind === 'migration') {
+        // The removal walk runs backwards; prepend so immutable artifact and
+        // route digests retain the manifest's reviewed recipe order.
+        recordsMigrationPlans.unshift(classification.plan);
+        resolved.splice(index, 1);
+        authoredRecipeDefs.splice(index, 1);
+      }
+    }
+    ready = resolved.every((entry) => entry.recipe !== null && entry.failure == null);
+    if (ready) {
+      recordsReviewSourceRecipes = resolved.map((entry) => ({
+        recipe: entry.recipe!.recipe,
+        publisher_id: entry.recipe!.publisher_id,
+        version: entry.recipe!.version,
+      }));
+    }
+    const namespace = deps.recordsStore?.getNamespace({
+      publisher: manifest.publisher,
+      pack_slug: manifest.slug,
+    });
+    const fromVersion = namespace?.state.state === 'ready'
+      ? namespace.state.version
+      : namespace?.state.state === 'orphaned'
+        ? namespace.state.last_version
+        : namespace?.state.state === 'migrating'
+          ? namespace.state.from_version
+          : undefined;
+    if (fromVersion !== undefined && fromVersion !== manifest.version
+      && deps.resolveRecordsMigrationArtifacts !== undefined) {
+      try {
+        recordsMigrationArtifacts = await deps.resolveRecordsMigrationArtifacts({
+          owner: { publisher: manifest.publisher, pack_slug: manifest.slug },
+          from_version: fromVersion,
+          target_version: manifest.version,
+        });
+      } catch (error) {
+        return {
+          result: {
+            ok: false,
+            installed: [],
+            rolled_back: [],
+            failure: {
+              code: 'unresolved',
+              message: `packs.install: historical Records route artifacts are unavailable — ${error instanceof Error ? error.message : String(error)}`,
+            },
+          },
+        };
+      }
+    }
+  }
 
   // A3 (slice 3) + first-party install wiring — resolve any BUNDLED op-step recipe
   // to its concrete vendor-bound form BEFORE the recipe-install transaction
@@ -733,7 +973,16 @@ const installSinglePack = async (
   // deferred composition must not leave op-steps unresolved. Fast-path passthrough
   // when no recipe carries an op-step (every v1 recipe-only pack).
   if (ready) {
-    const composition = compositionRefs[0]?.composition as CompositionIngredient | undefined;
+    const authoredComposition = compositionRefs[0]?.composition as CompositionIngredient | undefined;
+    const composition = recordsComposition && authoredComposition !== undefined
+      ? {
+          ...authoredComposition,
+          slug: await recordsCatalogSlug({
+            publisher: manifest.publisher,
+            pack_slug: manifest.slug,
+          }),
+        }
+      : authoredComposition;
     const recipeDefs = resolved.map((r) => r.recipe!.recipe);
     // D-182 Slice 4 — the Tier-P `pack_ref → catalog` map this pack's recipes'
     // `depends_on` ops resolve against, built from the installed-pack inventory +
@@ -837,17 +1086,98 @@ const installSinglePack = async (
     ...args.granted_permissions,
   ]);
 
-  const result = await installBulkPackOnServer(input, granted, {
-    recipeStore: deps.recipeStore,
-    ...(deps.webhookConsumerStore
-      ? { webhookConsumerStore: deps.webhookConsumerStore }
-      : {}),
-    ...(deps.webhookDoor ? { webhookDoor: deps.webhookDoor } : {}),
-    ...(deps.mcpBodyVisibilityStore
-      ? { mcpBodyVisibilityStore: deps.mcpBodyVisibilityStore }
-      : {}),
-    now,
-  });
+  let recordsAtomic = false;
+  let result: BulkPackInstallResultLike;
+  if (recordsComposition) {
+    if (!ready) {
+      result = {
+        ok: false,
+        installed: [],
+        rolled_back: [],
+        failure: {
+          code: 'unresolved',
+          message: 'packs.install: one or more Records pack recipes failed exact resolution',
+        },
+      };
+    } else {
+      try {
+        const atomic = await installRecordsPackAtomic(
+          {
+            recipeStore: deps.recipeStore,
+            recordsStore: deps.recordsStore!,
+            localManifestStore: deps.localManifestStore!,
+            contractStore: deps.contractStore!,
+            registry: deps.registry!,
+            now: () => now,
+            applyAudience: (operationIds, sourcePack, selection) =>
+              applyInstallAudienceGrantIds(
+                {
+                  contractStore: deps.contractStore!,
+                  ...(deps.sellerStore ? { sellerStore: deps.sellerStore } : {}),
+                  ...(deps.inboundTokenStore
+                    ? { inboundTokenStore: deps.inboundTokenStore }
+                    : {}),
+                  now: () => now,
+                },
+                operationIds,
+                sourcePack,
+                selection,
+              ),
+          },
+          {
+            manifest,
+            composition: compositionRefs[0]!.composition as CompositionIngredient,
+            verified_publisher: options.verifiedPublisher!,
+            recipes: resolved.map((entry) => ({
+              recipe: entry.recipe!.recipe,
+              publisher_id: entry.recipe!.publisher_id,
+              version: entry.recipe!.version,
+            })),
+            ...(recordsReviewSourceRecipes !== undefined
+              ? { review_source_recipes: recordsReviewSourceRecipes }
+              : {}),
+            migration_plans: recordsMigrationPlans,
+            migration_artifacts: recordsMigrationArtifacts,
+            by_ref_contents: plan.contents.filter((content) => content.type === 'ingredient'),
+            ...(args.install_scope !== undefined ? { install_scope: args.install_scope } : {}),
+            ...(options.recordsReviewFence !== undefined
+              ? { review_fence: options.recordsReviewFence }
+              : {}),
+          },
+        );
+        recordsAtomic = true;
+        result = { ok: true, installed: atomic.installed, rolled_back: [] };
+      } catch (error) {
+        const failure = error instanceof RecordsPackInstallError
+          ? error
+          : new RecordsPackInstallError(
+              'unexpected',
+              error instanceof Error ? error.message : String(error),
+            );
+        result = {
+          ok: false,
+          installed: [],
+          rolled_back: [],
+          failure: {
+            code: failure.code,
+            message: `packs.install: Records atomic install refused — ${failure.message}`,
+          },
+        };
+      }
+    }
+  } else {
+    result = await installBulkPackOnServer(input, granted, {
+      recipeStore: deps.recipeStore,
+      ...(deps.webhookConsumerStore
+        ? { webhookConsumerStore: deps.webhookConsumerStore }
+        : {}),
+      ...(deps.webhookDoor ? { webhookDoor: deps.webhookDoor } : {}),
+      ...(deps.mcpBodyVisibilityStore
+        ? { mcpBodyVisibilityStore: deps.mcpBodyVisibilityStore }
+        : {}),
+      now,
+    });
+  }
   if (result.ok && deps.recipeTrustStore !== undefined) {
     const trustedAt = new Date(now).toISOString();
     for (let i = 0; i < resolved.length; i++) {
@@ -876,8 +1206,8 @@ const installSinglePack = async (
   // `deferred_contents` filter at the return (the composition is no longer
   // deferred). At most one composition per pack (the early gate rejects more),
   // so this single flag fully describes the composition outcome.
-  let compositionProvisioned = false;
-  if (result.ok && canProvisionComposition) {
+  let compositionProvisioned = recordsAtomic && result.ok;
+  if (result.ok && canProvisionComposition && !recordsComposition) {
     // Only by-ref `ingredient` contents become marketplace inventory rows; the
     // composition catalog is recorded by the provisioner with its own kind.
     const byRefContents = plan.contents.filter((c) => c.type === 'ingredient');
@@ -970,6 +1300,7 @@ const installSinglePack = async (
   if (
     result.ok
     && deps.contractStore
+    && !recordsComposition
     && args.install_scope !== undefined
     && (compositionRefs.length === 0 || compositionProvisioned)
   ) {
@@ -1106,6 +1437,8 @@ const handlePacksInstallInternal = async (
   deps: PackInstallRpcDeps,
   args: PacksInstallArgs,
   context: InternalInstallContext,
+  verifiedPublisher?: string,
+  recordsReviewFence?: RecordsUpdateReviewFence,
 ): Promise<InternalInstallOutcome> => {
   const { manifest } = parsePacksInstallArgs(args);
   const ownRecipeKeys = declaredRecipeKeys(manifest);
@@ -1181,6 +1514,7 @@ const handlePacksInstallInternal = async (
           : {}),
       },
       context,
+      dependencyManifest.publisher,
     );
     for (const key of dependencyOutcome.recipeKeys) dependencyRecipeKeys.add(key);
     if (!dependencyOutcome.result.ok) {
@@ -1195,6 +1529,8 @@ const handlePacksInstallInternal = async (
 
   const ownInstall = await installSinglePack(deps, args, {
     omitRecipeKeys: dependencyRecipeKeys,
+    ...(verifiedPublisher !== undefined ? { verifiedPublisher } : {}),
+    ...(recordsReviewFence !== undefined ? { recordsReviewFence } : {}),
   });
   context.visiting.delete(manifest.slug);
   if (!ownInstall.result.ok) {
@@ -1233,14 +1569,76 @@ const handlePacksInstallInternal = async (
 export const handlePacksInstall = async (
   deps: PackInstallRpcDeps,
   args: PacksInstallArgs,
+  verifiedPublisher?: string,
+  prevalidatedRecordsReview?: {
+    fence?: RecordsUpdateReviewFence;
+  },
 ): Promise<{ result: BulkPackInstallResultLike }> => {
   const { manifest } = parsePacksInstallArgs(args);
+  const plan = normalizeBulkPackInstallPlan(manifest);
+  const isRecords = plan.contents.some((content) =>
+    content.type === 'composition' && isRecordsComposition(content.composition));
+  let effectiveVerifiedPublisher = verifiedPublisher;
+  if (isRecords && effectiveVerifiedPublisher === undefined) {
+    // The by-value UI route is authoritative only when the submitted body is
+    // byte-semantically the exact bundled artifact reloaded by the server.
+    const bundled = resolveBundledPackManifest(
+      deps.packDir ?? findCommunityPackDir(),
+      manifest.slug,
+    );
+    if (bundled !== null
+      && recordsManifestReviewHash(bundled) === recordsManifestReviewHash(manifest)) {
+      effectiveVerifiedPublisher = bundled.publisher;
+    }
+  }
+  let recordsReviewFence = prevalidatedRecordsReview?.fence;
+  if (isRecords && prevalidatedRecordsReview === undefined) {
+    let prepared: PreparedRecordsUpdateReview | null;
+    try {
+      prepared = await prepareRecordsUpdateReview(
+        deps,
+        manifest,
+        async (slug) => {
+          const recipe = deps.recipeStore.getBundled(slug);
+          if (recipe === null) return null;
+          return {
+            recipe,
+            publisher_id: manifest.publisher,
+            version: recipe.version,
+          };
+        },
+      );
+    } catch (error) {
+      return {
+        result: {
+          ok: false,
+          installed: [],
+          rolled_back: [],
+          failure: {
+            code: 'validator_rejected',
+            message: `packs.install: Records review staging refused — ${error instanceof Error ? error.message : String(error)}`,
+          },
+        },
+      };
+    }
+    if (prepared?.transition !== null && prepared !== null) {
+      if (args.expected_manifest_hash !== prepared.review_hash) {
+        return { result: staleManifestReviewResult(manifest.slug) };
+      }
+      recordsReviewFence = prepared.transition.fence;
+    } else if (args.expected_manifest_hash !== undefined
+      && args.expected_manifest_hash !== (prepared?.review_hash ?? recordsManifestReviewHash(manifest))) {
+      return { result: staleManifestReviewResult(manifest.slug) };
+    }
+  }
   const preflight = preflightTransitivePermissions(deps, args, manifest);
   if (preflight !== null) return { result: preflight };
   const { result } = await handlePacksInstallInternal(
     deps,
     args,
     { visiting: new Set(), installed: new Set(), recipeKeysByPack: new Map() },
+    effectiveVerifiedPublisher,
+    recordsReviewFence,
   );
   return { result };
 };
@@ -1288,8 +1686,10 @@ type PacksInstallBySlugArgs = {
   webhook_bindings?: PacksInstallArgs['webhook_bindings'];
 };
 
-const marketplaceManifestReviewHash = (manifest: BulkPackManifest): string =>
-  sha256Hex(canonicalJSONStringify(manifest));
+const marketplaceManifestReviewHash = (
+  manifest: BulkPackManifest,
+  recordsFence?: RecordsUpdateReviewFence,
+): string => recordsManifestReviewHash(manifest, recordsFence);
 
 const staleManifestReviewResult = (slug: string): BulkPackInstallResultLike => ({
   ok: false,
@@ -1302,6 +1702,83 @@ const staleManifestReviewResult = (slug: string): BulkPackInstallResultLike => (
       + 'refresh the pack detail and review the current manifest',
   },
 });
+
+interface PreparedRecordsUpdateReview {
+  target: PreparedRecordsReviewTarget;
+  recipes: RecordsReviewRecipe[];
+  migration_artifacts: readonly RecordsMigrationArtifact[];
+  transition: ReturnType<typeof buildRecordsPackUpdateReview>;
+  review_hash: string;
+}
+
+const recordsCurrentVersion = (
+  namespace: NonNullable<ReturnType<RecordsStore['getNamespace']>>,
+): number | undefined => namespace.state.state === 'ready'
+  ? namespace.state.version
+  : namespace.state.state === 'orphaned'
+    ? namespace.state.last_version
+    : namespace.state.state === 'migrating'
+      ? namespace.state.from_version
+      : undefined;
+
+/** Read-only target staging shared by marketplace preview/confirm and bundled
+ * list/confirm. It resolves exact recipe bodies because a ref-only manifest hash
+ * cannot bind migration bodies or watcher behavior. */
+export const prepareRecordsUpdateReview = async (
+  deps: PackInstallRpcDeps,
+  manifest: BulkPackManifest,
+  resolveRecipe: (slug: string) => Promise<{
+    recipe: RecipeDefinition;
+    publisher_id: string;
+    version: number;
+  } | null>,
+): Promise<PreparedRecordsUpdateReview | null> => {
+  const plan = normalizeBulkPackInstallPlan(manifest);
+  const recordsComposition = plan.contents.some((content) =>
+    content.type === 'composition' && isRecordsComposition(content.composition));
+  if (!recordsComposition) return null;
+  if (deps.recordsStore === undefined) {
+    throw new Error('Records runtime/storage is unavailable');
+  }
+  const recipes: RecordsReviewRecipe[] = [];
+  for (const ref of plan.recipes) {
+    const row = await resolveRecipe(ref.slug);
+    if (row === null) throw new Error(`Records recipe '${ref.slug}' could not be resolved for review`);
+    recipes.push({
+      slug: ref.slug,
+      recipe: row.recipe,
+      publisher_id: row.publisher_id,
+      version: row.version,
+    });
+  }
+  const target = await prepareRecordsReviewTarget({ manifest, recipes });
+  if (target === null) return null;
+  const owner = { publisher: manifest.publisher, pack_slug: manifest.slug };
+  const namespace = deps.recordsStore.getNamespace(owner);
+  const fromVersion = namespace === null ? undefined : recordsCurrentVersion(namespace);
+  let migrationArtifacts: readonly RecordsMigrationArtifact[] = [];
+  if (fromVersion !== undefined && fromVersion !== manifest.version
+    && deps.resolveRecordsMigrationArtifacts !== undefined) {
+    migrationArtifacts = await deps.resolveRecordsMigrationArtifacts({
+      owner,
+      from_version: fromVersion,
+      target_version: manifest.version,
+    });
+  }
+  const transition = buildRecordsPackUpdateReview({
+    manifest,
+    target,
+    store: deps.recordsStore,
+    migration_artifacts: migrationArtifacts,
+  });
+  return {
+    target,
+    recipes,
+    migration_artifacts: migrationArtifacts,
+    transition,
+    review_hash: marketplaceManifestReviewHash(manifest, transition?.fence),
+  };
+};
 
 /** Add-a-pack (2026-07-01) — `packs.resolveBySlug` args (manifest-only preview). */
 type PacksResolveBySlugArgs = {
@@ -1425,13 +1902,55 @@ export const installPackBySlug = async (
       },
     };
   }
-
-  const currentManifestHash = marketplaceManifestReviewHash(manifest);
-  const installed = deps.contractStore === undefined
-    ? null
-    : getInstalledPack(deps.contractStore, manifest.slug);
-  const isUpdate = installed !== null
-    && (installed.version === undefined || installed.version < manifest.version);
+  let preparedRecords: PreparedRecordsUpdateReview | null = null;
+  try {
+    preparedRecords = await prepareRecordsUpdateReview(
+      deps,
+      manifest,
+      async (slug) => {
+        const row = await fetchRecipeBySlug(slug, fetchFn, { install: true });
+        if (row === null || row.recipe_id !== slug || row.recipe.recipe_id !== slug) return null;
+        return { recipe: row.recipe, publisher_id: row.publisher_id, version: row.version };
+      },
+    );
+  } catch (error) {
+    return {
+      result: {
+        ok: false,
+        installed: [],
+        rolled_back: [],
+        failure: {
+          code: 'validator_rejected',
+          message: `packs.installBySlug: Records review staging refused — ${error instanceof Error ? error.message : String(error)}`,
+        },
+      },
+    };
+  }
+  const currentManifestHash = preparedRecords?.review_hash
+    ?? marketplaceManifestReviewHash(manifest);
+  const recordsNamespace = deps.recordsStore?.getNamespace({
+    publisher: manifest.publisher,
+    pack_slug: manifest.slug,
+  }) ?? null;
+  const installed = recordsNamespace !== null
+    ? {
+        version: recordsNamespace.state.state === 'ready'
+          ? recordsNamespace.state.version
+          : recordsNamespace.state.state === 'orphaned'
+            ? recordsNamespace.state.last_version
+            : undefined,
+      }
+    : deps.contractStore === undefined
+      ? null
+      : getInstalledPack(deps.contractStore, manifest.slug);
+  const isUpdate = preparedRecords?.transition !== null && preparedRecords !== null
+    ? true
+    : installed !== null
+    && (
+      recordsNamespace?.state.state === 'orphaned'
+      || installed.version === undefined
+      || installed.version < manifest.version
+    );
   if (
     (args.expected_manifest_hash !== undefined
       && args.expected_manifest_hash !== currentManifestHash)
@@ -1448,7 +1967,19 @@ export const installPackBySlug = async (
   // unresolved`); a hard fetch error throws → caught below as an `unexpected`
   // result, so a transient blip never masquerades as `not_found` or a raw rpc
   // error.
+  const preparedRecipeRows = new Map(
+    (preparedRecords?.recipes ?? []).map((row) => [row.slug, row]),
+  );
   const resolveMarketplaceRecipe = async (slug: string): Promise<MarketplaceRecipeResult | null> => {
+    const prepared = preparedRecipeRows.get(slug);
+    if (prepared !== undefined) {
+      return {
+        recipe_id: slug,
+        publisher_id: prepared.publisher_id,
+        version: prepared.version,
+        recipe: prepared.recipe,
+      } as MarketplaceRecipeResult;
+    }
     // Marked: a pack install DOES install each constituent recipe, so each ref
     // is a real recipe install. One N-recipe pack install therefore contributes
     // 1 to the pack and 1 to each of its N recipes — intended, not double
@@ -1465,7 +1996,16 @@ export const installPackBySlug = async (
 
   try {
     return await handlePacksInstall(
-      { ...deps, resolveMarketplaceRecipe },
+      {
+        ...deps,
+        resolveMarketplaceRecipe,
+        ...(preparedRecords !== null
+          ? {
+              resolveRecordsMigrationArtifacts: async () =>
+                preparedRecords!.migration_artifacts,
+            }
+          : {}),
+      },
       {
         manifest,
         granted_permissions: args.granted_permissions,
@@ -1473,6 +2013,12 @@ export const installPackBySlug = async (
         ...(args.chosen_connection !== undefined ? { chosen_connection: args.chosen_connection } : {}),
         ...(args.webhook_bindings !== undefined
           ? { webhook_bindings: args.webhook_bindings }
+          : {}),
+      },
+      manifest.publisher,
+      {
+        ...(preparedRecords?.transition?.fence !== undefined
+          ? { fence: preparedRecords.transition.fence }
           : {}),
       },
     );
@@ -1555,20 +2101,60 @@ export const resolvePackBySlug = async (
       },
     };
   }
-  const installed = deps.contractStore === undefined
-    ? null
-    : getInstalledPack(deps.contractStore, manifest.slug);
+  let preparedRecords: PreparedRecordsUpdateReview | null = null;
+  try {
+    preparedRecords = await prepareRecordsUpdateReview(
+      deps,
+      manifest,
+      async (slug) => {
+        const row = await fetchRecipeBySlug(slug, fetchFn);
+        if (row === null || row.recipe_id !== slug || row.recipe.recipe_id !== slug) return null;
+        return { recipe: row.recipe, publisher_id: row.publisher_id, version: row.version };
+      },
+    );
+  } catch (error) {
+    return {
+      manifest: null,
+      failure: {
+        code: 'validation',
+        message: `Records update preview refused: ${error instanceof Error ? error.message : String(error)}`,
+      },
+    };
+  }
+  const recordsNamespace = deps.recordsStore?.getNamespace({
+    publisher: manifest.publisher,
+    pack_slug: manifest.slug,
+  }) ?? null;
+  const installed = recordsNamespace !== null
+    ? {
+        version: recordsNamespace.state.state === 'ready'
+          ? recordsNamespace.state.version
+          : recordsNamespace.state.state === 'orphaned'
+            ? recordsNamespace.state.last_version
+            : undefined,
+      }
+    : deps.contractStore === undefined
+      ? null
+      : getInstalledPack(deps.contractStore, manifest.slug);
   const ownerOperationReview =
     deps.contractStore !== undefined
     && installed !== null
-    && (installed.version === undefined || installed.version < manifest.version)
+    && (
+      recordsNamespace?.state.state === 'orphaned'
+      || installed.version === undefined
+      || installed.version < manifest.version
+    )
       ? reviewOwnerOperationsForPackUpdate(deps.contractStore, manifest)
       : [];
   return {
     manifest,
-    manifest_review_hash: marketplaceManifestReviewHash(manifest),
+    manifest_review_hash: preparedRecords?.review_hash
+      ?? marketplaceManifestReviewHash(manifest),
     ...(ownerOperationReview.length > 0
       ? { owner_operation_review: ownerOperationReview }
+      : {}),
+    ...(preparedRecords?.transition !== null && preparedRecords !== null
+      ? { records_review: preparedRecords.transition.review }
       : {}),
   };
 };

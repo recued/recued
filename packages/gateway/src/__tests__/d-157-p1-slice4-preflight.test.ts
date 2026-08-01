@@ -864,6 +864,71 @@ describe('buildPreflightAsk', () => {
     expect(ask.message.text).toContain('pinned  connection = gmail-personal');
   });
 
+  it('omits absent pinned inputs from the approval copy without hiding meaningful falsy values', () => {
+    const ask = buildPreflightAsk({
+      checkpoint: checkpoint(),
+      context: askContext({
+        tool_slug: 'core.mail.send',
+        risk_tier: 'write',
+        session_grant: {
+          ttl_ms: 3_600_000,
+          max_uses: 10,
+          risk_tier: 'write',
+          grant_mode: 'open',
+        },
+        open_projection_preview: {
+          pinned: [
+            { label: 'to', value: '"client@example.test"' },
+            { label: 'attachments', value: 'null' },
+            { label: 'bcc', value: '""' },
+            { label: 'cc', value: '"   "' },
+            { label: 'track_opens', value: 'false' },
+            { label: 'retry_count', value: '0' },
+            { label: 'subject', value: '"null"' },
+            { label: 'tags', value: '[]' },
+          ],
+          varying: [],
+        },
+      }),
+    });
+
+    expect(ask.message.text).toContain('pinned  to = "client@example.test"');
+    expect(ask.message.text).not.toContain('pinned  attachments');
+    expect(ask.message.text).not.toContain('pinned  bcc');
+    expect(ask.message.text).not.toContain('pinned  cc');
+    expect(ask.message.text).toContain('pinned  track_opens = false');
+    expect(ask.message.text).toContain('pinned  retry_count = 0');
+    expect(ask.message.text).toContain('pinned  subject = "null"');
+    expect(ask.message.text).toContain('pinned  tags = []');
+    expect(ask.message.text).toContain('only while its fixed inputs stay exactly as approved');
+  });
+
+  it('does not leave a dangling detail colon when every preview value is absent', () => {
+    const ask = buildPreflightAsk({
+      checkpoint: checkpoint(),
+      context: askContext({
+        tool_slug: 'core.mail.send',
+        risk_tier: 'write',
+        session_grant: {
+          ttl_ms: 3_600_000,
+          max_uses: 10,
+          risk_tier: 'write',
+          grant_mode: 'open',
+        },
+        open_projection_preview: {
+          pinned: [
+            { label: 'attachments', value: 'null' },
+            { label: 'bcc', value: '""' },
+          ],
+          varying: [],
+        },
+      }),
+    });
+
+    expect(ask.message.text).not.toContain('pinned  ');
+    expect(ask.message.text).toContain('(anything else re-asks).\n\nApprove?');
+  });
+
   // D-182 §8 — the recipe-LESS raw-op door hold.
   it('renders an op-first sentence + raw_op_id payload for a raw-op hold (no recipe fields)', () => {
     const ask = buildPreflightAsk({

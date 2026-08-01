@@ -28,6 +28,8 @@
  *
  *  Spec: D-169 § N.5 #4 / I-11 / I-12 / TR-9. */
 
+import { formatClientDateTime } from '../date-time.js';
+
 /** One answer choice — mirrors the D-158 `AskOption` ({ id, label }) and
  *  the `ServerPendingAsk.options[]` wire shape without importing either. */
 export interface AskCardOption {
@@ -104,7 +106,13 @@ const projectGeneratedApprovalAsk = (text: string): ProjectedApprovalAsk | null 
   for (const line of lines.slice(1)) {
     const field = line.match(/^\s{2,}([^:]+):\s*(.*)$/);
     if (field !== null) {
-      fields.push({ key: field[1]!.trim(), value: field[2]!.trim() });
+      const key = field[1]!.trim();
+      // Generated metadata is producer bookkeeping, not a decision input.
+      // Keep it in the server-side ask for enforcement/audit, but do not
+      // project it into the approval card's user-facing technical details.
+      if (key !== 'metadata' && !key.startsWith('metadata.')) {
+        fields.push({ key, value: field[2]!.trim() });
+      }
       continue;
     }
     const reasonLine = line.trim().match(/^Reason:\s*(.+)$/i);
@@ -405,7 +413,7 @@ export const APPROVAL_CARD_CAUTION_ATTR = 'data-recued-approval-caution';
 
 const formatEpochMs = (value: number): string => {
   if (!Number.isFinite(value)) return 'unknown time';
-  return new Date(value).toISOString();
+  return formatClientDateTime(value, { invalidText: 'unknown time' });
 };
 
 const formatResolvedInput = (input: Record<string, unknown>): string => {

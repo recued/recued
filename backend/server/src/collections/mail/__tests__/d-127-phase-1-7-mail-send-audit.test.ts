@@ -112,6 +112,8 @@ const mkAuditLog = (): AuditSink => {
     listByChannelSession: async () => [],
     listByCognitionSession: async () => [],
     listByCorrelation: async () => [],
+    listByDish: async () => [],
+    latestByDishes: async () => new Map(),
     get: async () => null,
     clearOlderThan: async () => 0,
     clearByRecipe: async () => 0,

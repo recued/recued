@@ -995,6 +995,7 @@ describe('D-137 P3 plan-approval chat route', () => {
       .toBe('Approving…');
     expect(requirePlanCard(h.root, 'plan_approve').getAttribute('aria-busy'))
       .toBe('true');
+    expect(h.route.hasInFlightWork()).toBe(true);
 
     approve.resolve({
       plan: chatPlan({
@@ -1010,6 +1011,7 @@ describe('D-137 P3 plan-approval chat route', () => {
         'approved',
       );
     });
+    expect(h.route.hasInFlightWork()).toBe(false);
     expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)).toHaveLength(0);
     expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_CANCEL_ATTR)).toHaveLength(0);
     expect(planHint(requirePlanCard(h.root, 'plan_approve'))?.textContent).toBe(

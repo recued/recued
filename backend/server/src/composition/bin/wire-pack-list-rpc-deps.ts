@@ -16,6 +16,7 @@
 import type { PackListRpcDeps } from '../../pack-list-handler.js';
 import type { RecipeStore } from '../../recipe-store.js';
 import type { ContractStore } from '../../storage/contract-store.js';
+import type { RecordsStore } from '../../records/store.js';
 
 export interface ComposePackListRpcDepsInput {
   /** Per-pair recipe store. Absent → composer returns the
@@ -27,6 +28,7 @@ export interface ComposePackListRpcDepsInput {
    *  so the list sees the rows install writes. Optional: dbless boots leave
    *  it undefined + empty-recipes packs degrade to `installed: false`. */
   contractStore?: ContractStore;
+  recordsStore?: RecordsStore;
   /** Override the default community/packs directory. Tests pass a
    *  scratch dir; production callers leave undefined to use the
    *  bundled location. */
@@ -43,7 +45,7 @@ export interface PackListRpcBundle {
 export const composePackListRpcDeps = (
   input: ComposePackListRpcDepsInput,
 ): PackListRpcBundle => {
-  const { recipeStore, contractStore, packDir } = input;
+  const { recipeStore, contractStore, recordsStore, packDir } = input;
 
   if (!recipeStore) {
     return { packListDeps: undefined };
@@ -52,6 +54,7 @@ export const composePackListRpcDeps = (
   const packListDeps: PackListRpcDeps = {
     recipeStore,
     ...(contractStore !== undefined ? { contractStore } : {}),
+    ...(recordsStore !== undefined ? { recordsStore } : {}),
     ...(packDir !== undefined ? { packDir } : {}),
   };
 

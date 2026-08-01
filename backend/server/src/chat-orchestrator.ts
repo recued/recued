@@ -231,9 +231,15 @@ import {
   readExecutionCaseContext,
   type RequestAugmentationDeps,
 } from './execution-case-retrieval.js';
+import {
+  type ExecutionCasePrecedentDeps,
+} from './execution-case-precedent.js';
 import type {
   ExecutionCaseLifecycle,
 } from './chat-execution-case-tools.js';
+import type {
+  ExecutionCaseOfferLifecycle,
+} from './execution-case-offer-lifecycle.js';
 import type {
   ExecutionCaseProposalCritic,
 } from './execution-case-critic.js';
@@ -850,14 +856,36 @@ export interface ChatOrchestratorDeps {
   /** D-214 §10.1/§10.4 — optional experiment-gated request augmentation. */
   getExecutionCaseAugmentationDeps?:
     () => RequestAugmentationDeps | undefined;
+  /** D-219 — the ordinary-path shape-only precedent surface. Composed only when
+   *  the two dep above/below are NOT: an experiment's control arm that received
+   *  precedent from a second source is not a control arm. */
+  getExecutionCasePrecedentDeps?:
+    () => ExecutionCasePrecedentDeps | undefined;
   /** D-214 §4.3 — report closure and strong-signal finalization. */
   getExecutionCaseLifecycle?:
     () => ExecutionCaseLifecycle | undefined;
+  /** D-219 slice 9c — the owner-facing offer's lifecycle (raise after the turn
+   *  that earned it, retire at the owner's next request). Late-bound: the
+   *  notification block it needs is composed after the chat substrate. */
+  getExecutionCaseOfferLifecycle?:
+    () => ExecutionCaseOfferLifecycle | undefined;
   /** D-214 §10.2 — optional pre-dispatch experiment service. */
   getExecutionCaseProposalCritic?:
     () => ExecutionCaseProposalCritic | undefined;
   /** Tool-dispatch surface (Tier 1+2+3 via direct function call). */
   registry: InternalToolRegistry;
+  /** D-225 § 9.8.1 — the raw catalog-op source, DERIVED from the turn's
+   *  contract. Optional: absent ⇒ no raw ops, which is the behaviour before
+   *  § 9.5.1 and keeps every partial harness working. */
+  rawOpSource?: (source?: ExecutionSource) => ReadonlyArray<{
+    name: string;
+    tier: 2;
+    description: string;
+    arg_schema: unknown;
+    topic_tags: readonly string[];
+    classification: 'read' | 'write' | 'unknown';
+    concurrency_safe: boolean;
+  }>;
   /** Lever-2 (2026-07-02) — catalog delivery mode + index-desc cap. Absent
    *  → `DEFAULT_CHAT_CATALOG_PROJECTION` (`{ mode: 'full' }`, the launch
    *  baseline: full arg_schema per entry in the cacheable prefix).
@@ -1401,6 +1429,23 @@ export interface OrchestratorDispatch {
     read_only?: boolean;
     tool_name: string;
     arg_values: unknown;
+    /** D-219 — which tool-loop ROUND emitted this call.
+     *
+     *  ⛔ THE ONE THING TIMESTAMPS CANNOT RECOVER. The compiler derives a
+     *  flow's shape from audit rows ordered by timestamp, so two tools the
+     *  model emitted TOGETHER in one round and two it emitted in sequence
+     *  across two rounds are indistinguishable afterwards — both read as an
+     *  ordered pair. Measured on a real llm run: the same prompt produced
+     *  `mail.search+contact.search` in one round three times and
+     *  `contact.search | mail.search` across two rounds once, and every one of
+     *  those four turns compiled to the same kind of two-step chain.
+     *
+     *  That difference is the substance of what a procedure is worth learning
+     *  FOR — a batched pair is one round-trip, a sequenced pair is two — so a
+     *  card built without it cannot express the better shape even in principle.
+     *  Absent ⇒ recorded as unknown, never guessed from proximity (§4.2 refuses
+     *  structure inferred from timestamps, and this is that inference). */
+    round_index?: number;
     picker_target: ChatPickerTarget;
     /** The turn's REAL channel-minted `ExecutionSource` — threaded by the
      *  turn driver so a messenger turn's dispatches are gated under the
@@ -1802,7 +1847,10 @@ export const createChatOrchestrator = (
     deps.catalogProjectionForSource
       ? deps.catalogProjectionForSource(source)
       : catalogProjection;
-  const buildCatalog: ChatCatalogBuilder = (picker_target, projection) => {
+  // D-225 § 9.8.1 — the turn's `source` arrives per CALL (this closure is bound
+  // at orchestrator construction, where no turn exists yet), so the raw-op half
+  // of the catalog can be derived from the caller's contract.
+  const buildCatalog: ChatCatalogBuilder = (picker_target, projection, source) => {
     const peerName = extractPeerName(picker_target);
     const catalogEntries =
       peerName !== null
@@ -1824,8 +1872,14 @@ export const createChatOrchestrator = (
         : annotations
           ? computeConnectionMcpDisabledTier3Names(annotations)
           : new Set<string>();
+    // D-225 § 9.8.1 — raw catalog ops are DERIVED from the turn's contract
+    // rather than assembled and filtered at dispatch. A peer-scoped turn keeps
+    // the peer's own entries and adds none of ours.
+    const rawOps = peerName !== null || !deps.rawOpSource
+      ? []
+      : deps.rawOpSource(source);
     return buildChatMainTurnTools(
-      catalogEntries,
+      [...catalogEntries, ...(rawOps as typeof catalogEntries)],
       kindGatedTier2Names,
       disabledTier3Names,
       projection,
@@ -1863,8 +1917,20 @@ export const createChatOrchestrator = (
             deps.getExecutionCaseAugmentationDeps,
         }
       : {}),
+    ...(deps.getExecutionCasePrecedentDeps
+      ? {
+          getExecutionCasePrecedentDeps:
+            deps.getExecutionCasePrecedentDeps,
+        }
+      : {}),
     ...(deps.getExecutionCaseLifecycle
       ? { getExecutionCaseLifecycle: deps.getExecutionCaseLifecycle }
+      : {}),
+    ...(deps.getExecutionCaseOfferLifecycle
+      ? {
+          getExecutionCaseOfferLifecycle:
+            deps.getExecutionCaseOfferLifecycle,
+        }
       : {}),
     ...(piiHookDeps ? { pii: piiHookDeps } : {}),
     now,
@@ -2102,6 +2168,7 @@ export const createChatOrchestrator = (
     read_only,
     tool_name,
     arg_values,
+    round_index,
     picker_target,
     execution_source,
     contract_snapshot,
@@ -2109,6 +2176,23 @@ export const createChatOrchestrator = (
     dispatch_depth,
     turn_state,
   }) => {
+    // D-219 — ONE builder for every `chat_tool_call` detail on this path.
+    //
+    // ⛔ There are three write sites (mcp-wire, peer, internal) and they were
+    // three hand-copied object literals. A field added to one of them is a
+    // field silently missing from the other two, and the compiler reads all
+    // three as the same kind of row — the enumerating-copier shape this
+    // codebase has been bitten by before. Routing them through one function
+    // makes a new field impossible to drop at a site.
+    const toolCallDetail = (
+      fields: Record<string, unknown>,
+    ): string => JSON.stringify({
+      ...fields,
+      // Absent when the caller did not supply one (a non-tool-loop dispatch —
+      // messenger, MCP wire, a resumed run). Recorded as absent rather than
+      // defaulted to 0, because "round 0" is a claim and "unknown" is the truth.
+      ...(round_index !== undefined ? { round_index } : {}),
+    });
     // D-137 P4 § A.7 — peer-target detection. Peer-routed dispatches
     // go through the outbound MCP wire; Self-routed go through the
     // local registry. The plan-approval gate runs BEFORE the routing
@@ -2168,7 +2252,7 @@ export const createChatOrchestrator = (
         deps.auditLog,
         'chat_tool_call',
         `${session_id}:${turn_id}:${tool_name}`,
-        JSON.stringify({
+        toolCallDetail({
           channel: (
             peerName === null ? 'internal_function_call' : 'mcp_wire'
           ) satisfies ChatDispatchChannel,
@@ -2695,7 +2779,7 @@ export const createChatOrchestrator = (
         deps.auditLog,
         'chat_tool_call',
         `${session_id}:${turn_id}:${tool_name}`,
-        JSON.stringify({
+        toolCallDetail({
           channel: 'internal_function_call' satisfies ChatDispatchChannel,
           tier,
           status: result.run_failed ? 'error' : 'ok',
@@ -2729,7 +2813,7 @@ export const createChatOrchestrator = (
       deps.auditLog,
       'chat_tool_call',
       `${session_id}:${turn_id}:${tool_name}`,
-      JSON.stringify({
+      toolCallDetail({
         channel: 'internal_function_call' satisfies ChatDispatchChannel,
         tier,
         status: 'error',
@@ -2870,6 +2954,11 @@ export const createChatOrchestrator = (
         )
         .map((part) => part.text);
       const executionCaseContext = readExecutionCaseContext(ctx.state);
+      // ⛔ D-219's precedent card is REMOVED from this surface; nothing writes
+      // this state any more, so the read is deleted with it rather than left to
+      // resolve `undefined` forever. A reader with no writer is the shape that
+      // makes a deleted feature look merely dormant.
+      // Evidence + what survives: `wire-execution-cases.ts`.
       const content = assembleChatPromptContent([
         ...params.content_parts,
         ...ctx.prompt.parts().filter((part): part is ContentPromptPart => part.role === 'content'),
@@ -3015,6 +3104,7 @@ export const createChatOrchestrator = (
           ...(executionCaseContext
             ? { execution_case_context: executionCaseContext }
             : {}),
+
           // Lever-2 per-slot — the PER-TURN catalog delivery mode (resolved
           // from the turn's source) drives the system-prompt guidance. Same
           // `perTurnProjection` object that fed the catalog build → presentation

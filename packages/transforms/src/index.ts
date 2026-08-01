@@ -1,8 +1,11 @@
 import type { TransformFn } from './types.js';
 
-import { filter, sort, map, project, reduce, unique, flatten, slice, group_by, to_list, partition } from './collection.js';
-import { merge, prefix_keys, pick, omit, rename, set } from './object.js';
-import { lowercase, uppercase, trim, split, contains_any, concat, replace, template, truncate, strip_html, encode_base64, decode_base64 } from './string.js';
+import { filter, sort, map, project, reduce, unique, flatten, slice, group_by, enrich_by, to_list, partition } from './collection.js';
+import {
+  merge, prefix_keys, pick, omit, rename, set, json_byte_length,
+  json_stringify, json_parse, csv_parse, utf8_byte_length, sha256,
+} from './object.js';
+import { lowercase, uppercase, trim, string_length, split, contains_any, concat, replace, template, truncate, strip_html, encode_base64, decode_base64 } from './string.js';
 export { stripHtmlText, STRIP_HTML_MAX_INPUT } from './string.js';
 import { round, clamp, to_number, math, weighted_score } from './numeric.js';
 import { date_diff, date_format, date_add, date_parse, is_past, is_future, date_period, to_recent_date } from './date.js';
@@ -117,12 +120,14 @@ export type { AhoCorasick, AhoCorasickMatch } from './aho-corasick.js';
 export const TRANSFORMS: ReadonlyMap<string, TransformFn> = new Map([
   // Collection
   ['filter', filter], ['sort', sort], ['map', map], ['project', project], ['reduce', reduce],
-  ['unique', unique], ['flatten', flatten], ['slice', slice], ['group_by', group_by], ['to_list', to_list],
+  ['unique', unique], ['flatten', flatten], ['slice', slice], ['group_by', group_by], ['enrich_by', enrich_by], ['to_list', to_list],
   ['partition', partition],
   // Object
   ['merge', merge], ['prefix_keys', prefix_keys], ['pick', pick], ['omit', omit], ['rename', rename], ['set', set],
+  ['json_byte_length', json_byte_length], ['json_stringify', json_stringify], ['json_parse', json_parse], ['csv_parse', csv_parse],
+  ['utf8_byte_length', utf8_byte_length], ['sha256', sha256],
   // String
-  ['lowercase', lowercase], ['uppercase', uppercase], ['trim', trim], ['split', split],
+  ['lowercase', lowercase], ['uppercase', uppercase], ['trim', trim], ['string_length', string_length], ['split', split],
   ['contains_any', contains_any], ['concat', concat], ['replace', replace], ['template', template],
   ['truncate', truncate], ['strip_html', strip_html], ['encode_base64', encode_base64], ['decode_base64', decode_base64],
   // Numeric

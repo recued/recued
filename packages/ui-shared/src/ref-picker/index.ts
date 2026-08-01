@@ -9,6 +9,7 @@ export type {
   RefPickerOption,
   RefPickerSelection,
   RefPickerSearchCaller,
+  RefPickerSearchPage,
   RefPickerState,
   RefPickerRenderConfig,
   WireRefPickerOptions,
@@ -45,6 +46,7 @@ export {
   REF_PICKER_VALUE_ATTR,
 } from './render.js';
 
+export { asRefPickerSearchPage } from './types.js';
 export { wireRefPicker } from './wire.js';
 
 export { REF_PICKER_STYLES } from './styles.js';

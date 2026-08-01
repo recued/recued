@@ -26,8 +26,13 @@
  *  cross-walk.
  *
  *  At execution time, vault values from the VaultStore are loaded into
- *  the namespace stores, with env vars and vault-file overrides merged
- *  on top (highest priority last).
+ *  the namespace stores, with `RECUED_VAULT_*` env vars and any
+ *  per-request overrides merged on top (highest priority last). There is
+ *  no vault-file source -- see `server-executor.ts`. Note the two shapes
+ *  differ: stored credentials are publisher-nested
+ *  (`{'recued-core': {key: value}}`) while env entries are flat and
+ *  unscoped, so they occupy different reference paths and only collide
+ *  when a variable is named exactly like a publisher scope.
  */
 
 import type Database from 'better-sqlite3';

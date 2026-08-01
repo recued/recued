@@ -23,7 +23,7 @@ import {
   signManifest,
 } from '@recued/release';
 
-import { runReleaseCheck, type ReleaseCheckDeps } from '../update/release-check.js';
+import { resolveForApply, runReleaseCheck, type ReleaseCheckDeps } from '../update/release-check.js';
 import type { ReleaseCheckState } from '../update/release-state-store.js';
 
 const kp = generateKeypair();
@@ -54,6 +54,35 @@ const manifest = assembleManifest({
   },
 });
 const signed = signManifest(manifest, kp); // { json, sig } — the exact published bytes
+
+// ── the SAME release, but complete: binary + its native `lib-<triple>` sidecar.
+//    D-178 S1 rev 2 item 4 — `release-build.mjs` refuses to publish one without
+//    the other, so this is the shape the real pipeline emits.
+const libBytes = Buffer.from('fake better_sqlite3-linux-x64.node payload');
+const libName = 'better_sqlite3-linux-x64.node';
+const libArtifact = {
+  url: `https://cdn.example/releases/1.4.2/${libName}`,
+  sha256: createHash('sha256').update(libBytes).digest('hex'),
+  sig: signArtifact({ content: libBytes, fileName: libName, version: '1.4.2', key: kp }),
+};
+const pairedManifest = assembleManifest({
+  sequence: 200,
+  expires_at: '2027-01-01T00:00:00Z',
+  min_launcher_version: 1,
+  channels: {
+    stable: {
+      version: '1.4.2',
+      released_at: '2026-07-02T10:00:00Z',
+      min_supported: '1.2.0',
+      migration: true,
+      rollout_pct: 100,
+      notes_url: 'https://recued.com/notes',
+      binaries: { 'linux-x64': binArtifact },
+      libs: { 'lib-linux-x64': libArtifact },
+    },
+  },
+});
+const signedPaired = signManifest(pairedManifest, kp);
 
 // ── serve manifest.json + .minisig over real HTTP (the "hosting" hop) ─
 let served = { json: signed.json, sig: signed.sig };
@@ -122,5 +151,67 @@ describe('D-178 release manifest ↔ runReleaseCheck (real HTTP + real minisign)
     served = { json: `${signed.json} `, sig: signed.sig };
     const r = await runReleaseCheck(deps('1.3.0'));
     expect(r.status).toBe('bad-signature');
+  });
+});
+
+/** D-178 S1 rev 2 item 4 — the APPLY-side resolve, which until now was stubbed
+ *  at every call site and so had never run its `update-available` branch against
+ *  a real signed manifest. The exe and its native addon are ONE artifact here:
+ *  both self-apply channels run the SEA, which dlopen's
+ *  `<binDir>/lib/better_sqlite3.node` at the first database open. */
+describe('D-178 resolveForApply — the exe and its native addon are one artifact', () => {
+  it('a complete release resolves to applyable and carries the addon', async () => {
+    served = { json: signedPaired.json, sig: signedPaired.sig };
+    const r = await resolveForApply(deps('1.3.0'));
+    expect(r.status).toBe('applyable');
+    if (r.status !== 'applyable') return;
+    expect(r.artifact.url).toBe(binArtifact.url);
+    expect(r.libArtifact).toEqual(libArtifact);
+    expect(r.toVersion).toBe('1.4.2');
+  });
+
+  it('⛔ a binary with NO addon for this triple is refused as no-artifact', async () => {
+    // `signed` is the same release minus `lib-linux-x64`. Applying it would
+    // install an exe that boots far enough to look healthy and then cannot open
+    // its database — so the apply path refuses BEFORE any ledger entry exists.
+    served = { json: signed.json, sig: signed.sig };
+    const r = await resolveForApply(deps('1.3.0'));
+    expect(r.status).toBe('no-artifact');
+  });
+
+  it('…but the CHECK still reports that same release — only applying it is refused', async () => {
+    // The refusal must not blank the owner's update card: they need to see the
+    // release exists in order to understand why it will not install.
+    served = { json: signed.json, sig: signed.sig };
+    const r = await runReleaseCheck(deps('1.3.0'));
+    expect(r.status).toBe('update-available');
+    expect(r.available?.version).toBe('1.4.2');
+  });
+
+  it('an addon for a DIFFERENT triple does not satisfy this install', async () => {
+    // A manifest carrying only `lib-linux-arm64` must not let an x64 install
+    // proceed — the pairing is per-triple, and an arm64 .node on x64 is exactly
+    // the load failure the guard exists to prevent.
+    const wrongTriple = assembleManifest({
+      sequence: 200,
+      expires_at: '2027-01-01T00:00:00Z',
+      min_launcher_version: 1,
+      channels: {
+        stable: {
+          version: '1.4.2',
+          released_at: '2026-07-02T10:00:00Z',
+          min_supported: '1.2.0',
+          migration: true,
+          rollout_pct: 100,
+          notes_url: 'https://recued.com/notes',
+          binaries: { 'linux-x64': binArtifact },
+          libs: { 'lib-linux-arm64': libArtifact },
+        },
+      },
+    });
+    const s = signManifest(wrongTriple, kp);
+    served = { json: s.json, sig: s.sig };
+    const r = await resolveForApply(deps('1.3.0'));
+    expect(r.status).toBe('no-artifact');
   });
 });

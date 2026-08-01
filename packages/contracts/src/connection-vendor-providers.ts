@@ -33,6 +33,7 @@ import {
   MICROSOFT_AUTHORIZE_URL,
   MICROSOFT_TOKEN_URL,
 } from './foundational-oauth.js';
+import { isValidOAuthEndpointUrl } from './connection.js';
 
 // ────────────────────────────────────────────────────────────────
 // Cross-vendor sandbox-flag literal (D-130 — used as the
@@ -1260,11 +1261,11 @@ export const assertConnectionVendorProviderShape = (
   if (!entry.default_base_url.startsWith('https://')) {
     issues.push(`default_base_url must be https://: '${entry.default_base_url}'`);
   }
-  if (!entry.oauth.authorize_url.startsWith('https://')) {
-    issues.push(`oauth.authorize_url must be https://: '${entry.oauth.authorize_url}'`);
+  if (!isValidOAuthEndpointUrl(entry.oauth.authorize_url)) {
+    issues.push('oauth.authorize_url must be a complete HTTPS URL with no embedded username or password and no URL fragment');
   }
-  if (!entry.oauth.token_endpoint.startsWith('https://')) {
-    issues.push(`oauth.token_endpoint must be https://: '${entry.oauth.token_endpoint}'`);
+  if (!isValidOAuthEndpointUrl(entry.oauth.token_endpoint)) {
+    issues.push('oauth.token_endpoint must be a complete HTTPS URL with no embedded username or password and no URL fragment');
   }
   if (entry.oauth.scopes.length === 0) {
     issues.push(`oauth.scopes must be non-empty`);
@@ -1277,11 +1278,9 @@ export const assertConnectionVendorProviderShape = (
   }
   if (
     entry.oauth.access_token_introspect_url !== undefined &&
-    !entry.oauth.access_token_introspect_url.startsWith('https://')
+    !isValidOAuthEndpointUrl(entry.oauth.access_token_introspect_url)
   ) {
-    issues.push(
-      `oauth.access_token_introspect_url must be https://: '${entry.oauth.access_token_introspect_url}'`,
-    );
+    issues.push('oauth.access_token_introspect_url must be a complete HTTPS URL with no embedded username or password and no URL fragment');
   }
   if (
     entry.oauth.token_auth_style !== undefined &&
@@ -1303,19 +1302,15 @@ export const assertConnectionVendorProviderShape = (
   }
   if (
     entry.oauth.sandbox_authorize_url !== undefined &&
-    !entry.oauth.sandbox_authorize_url.startsWith('https://')
+    !isValidOAuthEndpointUrl(entry.oauth.sandbox_authorize_url)
   ) {
-    issues.push(
-      `oauth.sandbox_authorize_url must be https://: '${entry.oauth.sandbox_authorize_url}'`,
-    );
+    issues.push('oauth.sandbox_authorize_url must be a complete HTTPS URL with no embedded username or password and no URL fragment');
   }
   if (
     entry.oauth.sandbox_token_endpoint !== undefined &&
-    !entry.oauth.sandbox_token_endpoint.startsWith('https://')
+    !isValidOAuthEndpointUrl(entry.oauth.sandbox_token_endpoint)
   ) {
-    issues.push(
-      `oauth.sandbox_token_endpoint must be https://: '${entry.oauth.sandbox_token_endpoint}'`,
-    );
+    issues.push('oauth.sandbox_token_endpoint must be a complete HTTPS URL with no embedded username or password and no URL fragment');
   }
   if (entry.webhook_signature_header.length === 0) {
     issues.push(`webhook_signature_header must be non-empty`);

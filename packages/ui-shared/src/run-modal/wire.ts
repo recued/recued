@@ -18,12 +18,19 @@ import {
   FILE_REF_VARIABLE_ATTR,
   fileRefVariablePickerId,
   readWidgetValue,
+  toFileRefIds,
 } from '../variable-widgets.js';
+import {
+  FILE_REF_ARRAY_STYLES,
+  wireFileRefArray,
+  type FileRefArrayHandle,
+} from '../file-ref-array.js';
 import {
   REF_PICKER_STYLES,
   wireRefPicker,
   type RefPickerHandle,
 } from '../ref-picker/index.js';
+import { wireRecordRefVariables } from '../record-ref-variable.js';
 import {
   wireConfigEditorOverlay,
   type ConfigEditorOverlayHandle,
@@ -42,6 +49,8 @@ import {
   RUN_MODAL_CONFIG_ATTR,
   RUN_MODAL_PATTERN_ATTR,
   RUN_MODAL_PRESET_ATTR,
+  RUN_MODAL_REPEAT_ATTR,
+  RUN_MODAL_RUN_AT_ATTR,
   RUN_MODAL_RULE_ID_ATTR,
   RUN_MODAL_TARGET_ATTR,
   RUN_MODAL_TARGET_WARNING_ATTR,
@@ -56,6 +65,23 @@ import type {
   WireRunModalOptions,
 } from './types.js';
 
+/** D-215 slice 5 / § 4.6 — a `datetime-local` value carries NO zone, and
+ *  `new Date(s)` on a zone-less string is parsed in the runtime's LOCAL
+ *  zone. That is exactly what we want HERE and only here: the owner picked
+ *  a wall-clock time in the browser, so the browser's zone IS their intent,
+ *  and we convert to an absolute instant (epoch ms) before it ever leaves.
+ *
+ *  ⚠ The hazard § 4.6 warns about is the SERVER doing this. Resolving the
+ *  zone at the picker and shipping epoch ms is what prevents it: `run_at`
+ *  is an instant, never a wall clock.
+ *
+ *  Returns null for an empty or unparseable value. */
+const parseLocalDateTime = (value: string): number | null => {
+  if (value.trim().length === 0) return null;
+  const ms = new Date(value).getTime();
+  return Number.isFinite(ms) ? ms : null;
+};
+
 const RUN_MODAL_STYLES_MARKER = 'data-recued-run-modal-styles';
 
 const errMessage = (err: unknown): string =>
@@ -67,7 +93,7 @@ const injectStyles = (doc: Document): void => {
   }
   const style = doc.createElement('style');
   style.setAttribute(RUN_MODAL_STYLES_MARKER, '');
-  style.textContent = `${RUN_MODAL_STYLES}\n${REF_PICKER_STYLES}`;
+  style.textContent = `${RUN_MODAL_STYLES}\n${REF_PICKER_STYLES}\n${FILE_REF_ARRAY_STYLES}`;
   doc.head.appendChild(style);
 };
 
@@ -85,6 +111,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     canSchedule: opts.schedulesList !== undefined,
     canTrigger: opts.triggersList !== undefined,
     canPickFiles: opts.fileRefSearch !== undefined,
+    canPickRecords: opts.recordRefSearch !== undefined,
   };
   const firstPreset = CRON_PRESETS[0]?.expression ?? '';
   let state: RunModalState = initialRunModalState(
@@ -99,7 +126,8 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   // shared component opened over the modal. It owns its own focus trap; the
   // modal's trap is released while it's open and re-armed on close.
   let configEditorHandle: ConfigEditorOverlayHandle | null = null;
-  let fileRefPickers: RefPickerHandle[] = [];
+  let refPickers: RefPickerHandle[] = [];
+  let fileRefArrays: FileRefArrayHandle[] = [];
 
   const overlay = doc.createElement('div');
   overlay.className = 'run-modal-overlay-root';
@@ -116,10 +144,12 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
 
   const paint = (): void => {
     if (destroyed) return;
-    for (const picker of fileRefPickers) picker.destroy();
-    fileRefPickers = [];
+    for (const picker of refPickers) picker.destroy();
+    refPickers = [];
+    for (const list of fileRefArrays) list.destroy();
+    fileRefArrays = [];
     overlay.innerHTML = renderRunModal(state, opts.recipe, caps);
-    mountFileRefPickers();
+    mountVariablePickers();
   };
 
   // Targeting guard (design § 8) — live half: recompute the gate and flip
@@ -160,8 +190,10 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   const detach = (): void => {
     if (destroyed) return;
     destroyed = true;
-    for (const picker of fileRefPickers) picker.destroy();
-    fileRefPickers = [];
+    for (const picker of refPickers) picker.destroy();
+    refPickers = [];
+    for (const list of fileRefArrays) list.destroy();
+    fileRefArrays = [];
     overlay.removeEventListener('click', onClick);
     overlay.removeEventListener('input', onInput);
     overlay.removeEventListener('change', onInput);
@@ -281,8 +313,18 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   const addSchedule = (): Promise<void> => {
     const create = opts.schedulesCreate;
     if (create === undefined) return scheduleNotWired();
-    // Parity with the recipes route: an empty preset never creates a row.
-    if (state.preset_expression.length === 0) return Promise.resolve();
+    // D-215 slice 5 — Repeat off ⇒ a ONE-SHOT. The two arms are mutually
+    // exclusive at the caller, which is what keeps "one-shot" from being a
+    // second concept: it is this toggle, not a second entry point.
+    const runAt = state.repeat ? null : parseLocalDateTime(state.run_at_local);
+    if (state.repeat) {
+      // Parity with the recipes route: an empty preset never creates a row.
+      if (state.preset_expression.length === 0) return Promise.resolve();
+    } else if (runAt === null) {
+      state = { ...state, schedule_error: 'Pick a date and time to run once.' };
+      paint();
+      return Promise.resolve();
+    }
     let overlay: Record<string, unknown>;
     try {
       overlay = parseRunConfig(state.config_text);
@@ -300,7 +342,14 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
         // Default to the installed recipe's publisher (recipes-route
         // parity); `opts.publisherId` overrides when a host needs it.
         publisher_id: opts.publisherId ?? opts.recipe.publisher_id,
-        cron_expression: state.preset_expression,
+        ...(state.repeat
+          // `mode` is OMITTED for recurring, not sent as 'recurring': the
+          // contract reads absent as recurring, so every pre-slice-5 host
+          // and payload stays byte-identical.
+          ? { cron_expression: state.preset_expression }
+          // The server SYNTHESIZES `cron_expression` from `run_at`, so the
+          // caller never supplies one for a one-shot.
+          : { mode: 'one_shot' as const, run_at: runAt! }),
         ...(Object.keys(overlay).length > 0 ? { config_overlay: overlay } : {}),
       }),
     );
@@ -432,6 +481,9 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       ...(opts.fileRefSearch !== undefined
         ? { fileRefSearch: opts.fileRefSearch }
         : {}),
+      ...(opts.recordRefSearch !== undefined
+        ? { recordRefSearch: opts.recordRefSearch }
+        : {}),
       onConfirm: (config) => {
         if (section === 'schedule') {
           void runScheduleMutation(() =>
@@ -538,6 +590,21 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       state = { ...state, preset_expression: target.value ?? '' };
       return;
     }
+    // D-215 slice 5 — the Repeat toggle repaints (it swaps the control),
+    // unlike the preset which is captured silently.
+    if (target.hasAttribute(RUN_MODAL_REPEAT_ATTR)) {
+      state = {
+        ...state,
+        repeat: (target as unknown as { checked?: boolean }).checked === true,
+        schedule_error: null,
+      };
+      paint();
+      return;
+    }
+    if (target.hasAttribute(RUN_MODAL_RUN_AT_ATTR)) {
+      state = { ...state, run_at_local: target.value ?? '' };
+      return;
+    }
     // Trigger pattern (R21) — in place (caret preserved); the Add button's
     // empty-pattern disable flips live, mirroring refreshRunGate.
     if (target.hasAttribute(RUN_MODAL_PATTERN_ATTR)) {
@@ -594,25 +661,59 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     refreshRunGate();
   };
 
-  /** Attach name→id pickers to the shells emitted for `file_ref` variables.
+  /** Attach name→id pickers to the shells emitted for `record_ref`,
+   * `file_ref`, and `file_ref[]` variables.
    * Fake/string-only DOMs have no parsed shells and simply keep the pure
    * renderer coverage; browsers attach one picker per active modal surface. */
-  function mountFileRefPickers(): void {
-    if (opts.fileRefSearch === undefined || typeof overlay.querySelector !== 'function') return;
+  function mountVariablePickers(): void {
+    if (typeof overlay.querySelector !== 'function') return;
     let config: Record<string, unknown> = {};
     try {
       config = parseRunConfig(state.config_text);
     } catch {
       config = {};
     }
+    if (opts.recordRefSearch !== undefined) {
+      refPickers.push(...wireRecordRefVariables(overlay, {
+        variables: opts.recipe.recipe.variables ?? {},
+        values: config,
+        idPrefix: 'run-modal-var',
+        search: opts.recordRefSearch,
+        onChange: setVariableConfig,
+      }));
+    }
+    if (opts.fileRefSearch === undefined) return;
+    const fileRefSearch = opts.fileRefSearch;
     for (const [key, def] of Object.entries(opts.recipe.recipe.variables ?? {})) {
       if (
         def === null
         || typeof def !== 'object'
         || Array.isArray(def)
-        || (def as { type?: unknown }).type !== 'file_ref'
         || !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key)
       ) continue;
+      const hintType = (def as { type?: unknown }).type;
+
+      // D-215 slice 5 residual — the ORDERED list row. Dispatched on the
+      // DECLARED type (§ 4.6): the control follows the variable's type, never
+      // the recipe, so no pack ever needs special-casing here.
+      if (hintType === 'file_ref[]') {
+        const list = wireFileRefArray(overlay, {
+          key,
+          label: String((def as { label?: unknown }).label ?? key),
+          idPrefix: 'run-modal-var',
+          search: fileRefSearch,
+          initialIds: toFileRefIds(
+            Object.prototype.hasOwnProperty.call(config, key)
+              ? config[key]
+              : (def as { default?: unknown }).default,
+          ),
+          onChange: (ids) => { setVariableConfig(key, ids); },
+        });
+        if (list !== null) fileRefArrays.push(list);
+        continue;
+      }
+
+      if (hintType !== 'file_ref') continue;
       const pickerId = fileRefVariablePickerId(key, 'run-modal-var');
       if (overlay.querySelector(`[data-ref-picker="${pickerId}"]`) === null) continue;
       const raw = Object.prototype.hasOwnProperty.call(config, key)
@@ -624,7 +725,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       const hidden = overlay.querySelector(
         `[${FILE_REF_VARIABLE_ATTR}="${key}"] [data-var-key="${key}"][data-var-type="file_ref"]`,
       ) as HTMLInputElement | null;
-      fileRefPickers.push(wireRefPicker(overlay, {
+      refPickers.push(wireRefPicker(overlay, {
         search: opts.fileRefSearch,
         config: {
           pickerId,
@@ -689,6 +790,20 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     paint();
   };
 
+  /** D-215 slice 5 — the Repeat toggle, host/test-drivable like setPreset.
+   *  Repaints, because it swaps which control is shown. */
+  const setRepeat = (repeat: boolean): void => {
+    state = { ...state, repeat, schedule_error: null };
+    paint();
+  };
+
+  /** D-215 slice 5 — the one-shot fire time, as the datetime-local control
+   *  reports it (a zone-less wall clock; `addSchedule` resolves it against
+   *  the browser's zone before it travels). */
+  const setRunAtLocal = (value: string): void => {
+    state = { ...state, run_at_local: value };
+  };
+
   overlay.addEventListener('click', onClick);
   overlay.addEventListener('input', onInput);
   overlay.addEventListener('change', onInput);
@@ -718,6 +833,8 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     setTargetValue,
     setContextValues,
     setPreset,
+    setRepeat,
+    setRunAtLocal,
     confirmRun,
     addSchedule,
     toggleSchedule,

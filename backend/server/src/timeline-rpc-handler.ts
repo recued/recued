@@ -77,9 +77,13 @@ export const handleDataTimeline = async (
   const response = await handleTimelineRequest(deps.timelineDeps, request);
   // Preserve the declared output (drop an explicit `undefined`
   // next_cursor slot from the wire frame).
-  return response.next_cursor !== undefined
+  // ⚠ ENUMERATING PROJECTION — a field not named here never reaches the wire.
+  // D-226's `rollups` was invisible on this path until it was added; anything
+  // new on `TimelineResponse` has to be listed in the same commit.
+  const base = response.next_cursor !== undefined
     ? { entries: response.entries, next_cursor: response.next_cursor }
     : { entries: response.entries };
+  return response.rollups === undefined ? base : { ...base, rollups: response.rollups };
 };
 
 type TimelineRpcMethods = 'data.timeline';

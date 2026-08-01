@@ -1,170 +1,162 @@
-/** Webclient connection indicator — the topbar status chip + the
- *  offline banner, both bound to one `connection-status` controller.
+/** Webclient route-independent connection callout and status announcer.
  *
- *  ── Why it exists ───────────────────────────────────────────────────
- *  The webclient used to look "logged in" whenever IndexedDB held pair
- *  state, regardless of whether the paired server was actually
- *  reachable. This surface makes the LIVE connection visible:
+ *  Connection identity, details, and actions live in Account -> Server
+ *  profiles. This module deliberately keeps only what must survive every route:
+ *  a sustained-outage banner, a direct handoff to that Account surface, a
+ *  polite restoration or reconciled-context receipt, and a visually hidden
+ *  live announcer for short reconnecting/stalled transitions. The transport
+ *  retries by itself, so no fake manual retry is offered here.
  *
- *    - a small **chip** in the topbar (calm dot when connected, an
- *      accent "Reconnecting…" while a blip rides out, a danger "Offline"
- *      on a sustained outage), and
- *    - a route-independent **banner** at the app root that appears ONLY
- *      while `offline` — the unmissable "can't reach your server" signal.
- *
- *  Both render from the same `status()` / `onStatus()` seam so they can
- *  never disagree, and both follow the near-monochrome design system
- *  (D-174: one accent + one danger) — connected is intentionally the
- *  quietest state (a muted dot, no text) so the chrome only draws the
- *  eye when something is wrong.
- *
- *  ── Render model ────────────────────────────────────────────────────
- *  `createElement` + `textContent` only — no `innerHTML`, so this mounts
- *  cleanly under the node-env fake DOM the webclient tests use. A
- *  `data-state` attribute carries the status for CSS + as the stable
- *  test hook. The exported `CONNECTION_INDICATOR_STYLES` are injected
- *  once into `<head>` by the bootstrap (marker-guarded so a re-bootstrap
- *  on the same document doesn't stack them) — the same mount-creates-
- *  nodes / bootstrap-injects-styles split the notify toasts use, which
- *  keeps this mount touching only `createElement`. */
+ *  `createElement` + `textContent` only — no `innerHTML`, so the mount remains
+ *  usable under the webclient's node-env fake DOM. Styles are exported for the
+ *  bootstrap's one-time, marker-guarded injection. */
 
 import type { WebclientConnectionStatus } from '../realtime/connection-status.js';
 
-export const CONNECTION_CHIP_ATTR = 'data-recued-connection-chip';
+export const CONNECTION_INDICATOR_ATTR =
+  'data-recued-connection-indicator';
 export const CONNECTION_BANNER_ATTR = 'data-recued-connection-banner';
+export const CONNECTION_BANNER_ACTION_ATTR =
+  'data-recued-connection-banner-action';
+export const CONNECTION_STATUS_ANNOUNCER_ATTR =
+  'data-recued-connection-status-announcer';
 /** `<head>` `<style>` marker — injected once, marker-guarded. */
 export const CONNECTION_INDICATOR_STYLES_MARKER =
   'data-recued-connection-indicator-styles';
 
-/** Per-status presentation. `chipText` is empty for `connected` so the
- *  happy path is a bare dot; the chip's `aria-label` always carries the
- *  full state for screen readers. `showBanner` is the offline-only gate. */
-const PRESENTATION: Record<
-  WebclientConnectionStatus,
-  { chipText: string; ariaLabel: string; showBanner: boolean }
-> = {
-  connecting: {
-    chipText: 'Connecting…',
-    ariaLabel: 'Connecting to your server',
-    showBanner: false,
-  },
-  connected: {
-    chipText: '',
-    ariaLabel: 'Connected to your server',
-    showBanner: false,
-  },
-  reconnecting: {
-    chipText: 'Reconnecting…',
-    ariaLabel: 'Reconnecting to your server',
-    showBanner: false,
-  },
-  // Half-open server (socket up, not answering). Deliberately presented
-  // IDENTICALLY to `reconnecting` — it auto-recovers on the next heartbeat,
-  // so there is nothing for the user to do. The rpc layer fast-fails it
-  // (see rpc-conn) without surfacing a scary "act now" state or the red
-  // offline banner; the calm chip is the only ambient signal.
-  stalled: {
-    chipText: 'Reconnecting…',
-    ariaLabel: 'Reconnecting to your server',
-    showBanner: false,
-  },
-  offline: {
-    chipText: 'Offline',
-    ariaLabel: 'Your server is unreachable',
-    showBanner: true,
-  },
+export const CONNECTION_RESTORED_RECEIPT_MS = 5_000;
+export const CONNECTION_ATTENTION_RECEIPT_MS = 10_000;
+
+/** All that survives of the per-status view model: whether this status shows
+ *  the outage banner. The chip's copy (`chipText` / `statusLabel` / `title` /
+ *  `detail`) and its recovery steps left with the chip and the popover — the
+ *  account menu owns that wording now. Keeping the fields here would read as
+ *  live copy nobody renders. */
+interface ConnectionPresentation {
+  readonly showOfflineBanner: boolean;
+}
+
+const PRESENTATION: Record<WebclientConnectionStatus, ConnectionPresentation> = {
+  connecting: { showOfflineBanner: false },
+  connected: { showOfflineBanner: false },
+  // `reconnecting` / `stalled` stay quiet on purpose: both self-heal, and the
+  // whole point of the grace window is to ride out a blip without alarming.
+  reconnecting: { showOfflineBanner: false },
+  stalled: { showOfflineBanner: false },
+  offline: { showOfflineBanner: true },
 };
 
 export const CONNECTION_INDICATOR_STYLES = `
-[${CONNECTION_CHIP_ATTR}] {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 24px;
-  padding: 0 8px;
-  border-radius: 999px;
-  border: 1px solid transparent;
-  color: var(--fg-muted);
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: -0.005em;
+[${CONNECTION_INDICATOR_ATTR}] { display: contents; }
+[${CONNECTION_STATUS_ANNOUNCER_ATTR}] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
   white-space: nowrap;
-  user-select: none;
+  border: 0;
 }
-[${CONNECTION_CHIP_ATTR}] .recued-connection-dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 999px;
-  flex: 0 0 auto;
-  background: var(--fg-subtle);
-}
-[${CONNECTION_CHIP_ATTR}] .recued-connection-label:empty {
-  display: none;
-}
-/* Connected — the quietest state: a muted dot, no label, no border. */
-[${CONNECTION_CHIP_ATTR}][data-state="connected"] .recued-connection-dot {
-  background: var(--fg-subtle);
-}
-/* Connecting / reconnecting / stalled — accent (active/working) + a gentle
-   pulse. The stalled (half-open server) state shares this calm treatment. */
-[${CONNECTION_CHIP_ATTR}][data-state="connecting"],
-[${CONNECTION_CHIP_ATTR}][data-state="reconnecting"],
-[${CONNECTION_CHIP_ATTR}][data-state="stalled"] {
-  color: var(--fg-muted);
-}
-[${CONNECTION_CHIP_ATTR}][data-state="connecting"] .recued-connection-dot,
-[${CONNECTION_CHIP_ATTR}][data-state="reconnecting"] .recued-connection-dot,
-[${CONNECTION_CHIP_ATTR}][data-state="stalled"] .recued-connection-dot {
-  background: var(--accent);
-  animation: recued-connection-pulse 1.4s ease-in-out infinite;
-}
-/* Offline — the one danger state: a red dot + a danger-tinted pill. */
-[${CONNECTION_CHIP_ATTR}][data-state="offline"] {
-  color: var(--danger);
-  border-color: var(--danger);
-  background: var(--danger-bg);
-}
-[${CONNECTION_CHIP_ATTR}][data-state="offline"] .recued-connection-dot {
-  background: var(--danger);
-}
-@keyframes recued-connection-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-@media (prefers-reduced-motion: reduce) {
-  [${CONNECTION_CHIP_ATTR}] .recued-connection-dot { animation: none; }
-}
-/* The offline banner — fixed at the top of the viewport, above the shell
-   chrome but below modals/prompts (z 50, matching the retired re-pair
-   banner). Hidden unless data-state="offline". */
 [${CONNECTION_BANNER_ATTR}] {
   position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  z-index: 50;
+  inset-inline: 0;
+  bottom: 0;
+  z-index: 70;
+  box-sizing: border-box;
   display: none;
   align-items: center;
-  justify-content: center;
-  gap: 8px;
-  padding: 8px 16px;
-  background: var(--danger);
-  color: #ffffff;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 8px 14px max(8px, env(safe-area-inset-bottom));
   font-size: 13px;
-  font-weight: 600;
-  text-align: center;
-  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.18);
 }
+[${CONNECTION_BANNER_ATTR}][data-state="offline"],
+[${CONNECTION_BANNER_ATTR}][data-state="restored"],
+[${CONNECTION_BANNER_ATTR}][data-state="attention"] { display: flex; }
 [${CONNECTION_BANNER_ATTR}][data-state="offline"] {
-  display: flex;
+  background: var(--recued-danger-surface, #fdeceb);
+  color: var(--recued-danger, #b3261e);
+}
+[${CONNECTION_BANNER_ATTR}][data-state="restored"] {
+  background: var(--recued-ok-surface, #e8f5ec);
+  color: var(--recued-ok, #2f6b45);
+}
+[${CONNECTION_BANNER_ATTR}][data-state="attention"] {
+  background: var(--surface-sunk, #fff4e5);
+  color: var(--fg, #6b4100);
+  border-top: 1px solid var(--border-strong, #d4d4d8);
+}
+[${CONNECTION_BANNER_ATTR}] > span {
+  flex: 1 1 20rem;
+  min-width: 0;
+}
+[${CONNECTION_BANNER_ACTION_ATTR}] {
+  flex: 0 0 auto;
+  margin-left: auto;
+  min-height: 44px;
+  padding: 7px 12px;
+  border-radius: 999px;
+  border: 1px solid currentColor;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+[${CONNECTION_BANNER_ACTION_ATTR}]:focus-visible {
+  outline: 2px solid currentColor;
+  outline-offset: 2px;
+}
+[${CONNECTION_BANNER_ACTION_ATTR}][hidden] { display: none; }
+@media (prefers-color-scheme: dark) {
+  [${CONNECTION_BANNER_ATTR}][data-state="offline"] {
+    background: var(--recued-danger-surface, #3b1f1d);
+  }
+  [${CONNECTION_BANNER_ATTR}][data-state="restored"] {
+    background: var(--recued-ok-surface, #1e3527);
+  }
+  :root:not([data-theme]) [${CONNECTION_BANNER_ATTR}][data-state="attention"] {
+    background: var(--surface-sunk, #242428);
+    color: var(--fg, #e4e4e7);
+  }
+}
+:root[data-theme="dark"] [${CONNECTION_BANNER_ATTR}][data-state="attention"] {
+  background: var(--surface-sunk, #242428);
+  color: var(--fg, #e4e4e7);
+}
+@media (max-width: 520px) {
+  [${CONNECTION_BANNER_ACTION_ATTR}] {
+    width: 100%;
+    margin-left: 0;
+  }
 }
 `;
 
+export interface ConnectionReceiptAction {
+  readonly label: string;
+  readonly onSelect: () => void;
+}
+
+export interface ConnectedReceiptPayload {
+  readonly copy: string;
+  readonly action?: ConnectionReceiptAction;
+  readonly tone?: 'success' | 'attention';
+}
+
+export interface ConnectedReceipt extends ConnectedReceiptPayload {
+  /** A freshness-neutral replacement when the primary receipt cannot be
+   * shown until a later connected transition. Omitting it declines delayed
+   * delivery rather than replaying potentially stale copy. */
+  readonly afterReconnect?: ConnectedReceiptPayload;
+}
+
 export interface MountConnectionIndicatorOptions {
-  /** Topbar slot the chip is appended to (created by the shell). */
-  chipHost: HTMLElement;
-  /** App-root element the offline banner is appended to (route-
-   *  independent, survives route swaps — same posture as the toasts). */
+  /** Visually hidden live-status host. Kept separate from the banner so short
+   *  reconnecting transitions remain screen-reader-visible without a callout. */
+  statusHost: HTMLElement;
+  /** App-root element the outage/restoration banner is appended to. */
   bannerHost: HTMLElement;
   /** DOM document seam. Defaults to `globalThis.document`. */
   document?: Document;
@@ -172,73 +164,337 @@ export interface MountConnectionIndicatorOptions {
   status: () => WebclientConnectionStatus;
   /** Subscribe to status transitions. Returns an unsubscribe fn. */
   onStatus: (listener: (status: WebclientConnectionStatus) => void) => () => void;
+  /** What the banner's "Review server profiles" does. Production opens the
+   *  Account dialog, which carries the explanation and profiles. Absent ⇒ the
+   *  action button never renders, because a button that does nothing is worse
+   *  than no button. */
+  onRecoveryAction?: () => void;
+  /** Restoration receipt lifetime. Defaults to five seconds. */
+  restoredReceiptMs?: number;
+  /** Reconciled attention receipt lifetime. Defaults to ten seconds so its
+   * corrective copy remains readable. */
+  attentionReceiptMs?: number;
+  /** Show one restoration receipt on the first connected frame. Used after
+   * in-process pairing or startup recovery, whose new controller has no prior
+   * outage state. */
+  receiptOnFirstConnected?: boolean;
+  /** Optional copy for every ordinary restored receipt. */
+  restoredReceiptCopy?: string;
+  /** One-shot copy for `receiptOnFirstConnected`; later outages return to the
+   * ordinary restored copy so a stale re-pair message is never repeated. */
+  firstConnectedReceiptCopy?: string;
+  /** Optional one-shot action paired with the first-connected receipt. Later
+   * reconnect receipts never inherit it. */
+  firstConnectedReceiptAction?: ConnectionReceiptAction;
+  /** Timer seams for deterministic tests. */
+  setTimer?: (handler: () => void, delayMs: number) => unknown;
+  clearTimer?: (handle: unknown) => void;
 }
 
 export interface ConnectionIndicatorMount {
-  /** Tear down: drop the subscription + remove both nodes. Idempotent. */
+  /** Present a later one-shot receipt after a route-owned reconciliation. If
+   * still connecting/offline, only its explicit freshness-neutral
+   * `afterReconnect` replacement may wait for the next connected transition. */
+  showConnectedReceipt(receipt: ConnectedReceipt): boolean;
+  /** Tear down subscription, timers, listeners, and nodes. Idempotent. */
   dispose(): void;
 }
 
 export const mountConnectionIndicator = (
   opts: MountConnectionIndicatorOptions,
 ): ConnectionIndicatorMount => {
-  const doc =
-    opts.document ?? (globalThis as { document?: Document }).document;
+  const doc = opts.document ?? (globalThis as { document?: Document }).document;
   if (doc === undefined) {
     throw new Error(
       'mountConnectionIndicator: no document available — pass `opts.document` for non-browser environments',
     );
   }
 
-  // Styles live in `<head>` and are injected by the bootstrap (guarded by
-  // `CONNECTION_INDICATOR_STYLES_MARKER`), the same split the notify toasts
-  // use — so this mount only ever touches `createElement` and stays trivial
-  // to drive under the node-env fake DOM.
+  const setTimer = opts.setTimer
+    ?? ((handler: () => void, delayMs: number): unknown =>
+      globalThis.setTimeout(handler, delayMs));
+  const clearTimer = opts.clearTimer
+    ?? ((handle: unknown): void =>
+      globalThis.clearTimeout(handle as ReturnType<typeof globalThis.setTimeout>));
+  const restoredReceiptMs =
+    opts.restoredReceiptMs ?? CONNECTION_RESTORED_RECEIPT_MS;
+  const attentionReceiptMs =
+    opts.attentionReceiptMs ?? CONNECTION_ATTENTION_RECEIPT_MS;
+  const restoredReceiptCopy =
+    opts.restoredReceiptCopy ?? 'Back online. Your server is reachable again.';
 
-  // ── Chip ────────────────────────────────────────────────────────────
-  const chip = doc.createElement('span');
-  chip.setAttribute(CONNECTION_CHIP_ATTR, '');
-  chip.setAttribute('role', 'status');
-  chip.setAttribute('aria-live', 'polite');
-  const dot = doc.createElement('span');
-  dot.className = 'recued-connection-dot';
-  dot.setAttribute('aria-hidden', 'true');
-  const label = doc.createElement('span');
-  label.className = 'recued-connection-label';
-  chip.appendChild(dot);
-  chip.appendChild(label);
-  opts.chipHost.appendChild(chip);
+  // The topbar chip + its recovery popover were REMOVED. The account menu's
+  // badge is the signal now, and that menu carries the explanation and the
+  // remedy (switch server) in one place — the popover's own third step used
+  // to point at Settings pages the outage made unreachable.
+  //
+  // What did NOT go: this announcer, and the banner below. A badge is a colour
+  // cue; without an aria-live region a screen reader learns nothing about the
+  // transitions the badge is silent for.
+  const indicator = doc.createElement('div');
+  indicator.setAttribute(CONNECTION_INDICATOR_ATTR, '');
+  const statusAnnouncer = doc.createElement('span');
+  statusAnnouncer.setAttribute(CONNECTION_STATUS_ANNOUNCER_ATTR, '');
+  statusAnnouncer.setAttribute('role', 'status');
+  statusAnnouncer.setAttribute('aria-live', 'polite');
+  statusAnnouncer.setAttribute('aria-atomic', 'true');
+  indicator.appendChild(statusAnnouncer);
+  opts.statusHost.appendChild(indicator);
 
-  // ── Offline banner ──────────────────────────────────────────────────
+  // ── Route-independent outage + restoration banner ─────────────────
   const banner = doc.createElement('div');
   banner.setAttribute(CONNECTION_BANNER_ATTR, '');
-  banner.setAttribute('role', 'alert');
+  banner.setAttribute('aria-atomic', 'true');
   const bannerText = doc.createElement('span');
-  bannerText.textContent =
-    'Can’t reach your server. Retrying to reconnect…';
   banner.appendChild(bannerText);
+  const bannerAction = doc.createElement('button');
+  bannerAction.setAttribute('type', 'button');
+  bannerAction.setAttribute(CONNECTION_BANNER_ACTION_ATTR, '');
+  bannerAction.textContent = 'Review server profiles';
+  banner.appendChild(bannerAction);
   opts.bannerHost.appendChild(banner);
 
-  const render = (status: WebclientConnectionStatus): void => {
-    const view = PRESENTATION[status];
-    chip.setAttribute('data-state', status);
-    chip.setAttribute('aria-label', view.ariaLabel);
-    chip.setAttribute('title', view.ariaLabel);
-    label.textContent = view.chipText;
-    banner.setAttribute('data-state', view.showBanner ? 'offline' : 'ok');
+  let currentStatus = opts.status();
+  let receiptTimer: unknown = null;
+  let receiptAction: MountConnectionIndicatorOptions[
+    'firstConnectedReceiptAction'
+  ] = undefined;
+  let pendingConnectedReceipt: ConnectedReceiptPayload | null = null;
+  let visitRetired = false;
+  let disposed = false;
+
+  const cancelReceipt = (): void => {
+    if (receiptTimer === null) return;
+    clearTimer(receiptTimer);
+    receiptTimer = null;
   };
 
-  render(opts.status());
-  const unsub = opts.onStatus((status) => render(status));
+  const renderBanner = (
+    state: 'ok' | 'offline' | 'restored' | 'attention',
+    action?: MountConnectionIndicatorOptions['firstConnectedReceiptAction'],
+  ): void => {
+    receiptAction = state === 'restored' || state === 'attention'
+      ? action
+      : undefined;
+    banner.setAttribute('data-state', state);
+    if (state === 'offline') {
+      banner.setAttribute('role', 'alert');
+      banner.setAttribute('aria-live', 'assertive');
+      bannerText.textContent =
+        'Can’t reach the current server. Recued will keep trying.';
+      bannerAction.textContent = 'Review server profiles';
+      if (opts.onRecoveryAction === undefined) {
+        bannerAction.setAttribute('hidden', '');
+      } else {
+        bannerAction.removeAttribute('hidden');
+      }
+      return;
+    }
+    banner.setAttribute('role', 'status');
+    banner.setAttribute('aria-live', 'polite');
+    if (
+      (state === 'restored' || state === 'attention')
+      && action !== undefined
+    ) {
+      bannerAction.textContent = action.label;
+      bannerAction.removeAttribute('hidden');
+    } else {
+      bannerAction.setAttribute('hidden', '');
+    }
+    bannerText.textContent = state === 'restored' || state === 'attention'
+      ? restoredReceiptCopy
+      : '';
+  };
 
-  let disposed = false;
+  const showRestoredReceipt = (
+    copy = restoredReceiptCopy,
+    action?: MountConnectionIndicatorOptions['firstConnectedReceiptAction'],
+    tone: ConnectedReceipt['tone'] = 'success',
+  ): void => {
+    cancelReceipt();
+    renderBanner(tone === 'attention' ? 'attention' : 'restored', action);
+    bannerText.textContent = copy;
+    const receiptMs = tone === 'attention'
+      ? attentionReceiptMs
+      : restoredReceiptMs;
+    if (receiptMs <= 0) return;
+    receiptTimer = setTimer(() => {
+      receiptTimer = null;
+      if (disposed || currentStatus !== 'connected') return;
+      renderBanner('ok');
+    }, receiptMs);
+  };
+
+  const render = (
+    status: WebclientConnectionStatus,
+    behavior?: {
+      restored?: boolean;
+      receiptCopy?: string;
+      receiptAction?: MountConnectionIndicatorOptions[
+        'firstConnectedReceiptAction'
+      ];
+      receiptTone?: ConnectedReceipt['tone'];
+    },
+  ): void => {
+    const view = PRESENTATION[status];
+    currentStatus = status;
+    statusAnnouncer.textContent = status === 'reconnecting'
+      ? 'Connection interrupted. Recued is reconnecting automatically.'
+      : status === 'stalled'
+        ? 'Your server is not responding. Recued is waiting for it to recover.'
+        : status === 'connecting'
+          ? 'Connecting to your server.'
+          : '';
+    if (behavior?.restored === true) {
+      showRestoredReceipt(
+        behavior.receiptCopy,
+        behavior.receiptAction,
+        behavior.receiptTone,
+      );
+    } else {
+      cancelReceipt();
+      renderBanner(view.showOfflineBanner ? 'offline' : 'ok');
+    }
+  };
+
+  // Offline hands off to Account. A recovery-arrival receipt instead dismisses
+  // itself before returning focus to the exact safe area, so double clicks,
+  // timer expiry, and browser-history restoration cannot replay the handoff.
+  bannerAction.addEventListener('click', () => {
+    if (
+      (
+        banner.getAttribute('data-state') === 'restored'
+        || banner.getAttribute('data-state') === 'attention'
+      )
+      && receiptAction !== undefined
+    ) {
+      const action = receiptAction;
+      cancelReceipt();
+      renderBanner('ok');
+      action.onSelect();
+      return;
+    }
+    if (banner.getAttribute('data-state') === 'offline') {
+      opts.onRecoveryAction?.();
+    }
+  });
+
+  let firstConnectedReceiptPending = opts.receiptOnFirstConnected === true;
+  const initialRestored =
+    currentStatus === 'connected' && firstConnectedReceiptPending;
+  if (initialRestored) firstConnectedReceiptPending = false;
+  render(currentStatus, {
+    restored: initialRestored,
+    ...(initialRestored && opts.firstConnectedReceiptCopy !== undefined
+      ? { receiptCopy: opts.firstConnectedReceiptCopy }
+      : {}),
+    ...(initialRestored && opts.firstConnectedReceiptAction !== undefined
+      ? { receiptAction: opts.firstConnectedReceiptAction }
+      : {}),
+  });
+  // A restoration/context banner is transient to this visible visit. Retire
+  // it before the document enters browser history / BFCache so returning with
+  // Back or Forward cannot replay a pairing, reconnection, or return receipt.
+  const pageEvents = doc.defaultView as unknown as {
+    addEventListener?: (type: string, listener: (event: Event) => void) => void;
+    removeEventListener?: (type: string, listener: (event: Event) => void) => void;
+  } | null;
+  const onPageHide = (): void => {
+    // A late route read must not resurrect an arrival receipt after this page
+    // has entered browser history/BFCache. A future bootstrap gets a fresh
+    // mount; this visit has already consumed its one-shot marker.
+    visitRetired = true;
+    firstConnectedReceiptPending = false;
+    pendingConnectedReceipt = null;
+    if (
+      banner.getAttribute('data-state') !== 'restored'
+      && banner.getAttribute('data-state') !== 'attention'
+    ) return;
+    cancelReceipt();
+    renderBanner('ok');
+  };
+  pageEvents?.addEventListener?.('pagehide', onPageHide);
+  let sustainedInterruptionSeen =
+    currentStatus === 'stalled' || currentStatus === 'offline';
+  const unsub = opts.onStatus((status) => {
+    if (status === 'stalled' || status === 'offline') {
+      sustainedInterruptionSeen = true;
+    }
+    const firstConnectedReceipt =
+      status === 'connected' && firstConnectedReceiptPending;
+    const queuedConnectedReceipt = status === 'connected'
+      ? pendingConnectedReceipt
+      : null;
+    const restored =
+      status === 'connected'
+      && (
+        sustainedInterruptionSeen
+        || firstConnectedReceipt
+        || queuedConnectedReceipt !== null
+      );
+    if (status === 'connected') {
+      sustainedInterruptionSeen = false;
+      firstConnectedReceiptPending = false;
+      pendingConnectedReceipt = null;
+    }
+    render(status, {
+      restored,
+      ...(queuedConnectedReceipt !== null
+        ? { receiptCopy: queuedConnectedReceipt.copy }
+        : firstConnectedReceipt && opts.firstConnectedReceiptCopy !== undefined
+        ? { receiptCopy: opts.firstConnectedReceiptCopy }
+        : {}),
+      ...(queuedConnectedReceipt?.action !== undefined
+        ? { receiptAction: queuedConnectedReceipt.action }
+        : firstConnectedReceipt && opts.firstConnectedReceiptAction !== undefined
+        ? { receiptAction: opts.firstConnectedReceiptAction }
+        : {}),
+      ...(queuedConnectedReceipt?.tone !== undefined
+        ? { receiptTone: queuedConnectedReceipt.tone }
+        : {}),
+    });
+  });
+
   return {
+    showConnectedReceipt(receipt) {
+      if (
+        disposed
+        || visitRetired
+        || receipt.copy.trim().length === 0
+      ) return false;
+      const safeReceipt: ConnectedReceiptPayload = {
+        copy: receipt.copy,
+        ...(receipt.action !== undefined ? { action: receipt.action } : {}),
+        ...(receipt.tone !== undefined ? { tone: receipt.tone } : {}),
+      };
+      if (currentStatus === 'connected') {
+        showRestoredReceipt(
+          safeReceipt.copy,
+          safeReceipt.action,
+          safeReceipt.tone,
+        );
+      } else {
+        const delayed = receipt.afterReconnect;
+        if (delayed === undefined || delayed.copy.trim().length === 0) {
+          return false;
+        }
+        pendingConnectedReceipt = {
+          copy: delayed.copy,
+          ...(delayed.action !== undefined ? { action: delayed.action } : {}),
+          ...(delayed.tone !== undefined ? { tone: delayed.tone } : {}),
+        };
+      }
+      return true;
+    },
     dispose() {
       if (disposed) return;
       disposed = true;
+      pendingConnectedReceipt = null;
+      cancelReceipt();
       unsub();
+      pageEvents?.removeEventListener?.('pagehide', onPageHide);
       try {
-        opts.chipHost.removeChild(chip);
+        opts.statusHost.removeChild(indicator);
       } catch {
         /* already detached (shell torn down first) — best-effort */
       }

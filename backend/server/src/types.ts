@@ -14,6 +14,8 @@ import type {
   PreflightApprovedTarget,
   RunControlTermination,
   RunDegradation,
+  RecipeInvocation,
+  ResolvedOutputSection,
 } from '@recued/contracts';
 
 /** A realm identifier — a bearer token the client presents on every
@@ -62,6 +64,9 @@ export interface ExecuteRequest {
   vault?: Record<string, unknown>;
   /** Config overrides (recipe variables). */
   config?: Record<string, unknown>;
+  /** D-222 — host control-plane identity for a submit originating in one
+   *  resolved output filter. Never projected into recipe namespaces. */
+  invocation?: RecipeInvocation;
   /** D-179 P1 — standing dish to run as. The dish's `config_overlay`
    *  merges OVER `config` at dispatch (dish → install → defaults) and
    *  the run's audit row carries the dish for attribution. Absent ⇒
@@ -126,6 +131,14 @@ export interface ExecuteRequest {
  *  builder — a misbehaving dispatcher cannot accidentally overwrite an
  *  unrelated run's audit row by setting these fields. */
 export interface InternalExecuteOverrides {
+  /** D-221 watcher causality minted only by the durable Records outbox
+   * runner. It never appears on ExecuteRequest, so recipe/client args cannot
+   * reset a root, depth, or watcher identity. */
+  records_event?: {
+    root_event_id: string;
+    causal_depth: number;
+    watcher_digest: string;
+  };
   /** Override the minted `run_id`. The resumer uses this to re-issue
    *  the paused anchor's `run_id` so the resumed run transitions the
    *  same execution-request anchor in place. */
@@ -233,8 +246,8 @@ export interface ExecuteResponse {
   recipe_hash: string;
   success: boolean;
   output: {
-    render: ({ type: string; data: unknown } & Record<string, unknown>)[];
-    sidebar: ({ type: string; data: unknown } & Record<string, unknown>)[];
+    render: ResolvedOutputSection[];
+    sidebar: ResolvedOutputSection[];
   };
   steps: { id: string; type: string; skipped: boolean; duration_ms: number; error: unknown }[];
   errors: unknown[];

@@ -43,6 +43,7 @@ import {
   type TimelineRequest,
   type TimelineResponse,
   type TimelineSource,
+  type TimelineRollup,
 } from '@recued/contracts';
 import type { AuditEntry, AuditLogStore } from '@recued/storage';
 import type { AnnotationStore } from '../storage/annotation-store.js';
@@ -114,6 +115,13 @@ export interface TimelineDeps {
    *  recipes are contract-free and see the full feed. Mirrors
    *  `EnrichmentReaderPolicy.gate_mcp_private` from the `enrichment-or-fetch` path. */
   gateMcpPrivate?: boolean;
+  /** D-226 — every installed pack's declared projection onto this identity.
+   *  Absent ⇒ the response carries no `rollups` at all, which is how a
+   *  collection with no declared roots reads. Wired ONLY after the whole-tool
+   *  read gate above, so a rollup can never be seen by a caller who was
+   *  refused the feed itself: the aggregate is derived from the same records
+   *  the entries come from, and must not become a side door around them. */
+  rollupsForEntity?(collection: string, id: string): TimelineRollup[];
 }
 
 /** Entry assembled internally during the merge — carries the stable
@@ -942,7 +950,14 @@ export const handleTimelineRequest = async (
       : undefined;
 
   const entries = page.map((m) => m.entry);
-  return next_cursor !== undefined ? { entries, next_cursor } : { entries };
+  // ⚠ Computed AFTER the grant fence and independently of the page window:
+  // `since` / `until` / `limit` bound the CHRONOLOGY, and a standing aggregate
+  // is not in that chronology. Clipping it to the page would silently answer
+  // "what have I not billed Bob for" with "…in the last 30 days", which is a
+  // different question wearing the same words.
+  const rollups = deps.rollupsForEntity?.(collection, parsed.id);
+  const base = next_cursor !== undefined ? { entries, next_cursor } : { entries };
+  return rollups === undefined ? base : { ...base, rollups };
 };
 
 /** Test-only export — exposes the internal merge comparator + cursor

@@ -32,13 +32,77 @@ import {
   KERNEL_OP_REGISTRY,
   opGrantEntry,
   OWNER_CONTRACT_ID,
+  primitiveGrantEntry,
   READABLE_COLLECTIONS,
+  TIER1_TOOL_NAMES,
   topicGrantEntry,
   type EnrichmentTopic,
 } from '@recued/contracts';
 
 import type { ContractStore } from './storage/contract-store.js';
+import { createContractDefinitionStore } from './storage/contract-definition-store.js';
 import { createContractGrantEntryStore } from './storage/contract-grant-entry-store.js';
+
+/** Outcome of {@link grandfatherPrimitiveGrants}. */
+export interface PrimitiveGrandfatherResult {
+  /** Contracts that received at least one newly-seeded `primitive.*` row. */
+  readonly contracts: number;
+  /** Rows written across them. */
+  readonly seeded: number;
+}
+
+/** ⛔⛔ D-228 slice 5 — THE ONE-TIME GRANDFATHER, and the reason wiring the gate
+ *  does not break anyone.
+ *
+ *  Until the gate landed, EVERY mcp_wire caller reached the Tier-1 primitives
+ *  subject only to its per-token checklist — no contract said anything about
+ *  them, because there was no `primitive.*` id to say it with. Gating them now
+ *  resolves each through `opAuthorDefault`, which is FAIL-CLOSED for a scoped
+ *  door and for a D-196 customer instance. Those contracts hold no `primitive.*`
+ *  row (none could exist before this slice), so the gate would silently strip
+ *  `mail.search` / `recipe.run` from every one of them on upgrade.
+ *
+ *  🔑 So each EXISTING contract is grandfathered to exactly what it can do today:
+ *  one `granted:true` row per primitive, written once. After this, absence of a
+ *  row means something real — the owner removed it — which is the precondition a
+ *  fail-closed gate needs to be honest.
+ *
+ *  ⚠ NOT a mint-time default, deliberately. A contract minted AFTER this runs
+ *  gets what its minter chose in the grant UI (where primitives are now visible),
+ *  and a scoped door that lists none legitimately has none. Grandfathering is for
+ *  contracts minted when the choice could not be expressed; it is not a policy
+ *  that new doors inherit.
+ *
+ *  Idempotent + revoke-preserving by the same three-state read the owner
+ *  reconcile uses: a stored `false` is an owner tightening and is never
+ *  overwritten. The OWNER contract is skipped — `reconcileOwnerGrants` owns it. */
+export const grandfatherPrimitiveGrants = (
+  contractStore: ContractStore,
+  now: () => number = () => Date.now(),
+): PrimitiveGrandfatherResult => {
+  const grantEntryStore = createContractGrantEntryStore(contractStore);
+  // Read-only use (`list`), so the id/clock opts never come into play — same
+  // one-arg call shape as `reconcileOwnerGrants` for both boot sites.
+  const definitionStore = createContractDefinitionStore(contractStore);
+  const ts = now();
+  let contracts = 0;
+  let seeded = 0;
+  contractStore.transaction(() => {
+    for (const def of definitionStore.list()) {
+      if (def.contract_id === OWNER_CONTRACT_ID) continue;
+      let wrote = false;
+      for (const name of TIER1_TOOL_NAMES) {
+        const entry = primitiveGrantEntry(name);
+        if (grantEntryStore.get(def.contract_id, entry) !== undefined) continue;
+        grantEntryStore.set(def.contract_id, entry, true, ts);
+        seeded += 1;
+        wrote = true;
+      }
+      if (wrote) contracts += 1;
+    }
+  });
+  return { contracts, seeded };
+};
 
 /** Outcome of {@link reconcileOwnerGrants} — for boot-log observability + tests. */
 export interface OwnerGrantReconcileResult {
@@ -52,10 +116,17 @@ export interface OwnerGrantReconcileResult {
 
 /** Ensure the owner contract holds a `granted:true` grant row for every COMPILED-IN
  *  registered id — the kernel ops ({@link KERNEL_OP_REGISTRY}), the readable warehouse
- *  collections ({@link READABLE_COLLECTIONS}), and the enrichment topics
- *  ({@link ENRICHMENT_REGISTRY}) — preserving any explicit row already present (grant or
+ *  collections ({@link READABLE_COLLECTIONS}), the enrichment topics
+ *  ({@link ENRICHMENT_REGISTRY}), and (D-228 slice 5) the Tier-1 chat primitives
+ *  ({@link TIER1_TOOL_NAMES}) — preserving any explicit row already present (grant or
  *  revoke). Idempotent; atomic (one `contractStore.transaction`). `now` defaults to
- *  `Date.now` (stamps the `set_at` of newly-seeded rows). */
+ *  `Date.now` (stamps the `set_at` of newly-seeded rows).
+ *
+ *  ⚠ All four sets share the one property this reconcile rests on: they are COMPILED
+ *  IN, so the id space changes only on a server update and never as a runtime event.
+ *  Anything arriving at runtime (pack ops at install, canonical-convention
+ *  `core.crm.*`) is deliberately NOT seeded and rides the owner-permissive author
+ *  default instead. */
 export const reconcileOwnerGrants = (
   contractStore: ContractStore,
   now: () => number = () => Date.now(),
@@ -80,6 +151,26 @@ export const reconcileOwnerGrants = (
     for (const t of Object.keys(ENRICHMENT_REGISTRY) as EnrichmentTopic[]) {
       ensure(topicGrantEntry(t));
     }
+    // ⛔⛔ D-228 slice 5 — the Tier-1 chat primitives (`primitive.<tool>`). These
+    // are the ALWAYS-ON tools — `mail.search`, `contact.search`, `recipe.run` —
+    // and seeding them here is what makes them GOVERNABLE at all: until now the
+    // owner had no row for them, so they could not be revoked from the contracts
+    // UI (which mirrors these rows 1:1), and no gate could read a decision that
+    // was never recorded.
+    //
+    // ⚠ SEEDING ONLY — nothing consults these yet, deliberately. Wiring the
+    // dispatch gate is a separate step, because these are the tools a chat turn
+    // cannot function without: a default-deny bug dark-boots the assistant. This
+    // ordering is the whole point — the rows must exist BEFORE anything reads
+    // them, or the first read of an unseeded id takes the author default, which
+    // fails CLOSED for scoped doors and D-196 customer instances.
+    //
+    // 🔑 `TIER1_TOOL_NAMES` is the compiled-in registry, matching the three
+    // above: the set changes only via a server source update, never at runtime,
+    // which is the property this whole reconcile rests on. `primitiveGrantEntry`
+    // namespaces them (a BARE `enrichment.search` collides with the reserved
+    // topic prefix and `opGrantEntry` throws on it).
+    for (const t of TIER1_TOOL_NAMES) ensure(primitiveGrantEntry(t));
   });
   return { seeded, preserved };
 };

@@ -47,6 +47,7 @@ import {
   isSellerOrderPhase,
   isSellerOrderTransitionOpTarget,
   isWorkEntityKind,
+  SYNC_STATE_SET,
   SELLER_ORDER_ORIGIN_KINDS,
   SELLER_OFFER_KINDS,
   SELLER_OFFER_PRICING_KINDS,
@@ -100,6 +101,8 @@ import {
   type SellerOrderOriginKind,
   type SellerOrderPhase,
   type WorkEntityKind,
+  type WorkEntity,
+  type SyncState,
   type SellerOfferPricingKind,
   type SellerOfferState,
   type SourceTopTierKind,
@@ -290,6 +293,31 @@ export type KernelWatcherSlug =
   | 'calendar-watcher'
   | 'webhook-watcher'
   | 'time-relative-watcher';
+
+/** ⛔⛔ THE WATCHERS THAT KEY PER-RECIPE STATE, and therefore require an
+ *  ENGINE-OWNED recipe identity rather than an authored one.
+ *
+ *    webhook-watcher       — its per-`(recipe_id, slug)` queue, which `drain()`
+ *                            DELETES as it returns.
+ *    time-relative-watcher — its durable firing ledger.
+ *
+ *  Two consumers, and they must never drift apart:
+ *    1. The kernel adapter (below) OVERWRITES `args.recipe_id` from
+ *       `stepMeta.recipe_id` for exactly these slugs, so a recipe can only ever
+ *       touch its own state.
+ *    2. `runtime.runWatcher` (backend `watcher-rpc-handler.ts`) REFUSES exactly
+ *       these slugs, because that transport is a thin pass-through with no
+ *       engine context — it cannot supply the identity, so it must not pretend
+ *       to. A caller there could otherwise name another recipe's queue and both
+ *       read its contents (headers, body, source IP) and destroy them.
+ *
+ *  ⚠ The other six take explicit args and mutate nothing, so they stay
+ *  forwardable. This is not "watchers are dangerous"; it is "state keyed by an
+ *  identity the caller supplies is only as trustworthy as the caller". */
+export const RECIPE_KEYED_WATCHER_SLUGS: ReadonlySet<KernelWatcherSlug> = new Set([
+  'webhook-watcher',
+  'time-relative-watcher',
+]);
 
 /** Minimum envelope watcher handlers return. `should_run` is the AND-
  *  gate field the trigger phase inspects; every other field is surfaced
@@ -1354,6 +1382,26 @@ export interface KernelDispatchers {
     step_id?: string;
   }) => Promise<{ notified: boolean; reason?: string }>;
 
+  // ── Work-entity recipe reads + D-145 PA3 CRUD dispatcher slots ───
+  /** Recipe-callable polymorphic read. `parent_project_id` is exact and is
+   *  admitted only for task/project, keeping federation reads scoped before
+   *  any row enters recipe state. */
+  workEntityList?: (input: {
+    kind: WorkEntityKind;
+    source_id?: string;
+    sync_states?: readonly SyncState[];
+    include_deleted?: boolean;
+    include_disabled?: boolean;
+    parent_project_id?: string;
+    limit?: number;
+    offset?: number;
+  }) => Promise<{ entities: WorkEntity[]; total: number }>;
+  /** Recipe-callable by-id native read. */
+  workEntityGet?: (input: {
+    kind: WorkEntityKind;
+    id: string;
+  }) => Promise<{ entity: WorkEntity | null; found: boolean }>;
+
   // ── D-145 PA3 — work-entity CRUD dispatcher slots ───────────────
   // 14 slots covering task / note / commitment / project CRUD. Every
   // slot resolves the Source the same way (input.source_id wins; per-
@@ -2381,9 +2429,42 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
             { slug },
           );
         }
+        const args = { ...(call.input as Record<string, unknown>) };
+        // These watchers key PER-RECIPE state by recipe id. That identity is
+        // engine-owned (and deliberately absent from the public manifests), so
+        // inject the trusted step metadata here. Keep an explicit input value
+        // only for direct-RPC callers that have no engine context; when
+        // metadata is present it must win over authored input.
+        //
+        //   time-relative-watcher — its durable firing ledger.
+        //   webhook-watcher       — ⛔⛔ its per-`(recipe_id, slug)` queue, which
+        //     `drain()` DELETES as it returns. Added 2026-07-31 after a Codex
+        //     review: `recipe_id` was caller-supplied and unchecked, so any
+        //     recipe could name ANOTHER recipe's queue and both READ its
+        //     contents (headers, body, source IP — including authorization and
+        //     signature headers) and DESTROY them, leaving the owning recipe to
+        //     miss those deliveries permanently. One trigger silently eating
+        //     another's webhooks is close to undiagnosable from the outside.
+        //
+        // ⚠ The DESTRUCTIVE drain itself is correct and stays: it is the
+        // at-most-once consume that stops a webhook re-firing on every tick.
+        // What was wrong is WHOSE queue a caller could name. With identity
+        // bound to the executing recipe, a recipe can only drain its own —
+        // `slug` stays authored because the hook path is `/hook/{recipe_id}/
+        // {slug}`, so it is already fenced inside the recipe's own namespace.
+        // ⚠ DERIVED from `RECIPE_KEYED_WATCHER_SLUGS`, never re-listed here — the
+        // rpc handler refuses the same set, and a hand-copied list is how the
+        // two halves of one rule drift apart.
+        if (
+          RECIPE_KEYED_WATCHER_SLUGS.has(slug as KernelWatcherSlug)
+          && typeof call.stepMeta?.recipe_id === 'string'
+          && call.stepMeta.recipe_id.length > 0
+        ) {
+          args.recipe_id = call.stepMeta.recipe_id;
+        }
         return dispatchers.watcher({
           slug: slug as KernelWatcherSlug,
-          args: call.input as Record<string, unknown>,
+          args,
         });
       }
 
@@ -4237,6 +4318,117 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
           dispatchInput.origin_contract_id = call.stepMeta.contract_id;
         }
         return dispatchers.timelineRead(dispatchInput);
+      }
+
+      // ── Recipe-callable work-entity reads ───────────────────────
+      case 'work-entity-list': {
+        if (!dispatchers.workEntityList) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            `work-entity-list unavailable — no paired server or work-entity dispatcher`,
+            { slug },
+          );
+        }
+        const raw = call.input as Record<string, unknown>;
+        if (typeof raw.kind !== 'string' || !isWorkEntityKind(raw.kind)) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'work-entity-list: kind must be task, note, commitment, project, or booking',
+            { slug },
+          );
+        }
+        if (raw.parent_project_id !== undefined
+          && raw.kind !== 'task' && raw.kind !== 'project') {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'work-entity-list: parent_project_id is admitted only for task or project',
+            { slug },
+          );
+        }
+        if (raw.source_id !== undefined
+          && (typeof raw.source_id !== 'string' || raw.source_id.length === 0)) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'work-entity-list: source_id must be a non-empty string when supplied',
+            { slug },
+          );
+        }
+        if (raw.parent_project_id !== undefined
+          && (typeof raw.parent_project_id !== 'string'
+            || raw.parent_project_id.length === 0)) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'work-entity-list: parent_project_id must be a non-empty string when supplied',
+            { slug },
+          );
+        }
+        if (raw.sync_states !== undefined
+          && (!Array.isArray(raw.sync_states)
+            || !raw.sync_states.every((state) =>
+              typeof state === 'string' && SYNC_STATE_SET.has(state as SyncState)))) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'work-entity-list: sync_states contains an unknown state',
+            { slug },
+          );
+        }
+        for (const flag of ['include_deleted', 'include_disabled'] as const) {
+          if (raw[flag] !== undefined && typeof raw[flag] !== 'boolean') {
+            throw new IngredientError(
+              'BAD_INPUT',
+              `work-entity-list: ${flag} must be boolean when supplied`,
+              { slug },
+            );
+          }
+        }
+        if (raw.limit !== undefined
+          && (typeof raw.limit !== 'number' || !Number.isInteger(raw.limit) || raw.limit < 1)) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'work-entity-list: limit must be a positive integer when supplied',
+            { slug },
+          );
+        }
+        if (raw.offset !== undefined
+          && (typeof raw.offset !== 'number' || !Number.isInteger(raw.offset) || raw.offset < 0)) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'work-entity-list: offset must be a non-negative integer when supplied',
+            { slug },
+          );
+        }
+        const input: Parameters<NonNullable<KernelDispatchers['workEntityList']>>[0] = {
+          kind: raw.kind,
+        };
+        if (typeof raw.source_id === 'string') input.source_id = raw.source_id;
+        if (Array.isArray(raw.sync_states)) input.sync_states = raw.sync_states as SyncState[];
+        if (typeof raw.include_deleted === 'boolean') input.include_deleted = raw.include_deleted;
+        if (typeof raw.include_disabled === 'boolean') input.include_disabled = raw.include_disabled;
+        if (typeof raw.parent_project_id === 'string') input.parent_project_id = raw.parent_project_id;
+        if (typeof raw.limit === 'number') input.limit = raw.limit;
+        if (typeof raw.offset === 'number') input.offset = raw.offset;
+        return dispatchers.workEntityList(input);
+      }
+      case 'work-entity-get': {
+        if (!dispatchers.workEntityGet) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            `work-entity-get unavailable — no paired server or work-entity dispatcher`,
+            { slug },
+          );
+        }
+        const raw = call.input as Record<string, unknown>;
+        if (typeof raw.kind !== 'string' || !isWorkEntityKind(raw.kind)) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'work-entity-get: kind must be task, note, commitment, project, or booking',
+            { slug },
+          );
+        }
+        if (typeof raw.id !== 'string' || raw.id.length === 0) {
+          throw new IngredientError('BAD_INPUT', 'work-entity-get: id is required', { slug });
+        }
+        return dispatchers.workEntityGet({ kind: raw.kind, id: raw.id });
       }
 
       // ── D-145 PA3 — work-entity CRUD kernel ingredients ────────

@@ -25,7 +25,9 @@ export const UPDATE_LEDGER_FILE = 'updates.log';
 /** The lifecycle events an update produces. Two-phase apply walks
  *  `apply_started → apply_staged → (apply_committed | apply_reverted)`; rollback
  *  emits `rolled_back` (with snapshot metadata when it restored one); a restore
- *  replay emits `restore_replayed`. */
+ *  replay emits `restore_replayed`. `operation_closed` is an owner-reviewed
+ *  recovery marker for a receipt the server can no longer resolve; it makes no
+ *  claim about whether that operation succeeded. */
 export type UpdateLedgerKind =
   | 'apply_started'
   | 'apply_staged'
@@ -33,7 +35,8 @@ export type UpdateLedgerKind =
   | 'apply_reverted'
   | 'rolled_back'
   | 'snapshot_taken'
-  | 'restore_replayed';
+  | 'restore_replayed'
+  | 'operation_closed';
 
 export interface UpdateLedgerEntry {
   /** Stable unique id — idempotency key for the replay-into-audit path. */
@@ -55,6 +58,12 @@ export interface UpdateLedgerEntry {
   snapshot_ref?: string;
   /** Free-form non-secret detail (e.g. a revert reason). */
   detail?: string;
+  /** Present only on `operation_closed`: the opaque receipt whose unresolved
+   * recovery was durably retired. This remains server-local ledger material. */
+  closed_operation_id?: string;
+  /** Present only on `operation_closed`: the operation the owner expected.
+   * This labels the unresolved closure; it does not assert an outcome. */
+  closed_operation?: 'update' | 'rollback';
 }
 
 export type UpdateLedger = JsonlLedger<UpdateLedgerEntry>;

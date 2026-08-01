@@ -6,6 +6,7 @@ import type {
   NamespaceStores,
   RecipeError,
   IngredientManifest,
+  EntityFieldDeclaration,
   OpenProjection,
   OpenProjectionComputation,
   StepOptions,
@@ -27,6 +28,9 @@ import type {
   ExecutionLane,
   OpDurationClassifier,
   RestExecutionBinding,
+  ResolvedOutputSection,
+  RecordsExecutionBinding,
+  RecordsExecutionCall,
 } from '@recued/contracts';
 import type { ValidationIssue } from '@recued/recipes';
 import type { ContextRecipeSnapshotResult } from './context-recipe.js';
@@ -63,6 +67,12 @@ export interface CliInvocationCall {
 }
 
 export type CliInvocationExecutor = (call: CliInvocationCall) => Promise<unknown>;
+
+/** D-221 host-owned local Records executor. The engine supplies only a
+ * verified installed binding, derived principal, and ordinary operation args. */
+export type RecordsOperationExecutor = (
+  call: RecordsExecutionCall,
+) => unknown | Promise<unknown>;
 
 /** D-201 Slice 6B3 — the server-only seam for an operation whose trusted
  * catalog declaration binds it to an owner-selected webhook ingress. Authored
@@ -152,7 +162,7 @@ export type ProgressEvent =
   /** D-068 / D-195: fires after each sequential step once all output render
    *  sources are resolved. Carries the full re-resolved render array so the UI can clear +
    *  re-render without waiting for execution_complete. */
-  | { type: 'render_ready'; render: { type: string; data: unknown; label?: string }[] };
+  | { type: 'render_ready'; render: ResolvedOutputSection[] };
 
 /** Callback supplied by the caller to receive progress events. */
 export type ProgressCallback = (event: ProgressEvent) => void;
@@ -286,6 +296,12 @@ export interface ExecutionContext {
    *  recipe-shaped read is `ctx.recipe?.…`-guarded; the recipe-origin path is
    *  unchanged (a recipe is always present there). */
   recipe?: RecipeDefinition;
+  /** D-222 — immutable authored snapshot identity for resolved filter
+   *  provenance. A server dispatch may lower canonical ops before engine entry,
+   *  changing the ordinary execution hash while the stored output section is
+   *  unchanged; callers that own a stored snapshot pass its pre-lowering hash.
+   *  Other engine hosts omit it and the execution hash is used. */
+  outputRecipeHash?: string;
   stores: NamespaceStores;
   ingredientExecutor: IngredientExecutor;
   /** D-181 slice 4 — the execution-request anchor `run_id` for this run.
@@ -306,6 +322,23 @@ export interface ExecutionContext {
    *  `kind: "cli_invocation"`. When absent, admitted CLI catalog ops fail
    *  closed after the catalog gate with `no_cli_executor`. */
   cliInvocationExecutor?: CliInvocationExecutor;
+  /** D-221 first kernel gate for a core.records catalog operation. The
+   * namespace gate remains inside the Records store transaction. */
+  recordsReachabilityResolver?: (
+    principal: string | null,
+    ingredient_id: string,
+    operation_id: string,
+    binding: RecordsExecutionBinding,
+  ) => boolean;
+  /** D-221 server-local dispatch after the ordinary catalog policy/approval
+   * path admits. Absent means Records fails closed. */
+  recordsOperationExecutor?: RecordsOperationExecutor;
+  /** Host-minted Records watcher lineage inherited by any mutation this run
+   * performs. Not sourced from recipe/context/config data. */
+  recordsMutationContext?: Pick<
+    RecordsExecutionCall,
+    'execution_lease_id' | 'root_event_id' | 'causal_depth' | 'watcher_digest'
+  >;
   /** D-201 Slice 6B3 — trusted callback binding/injection. An operation that
    *  declares `operation_bound_webhook` fails closed when this resolver is
    *  absent; ordinary operations never call it. */
@@ -327,6 +360,31 @@ export interface ExecutionContext {
     mime_type: string;
     source_id: string;
   }) => Promise<{ record_id: string }>;
+  /** D-217 slice 2b-ii-β2 — size + content pin for the file a CHUNKED upload
+   *  will send, read from the file record's metadata.
+   *
+   *  🔑 **Metadata only, and that is the whole point.** The engine needs the
+   *  plaintext SIZE to fix the request count before dispatch (`ceil(size /
+   *  chunk_bytes)` — the number the owner approves), and it needs the content
+   *  hash to pin which bytes that count was computed for. Neither requires
+   *  decrypting anything.
+   *
+   *  ⛔ **The engine deliberately does NOT stage.** An earlier shape had it
+   *  stage here and put the resulting token on the dispatch input; the action-
+   *  identity hash covers that input and drops nothing engine-owned, so a fresh
+   *  token per attempt meant a fresh `canonical_payload_hash` and a D-177 grant
+   *  that could never match an honest repeat. Staging lives in the connection
+   *  adapter, below the commit boundary — see
+   *  `ConnectionApiHandlerDeps.uploadStaging`. A side benefit worth keeping:
+   *  the owner's decrypted plaintext then exists only for the walk itself,
+   *  never across hashing, admission or an approval hold.
+   *
+   *  Absent dep or an unknown ref ⇒ the chunked op fails closed (mirrors
+   *  `no_file_ingestor`). */
+  describeUploadSource?: (file_ref: string) => Promise<{
+    size_bytes: number;
+    content_hash: string;
+  } | undefined>;
   /** Optional progress callback. Fires as individual prefetch steps
    *  resolve and before/after each sequential step. Exceptions thrown
    *  from the callback are swallowed — they never disrupt execution. */
@@ -346,6 +404,21 @@ export interface ExecutionContext {
    *  browser-only adapter (DOM, Chat) when running on the server.
    *  Omit to skip the check (backward compatible). */
   manifestGetter?: (slug: string, requestedVersion?: number) => IngredientManifest | null;
+  /** Entity-field lookup for a `record_fields` output block: the installed
+   *  pack's declaration for `<entity>`, normalized across the two runtime
+   *  shapes (`surfaces.records.schema.entities` for a storage ingredient,
+   *  `entity_schemas[].meta_fields` for an http one — 11 packs versus 221).
+   *
+   *  Deliberately NOT read off `manifestGetter`. Supplying that getter turns on
+   *  the D-165 catalog gateway, so deriving a purely presentational label set
+   *  through it would couple "can this recipe show a field name" to "does this
+   *  recipe hold an operation grant" — two unrelated questions, and the block
+   *  would go blank on a grant failure rather than on a schema failure. It also
+   *  spares the engine guessing WHICH catalog a bare entity kind belongs to.
+   *
+   *  Omit and every `record_fields` block resolves `unresolved: 'no_schema'` —
+   *  which reads as "could not look it up", never as "the record is empty". */
+  entityFields?: (entity: string) => readonly EntityFieldDeclaration[] | null;
   /** D-181 Slice 2 — the long-op execution governor. Before each ingredient
    *  call the engine classifies it by kind (`callClassForKind` over the
    *  manifest) and acquires a lane slot from this governor; the heavy call then
@@ -432,8 +505,9 @@ export interface ExecutionContext {
    *  kind `authorized` preflight stage (increment 3). The gateway calls this —
    *  instead of `connectionProfileResolver` — for a catalog op whose connector
    *  binding is `cli_invocation`: may a recipe run under `principal` (the
-   *  resolved `(actor, contract_id)` → principal, see
-   *  `cliPrincipalFromExecutionSource`; `null` ⇒ no definite principal ⇒ deny)
+   *  resolved full execution source → principal, see
+   *  `cliPrincipalFromExecutionSource`; this includes a server-derived owner
+   *  schedule while keeping other contract-free system work at `null` ⇒ deny)
    *  reach this cli `ingredient_id`'s `operation_id`? A connection-less by-value
    *  cli pack has no connection profile to seed (the `no_connection_profile`
    *  gap), and cli is pack-only, so its authorization is a (contract × pack-op)
@@ -614,11 +688,17 @@ export interface ExecutionContext {
   contextRecipeSnapshot?: ContextRecipe | null;
   /** D-120 Phase 4.5 — callback fired after the run finishes
    *  successfully with the snapshot the engine computed for the next
-   *  run. Hosts persist the snapshot to their per-pair store. For
-   *  reactive (`auto_run`) recipes, hosts buffer the snapshot in
-   *  memory and only commit on `ProcessRetireReason` boundaries —
-   *  per-tick prefs writes would churn for no semantic gain. For
-   *  cron + manual runs, hosts persist immediately.
+   *  run. Hosts persist the snapshot to their per-pair store on cron +
+   *  manual runs.
+   *
+   *  ⛔ Reactive (`auto_run`) is OUT OF SCOPE — deliberately, not pending
+   *  (closed 2026-07-27). The engine still emits the snapshot on every
+   *  successful run because it does not know the trigger source; the
+   *  server host DROPS it for `auto_run` (`execute-handler.ts`, gated
+   *  `trigger_source !== 'auto_run'`). Reactive continuity is a PAIRED
+   *  RECIPE with a convergent write, not an engine snapshot — see
+   *  internal design notes. Do not add a
+   *  reactive commit boundary here.
    *
    *  Skipped when the run failed, was trigger-skipped, or the recipe
    *  doesn't reference `{{context.recipe.*}}` at all (manifest-driven
@@ -763,6 +843,33 @@ export interface StepLog {
   result: unknown;
   error: RecipeError | null;
   duration_ms: number;
+  /** Per-item tally for a `foreach` step. Present only on those.
+   *
+   *  ⛔⛔ Why this exists. A `foreach` is continue-on-error by design: each
+   *  iteration's failure lands in that item's `{ ok: false, error }` and the
+   *  STEP still returns `error: null`, so `errors[]` stays empty and `success`
+   *  stays true. That is correct — a partial write is not a failed run — but it
+   *  made total failure indistinguishable from total success at every surface
+   *  above the step output. Three separate defects shipped that way in one pack:
+   *  a wrong `<kind>/` reference prefix, a submission missing its row identity,
+   *  and a missing required field. Each refused EVERY item, and each month
+   *  reported success having written nothing.
+   *
+   *  A recipe can already see this — it reads `{{step.x}}` and filters on
+   *  `ok`. The gap was that nothing surfaced it unless the author thought to
+   *  look. So this is deliberately NOT an error: `success` and `errors[]` are
+   *  untouched, and a host renders "3 of 12 items failed" from the counts.
+   *
+   *  ⚠ Both numbers, not a ratio and not just the failures: a surface that had
+   *  to re-derive the total from the step result would be reading a 16 KB array
+   *  to print one line, and an empty collection (0 of 0) is a different thing
+   *  from a collection that all failed. */
+  foreach?: {
+    /** Iterations attempted — the resolved collection's length. */
+    items: number;
+    /** Iterations whose inner step reported an error. */
+    failed: number;
+  };
 }
 
 /** What executeRecipe() returns. */
@@ -791,8 +898,8 @@ export interface ExecutionResult {
    *  index signature keeps those extras typed-as-unknown without
    *  forcing each block kind into the union here. */
   output: {
-    render: ({ type: string; data: unknown } & Record<string, unknown>)[];
-    sidebar: ({ type: string; data: unknown } & Record<string, unknown>)[];
+    render: ResolvedOutputSection[];
+    sidebar: ResolvedOutputSection[];
   };
   steps: StepLog[];
   errors: RecipeError[];
@@ -892,6 +999,12 @@ export interface ExecutionResult {
      *  `QualityDelegationSignal` per resolution. Absent on non-quality asks ⇒ no
      *  signal (behaviour-preserving). */
     quality_relevant?: boolean;
+    /** D-217 § 6.1 — the AMPLIFICATION BOUND of a multi-request act, read off
+     *  the caught signal. One approval buying N requests is the fact a reviewer
+     *  must see BEFORE approving, and it is the one thing an ask naming only
+     *  the operation cannot convey. Fixed before the first dispatch (§ 8a), so
+     *  it is exact rather than an estimate. Absent on single-request holds. */
+    egress_bound?: { readonly requests: number; readonly total_bytes: number };
     /** D-211 — optional standing owner-ruling action + clamp warning. */
     owner_override_offer?: PreflightOverrideOffer;
     approval_clamped_from?: OperationApproval;

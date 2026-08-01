@@ -11,12 +11,17 @@ import {
   HUBSPOT_API_BASE,
   HUBSPOT_OAUTH_TOKEN_URL,
   NOTIFICATION_SUBTYPES,
+  OAUTH_CLOUD_CALLBACK_URL,
   SALESFORCE_OAUTH_TOKEN_URL_SANDBOX,
 } from '@recued/contracts';
 import {
   renderConnectionsPage,
+  CONNECTIONS_PAGE_STYLES,
   initialConnectionsPageState,
   initialConnectionsDialogState,
+  connectionFormValidationIssue,
+  connectionCredentialRegenerationAdminHandoff,
+  validateConnectionForm,
   projectConnectionPayload,
   shouldPatchConnectionAuth,
   flattenConnectionViewIntoValues,
@@ -136,6 +141,35 @@ describe('D-125 P7.1 — dialog stages', () => {
     }
   });
 
+  it('renders an accessible stale-editor boundary and disables save until latest is reloaded', () => {
+    const html = renderConnectionsPage(withDialog({
+      stage: 'form',
+      mode: 'edit',
+      kind: 'api',
+      editingId: 'api/shared-api',
+      values: {
+        name: 'shared-api',
+        display_name: 'Shared API',
+        'config.base_url': 'https://api.example.com',
+        'auth.type': 'bearer',
+      },
+      externalChange: {
+        kind: 'api',
+        name: 'shared-api',
+        phase: 'changed',
+        reloading: false,
+        error: null,
+      },
+    }));
+
+    expect(html).toContain('data-connection-external-change="changed"');
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('Your unsaved entries remain only in this tab');
+    expect(html).toContain('data-action="connections-reload-stale-editor"');
+    expect(html).toContain('Reload latest');
+    expect(html).toMatch(/data-action="connections-submit-form"[^>]*disabled/);
+  });
+
   it('subtype-picker for notification lists four subtypes', () => {
     const html = renderConnectionsPage(
       withDialog({ stage: 'subtype-picker', kind: 'notification' }),
@@ -155,6 +189,493 @@ describe('D-125 P7.1 — dialog stages', () => {
     );
     expect(html).toContain('Bearer Token');
     expect(html).not.toContain('Refresh Token'); // oauth2_refresh field hidden
+  });
+
+  it('turns a disabled save into one explicit first-fix action', () => {
+    const blocked = renderConnectionsPage(
+      withDialog({
+        stage: 'form',
+        kind: 'api',
+        values: { 'auth.type': 'bearer' },
+      }),
+    );
+
+    expect(blocked).toContain('data-connection-form-validation');
+    expect(blocked).toContain('data-status="blocked"');
+    expect(blocked).toContain('role="status"');
+    expect(blocked).toContain('aria-live="polite"');
+    expect(blocked).toContain('Next: Name');
+    expect(blocked).toContain('Name is required.');
+    expect(blocked).toContain('data-action="connections-focus-first-invalid"');
+    expect(blocked).toContain('data-field-key="name"');
+    expect(blocked).toContain('Go to Name');
+    expect(blocked).toMatch(/data-action="connections-submit-form"[^>]*disabled/);
+
+    const ready = renderConnectionsPage(
+      withDialog({
+        stage: 'form',
+        kind: 'api',
+        values: {
+          name: 'my-api',
+          display_name: 'My API',
+          'config.base_url': 'https://api.example.com',
+          'auth.type': 'bearer',
+          'auth.token': 'secret-token',
+        },
+      }),
+    );
+    expect(ready).toContain('data-status="ready"');
+    expect(ready).toContain('Required details complete');
+    expect(ready).toContain('Review the values before saving.');
+    expect(ready).toMatch(/data-connection-form-validation-action hidden/);
+    expect(ready).not.toMatch(/data-action="connections-submit-form"[^>]*disabled/);
+  });
+
+  it('replaces local readiness with one exact server-rejection correction', () => {
+    const html = renderConnectionsPage(
+      withDialog({
+        stage: 'form',
+        mode: 'edit',
+        kind: 'api',
+        editingId: 'api/my-api',
+        values: {
+          name: 'my-api',
+          display_name: 'My API',
+          'config.base_url': 'https://api.example.com',
+          'auth.type': 'bearer',
+          'auth.token': 'memory-only-draft',
+        },
+        credentialCorrection: {
+          message: 'The provider rejected the replacement credentials. Your saved connection was not changed.',
+          fieldKeys: ['auth.token'],
+        },
+      }),
+    );
+
+    expect(html).toContain('data-connection-credential-correction');
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('Replacement rejected');
+    expect(html).toContain('Review Bearer Token, then verify the replacement again.');
+    expect(html).toContain('data-action="connections-focus-credential-correction"');
+    expect(html).toContain('data-field-key="auth.token"');
+    const tokenInput = html.match(
+      /<input[^>]*data-conn-field="auth\.token"[^>]*>/,
+    )?.[0];
+    expect(tokenInput).toContain('aria-invalid="true"');
+    expect(tokenInput).toContain(
+      'aria-errormessage="connections-credential-correction-message"',
+    );
+    expect(html).not.toContain('data-connection-form-validation');
+    expect(html).not.toMatch(/data-action="connections-submit-form"[^>]*disabled/);
+  });
+
+  it('turns a repeated provider rejection into bounded endpoint and setup actions', () => {
+    const html = renderConnectionsPage(
+      withDialog({
+        stage: 'form',
+        mode: 'edit',
+        kind: 'api',
+        editingId: 'api/my-api',
+        values: {
+          name: 'my-api',
+          display_name: 'My API',
+          'config.base_url': 'https://api.example.com',
+          'auth.type': 'bearer',
+          'auth.token': 'memory-only-draft',
+        },
+        credentialCorrection: {
+          message: 'The provider rejected the replacement credentials. Your saved connection was not changed.',
+          fieldKeys: ['auth.token'],
+          triage: {
+            stage: 'provider_probe',
+            endpointFieldKeys: ['config.base_url'],
+          },
+        },
+      }),
+    );
+
+    expect(html).toContain('Replacement rejected again');
+    expect(html).toContain('data-connection-credential-triage');
+    expect(html).toContain('data-stage="provider_probe"');
+    expect(html).toContain(
+      'configured endpoint check rejected this replacement again',
+    );
+    expect(html).toContain(
+      'credential and endpoint belong to the intended provider account or tenant',
+    );
+    expect(html).toContain('data-action="connections-focus-credential-triage"');
+    expect(html).toContain('data-field-key="config.base_url"');
+    expect(html).toContain('>Review Base URL</button>');
+    expect(html).toContain('>Check provider setup</button>');
+    expect(html).not.toContain('Base URL is wrong');
+    expect(CONNECTIONS_PAGE_STYLES).toContain(
+      '.connections-credential-correction-action .rx-btn { min-height: 44px; }',
+    );
+  });
+
+  it('turns a third rejection into a safe regeneration or administrator handoff', () => {
+    const state = withDialog({
+      stage: 'form',
+      mode: 'edit',
+      kind: 'api',
+      editingId: 'api/my-api',
+      values: {
+        name: 'my-api',
+        display_name: 'My API',
+        'config.base_url': 'https://private-api.example.com',
+        'auth.type': 'bearer',
+        'auth.token': 'memory-only-secret',
+      },
+      credentialCorrection: {
+        message: 'The provider rejected another replacement.',
+        fieldKeys: ['auth.token'],
+        triage: {
+          stage: 'provider_probe',
+          endpointFieldKeys: ['config.base_url'],
+          resolution: 'regenerate_credential_or_contact_admin',
+        },
+      },
+    });
+    const html = renderConnectionsPage(state);
+
+    expect(html).toContain('data-credential-safe-stop="true"');
+    expect(html).toContain('Pause before retrying');
+    expect(html).toContain('Do not resend this replacement unchanged');
+    expect(html).toContain('>Create or rotate credential</button>');
+    expect(html).toContain('>Enter fresh Bearer Token</button>');
+    expect(html).toContain('>Provider/admin confirmed a fix</button>');
+    expect(html).toContain('Safe details for the provider administrator');
+    expect(html).toContain('Nothing is sent automatically');
+    expect(html).toContain('data-credential-admin-handoff-summary');
+    expect(html).toContain('>Copy safe handoff</button>');
+    expect(html).toMatch(
+      /data-action="connections-submit-form"[^>]*disabled/,
+    );
+    expect(CONNECTIONS_PAGE_STYLES).toContain(
+      '.connections-credential-admin-handoff > summary',
+    );
+    expect(CONNECTIONS_PAGE_STYLES).toContain('min-height: 44px');
+
+    const handoff = connectionCredentialRegenerationAdminHandoff(
+      state.dialog,
+      apiSchema,
+    );
+    expect(handoff).toContain('Connection: api/my-api');
+    expect(handoff).toContain('Sign-in method: Bearer token');
+    expect(handoff).toContain('Server-observed step: configured provider endpoint check');
+    expect(handoff).toContain('Non-secret fields to review: Base URL');
+    expect(handoff).toContain('saved credential was not changed');
+    expect(handoff).not.toContain('memory-only-secret');
+    expect(handoff).not.toContain('https://private-api.example.com');
+    expect(handoff).not.toContain('The provider rejected another replacement.');
+
+    state.dialog.values['auth.token'] = '';
+    const withoutDraft = renderConnectionsPage(state);
+    expect(withoutDraft).toContain('No rejected credential was restored');
+    expect(withoutDraft).toContain('Provider/admin confirmed a fix');
+    expect(withoutDraft).toMatch(
+      /data-action="connections-submit-form"[^>]*disabled/,
+    );
+
+    state.dialog.editingId = 'api/another-connection';
+    expect(connectionCredentialRegenerationAdminHandoff(
+      state.dialog,
+      apiSchema,
+    )).toBeNull();
+  });
+
+  it('makes server-authoritative safe-stop closure explicit without rendering its token', () => {
+    const state = withDialog({
+      stage: 'form',
+      mode: 'edit',
+      kind: 'api',
+      editingId: 'api/my-api',
+      values: {
+        name: 'my-api',
+        display_name: 'My API',
+        'config.base_url': 'https://api.example.com',
+        'auth.type': 'bearer',
+        'auth.token': 'memory-only-secret',
+      },
+      credentialCorrection: {
+        message: 'The provider rejected another replacement.',
+        fieldKeys: ['auth.token'],
+        triage: {
+          stage: 'provider_probe',
+          endpointFieldKeys: ['config.base_url'],
+          resolution: 'regenerate_credential_or_contact_admin',
+        },
+        safeStopClosure: { phase: 'checking', error: null },
+      },
+    });
+
+    const checking = renderConnectionsPage(state);
+    expect(checking).toContain('Checking server support…');
+    expect(checking).toContain('data-credential-safe-stop-closure-status="checking"');
+    expect(checking).toMatch(
+      /data-action="connections-confirm-credential-handoff"[^>]*disabled/,
+    );
+
+    state.dialog.credentialCorrection!.safeStopClosure = {
+      phase: 'ready',
+      error: null,
+    };
+    const ready = renderConnectionsPage(state);
+    expect(ready).toContain('Provider/admin confirmed a fix');
+    expect(ready).toContain(
+      'ask the paired server to record this fix before closing the recovery stop',
+    );
+    expect(ready).not.toMatch(
+      /data-action="connections-confirm-credential-handoff"[^>]*disabled/,
+    );
+
+    state.dialog.credentialCorrection = null;
+    state.dialog.credentialSafeStopClosureNotice = {
+      kind: 'api',
+      name: 'my-api',
+      nextStep: 'verify_replacement',
+    };
+    const closed = renderConnectionsPage(state);
+    expect(closed).toContain('Recovery stop closed');
+    expect(closed).toContain('acknowledgement did not send or replace a credential');
+    const closureNotice = closed.match(
+      /<section class="connections-credential-rotation"[\s\S]*?data-credential-safe-stop-closure="confirmed"[\s\S]*?<\/section>/,
+    )?.[0] ?? '';
+    expect(closureNotice).not.toContain('memory-only-secret');
+    expect(closed).not.toMatch(/[a-f0-9]{64}/);
+    expect(CONNECTIONS_PAGE_STYLES).toContain(
+      '.connections-credential-rotation[data-credential-safe-stop-closure] .rx-btn',
+    );
+  });
+
+  it('distinguishes a repeated OAuth exchange rejection from a provider probe', () => {
+    const html = renderConnectionsPage(
+      withDialog({
+        stage: 'form',
+        mode: 'edit',
+        kind: 'api',
+        editingId: 'api/oauth-api',
+        values: {
+          name: 'oauth-api',
+          display_name: 'OAuth API',
+          'config.base_url': 'https://api.example.com',
+          'auth.type': 'oauth2_refresh',
+          'auth.refresh_token': 'memory-only-refresh',
+          'auth.client_id': 'client-id',
+          'auth.token_endpoint': 'https://oauth.example.com/token',
+        },
+        credentialCorrection: {
+          message: 'The provider rejected the replacement credentials.',
+          fieldKeys: [
+            'auth.refresh_token',
+            'auth.client_id',
+            'auth.client_secret',
+            'auth.token_endpoint',
+          ],
+          triage: {
+            stage: 'credential_exchange',
+            endpointFieldKeys: ['auth.token_endpoint'],
+          },
+        },
+      }),
+    );
+
+    expect(html).toContain('data-stage="credential_exchange"');
+    expect(html).toContain('another rejection during credential exchange');
+    expect(html).toContain('credential details and exchange endpoint');
+    expect(html).toContain('>Review Token Endpoint</button>');
+    expect(html).not.toContain('configured provider check');
+  });
+
+  it('does not invent an endpoint action when the live schema has none', () => {
+    const html = renderConnectionsPage(
+      withDialog({
+        stage: 'form',
+        mode: 'edit',
+        kind: 'notification',
+        subtype: 'slack',
+        editingId: 'notification/slack-alerts',
+        values: {
+          name: 'slack-alerts',
+          display_name: 'Slack alerts',
+          'auth.type': 'bearer',
+          'auth.token': 'memory-only-token',
+        },
+        credentialCorrection: {
+          message: 'The provider rejected the replacement credentials.',
+          fieldKeys: ['auth.token'],
+          triage: {
+            stage: 'provider_probe',
+            endpointFieldKeys: [],
+          },
+        },
+      }),
+    );
+
+    expect(html).toContain(
+      'configured provider check rejected this replacement again',
+    );
+    expect(html).toContain('intended provider account, tenant, or workspace');
+    expect(html).not.toContain('connection endpoint is correct');
+    expect(html).not.toContain('connections-focus-credential-triage');
+    expect(html).not.toContain('Check provider setup');
+  });
+
+  it('keeps a newly blocking local fix visible beside an authoritative rejection', () => {
+    const html = renderConnectionsPage(
+      withDialog({
+        stage: 'form',
+        mode: 'edit',
+        kind: 'api',
+        editingId: 'api/my-api',
+        values: {
+          name: 'my-api',
+          display_name: '',
+          'config.base_url': 'https://api.example.com',
+          'auth.type': 'bearer',
+          'auth.token': 'memory-only-draft',
+        },
+        credentialCorrection: {
+          message: 'The provider rejected the replacement credentials. Your saved connection was not changed.',
+          fieldKeys: ['auth.token'],
+        },
+      }),
+    );
+
+    expect(html).toContain('data-connection-credential-correction');
+    expect(html).toContain('Replacement rejected');
+    expect(html).toContain('data-connection-form-validation');
+    expect(html).toContain('data-status="blocked"');
+    expect(html).toContain('role="group"');
+    expect(html).not.toContain('aria-live="polite"');
+    expect(html).toContain('Next: Display name');
+    expect(html).toContain('Display name is required.');
+    expect(html).toContain('data-field-key="display_name"');
+    expect(html).toMatch(/data-action="connections-submit-form"[^>]*disabled/);
+  });
+
+  it('names the whole rejected compound credential without blaming one value', () => {
+    const html = renderConnectionsPage(
+      withDialog({
+        stage: 'form',
+        mode: 'edit',
+        kind: 'api',
+        editingId: 'api/basic-api',
+        values: {
+          name: 'basic-api',
+          display_name: 'Basic API',
+          'config.base_url': 'https://api.example.com',
+          'auth.type': 'basic',
+          'auth.username': 'owner',
+          'auth.password': 'memory-only-draft',
+        },
+        credentialCorrection: {
+          message: 'The provider rejected the replacement credentials.',
+          fieldKeys: ['auth.username', 'auth.password'],
+        },
+      }),
+    );
+
+    expect(html).toContain(
+      'Review this credential set together: Username, Password. Start with Username, then verify again.',
+    );
+    expect(html).toContain('>Review Username</button>');
+    expect(html).not.toContain('Username is wrong');
+  });
+
+  it('associates a rejected repeatable credential with its exact field group', () => {
+    const html = renderConnectionsPage(
+      withDialog({
+        stage: 'form',
+        mode: 'edit',
+        kind: 'api',
+        editingId: 'api/header-api',
+        values: {
+          name: 'header-api',
+          display_name: 'Header API',
+          'config.base_url': 'https://api.example.com',
+          'auth.type': 'header',
+          'auth.headers.0.header_name': 'X-API-Key',
+          'auth.headers.0.value': 'memory-only-draft',
+        },
+        credentialCorrection: {
+          message: 'The provider rejected the replacement credentials.',
+          fieldKeys: ['auth.headers'],
+        },
+      }),
+    );
+
+    expect(html).toContain(
+      'data-field-key="auth.headers" data-credential-rejected="true" role="group"',
+    );
+    expect(html).toContain('aria-describedby="connections-credential-correction-message"');
+    expect(html.match(/aria-invalid="true"/g)).toHaveLength(2);
+    expect(html).toContain('>Review Headers</button>');
+  });
+
+  it('identifies the exact missing control inside repeatable credentials', () => {
+    const issue = connectionFormValidationIssue(
+      apiSchema,
+      {
+        name: 'custom-api',
+        display_name: 'Custom API',
+        'config.base_url': 'https://api.example.com',
+        'auth.type': 'header',
+        'auth.headers.0.header_name': 'X-API-Key',
+        'auth.headers.0.value': '',
+      },
+      undefined,
+      'create',
+    );
+
+    expect(issue).toEqual({
+      fieldKey: 'auth.headers.0.value',
+      fieldLabel: 'Headers',
+      message: 'Headers: each header needs both a name and a value.',
+    });
+
+    const invalidTrigger = connectionFormValidationIssue(
+      notificationSchemas.slack,
+      {
+        name: 'team-slack',
+        display_name: 'Team Slack',
+        'config.channel_id': 'C0123456789',
+        'auth.type': 'bearer',
+        'auth.token': 'xoxb-token',
+        'config.match_patterns.3.kind': 'tag',
+        'config.match_patterns.3.value': 'two words',
+      },
+      undefined,
+      'create',
+    );
+    expect(invalidTrigger).toMatchObject({
+      fieldKey: 'config.match_patterns.3.value',
+      fieldLabel: 'Message triggers',
+    });
+  });
+
+  it('lets a higher-priority server error own the live announcement', () => {
+    const html = renderConnectionsPage(
+      withDialog({
+        stage: 'form',
+        kind: 'api',
+        error: 'The paired server rejected this connection.',
+        values: {
+          name: 'my-api',
+          display_name: 'My API',
+          'config.base_url': 'https://api.example.com',
+          'auth.type': 'bearer',
+          'auth.token': 'secret-token',
+        },
+      }),
+    );
+
+    expect(html).toContain('The paired server rejected this connection.');
+    const validationPanel = html.match(
+      /<section[^>]*data-connection-form-validation[^>]*>/u,
+    )?.[0];
+    expect(validationPanel).toContain('role="group"');
+    expect(validationPanel).not.toContain('aria-live="polite"');
   });
 
   it('switching auth.type to oauth2_refresh swaps in OAuth fields', () => {
@@ -210,6 +731,632 @@ describe('D-125 P7.1 — dialog stages', () => {
       }),
     );
     expect(html).toContain('Save changes');
+    expect(html).toContain('Current credentials stay active');
+    expect(html).toContain('Leave credential fields blank to keep');
+  });
+
+  it('makes a started credential rotation explicit before submit', () => {
+    const html = renderConnectionsPage(
+      withDialog({
+        stage: 'form',
+        mode: 'edit',
+        kind: 'api',
+        values: {
+          name: 'hubspot',
+          display_name: 'HubSpot',
+          'config.base_url': 'https://api.hubapi.com',
+          'auth.type': 'bearer',
+          'auth.token': 'replacement',
+        },
+      }),
+    );
+    expect(html).toContain('data-credential-rotation="replacement"');
+    expect(html).toContain('Replacement ready to verify');
+    expect(html).toContain('If verification fails, nothing in this connection changes');
+    expect(html).toContain('Verify and replace');
+    expect(html).not.toContain('Save changes');
+  });
+
+  it('renders a secret-free, accessible credential verification receipt', () => {
+    const state = baseState();
+    state.dialog.recentProbe = {
+      kind: 'api',
+      name: 'hubspot',
+      status: 'verified',
+      purpose: 'credential_rotation',
+      verified_at: Date.UTC(2024, 4, 5, 12, 30),
+      auth_type: 'oauth2_refresh',
+      access_expires_at: Date.UTC(2024, 4, 5, 13, 30),
+    };
+    const html = renderConnectionsPage(state);
+    expect(html).toContain('data-connection-credential-receipt="verified"');
+    expect(html).toContain('role="status"');
+    expect(html).toContain('aria-live="polite"');
+    expect(html).toContain('OAuth refresh credential verified and now active for api/hubspot');
+    expect(html).toContain('Verified 2024-05-05 12:30 UTC');
+    expect(html).toContain('Access token valid until 2024-05-05 13:30 UTC');
+    expect(html).toContain('Future provider calls use the replacement');
+  });
+
+  it('renders authoritative post-ack resolution, correction, and retry states with one next action', () => {
+    const state = baseState();
+    state.dialog.recentProbe = {
+      kind: 'api',
+      name: 'hubspot',
+      status: 'ok',
+      purpose: 'post_safe_stop',
+      resolution: 'resolved',
+      checked_at: Date.UTC(2024, 4, 5, 12, 30),
+    };
+    const resolved = renderConnectionsPage({
+      ...state,
+      postSafeStopProfileLabel: 'Home NAS',
+    });
+    expect(resolved).toContain('data-post-safe-stop-verification="resolved"');
+    expect(resolved).toContain('Recovery verified');
+    expect(resolved).toContain('provider accepted it');
+    expect(resolved).toContain('no credential was changed or replayed');
+    expect(resolved).toContain('Server profile: Home NAS');
+    expect(resolved).not.toContain('connections-recheck-post-safe-stop');
+    expect(resolved).not.toContain('connections-review-post-safe-stop');
+
+    state.dialog.recentProbe = {
+      kind: 'api',
+      name: 'hubspot',
+      status: 'auth_failed',
+      purpose: 'post_safe_stop',
+      resolution: 'reopen',
+      credential_correction: {
+        auth_type: 'bearer',
+        field_keys: ['auth.token'],
+      },
+    };
+    const reopened = renderConnectionsPage(state);
+    expect(reopened).toContain('data-post-safe-stop-verification="reopen"');
+    expect(reopened).toContain('Saved credential still needs attention');
+    expect(reopened).toContain('data-action="connections-review-post-safe-stop"');
+    expect(reopened).toContain('Review saved credential');
+    expect(reopened).not.toContain('auth.token');
+
+    state.dialog.recentProbe = {
+      kind: 'api',
+      name: 'hubspot',
+      status: 'unreachable',
+      purpose: 'post_safe_stop',
+      resolution: 'retry',
+    };
+    const retry = renderConnectionsPage(state);
+    expect(retry).toContain('Provider could not be reached');
+    expect(retry).toContain('does not prove the saved credential is wrong');
+    expect(retry).toContain('data-action="connections-recheck-post-safe-stop"');
+    expect(retry).toContain('Check again');
+    expect(retry).toContain('role="status"');
+    expect(retry).toContain('aria-live="polite"');
+
+    state.dialog.recentProbe = {
+      kind: 'api',
+      name: 'hubspot',
+      status: 'ok',
+      purpose: 'post_safe_stop',
+      resolution: 'unsupported',
+    };
+    const unsupported = renderConnectionsPage(state);
+    expect(unsupported).toContain('Server update needed for an exact check');
+    expect(unsupported).toContain('cannot prove which saved version it checked');
+    expect(unsupported).toContain('Check after update');
+  });
+
+  it('renders a responsive, escaped profile-bound recovery handoff without selecting current-server work', () => {
+    const state = baseState({
+      postSafeStopRecoveries: [{
+        kind: 'api',
+        name: 'same-name',
+        status: 'pending',
+        acknowledgedAt: Date.UTC(2024, 4, 5, 12, 30),
+      }],
+    });
+    const html = renderConnectionsPage({
+      ...state,
+      postSafeStopProfileHandoff: {
+        reason: 'profile_mismatch',
+        activeProfileLabel: 'Office <server>',
+        sourceProfileLabel: 'Home & NAS',
+        serverProfilesAvailable: true,
+      },
+    });
+
+    expect(html).toContain(
+      'data-post-safe-stop-profile-handoff="profile_mismatch"',
+    );
+    expect(html).toContain('This recovery belongs to another server');
+    expect(html).toContain('Home &amp; NAS');
+    expect(html).toContain('Office &lt;server&gt;');
+    expect(html).not.toContain('Office <server>');
+    expect(html).toContain('data-action="connections-open-post-safe-stop-profile"');
+    expect(html).toContain('data-action="connections-review-active-post-safe-stop"');
+    expect(html).toContain('data-action="connections-dismiss-post-safe-stop-profile"');
+    expect(html).not.toContain('data-post-safe-stop-verification=');
+    expect(html).toContain('role="status"');
+    expect(html).toContain('aria-live="polite"');
+    expect(CONNECTIONS_PAGE_STYLES).toContain(
+      '.connections-post-safe-stop-profile-actions',
+    );
+    expect(CONNECTIONS_PAGE_STYLES).toContain('flex-wrap: wrap');
+    expect(CONNECTIONS_PAGE_STYLES).toContain('min-height: 44px');
+  });
+
+  it('gives an unbound legacy recovery a useful stop without dead actions', () => {
+    const html = renderConnectionsPage({
+      ...baseState({ connections: [] }),
+      postSafeStopProfileHandoff: {
+        reason: 'unbound',
+        activeProfileLabel: 'Current server',
+        serverProfilesAvailable: false,
+      },
+    });
+
+    expect(html).toContain('This recovery link needs a server check');
+    expect(html).toContain('older or incomplete link');
+    expect(html).toContain('You are using Current server');
+    expect(html).toContain('connections-dismiss-post-safe-stop-profile');
+    expect(html).not.toContain('connections-open-post-safe-stop-profile');
+    expect(html).not.toContain('connections-review-active-post-safe-stop');
+  });
+
+  it('does not offer to replace an open editor with current-profile recovery', () => {
+    const state = baseState({
+      postSafeStopRecoveries: [{
+        kind: 'api',
+        name: 'same-name',
+        status: 'pending',
+        acknowledgedAt: Date.UTC(2024, 4, 5, 12, 30),
+      }],
+    });
+    state.dialog.stage = 'form';
+    state.dialog.kind = 'api';
+    state.dialog.values.name = 'another-connection';
+
+    const html = renderConnectionsPage({
+      ...state,
+      postSafeStopProfileHandoff: {
+        reason: 'profile_mismatch',
+        activeProfileLabel: 'Office server',
+        sourceProfileLabel: 'Home server',
+        serverProfilesAvailable: true,
+      },
+    });
+
+    expect(html).toContain('This recovery belongs to another server');
+    expect(html).not.toContain('connections-review-active-post-safe-stop');
+    expect(html).toContain('connections-open-post-safe-stop-profile');
+    expect(html).toContain('connections-dismiss-post-safe-stop-profile');
+  });
+
+  it('renders an interrupted rotation as an explicit no-retry recovery step', () => {
+    const state = baseState();
+    state.credentialRotationRecovery = {
+      kind: 'api',
+      name: 'hubspot',
+      phase: 'pending',
+    };
+    const html = renderConnectionsPage(state);
+    expect(html).toContain('data-connection-credential-recovery="pending"');
+    expect(html).toContain('aria-live="polite"');
+    expect(html).toContain('Do not retry while this outcome is pending');
+    expect(html).toContain('data-action="connections-check-credential-rotation"');
+    expect(html).not.toContain('attempt_id');
+  });
+
+  it('renders server-authoritative post-update evidence without looping back to generic update copy', () => {
+    const state = baseState();
+    state.credentialRotationRecovery = {
+      kind: 'api',
+      name: 'hubspot',
+      phase: 'restart_unsupported',
+      returnedFromServerUpdate: true,
+      serverUpdateTriage: {
+        reason: 'update_still_available',
+        checkStatus: 'update-available',
+        baselineVersion: '26.7.3',
+        currentVersion: '26.8.0',
+        channel: 'stable',
+        availableVersion: '26.9.0',
+      },
+    };
+    const html = renderConnectionsPage({
+      ...state,
+      credentialRotationServerUpdateGuideAvailable: true,
+    });
+    expect(html).toContain('moved from version 26.7.3 to 26.8.0');
+    expect(html).toContain('still offers version 26.9.0');
+    expect(html).toContain('An update landed');
+    expect(html).toContain(
+      'Server evidence: running 26.8.0 · stable channel · update check update available · before update 26.7.3.',
+    );
+    expect(html).toContain('Continue server update');
+    expect(html).toContain('Check again');
+    expect(html).not.toContain('The update may not have finished');
+    expect(html).not.toContain('replacement-token');
+    expect(html).not.toContain('server_url');
+  });
+
+  it('turns release-integrity evidence into a stop-and-correct action', () => {
+    const state = baseState();
+    state.credentialRotationRecovery = {
+      kind: 'api',
+      name: 'hubspot',
+      phase: 'restart_unsupported',
+      returnedFromServerUpdate: true,
+      serverUpdateTriage: {
+        reason: 'release_check_inconclusive',
+        checkStatus: 'bad-signature',
+        baselineVersion: '26.7.3',
+        currentVersion: '26.7.3',
+        channel: 'stable',
+      },
+    };
+
+    const html = renderConnectionsPage({
+      ...state,
+      credentialRotationServerUpdateGuideAvailable: true,
+    });
+    expect(html).toContain('rejected the release manifest signature');
+    expect(html).toContain('Do not apply from that feed');
+    expect(html).toContain('update check bad signature');
+    expect(html).not.toContain('Restart or redeploy the actual server');
+  });
+
+  it('renders freshly confirmed capability as an explicit same-tab continuation without opening a form', () => {
+    const state = baseState();
+    state.credentialRotationRecovery = {
+      kind: 'api',
+      name: 'hubspot',
+      phase: 'restart_resolved',
+      returnedFromServerUpdate: true,
+      baselineUpdatedAt: 100,
+    };
+
+    const html = renderConnectionsPage(state);
+
+    expect(html).toContain(
+      'data-connection-credential-recovery="restart_resolved"',
+    );
+    expect(html).toContain(
+      'A fresh, read-only check confirmed that this server can safely check a credential replacement for api/hubspot',
+    );
+    expect(html).toContain('You stayed on this page');
+    expect(html).toContain('Continue in this tab');
+    expect(html).toContain(
+      'data-action="connections-start-fresh-credential-rotation"',
+    );
+    expect(html).toContain('data-action="connections-dismiss-credential-rotation"');
+    expect(html).not.toContain('replacement-token');
+    expect(html).not.toContain('server_url');
+  });
+
+  it('renders an interrupted untouched editor as a target-only resume without receipt replay', () => {
+    const state = baseState();
+    state.credentialRotationRecovery = {
+      kind: 'api',
+      name: 'hubspot',
+      phase: 'editor_ready',
+      returnedFromServerUpdate: true,
+    };
+
+    const interrupted = renderConnectionsPage(state);
+    expect(interrupted).toContain(
+      'data-connection-credential-recovery="editor_ready"',
+    );
+    expect(interrupted).toContain(
+      'clean credential editor for api/hubspot closed before any field changed',
+    );
+    expect(interrupted).toContain('Resume clean editor');
+    expect(interrupted).toContain(
+      'No field value, credential, or server-recovery receipt will be restored',
+    );
+    expect(interrupted).not.toContain('Recovery finished');
+    expect(interrupted).not.toContain('replacement-token');
+
+    state.dialog = {
+      ...state.dialog,
+      stage: 'form',
+      mode: 'edit',
+      kind: 'api',
+      editingId: 'api/hubspot',
+      values: {
+        name: 'hubspot',
+        'auth.type': 'bearer',
+      },
+    };
+    const reopened = renderConnectionsPage(state);
+    expect(reopened).toContain(
+      'read-only safety check finished and the clean credential editor',
+    );
+    expect(reopened).toContain('No field value or credential was restored');
+    expect(reopened).not.toContain('Resume clean editor');
+  });
+
+  it('renders server-change progress as a busy passive state with no retry action', () => {
+    const state = baseState();
+    state.credentialRotationRecovery = {
+      kind: 'api',
+      name: 'hubspot',
+      phase: 'restart_unsupported',
+      returnedFromServerUpdate: true,
+      serverUpdateProgress: {
+        phase: 'applying',
+        operation: 'update',
+        startedAt: 100,
+      },
+    };
+
+    const applying = renderConnectionsPage({
+      ...state,
+      credentialRotationServerUpdateGuideAvailable: true,
+    });
+    expect(applying).toContain('aria-busy="true"');
+    expect(applying).toContain(
+      'An open Recued tab is applying the server update',
+    );
+    expect(applying).toContain('wait instead of sending a duplicate action');
+    expect(applying).toContain(
+      'opaque ID for the selected server profile',
+    );
+    expect(applying).not.toContain(
+      'data-action="connections-start-fresh-credential-rotation"',
+    );
+    expect(applying).not.toContain(
+      'data-action="connections-review-server-update"',
+    );
+    expect(applying).not.toContain('replacement-token');
+    expect(applying).not.toContain('server_url');
+
+    state.credentialRotationRecovery.serverUpdateProgress = {
+      phase: 'awaiting_reconnect',
+      operation: 'rollback',
+      startedAt: 100,
+      operationId: 'server-ledger-receipt',
+    };
+    const waiting = renderConnectionsPage(state);
+    expect(waiting).toContain('server accepted the rollback');
+    expect(waiting).toContain('verifies the exact opaque receipt');
+    expect(waiting).not.toContain('server-ledger-receipt');
+    expect(waiting).not.toContain(
+      'data-action="connections-start-fresh-credential-rotation"',
+    );
+
+    state.credentialRotationRecovery.serverUpdateVerification = {
+      phase: 'unknown',
+      operation: 'rollback',
+      startedAt: 100,
+      reason: 'unknown_receipt',
+    };
+    const unknown = renderConnectionsPage(state);
+    expect(unknown).toContain('aria-busy="false"');
+    expect(unknown).toContain('did not recognize this rollback receipt');
+    expect(unknown).toContain('all server controls remain paused');
+    expect(unknown).toContain('privacy-safe diagnostic');
+    expect(unknown).not.toContain('server-ledger-receipt');
+
+    state.credentialRotationRecovery.serverUpdateVerification = {
+      phase: 'closed',
+      operation: 'rollback',
+      startedAt: 100,
+      reason: 'server_closed_unresolved',
+    };
+    const closed = renderConnectionsPage(state);
+    expect(closed).toContain('aria-busy="false"');
+    expect(closed).toContain('durably closed this receipt as unresolved');
+    expect(closed).toContain('without claiming the rollback succeeded or failed');
+    expect(closed).toContain(
+      'Confirm its current version, release posture, and api/hubspot activity',
+    );
+    expect(closed).not.toContain('server-ledger-receipt');
+
+    state.credentialRotationRecovery.serverUpdateVerification = {
+      phase: 'checking_baseline',
+      operation: 'rollback',
+      startedAt: 100,
+      reason: 'server_closed_unresolved',
+    };
+    const checkingBaseline = renderConnectionsPage(state);
+    expect(checkingBaseline).toContain('aria-busy="true"');
+    expect(checkingBaseline).toContain(
+      'freshly reading the selected server’s running version',
+    );
+    expect(checkingBaseline).toContain('original rollback outcome remains unknown');
+
+    state.credentialRotationRecovery.serverUpdateVerification = {
+      phase: 'baseline_confirmed',
+      operation: 'rollback',
+      startedAt: 100,
+      reason: 'server_closed_unresolved',
+      baseline: {
+        currentVersion: '26.8.1',
+        channel: 'stable',
+        updateStatus: 'up-to-date',
+        affectedConnection: {
+          kind: 'api',
+          name: 'hubspot',
+          activity: 'idle',
+        },
+      },
+    };
+    const confirmedBaseline = renderConnectionsPage(state);
+    expect(confirmedBaseline).toContain('aria-busy="false"');
+    expect(confirmedBaseline).toContain(
+      'Current state confirmed: running 26.8.1 on the stable channel',
+    );
+    expect(confirmedBaseline).toContain(
+      'the release feed reports this version is current',
+    );
+    expect(confirmedBaseline).toContain(
+      'api/hubspot has no credential verification pending',
+    );
+    expect(confirmedBaseline).toContain(
+      'original rollback outcome remains unknown',
+    );
+    expect(confirmedBaseline).not.toContain('server-ledger-receipt');
+
+    state.credentialRotationRecovery.serverUpdateVerification = {
+      ...state.credentialRotationRecovery.serverUpdateVerification,
+      reason: 'finish_unavailable',
+    };
+    const finishRetry = renderConnectionsPage(state);
+    expect(finishRetry).toContain(
+      'exact browser latch could not be retired',
+    );
+    expect(finishRetry).toContain('retry Finish recovery');
+    expect(finishRetry).toContain('No server action will repeat');
+
+    state.credentialRotationRecovery = {
+      kind: 'api',
+      name: 'hubspot',
+      phase: 'restart_ready',
+      baselineUpdatedAt: 100,
+      returnedFromServerUpdate: true,
+      serverUpdateVerification: {
+        phase: 'completed',
+        operation: 'rollback',
+        startedAt: 100,
+        reason: 'server_closed_unresolved',
+        baseline: {
+          currentVersion: '26.8.1',
+          channel: 'stable',
+          updateStatus: 'up-to-date',
+          affectedConnection: {
+            kind: 'api',
+            name: 'hubspot',
+            activity: 'idle',
+          },
+        },
+      },
+    };
+    const completed = renderConnectionsPage(state);
+    expect(completed).toContain(
+      'Server recovery is finished and server-change controls are unlocked',
+    );
+    expect(completed).toContain(
+      'confirmed running 26.8.1 on the stable channel',
+    );
+    expect(completed).toContain(
+      'original rollback outcome remains unknown',
+    );
+    expect(completed).toContain('Start fresh');
+    expect(completed).not.toContain('server-ledger-receipt');
+  });
+
+  it('lands a terminal recovery failure on the exact connection review', () => {
+    const state = baseState();
+    state.credentialRotationRecovery = {
+      kind: 'api',
+      name: 'hubspot',
+      phase: 'failed',
+      failureReason: 'auth_failed',
+      correction: {
+        auth_type: 'bearer',
+        field_keys: ['auth.token'],
+      },
+    };
+    const html = renderConnectionsPage(state);
+    expect(html).toContain('saved credential was preserved');
+    expect(html).toContain('data-action="connections-review-credential-rotation"');
+    expect(html).toContain('data-kind="api"');
+    expect(html).toContain('data-name="hubspot"');
+    expect(html).toContain('Correct replacement');
+    expect(html).toContain(
+      'aria-label="Correct the rejected credential replacement for api/hubspot"',
+    );
+  });
+
+  it('names a recovered repeated rejection as a resolution handoff', () => {
+    const state = baseState();
+    state.credentialRotationRecovery = {
+      kind: 'api',
+      name: 'hubspot',
+      phase: 'failed',
+      failureReason: 'auth_failed',
+      correction: {
+        auth_type: 'bearer',
+        field_keys: ['auth.token'],
+        triage: {
+          reason: 'repeated_auth_rejection',
+          stage: 'provider_probe',
+          endpoint_field_keys: ['config.base_url', 'config.endpoint'],
+        },
+      },
+    };
+
+    const html = renderConnectionsPage(state);
+    expect(html).toContain('Resolve repeated rejection');
+    expect(html).toContain(
+      'aria-label="Resolve the repeated credential rejection for api/hubspot"',
+    );
+    expect(html).not.toContain('>Correct replacement</button>');
+  });
+
+  it('keeps a recovered regeneration safe stop explicit until its exact editor opens', () => {
+    const state = baseState();
+    state.credentialRotationRecovery = {
+      kind: 'api',
+      name: 'hubspot',
+      phase: 'failed',
+      failureReason: 'auth_failed',
+      correction: {
+        auth_type: 'bearer',
+        field_keys: ['auth.token'],
+        triage: {
+          reason: 'repeated_auth_rejection',
+          stage: 'provider_probe',
+          endpoint_field_keys: ['config.base_url', 'config.endpoint'],
+          resolution: 'regenerate_credential_or_contact_admin',
+        },
+      },
+    };
+
+    const html = renderConnectionsPage(state);
+    expect(html).toContain('Resume credential recovery');
+    expect(html).toContain(
+      'aria-label="Resume safe credential recovery for api/hubspot"',
+    );
+    expect(html).toContain('saved credential remains active');
+    expect(html).toContain('no credential draft was stored');
+    expect(html).not.toContain('Resolve repeated rejection');
+
+    state.dialog = {
+      ...initialConnectionsDialogState(),
+      stage: 'form',
+      mode: 'edit',
+      kind: 'api',
+      editingId: 'api/hubspot',
+      values: {
+        name: 'hubspot',
+        display_name: 'HubSpot',
+        'auth.type': 'bearer',
+      },
+    };
+    const exact = renderConnectionsPage(state);
+    expect(exact).toContain('Safe credential recovery is open');
+    expect(exact).toContain('Verify and replace stays paused');
+    expect(exact).not.toContain('>Resume credential recovery</button>');
+  });
+
+  it('does not promise an exact recovery landing before its row is available', () => {
+    const loadingState = baseState({ loading: true, connections: [] });
+    loadingState.credentialRotationRecovery = {
+      kind: 'api',
+      name: 'hubspot',
+      phase: 'failed',
+      failureReason: 'server_error',
+    };
+    const loading = renderConnectionsPage(loadingState);
+    expect(loading).toContain('Loading connection…');
+    expect(loading).toContain('disabled');
+
+    loadingState.loading = false;
+    const missing = renderConnectionsPage(loadingState);
+    expect(missing).toContain('>Dismiss</button>');
+    expect(missing).not.toContain('Review connection');
   });
 
   it('edit-mode locks the connection name because row identity is immutable', () => {
@@ -310,7 +1457,35 @@ describe('D-125 P7.2 — schemas', () => {
       'query',
       'oauth2_refresh',
       'oauth2_client_credentials',
+      // D-218 — ⚠ this ratchet FIRED on the widened vocabulary, which is
+      // exactly its job. The form list DERIVES from `CONNECTION_AUTH_TYPES`
+      // now, so a new type arrives here automatically; the pin is what makes
+      // that arrival visible rather than silent.
+      'atproto_session',
     ]);
+  });
+
+  it('D-218 — the atproto fields are gated, and there is NO endpoint field', () => {
+    // ⛔ The absence is the security property (§ 7.5b): every other exchanging
+    // type on this form asks for a token endpoint, and this one derives the
+    // session URLs from Base URL instead — so the app password can only reach
+    // the host the connection already talks to. A field here would quietly
+    // become a credential-only destination.
+    const shown = (authType: string): string[] =>
+      apiSchema.fields
+        .filter((f) => f.showWhen === undefined || f.showWhen({ 'auth.type': authType }))
+        .map((f) => f.key);
+
+    const atproto = shown('atproto_session');
+    expect(atproto).toContain('auth.identifier');
+    expect(atproto).toContain('auth.app_password');
+    expect(atproto).not.toContain('auth.token_endpoint');
+    expect(atproto).not.toContain('auth.client_id');
+    expect(atproto).not.toContain('auth.client_secret');
+
+    // …and the new fields stay out of every other type's form.
+    expect(shown('bearer')).not.toContain('auth.app_password');
+    expect(shown('oauth2_refresh')).not.toContain('auth.identifier');
   });
 
   it('mcp schemas cover sse / websocket / stdio', () => {
@@ -476,6 +1651,17 @@ describe('D-125 P7.2 — payload projection', () => {
       'auth.token_endpoint': HUBSPOT_OAUTH_TOKEN_URL,
       'auth.refresh_token': 'refresh',
     })).toBe(true);
+
+    const api = resolveConnectionSchema('api');
+    expect(api).toBeDefined();
+    expect(shouldPatchConnectionAuth(api!, {
+      name: 'header-api',
+      display_name: 'Header API',
+      'config.base_url': 'https://api.example.com',
+      'auth.type': 'header',
+      'auth.headers.0.header_name': 'X-API-Key',
+      'auth.headers.0.value': 'memory-only-secret',
+    })).toBe(true);
   });
 });
 
@@ -485,14 +1671,33 @@ describe('D-125 P7.2 — view → values flatten', () => {
       name: 'hubspot',
       kind: 'api',
       display_name: 'HubSpot',
+      updated_at: 1_700_000_000_000,
       base_url: 'https://api.hubapi.com',
     });
     expect(values.name).toBe('hubspot');
     expect(values.display_name).toBe('HubSpot');
     expect(values['config.base_url']).toBe('https://api.hubapi.com');
+    expect(values['config.updated_at']).toBeUndefined();
     // No auth keys in the projection — `ConnectionView` excludes them
     // by construction; the test asserts the flattener mirrors that.
     expect(values['auth.token']).toBeUndefined();
+  });
+
+  it('uses non-secret auth metadata to reopen the correct rotation fields', () => {
+    const patch = buildConnectionEditDialogPatch({
+      name: 'basic-api',
+      kind: 'api',
+      display_name: 'Basic API',
+      auth_type: 'basic',
+      base_url: 'https://api.example.com',
+      granted_scopes: ['read'],
+    });
+
+    expect(patch.values['auth.type']).toBe('basic');
+    expect(patch.values['auth.username']).toBeUndefined();
+    expect(patch.values['auth.password']).toBeUndefined();
+    expect(patch.values['config.auth_type']).toBeUndefined();
+    expect(patch.values['config.granted_scopes']).toBeUndefined();
   });
 
   it('builds an edit dialog patch that restores vendor schema defaults', () => {
@@ -591,6 +1796,62 @@ describe('R13/R14 — kind picker + generic free-edit OAuth', () => {
     expect(html).not.toContain('data-vendor=');
   });
 
+  it('marks an entered but unsafe generic endpoint as needing attention', () => {
+    const html = renderConnectionsPage(
+      withDialog({
+        stage: 'form',
+        kind: 'api',
+        values: {
+          'auth.type': 'oauth2_refresh',
+          'auth.client_id': 'client-id',
+          'auth.token_endpoint': 'http://provider.example/token',
+          'auth.authorize_url': 'https://provider.example/authorize',
+        },
+      }),
+    );
+    expect(html).toContain('1 detail needs attention');
+    expect(html).toContain('data-oauth-requirement="auth.token_endpoint" data-status="invalid"');
+    expect(html).toContain('<small>Check</small>');
+  });
+
+  it('rejects an unsafe token endpoint when saving a pasted refresh token', () => {
+    const error = validateConnectionForm(
+      apiSchema,
+      {
+        name: 'provider',
+        display_name: 'Provider',
+        'config.base_url': 'https://api.provider.example',
+        'auth.type': 'oauth2_refresh',
+        'auth.client_id': 'client-id',
+        'auth.refresh_token': 'pasted-token',
+        'auth.token_endpoint': 'http://provider.example/token',
+      },
+      {},
+      'create',
+    );
+
+    expect(error).toContain('complete HTTPS URL');
+  });
+
+  it('keeps a valid pasted-token path complete without requiring an Authorize URL', () => {
+    const html = renderConnectionsPage(
+      withDialog({
+        stage: 'form',
+        kind: 'api',
+        values: {
+          'auth.type': 'oauth2_refresh',
+          'auth.client_id': 'client-id',
+          'auth.refresh_token': 'pasted-token',
+          'auth.token_endpoint': 'https://provider.example/token',
+        },
+      }),
+    );
+    expect(html).toContain('data-oauth-state="authorized"');
+    expect(html).toContain('Refresh token ready to save');
+    expect(html).toContain('Add re-authorization details');
+    expect(html).not.toContain('Review provider credentials');
+  });
+
   it('a non-oauth api form shows no Authorize button', () => {
     const html = renderConnectionsPage(
       withDialog({ stage: 'form', kind: 'api', values: { 'auth.type': 'bearer' } }),
@@ -652,10 +1913,40 @@ describe('D-129 P1.3 — vendor-flavored form', () => {
     expect(html).toContain('data-conn-field="auth.type"');
   });
 
-  it('shows "Authorize with HubSpot" button when refresh_token is empty', () => {
+  it('shows the live-only credential checklist before an incomplete app can authorize', () => {
     const html = renderConnectionsPage(hubspotForm());
     expect(html).toContain('data-action="connections-authorize-vendor"');
-    expect(html).toMatch(/Authorize with HubSpot/);
+    expect(html).toContain('Provider credentials');
+    expect(html).toContain('2 required details left');
+    expect(html).toContain('Review provider credentials');
+    expect(html).toContain('Excluded from AI');
+    expect(html).toContain("provider's OAuth endpoints");
+    expect(html).toContain('Saving stores them on your server');
+    expect(html).toContain('reload recovery never receive their values');
+    expect(html).toContain(OAUTH_CLOUD_CALLBACK_URL);
+    expect(html).toContain('Register this unchanged in the provider app');
+    // The checklist follows the fields it describes instead of putting an
+    // unusable authorization action ahead of the required entries.
+    expect(html.indexOf('class="connections-form-fields"')).toBeLessThan(
+      html.indexOf('aria-labelledby="connections-oauth-title"'),
+    );
+  });
+
+  it('makes the authorization action explicit only when registered credentials are ready', () => {
+    const html = renderConnectionsPage(
+      hubspotForm({
+        values: {
+          'config.vendor': 'hubspot',
+          'auth.type': 'oauth2_refresh',
+          'auth.client_id': 'client-id',
+          'auth.client_secret': 'client-secret',
+        },
+      }),
+    );
+    expect(html).toContain('data-oauth-state="ready"');
+    expect(html).toContain('Ready to authorize');
+    expect(html).toContain('Authorize with HubSpot');
+    expect(html).not.toContain('Review provider credentials');
   });
 
   it('shows "Re-authorize with HubSpot" button when refresh_token already filled', () => {
@@ -664,6 +1955,8 @@ describe('D-129 P1.3 — vendor-flavored form', () => {
         values: {
           'config.vendor': 'hubspot',
           'auth.type': 'oauth2_refresh',
+          'auth.client_id': 'client-id',
+          'auth.client_secret': 'client-secret',
           'auth.refresh_token': 'pre-existing-token',
         },
       }),
@@ -671,13 +1964,59 @@ describe('D-129 P1.3 — vendor-flavored form', () => {
     expect(html).toContain('Re-authorize with HubSpot');
   });
 
-  it('disables the Authorize button while OAuth is in flight', () => {
-    const html = renderConnectionsPage(hubspotForm({ oauthInFlight: true }));
+  it('does not call a pasted token complete while its refresh credentials are missing', () => {
+    const html = renderConnectionsPage(
+      hubspotForm({
+        values: {
+          'config.vendor': 'hubspot',
+          'auth.type': 'oauth2_refresh',
+          'auth.refresh_token': 'pasted-token',
+        },
+      }),
+    );
+    expect(html).toContain('data-oauth-state="incomplete"');
+    expect(html).toContain('2 required details left');
+    expect(html).toContain('Review provider credentials');
+    expect(html).not.toContain('Authorization received');
+    expect(html).not.toContain('Re-authorize with HubSpot');
+  });
+
+  it('locks captured provider credentials and Save while OAuth is in flight', () => {
+    const html = renderConnectionsPage(hubspotForm({
+      oauthInFlight: true,
+      values: {
+        'config.vendor': 'hubspot',
+        'auth.type': 'oauth2_refresh',
+        'auth.client_id': 'client-id',
+        'auth.client_secret': 'client-secret',
+        'config.base_url': 'https://api.hubapi.com',
+      },
+    }));
     expect(html).toContain('Authorizing…');
-    // Disabled button stays in the DOM — sidebar handler ignores
-    // re-clicks via `oauthInFlight` guard, but the visual disable
-    // matches the saving pattern.
-    expect(html).toMatch(/disabled/);
+    const clientIdInput = html.match(/<input[^>]*data-conn-field="auth\.client_id"[^>]*>/)?.[0];
+    const clientSecretInput = html.match(/<input[^>]*data-conn-field="auth\.client_secret"[^>]*>/)?.[0];
+    const baseUrlInput = html.match(/<input[^>]*data-conn-field="config\.base_url"[^>]*>/)?.[0];
+    const saveButton = html.match(/<button[^>]*data-action="connections-submit-form"[^>]*>/)?.[0];
+    expect(clientIdInput).toContain('readonly');
+    expect(clientSecretInput).toContain('readonly');
+    expect(baseUrlInput).toContain('readonly');
+    expect(saveButton).toContain('disabled');
+  });
+
+  it('disables provider authorization while Save is committing', () => {
+    const html = renderConnectionsPage(hubspotForm({
+      saving: true,
+      values: {
+        'config.vendor': 'hubspot',
+        'auth.type': 'oauth2_refresh',
+        'auth.client_id': 'client-id',
+        'auth.client_secret': 'client-secret',
+      },
+    }));
+    const authorizeButton = html.match(
+      /<button[^>]*data-action="connections-authorize-vendor"[^>]*>/,
+    )?.[0];
+    expect(authorizeButton).toContain('disabled');
   });
 
   it('surfaces granted scopes inline after a successful exchange', () => {
@@ -686,6 +2025,8 @@ describe('D-129 P1.3 — vendor-flavored form', () => {
         values: {
           'config.vendor': 'hubspot',
           'auth.type': 'oauth2_refresh',
+          'auth.client_id': 'client-id',
+          'auth.client_secret': 'client-secret',
           'auth.refresh_token': 'fresh-token',
         },
         oauthGrantedScopes: ['crm.objects.deals.read', 'crm.objects.contacts.read', 'oauth'],
@@ -695,13 +2036,37 @@ describe('D-129 P1.3 — vendor-flavored form', () => {
     expect(html).toContain('crm.objects.deals.read');
   });
 
-  it('renders OAuth error inline above the Authorize button', () => {
+  it('explains when changed app details invalidate an in-app authorization', () => {
+    const html = renderConnectionsPage(
+      hubspotForm({
+        values: {
+          'config.vendor': 'hubspot',
+          'auth.type': 'oauth2_refresh',
+          'auth.client_id': 'replacement-client-id',
+          'auth.client_secret': 'client-secret',
+        },
+        oauthNeedsReauthorization: true,
+      }),
+    );
+    expect(html).toContain('role="status"');
+    expect(html).toContain('cleared the previous authorization');
+    expect(html).toContain('Authorize again or paste a matching refresh token');
+  });
+
+  it('associates a correctable OAuth error with the exact credential field', () => {
     const html = renderConnectionsPage(
       hubspotForm({
         oauthError: 'token exchange failed (400): bad code',
+        oauthErrorFieldKey: 'auth.client_id',
       }),
     );
-    expect(html).toContain('OAuth: token exchange failed (400): bad code');
+    expect(html).toContain('id="connections-oauth-error"');
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('token exchange failed (400): bad code');
+    const clientIdInput = html.match(/<input[^>]*data-conn-field="auth\.client_id"[^>]*>/)?.[0];
+    expect(clientIdInput).toContain('aria-invalid="true"');
+    expect(clientIdInput).toContain('aria-errormessage="connections-oauth-error"');
+    expect(html).toContain('data-field-key="auth.client_id" data-oauth-invalid="true"');
   });
 
   it('Back button on a vendor flow goes back to the kind-picker (no subtype-picker for vendors)', () => {
@@ -734,7 +2099,19 @@ describe('D-129 P1.3 — initial dialog state defaults', () => {
     expect(s.vendor).toBeNull();
     expect(s.oauthInFlight).toBe(false);
     expect(s.oauthError).toBeNull();
+    expect(s.oauthErrorFieldKey).toBeNull();
+    expect(s.credentialCorrection).toBeNull();
+    expect(s.oauthNeedsReauthorization).toBe(false);
     expect(s.oauthGrantedScopes).toBeNull();
+    expect(s.setupGuide).toEqual({
+      stage: 'closed',
+      targetUrl: '',
+      preview: null,
+      result: null,
+      error: null,
+      resumeAvailable: false,
+      resumeFieldKey: null,
+    });
   });
 });
 

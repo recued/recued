@@ -61,6 +61,7 @@ import {
   type EnrichmentTopic,
   type IngredientManifest,
   type ReadableCollection,
+  type RecipeDefinition,
   type RecipeError,
   type ScopeSearchResult,
   type ScopeSearchSourceId,
@@ -132,6 +133,20 @@ import type {
 } from './user-memory-store.js';
 import type { WorkEntityResolver } from './work-entity-resolver.js';
 import type { WorkEntityTargetedReadDeps } from './work-entity-write-executor.js';
+// D-225 § 9.5.1 — the raw catalog-op projection, shared with the inbound door.
+import {
+  OP_TOOL_PREFIX,
+  buildRawOpToolDescriptors,
+  rawOpToolEntriesFrom,
+  visibleRawOps,
+  type RawOpToolEntry,
+} from './raw-op-tool-catalog.js';
+import {
+  dispatchRawOp,
+  type RawOpDispatchDeps,
+  type RawOpDispatchOutcome,
+} from './raw-op-dispatch.js';
+import type { InstalledPackScan } from './pack-inventory.js';
 
 /** Executor closure shape. `chat-tool-handlers` calls this rather than
  *  importing `handleExecute` directly so tests can substitute a fake
@@ -167,10 +182,33 @@ export interface ChatToolHandlerDeps {
   getEnrichmentStore: () => EnrichmentStore | undefined;
   getRecipeStore: () => RecipeStore;
   getExecutorConfig: () => ServerExecutorConfig;
+  /** D-225 § 9.5.1 — the installed-pack inventory scan. Supplied ⇒ the chat
+   *  catalog ALSO offers raw catalog ops (`recued_op_<opid>`), the SAME source
+   *  the inbound door has had since D-182 §8.
+   *
+   *  ⛔ This absence is the entire reason declared pack ops had no chat
+   *  presence. Nothing about the projection was door-specific — chat has its own
+   *  catalog and simply never received the source. Absent here ⇒ no raw ops,
+   *  which is today's behaviour and keeps every dbless / partial harness working
+   *  unchanged. */
+  scanInstalledPacks?: InstalledPackScan;
+  /** D-225 § 9.5.1 step 2b — the raw-op dispatch deps, late-bound like
+   *  `getExecuteRecipe` (they compose after the executor). Supplied ⇒ a chat
+   *  caller can INVOKE the `recued_op_*` tools `createChatRawOpSource` offers.
+   *
+   *  ⚠ Source and dispatch are separate deps ON PURPOSE. A host that offered
+   *  the tools without wiring the dispatch would advertise calls it cannot
+   *  make; the registry builder below refuses that pairing rather than letting
+   *  the model discover it at call time. */
+  getRawOpDispatchDeps?: () => RawOpDispatchDeps | undefined;
   /** Recipe executor closure. Bound late by bin.ts (resolves the
    *  composed `executeDeps` at call time). When undefined the
    *  `recipe.run` + Tier 2 handlers surface `execution_error`. */
   getExecuteRecipe: () => ChatRecipeExecutor | undefined;
+  /** D-221 §3.3.3 defense-in-depth for an external MCP invocation. Grant
+   * preflight owns the exposure-time refusal; this live check closes stale
+   * grants, recipe upgrades, and the generic `recipe.run` umbrella. */
+  preflightExternalRecipeDispatch?: (recipe: RecipeDefinition) => void;
   /** D-137/M-CHAT-2 — live Tier 3 annotation snapshot used by
    *  `createChatTier3Dispatch` to resolve `<connection>.<tool>` back
    *  to the upstream MCP tool name + Mary's current classification
@@ -2455,6 +2493,17 @@ const createRecipeRunHandler =
     if (req.recipe_id) {
       req.recipe_id = resolveRecipeId(req.recipe_id, deps.getRecipeStore());
     }
+    if (ctx.channel === 'mcp_wire' && deps.preflightExternalRecipeDispatch) {
+      const exposedRecipe = (req.recipe as RecipeDefinition | undefined)
+        ?? (req.recipe_id ? deps.getRecipeStore().get(req.recipe_id) : null);
+      if (exposedRecipe) {
+        try {
+          deps.preflightExternalRecipeDispatch(exposedRecipe);
+        } catch (error) {
+          return executionError(errMessage(error));
+        }
+      }
+    }
     try {
       const result = await execute(req);
       return wrapRecipeRunResult(result);
@@ -2500,6 +2549,13 @@ export const createChatTier2Dispatch =
       return executionError(
         `recipe "${parsed.recipe_id}" not found in store`,
       );
+    }
+    if (ctx.channel === 'mcp_wire' && deps.preflightExternalRecipeDispatch) {
+      try {
+        deps.preflightExternalRecipeDispatch(recipe);
+      } catch (error) {
+        return executionError(errMessage(error));
+      }
     }
     // D-137 Trio #D Codex P1 fold — channel-aware trigger_source so
     // Tier 2 recipes invoked over MCP wire trip the same engine gates
@@ -2776,9 +2832,96 @@ export const createChatManifestLookup =
 // Tier 1 handler bundle factory
 // ────────────────────────────────────────────────────────────────
 
+/** ⛔⛔ SAY "NOTHING FOUND" IN WORDS, on every read that returns nothing.
+ *
+ *  Audited across ~1700 live empty dispatch results, and the signal was
+ *  inconsistent three ways. `memory.search` says it plainly
+ *  (`hint: "no memories saved yet — write one with memory.write"`).
+ *  `contact` / `deal` / `account.search` bury it in
+ *  `envelope.shape.measures.candidate_count: 0`. `mail.search` and
+ *  `calendar.search` return a BARE `{ matches: [], collections: ["bench-mail"] }`
+ *  — and `memory.search` has a second path returning `{ entries: [] }` with no
+ *  hint at all. Same fact, four presentations, one of them wordless.
+ *
+ *  This file already knew: the D-205 fenced-read hint exists because
+ *  "`{ matches: [] }` is indistinguishable from an empty mailbox". That
+ *  reasoning was applied to the FENCE and never to the ordinary empty.
+ *
+ *  🔑 WHY IT MATTERS HERE: a model that does not register "there is nothing"
+ *  supplies the value itself. Task 123 fabricated `pat@example.com` immediately
+ *  after `deal.search` returned `candidates: []`. The grounding gate now refuses
+ *  such a call at dispatch, but a refusal is a late, lossy correction — saying
+ *  the truth plainly is the cheap one, and the two are complementary rather than
+ *  alternatives.
+ *
+ *  ⚠ ADDITIVE ONLY. The existing container stays exactly as it was — callers and
+ *  the D-214 flow compiler read `matches` / `candidates` / `entries`, and a
+ *  changed envelope would break them. This adds a `hint` where none exists and
+ *  NEVER overwrites one: `memory.search`'s "nothing matches 'pilotnote213'" is
+ *  more specific than anything generic, and the fenced-read hint says something
+ *  categorically different ("you are not allowed to read this", not "this is
+ *  empty") — overwriting that would re-open the exact hole D-205 closed.
+ *
+ *  ⚠ Model-facing string — see `chat-prompt-optimization-log.md`. */
+const EMPTY_RESULT_CONTAINERS = [
+  'matches', 'candidates', 'entries', 'memories', 'enrichments', 'rows', 'items',
+] as const;
+
+export const withExplicitEmpty = (
+  tool: string,
+  result: unknown,
+): unknown => {
+  if (result === null || typeof result !== 'object' || Array.isArray(result)) return result;
+  const row = result as Record<string, unknown>;
+  // ⛔ Never clobber a hint that is already there — it is always more specific,
+  // and the fenced-read one means something else entirely.
+  if (typeof row['hint'] === 'string' && row['hint'].length > 0) return result;
+  // ⛔⛔ A PARTIAL READ IS NOT AN EMPTY ONE, and conflating them is the D-205
+  // hazard wearing new clothes. `contact.search` returns
+  // `{ candidates: [], partial: true, partial_failures: [{ source: 'local',
+  // reason: '…' }] }` when a source could not be reached — the search did not
+  // find nothing, it could not finish. Telling the owner "there are no matching
+  // records" because their contact store was down is a confident false
+  // statement, which is worse than the bare empty this function exists to fix.
+  // Caught by probing the real handler, not by review.
+  //
+  // ⛔⛔ BUT IT GETS ITS OWN WORDS, because silence here INVERTED the signalling:
+  // the first cut made a benign empty explicit and left the DANGEROUS case mute,
+  // so `{ candidates: [], partial: true }` said less than `{ candidates: [] }`.
+  // That is precisely the 2026-06-08 failure this codebase already paid for —
+  // a held run returned `{"status":"ok","result":{"success":false,"steps":[],
+  // "errors":[]}}` and a reasoning model read the flag-plus-empty-arrays as a
+  // silent failure and looped until the turn timed out. A boolean beside an
+  // empty collection is not a sentence, and the model supplies the sentence.
+  //
+  // ⚠ Fires whether or not the containers are empty: a partial read WITH rows
+  // is just as misleading ("here are your 3 contacts" when ten exist).
+  const failures = Array.isArray(row['partial_failures']) ? row['partial_failures'] : [];
+  if (row['partial'] === true || failures.length > 0) {
+    return {
+      ...row,
+      hint: `${tool} did NOT finish — `
+        + `${failures.length > 0 ? `${failures.length} source(s) failed` : 'a source was unreachable'}`
+        + '. Records may exist that are not shown here, so do not conclude there'
+        + ' are none and do not supply a value from memory. Say the lookup was'
+        + ' incomplete, or retry.',
+    };
+  }
+  const containers = EMPTY_RESULT_CONTAINERS.filter((key) => Array.isArray(row[key]));
+  // ⚠ No container ⇒ not a list-shaped read (a `.get`, a write receipt). Saying
+  // "found nothing" about those would be a lie, not a clarification.
+  if (containers.length === 0) return result;
+  if (!containers.every((key) => (row[key] as unknown[]).length === 0)) return result;
+  return {
+    ...row,
+    hint: `${tool} found nothing — there are no matching records. `
+      + 'Do not supply a value it would have returned; say so, or ask.',
+  };
+};
+
 export const buildChatTier1Handlers = (
   deps: ChatToolHandlerDeps,
-): Record<string, Tier1Handler> => ({
+): Record<string, Tier1Handler> => wrapEmptyResults({
   'contact.search': createContactSearchHandler(deps),
   'mail.search': createMailSearchHandler(deps),
   'calendar.search': createCalendarSearchHandler(deps),
@@ -2792,17 +2935,167 @@ export const buildChatTier1Handlers = (
   'recipe.run': createRecipeRunHandler(deps),
 });
 
+/** ⛔ Applied at the TABLE, not inside each handler. Eight readers each
+ *  remembering to describe their own empty is eight chances to drift, and the
+ *  audit above is what that drift looks like after a year. */
+export const wrapEmptyResults = (
+  handlers: Record<string, Tier1Handler>,
+): Record<string, Tier1Handler> =>
+  Object.fromEntries(Object.entries(handlers).map(([tool, handler]) => [
+    tool,
+    (async (raw, ctx) => {
+      const out = await handler(raw, ctx);
+      return out.ok ? { ...out, result: withExplicitEmpty(tool, out.result) } : out;
+    }) satisfies Tier1Handler,
+  ]));
+
 /** Convenience export — bin.ts passes this entire bundle to
  *  `createInternalToolRegistry({ tier1Handlers, tier2Source,
  *  manifestLookup, tier2Dispatch, tier3Dispatch })`. The registry's
  *  per-name override table only applies known Tier 1 names; the unused
  *  channel-isolation guard + `getByName` shape stay verbatim. */
+/** D-225 § 9.5.1 — the chat catalog's raw catalog-op source.
+ *
+ *  Byte-identical rows to the door's, from the shared `rawOpToolEntries` — a raw
+ *  op describing itself differently to chat than to the door would be one op
+ *  wearing two faces while the owner's single grant covers both.
+ *
+ *  🔑 Emitting an entry is VISIBILITY, not authority. What a chat caller may
+ *  actually invoke is still the contract's per-op grant, and whether a given
+ *  call holds is still the op's risk/approval — the two axes of § 9.7. Chat
+ *  arrives as `user_self`, so the owner's author-default admits; a door arrives
+ *  with a contract id and needs its grant.
+ *
+ *  ⚠ No `recipeOpCoverage` is passed. The door suppresses a raw WRITE op a
+ *  recipe already provides, because at the door a recipe is the guardrailed
+ *  form of the same action. That reasoning is the door's; whether chat wants the
+ *  same suppression is a UX question nobody has answered, and quietly inheriting
+ *  it would answer it by accident. Absent ⇒ no suppression. */
+export const createChatRawOpSource = (
+  deps: ChatToolHandlerDeps,
+): ((source?: ExecutionSource) => RawOpToolEntry[]) => (source) => {
+  const scan = deps.scanInstalledPacks;
+  if (!scan) return [];
+  const getManifest = (slug: string) => deps.getExecutorConfig().manifests.get(slug);
+  const universe = buildRawOpToolDescriptors(scan, getManifest);
+  const gate = deps.getOpAdmissionGate?.();
+  // ⚠ No gate wired ⇒ unfiltered, which is today's behaviour and keeps every
+  // dbless / partial harness working. Deliberate, and pinned by test so it stays
+  // a decision someone reads rather than a hole.
+  if (!gate) return rawOpToolEntriesFrom(universe);
+  // ⛔ An ABSENT source DENIES. `TurnContext.source` is optional ("only for bare
+  // test harnesses"), so a missing one is reachable — and `isOpGranted` returns
+  // TRUE when no contract governs, so passing a synthesised or undefined source
+  // would make the filter admit everything while looking identical to a working
+  // one. Fail closed instead: no source, no derived catalog.
+  if (!source) return [];
+  return rawOpToolEntriesFrom(visibleRawOps(universe, (opId) => gate.isOpGranted(source, opId)));
+};
+
+/** D-225 § 9.5.1 step 2b — invoke a raw catalog op from chat.
+ *
+ *  Mirrors `createChatTier2Dispatch`: resolve, dispatch, project. The dispatch
+ *  itself is `dispatchRawOp`, unchanged and unwrapped — the SAME function the
+ *  inbound door calls. Chat supplies its own `execution_source` (owner chat
+ *  arrives `(chat, user_self)`), so the admission resolves to the owner
+ *  author-default rather than a door's grant, and the op's risk/approval is the
+ *  global row either way (§ 9.7).
+ *
+ *  🔑 **ONE ASK.** A `held` outcome projects to the same `awaiting_approval`
+ *  shape Tier 1/2/3 already surface — chat does not add a second consent step of
+ *  its own. Two asks for one action trains click-through, and the engine's
+ *  preflight gate is already the single boundary ("no second enforcement path").
+ *
+ *  ⚠ `held` and `ask` are NOT errors. A held write is the expected, successful
+ *  outcome of asking for one; returning an error envelope would tell a weak
+ *  model to retry, which is exactly the loop the door's own handler avoids. */
+export const createChatRawOpDispatch = (
+  deps: ChatToolHandlerDeps,
+): ChatRawOpDispatch => async (toolName, args, ctx) => {
+  const getDispatchDeps = deps.getRawOpDispatchDeps;
+  if (!getDispatchDeps) return { ok: false, error: 'raw op dispatch unavailable' };
+  const dispatchDeps = getDispatchDeps();
+  if (!dispatchDeps) return { ok: false, error: 'raw op dispatch unavailable' };
+  if (!toolName.startsWith(OP_TOOL_PREFIX)) {
+    return { ok: false, error: `not a raw catalog op: ${toolName}` };
+  }
+  const opId = toolName.slice(OP_TOOL_PREFIX.length);
+  try {
+    const outcome = await dispatchRawOp(dispatchDeps, {
+      opId,
+      args,
+      ...(ctx.execution_source ? { executionSource: ctx.execution_source } : {}),
+      ...(ctx.contract_snapshot ? { contractSnapshot: ctx.contract_snapshot } : {}),
+    } as Parameters<typeof dispatchRawOp>[1]);
+    return projectRawOpOutcome(outcome);
+  } catch (e) {
+    return { ok: false, error: errMessage(e) };
+  }
+};
+
+/** D-225 § 9.5.1 — project a `dispatchRawOp` outcome into a chat tool result.
+ *
+ *  🔑 Extracted as a PURE function rather than injecting a fake dispatcher. The
+ *  behaviour worth pinning here is the PROJECTION — what the agent is told about
+ *  a held run — not that a stub was called. A test-only dependency seam would
+ *  have added a hole to production shape to observe something that was never
+ *  about the dependency.
+ *
+ *  ⛔ `held` and `ask` are SUCCESSES, not errors. A held write is the expected
+ *  outcome of asking for one; an error envelope tells a weak model to retry,
+ *  which is the loop the door's own handler is careful to avoid. The held
+ *  message therefore carries do-NOT-resend + tell-the-user.
+ *
+ *  🔑 ONE ASK: `held` projects to the same `awaiting_approval` shape Tier 1/2/3
+ *  already surface, so chat adds no second consent of its own. */
+export const projectRawOpOutcome = (
+  outcome: RawOpDispatchOutcome,
+): { ok: true; result: unknown } | { ok: false; error: string } => {
+  switch (outcome.kind) {
+    case 'result':
+      return { ok: true, result: outcome.result };
+    case 'held':
+      return {
+        ok: true,
+        result: {
+          status: 'awaiting_approval',
+          awaiting_approval: true,
+          op: outcome.op_id,
+          message: HELD_FOR_APPROVAL_CHAT_MESSAGE,
+        },
+      };
+    case 'ask':
+      return {
+        ok: true,
+        result: { status: 'requires_approval', op: outcome.op_id, message: outcome.message },
+      };
+    case 'refused':
+      return { ok: false, error: outcome.message };
+  }
+};
+
+/** What a chat raw-op dispatch returns. Structural, matching the shape the
+ *  other chat dispatches use. */
+export type ChatRawOpDispatch = (
+  toolName: string,
+  args: Record<string, unknown>,
+  ctx: ChatDispatchContext,
+) => Promise<{ ok: true; result: unknown } | { ok: false; error: string }>;
+
+/** The held-run message. Expected-outcome framing + do-NOT-resend + tell-the-
+ *  user, so a weak/local model never loops on an approval it cannot resolve. */
+const HELD_FOR_APPROVAL_CHAT_MESSAGE =
+  'This operation is held for the owner\'s approval. Do NOT resend it — tell the '
+  + 'user it is waiting for them to approve.';
+
 export const buildChatToolRegistryInputs = (deps: ChatToolHandlerDeps) => ({
   tier1Handlers: buildChatTier1Handlers(deps),
   tier2Source: createChatTier2Source(deps),
   manifestLookup: createChatManifestLookup(deps),
   tier2Dispatch: createChatTier2Dispatch(deps),
   tier3Dispatch: createChatTier3Dispatch(deps),
+  rawOpSource: createChatRawOpSource(deps),
+  rawOpDispatch: createChatRawOpDispatch(deps),
 });
 
 /** Re-export for callers that want to construct the ctx for

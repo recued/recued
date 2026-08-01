@@ -8,20 +8,24 @@
  *  `/webclient/` LAN redirect (that makes the localhost path work; a LAN-IP-
  *  over-http load still needs HTTPS — this is where the user learns that).
  *
- *  Pure-function scope + a wiring test that drives the resolver →
- *  `setSplashMessage` composition against a fake splash document (the
- *  `readSecureContextEnv` global reads are covered in their own block), so the
- *  user-visible outcome is verified without a browser. */
+ *  Pure-function scope + a source-order ratchet over the real production entry
+ *  (the rendered card itself has unit + browser coverage). The ratchet keeps
+ *  the guard and guided handoff ahead of service-worker, storage, and crypto
+ *  startup rather than exercising the retired static-splash composition. */
 
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import {
   INSECURE_CONTEXT_SPLASH_MESSAGE,
   WEBCRYPTO_MISSING_SPLASH_MESSAGE,
   readSecureContextEnv,
   resolveInsecureContextMessage,
+  resolveSecureContextIssue,
   type SecureContextEnv,
 } from '../boot/secure-context-guard.js';
-import { setSplashMessage } from '../boot/pair-fallback-bootstrap.js';
+
+const WEBCLIENT_MAIN_PATH = resolve(__dirname, '../webclient-main.ts');
 
 describe('resolveInsecureContextMessage', () => {
   it('secure context + Web Crypto present → null (boot proceeds)', () => {
@@ -46,6 +50,23 @@ describe('resolveInsecureContextMessage', () => {
 
   it('the two messages are distinct', () => {
     expect(INSECURE_CONTEXT_SPLASH_MESSAGE).not.toBe(WEBCRYPTO_MISSING_SPLASH_MESSAGE);
+  });
+
+  it('returns a typed reason so the boot handoff does not parse display copy', () => {
+    expect(resolveSecureContextIssue({
+      isSecureContext: false,
+      hasSubtleCrypto: false,
+    })).toEqual({
+      kind: 'insecure_context',
+      message: INSECURE_CONTEXT_SPLASH_MESSAGE,
+    });
+    expect(resolveSecureContextIssue({
+      isSecureContext: true,
+      hasSubtleCrypto: false,
+    })).toEqual({
+      kind: 'webcrypto_missing',
+      message: WEBCRYPTO_MISSING_SPLASH_MESSAGE,
+    });
   });
 });
 
@@ -80,49 +101,152 @@ describe('readSecureContextEnv', () => {
   });
 });
 
-describe('wiring — insecure context upgrades the boot splash (the user-visible outcome)', () => {
-  // Fake splash document mirroring the boot HTML's
-  // `#webclient-boot-splash-message` element (webclient tests run in node with
-  // hand-built document seams — no jsdom global).
-  const makeSplashDoc = (): { doc: Document; read: () => string } => {
-    let text = '';
-    const messageEl = {
-      get textContent(): string {
-        return text;
-      },
-      set textContent(v: string) {
-        text = v;
-      },
-    };
-    const doc = {
-      getElementById: (id: string): unknown =>
-        id === 'webclient-boot-splash-message' ? messageEl : null,
-    } as unknown as Document;
-    return { doc, read: () => text };
-  };
+describe('production entry secure-access wiring', () => {
+  it('consumes reload intent before guards and leaves sibling-completed startup silent', () => {
+    const source = readFileSync(WEBCLIENT_MAIN_PATH, 'utf8');
+    const mainIndex = source.indexOf('const main = async (): Promise<void> => {');
+    const consumeIndex = source.indexOf(
+      'consumeStartupReloadRecovery();',
+      mainIndex,
+    );
+    const guardIndex = source.indexOf(
+      'const secureContextIssue = resolveSecureContextIssue(',
+      mainIndex,
+    );
+    const credentialRecoveryIndex = source.indexOf(
+      'credentialHealth = await recoverStartupTaskWithTriage({',
+      guardIndex,
+    );
+    const recoveryReloadIndex = source.indexOf(
+      'onReload: () => requestStartupRecoveryReload(),',
+      credentialRecoveryIndex,
+    );
+    const repeatedIndex = source.indexOf(
+      'repeated: startupReloadRecoveryRequested,',
+      credentialRecoveryIndex,
+    );
+    const reloadAttemptedIndex = source.indexOf(
+      'reloadAttempted: startupReloadRecoveryRequested,',
+      repeatedIndex,
+    );
+    const depsIndex = source.indexOf(
+      'const bootstrapDeps: PairFallbackBootstrapDeps = {',
+      reloadAttemptedIndex,
+    );
+    const silentConvergenceIndex = source.indexOf(
+      'silentCredentialConvergence: true',
+      depsIndex,
+    );
+    const siblingReceiptGuardIndex = source.indexOf(
+      'credentialHealth.pairCompletedInAnotherTab !== true',
+      silentConvergenceIndex,
+    );
+    const queueIndex = source.indexOf(
+      "queueStartupRecoveryForNextAttempt(bootstrapDeps, 'reload');",
+      siblingReceiptGuardIndex,
+    );
+    const bootstrapIndex = source.indexOf(
+      'runBootstrapWithPairFallback(bootstrapDeps)',
+      queueIndex,
+    );
 
-  it('drives resolver → setSplashMessage → DOM: the splash shows the insecure-context copy', () => {
-    const { doc, read } = makeSplashDoc();
-    const message = resolveInsecureContextMessage({
-      isSecureContext: false,
-      hasSubtleCrypto: false,
-    });
-    expect(message).toBe(INSECURE_CONTEXT_SPLASH_MESSAGE);
-    setSplashMessage(message ?? '', doc);
-    expect(read()).toBe(INSECURE_CONTEXT_SPLASH_MESSAGE);
+    expect(mainIndex).toBeGreaterThanOrEqual(0);
+    expect(consumeIndex).toBeGreaterThan(mainIndex);
+    expect(guardIndex).toBeGreaterThan(consumeIndex);
+    expect(credentialRecoveryIndex).toBeGreaterThan(guardIndex);
+    expect(recoveryReloadIndex).toBeGreaterThan(credentialRecoveryIndex);
+    expect(repeatedIndex).toBeGreaterThan(credentialRecoveryIndex);
+    expect(reloadAttemptedIndex).toBeGreaterThan(repeatedIndex);
+    expect(depsIndex).toBeGreaterThan(reloadAttemptedIndex);
+    expect(silentConvergenceIndex).toBeGreaterThan(depsIndex);
+    expect(siblingReceiptGuardIndex).toBeGreaterThan(
+      silentConvergenceIndex,
+    );
+    expect(queueIndex).toBeGreaterThan(siblingReceiptGuardIndex);
+    expect(bootstrapIndex).toBeGreaterThan(queueIndex);
   });
 
-  it('a healthy environment resolves to null, so the entry never overwrites the splash', () => {
-    const { doc, read } = makeSplashDoc();
-    read(); // baseline: empty
-    const message = resolveInsecureContextMessage({
-      isSecureContext: true,
-      hasSubtleCrypto: true,
-    });
-    expect(message).toBeNull();
-    // The entry guards on a non-null message before calling setSplashMessage,
-    // so a healthy boot leaves the splash untouched (loading copy stays).
-    if (message) setSplashMessage(message, doc);
-    expect(read()).toBe('');
+  it('mounts the guided handoff and returns before service-worker or storage startup', () => {
+    const source = readFileSync(WEBCLIENT_MAIN_PATH, 'utf8');
+    const guardIndex = source.indexOf(
+      'const secureContextIssue = resolveSecureContextIssue(',
+    );
+    const handoffIndex = source.indexOf(
+      'mountSecureAccessHandoff({',
+      guardIndex,
+    );
+    const returnIndex = source.indexOf('\n    return;', handoffIndex);
+    const serviceWorkerIndex = source.indexOf(
+      'void registerServiceWorker()',
+      handoffIndex,
+    );
+    const storageIndex = source.indexOf(
+      'openPersistentStorageWithRecovery({',
+      handoffIndex,
+    );
+
+    expect(guardIndex).toBeGreaterThanOrEqual(0);
+    expect(handoffIndex).toBeGreaterThan(guardIndex);
+    expect(returnIndex).toBeGreaterThan(handoffIndex);
+    expect(serviceWorkerIndex).toBeGreaterThan(returnIndex);
+    expect(storageIndex).toBeGreaterThan(serviceWorkerIndex);
+    expect(source.slice(handoffIndex, returnIndex)).toContain(
+      'setSplashMessage(secureContextIssue.message)',
+    );
+  });
+
+  it('threads explicit reload continuity through persistent-storage startup', () => {
+    const source = readFileSync(WEBCLIENT_MAIN_PATH, 'utf8');
+    const storageIndex = source.indexOf(
+      'db = await openPersistentStorageWithRecovery({',
+    );
+    const reloadContextIndex = source.indexOf(
+      'reloadAttempted: startupReloadRecoveryRequested,',
+      storageIndex,
+    );
+    const markedReloadIndex = source.indexOf(
+      'reload: () => requestStartupRecoveryReload(),',
+      reloadContextIndex,
+    );
+    const storageFailureIndex = source.indexOf(
+      'onFailure: (error, kind) => {',
+      markedReloadIndex,
+    );
+
+    expect(storageIndex).toBeGreaterThanOrEqual(0);
+    expect(reloadContextIndex).toBeGreaterThan(storageIndex);
+    expect(markedReloadIndex).toBeGreaterThan(reloadContextIndex);
+    expect(storageFailureIndex).toBeGreaterThan(markedReloadIndex);
+  });
+
+  it('threads explicit reload continuity through cold credential repair', () => {
+    const source = readFileSync(WEBCLIENT_MAIN_PATH, 'utf8');
+    const repairIndex = source.indexOf(
+      'startColdStartCredentialRepair({',
+    );
+    const reloadContextIndex = source.indexOf(
+      'reloadAttempted: startupReloadRecoveryRequested,',
+      repairIndex,
+    );
+    const markedReloadIndex = source.indexOf(
+      'reload: () => requestStartupRecoveryReload(),',
+      reloadContextIndex,
+    );
+    const repairReturnIndex = source.indexOf('\n    return;', repairIndex);
+
+    expect(repairIndex).toBeGreaterThanOrEqual(0);
+    expect(reloadContextIndex).toBeGreaterThan(repairIndex);
+    expect(markedReloadIndex).toBeGreaterThan(reloadContextIndex);
+    expect(repairReturnIndex).toBeGreaterThan(markedReloadIndex);
+  });
+
+  it('resumes pairing from the live destination URL, not a query URL', () => {
+    const source = readFileSync(WEBCLIENT_MAIN_PATH, 'utf8');
+    expect(source).toContain(
+      'const pairEntry = parsePairEntryHandoff(',
+    );
+    expect(source).toContain("globalThis.location?.href ?? ''");
+    expect(source.match(/pairEntry\.active/g)).toHaveLength(2);
+    expect(source).not.toContain("parsePairDeeplink(globalThis.location");
   });
 });

@@ -73,6 +73,9 @@ const applyableResolution = (over: Partial<Extract<ResolveForApplyResult, { stat
   isMajor: false,
   autoApplyEligible: true,
   artifact: { url: 'https://x/recued', sha256: 'abc', sig: 'RWS' },
+  // An `applyable` resolution now always carries its native addon — a release
+  // without one is refused as `no-artifact` upstream (D-178 item 4).
+  libArtifact: { url: 'https://x/lib.node', sha256: 'def', sig: 'RWSlib' },
   webclientArtifact: null,
   ...over,
 });
@@ -143,8 +146,14 @@ describe('makeUpdateHandlers', () => {
   });
 
   // ── update.apply / update.rollback ────────────────────────────────
-  const applyHandler = (applyDeps?: UpdateApplyDeps) => {
-    const slice = makeUpdateHandlers({ ...handlerDeps(), ...(applyDeps ? { applyDeps } : {}) });
+  const applyHandler = (
+    applyDeps?: UpdateApplyDeps,
+    releaseCheckDeps: ReleaseCheckDeps = stubDeps(),
+  ) => {
+    const slice = makeUpdateHandlers({
+      ...handlerDeps({ releaseCheckDeps }),
+      ...(applyDeps ? { applyDeps } : {}),
+    });
     if (!slice) throw new Error('expected slice');
     return slice;
   };
@@ -161,8 +170,13 @@ describe('makeUpdateHandlers', () => {
   it('update.apply stages + restarts on an applyable, non-major release', async () => {
     const restart = vi.fn();
     const deps = stubApplyDeps({ ports: okPorts({ requestRestart: restart }) });
-    const res = (await call(applyHandler(deps), 'update.apply', {}, REG)) as { status: string; to_version?: string };
+    const res = (await call(applyHandler(deps), 'update.apply', {}, REG)) as {
+      status: string;
+      operation_id?: string;
+      to_version?: string;
+    };
     expect(res.status).toBe('restarting');
+    expect(res.operation_id).toBe('e0');
     expect(res.to_version).toBe('1.4.0');
     expect(restart).toHaveBeenCalledOnce();
   });
@@ -202,8 +216,157 @@ describe('makeUpdateHandlers', () => {
   it('update.rollback swaps back + restarts on a committed release', async () => {
     const restart = vi.fn();
     const deps = stubApplyDeps({ ports: okPorts({ requestRestart: restart }) });
-    const res = (await call(applyHandler(deps), 'update.rollback', undefined, REG)) as { status: string };
+    const res = (await call(applyHandler(deps), 'update.rollback', undefined, REG)) as {
+      status: string;
+      operation_id?: string;
+    };
     expect(res.status).toBe('rolled-back');
+    expect(res.operation_id).toBe('e0');
     expect(restart).toHaveBeenCalledOnce();
+  });
+
+  it('resolves an accepted operation receipt only for a registered owner', async () => {
+    const deps = stubApplyDeps();
+    const slice = applyHandler(deps);
+    const applied = (await call(
+      slice,
+      'update.apply',
+      {},
+      REG,
+    )) as { operation_id?: string };
+    expect(applied.operation_id).toBe('e0');
+
+    await expect(call(
+      slice,
+      'update.operation_status',
+      { operation_id: 'e0' },
+      { instance_id: null },
+    )).rejects.toThrow(/registered/);
+    await expect(call(
+      slice,
+      'update.operation_status',
+      { operation_id: '../updates.log' },
+      REG,
+    )).rejects.toThrow(/opaque update receipt/);
+    await expect(call(
+      slice,
+      'update.operation_status',
+      { operation_id: 'e0', include_closed: 'yes' },
+      REG,
+    )).rejects.toThrow(/include_closed must be boolean/);
+
+    expect(await call(
+      slice,
+      'update.operation_status',
+      { operation_id: 'e0' },
+      REG,
+    )).toEqual({
+      status: 'waiting_for_restart',
+      operation: 'update',
+    });
+    expect(await call(
+      applyHandler(
+        deps,
+        stubDeps({ currentVersion: '1.4.0' }),
+      ),
+      'update.operation_status',
+      { operation_id: 'e0' },
+      REG,
+    )).toEqual({ status: 'completed', operation: 'update' });
+    expect(await call(
+      slice,
+      'update.operation_status',
+      { operation_id: 'missing' },
+      REG,
+    )).toEqual({ status: 'unknown' });
+  });
+
+  it('closes an unknown receipt in the server ledger and restores that closure', async () => {
+    const deps = stubApplyDeps();
+    const slice = applyHandler(deps);
+
+    await expect(call(
+      slice,
+      'update.operation_close',
+      {
+        operation_id: 'lost-receipt',
+        expected_operation: 'rollback',
+      },
+      { instance_id: null },
+    )).rejects.toThrow(/registered/);
+    await expect(call(
+      slice,
+      'update.operation_close',
+      {
+        operation_id: '../updates.log',
+        expected_operation: 'rollback',
+      },
+      REG,
+    )).rejects.toThrow(/opaque update receipt/);
+
+    expect(await call(
+      slice,
+      'update.operation_close',
+      {
+        operation_id: 'lost-receipt',
+        expected_operation: 'rollback',
+      },
+      REG,
+    )).toEqual({
+      status: 'closed_unresolved',
+      operation: 'rollback',
+    });
+    expect(await call(
+      slice,
+      'update.operation_status',
+      { operation_id: 'lost-receipt' },
+      REG,
+    )).toEqual({ status: 'unknown' });
+    expect(await call(
+      slice,
+      'update.operation_status',
+      {
+        operation_id: 'lost-receipt',
+        include_closed: true,
+      },
+      REG,
+    )).toEqual({
+      status: 'closed_unresolved',
+      operation: 'rollback',
+    });
+  });
+
+  it('refuses unresolved closure while an update is in flight', async () => {
+    const deps = stubApplyDeps();
+    const slice = applyHandler(deps);
+    await call(slice, 'update.apply', {}, REG);
+
+    expect(await call(
+      slice,
+      'update.operation_close',
+      {
+        operation_id: 'other-receipt',
+        expected_operation: 'update',
+      },
+      REG,
+    )).toEqual({
+      status: 'refused',
+      reason: 'operation_in_flight',
+    });
+  });
+
+  it('reports unresolved closure unsupported without a self-apply ledger', async () => {
+    expect(await call(
+      applyHandler(undefined),
+      'update.operation_close',
+      {
+        operation_id: 'lost-receipt',
+        expected_operation: 'update',
+      },
+      REG,
+    )).toEqual({
+      status: 'refused',
+      reason: 'not_supported',
+    });
   });
 });

@@ -363,7 +363,9 @@ const parseJsonRpcLines = (stdout: string): Array<Record<string, unknown>> =>
 
 const runMcpUntilToolsList = (
   dbPath: string,
-  options: { loaderTracePath?: string } = {},
+  /** D-228 — `token` appends `--token <bearer>` so a boot can carry a contract.
+   *  Without it the server offers nothing (slice 6), which is its own test. */
+  options: { loaderTracePath?: string; token?: string } = {},
 ): Promise<{
   stdout: string;
   stderr: string;
@@ -380,6 +382,7 @@ const runMcpUntilToolsList = (
       '--mcp',
       '--db',
       dbPath,
+      ...(options.token !== undefined ? ['--token', options.token] : []),
     ],
     {
       cwd: repoRoot,
@@ -802,7 +805,103 @@ describe('production router', () => {
     expect(show.stdout).toContain('"supports_json": true');
   }, 30_000);
 
-  it('routes --mcp through the MCP profile context and lists legacy plus registry tools', async () => {
+  /** ⛔⛔ CONTRACT MOVED — D-228 slice 6. This asserted that a bare `--mcp` boot
+   *  lists `recued_listRecipes` / `recued_dataTimeline` / `recipe.run` /
+   *  `contact.search`, and that IS what shipped: a token-less stdio server
+   *  advertised and dispatched the whole catalog to any local process that could
+   *  reach it. An absent per-tool checklist now DENIES, so the honest end-to-end
+   *  expectation for a boot with no `--token` is an EMPTY catalog plus the
+   *  stderr instruction that makes it recoverable.
+   *
+   *  🔑 This is the most production-faithful witness on this surface — it spawns
+   *  the real binary — so it is the right place to pin the refusal. Its unique
+   *  subject (profile routing, module-boundary, boot phases) is untouched below.
+   *
+   *  ⚠ WHAT IS NO LONGER COVERED END-TO-END: the catalog COMPOSITION (legacy +
+   *  registry tools merging) for a caller that DOES present a token. That needs
+   *  a seeded inbound token, which needs the DB schema to exist before the child
+   *  boots — two spawns. It is covered at the unit level
+   *  (`d-137-trio-d-mcp-registry-wiring`, `mcp-server.test.ts`), which is NOT the
+   *  same as covering it here; a wiring regression that only manifests under a
+   *  real boot would now be caught by neither. */
+  /** ⛔⛔ D-228 — CATALOG COMPOSITION FOR A TOKENED CALLER, end-to-end at the real
+   *  binary. The sibling test below pins the token-LESS boot (empty catalog), and
+   *  when slice 6 flipped that default this was the coverage it cost: nothing
+   *  proved, against a live boot, that the legacy `recued_*` tools and the
+   *  registry Tier-1 names still MERGE into one catalog. A wiring regression that
+   *  only manifests under a real boot would have been caught by neither.
+   *
+   *  ⚠ TWO SPAWNS, deliberately. The token row has to exist BEFORE the child
+   *  boots, and the schema has to exist before the row — so: boot once to create
+   *  the db, seed a bearer into it, boot again carrying `--token`. That cost is
+   *  the reason this was deferred; it is not a reason to keep deferring it. */
+  it('a TOKENED --mcp boot composes the legacy + registry catalog', async () => {
+    const dir = makeTmp();
+    const dbPath = join(dir, 'server.db');
+
+    // Spawn 1 — create the db + schema (and prove the token-less path first).
+    const first = await runMcpUntilToolsList(dbPath);
+    expect(first.timedOut).toBe(false);
+    expect(existsSync(dbPath)).toBe(true);
+
+    // Seed a bearer the second boot can present. `issueToken` accepts the
+    // plaintext, so the id derivation stays the server's own.
+    const BEARER = 'recued_e2e_catalog_composition_bearer';
+    const GRANTED = [
+      'recued_listRecipes', 'recued_dataTimeline', 'recipe.run', 'contact.search',
+    ];
+    {
+      const { createChatInboundTokenStore } = await import('../storage/chat-inbound-token-store.js');
+      const db = new Database(dbPath);
+      try {
+        // ⚠ NO `as never` HERE, deliberately. My first draft cast this and the
+        // cast hid TWO shape errors — `concurrency_tier: 'single'` (the type is
+        // `3 | 5 | 10`) and `chat_mode: { enabled: false }` (it is
+        // `ConnectionMcpChatMode | null`). A malformed blob makes the store
+        // revoke the row, so the token was FOUND (no stderr notice) but INACTIVE,
+        // and every tool silently denied — an empty catalog that looked like a
+        // catalog bug. Same lesson as the `granted_permissions` defect this
+        // suite exists for: a whole-object cast silences the check that matters.
+        createChatInboundTokenStore(db).issueToken({
+          value: {
+            label: 'e2e',
+            grants: Object.fromEntries(GRANTED.map((n) => [n, true])),
+            concurrency_tier: 3,
+            expires_at: 0, // sentinel: never expires
+            chat_mode: null,
+          },
+          now: Date.now(),
+          bearer_plaintext: BEARER,
+        });
+      } finally { db.close(); }
+    }
+
+    // Spawn 2 — the same binary, now carrying a contract.
+    const result = await runMcpUntilToolsList(dbPath, { token: BEARER });
+    const responses = parseJsonRpcLines(result.stdout);
+    const toolListResponse = responses.find((response) => response.id === 2) as
+      | { result?: { tools?: Array<{ name?: string }> } }
+      | undefined;
+    const toolNames = toolListResponse?.result?.tools?.map((tool) => tool.name) ?? [];
+
+    expect(result.timedOut).toBe(false);
+    expect(result.exitCode).toBe(0);
+    // ⚠ The recovery notice must NOT appear — it would mean the token did not
+    // resolve and this test degenerated into the token-less case with extra steps.
+    expect(result.stderr).not.toContain('no token supplied');
+    expect(result.stderr).not.toContain('was not recognised');
+
+    // ⛔ THE COMPOSITION ITSELF: a LEGACY `recued_*` tool and a REGISTRY Tier-1
+    // name, from the two different sources `handleToolsList` merges.
+    expect(toolNames).toContain('recued_listRecipes');
+    expect(toolNames).toContain('recipe.run');
+    expect(toolNames).toContain('contact.search');
+    // …and the checklist still FILTERS at the same time — an ungranted tool is
+    // absent, so this is a composed-then-filtered catalog, not "everything".
+    expect(toolNames).not.toContain('recued_saveRecipe');
+  }, 60_000);
+
+  it('routes --mcp through the MCP profile context; a token-less boot offers NOTHING', async () => {
     const dir = makeTmp();
     const dbPath = join(dir, 'server.db');
     const tracePath = join(dir, 'mcp-modules.jsonl');
@@ -826,10 +925,15 @@ describe('production router', () => {
     expect(result.stderr).toContain('"phase":"vault-init-complete"');
     expect(result.stderr).toContain('"phase":"dispatch-mcp"');
     expect(responses).toContainEqual(expect.objectContaining({ id: 1 }));
-    expect(toolNames).toContain('recued_listRecipes');
-    expect(toolNames).toContain('recued_dataTimeline');
-    expect(toolNames).toContain('recipe.run');
-    expect(toolNames).toContain('contact.search');
+    // D-228 slice 6 — no `--token` on the command line ⇒ no checklist ⇒ nothing
+    // offered. The tools/list call still SUCCEEDS (this is a governed empty
+    // catalog, not a transport error), which is why the assertion is on the
+    // names rather than on an error envelope.
+    expect(toolNames).toEqual([]);
+    // …and the refusal is recoverable rather than a mystery: the CLI says what
+    // to do, on stderr (stdout is the MCP protocol stream).
+    expect(result.stderr).toContain('no token supplied');
+    expect(result.stderr).toContain('RECUED_MCP_TOKEN');
     expect(existsSync(dbPath)).toBe(true);
     expect(loaded.length).toBeGreaterThan(0);
     expect(loaded.filter((entry) => profileBoundaryForbiddenLoadedModule(entry, {

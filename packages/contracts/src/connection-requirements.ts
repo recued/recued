@@ -24,8 +24,11 @@
 
 import { AUTHORIZE_PARAM_RESERVED_KEYS, MICROSOFT_GRAPH_API_BASE } from './connection-vendor-providers.js';
 import {
+  CONNECTION_AUTH_TYPES,
+  isValidOAuthEndpointUrl,
   MAX_HEADER_AUTH_ENTRIES,
   validateHeaderAuthEntries,
+  type ConnectionAuthType,
   type ConnectionView,
   type HeaderAuthIssue,
 } from './connection.js';
@@ -82,19 +85,38 @@ export type ConnectionAuthDescriptor =
       token_endpoint: string;
       token_auth_style?: 'body' | 'basic';
       scope?: string;
-    };
+    }
+  /** D-218 — AT Protocol session exchange. The owner enters a handle and an app
+   *  password at enroll.
+   *
+   *  ⛔ **Carries NO endpoint, and that is the security property (§ 7.5b).**
+   *  Every other exchanging descriptor names a `token_endpoint`; this one
+   *  deliberately does not, because the session endpoints are DERIVED from the
+   *  connection's own `api_base`. A pack-declared, credential-only destination
+   *  would let a manifest name where an account password gets POSTed — the
+   *  highest-value exfiltration primitive in the system, and one no reviewer
+   *  would think to look for on an auth descriptor. Deriving it means the
+   *  password can only ever reach the host the connection already talks to. */
+  | { type: 'atproto_session' };
 
-/** Closed list of `ConnectionAuthDescriptor` discriminants — mirrors the
- *  enrollable `AUTH_TYPES` (`connection-schemas/api.ts`) plus `none`. */
-export const CONNECTION_AUTH_DESCRIPTOR_TYPES = [
-  'none',
-  'bearer',
-  'basic',
-  'header',
-  'query',
-  'oauth2_refresh',
-  'oauth2_client_credentials',
-] as const;
+/** Closed list of `ConnectionAuthDescriptor` discriminants.
+ *
+ *  ⚠ **A pack-side vocabulary, distinct from `ConnectionAuth`** — this is what a
+ *  pack DECLARES it needs, not what the owner stores. The two happen to carry
+ *  the same names, and D-218 found that "happen to" was doing real work: the
+ *  list was a hand-kept copy, so widening `ConnectionAuth` left it silently
+ *  short and a subset typechecks. It is now DERIVED, with the descriptor union
+ *  checked against it below — the same both-directions guard `CONNECTION_AUTH_TYPES`
+ *  carries. */
+export const CONNECTION_AUTH_DESCRIPTOR_TYPES =
+  CONNECTION_AUTH_TYPES satisfies readonly ConnectionAuthDescriptor['type'][];
+
+/** Compile-time proof that no descriptor member is missing from the derived
+ *  list — the reverse direction `satisfies` cannot express. */
+type DescriptorTypesAreExhaustive =
+  Exclude<ConnectionAuthDescriptor['type'], ConnectionAuthType> extends never ? true : never;
+const _descriptorTypesAreExhaustive: DescriptorTypesAreExhaustive = true;
+void _descriptorTypesAreExhaustive;
 export type ConnectionAuthDescriptorType = (typeof CONNECTION_AUTH_DESCRIPTOR_TYPES)[number];
 
 // ────────────────────────────────────────────────────────────────
@@ -201,11 +223,11 @@ const validateAuthDescriptor = (auth: unknown): string[] => {
   const issues: string[] = [];
   switch (type) {
     case 'oauth2_refresh':
-      if (typeof a.authorize_url !== 'string' || !a.authorize_url.startsWith('https://')) {
-        issues.push('auth.authorize_url must be an https:// URL');
+      if (!isValidOAuthEndpointUrl(a.authorize_url)) {
+        issues.push('auth.authorize_url must be a complete HTTPS URL with no embedded username or password and no URL fragment');
       }
-      if (typeof a.token_endpoint !== 'string' || !a.token_endpoint.startsWith('https://')) {
-        issues.push('auth.token_endpoint must be an https:// URL');
+      if (!isValidOAuthEndpointUrl(a.token_endpoint)) {
+        issues.push('auth.token_endpoint must be a complete HTTPS URL with no embedded username or password and no URL fragment');
       }
       if (a.authorize_params !== undefined) {
         if (!isStringRecord(a.authorize_params)) {
@@ -229,8 +251,8 @@ const validateAuthDescriptor = (auth: unknown): string[] => {
       }
       break;
     case 'oauth2_client_credentials':
-      if (typeof a.token_endpoint !== 'string' || !a.token_endpoint.startsWith('https://')) {
-        issues.push('auth.token_endpoint must be an https:// URL');
+      if (!isValidOAuthEndpointUrl(a.token_endpoint)) {
+        issues.push('auth.token_endpoint must be a complete HTTPS URL with no embedded username or password and no URL fragment');
       }
       if (a.token_auth_style !== undefined
         && a.token_auth_style !== 'body'
@@ -262,7 +284,14 @@ const validateAuthDescriptor = (auth: unknown): string[] => {
         issues.push('auth.param_name must be a non-empty string');
       }
       break;
-    // 'bearer' | 'basic' | 'none' — the discriminant is the whole descriptor.
+    // 'bearer' | 'basic' | 'none' | 'atproto_session' — the discriminant is the
+    // whole descriptor, so there is nothing beyond it to validate.
+    //
+    // ⚠ D-218: `atproto_session` belongs here for a REASON, not by omission. It
+    // carries no endpoint by design (§ 7.5b) — the session URLs derive from the
+    // connection's `api_base` — so a case that checked "is the endpoint https"
+    // would have nothing to check. The absence IS the security property; if a
+    // future edit gives this descriptor a field, it stops belonging here.
     default:
       break;
   }
@@ -374,6 +403,10 @@ export const findEndpointCandidates = (
   const out: EndpointCandidate[] = [];
   for (const c of connections) {
     if (c.kind !== 'api') continue;
+    // Endpoint identity alone cannot make two credential protocols
+    // interchangeable. Missing legacy metadata fails closed and asks for
+    // enrollment instead of auto-binding a row the operation cannot use.
+    if (c.auth_type !== requirement.auth.type) continue;
     const isMatch = requirement.per_org
       ? c.vendor === requirement.vendor
       : endpointHost(c.base_url) === target;

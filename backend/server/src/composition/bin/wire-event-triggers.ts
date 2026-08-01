@@ -39,7 +39,6 @@
  *  `not_configured`, mirroring every other db-gated handler family. */
 
 import type Database from 'better-sqlite3';
-import { OWNER_CONTRACT_ID } from '@recued/contracts';
 import type { AuditLogStore } from '@recued/storage';
 import type { WarehouseEventBus } from '@recued/warehouse-events';
 
@@ -150,9 +149,10 @@ export const composeEventTriggers = (
             actor: 'system',
             event_kind,
             source_recipe: recipe_id,
-            // D-209 §1.4 — the owner's event-triggered automation runs under the owner
-            // contract → `read` ceiling → writes HOLD for review.
-            contract_id: OWNER_CONTRACT_ID,
+            // D-215 slice 1a — background automation is contract-free.
+            // The `(reactive, system)` channel already resolves to the `read`
+            // ceiling, so writes still HOLD without turning the owner sentinel
+            // into a bound door that would require an impossible snapshot.
           },
           context,
           // D-179 P2 — the dish overlay resolves INSIDE handleExecute

@@ -2,6 +2,8 @@ import {
   composeExposureAndTlsRpcDeps,
   type ExposureAndTlsRpcDepsBundle,
 } from '../composition/bin/wire-exposure-tls-rpc-deps.js';
+import { createFormDefinitionReader } from '../form-contract-gate.js';
+import { parseIntakeFormConfig } from '../ports/reception/transformations/intake-form.js';
 import {
   composeMcpHttpTransport,
 } from '../composition/bin/wire-mcp-http-transport.js';
@@ -26,7 +28,7 @@ import {
 import { handleExecute } from '../execute-handler.js';
 import {
   isVerifiedWebclientBundlePresent,
-  resolveWebclientBundleDir,
+  resolveServedWebclientBundleDir,
 } from '../webclient-bundle-loader.js';
 import { createWarehouseStatusEntitySourceReader } from '../ports/reception/status-entity-source-reader.js';
 // D-207 slice 1c — the reception door's op-id resolver (ingredient step → canonical grant).
@@ -74,6 +76,7 @@ export interface ComposeIngressRpcContextOptions {
     // seam's per-kind compiled-recipe resolution (`listForPack` → the
     // `review-then-approve` recipe).
     | 'recipeStore'
+    | 'recordsStore'
     // D-139 P6.B — server-scoped body-content grant store for the MCP read.
     | 'mcpBodyVisibilityStore'
   >;
@@ -132,7 +135,17 @@ export interface ComposeIngressRpcContextOptions {
    *  serving mode. Forwarded to the exposure rpc deps so `exposure.set_apex`
    *  persists `network.apex_mode` (read hot by the root handler). */
   readonly runtimeConfig?: RuntimeConfigStore;
-  readonly env?: Record<string, string | undefined>;
+  // `env?: Record<string, string | undefined>` was removed 2026-07-28. It was
+  // the injection point for the v1 `RECUED_MCP_HTTP_TOKEN` bearer; that path is
+  // retired (`wire-mcp-http-transport.ts` now returns 401 for old env values —
+  // only structured `<token_id>.<bearer>` and D-171 `recued_*` door tokens are
+  // accepted). Nothing in this composer read the field afterwards, so it was a
+  // declared-but-unbacked option threaded in from `startPreListenerRuntime`.
+  // NOTE: the env seam itself is still LIVE one layer over — the client-security
+  // phase forwards it to the cert stack, which reads
+  // `RECUED_PRO_ENTITLEMENT_MINT_URL` / `_PUBLIC_KEY_B64` from it. Only THIS
+  // declaration was dead. (Naming that composer literally here would trip the
+  // source-boundary test that keeps this file out of later serve phases.)
 }
 
 export interface IngressRpcContext
@@ -183,7 +196,7 @@ export const composeIngressRpcContext = async (
   // handler agree on bundle availability. (The serving path reloads the bundle
   // in `compose-listeners`; a second small boot-time read here keeps the two
   // consumers decoupled.)
-  const webclientBundleDir = resolveWebclientBundleDir(
+  const webclientBundleDir = resolveServedWebclientBundleDir(
     app.cacheBlobs?.root,
     process.env.RECUED_WEBCLIENT_DIR,
   );
@@ -291,6 +304,7 @@ export const composeIngressRpcContext = async (
     intakeFormSubmissionStore: storage.intakeFormSubmissionStoreRef,
     intakeRecipePairStore: storage.intakeRecipePairStoreRef,
     recipeStore: storage.recipeStore,
+    recordsStore: storage.recordsStore,
     // D-207 slice 1c — the door. `contractDefinitionStore` / `grantEntryStore` are the SAME
     // instances the Gateway reads its verdicts from, so a grant the mint writes is a grant
     // the gate can see. `executeDeps` is what a bound door's recipe actually runs through.
@@ -337,6 +351,18 @@ export const composeIngressRpcContext = async (
     // authenticated, then seller customer status / grace / tier state can still
     // close the bound customer door at dispatch.
     sellerStore: app.sellerStoreRef,
+    // D-220 — gate `recued_saveRecipe` with the SAME form-field contract as the
+    // `recipe.save` rpc. Finding 3.2: the MCP tool called the store directly, so
+    // an authenticated caller could arm a `form_response.accepted` trigger against
+    // a form that does not collect the declared field.
+    ...(storage.publicEndpointRegistryStoreRef
+      ? {
+          formDefinitionReader: createFormDefinitionReader(
+            (filter) => storage.publicEndpointRegistryStoreRef!.list(filter),
+            parseIntakeFormConfig,
+          ),
+        }
+      : {}),
     // D-139 P5 — `recued_contactEngagementsList` resolves engagement
     // evidence (body-stripped projection). Shared bundle from app-context.
     engagementsResolveDeps: app.contactEngagementsResolveDepsRef,

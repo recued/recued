@@ -57,6 +57,7 @@ import {
 } from '../settings/llm-availability.js';
 import {
   serializeChatAnswerAddress,
+  serializeChatSessionAddress,
   serializeLogsRunAddress,
   serializeShellRoute,
   serializeSourceRecordAddress,
@@ -107,7 +108,31 @@ export const CHAT_ROUTE_HOST_ATTR = 'data-recued-chat-route';
 export const CHAT_ROUTE_HEADING_ATTR = 'data-recued-chat-route-heading';
 export const CHAT_ROUTE_SESSION_LIST_ATTR = 'data-recued-chat-route-session-list';
 export const CHAT_ROUTE_SESSION_ROW_ATTR = 'data-recued-chat-route-session-row';
+export const CHAT_ROUTE_HISTORY_SEARCH_ATTR =
+  'data-recued-chat-route-history-search';
+export const CHAT_ROUTE_HISTORY_GROUP_ATTR =
+  'data-recued-chat-route-history-group';
+export const CHAT_ROUTE_HISTORY_EMPTY_ATTR =
+  'data-recued-chat-route-history-empty';
+export const CHAT_ROUTE_HISTORY_LANDING_ATTR =
+  'data-recued-chat-route-history-landing';
+export const CHAT_ROUTE_HISTORY_CONTINUE_ATTR =
+  'data-recued-chat-route-history-continue';
+export const CHAT_ROUTE_SESSION_ACTIONS_ATTR =
+  'data-recued-chat-route-session-actions';
+export const CHAT_ROUTE_SESSION_EXPORT_ATTR =
+  'data-recued-chat-route-session-export';
+export const CHAT_ROUTE_SESSION_DELETE_ATTR =
+  'data-recued-chat-route-session-delete';
+export const CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR =
+  'data-recued-chat-route-session-delete-confirm';
+export const CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR =
+  'data-recued-chat-route-history-draft-guard';
+export const CHAT_ROUTE_HISTORY_ANNOUNCER_ATTR =
+  'data-recued-chat-route-history-announcer';
 export const CHAT_ROUTE_THREAD_ATTR = 'data-recued-chat-route-thread';
+export const CHAT_ROUTE_THREAD_TITLE_ATTR =
+  'data-recued-chat-route-thread-title';
 export const CHAT_ROUTE_MESSAGE_ATTR = 'data-recued-chat-route-message';
 export const CHAT_ROUTE_RETURN_TARGET_ATTR =
   'data-recued-chat-route-return-target';
@@ -305,6 +330,14 @@ export interface ChatRouteConn {
     payload: { title?: string },
   ): Promise<{ session_id: string }>;
   (
+    method: 'chat.session.delete',
+    payload: { session_id: string },
+  ): Promise<{ ok: true }>;
+  (
+    method: 'chat.session.export',
+    payload: { session_id: string },
+  ): Promise<unknown>;
+  (
     method: 'chat.send',
     payload: {
       session_id: string;
@@ -409,32 +442,264 @@ const CHAT_ROUTE_CHROME_STYLES = `
   background: var(--surface);
 }
 [${CHAT_ROUTE_SESSION_LIST_ATTR}] {
-  display: grid;
-  align-content: start;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-height: min(720px, calc(100vh - 132px));
+  padding: 12px;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-head,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-heading-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 8px;
-  padding: 10px;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-head {
+  display: grid;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-title,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-group-title {
+  margin: 0;
+  color: var(--fg);
+  font-weight: 680;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-title {
+  font-size: 14px;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-new,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-action,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-guard-action,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-session-action {
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 6px 10px;
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  cursor: pointer;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-new,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-action--primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+[${CHAT_ROUTE_HISTORY_SEARCH_ATTR}] {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 7px 10px;
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-results {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-result-count {
+  margin: 0 0 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+[${CHAT_ROUTE_HISTORY_GROUP_ATTR}] {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 12px;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-group-title {
+  padding: 0 2px;
+  color: var(--muted);
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-items {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-session-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  border: 1px solid var(--border-subtle);
+  border-radius: 8px;
+  background: var(--surface-subtle);
 }
 [${CHAT_ROUTE_SESSION_ROW_ATTR}] {
   width: 100%;
+  min-height: 52px;
+  align-self: start;
   text-align: left;
-  border: 1px solid var(--border-subtle);
-  border-radius: 6px;
-  background: var(--surface-subtle);
-  padding: 8px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--fg);
+  padding: 10px;
   cursor: pointer;
 }
-[${CHAT_ROUTE_SESSION_ROW_ATTR}][data-active="true"] {
+[${CHAT_ROUTE_HOST_ATTR}] .chat-session-item[data-active="true"] {
   border-color: var(--accent);
+  background: var(--accent-weak);
+}
+[${CHAT_ROUTE_SESSION_ROW_ATTR}][aria-busy="true"] {
+  cursor: wait;
+  opacity: .72;
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-session-title {
   display: block;
   font-size: 13px;
   font-weight: 650;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-session-meta,
 [${CHAT_ROUTE_HOST_ATTR}] .chat-route-muted {
   font-size: 12px;
   color: var(--muted);
+}
+[${CHAT_ROUTE_SESSION_ACTIONS_ATTR}] {
+  position: relative;
+  align-self: start;
+  border-left: 1px solid var(--border-subtle);
+}
+[${CHAT_ROUTE_SESSION_ACTIONS_ATTR}][open] {
+  /* The menu lives inside the scrollable history list. Reserve its height so
+     opening the final row creates real scroll range instead of clipping the
+     actions below the list viewport. The toggle handler below then reveals
+     the reserved menu with block-nearest scrolling. */
+  padding-bottom: 112px;
+}
+[${CHAT_ROUTE_SESSION_ACTIONS_ATTR}] > summary {
+  display: grid;
+  width: 38px;
+  height: 100%;
+  min-height: 44px;
+  place-items: center;
+  list-style: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+[${CHAT_ROUTE_SESSION_ACTIONS_ATTR}] > summary::-webkit-details-marker {
+  display: none;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-session-action-menu {
+  position: absolute;
+  top: 48px;
+  right: 4px;
+  z-index: 20;
+  display: grid;
+  min-width: 148px;
+  gap: 4px;
+  padding: 5px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: 0 10px 28px rgba(24, 33, 36, .18);
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-session-action {
+  width: 100%;
+  text-align: left;
+}
+[${CHAT_ROUTE_SESSION_DELETE_ATTR}],
+[${CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR}] {
+  color: var(--danger);
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-session-confirm,
+[${CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR}] {
+  grid-column: 1 / -1;
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--fg);
+  font-size: 12px;
+  line-height: 1.4;
+}
+[${CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR}] {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--accent-weak);
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-guard-actions,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-action-error {
+  grid-column: 1 / -1;
+  margin: 0;
+  padding: 8px 10px;
+  color: var(--danger);
+  font-size: 11px;
+}
+[${CHAT_ROUTE_HISTORY_EMPTY_ATTR}] {
+  display: grid;
+  gap: 4px;
+  padding: 14px 8px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
+}
+[${CHAT_ROUTE_HISTORY_LANDING_ATTR}] {
+  display: grid;
+  align-content: center;
+  justify-items: start;
+  gap: 12px;
+  min-height: 420px;
+  padding: clamp(24px, 7vw, 72px);
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-eyebrow {
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 720;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-title {
+  margin: 0;
+  max-width: 24ch;
+  font-size: clamp(24px, 4vw, 36px);
+  line-height: 1.1;
+}
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-detail {
+  margin: 0;
+  max-width: 54ch;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+}
+[${CHAT_ROUTE_HISTORY_ANNOUNCER_ATTR}] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+[${CHAT_ROUTE_HISTORY_SEARCH_ATTR}]:focus-visible,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-new:focus-visible,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-action:focus-visible,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-history-guard-action:focus-visible,
+[${CHAT_ROUTE_SESSION_ROW_ATTR}]:focus-visible,
+[${CHAT_ROUTE_SESSION_ACTIONS_ATTR}] > summary:focus-visible,
+[${CHAT_ROUTE_HOST_ATTR}] .chat-session-action:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 [${CHAT_ROUTE_THREAD_ATTR}] {
   min-height: 420px;
@@ -1814,6 +2079,13 @@ const CHAT_ROUTE_CHROME_STYLES = `
   [${CHAT_ROUTE_HOST_ATTR}] .chat-route-shell {
     grid-template-columns: 1fr;
   }
+  [${CHAT_ROUTE_SESSION_LIST_ATTR}] {
+    max-height: min(420px, 52vh);
+  }
+  [${CHAT_ROUTE_HISTORY_LANDING_ATTR}] {
+    min-height: 300px;
+    padding: 28px 20px;
+  }
   [${CHAT_ROUTE_ACTIVATION_ATTR}] .chat-activation-grid {
     grid-template-columns: 1fr;
   }
@@ -1828,6 +2100,25 @@ const CHAT_ROUTE_CHROME_STYLES = `
     flex: 1 1 100%;
   }
   [${CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR}="draft"] {
+    flex: 1 1 100%;
+  }
+}
+@media (max-width: 520px) {
+  [${CHAT_ROUTE_HOST_ATTR}] {
+    padding: 10px;
+  }
+  [${CHAT_ROUTE_HOST_ATTR}] .chat-history-new,
+  [${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-action,
+  [${CHAT_ROUTE_HOST_ATTR}] .chat-history-guard-action,
+  [${CHAT_ROUTE_HOST_ATTR}] .chat-session-action {
+    min-height: 44px;
+  }
+  [${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-actions,
+  [${CHAT_ROUTE_HOST_ATTR}] .chat-history-guard-actions {
+    width: 100%;
+  }
+  [${CHAT_ROUTE_HOST_ATTR}] .chat-history-landing-action,
+  [${CHAT_ROUTE_HOST_ATTR}] .chat-history-guard-action {
     flex: 1 1 100%;
   }
 }
@@ -1876,9 +2167,32 @@ export interface BootstrapChatRouteOptions {
   /** Default-app first-run affordance. Kept explicit so narrower embedded/test
    *  chat mounts retain their existing empty state unless they opt in. */
   enableFirstRunActivation?: boolean;
+  /** Bare `#chat` can act as a returning-user history landing while
+   * `#chat/new` remains an explicit blank draft. Defaults to `new` so narrow
+   * embedded mounts preserve their established composer-first behavior. */
+  initialLanding?: 'history' | 'new';
+  /** Silent History API writer owned by the shell. Chat calls it after an
+   * in-place transition so session selection, lazy creation, and New chat
+   * remain reload/back-addressable without remounting the active route. */
+  onAddressChange?: (
+    hash: string,
+    mode: 'push' | 'replace',
+  ) => void;
+  /** Clock seam for relative history timestamps and date buckets. */
+  now?: () => number;
+  /** Export download seam. Production falls back to a JSON Blob download;
+   * tests/embedders can capture the server-authored bundle directly. */
+  downloadExport?: (
+    bundle: unknown,
+    filename: string,
+  ) => void | Promise<void>;
   /** Seed (but never send) the first-run prompt after an empty session list
    * loads. Used by the successful `Set up Chat` return path. */
   initialStarterPrompt?: boolean;
+  /** In-memory draft captured immediately before a re-pair teardown. Applied
+   * only after the exact durable session has rehydrated, then focused without
+   * sending. Nothing is persisted to browser storage. */
+  initialRecoveryDraft?: ChatRouteRecoveryDraft;
   /** Open this durable session after the session list loads. The focused Chat
    * setup journey uses it to return someone to the exact thread they repaired. */
   initialSessionId?: string;
@@ -1904,15 +2218,35 @@ export interface BootstrapChatRouteOptions {
   onConnectedSourceRetired?: () => void;
 }
 
+/** The minimum safe Chat state carried across an in-process re-pair. The
+ * durable session and messages come back from the server; only unsent text,
+ * its leave-guard posture, and a draft-only model choice need local rescue. */
+export interface ChatRouteRecoveryDraft {
+  readonly text: string;
+  readonly protected: boolean;
+  readonly modelSourceId: ChatModelSourceId | null;
+}
+
 export interface ChatRoute {
   getSessions(): ReadonlyArray<ChatSessionSummary>;
   getThread(): ChatThreadState;
+  /** Initial server-owned session/history reads, used by recovery-return
+   * reconciliation before it calls this context current. */
+  whenLoaded(): Promise<void>;
+  getRecoveryContextFreshness(): 'current' | 'unavailable';
   refresh(): Promise<void>;
   openSession(sessionId: string): Promise<void>;
   /** Handle a same-session plan link in place so an existing composer draft
    * survives. Returns false when the shell must switch sessions instead. */
   openPlanLanding(address: ChatPlanAddress): boolean;
+  /** Capture unsent composer work for an in-process re-pair. Null when the
+   * composer is empty; server-owned thread state is deliberately excluded. */
+  getRecoveryDraft(): ChatRouteRecoveryDraft | null;
   hasUnsavedChanges(): boolean;
+  /** True from send dispatch until the accepted turn settles. A server switch
+   * cannot prove or cancel the outcome during this window. */
+  hasInFlightWork(): boolean;
+  startNewChat(): void;
   createSession(title?: string): Promise<void>;
   sendMessage(message: string): Promise<void>;
   dispose(): void;
@@ -1966,8 +2300,92 @@ interface ChatRouteState {
 }
 
 
-const formatRelative = (ms: number): string =>
-  Number.isFinite(ms) ? new Date(ms).toLocaleString() : 'unknown';
+const formatSessionRecency = (ms: number, now: number): string => {
+  if (!Number.isFinite(ms) || !Number.isFinite(now)) return 'Unknown time';
+  const elapsed = Math.max(0, now - ms);
+  if (elapsed < 60_000) return 'Just now';
+  if (elapsed < 3_600_000) {
+    return `${Math.floor(elapsed / 60_000)} min ago`;
+  }
+  if (elapsed < 86_400_000) {
+    const hours = Math.floor(elapsed / 3_600_000);
+    return `${hours} hr${hours === 1 ? '' : 's'} ago`;
+  }
+  if (elapsed < 172_800_000) return 'Yesterday';
+  if (elapsed < 604_800_000) {
+    return `${Math.floor(elapsed / 86_400_000)} days ago`;
+  }
+  return new Date(ms).toLocaleDateString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    ...(new Date(ms).getFullYear() === new Date(now).getFullYear()
+      ? {}
+      : { year: 'numeric' }),
+  });
+};
+
+type ChatHistoryGroupId = 'today' | 'week' | 'older' | 'archived';
+
+interface ChatHistoryGroup {
+  readonly id: ChatHistoryGroupId;
+  readonly label: string;
+  readonly sessions: ReadonlyArray<ChatSessionSummary>;
+}
+
+const groupChatHistory = (
+  sessions: ReadonlyArray<ChatSessionSummary>,
+  now: number,
+): ReadonlyArray<ChatHistoryGroup> => {
+  const rows = new Map<ChatHistoryGroupId, ChatSessionSummary[]>([
+    ['today', []],
+    ['week', []],
+    ['older', []],
+    ['archived', []],
+  ]);
+  const startToday = new Date(now);
+  startToday.setHours(0, 0, 0, 0);
+  const todayAt = startToday.getTime();
+  const startPreviousWeek = new Date(startToday);
+  startPreviousWeek.setDate(startPreviousWeek.getDate() - 7);
+  const weekAt = startPreviousWeek.getTime();
+  const sorted = [...sessions].sort((a, b) =>
+    b.last_active_at !== a.last_active_at
+      ? b.last_active_at - a.last_active_at
+      : a.id.localeCompare(b.id),
+  );
+  for (const session of sorted) {
+    const id: ChatHistoryGroupId = session.archived
+      ? 'archived'
+      : session.last_active_at >= todayAt
+        ? 'today'
+        : session.last_active_at >= weekAt
+          ? 'week'
+          : 'older';
+    rows.get(id)!.push(session);
+  }
+  const labels: ReadonlyArray<readonly [ChatHistoryGroupId, string]> = [
+    ['today', 'Today'],
+    ['week', 'Previous 7 days'],
+    ['older', 'Older'],
+    ['archived', 'Archived'],
+  ];
+  return labels.flatMap(([id, label]) => {
+    const grouped = rows.get(id) ?? [];
+    return grouped.length === 0 ? [] : [{ id, label, sessions: grouped }];
+  });
+};
+
+const chatExportFilename = (
+  session: Pick<ChatSessionSummary, 'id' | 'title'>,
+): string => {
+  const base = (session.title ?? `chat-${session.id}`)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 64);
+  return `${base.length > 0 ? base : 'recued-chat'}.json`;
+};
 
 /** Shell-frame Step 3 — lazy-session title from the first words of the
  *  opening message, so chat history holds readable "first-words" labels.
@@ -2546,6 +2964,29 @@ export const bootstrapChatRoute = (
   // unsaved user work. Typing, choosing a follow-up, or preparing an action
   // draft promotes the composer to protected work for the shell leave guard.
   let composerDraftProtected = false;
+  // Bare #chat is a deliberate returning-user history view. It retires as
+  // soon as the owner opens a conversation or explicitly starts a draft;
+  // ordinary re-renders must not bounce an in-progress draft back into it.
+  let historyLandingActive = opts.initialLanding === 'history';
+  let pendingRecoveryDraft =
+    opts.initialRecoveryDraft !== undefined
+    && opts.initialRecoveryDraft.text.trim().length > 0
+      ? opts.initialRecoveryDraft
+      : null;
+  let historyQuery = '';
+  let openingSessionId: string | null = null;
+  let sessionAction:
+    | {
+        readonly sessionId: string;
+        readonly kind: 'delete-confirm' | 'delete-busy' | 'export-busy' | 'error';
+        readonly message?: string;
+      }
+    | null = null;
+  let pendingDraftGuard:
+    | { readonly kind: 'new' }
+    | { readonly kind: 'open'; readonly sessionId: string }
+    | null = null;
+  let historyAnnouncement = '';
   let seedStarterPromptOnLoad = opts.initialStarterPrompt === true;
   let initialSessionIdOnLoad = opts.initialSessionId?.trim() || null;
   let initialMessageIdOnLoad = opts.initialMessageId?.trim() || null;
@@ -2940,6 +3381,41 @@ export const bootstrapChatRoute = (
 
   const clearChildren = (node: HTMLElement): void => {
     while (node.firstChild) node.removeChild(node.firstChild);
+  };
+
+  const downloadExportBundle = async (
+    bundle: unknown,
+    filename: string,
+  ): Promise<void> => {
+    if (opts.downloadExport !== undefined) {
+      await opts.downloadExport(bundle, filename);
+      return;
+    }
+    const view = doc.defaultView;
+    const BlobCtor = view?.Blob ?? globalThis.Blob;
+    const urlApi = view?.URL ?? globalThis.URL;
+    if (
+      BlobCtor === undefined
+      || typeof urlApi?.createObjectURL !== 'function'
+    ) {
+      throw new Error('Chat export download is unavailable in this browser.');
+    }
+    const blob = new BlobCtor(
+      [JSON.stringify(bundle, null, 2)],
+      { type: 'application/json' },
+    );
+    const href = urlApi.createObjectURL(blob);
+    const anchor = doc.createElement('a');
+    anchor.setAttribute('href', href);
+    anchor.setAttribute('download', filename);
+    anchor.setAttribute('aria-hidden', 'true');
+    try {
+      doc.body.appendChild(anchor);
+      anchor.click();
+    } finally {
+      anchor.remove();
+      urlApi.revokeObjectURL(href);
+    }
   };
 
   const connectedSourcePrompt = connectedSource === null
@@ -5978,48 +6454,318 @@ export const bootstrapChatRoute = (
 
     const sessions = doc.createElement('aside');
     sessions.setAttribute(CHAT_ROUTE_SESSION_LIST_ATTR, '');
+    sessions.setAttribute('aria-label', 'Chat history');
+    const historyHead = doc.createElement('div');
+    historyHead.className = 'chat-history-head';
+    const historyHeadingRow = doc.createElement('div');
+    historyHeadingRow.className = 'chat-history-heading-row';
+    const historyTitle = doc.createElement('h2');
+    historyTitle.className = 'chat-history-title';
+    historyTitle.textContent = 'Chats';
+    historyHeadingRow.appendChild(historyTitle);
     const newButton = doc.createElement('button');
     newButton.type = 'button';
     newButton.setAttribute(CHAT_ROUTE_NEW_SESSION_ATTR, '');
+    newButton.className = 'chat-history-new';
     newButton.textContent = 'New chat';
     newButton.addEventListener('click', () => {
-      startNewChat();
+      requestStartNewChat();
     });
-    sessions.appendChild(newButton);
+    historyHeadingRow.appendChild(newButton);
+    historyHead.appendChild(historyHeadingRow);
+    sessions.appendChild(historyHead);
+
+    if (pendingDraftGuard !== null) {
+      const guard = doc.createElement('div');
+      guard.setAttribute(CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR, '');
+      guard.setAttribute('role', 'alert');
+      guard.setAttribute('tabindex', '-1');
+      const copy = doc.createElement('span');
+      copy.textContent = pendingDraftGuard.kind === 'new'
+        ? 'Start a new chat? Your unsent draft will be discarded.'
+        : 'Open this chat? Your unsent draft will be discarded.';
+      guard.appendChild(copy);
+      const actions = doc.createElement('div');
+      actions.className = 'chat-history-guard-actions';
+      const keep = doc.createElement('button');
+      keep.type = 'button';
+      keep.className = 'chat-history-guard-action';
+      keep.textContent = 'Keep writing';
+      keep.addEventListener('click', () => {
+        pendingDraftGuard = null;
+        render();
+        focusComposer(true);
+      });
+      actions.appendChild(keep);
+      const discard = doc.createElement('button');
+      discard.type = 'button';
+      discard.className = 'chat-history-guard-action';
+      discard.textContent = pendingDraftGuard.kind === 'new'
+        ? 'Discard and start new'
+        : 'Discard and open';
+      discard.addEventListener('click', () => {
+        const pending = pendingDraftGuard;
+        pendingDraftGuard = null;
+        if (pending?.kind === 'open') {
+          void openHistorySession(pending.sessionId, true);
+        } else if (pending?.kind === 'new') {
+          startNewChat(true, 'push');
+        }
+      });
+      actions.appendChild(discard);
+      guard.appendChild(actions);
+      sessions.appendChild(guard);
+    }
+
     if (state.phase === 'loading') {
       const loading = doc.createElement('div');
       loading.className = 'chat-route-muted';
       loading.textContent = 'Loading chats...';
       sessions.appendChild(loading);
+    } else if (state.phase === 'error' && state.sessions.length === 0) {
+      const unavailable = doc.createElement('div');
+      unavailable.setAttribute(CHAT_ROUTE_HISTORY_EMPTY_ATTR, '');
+      const unavailableTitle = doc.createElement('strong');
+      unavailableTitle.textContent = 'Chats unavailable';
+      const unavailableDetail = doc.createElement('span');
+      unavailableDetail.textContent =
+        'Reconnect to load your saved conversations. Your chats have not been removed.';
+      unavailable.appendChild(unavailableTitle);
+      unavailable.appendChild(unavailableDetail);
+      sessions.appendChild(unavailable);
     } else if (state.sessions.length === 0) {
       const empty = doc.createElement('div');
-      empty.className = 'chat-route-muted';
-      empty.textContent = 'No saved chats yet.';
+      empty.setAttribute(CHAT_ROUTE_HISTORY_EMPTY_ATTR, '');
+      const emptyTitle = doc.createElement('strong');
+      emptyTitle.textContent = 'No saved chats yet';
+      const emptyDetail = doc.createElement('span');
+      emptyDetail.textContent =
+        'Your conversations appear here after you send the first message.';
+      empty.appendChild(emptyTitle);
+      empty.appendChild(emptyDetail);
       sessions.appendChild(empty);
     } else {
-      for (const session of state.sessions) {
-        const row = doc.createElement('button');
-        row.type = 'button';
-        row.setAttribute(CHAT_ROUTE_SESSION_ROW_ATTR, session.id);
-        row.setAttribute(
-          'data-active',
-          session.id === state.activeSessionId ? 'true' : 'false',
-        );
-        const title = doc.createElement('span');
-        title.className = 'chat-session-title';
-        title.textContent = sessionTitle(session);
-        row.appendChild(title);
-        const meta = doc.createElement('span');
-        meta.className = 'chat-session-meta';
-        meta.textContent =
-          `${session.message_count} messages - ${formatRelative(session.last_active_at)}`;
-        row.appendChild(meta);
-        row.addEventListener('click', () => {
-          void openSession(session.id);
+      const search = doc.createElement('input');
+      search.type = 'search';
+      search.setAttribute(CHAT_ROUTE_HISTORY_SEARCH_ATTR, '');
+      search.setAttribute('aria-label', 'Search chat titles');
+      search.setAttribute('placeholder', 'Search chat titles');
+      search.setAttribute('autocomplete', 'off');
+      search.value = historyQuery;
+      sessions.appendChild(search);
+
+      const results = doc.createElement('div');
+      results.className = 'chat-history-results';
+      const renderHistoryResults = (): void => {
+        clearChildren(results);
+        const query = historyQuery.trim().toLocaleLowerCase();
+        const matching = state.sessions.filter((session) => {
+          if (query.length === 0) return true;
+          return sessionTitle(session).toLocaleLowerCase().includes(query)
+            || session.id.toLocaleLowerCase().includes(query);
         });
-        sessions.appendChild(row);
-      }
+        const count = doc.createElement('p');
+        count.className = 'chat-history-result-count';
+        count.setAttribute('role', 'status');
+        count.textContent = query.length === 0
+          ? `${matching.length} saved chat${matching.length === 1 ? '' : 's'}`
+          : `${matching.length} result${matching.length === 1 ? '' : 's'}`;
+        results.appendChild(count);
+        if (matching.length === 0) {
+          const empty = doc.createElement('div');
+          empty.setAttribute(CHAT_ROUTE_HISTORY_EMPTY_ATTR, '');
+          const emptyTitle = doc.createElement('strong');
+          emptyTitle.textContent = 'No matching chats';
+          const emptyDetail = doc.createElement('span');
+          emptyDetail.textContent = 'Try another chat title.';
+          empty.appendChild(emptyTitle);
+          empty.appendChild(emptyDetail);
+          results.appendChild(empty);
+          return;
+        }
+        for (const group of groupChatHistory(
+          matching,
+          (opts.now ?? Date.now)(),
+        )) {
+          const section = doc.createElement('section');
+          section.setAttribute(CHAT_ROUTE_HISTORY_GROUP_ATTR, group.id);
+          const groupTitle = doc.createElement('h3');
+          groupTitle.className = 'chat-history-group-title';
+          groupTitle.textContent = group.label;
+          section.appendChild(groupTitle);
+          const list = doc.createElement('ul');
+          list.className = 'chat-history-items';
+          for (const session of group.sessions) {
+            const item = doc.createElement('li');
+            item.className = 'chat-session-item';
+            item.setAttribute(
+              'data-active',
+              session.id === state.activeSessionId ? 'true' : 'false',
+            );
+            const row = doc.createElement('button');
+            row.type = 'button';
+            row.setAttribute(CHAT_ROUTE_SESSION_ROW_ATTR, session.id);
+            row.setAttribute(
+              'data-active',
+              session.id === state.activeSessionId ? 'true' : 'false',
+            );
+            if (session.id === state.activeSessionId) {
+              row.setAttribute('aria-current', 'page');
+            }
+            if (openingSessionId !== null) {
+              row.disabled = true;
+              if (openingSessionId === session.id) {
+                row.setAttribute('aria-busy', 'true');
+              }
+            }
+            const title = doc.createElement('span');
+            title.className = 'chat-session-title';
+            title.textContent = sessionTitle(session);
+            row.appendChild(title);
+            const meta = doc.createElement('span');
+            meta.className = 'chat-session-meta';
+            const messages = `${session.message_count} message${session.message_count === 1 ? '' : 's'}`;
+            meta.textContent =
+              `${messages} · ${formatSessionRecency(session.last_active_at, (opts.now ?? Date.now)())}`;
+            row.appendChild(meta);
+            row.addEventListener('click', () => {
+              requestOpenSession(session.id);
+            });
+            item.appendChild(row);
+
+            const actionDetails = doc.createElement('details');
+            actionDetails.setAttribute(CHAT_ROUTE_SESSION_ACTIONS_ATTR, session.id);
+            const summary = doc.createElement('summary');
+            summary.setAttribute('aria-label', `Actions for ${sessionTitle(session)}`);
+            summary.textContent = '•••';
+            actionDetails.appendChild(summary);
+            const menu = doc.createElement('div');
+            menu.className = 'chat-session-action-menu';
+            actionDetails.addEventListener('toggle', () => {
+              if (actionDetails.open) {
+                menu.scrollIntoView?.({ block: 'nearest' });
+              }
+            });
+            const exportButton = doc.createElement('button');
+            exportButton.type = 'button';
+            exportButton.className = 'chat-session-action';
+            exportButton.setAttribute(CHAT_ROUTE_SESSION_EXPORT_ATTR, session.id);
+            exportButton.textContent =
+              sessionAction?.sessionId === session.id
+              && sessionAction.kind === 'export-busy'
+                ? 'Exporting…'
+                : 'Export JSON';
+            const historyActionLocked =
+              openingSessionId !== null
+              || (sessionAction !== null && sessionAction.kind !== 'error');
+            exportButton.disabled = historyActionLocked;
+            exportButton.addEventListener('click', () => {
+              void exportSession(session);
+            });
+            menu.appendChild(exportButton);
+            const deleteButton = doc.createElement('button');
+            deleteButton.type = 'button';
+            deleteButton.className = 'chat-session-action';
+            deleteButton.setAttribute(CHAT_ROUTE_SESSION_DELETE_ATTR, session.id);
+            deleteButton.textContent = 'Delete chat';
+            if (
+              historyActionLocked
+              || (state.sending && session.id === state.activeSessionId)
+            ) {
+              deleteButton.disabled = true;
+              if (state.sending && session.id === state.activeSessionId) {
+                deleteButton.setAttribute(
+                  'title',
+                  'Wait for the current response before deleting this chat.',
+                );
+              }
+            }
+            deleteButton.addEventListener('click', () => {
+              sessionAction = { sessionId: session.id, kind: 'delete-confirm' };
+              render();
+              focusSessionDeleteConfirm(session.id);
+            });
+            menu.appendChild(deleteButton);
+            actionDetails.appendChild(menu);
+            item.appendChild(actionDetails);
+
+            if (
+              sessionAction?.sessionId === session.id
+              && (
+                sessionAction.kind === 'delete-confirm'
+                || sessionAction.kind === 'delete-busy'
+              )
+            ) {
+              const confirm = doc.createElement('div');
+              confirm.className = 'chat-session-confirm';
+              const warning = doc.createElement('span');
+              warning.textContent =
+                'Delete this chat, its messages, and saved action details '
+                + 'permanently? This cannot be undone.';
+              confirm.appendChild(warning);
+              const confirmActions = doc.createElement('div');
+              confirmActions.className = 'chat-history-guard-actions';
+              const cancel = doc.createElement('button');
+              cancel.type = 'button';
+              cancel.className = 'chat-history-guard-action';
+              cancel.textContent = 'Cancel';
+              cancel.disabled = sessionAction.kind === 'delete-busy';
+              cancel.addEventListener('click', () => {
+                sessionAction = null;
+                render();
+                focusHistorySessionRow(session.id);
+              });
+              confirmActions.appendChild(cancel);
+              const confirmDelete = doc.createElement('button');
+              confirmDelete.type = 'button';
+              confirmDelete.className = 'chat-history-guard-action';
+              confirmDelete.setAttribute(
+                CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR,
+                session.id,
+              );
+              confirmDelete.textContent =
+                sessionAction.kind === 'delete-busy'
+                  ? 'Deleting…'
+                  : 'Delete permanently';
+              confirmDelete.disabled = sessionAction.kind === 'delete-busy';
+              confirmDelete.addEventListener('click', () => {
+                void deleteSession(session);
+              });
+              confirmActions.appendChild(confirmDelete);
+              confirm.appendChild(confirmActions);
+              item.appendChild(confirm);
+            }
+            if (
+              sessionAction?.sessionId === session.id
+              && sessionAction.kind === 'error'
+            ) {
+              const error = doc.createElement('p');
+              error.className = 'chat-history-action-error';
+              error.setAttribute('role', 'alert');
+              error.textContent = sessionAction.message
+                ?? 'This chat could not be updated.';
+              item.appendChild(error);
+            }
+            list.appendChild(item);
+          }
+          section.appendChild(list);
+          results.appendChild(section);
+        }
+      };
+      search.addEventListener('input', () => {
+        historyQuery = search.value;
+        renderHistoryResults();
+      });
+      renderHistoryResults();
+      sessions.appendChild(results);
     }
+    const historyAnnouncer = doc.createElement('div');
+    historyAnnouncer.setAttribute(CHAT_ROUTE_HISTORY_ANNOUNCER_ATTR, '');
+    historyAnnouncer.setAttribute('role', 'status');
+    historyAnnouncer.setAttribute('aria-live', 'polite');
+    historyAnnouncer.setAttribute('aria-atomic', 'true');
+    historyAnnouncer.textContent = historyAnnouncement;
+    sessions.appendChild(historyAnnouncer);
     shell.appendChild(sessions);
 
     const thread = doc.createElement('section');
@@ -6037,9 +6783,22 @@ export const bootstrapChatRoute = (
       && connectedSourceHandoffActive
       && connectedSource !== null
       && connectedSourceStatus !== null;
+    const returnableSessions = [...state.sessions]
+      .filter(
+        (session) => !session.archived && session.message_count > 0,
+      )
+      .sort((a, b) => b.last_active_at - a.last_active_at);
+    const showReturningHistory =
+      isEmpty
+      && historyLandingActive
+      && state.activeSessionId === null
+      && state.phase === 'ready'
+      && returnableSessions.length > 0
+      && !showConnectedSourceHandoff;
     const showFirstRunActivation =
       isEmpty
       && !showConnectedSourceHandoff
+      && !showReturningHistory
       // Someone who deliberately continued from a connected source has
       // already crossed the first-run decision point. Dismissing that source
       // must not bounce them straight back into "Connect my work".
@@ -6049,30 +6808,73 @@ export const bootstrapChatRoute = (
       && !hasCompletedChat;
 
     if (isEmpty) {
-      const hero = doc.createElement('div');
-      hero.className = 'chat-thread-hero';
-      if (showConnectedSourceHandoff) {
-        const handoff = buildConnectedSourceHandoff();
-        if (handoff !== null) hero.appendChild(handoff);
-      } else if (showFirstRunActivation) {
-        hero.appendChild(buildFirstRunActivation());
+      if (showReturningHistory) {
+        const recent = returnableSessions[0]!;
+        const landing = doc.createElement('div');
+        landing.setAttribute(CHAT_ROUTE_HISTORY_LANDING_ATTR, '');
+        const eyebrow = doc.createElement('span');
+        eyebrow.className = 'chat-history-landing-eyebrow';
+        eyebrow.textContent = 'Welcome back';
+        landing.appendChild(eyebrow);
+        const title = doc.createElement('h2');
+        title.className = 'chat-history-landing-title';
+        title.textContent = `Continue “${sessionTitle(recent)}”?`;
+        landing.appendChild(title);
+        const detail = doc.createElement('p');
+        detail.className = 'chat-history-landing-detail';
+        const messages = `${recent.message_count} message${recent.message_count === 1 ? '' : 's'}`;
+        detail.textContent =
+          `${messages} · ${formatSessionRecency(recent.last_active_at, (opts.now ?? Date.now)())}. `
+          + 'Or choose another conversation from your history.';
+        landing.appendChild(detail);
+        const actions = doc.createElement('div');
+        actions.className = 'chat-history-landing-actions';
+        const continueButton = doc.createElement('button');
+        continueButton.type = 'button';
+        continueButton.className =
+          'chat-history-landing-action chat-history-landing-action--primary';
+        continueButton.setAttribute(CHAT_ROUTE_HISTORY_CONTINUE_ATTR, recent.id);
+        continueButton.textContent = 'Continue chat';
+        continueButton.addEventListener('click', () => {
+          requestOpenSession(recent.id);
+        });
+        actions.appendChild(continueButton);
+        const startButton = doc.createElement('button');
+        startButton.type = 'button';
+        startButton.className = 'chat-history-landing-action';
+        startButton.textContent = 'Start a new chat';
+        startButton.addEventListener('click', () => {
+          requestStartNewChat();
+        });
+        actions.appendChild(startButton);
+        landing.appendChild(actions);
+        thread.appendChild(landing);
       } else {
-        const greeting = doc.createElement('div');
-        greeting.className = 'chat-thread-greeting';
-        greeting.setAttribute(CHAT_ROUTE_GREETING_ATTR, '');
-        greeting.textContent = 'What can Recued help you with?';
-        hero.appendChild(greeting);
-        if (aiNotice !== null) hero.appendChild(aiNotice);
+        const hero = doc.createElement('div');
+        hero.className = 'chat-thread-hero';
+        if (showConnectedSourceHandoff) {
+          const handoff = buildConnectedSourceHandoff();
+          if (handoff !== null) hero.appendChild(handoff);
+        } else if (showFirstRunActivation) {
+          hero.appendChild(buildFirstRunActivation());
+        } else {
+          const greeting = doc.createElement('div');
+          greeting.className = 'chat-thread-greeting';
+          greeting.setAttribute(CHAT_ROUTE_GREETING_ATTR, '');
+          greeting.textContent = 'What can Recued help you with?';
+          hero.appendChild(greeting);
+          if (aiNotice !== null) hero.appendChild(aiNotice);
+        }
+        // Empty hero — composer centered, the buttons expanded below it.
+        hero.appendChild(buildComposer(false));
+        // The activation cards already own the first-run actions; repeating the
+        // Run/Create chip row underneath makes the landing harder to scan.
+        const actions = showFirstRunActivation || showConnectedSourceHandoff
+          ? null
+          : buildComposerActions(false);
+        if (actions !== null) hero.appendChild(actions);
+        thread.appendChild(hero);
       }
-      // Empty hero — composer centered, the buttons expanded below it.
-      hero.appendChild(buildComposer(false));
-      // The activation cards already own the first-run actions; repeating the
-      // Run/Create chip row underneath makes the landing harder to scan.
-      const actions = showFirstRunActivation || showConnectedSourceHandoff
-        ? null
-        : buildComposerActions(false);
-      if (actions !== null) hero.appendChild(actions);
-      thread.appendChild(hero);
     } else {
       // Docked layout — session-title header (the model picker moved into the
       // composer per §D.L1, so the header no longer carries a routing badge).
@@ -6080,6 +6882,8 @@ export const bootstrapChatRoute = (
       threadHeader.className = 'chat-thread-header';
       const threadTitle = doc.createElement('h2');
       threadTitle.className = 'chat-thread-title';
+      threadTitle.setAttribute(CHAT_ROUTE_THREAD_TITLE_ATTR, '');
+      threadTitle.setAttribute('tabindex', '-1');
       threadTitle.textContent = sessionTitle(state.thread.session);
       threadHeader.appendChild(threadTitle);
       thread.appendChild(threadHeader);
@@ -6441,9 +7245,11 @@ export const bootstrapChatRoute = (
     }
   };
 
-  const loadSessions = async (): Promise<void> => {
-    state = { ...state, phase: 'loading', error: null };
-    render();
+  const loadSessions = async (background = false): Promise<void> => {
+    if (!background) {
+      state = { ...state, phase: 'loading', error: null };
+      render();
+    }
     try {
       const { sessions } = await opts.conn('chat.sessions.list');
       if (disposed) return;
@@ -6476,7 +7282,11 @@ export const bootstrapChatRoute = (
       }
     } catch (err) {
       if (disposed) return;
-      state = { ...state, phase: 'error', error: classifyRpcError(err) };
+      state = {
+        ...state,
+        phase: background && state.sessions.length > 0 ? 'ready' : 'error',
+        error: classifyRpcError(err),
+      };
       render();
     }
   };
@@ -6582,6 +7392,9 @@ export const bootstrapChatRoute = (
       if (disposed || bufferedEvents === null) return;
       if (snapshot.messages.length > 0) hasCompletedChat = true;
       // Switching threads abandons any typed-but-unsent draft.
+      historyLandingActive = false;
+      pendingDraftGuard = null;
+      sessionAction = null;
       retireConnectedSourceHandoff(false);
       resetConnectedSourceTurns();
       resetPlanContinuations();
@@ -6643,6 +7456,119 @@ export const bootstrapChatRoute = (
       }
       render();
     }
+  };
+
+  const focusOpenThread = (): void => {
+    const heading = routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_THREAD_TITLE_ATTR}]`,
+    ) as HTMLElement | null | undefined;
+    if (heading !== null && heading !== undefined) {
+      heading.focus?.({ preventScroll: true });
+      return;
+    }
+    // A newly-created durable session can still have zero messages. Its empty
+    // thread has no header yet, so the composer is the useful focus target.
+    focusComposer(true, 'start');
+  };
+
+  const focusDraftGuard = (): void => {
+    const guard = routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR}]`,
+    ) as HTMLElement | null | undefined;
+    guard?.focus?.({ preventScroll: true });
+  };
+
+  const focusSessionDeleteConfirm = (sessionId: string): void => {
+    const button = routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR}]`,
+    ) as HTMLElement | null | undefined;
+    if (
+      button?.getAttribute(CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR)
+      === sessionId
+    ) {
+      button.focus?.({ preventScroll: true });
+    }
+  };
+
+  const focusHistorySessionRow = (sessionId: string): void => {
+    const queryable = routeRoot as unknown as {
+      querySelectorAll?: (
+        selectors: string,
+      ) => ArrayLike<HTMLElement>;
+    };
+    const row = Array.from(
+      queryable.querySelectorAll?.(`[${CHAT_ROUTE_SESSION_ROW_ATTR}]`) ?? [],
+    ).find(
+      (candidate) =>
+        candidate.getAttribute(CHAT_ROUTE_SESSION_ROW_ATTR) === sessionId,
+    );
+    row?.focus?.({ preventScroll: true });
+  };
+
+  const focusHistoryHome = (): void => {
+    const target = (
+      routeRoot.querySelector?.(`[${CHAT_ROUTE_HISTORY_CONTINUE_ATTR}]`)
+      ?? routeRoot.querySelector?.(`[${CHAT_ROUTE_HISTORY_SEARCH_ATTR}]`)
+      ?? routeRoot.querySelector?.(`[${CHAT_ROUTE_NEW_SESSION_ATTR}]`)
+    ) as HTMLElement | null | undefined;
+    target?.focus?.({ preventScroll: true });
+  };
+
+  const openHistorySession = async (
+    sessionId: string,
+    discardProtectedDraft = false,
+  ): Promise<void> => {
+    if (openingSessionId !== null) return;
+    if (
+      !discardProtectedDraft
+      && composerDraftProtected
+      && composerDraft.trim().length > 0
+      && state.activeSessionId !== sessionId
+    ) {
+      pendingDraftGuard = { kind: 'open', sessionId };
+      render();
+      focusDraftGuard();
+      return;
+    }
+    if (
+      state.activeSessionId === sessionId
+      && state.thread.session?.id === sessionId
+    ) {
+      historyLandingActive = false;
+      focusOpenThread();
+      return;
+    }
+    openingSessionId = sessionId;
+    pendingDraftGuard = null;
+    state = { ...state, error: null };
+    render();
+    try {
+      await openSession(sessionId);
+      if (
+        !disposed
+        && state.activeSessionId === sessionId
+        && state.thread.session?.id === sessionId
+      ) {
+        opts.onAddressChange?.(
+          serializeChatSessionAddress({ sessionId }),
+          'push',
+        );
+      }
+    } finally {
+      if (openingSessionId === sessionId) openingSessionId = null;
+      if (!disposed) {
+        render();
+        if (state.activeSessionId === sessionId) {
+          focusOpenThread();
+        } else {
+          focusHistorySessionRow(sessionId);
+        }
+      }
+    }
+  };
+
+  const requestOpenSession = (sessionId: string): void => {
+    void openHistorySession(sessionId);
   };
 
   const openPlanLanding = (address: ChatPlanAddress): boolean => {
@@ -6902,16 +7828,34 @@ export const bootstrapChatRoute = (
   // session is minted on the first send, so the history holds only real
   // sessions (fixes the eager-create junk). A no-op ONLY when already in a
   // BLANK draft — "New chat while blank → no-op" (§D.L1); a draft with typed
-  // text resets to blank.
-  const startNewChat = (): void => {
+  // text asks before reset so switching from history cannot silently discard
+  // user work.
+  const startNewChat = (
+    discardProtectedDraft = false,
+    addressMode?: 'push' | 'replace',
+  ): void => {
+    if (
+      !discardProtectedDraft
+      && composerDraftProtected
+      && composerDraft.trim().length > 0
+    ) {
+      pendingDraftGuard = { kind: 'new' };
+      render();
+      focusDraftGuard();
+      return;
+    }
     if (
       state.thread.session === null
       && state.activeSessionId === null
       && composerDraft.trim().length === 0
       && !connectedSourceHandoffActive
+      && !historyLandingActive
     ) {
       return;
     }
+    historyLandingActive = false;
+    pendingDraftGuard = null;
+    sessionAction = null;
     retireConnectedSourceHandoff(true);
     resetConnectedSourceTurns();
     resetPlanContinuations();
@@ -6943,6 +7887,84 @@ export const bootstrapChatRoute = (
       pending_turn_id: null,
     };
     render();
+    if (addressMode !== undefined) {
+      opts.onAddressChange?.(
+        serializeShellRoute('chat', 'new'),
+        addressMode,
+      );
+    }
+    focusComposer(true, 'start');
+  };
+
+  const requestStartNewChat = (): void => {
+    startNewChat(false, 'push');
+  };
+
+  const exportSession = async (
+    session: ChatSessionSummary,
+  ): Promise<void> => {
+    if (sessionAction?.kind === 'export-busy') return;
+    sessionAction = { sessionId: session.id, kind: 'export-busy' };
+    render();
+    focusHistorySessionRow(session.id);
+    try {
+      const bundle = await opts.conn('chat.session.export', {
+        session_id: session.id,
+      });
+      if (disposed) return;
+      await downloadExportBundle(bundle, chatExportFilename(session));
+      if (disposed) return;
+      historyAnnouncement = `Exported ${sessionTitle(session)}.`;
+      sessionAction = null;
+      render();
+      focusHistorySessionRow(session.id);
+    } catch (err) {
+      if (disposed) return;
+      sessionAction = {
+        sessionId: session.id,
+        kind: 'error',
+        message: `Couldn't export this chat. ${classifyRpcError(err).copy}`,
+      };
+      render();
+      focusHistorySessionRow(session.id);
+    }
+  };
+
+  const deleteSession = async (
+    session: ChatSessionSummary,
+  ): Promise<void> => {
+    if (
+      sessionAction?.sessionId !== session.id
+      || sessionAction.kind !== 'delete-confirm'
+    ) return;
+    sessionAction = { sessionId: session.id, kind: 'delete-busy' };
+    render();
+    try {
+      await opts.conn('chat.session.delete', { session_id: session.id });
+      if (disposed) return;
+      const remaining = state.sessions.filter(
+        (candidate) => candidate.id !== session.id,
+      );
+      state = { ...state, sessions: remaining, error: null };
+      sessionAction = null;
+      historyAnnouncement = `Deleted ${sessionTitle(session)}.`;
+      if (state.activeSessionId === session.id) {
+        startNewChat(true);
+        historyLandingActive = remaining.length > 0;
+        opts.onAddressChange?.(serializeShellRoute('chat'), 'replace');
+      }
+      render();
+      focusHistoryHome();
+    } catch (err) {
+      if (disposed) return;
+      sessionAction = {
+        sessionId: session.id,
+        kind: 'error',
+        message: `Couldn't delete this chat. ${classifyRpcError(err).copy}`,
+      };
+      render();
+      focusHistorySessionRow(session.id);
+    }
   };
 
   // Shell-frame Step 3 — composer model picker. An active session persists its
@@ -7085,9 +8107,14 @@ export const bootstrapChatRoute = (
         // window. A fresh session has no pending turn.
         pending_turn_id: null,
       };
+      historyLandingActive = false;
       render();
+      opts.onAddressChange?.(
+        serializeChatSessionAddress({ sessionId: session_id }),
+        'replace',
+      );
       // Refresh the sidebar to include the new session (don't block the send).
-      void loadSessions();
+      void loadSessions(true);
       return thread.session;
     } catch (err) {
       if (disposed) return null;
@@ -7103,8 +8130,14 @@ export const bootstrapChatRoute = (
         ? await opts.conn('chat.session.create', { title })
         : await opts.conn('chat.session.create');
       if (disposed) return;
-      await loadSessions();
+      await loadSessions(true);
       await openSession(session_id);
+      if (!disposed && state.activeSessionId === session_id) {
+        opts.onAddressChange?.(
+          serializeChatSessionAddress({ sessionId: session_id }),
+          'push',
+        );
+      }
     } catch (err) {
       if (disposed) return;
       state = { ...state, error: classifyRpcError(err) };
@@ -7390,6 +8423,15 @@ export const bootstrapChatRoute = (
             session_id?: unknown;
             message_id?: unknown;
           };
+          if (
+            state.phase === 'ready'
+            && evt.kind === 'chat.session_changed'
+          ) {
+            // Titles, archive state, and their updated recency are list
+            // projections. Re-read them quietly so returning-user history
+            // stays current across this tab and other paired clients.
+            void loadSessions(true);
+          }
           if (evt.kind === 'chat.message_complete') {
             hasCompletedChat = true;
             if (
@@ -7546,6 +8588,7 @@ export const bootstrapChatRoute = (
     unsubscribers.push(
       opts.reconnect(() => {
         void recoverOpenSession();
+        void loadSessions(true);
       }),
     );
   }
@@ -7556,7 +8599,12 @@ export const bootstrapChatRoute = (
   const focusConnectedSourceAfterInitialLoad = connectedSource !== null;
   const focusReturnedMessageAfterInitialLoad = initialMessageIdOnLoad;
   const focusReturnedPlanAfterInitialLoad = initialPlanIdOnLoad;
-  void Promise.all([
+  const focusNewDraftAfterInitialLoad =
+    opts.initialLanding === 'new'
+    && opts.initialStarterPrompt !== true
+    && connectedSource === null
+    && initialSessionIdOnLoad === null;
+  const initialLoad = Promise.all([
     loadSessions(),
     loadAiAvailability(),
     loadDefaultModelPref(),
@@ -7566,6 +8614,25 @@ export const bootstrapChatRoute = (
     // Each cold-start read can rebuild the textarea on a different network
     // tick. Focus only after the initial reads have settled so a handoff does
     // not leave focus on a detached, earlier render of the composer.
+    if (!disposed && pendingRecoveryDraft !== null) {
+      const recovery = pendingRecoveryDraft;
+      pendingRecoveryDraft = null;
+      composerDraft = recovery.text;
+      composerDraftProtected = recovery.protected;
+      if (
+        state.thread.session === null
+        && recovery.modelSourceId !== null
+        && state.modelSources?.some(
+          (source) => source.id === recovery.modelSourceId,
+        ) === true
+      ) {
+        state = { ...state, draftSourceId: recovery.modelSourceId };
+      }
+      historyLandingActive = false;
+      render();
+      focusComposer(false, 'end');
+      return;
+    }
     if (
       !disposed
       && focusConnectedSourceAfterInitialLoad
@@ -7599,27 +8666,61 @@ export const bootstrapChatRoute = (
       return;
     }
     if (
-      disposed
-      || !focusStarterAfterInitialLoad
-      || state.activeSessionId !== null
-      || composerDraft !== CHAT_ROUTE_STARTER_PROMPT
-    ) return;
-    const input = routeRoot.querySelector?.(
-      `[${CHAT_ROUTE_INPUT_ATTR}]`,
-    ) as HTMLTextAreaElement | null | undefined;
-    input?.focus?.();
-    const end = input?.value.length ?? 0;
-    input?.setSelectionRange?.(end, end);
+      !disposed
+      && focusStarterAfterInitialLoad
+      && state.activeSessionId === null
+      && composerDraft === CHAT_ROUTE_STARTER_PROMPT
+    ) {
+      focusComposer(false, 'end');
+      return;
+    }
+    if (
+      !disposed
+      && focusNewDraftAfterInitialLoad
+      && state.activeSessionId === null
+      && !historyLandingActive
+    ) {
+      focusComposer(false, 'start');
+    }
   });
 
   return {
     getSessions: () => state.sessions,
     getThread: () => state.thread,
-    refresh: () => loadSessions(),
+    whenLoaded: () => initialLoad,
+    getRecoveryContextFreshness: () =>
+      state.phase === 'ready' ? 'current' : 'unavailable',
+    refresh: () => loadSessions(true),
     openSession: (sessionId) => openSession(sessionId),
     openPlanLanding,
+    getRecoveryDraft: () => {
+      if (composerDraft.trim().length === 0) {
+        // During post-pair hydration the rescued draft waits for the initial
+        // async reads before it is painted into the composer. Keep that
+        // pending value observable so an immediate second disconnect can
+        // capture it again rather than collapsing the recovery chain.
+        return pendingRecoveryDraft;
+      }
+      return {
+        text: composerDraft,
+        protected: composerDraftProtected,
+        modelSourceId:
+          state.thread.session === null
+            ? pickerSelectedSource()?.id ?? null
+            : null,
+      };
+    },
     hasUnsavedChanges: () =>
-      composerDraftProtected && composerDraft.trim().length > 0,
+      (composerDraftProtected && composerDraft.trim().length > 0)
+      || (
+        pendingRecoveryDraft?.protected === true
+        && pendingRecoveryDraft.text.trim().length > 0
+      ),
+    hasInFlightWork: () => state.sending
+      || pendingPlanActions.size > 0
+      || sessionAction?.kind === 'export-busy'
+      || sessionAction?.kind === 'delete-busy',
+    startNewChat: () => requestStartNewChat(),
     createSession: (title) => createSession(title),
     sendMessage: (message) => sendMessage(message),
     dispose: () => {

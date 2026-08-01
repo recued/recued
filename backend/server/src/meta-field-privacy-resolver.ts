@@ -180,25 +180,119 @@ const operationKeysFor = (
   return [...keys].filter((key) => key.length > 0);
 };
 
+/** D-221 § 6.3 — the REQUEST containers a Records action carries its tagged
+ *  values in, keyed by action. The spec requires request privacy paths derived
+ *  from the same entity snapshot as the response ones ("`values.<alias>`,
+ *  `set.<alias>`, id, and filter literal paths on input"); the local carrier can
+ *  hold only one `source_path` per meta-field key and uses it for the response,
+ *  so the request twins are derived here from the field's ALIAS.
+ *
+ *  Without them a call whose PII lives only in its ARGUMENTS emits no tag at
+ *  all: `pushRecordEnvelopeTags` walked `result` alone, and the fallback content
+ *  scan self-gates on an already-seeded ledger — so a search for
+ *  `filters.email = <private>` that matched no rows put that raw address in the
+ *  next `prior_tool_calls[].args` unaliased. */
+const RECORDS_REQUEST_CONTAINERS: Readonly<Record<string, readonly string[]>> = {
+  create: ['args.values'],
+  upsert: ['args.values'],
+  update: ['args.set'],
+  // A filter literal is either the bare value or `{op, value}`, so both.
+  search: ['args.filters', 'args.filters#value'],
+  count: ['args.filters', 'args.filters#value'],
+  get: [],
+  get_many: [],
+  delete: [],
+};
+
+/** The id argument each Records action names, so an `external_id`-tagged pk is
+ *  aliased on the way IN as well as out. `get_many` takes a scalar array. */
+const RECORDS_ID_ARG: Readonly<Record<string, readonly string[]>> = {
+  create: ['args.id'],
+  upsert: ['args.id'],
+  update: ['args.id'],
+  delete: ['args.id'],
+  get: ['args.id'],
+  get_many: ['args.ids[]'],
+  search: [],
+  count: [],
+};
+
+const ARGS_ROOT = 'args.';
+
+/** Derive one field's request-path template from its alias. `isId` fields map to
+ *  the action's id argument; every other tagged field maps into the action's
+ *  value/filter containers. Returns no template when the action carries the
+ *  field nowhere, so nothing empty reaches the index. */
+const recordsRequestPaths = (
+  action: string,
+  alias: string,
+  isId: boolean,
+): string[] => {
+  if (alias.length === 0 || hasUnsafePathSegment(alias)) return [];
+  if (isId) return [...(RECORDS_ID_ARG[action] ?? [])];
+  return (RECORDS_REQUEST_CONTAINERS[action] ?? []).map((container) =>
+    container.endsWith('#value')
+      ? `${container.slice(0, -'#value'.length)}.${alias}.value`
+      : `${container}.${alias}`);
+};
+
 const buildOperationPrivacyIndex = (
   schemas: readonly EntitySchemaIngredientInput[],
   getManifest: ManifestLookup | undefined,
 ): OperationPrivacyIndex => {
   const index: OperationPrivacyIndex = new Map();
   for (const schema of schemas) {
-    const taggedFields = (schema.meta_fields ?? [])
+    const tagged = (schema.meta_fields ?? [])
       .filter((field) => field.privacy !== undefined)
-      .map((field): FieldTagTemplate | null => {
+      .map((field): { template: FieldTagTemplate; alias: string; isId: boolean } | null => {
         const paths = piiPathsForMetaField(field);
         return paths.length > 0 && field.privacy !== undefined
-          ? { paths, kind: field.privacy }
+          ? {
+              template: { paths, kind: field.privacy },
+              alias: field.key,
+              isId: field.source_path === 'record.id' || field.key === 'id',
+            }
           : null;
       })
-      .filter((field): field is FieldTagTemplate => field !== null);
+      .filter((entry): entry is { template: FieldTagTemplate; alias: string; isId: boolean } =>
+        entry !== null);
+    const taggedFields = tagged.map((entry) => entry.template);
     if (taggedFields.length === 0) continue;
     for (const [operationKey, operation] of Object.entries(schema.source_operations)) {
+      const manifest = getManifest?.(operation.catalog);
+      const recordsAction = manifest?.surfaces?.records?.executes?.[operation.operation]?.action;
+      // D-221 list reads return `{records:[...]}` while the existing entity
+      // schema cell can carry only one `source_path` per unique meta-field key.
+      // The local carrier uses the singular `{record}` path; derive its exact
+      // array twin only for the two Records actions whose kernel response is a
+      // list. This stays operation-specific and leaves every provider schema
+      // byte-identical.
+      const operationFields = recordsAction === 'get_many' || recordsAction === 'search'
+        ? taggedFields.map((field) => ({
+            ...field,
+            paths: [...new Set([
+              ...field.paths,
+              ...field.paths.flatMap((path) => path.startsWith('record.')
+                ? [`records[].${path.slice('record.'.length)}`]
+                : []),
+            ])],
+          }))
+        : taggedFields;
+      // The request twins are emitted as SEPARATE templates whose every path is
+      // `args.`-rooted, so `pushRecordEnvelopeTags` can root them at the
+      // tool-call record instead of at `.result` by inspecting the path alone.
+      // Gated on `recordsAction`, so a provider schema contributes none and its
+      // tagging stays byte-identical.
+      const requestFields = recordsAction === undefined
+        ? []
+        : tagged.flatMap((entry) => {
+            const paths = recordsRequestPaths(recordsAction, entry.alias, entry.isId);
+            return paths.length > 0
+              ? [{ paths, kind: entry.template.kind } satisfies FieldTagTemplate]
+              : [];
+          });
       for (const key of operationKeysFor(schema, operationKey, operation, getManifest)) {
-        index.set(key, [...(index.get(key) ?? []), ...taggedFields]);
+        index.set(key, [...(index.get(key) ?? []), ...operationFields, ...requestFields]);
       }
     }
   }
@@ -324,10 +418,22 @@ const pushRecordEnvelopeTags = (
   basePath: string,
 ): void => {
   const result = record.result;
-  if (result === undefined) return;
   const resultPrefix = basePath.length > 0 ? `${basePath}.result` : 'result';
   for (const operationName of candidateOperationNames(record)) {
-    pushTemplates(out, seen, index.get(operationName), resultPrefix, result);
+    const templates = index.get(operationName);
+    if (templates === undefined) continue;
+    // Split by root. Request templates (`args.`-rooted, D-221 § 6.3) resolve
+    // against the tool-call record itself, so they MUST survive a call that
+    // returned nothing — that is exactly the case that leaked, because the
+    // fallback content scan self-gates on an already-seeded ledger and a
+    // result-less call seeds nothing.
+    const request = templates.filter((template) =>
+      template.paths.every((path) => path.startsWith(ARGS_ROOT)));
+    if (request.length > 0) pushTemplates(out, seen, request, basePath, record);
+    if (result === undefined) continue;
+    const response = templates.filter((template) =>
+      !template.paths.every((path) => path.startsWith(ARGS_ROOT)));
+    if (response.length > 0) pushTemplates(out, seen, response, resultPrefix, result);
   }
 };
 
@@ -474,11 +580,29 @@ export const createMetaFieldPrivacyResolverFromLocalManifestStore = (
     // tags), whose email + phone + name were egressing RAW. Explicit author tags win, so
     // the two hand-written HubSpot/Salesforce schemas are untouched. Evaluated per
     // resolve (like the store read), so a runtime pack install is reflected immediately.
-    getEntitySchemas: () =>
-      withDerivedVendorEntityPrivacy([
+    getEntitySchemas: () => {
+      const localSchemas = store.slugs().flatMap((slug) => {
+        const manifest = store.getManifest(slug);
+        const schemas = store.getEntitySchemas(slug);
+        const recordsEntities = manifest?.surfaces?.records?.schema.entities;
+        if (recordsEntities !== undefined) {
+          const expected = Object.keys(recordsEntities).sort();
+          const actual = schemas.map((schema) => schema.entity_id).sort();
+          if (actual.length !== expected.length
+            || actual.some((entity, index) => entity !== expected[index])) {
+            // A Records operation result is model-bound data. Losing the local
+            // entity snapshot must stop egress, not silently degrade the
+            // resolver to an empty tag set and send raw business PII.
+            throw new Error(`records_schema_carrier_missing:${slug}`);
+          }
+        }
+        return schemas;
+      });
+      return withDerivedVendorEntityPrivacy([
         ...shippedSchemas,
-        ...listLocalManifestEntitySchemas(store),
-      ]),
+        ...localSchemas,
+      ]);
+    },
     getManifest: (slug, version) =>
       store.getManifest(slug, version) ?? shippedManifests?.get(slug) ?? null,
     getEntityPrivacyTags: () => shippedEntityPrivacyTags,

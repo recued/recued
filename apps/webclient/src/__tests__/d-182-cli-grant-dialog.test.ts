@@ -8,7 +8,8 @@
  *  default-confirm paths, the partial-failure error chip, and the stale-confirm
  *  reopen guard (Codex F1).
  *
- *  Uses the same hand-rolled fake DOM as `d-182-local-tools-panel.test.ts`. */
+ *  Uses a hand-rolled fake DOM (the shared shape the webclient panel tests
+ *  use; the `d-182-local-tools-panel` original was retired with its panel). */
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -28,7 +29,7 @@ import type {
   CliToolGridEntry,
 } from '@recued/contracts';
 
-// ── fake DOM (trimmed copy of the local-tools-panel test harness) ────
+// ── fake DOM (the shared webclient panel-test harness) ────
 interface FakeEl {
   tagName: string;
   className: string;

@@ -1588,3 +1588,73 @@ describe('D-192 Gate E′ graphql work_entity_sources', () => {
     ).toEqual([]);
   });
 });
+
+describe('D-225 Slice 3 — an EMPIRICALLY-proven Source is not confined to REST', () => {
+  /** ⛔ The bug: a missing `contract_source` resolved to the fail-closed
+   *  `openapi`/REST default, which silently confined the EMPIRICAL route — the
+   *  one the D-192 ladder rates HIGHEST — to REST-bound ops.
+   *
+   *  It was never mcp-specific: a doc-less Source over a graphql pack was
+   *  rejected for the same reason. Widening for mcp alone would have left the
+   *  real rule unstated.
+   *
+   *  With no pinned document there is no prover, so "must match the prover's
+   *  transport" has nothing to say. The only constraint the machine can honestly
+   *  impose is that the op is SYNCHRONOUSLY DISPATCHABLE. */
+  const empirical = (bindingKind: string): MutableCatalog => {
+    const manifest = validCatalog();
+    delete source(manifest).contract_source;
+    for (const op of Object.values(executes(manifest))) {
+      for (const k of Object.keys(op)) delete op[k];
+      op.kind = bindingKind;
+      if (bindingKind === 'rest') { op.method = 'GET'; op.path_template = '/x'; }
+      if (bindingKind === 'graphql') {
+        op.operation_type = 'query'; op.query = 'query Q { a }'; op.endpoint_path = '/graphql';
+      }
+      if (bindingKind === 'mcp') op.tool = 'thing.list';
+    }
+    return manifest;
+  };
+  const opIssues = (m: MutableCatalog): Issue[] =>
+    collectWorkEntityIssues(m).filter((i) => i.code === 'WORK_ENTITY_SOURCES_OP_INVALID');
+
+  it('admits MCP-bound ops', () => {
+    expect(opIssues(empirical('mcp'))).toEqual([]);
+  });
+
+  it('admits GRAPHQL-bound ops — the same bug, and it predates mcp', () => {
+    expect(opIssues(empirical('graphql'))).toEqual([]);
+  });
+
+  it('still admits REST-bound ops', () => {
+    expect(opIssues(empirical('rest'))).toEqual([]);
+  });
+
+  it('⛔ still REFUSES a realtime binding — it cannot back a Source op at all', () => {
+    // The line the widening must not cross. A webhook/queue/push subscription
+    // delivers events; it is not a call a sync walk can make, whatever proves
+    // it. This is what separates "no prover, so no transport constraint" from
+    // "no constraint at all".
+    for (const realtime of ['webhook_subscription', 'queue_subscription', 'push_channel']) {
+      const issues = opIssues(empirical(realtime));
+      expect(issues.length, realtime).toBeGreaterThan(0);
+      expect(issues[0]!.message).toMatch(/synchronously-dispatchable/);
+    }
+  });
+
+  it('a PINNED Source still requires its prover’s transport', () => {
+    // The paired direction. The widening applies ONLY where there is no
+    // document; an openapi-pinned Source must still be REST, or an op would
+    // escape the prover the pin exists to run.
+    const manifest = empirical('mcp');
+    source(manifest).contract_source = {
+      kind: 'openapi',
+      surface: 'surfaces.api.openapi_source',
+      url: api(manifest).openapi_source?.url,
+      sha256: api(manifest).openapi_source?.sha256,
+    };
+    const issues = opIssues(manifest);
+    expect(issues.length).toBeGreaterThan(0);
+    expect(issues[0]!.message).toMatch(/must have a rest execution binding/);
+  });
+});

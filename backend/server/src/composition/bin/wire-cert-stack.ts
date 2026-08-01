@@ -168,9 +168,11 @@ export interface CertStackLateDeps {
   /** SQLite-backed `tls_domains` row store. `undefined` in a dbless
    *  test harness — the late composer no-ops. */
   tlsDomainStore: SqliteTlsDomainStore | undefined;
-  /** LAN bind address the listener actually opened on. Feeds the
-   *  hints reader the cert source + renewer share. */
-  lanBindAddress: string;
+  /** Where the server is REACHABLE on the LAN — not what the listener bound,
+   *  which is `0.0.0.0` whenever a LAN address was detected. Feeds the hints
+   *  reader the cert source + renewer share, and those hints are dialled
+   *  (`wss://<addr>:<port>/ws`), so a wildcard here would publish nonsense. */
+  lanAdvertisedAddress: string;
   /** Listener port the WS server actually opened on. */
   actualPort: number;
 }
@@ -621,7 +623,7 @@ export const composeCertStack = async (
   const composeLate = async (lateDeps: CertStackLateDeps): Promise<void> => {
     if (lateComposed) return;
     lateComposed = true;
-    const { tlsDomainStore, lanBindAddress, actualPort } = lateDeps;
+    const { tlsDomainStore, lanAdvertisedAddress, actualPort } = lateDeps;
 
     // D-148 § A.6.5 — production cert-source composition. `sources:
     // ['pro_acme']` filters BYO-uploaded certs out of the housekeeping
@@ -630,7 +632,7 @@ export const composeCertStack = async (
     if (tlsDomainStore) {
       tlsCertSourceRef = createSqliteBackedCertSource({
         readHints: () => ({
-          lan: [`wss://${lanBindAddress}:${actualPort}/ws`],
+          lan: [`wss://${lanAdvertisedAddress}:${actualPort}/ws`],
         }),
         store: tlsDomainStore,
         sources: ['pro_acme'],
@@ -650,7 +652,7 @@ export const composeCertStack = async (
       // this phase; LAN listener rotations would require a wider seam).
       const passportReadHints = (): ServerAddressHintsSnapshot => {
         const hints: ServerAddressHintsSnapshot = {
-          lan: [`wss://${lanBindAddress}:${actualPort}/ws`],
+          lan: [`wss://${lanAdvertisedAddress}:${actualPort}/ws`],
         };
         if (currentDdnsHostSnapshot !== null) {
           hints.ddns = `wss://${currentDdnsHostSnapshot}:${actualPort}/ws`;
@@ -685,7 +687,7 @@ export const composeCertStack = async (
 
       tlsRenewalHookRef = createDomainBackedTlsRenewalHook({
         readHints: () => ({
-          lan: [`wss://${lanBindAddress}:${actualPort}/ws`],
+          lan: [`wss://${lanAdvertisedAddress}:${actualPort}/ws`],
         }),
         store: tlsDomainStore,
         renewer: acmeDomainIssuer,

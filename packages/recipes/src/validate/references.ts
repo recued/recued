@@ -66,7 +66,29 @@ export const validateReferences = (
   let memoryRefSample = '';
   let auditAliasSampleRef: string | null = null;
 
-  const serialized = JSON.stringify(r);
+  // `metadata.readme` is prose, not a resolved field. It is `RecipeMetadata`'s
+  // "detail page explainer", rendered as markdown by the marketplace; no
+  // resolver ever touches it, so a `{{ref}}` inside it is an EXAMPLE, never a
+  // runtime read.
+  //
+  // Scanning it made accurate documentation impossible: `plan-service-day`'s
+  // readme explains why the recipe can only plan TODAY by quoting the very
+  // expression the language forbids —
+  // `{{step.x.daily.weather_code.{{step.offset}}}}` — and the scanner read that
+  // sentence as a nested template plus an undeclared step ref, failing a recipe
+  // whose logic is correct and whose docs are right. A gate that punishes a pack
+  // for explaining a limitation teaches authors to document less precisely.
+  //
+  // `metadata.description` stays scanned on purpose: it is a one-line summary,
+  // where a template is far more likely to be a mistake than an example.
+  const scannable = { ...r };
+  const meta = r.metadata;
+  if (meta !== null && typeof meta === 'object' && !Array.isArray(meta)
+    && 'readme' in (meta as Record<string, unknown>)) {
+    const { readme: _readme, ...metaWithoutReadme } = meta as Record<string, unknown>;
+    scannable.metadata = metaWithoutReadme;
+  }
+  const serialized = JSON.stringify(scannable);
 
   // Nested template detection — `{{ ... {{ ... }} ... }}` is not allowed
   if (/\{\{[^{}]*\{\{/.test(serialized)) {
@@ -104,21 +126,30 @@ export const validateReferences = (
     }
 
     // D-120 Phase 4.5 — `context.recipe.*` is prior-run state for MANUAL + CRON
-    // runs only. Its reactive half was designed and never built: the host write
-    // is gated `trigger_source !== 'auto_run'` (execute-handler.ts, deliberate —
-    // per-tick writes would thrash), the process-retire boundary that was to own
-    // it has no handler anywhere, and the auto-run handler holds
-    // `Pick<DishContextStore, 'clear'>` — it cannot `set`. So in an `auto_run`
-    // recipe every read resolves `undefined` FOREVER, `coalesce` makes each tick
-    // look like a first run, and a cursor gate
+    // runs only. Reactive (`auto_run`) is CLOSED, deliberately and permanently
+    // (2026-07-27): the host write is gated `trigger_source !== 'auto_run'`
+    // (execute-handler.ts — per-tick writes would thrash), the process-retire
+    // boundary the design named has no handler and never did, and the auto-run
+    // handler holds `Pick<DishContextStore, 'clear'>` — it cannot `set`.
+    //
+    // So in an `auto_run` recipe every read resolves `undefined` FOREVER,
+    // `coalesce` makes each tick look like a first run, and a cursor gate
     // (`{{step.id}} not_equal {{context.recipe.last_id}}`) is unconditionally
     // true — the recipe re-does its work every tick at `success: true`. Two
-    // shipped watchers burned docling/whisper + an AI extract every 5 minutes on
-    // this. Silence is the failure mode, so it is an ERROR here, not a warning.
-    // ⇒ If the reactive half is ever built, delete this check.
+    // shipped watchers burned docling/whisper + an AI extract every 5 minutes
+    // on this before both were converted. Silence is the failure mode, so this
+    // is an ERROR, not a warning.
+    //
+    // ⛔ This check is PERMANENT — do not delete it by building the reactive
+    // half. A snapshot is RESUMPTION, whose failure mode is exactly the silence
+    // above; the sanctioned shape is a PAIRED RECIPE over a convergent write,
+    // which has no silent-redo mode. The message names that first and the
+    // cursor second, because the cursor is the fallback for sources with no
+    // stable per-record identity, not the default.
+    // See internal design notes.
     if (ns === 'context' && /^recipe\b/.test(path) && r.auto_run !== undefined) {
       add('error', 'context_recipe_in_auto_run', '',
-        `{{context.${path}}} never persists in an auto_run recipe — it is manual/cron only, so this read is always undefined and any gate on it is always true. Use data.shared for a reactive cursor.`);
+        `{{context.${path}}} never persists in an auto_run recipe — it is manual/cron only, so this read is always undefined and any gate on it is always true. Carry reactive state by pairing this watcher with a convergent write keyed on the record (the shape the seller pack's procedural recipes use), or, only if the source has no stable per-record identity, a data.shared cursor.`);
       continue;
     }
 
@@ -128,6 +159,15 @@ export const validateReferences = (
     // recipe, regardless of how many memory refs appear).
     if (ns === 'data') {
       const sub = path.split('.')[0];
+      // D-221 — Records is reachable only through installed Tier-P operations.
+      // `#data` uses a separate owner control plane; exposing it through the
+      // generic data resolver would bypass operation grants, provenance stamps,
+      // version gates, and the Records execution principal.
+      if (sub === 'records') {
+        add('error', 'records_data_ref_forbidden', '',
+          `{{data.${path}}} is not a recipe namespace — call the installed Records pack operation instead`);
+        continue;
+      }
       if (isMemoryDataSubnamespace(sub)) {
         if (!memoryRefSeen) {
           memoryRefSeen = true;

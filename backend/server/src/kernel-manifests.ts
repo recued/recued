@@ -2279,6 +2279,7 @@ const MANIFESTS = [
     "kind": "storage",
     "version": 2,
     "category": "data",
+    "mcp_exposed": true,
     "risk_tier": "read",
     "tags": [
       "kernel",
@@ -3372,6 +3373,60 @@ const MANIFESTS = [
     },
     "output": {
       "schedule": "schedule"
+    }
+  },
+  {
+    "slug": "work-entity-list",
+    "name": "List native work entities",
+    "description": "Recipe-callable polymorphic read over one native work-entity kind. Optional source_id scopes to one Source; parent_project_id is an exact task/project-only scope applied in storage before rows enter recipe state. Returns canonical tagged entities plus the full matching count before pagination.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "work-entity",
+      "read",
+      "list"
+    ],
+    "input": {
+      "kind": null,
+      "source_id": null,
+      "sync_states": null,
+      "include_deleted": false,
+      "include_disabled": false,
+      "parent_project_id": null,
+      "limit": null,
+      "offset": null
+    },
+    "output": {
+      "entities": "entities",
+      "total": "total"
+    }
+  },
+  {
+    "slug": "work-entity-get",
+    "name": "Get a native work entity",
+    "description": "Recipe-callable by-id read over one native work-entity kind. Tombstoned and orphaned rows remain excluded by the resolver. Returns the canonical tagged entity or null and an explicit found flag.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "work-entity",
+      "read",
+      "get"
+    ],
+    "input": {
+      "kind": null,
+      "id": null
+    },
+    "output": {
+      "entity": "entity",
+      "found": "found"
     }
   },
   {

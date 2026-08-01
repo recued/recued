@@ -18,6 +18,8 @@ import {
   RpcError,
   type Dish,
   type DishGroup,
+  type DishLastRun,
+  type DishRunRow,
   type HandlerSlice,
   type ServerRpcRegistry,
 } from '@recued/contracts';
@@ -45,6 +47,11 @@ export interface DishHandlerDeps {
    *  `dishes`. */
   auditLog?: AuditLogStore;
 }
+
+/** Page size for `dishes.history` when the caller names none. Bounded
+ *  because the audit store filters in JS over a full scan (§ 4.3) — an
+ *  unbounded page would ship the whole log for one row's detail view. */
+const DISH_HISTORY_DEFAULT_LIMIT = 50;
 
 const generateDishId = (): string => {
   // Same scheme as schedule ids: timestamp (base36) + 6 random chars.
@@ -84,6 +91,83 @@ const requireOverlay = (
   return value as Record<string, unknown>;
 };
 
+/** D-215 slice 0 — the owning row of a MANAGED dish, or null when the dish
+ *  is user-assigned.
+ *
+ *  A managed dish's lifecycle belongs to the schedule / trigger / auto-run
+ *  row that minted it (D-179): auto-run config is versioned immutably — a
+ *  config change mints a NEW dish and dissolves the prior — so that one
+ *  `dish_id` always means one config and the audit never shows a `dish_id`
+ *  with drifting results. Mutating one through this rpc breaks that
+ *  invariant silently, and DELETING one orphans its owner: the schedule
+ *  row survives pointing at a vanished dish, and the fire-time gate in
+ *  `scheduler.ts` then treats it exactly like a disabled dish — skipping
+ *  silently, forever, with the schedule still armed and no failed-run
+ *  noise. The sanctioned edit path is the owning row's own config editor
+ *  (D-179 "edit config on existing schedule/trigger rows (immutable)").
+ *
+ *  ⚠ This is a HANDLER guard on purpose — never push it into `DishStore`.
+ *  Internal lifecycle code legitimately writes managed dishes through the
+ *  store: the trigger-enable/disable flow flips `enabled`, auto-run
+ *  versioning writes replacement rows, and `schedule-handler` dissolves on
+ *  delete. A store-level guard would break all three. */
+const managedOwner = (
+  dish: Dish,
+): { field: string; owner: string; surface: string } | null => {
+  if (dish.managed_by_schedule_id !== undefined) {
+    return {
+      field: 'managed_by_schedule_id',
+      owner: dish.managed_by_schedule_id,
+      surface: 'schedule',
+    };
+  }
+  if (dish.managed_by_trigger_id !== undefined) {
+    return {
+      field: 'managed_by_trigger_id',
+      owner: dish.managed_by_trigger_id,
+      surface: 'trigger',
+    };
+  }
+  // `managed_by_auto_run` carries the owning RECIPE id, not a row id.
+  if (dish.managed_by_auto_run !== undefined) {
+    return {
+      field: 'managed_by_auto_run',
+      owner: dish.managed_by_auto_run,
+      surface: 'auto-run',
+    };
+  }
+  return null;
+};
+
+/** Fields whose write changes a dish's RESOLVED config or its lifecycle,
+ *  and so must not be set on a managed dish through this rpc. `group_id`
+ *  is included because group membership merges UNDER the dish overlay
+ *  (dish → group → install → defaults), so re-binding a group silently
+ *  redefines what the dish runs with — the same invariant `config_overlay`
+ *  protects. `name` is deliberately absent: it is a label, it changes no
+ *  resolution, and letting the owner rename a managed dish is the whole
+ *  point of listing them (D-215 § 3). */
+const MANAGED_DISH_FROZEN_FIELDS = ['config_overlay', 'enabled', 'group_id'] as const;
+
+const refuseManagedMutation = (
+  dish: Dish,
+  body: Record<string, unknown>,
+): void => {
+  const managed = managedOwner(dish);
+  if (!managed) return;
+  const attempted = MANAGED_DISH_FROZEN_FIELDS.filter((f) =>
+    Object.hasOwn(body, f) && body[f] !== undefined,
+  );
+  if (attempted.length === 0) return;
+  throw new RpcError(
+    'conflict',
+    `Dish '${dish.dish_id}' is managed by its ${managed.surface} '${managed.owner}' `
+      + `(${managed.field}) — ${attempted.join(', ')} must be changed on that `
+      + `${managed.surface} row, not on the dish.`,
+    409,
+  );
+};
+
 const checkAdmission = (
   deps: DishHandlerDeps,
   bytes: number,
@@ -109,14 +193,67 @@ const checkAdmission = (
   );
 };
 
-export const listDishes = (
+export const listDishes = async (
   deps: DishHandlerDeps,
   query: { recipe_id?: string },
-): { dishes: Dish[] } => {
+): Promise<{ dishes: Dish[]; last_runs?: Record<string, DishLastRun> }> => {
   const dishes = query.recipe_id
     ? deps.store.listByRecipe(query.recipe_id)
     : deps.store.list();
-  return { dishes };
+  // D-215 slice 3 — the last-outcome cell, resolved in ONE audit scan for
+  // the whole page rather than per row. Absent audit store ⇒ the field is
+  // omitted entirely; the surface treats "no map" and "not in the map"
+  // identically (unknown → "never run"), so this degrades rather than
+  // rendering every dish as failed.
+  if (!deps.auditLog || dishes.length === 0) return { dishes };
+  const latest = await deps.auditLog.latestByDishes(dishes.map((d) => d.dish_id));
+  if (latest.size === 0) return { dishes };
+  const last_runs: Record<string, DishLastRun> = {};
+  for (const [dish_id, entry] of latest) {
+    last_runs[dish_id] = {
+      run_id: entry.run_id,
+      started_at: entry.started_at,
+      commit_status: entry.commit_status,
+    };
+  }
+  return { dishes, last_runs };
+};
+
+/** D-215 slice 5 — one dish's run history, newest first.
+ *
+ *  ⚠ Consults NO dish store, deliberately. `dish_id` is an audit-row field
+ *  and OUTLIVES the dish: auto-run config versioning dissolves the prior
+ *  dish on every change, and a one-shot retires itself on success (§ 5).
+ *  Looking the dish up here to "validate" the id would break exactly the
+ *  case this exists to serve — a RETIRED dish's history.
+ *
+ *  An unknown id is an empty list, never an error. "No runs yet" and "this
+ *  dish is gone" are both legitimate answers, and the caller distinguishes
+ *  them by whether `dishes.list` still carries the row; the server has no
+ *  better information than that. */
+export const dishHistory = async (
+  deps: DishHandlerDeps,
+  query: { dish_id?: unknown; limit?: unknown },
+): Promise<{ runs: DishRunRow[] }> => {
+  const dish_id = typeof query.dish_id === 'string' ? query.dish_id : '';
+  if (dish_id.length === 0) {
+    throw new RpcError('bad_request', 'dish_id is required', 400);
+  }
+  if (!deps.auditLog) return { runs: [] };
+  const limit = typeof query.limit === 'number' && Number.isFinite(query.limit)
+    ? Math.max(0, Math.trunc(query.limit))
+    : DISH_HISTORY_DEFAULT_LIMIT;
+  const entries = await deps.auditLog.listByDish(dish_id, limit);
+  return {
+    runs: entries.map((entry) => ({
+      run_id: entry.run_id,
+      started_at: entry.started_at,
+      duration_ms: entry.duration_ms,
+      commit_status: entry.commit_status,
+      trigger_source: entry.trigger_source,
+      error: (entry.errors[0] as { message?: string } | undefined)?.message ?? null,
+    })),
+  };
 };
 
 export const createDish = (
@@ -208,6 +345,11 @@ export const updateDish = (
   if (!existing) {
     throw new RpcError('not_found', `Dish '${dish_id}' not found`, 404);
   }
+  // D-215 slice 0 — a managed dish is renameable but not reconfigurable
+  // here. Checked BEFORE shape validation so a managed dish reports the
+  // ownership conflict rather than a field-type complaint about a write
+  // it was never going to accept.
+  refuseManagedMutation(existing, body as Record<string, unknown>);
 
   if (body.name !== undefined && typeof body.name !== 'string') {
     throw new RpcError('bad_request', 'name must be a string', 400);
@@ -249,8 +391,25 @@ export const deleteDish = (
   deps: DishHandlerDeps,
   dish_id: string,
 ): { deleted: true } => {
-  const deleted = deps.store.delete(dish_id);
-  if (!deleted) {
+  // D-215 slice 0 — read BEFORE deleting so a managed dish can be refused.
+  // The pre-D-215 shape deleted first and inferred `not_found` from the
+  // return; a guard cannot run after the row is gone.
+  const existing = deps.store.get(dish_id);
+  if (!existing) {
+    throw new RpcError('not_found', `Dish '${dish_id}' not found`, 404);
+  }
+  const managed = managedOwner(existing);
+  if (managed) {
+    throw new RpcError(
+      'conflict',
+      `Dish '${dish_id}' is managed by its ${managed.surface} '${managed.owner}' `
+        + `(${managed.field}) — delete that ${managed.surface} instead. Removing the `
+        + `dish directly would leave the ${managed.surface} armed against a dish that `
+        + `no longer exists, skipping every fire silently.`,
+      409,
+    );
+  }
+  if (!deps.store.delete(dish_id)) {
     throw new RpcError('not_found', `Dish '${dish_id}' not found`, 404);
   }
   deps.contextStore?.clear(dish_id);
@@ -420,6 +579,7 @@ export type DishMethods =
   | 'dishes.create'
   | 'dishes.update'
   | 'dishes.delete'
+  | 'dishes.history'
   | 'dish_groups.list'
   | 'dish_groups.create'
   | 'dish_groups.update'
@@ -434,6 +594,7 @@ export const makeDishHandlers = (
   return {
     methods: [
       'dishes.list', 'dishes.create', 'dishes.update', 'dishes.delete',
+      'dishes.history',
       'dish_groups.list', 'dish_groups.create', 'dish_groups.update', 'dish_groups.delete',
       'recipe_config.get', 'recipe_config.set',
     ],
@@ -455,6 +616,8 @@ export const makeDishHandlers = (
         }
         return deleteDish(deps, args.dish_id);
       },
+      'dishes.history': async (args) =>
+        dishHistory(deps, args as { dish_id?: unknown; limit?: unknown }),
       'dish_groups.list': async () => listDishGroups(deps),
       'dish_groups.create': async (args) => createDishGroup(deps, args),
       'dish_groups.update': async (args) => {

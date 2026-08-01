@@ -31,28 +31,56 @@ export interface IngredientIssue {
   message: string;
 }
 
-/** D-112 strict-validation flag.
+/** D-112 strict-validation default.
  *
- *  Release N (D-112 ships): `false` — undeclared keys warn; locks
- *  still error (those are non-negotiable).
- *  Release N+1: flipped to `true` — undeclared keys error. Third-
- *  party ingredient authors have one release cycle to add wildcards
- *  or enumerate missing fields.
+ *  Release N (D-112 ships): `false` — undeclared keys warn; locks still error
+ *  (those are non-negotiable). Release N+1 was to flip this to `true` so
+ *  undeclared keys error, giving third-party ingredient authors one release
+ *  cycle to add wildcards or enumerate missing fields.
  *
- *  Read from `process.env.RECUED_STRICT_INPUT_VALIDATION` when the
- *  runtime exposes `process`; otherwise defaults to `false`. Tests
- *  pass an explicit override through `validateIngredientRefs` options. */
-const readStrictEnv = (): boolean => {
-  try {
-    const g = globalThis as { process?: { env?: Record<string, string | undefined> } };
-    const v = g.process?.env?.RECUED_STRICT_INPUT_VALIDATION;
-    return v === '1' || v === 'true';
-  } catch {
-    return false;
-  }
-};
+ *  ⛔ That flip is still PENDING, and it is a RELEASE decision — it changes what
+ *  a third-party recipe is allowed to do — so it belongs in this constant (or an
+ *  explicit `strict` at the call site), reviewed like any other compatibility
+ *  break.
+ *
+ *  It used to be read from `process.env.RECUED_STRICT_INPUT_VALIDATION` at
+ *  MODULE LOAD. Removed 2026-07-28: an env var is the wrong instrument for a
+ *  compatibility decision — it silently varies enforcement per deployment, it
+ *  cannot be changed after import anyway, and a validator whose strictness
+ *  depends on the shell that started the process is one whose results cannot be
+ *  compared across environments. Nothing set it; `validateIngredientRefs` also
+ *  has no production caller today (the marketplace/edge publish path runs
+ *  `parseRecipe` + the content/publish policies, and pack install enforces
+ *  `min_version` separately in `pack-install-handler.ts`), so the env read was
+ *  gating a function that does not run in production.
+ *
+ *  Callers that want strict behaviour pass `{ strict: true }` explicitly. */
+export const STRICT_INPUT_VALIDATION_DEFAULT = false;
 
-export const STRICT_INPUT_VALIDATION_DEFAULT = readStrictEnv();
+/** D-067 — THE breaking-change predicate, in ONE place.
+ *
+ *  A recipe step pins `ingredient_version`. The manifest declares `min_version`
+ *  — the oldest pin the CURRENT ingredient is still compatible with. A pin
+ *  below that floor means the recipe was authored against a shape the
+ *  ingredient no longer honours: its inputs or outputs have moved.
+ *
+ *  Exported so the pre-run gate (`backend/server/src/pre-run-version-check.ts`)
+ *  and the authoring-time validator below decide "breaking" identically. Two
+ *  hand-written copies of a version comparison drift, and the drift is silent —
+ *  one surface would reject a recipe the other admits.
+ *
+ *  Deliberately narrow: a MISSING manifest is not breaking (the ingredient may
+ *  simply not be installed yet, and a conditional step may never run — the
+ *  runtime surfaces that at the step). Only a present manifest with a
+ *  `min_version` above the pin is. */
+export const isBreakingIngredientPin = (
+  pinnedVersion: number | null | undefined,
+  manifest: { version?: number | null; min_version?: number | null } | null | undefined,
+): boolean =>
+  pinnedVersion != null
+  && manifest?.version != null
+  && manifest.min_version != null
+  && pinnedVersion < manifest.min_version;
 
 export type ManifestLookup = (slug: string) => Promise<IngredientManifest | null>;
 
@@ -63,9 +91,9 @@ const own = (value: Record<string, unknown>, key: string): unknown =>
   hasOwn(value, key) ? value[key] : undefined;
 
 export interface ValidateIngredientRefsOptions {
-  /** D-112 — when true, undeclared recipe keys error instead of
-   *  warning. Defaults to `STRICT_INPUT_VALIDATION_DEFAULT` (reads
-   *  `RECUED_STRICT_INPUT_VALIDATION` env). */
+  /** D-112 — when true, undeclared recipe keys error instead of warning.
+   *  Defaults to `STRICT_INPUT_VALIDATION_DEFAULT` (currently `false`; the
+   *  Release N+1 flip is a reviewed release decision, no longer an env var). */
   strict?: boolean;
 }
 
@@ -168,7 +196,7 @@ export const validateIngredientRefs = async (
     //    integer schema; binary release version lives on
     //    `input.service.binary_version` and isn't checked here.
     if (step.pinnedVersion != null && manifest.version != null) {
-      if (manifest.min_version != null && step.pinnedVersion < manifest.min_version) {
+      if (isBreakingIngredientPin(step.pinnedVersion, manifest)) {
         issues.push({
           severity: 'error',
           step_id: step.id,

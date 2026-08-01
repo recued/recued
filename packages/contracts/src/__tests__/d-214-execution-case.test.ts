@@ -168,13 +168,29 @@ describe('D-214 admission constants', () => {
     expect(EXECUTION_CASE_RECURRENCE_FLOOR).toBe(3);
   });
 
-  /** B.12 / acceptance #49 — negatives file freely, positives are gated. A
-   *  build that "tidied" these to one shared constant would drop every
-   *  single-call negative, which is the cheapest evidence D-214 collects. */
-  it('gates positives at 2 calls but admits negatives at 1', () => {
+  /** ⚠ B.12 / acceptance #49 was REVERSED by D-219 slice 7, and this ratchet
+   *  did its job on the way: it was written to stop a build "tidying these to
+   *  one shared constant", which is precisely what slice 7 does — deliberately,
+   *  and with the old rule and reasoning preserved beside the constants rather
+   *  than overwritten.
+   *
+   *  WAS: positives gated at 2, negatives free at 1, because "choosing the wrong
+   *  single tool is exactly what users correct" and a single-call negative was
+   *  "the cheapest evidence D-214 collects".
+   *
+   *  WHY IT NO LONGER HOLDS: slices 2–4 excluded every negative the system
+   *  observed about itself, so that evidence mostly cannot occur; nine of the
+   *  eleven Tier-1 primitives are retrieval, where there is no lesson; and the
+   *  one real single-call lesson — which recipe to run — lives in an argument no
+   *  case records. Candidacy is now uniform: a case is for a PROCEDURE worth
+   *  short-circuiting, and one call is not a procedure.
+   *
+   *  The ratchet still ratchets — it now pins the equality, so a future split
+   *  back into two floors has to be deliberate too. */
+  it('requires MORE THAN ONE call in both directions', () => {
     expect(EXECUTION_CASE_MIN_CALLS_POSITIVE).toBe(2);
-    expect(EXECUTION_CASE_MIN_CALLS_NEGATIVE).toBe(1);
-    expect(EXECUTION_CASE_MIN_CALLS_NEGATIVE).toBeLessThan(
+    expect(EXECUTION_CASE_MIN_CALLS_NEGATIVE).toBe(2);
+    expect(EXECUTION_CASE_MIN_CALLS_NEGATIVE).toBe(
       EXECUTION_CASE_MIN_CALLS_POSITIVE,
     );
   });

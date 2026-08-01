@@ -19,6 +19,7 @@
  *  Spec: D-129 § A.1 + P1.1 close memo step 6. */
 
 import {
+  isValidOAuthEndpointUrl,
   resolveVendorOAuthEndpoints,
   type ConnectionVendorProvider,
 } from '@recued/contracts';
@@ -243,6 +244,16 @@ export const completeVendorOAuth = async (
   opts: CompleteVendorOAuthOptions,
 ): Promise<{ refresh_token: string; granted_scopes: string[]; instance_url?: string }> => {
   const fetcher = opts.fetcher ?? defaultFetcher;
+  const { token_endpoint } = resolveVendorOAuthEndpoints(opts.provider, {
+    sandbox: opts.sandbox,
+  });
+  if (!isValidOAuthEndpointUrl(token_endpoint)) {
+    throw new VendorOAuthError(
+      'token_exchange_failed',
+      400,
+      'token exchange refused: provider token endpoint must be a complete HTTPS URL with no embedded username or password and no URL fragment',
+    );
+  }
 
   const body = new URLSearchParams({
     code: opts.code,
@@ -265,12 +276,6 @@ export const completeVendorOAuth = async (
     body.set('code_verifier', opts.code_verifier);
   }
 
-  // D-130 — pick the sandbox token endpoint when the provider
-  // declares one and the caller flagged sandbox. Vendors without a
-  // sandbox split fall through to the production endpoint.
-  const { token_endpoint } = resolveVendorOAuthEndpoints(opts.provider, {
-    sandbox: opts.sandbox,
-  });
   let tokenRes: Awaited<ReturnType<HttpFetcher>>;
   try {
     tokenRes = await fetcher(token_endpoint, {
@@ -345,6 +350,10 @@ const introspectGrantedScopes = async (
   access_token: string,
   fetcher: HttpFetcher,
 ): Promise<string[]> => {
+  // The access token is itself a credential and becomes path material below.
+  // Keep introspection's documented soft-failure semantics, but never call an
+  // unsafe endpoint even if a restored/provider object bypassed registry checks.
+  if (!isValidOAuthEndpointUrl(introspect_url)) return [];
   const url = `${introspect_url}/${encodeURIComponent(access_token)}`;
   let res: Awaited<ReturnType<HttpFetcher>>;
   try {

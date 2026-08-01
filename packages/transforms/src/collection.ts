@@ -298,7 +298,34 @@ function resolveExpression(expr: unknown, item: unknown): unknown {
 
     // Case 2: math expression — has operators AND at least one {{item.*}} ref
     ITEM_REF_RE.lastIndex = 0; // global regex carries state across CALLS
-    if (ITEM_REF_RE.test(expr) && /[+\-*/%()]/.test(expr)) {
+    // ⛔ An operator is not enough. Every Records reference is `<entity>/<id>`,
+    // so `"rental_contract/{{item.id}}"` contains `/` and was read as DIVISION:
+    // the ref substituted to a number, `rental_contract/0` evaluated, and the
+    // whole thing resolved to null. Silently — a seeded grid row arrived with a
+    // null tenancy and the write failed downstream for an unrelated-looking
+    // reason. No ref could ever be built inline in a map expression, which is
+    // why the corpus builds them in a `template` step instead.
+    //
+    // Real arithmetic has nothing but refs, numbers, operators and whitespace
+    // between its parts. Anything else — a word, a slash in a path — means the
+    // author wrote text, so it falls through to interpolation below.
+    ITEM_REF_RE.lastIndex = 0;
+    // Strip the refs and the function names `evaluateMathExpression` supports
+    // (min, max, abs, ceil, floor, round) — what remains of REAL arithmetic is
+    // only digits, operators, parens and whitespace. `round({{item.minutes}} *
+    // 125 / 60 * 100) / 100` is arithmetic; `rental_contract/{{item.id}}` is
+    // not, and the difference is a word that is not a function.
+    //
+    // ⚠ A first cut checked the leftovers without stripping the functions, and
+    // broke every priced line in `billable-hours` and `invoice-book` — the
+    // guard has to know what the evaluator accepts, or it rejects the
+    // expressions it exists to protect.
+    const withoutRefs = expr
+      .replace(ITEM_REF_RE, ' ')
+      .replace(/\b(?:min|max|abs|ceil|floor|round)\b/g, ' ');
+    const looksArithmetic = /^[\d\s+\-*/%().,]*$/.test(withoutRefs);
+    ITEM_REF_RE.lastIndex = 0;
+    if (ITEM_REF_RE.test(expr) && /[+\-*/%()]/.test(expr) && looksArithmetic) {
       ITEM_REF_RE.lastIndex = 0; // reset after .test()
       const substituted = expr.replace(ITEM_REF_RE, (_, path) => {
         const v = getField(item, path);
@@ -493,4 +520,57 @@ export const partition: TransformFn = (p) => {
   const unmatched: unknown[] = [];
   for (const item of arr) (predicate(item) ? matched : unmatched).push(item);
   return { matched, unmatched };
+};
+
+/** Attach fields from a SECOND array onto each item of the first, matched on a
+ *  key. The relational join the recipe language was missing.
+ *
+ *  ── Why this exists ──────────────────────────────────────────────
+ *  A board that lists one collection and wants a column from another had no way
+ *  to express it. `group_by` produces a keyed object, but a `map` expression
+ *  cannot do a DYNAMIC lookup into it: the step's input is resolved before the
+ *  transform runs, so `{{step.by_id.{{item.key}}}}` is a nested template and is
+ *  not resolvable. `find` matches one element but cannot be called per item from
+ *  inside `map`. So the only alternatives were N per-row op reads, or storing a
+ *  denormalised copy on the left-hand record.
+ *
+ *  ⚠ FIRST match wins, and the right-hand array is indexed in its given order,
+ *  so the result is deterministic for duplicate keys rather than
+ *  last-one-seen. Keys are compared as STRINGS: a numeric id on one side and its
+ *  string form on the other still match, which is what mixed warehouse / provider
+ *  ids need.
+ *
+ *  ⚠ An unmatched item gets each declared field as `null`, never a missing key —
+ *  a renderer that reads `row.description` must not see `undefined` for "no
+ *  match" and a real absence identically. */
+export const enrich_by: TransformFn = (p) => {
+  const left = p.array as unknown[];
+  if (!Array.isArray(left)) return [];
+  const right = Array.isArray(p.with) ? (p.with as unknown[]) : [];
+  const leftKey = String(p.key ?? '');
+  const rightKey = String(p.with_key ?? p.key ?? '');
+  const fields = (typeof p.fields === 'object' && p.fields !== null
+    ? p.fields
+    : {}) as Record<string, unknown>;
+
+  const index = new Map<string, unknown>();
+  for (const row of right) {
+    const raw = getField(row, rightKey);
+    if (raw === undefined || raw === null) continue;
+    const key = String(raw);
+    if (!index.has(key)) index.set(key, row);
+  }
+
+  return left.map((item) => {
+    const raw = getField(item, leftKey);
+    const match = raw === undefined || raw === null ? undefined : index.get(String(raw));
+    const out = { ...(item as Record<string, unknown>) };
+    for (const [outName, path] of Object.entries(fields)) {
+      const value = match === undefined ? null : getField(match, String(path));
+      // setSafe: `fields` keys are recipe-authored, so the prototype filter is
+      // load-bearing here exactly as it is for `map`'s `output_field`.
+      setSafe(out, outName, value === undefined ? null : value);
+    }
+    return out;
+  });
 };

@@ -15,6 +15,7 @@ import type {
   ProConvenienceItem,
   ProConvenienceStatusResponse,
 } from '@recued/contracts';
+import { formatClientDateTime } from '@recued/ui-shared';
 
 import type {
   AccountBindingAuthSession,
@@ -146,7 +147,7 @@ const append = <K extends keyof HTMLElementTagNameMap>(
 
 const formatTimestamp = (value: number | undefined): string =>
   typeof value === 'number' && Number.isFinite(value)
-    ? new Date(value).toISOString()
+    ? formatClientDateTime(value, { invalidText: 'Not set' })
     : 'Not set';
 
 const accountLabel = (

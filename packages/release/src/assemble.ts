@@ -41,6 +41,12 @@ export interface ChannelInput {
   notes_url: string;
   /** Per-platform downloadable binaries — each already sha256'd + signed. */
   binaries: Partial<Record<Platform, BinaryArtifact>>;
+  /** D-178 S1 rev 2 item 2 — the per-triple native sidecar, keyed `lib-<triple>`
+   *  and already sha256'd + signed. The SEA binary cannot embed a `.node`, so
+   *  each binary is USELESS without its pair — `release-build.mjs` refuses to
+   *  emit one without the other, and this stays a plain map only because the
+   *  pairing is enforced upstream where the files are on disk to check. */
+  libs?: Partial<Record<`lib-${Platform}`, BinaryArtifact>>;
   dockerBaked?: DockerArtifact;
   dockerThin?: DockerArtifact;
   /** The arch-neutral webclient bundle archive — already sha256'd + signed
@@ -68,6 +74,7 @@ export const assembleManifest = (input: ManifestInput): ReleaseManifest => {
     if (ch.dockerBaked) artifacts['docker-baked'] = ch.dockerBaked;
     if (ch.dockerThin) artifacts['docker-thin'] = ch.dockerThin;
     if (ch.webclient) artifacts['webclient'] = ch.webclient;
+    if (ch.libs) Object.assign(artifacts, ch.libs);
     channels[name] = {
       version: ch.version,
       released_at: ch.released_at,

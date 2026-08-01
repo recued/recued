@@ -448,12 +448,11 @@ describe('D-137 Trio #A — enrichment.search handler', () => {
     }
   });
 
-  it('returns a PLAIN empty result (no guidance hint) when a topic IS supplied but the store has no rows — the guided-empty hint is for MISSING-topic only, not "no match"', async () => {
-    // Distinguishes the two empty paths: a missing topic short-circuits to a
-    // guided-empty + hint (above); a supplied topic that simply matches nothing
-    // goes through the store (an unknown topic returns [] via the store's
-    // `isEnrichmentTopic` guard) and yields a plain `{ enrichments: [] }` — a
-    // normal "no match" a model answers from, NOT a guidance prompt.
+  it('returns an explicit no-match hint when a supplied topic has no rows', async () => {
+    // Distinguishes the two empty paths: a missing topic asks the model to
+    // supply one (above); a supplied topic reaches the store and explicitly
+    // says that the search found nothing, preventing the model from inventing
+    // an absent enrichment.
     const list = vi.fn(() => []);
     const handlers = buildChatTier1Handlers(
       buildDepsStub({
@@ -467,9 +466,10 @@ describe('D-137 Trio #A — enrichment.search handler', () => {
     expect(result.ok).toBe(true);
     expect(list).toHaveBeenCalledWith(expect.objectContaining({ topic: 'sentiment' }));
     if (result.ok) {
-      const r = result.result as { enrichments: unknown[]; hint?: string };
+      const r = result.result as { enrichments: unknown[]; hint: string };
       expect(r.enrichments).toEqual([]);
-      expect(r.hint).toBeUndefined();
+      expect(r.hint).toContain('found nothing');
+      expect(r.hint).toContain('Do not supply');
     }
   });
 });

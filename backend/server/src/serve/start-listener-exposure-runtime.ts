@@ -25,7 +25,7 @@ export interface StartListenerExposureRuntimeOptions {
   >;
   readonly runtime: Omit<
     StartPostListenerRuntimeOptions,
-    'server' | 'lanBindAddress' | 'webclientServed' | 'actualPort' | 'eventTriggerDispatcher' | 'watchManager' | 'runUpdateBootReconcile'
+    'server' | 'lanAdvertisedAddress' | 'webclientServed' | 'actualPort' | 'eventTriggerDispatcher' | 'watchManager' | 'runUpdateBootReconcile'
   >;
   readonly publishWsHandleForLockout: (
     wsHandle: ComposeListenersResult['serverHandlerSet']['wsHandle'],
@@ -61,7 +61,9 @@ export const startListenerExposureRuntime = async (
   const runtime = await startPostListenerRuntime({
     ...options.runtime,
     server: listeners.server,
-    lanBindAddress: listeners.lanBindAddress,
+    // The cert stack publishes `wss://<addr>:<port>/ws` pairing hints, so it
+    // needs the REACHABLE address — `0.0.0.0` is not somewhere a peer dials.
+    lanAdvertisedAddress: listeners.lanAdvertisedAddress,
     webclientServed: listeners.webclientServed,
     actualPort,
     // Reactive-substrate slice 1 — hand the live dispatcher composed

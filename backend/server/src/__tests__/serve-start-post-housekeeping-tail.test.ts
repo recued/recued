@@ -95,7 +95,6 @@ const makeOptions = (
     lifecycle: { install: vi.fn(), markBooted: vi.fn() },
     cascade: { close: vi.fn() },
     server: { port: 4747, close: vi.fn(async () => undefined) },
-    lanBindAddress: '192.168.1.7',
     webclientServed: true,
     ...overrides,
   }) as unknown as StartPostHousekeepingTailOptions;
@@ -149,14 +148,17 @@ describe('startPostHousekeepingTail', () => {
     expect(tailMocks.logBootBanner).toHaveBeenCalledWith({
       version: SERVER_VERSION,
       port: 4747,
-      lanBindAddress: '192.168.1.7',
       webclientServed: true,
       dbPath: '/tmp/server.db',
       recipeCount: 12,
-      ingredientCount: 34,
       llmConfig: options.app.llmConfig,
       pairingCode: 'PAIR-CODE',
       notEnrolled: true,
+      // Read from the dispatch seam's own `isAutoPiiDisabled()` so the banner
+      // cannot disagree with what execution actually does. `false` here because
+      // the suite runs without `RECUED_AUTO_PII` set — the exact-object
+      // assertion is what makes a silently-dropped field fail rather than pass.
+      autoPiiDisabled: false,
     });
     expect(tailMocks.installShutdown).toHaveBeenCalledWith({
       lifecycle: options.lifecycle,

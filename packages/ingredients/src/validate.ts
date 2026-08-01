@@ -26,6 +26,11 @@ import {
   isApiTransport,
   isAuthKind,
   isApiExecutionBindingKind,
+  // D-225 Slice 1 — the message quotes the closed list rather than restating
+  // it, so a widened vocabulary can never leave a stale error text telling an
+  // author that a value the validator now accepts is invalid.
+  API_TRANSPORTS,
+  API_EXECUTION_BINDING_KINDS,
   isRealtimeApiBindingKind,
   isConnectorWireProtocol,
   // Connection-agnostic op dispatch — surface-level closed-set DIALECT guards +
@@ -72,6 +77,8 @@ import {
   REGEN_INPUT_INVARIANTS,
   AI_COOPERATIVE_OPT_OUT_RATIONALE_MIN_CHARS,
   isLockedInputKey,
+  isRecordsAction,
+  recordsSlotKind,
   // D-177 P1b — fail-closed gate on declared `hash_exclude_args` (N.2).
   validateHashExcludeArgs,
   // D-177 P5b — the shared wire-authority baseline (one authority set, two
@@ -887,6 +894,14 @@ const OAUTH2_FLOW_SET = new Set<string>(OAUTH2_FLOWS);
 const CALLBACK_STRATEGY_SET = new Set<string>(CALLBACK_URL_STRATEGIES);
 const REST_METHOD_SET = new Set<string>(REST_METHODS);
 const GRAPHQL_OP_TYPE_SET = new Set<string>(GRAPHQL_OPERATION_TYPES);
+/** D-225 Slice 1 — accepted shape of an `McpExecutionBinding.tool`. The MCP
+ *  spec does not constrain tool names, so this is OUR bound, chosen to cover
+ *  every naming convention servers actually use (`list_files`, `project.list`,
+ *  `github/create-issue`) while excluding whitespace, control characters, and
+ *  anything else that would make an opaque identifier ambiguous downstream.
+ *  Deliberately anchored + length-capped: Slice 2 mints these from a
+ *  third-party `tools/list`. */
+const MCP_TOOL_NAME_RE = /^[A-Za-z0-9_./-]{1,128}$/;
 const QUEUE_KIND_SET = new Set<string>(QUEUE_KINDS);
 const CONNECTOR_TRANSPORT_SET = new Set<string>(CONNECTOR_TRANSPORTS);
 const CONNECTOR_AUTH_METHOD_SET = new Set<string>(CONNECTOR_AUTH_METHODS);
@@ -1815,6 +1830,30 @@ const validateApiBindingShape = (
       }
       break;
     }
+    case 'mcp': {
+      // D-225 Slice 1 — `tool` is the binding's WHOLE call target, so a missing
+      // or empty one is not a cosmetic omission: it is an undispatchable op.
+      if (!isNonEmptyStr(binding.tool)) {
+        add('error', 'CATALOG_BINDING_INVALID', `${bPath}.tool`,
+          `mcp binding for '${opKey}' must declare a non-empty tool name`);
+      } else if (!MCP_TOOL_NAME_RE.test(binding.tool as string)) {
+        // Bound the shape rather than accept any string. The name goes out as
+        // the JSON-RPC `params.name` verbatim, and a generated pack (Slice 2)
+        // will mint these from a third-party `tools/list` — so the constraint
+        // exists to keep a hostile server from smuggling whitespace, control
+        // characters, or a display-name-shaped string into an identifier the
+        // rest of the system treats as opaque.
+        add('error', 'CATALOG_BINDING_INVALID', `${bPath}.tool`,
+          `mcp binding for '${opKey}' tool must be 1-128 chars of letters, digits, '_', '-', '.', or '/' `
+            + `(got ${JSON.stringify(binding.tool)})`);
+      }
+      // No path/method/endpoint gate: an mcp binding names no URL. The server
+      // endpoint is the CONNECTION record's (`config.endpoint` / the stdio
+      // launch spec), which is exactly the per-connection resolution a REST
+      // binding gets from `base_url` — so an mcp op is portable across two
+      // enrollments of the same server for the same reason a REST op is.
+      break;
+    }
     case 'webhook_subscription': {
       const profileIdPresent = hasOwn(binding, 'profile_id');
       const signatureSchemePresent = hasOwn(binding, 'signature_scheme');
@@ -2012,6 +2051,25 @@ const validateApiBindingRiskConsistency = (
         `operation '${opKey}' uses the write HTTP method ${method} but risk_tier is 'read' — confirm this is a dry-run/preview endpoint (genuinely read-only), not a mis-tiered write that would bypass approval`);
     }
   }
+
+  // ⚠ D-225 Slice 1 — `mcp` is DELIBERATELY absent, and the absence is the
+  // finding, not an omission.
+  //
+  // This function's premise was that every api binding carries a signal
+  // INDEPENDENT of the author's `risk_tier` to cross-check it against: a REST
+  // method, a GraphQL document's leading keyword. An MCP binding carries none.
+  // A tool NAME proves nothing (`run` could be either), and neither does the
+  // `tools/list` entry a Slice-2 generated pack is minted from — MCP's
+  // `annotations.readOnlyHint` is a value the SERVER self-reports, so trusting
+  // it would let a third party tier its own write tool as a read and skip the
+  // approval gate. A check built on it would be assurance-shaped and carry no
+  // assurance, which is worse than none.
+  //
+  // ⇒ On this transport the author's declaration is the SOLE risk signal, and
+  // that is a real difference in what publishing proves, not a gap to fill
+  // later. The consequence belongs to whoever mints declarations without an
+  // author: a generated pack must tier CONSERVATIVELY (never infer `read`),
+  // because nothing downstream will catch it if it is wrong.
 };
 
 /** Validate the API surface + run the two surface-dependent invariants
@@ -2024,11 +2082,26 @@ const validateApiSurface = (
 ): void => {
   if (!isApiTransport(api.transport)) {
     add('error', 'CATALOG_SURFACE_INVALID', 'surfaces.api.transport',
-      'surfaces.api.transport must be one of rest|graphql');
+      `surfaces.api.transport must be one of ${API_TRANSPORTS.join('|')}`);
   }
   const baseUrl = api.default_base_url;
   const baseUrlSet = isNonEmptyStr(baseUrl);
-  if (!baseUrlSet) {
+  // D-225 Slice 1 — an MCP surface has NO base URL. Its server address is the
+  // connection record's (`config.endpoint`, or the stdio launch spec), which is
+  // the same per-connection resolution a REST surface gets — there is simply no
+  // surface-level default to fall back to, because a path is never joined onto
+  // anything. Requiring a URL here would make every mcp author (and every
+  // Slice-2 generated pack) fabricate one that configures nothing, and a
+  // fabricated field is one a corpus learns to copy. So it is required to be
+  // EMPTY, not merely permitted to be: a present value would read as
+  // configuring the endpoint when nothing consults it.
+  if (api.transport === 'mcp') {
+    if (baseUrlSet) {
+      add('error', 'CATALOG_SURFACE_INVALID', 'surfaces.api.default_base_url',
+        `surfaces.api.default_base_url must be '' on an mcp surface — the server address comes from the `
+          + `connection record, and a value here configures nothing (got ${JSON.stringify(baseUrl)})`);
+    }
+  } else if (!baseUrlSet) {
     add('error', 'CATALOG_SURFACE_INVALID', 'surfaces.api.default_base_url',
       'surfaces.api.default_base_url must be a non-empty URL string');
   } else if (!isHttpsOrLocalBaseUrl(baseUrl)) {
@@ -2132,7 +2205,7 @@ const validateApiSurface = (
       }
       if (!isApiExecutionBindingKind(rawBinding.kind)) {
         add('error', 'CATALOG_BINDING_INVALID', `${bPath}.kind`,
-          `binding for '${opKey}' kind must be one of rest|graphql|webhook_subscription|queue_subscription|push_channel`);
+          `binding for '${opKey}' kind must be one of ${API_EXECUTION_BINDING_KINDS.join('|')}`);
         continue;
       }
       bindingKindByOp[opKey] = rawBinding.kind;
@@ -2534,10 +2607,15 @@ const validateProviderSurfaces = (
   operations: Record<string, unknown>,
   opKeys: Set<string>,
 ): void => {
-  const { api, connector, notification } = surfaces;
-  if (api === undefined && connector === undefined && notification === undefined) {
+  const { api, connector, notification, records } = surfaces;
+  for (const key of Object.keys(surfaces)) {
+    if (!['api', 'connector', 'notification', 'records'].includes(key)) {
+      add('error', 'CATALOG_SURFACE_INVALID', `surfaces.${key}`, `unknown provider surface '${key}'`);
+    }
+  }
+  if (api === undefined && connector === undefined && notification === undefined && records === undefined) {
     add('error', 'CATALOG_SURFACE_INVALID', 'surfaces',
-      'surfaces must declare at least one of api | connector | notification');
+      'surfaces must declare at least one of api | connector | notification | records');
     return;
   }
   if (api !== undefined) {
@@ -2571,6 +2649,50 @@ const validateProviderSurfaces = (
         && typeof notification.supports_rich_content !== 'boolean') {
         add('error', 'CATALOG_SURFACE_INVALID', 'surfaces.notification.supports_rich_content',
           'notification surface supports_rich_content must be a boolean');
+      }
+    }
+  }
+  if (records !== undefined) {
+    if (!isObjectRecord(records)) {
+      add('error', 'CATALOG_SURFACE_INVALID', 'surfaces.records', 'surfaces.records must be an object');
+    } else {
+      for (const key of Object.keys(records)) {
+        if (key !== 'executes' && key !== 'schema') {
+          add('error', 'CATALOG_SURFACE_INVALID', `surfaces.records.${key}`, `unknown Records surface key '${key}'`);
+        }
+      }
+      if (!isObjectRecord(records.executes)) {
+        add('error', 'CATALOG_SURFACE_INVALID', 'surfaces.records.executes', 'Records executes must be an object');
+      } else {
+        for (const opKey of opKeys) {
+          const raw = records.executes[opKey];
+          if (!isObjectRecord(raw) || raw.kind !== 'core.records' || !isRecordsAction(raw.action)) {
+            add('error', 'CATALOG_BINDING_INVALID', `surfaces.records.executes.${opKey}`, `Records operation '${opKey}' needs a closed core.records binding`);
+          }
+        }
+        for (const opKey of Object.keys(records.executes)) {
+          if (!opKeys.has(opKey)) {
+            add('error', 'CATALOG_BINDING_INVALID', `surfaces.records.executes.${opKey}`, `Records binding '${opKey}' has no declared operation`);
+          }
+        }
+      }
+      if (!isObjectRecord(records.schema) || records.schema.decimal_scale !== 4 || !isObjectRecord(records.schema.entities)) {
+        add('error', 'CATALOG_SURFACE_INVALID', 'surfaces.records.schema', 'Records surface needs the fixed-scale entity schema snapshot');
+      } else {
+        for (const [entityKey, entity] of Object.entries(records.schema.entities)) {
+          if (!isObjectRecord(entity) || entity.kind !== entityKey || !Array.isArray(entity.fields)) {
+            add('error', 'CATALOG_SURFACE_INVALID', `surfaces.records.schema.entities.${entityKey}`, 'malformed Records entity snapshot');
+            continue;
+          }
+          for (const [idx, rawField] of entity.fields.entries()) {
+            if (!isObjectRecord(rawField)
+              || typeof rawField.key !== 'string'
+              || typeof rawField.slot !== 'string'
+              || (rawField.slot !== 'pk' && recordsSlotKind(rawField.slot) === undefined)) {
+              add('error', 'CATALOG_SURFACE_INVALID', `surfaces.records.schema.entities.${entityKey}.fields[${idx}]`, 'malformed Records field snapshot');
+            }
+          }
+        }
       }
     }
   }
@@ -3314,7 +3436,13 @@ const validateCategoryConsistency = (m: Record<string, unknown>, add: AddFn): vo
   const isKernel = isKernelManifest(m);
   const isService = isServiceManifest(m);
   const isConnection = m.kind === 'connection';
-  if (!isKernel && !isService && !isConnection && (category === 'data' || category === 'action') && !hasHttp && !hasDom && !hasMcp && !hasChat && !hasTriggerInOutput) {
+  const surfaces = own(m, 'surfaces');
+  const isRecordsCatalog = isCatalogForm(m)
+    && surfaces !== null
+    && typeof surfaces === 'object'
+    && !Array.isArray(surfaces)
+    && Object.prototype.hasOwnProperty.call(surfaces, 'records');
+  if (!isKernel && !isService && !isConnection && !isRecordsCatalog && (category === 'data' || category === 'action') && !hasHttp && !hasDom && !hasMcp && !hasChat && !hasTriggerInOutput) {
     add('error', 'executor_ambiguous', 'input',
       'cannot determine executor — input must contain url (HTTP), dom.* (DOM), mcp.* (MCP), or chat.* (Chat) keys, or output must contain trigger patterns (DOM)');
   }

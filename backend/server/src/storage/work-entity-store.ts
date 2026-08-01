@@ -809,6 +809,10 @@ export interface WorkEntityListQuery {
    *  scope wins; admin tools can read a disabled Source's rows by
    *  scoping to it directly). */
   include_disabled?: boolean;
+  /** Task/project-only exact parent scope. Used by recipe-callable native
+   *  reads and the federated-project Source so a project board never has to
+   *  materialize every private task and filter after the fact. */
+  parent_project_id?: string;
   limit?: number;
   offset?: number;
   /** Booking-only search. Applied by SQL before pagination. */
@@ -855,6 +859,7 @@ const normalizeListQuery = (q?: WorkEntityListQuery): Required<WorkEntityListQue
     source_id: q?.source_id ?? '',
     include_deleted: q?.include_deleted ?? false,
     include_disabled: q?.include_disabled ?? false,
+    parent_project_id: q?.parent_project_id ?? '',
     limit,
     offset,
     search,
@@ -867,6 +872,7 @@ const escapeLike = (value: string): string => value.replace(/[\\%_]/g, '\\$&');
 const buildListWhere = (
   q: Required<WorkEntityListQuery>,
   bookingFilters = false,
+  parentProjectFilter = false,
 ): { sql: string; params: unknown[] } => {
   const clauses: string[] = [];
   const params: unknown[] = [];
@@ -899,6 +905,16 @@ const buildListWhere = (
   }
   if (!q.include_deleted) {
     clauses.push('deleted_at IS NULL');
+  }
+  if (q.parent_project_id.length > 0) {
+    if (!parentProjectFilter) {
+      throw new WorkEntityValidationError(
+        'parent_project_id is a task/project-only filter',
+        'parent_project_id',
+      );
+    }
+    clauses.push('parent_project_id = ?');
+    params.push(q.parent_project_id);
   }
   if (bookingFilters) {
     if (q.search.length > 0) {
@@ -2340,7 +2356,7 @@ export const createWorkEntityStore = (
 
   const listTasks: WorkEntityStore['listTasks'] = (q) => {
     const norm = normalizeListQuery(q);
-    const where = buildListWhere(norm);
+    const where = buildListWhere(norm, false, true);
     const rows = db
       .prepare(
         `SELECT * FROM ${TASK_TABLE} ${where.sql}
@@ -2375,7 +2391,7 @@ export const createWorkEntityStore = (
 
   const countTasks: WorkEntityStore['countTasks'] = (q) => {
     const norm = normalizeListQuery(q);
-    const where = buildListWhere(norm);
+    const where = buildListWhere(norm, false, true);
     const row = db
       .prepare(`SELECT COUNT(*) AS n FROM ${TASK_TABLE} ${where.sql}`)
       .get(...where.params) as { n: number };
@@ -3138,7 +3154,7 @@ export const createWorkEntityStore = (
 
   const listProjects: WorkEntityStore['listProjects'] = (q) => {
     const norm = normalizeListQuery(q);
-    const where = buildListWhere(norm);
+    const where = buildListWhere(norm, false, true);
     const rows = db
       .prepare(
         `SELECT * FROM ${PROJECT_TABLE} ${where.sql}
@@ -3173,7 +3189,7 @@ export const createWorkEntityStore = (
 
   const countProjects: WorkEntityStore['countProjects'] = (q) => {
     const norm = normalizeListQuery(q);
-    const where = buildListWhere(norm);
+    const where = buildListWhere(norm, false, true);
     const row = db
       .prepare(`SELECT COUNT(*) AS n FROM ${PROJECT_TABLE} ${where.sql}`)
       .get(...where.params) as { n: number };

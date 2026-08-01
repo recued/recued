@@ -99,9 +99,9 @@
       "read_recipe_session_identity_source": "config.session_id",
       "normalized_operations_sha256": "0972c2b0c33ecbc4cd2963c5582002d50724a98871fd522f1ce88686c6bb62b5",
       "entities_sha256": "8ea6242f77dd78e11c08603f0eb10b85b3bd04bb72d2cfed0951d3fcc0035a30",
-      "recipe_contents_sha256": "91733fb090fe7b9eaa330e219a0c4e719d6a69fe101a9c565adfbd435c1adf97",
+      "recipe_contents_sha256": "20280f5cbc9e908a19bbff83168d320671054d9bdb1fd698260e0003021a2aa7",
       "recipes_field_sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945",
-      "recipe_files_sha256": "afebafb2ce30cce5a29ebae8b0130579ab02efacf759c02be80424479a6f5cc7"
+      "recipe_files_sha256": "f54ee566f0495c9f995b2b976628f43d524140f77af1e37964772215328829f9"
     },
     "recipes": {
       "baseline_count": 4,
@@ -120,18 +120,18 @@
         "refund-order-klarna"
       ],
       "versions": {
-        "create-payment-session-klarna": 1,
+        "create-payment-session-klarna": 2,
         "payment-session-brief-klarna": 2,
-        "update-payment-session-cart-klarna": 2,
-        "create-order-from-authorization-klarna": 2,
+        "update-payment-session-cart-klarna": 3,
+        "create-order-from-authorization-klarna": 3,
         "order-operations-brief-klarna": 1,
         "payout-reconciliation-brief-klarna": 1,
         "disputes-queue-digest-klarna": 1,
         "create-hosted-payment-page-klarna": 1,
-        "capture-order-klarna": 1,
-        "refund-order-klarna": 1
+        "capture-order-klarna": 2,
+        "refund-order-klarna": 2
       },
-      "all_recipe_files_sha256": "5990a3d56a0c5c85afc69ddc5ce11cc6b57ed2ef1197471379e3cbc23b5e0732"
+      "all_recipe_files_sha256": "3b0173eb2b05a529898f4bdec6984fda8c7acc08dbfa7e7a40b49a81086b9b2f"
     },
     "source_pin": {
       "omitted": true,

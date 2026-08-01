@@ -13,9 +13,9 @@
  *  path work (loopback is a secure context), but a load from ANOTHER device
  *  over `http://<lan-ip>/` is still insecure and cannot pair. Rather than
  *  crash, the entry (`webclient-main.ts#main`) reads the environment through
- *  `readSecureContextEnv` and, if `resolveInsecureContextMessage` returns a
- *  message, upgrades the boot splash with an actionable explanation and stops
- *  (the DD#2 pattern — init failures upgrade the splash, they do not throw).
+ *  `readSecureContextEnv` and, if `resolveSecureContextIssue` returns an issue,
+ *  mounts the guided secure-access handoff and stops (the DD#2 pattern — init
+ *  failures upgrade the splash, they do not throw).
  *
  *  Kept PURE + dependency-free (no DOM, no `@recued/*` imports) so it obeys
  *  the webclient role-boundary lint (DD#3) and is unit-testable in plain node
@@ -46,6 +46,16 @@ export interface SecureContextEnv {
   hasSubtleCrypto: boolean;
 }
 
+export type SecureContextIssue =
+  | {
+    readonly kind: 'insecure_context';
+    readonly message: typeof INSECURE_CONTEXT_SPLASH_MESSAGE;
+  }
+  | {
+    readonly kind: 'webcrypto_missing';
+    readonly message: typeof WEBCRYPTO_MISSING_SPLASH_MESSAGE;
+  };
+
 /** Read the live secure-context signals off `globalThis`. A thin seam so the
  *  resolver can be exercised for both branches without a real browser — the
  *  caller in `main()` uses this; tests pass a `SecureContextEnv` directly. */
@@ -58,15 +68,30 @@ export const readSecureContextEnv = (): SecureContextEnv => ({
     ?.subtle,
 });
 
-/** Decide whether boot must abort because Web Crypto is unavailable. Returns
- *  the splash message to show, or `null` when the environment can run the
- *  webclient. Pure — the caller supplies the environment. The insecure-context
- *  message wins when both signals are bad (fixing the context restores
- *  `crypto.subtle` too), so it is the more actionable of the two. */
-export const resolveInsecureContextMessage = (
+/** Decide whether boot must pause because Web Crypto is unavailable. The
+ * discriminant lets the boot surface distinguish a transport problem from an
+ * obsolete browser without parsing user-facing copy. The insecure-context
+ * issue wins when both signals are bad because fixing the origin normally
+ * restores `crypto.subtle` too. */
+export const resolveSecureContextIssue = (
   env: SecureContextEnv,
-): string | null => {
-  if (!env.isSecureContext) return INSECURE_CONTEXT_SPLASH_MESSAGE;
-  if (!env.hasSubtleCrypto) return WEBCRYPTO_MISSING_SPLASH_MESSAGE;
+): SecureContextIssue | null => {
+  if (!env.isSecureContext) {
+    return {
+      kind: 'insecure_context',
+      message: INSECURE_CONTEXT_SPLASH_MESSAGE,
+    };
+  }
+  if (!env.hasSubtleCrypto) {
+    return {
+      kind: 'webcrypto_missing',
+      message: WEBCRYPTO_MISSING_SPLASH_MESSAGE,
+    };
+  }
   return null;
 };
+
+/** Compatibility seam for callers that only need fallback splash copy. */
+export const resolveInsecureContextMessage = (
+  env: SecureContextEnv,
+): string | null => resolveSecureContextIssue(env)?.message ?? null;

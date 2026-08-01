@@ -49,6 +49,7 @@ import {
   type EnrollDeps as FileEnrollDeps,
 } from './file/enroll.js';
 import {
+  handleCalendarAttachGraphGrant,
   handleCalendarEnrollOAuth,
   handleCalendarEnrollBasic,
   handleCalendarList as handleCalendarEnrollList,
@@ -648,7 +649,7 @@ export const handleCollectionEnrollOAuth = async (
   if (!deps.enrollOAuth) {
     throw new RpcError(
       'not_configured',
-      'collection.mail.enrollOAuth: server has no OAuth client configured — set RECUED_GMAIL_CLIENT_ID / RECUED_GRAPH_CLIENT_ID',
+      'collection.mail.enrollOAuth: server has no OAuth client configured — add your Google or Microsoft OAuth app under Connections → Mail',
       503,
     );
   }
@@ -805,6 +806,7 @@ export type CollectionMethods =
   | 'collection.file.resync'
   | 'collection.listInstances'
   | 'collection.calendar.enrollOAuth'
+  | 'collection.calendar.attachGraphGrant'
   | 'collection.calendar.enrollBasic'
   | 'collection.calendar.list'
   | 'collection.calendar.update'
@@ -902,6 +904,7 @@ export const makeCollectionHandlers = (
       'collection.file.resync',
       'collection.listInstances',
       'collection.calendar.enrollOAuth',
+      'collection.calendar.attachGraphGrant',
       'collection.calendar.enrollBasic',
       'collection.calendar.list',
       'collection.calendar.update',
@@ -964,6 +967,11 @@ export const makeCollectionHandlers = (
         handleListInstances(requireFileEnroll(deps), args as Parameters<typeof handleListInstances>[1]),
       'collection.calendar.enrollOAuth': async (args) =>
         handleCalendarEnrollOAuth(requireCalendarEnroll(deps), args as Parameters<typeof handleCalendarEnrollOAuth>[1]),
+      'collection.calendar.attachGraphGrant': async (args) =>
+        handleCalendarAttachGraphGrant(
+          requireCalendarEnroll(deps),
+          args as Parameters<typeof handleCalendarAttachGraphGrant>[1],
+        ),
       'collection.calendar.enrollBasic': async (args) =>
         handleCalendarEnrollBasic(requireCalendarEnroll(deps), args as Parameters<typeof handleCalendarEnrollBasic>[1]),
       'collection.calendar.list': async () =>

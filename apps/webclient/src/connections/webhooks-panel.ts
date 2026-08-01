@@ -179,6 +179,9 @@ export interface WebhooksPanelOptions {
 
 export interface WebhooksPanelMount {
   refresh(): Promise<void>;
+  whenLoaded(): Promise<void>;
+  getLoadError(): string | null;
+  hasInFlightWork(): boolean;
   dispose(): void;
 }
 
@@ -339,6 +342,7 @@ export const mountWebhooksPanel = (
 
   let disposed = false;
   let busy = false;
+  let mutationInFlight = false;
   let refreshInFlight: Promise<void> | null = null;
   let showCreate = false;
   let credentialIngressId: string | null = null;
@@ -411,6 +415,7 @@ export const mountWebhooksPanel = (
   const mutate = async (operation: () => Promise<unknown>): Promise<void> => {
     if (busy || disposed) return;
     busy = true;
+    mutationInFlight = true;
     error = null;
     render();
     try {
@@ -436,6 +441,7 @@ export const mountWebhooksPanel = (
       }
     }
     busy = false;
+    mutationInFlight = false;
     if (!disposed) render();
   };
 
@@ -1884,6 +1890,9 @@ export const mountWebhooksPanel = (
   void refresh();
   return {
     refresh,
+    whenLoaded: () => refreshInFlight ?? Promise.resolve(),
+    getLoadError: () => error,
+    hasInFlightWork: () => mutationInFlight,
     dispose() {
       if (disposed) return;
       disposed = true;

@@ -1,7 +1,12 @@
 // Runtime constants
 export { OPS, UNARY_OPS } from './conditions.js';
 export { NS } from './namespaces.js';
-export { ERR, ERROR_MESSAGES, defaultErrorMessage } from './errors.js';
+export {
+  ERR, ERROR_MESSAGES, defaultErrorMessage,
+  ERROR_ATTRIBUTION, OWNER_ATTRIBUTED_ERROR_CODES,
+  isChoiceAttributableFailure, isEnvironmentOnlyFailure,
+} from './errors.js';
+export type { ErrorAttribution } from './errors.js';
 export { FORMAT_HINTS, TARGET_SCOPE, ESCAPE_HINTS, isRefHint } from './values.js';
 export { MIN_TTL } from './vault.js';
 
@@ -53,11 +58,44 @@ export type {
 
 // Types — recipe
 export type {
-  RecipeMetadata, VariableDefault, OutputSection, OutputType, RecipeOutput,
+  RecipeMetadata, VariableDefault, DataOutputSection, FilterOutputSection,
+  RecordFieldsOutputSection, ResolvedRecordField, ResolvedRecordFieldsDescriptor,
+  TableOutputSection, ResolvedRecordColumn, ResolvedRecordColumnsDescriptor,
+  TableEditSpec, ResolvedTableEditDescriptor, OutputTableEditInvocation,
+  TableAppendedColumn, TableColumnControl,
+  OutputSection, OutputType, RecipeOutput, ResolvedFilterDescriptor,
+  ResolvedOutputSection, OutputFilterInvocation, RecipeInvocation,
   RecipeOutputAction, RecipeDefinition,
   RecipeEventTrigger, OnFailureBinding,
+  UndeclaredConfigOrigin, UndeclaredConfigArgument, UndeclaredConfigArgumentDetails,
 } from './recipe.js';
-export { ALLOW_UPGRADE_VARIABLE, OUTPUT_TYPES, recipeOutputSections } from './recipe.js';
+export {
+  ALLOW_UPGRADE_VARIABLE,
+  OUTPUT_TYPES,
+  TABLE_COLUMN_CONTROLS,
+  tableColumnInputType,
+  recipeOutputSections,
+  FILTER_CONFIG_KEY_NOT_ALLOWED,
+  FILTER_INVOCATION_STALE,
+  FILTER_INVOCATION_FORBIDDEN,
+} from './recipe.js';
+export {
+  UNDECLARED_CONFIG_ARGUMENT,
+  undeclaredConfigArguments,
+  undeclaredConfigArgumentMessage,
+} from './recipe.js';
+export {
+  entityFieldsFromMetaFields,
+  entityFieldsFromRecordsSnapshot,
+  isResolvedRecordFieldsDescriptor,
+  isResolvedRecordColumnsDescriptor,
+  recordFieldLabel,
+  recordFieldsSource,
+  resolveRecordFields,
+  resolveRecordColumns,
+  NUMERIC_FIELD_KINDS,
+} from './record-fields.js';
+export type { EntityFieldDeclaration } from './record-fields.js';
 
 
 // D-207 3d·6d — the general reception form/recipe pair binding (split out of
@@ -123,6 +161,31 @@ export type {
   PaidDocumentDirectCheckoutClaimConfigurationResolution,
   PaidDocumentFulfillmentTemplateState,
 } from './paid-document-direct-checkout-config.js';
+
+// D-220 Slice A1 — a recipe's declared contract with the intake form it is
+// paired to. The names are read by static path, so they are a contract; this
+// makes the claim machine-checkable at authoring and at wiring.
+export {
+  RECIPE_FORM_FIELD_NOTE_MAX,
+  RECIPE_FORM_FIELDS_COUNT_MAX,
+  FORM_FIELD_VALUE_SHAPE,
+  validateRecipeFormFields,
+  collectFormValueRefs,
+  collectWholeFormRecordRefs,
+  evaluateFormFieldContract,
+  formResponseTriggerFormScope,
+  recipeFormResponseScope,
+} from './recipe-form-fields.js';
+export type {
+  RecipeFormFieldRequirement,
+  RecipeFormFieldsValidationCode,
+  RecipeFormFieldsValidationFailure,
+  FormFieldContractMismatchCode,
+  FormFieldContractMismatch,
+  FormFieldContractVerdict,
+  FormFieldContractFormView,
+  FormResponseTriggerFormScope,
+} from './recipe-form-fields.js';
 
 // D-200 Slices 6g.3/6g.10/6g.11 — paired-client authoring/readiness wire shapes.
 // Bind names only current local sources and an observed row token; core derives
@@ -757,7 +820,7 @@ export type {
   RegenPolicy, RegenInputInvariant, RegenDeterminism, RegenTrigger,
 } from './ingredient.js';
 export {
-  isLocalIngredient, isKernelManifest, isServiceManifest, KERNEL_AUTHOR,
+  isLocalIngredient, isKernelManifest, isServiceManifest, KERNEL_AUTHOR, GENERATED_PACK_PUBLISHER,
   INGREDIENT_KINDS, KIND_ALLOWED_TIERS,
   // D-203 — canonical RiskTier ladder / rank / label (single source of truth)
   RISK_TIERS, RISK_TIER_SET, isRiskTier, RISK_TIER_RANK, RISK_TIER_LABELS, riskTierLabel,
@@ -765,6 +828,25 @@ export {
   REGEN_TRIGGERS, REGEN_DETERMINISMS, REGEN_INPUT_INVARIANTS,
 } from './ingredient.js';
 export type { ValueHintType, ValueHint } from './value-hint.js';
+export { VALUE_HINT_KEYS } from './value-hint.js';
+// D-223 § 7.2 — the seam where "may this publisher declare X" is answered.
+export {
+  FIRST_PARTY_PUBLISHER,
+  publisherMayDeclare,
+  reservedCapabilityMessage,
+  type ReservedPackCapability,
+} from './publisher-trust.js';
+// D-223 — connection hints: a publisher may pre-fill a visible, editable field.
+export {
+  APPLICABLE_GUIDE_FIELD_KEYS,
+  BULK_PACK_MAX_CONNECTION_HINTS,
+  HTTPS_GUIDE_FIELD_KEYS,
+  RESERVED_CONNECTION_REQUIREMENT_CELLS,
+  canApplyConnectionSetupGuideSuggestion,
+  isPrivateHost,
+  validateConnectionHintShape,
+  type ConnectionHint,
+} from './connection-hints.js';
 
 // D-165 P0 — provider-catalog seed (minimal): catalog-form detection +
 // per-connection operation-profile policy resolution + gateway audit shape.
@@ -789,12 +871,12 @@ export type {
   ProviderNotificationSurface,
   AuthSpec, OAuth2Spec, OAuth2TokenType, ApiKeySpec, ApiKeySlot,
   SignedRequestSpec, NoAuthSpec, SchemaSourceRef,
-  ApiExecutionBinding, RestExecutionBinding, RestResponseCaptureSpec, RestResponseJsonSpec, RestRequestJsonSpec, GraphQLExecutionBinding,
+  ApiExecutionBinding, RestExecutionBinding, RestResponseCaptureSpec, RestResponseJsonSpec, RestRequestJsonSpec, GraphQLExecutionBinding, McpExecutionBinding,
   WebhookExecutionBinding, QueueSubscriptionBinding, PushChannelBinding,
   ConnectorRuntimeSpec, ConnectorLifecycleSpec, ConnectorExecutionBinding,
   ConnectorMethodBinding, CliArgvTemplateEntry, CliInvocationCwdSpec, CliMethodBinding, CliInputMaterializeSpec, CliProgressSpec, CliOutputCaptureSpec, CliDetachedMarkerCompletion,
   CliDetachedCancelSpec, CliDetachedJobSpec, ConnectorEventSpec,
-  ApiTransport, AuthKind, OAuth2Flow, CallbackUrlStrategy, OAuthScopeSeparator,
+  ApiTransport, McpPackReviewRow, AuthKind, OAuth2Flow, CallbackUrlStrategy, OAuthScopeSeparator,
   RestMethod, GraphQLOperationType, QueueKind, ApiExecutionBindingKind,
   ConnectorTransport, ConnectorWireProtocol, ConnectorAuthMethod,
   ReconnectPolicy, ConnectorExecutionBindingKind, CliStdinHandling,
@@ -1044,7 +1126,13 @@ export type {
   SellerStripeSynchronizeResponse,
   SellerAcknowledgeLlmGatewayPaidRequest,
   SellerAcknowledgeLlmGatewayPaidResponse,
+  SellerCustomerIssueOutcome,
 } from './seller.js';
+// The reusable convergent-write primitive the seller pack's paired procedural
+// recipes are built on (extracted 2026-07-27). Adopt this rather than re-typing
+// `'created' | 'extended'` at a new site.
+export type { ConvergentWriteResult } from './convergent-write.js';
+export { CONVERGENT_WRITE_RESULTS } from './convergent-write.js';
 export {
   SELLER_OFFER_KINDS,
   SELLER_OFFER_ID_MAX_LENGTH,
@@ -1279,6 +1367,8 @@ export {
   collectionGrantEntry,
   topicGrantEntry,
   opGrantEntry,
+  PRIMITIVE_GRANT_PREFIX,
+  primitiveGrantEntry,
   classifyGrantEntry,
   parseGrantEntry,
   isOpGrantEntry,
@@ -1294,6 +1384,7 @@ export {
   isGrantedReadAdmissible,
   OWNER_DEFAULT_ONLY_GRANT_ENTRIES,
   isOwnerDefaultOnlyEntry,
+  isGeneratedPackOpEntry,
   ownerOnlyAdjustedAuthorDefault,
 } from './grant-resolve.js';
 // D-177 P5a — batched approval (N.10): the channel-resolved origin unit, the
@@ -1896,6 +1987,7 @@ export type {
   TimelineRequest,
   TimelineEntry,
   TimelineResponse,
+  TimelineRollup,
   TimelineCursor,
   MirrorSearchKind,
   MirrorSearchRequest,
@@ -2196,6 +2288,10 @@ export {
   OAUTH2_REFRESH_LEAD_MS,
   MCP_CLIENT_IDLE_TIMEOUT_MS,
   ENRICHMENT_TRUST_MIN_DEFAULT,
+  CONNECTION_CREDENTIAL_ROTATION_ATTEMPT_ID_REGEX,
+  CONNECTION_CREDENTIAL_SAFE_STOP_TOKEN_REGEX,
+  connectionCredentialRejectionCorrection,
+  connectionCredentialRejectionTriage,
   // D-177 P2b — kernel MCP-tool dispatch surfaces (chat Tier-3 routing).
   CONNECTION_MCP_READ_SLUG,
   CONNECTION_MCP_WRITE_SLUG,
@@ -2210,6 +2306,20 @@ export type {
   HeaderAuthIssue,
   ConnectionRecord,
   ConnectionHealth,
+  ConnectionCredentialVerification,
+  ConnectionCredentialCorrectionFieldKey,
+  ConnectionCredentialRejectionCorrection,
+  ConnectionCredentialRejectionTriage,
+  ConnectionCredentialRejectionTriageFieldKey,
+  ConnectionCredentialRejectionResolution,
+  ConnectionCredentialRejectionTriageStage,
+  ConnectionCredentialRotationFailureReason,
+  ConnectionCredentialRotationOutcome,
+  ConnectionCredentialRotationActivity,
+  ConnectionCredentialRotationSafeStop,
+  ConnectionCredentialRotationSafeStopSummary,
+  ConnectionCredentialPostSafeStopVerificationSummary,
+  ConnectionCredentialRotationSafeStopAcknowledgement,
   ConnectionView,
   ConnectionStore,
 } from './connection.js';
@@ -2219,6 +2329,14 @@ export {
   // Generic auth→bearer-token seam — the single place auth-type knowledge
   // lives; vendor reconcilers call this instead of pattern-matching auth.type.
   resolveBearerAccessToken,
+  // Shared credential-destination gate used by browser preflight and the
+  // authoritative server enrollment/update/OAuth-start paths.
+  isValidOAuthEndpointUrl,
+  // D-218 — the CLOSED auth-type vocabulary, compile-checked against the
+  // `ConnectionAuth` union in both directions. Every consumer that used to keep
+  // its own copy (the descriptor list, the enrollment form, the handler's
+  // enrollable set) now derives from this one.
+  CONNECTION_AUTH_TYPES,
   // D-192 CORE #6 make-live — the same seam for the messenger SEND path, so the
   // enroll gate and every generic outbound path agree on what a chat-transport
   // credential is. Replaces two hand-rolled `auth.type !== 'bearer'` checks that
@@ -2242,7 +2360,11 @@ export {
   SUBRESOURCE_PATH_MAX_LEN,
   canonicalizeSubresourcePath,
 } from './connection.js';
-export type { ConnectionRow, ConnectionDataPurgeSummary } from './connection.js';
+export type {
+  ConnectionRow,
+  ConnectionDataPurgeSummary,
+  ConnectionAuthType,
+} from './connection.js';
 
 // granted-scope coverage — pure helpers bridging pack `required_scopes` to a
 // connection's vendor-granted `granted_scopes` (pack-readiness reuse-vs-reauth).
@@ -2908,7 +3030,7 @@ export type {
 } from './supervision.js';
 
 // D-179 P1 — dishes (execution instances); P3 — dish groups.
-export type { Dish, DishGroup } from './dish.js';
+export type { Dish, DishGroup, DishLastRun, DishRunRow } from './dish.js';
 export {
   DISH_ID_PREFIX,
   DISH_GROUP_ID_PREFIX,
@@ -2983,8 +3105,13 @@ export {
   recipePiiPostureHasContent,
 } from './recipe-pii-trace.js';
 
-// D-119 follow-on — typed `context.*` field shapes.
-export type { ContextServer } from './context.js';
+// D-119 follow-on + D-221 prerequisite — typed `context.*` field shapes and
+// the trusted execution-source → recipe-caller projection.
+export {
+  contextCallerFromExecutionSource,
+  installContextCaller,
+} from './context.js';
+export type { ContextCaller, ContextServer } from './context.js';
 
 // D-120 Phase 4.5 — `context.recipe.*` durability shape.
 export type { ContextRecipe } from './context.js';
@@ -3807,6 +3934,11 @@ export {
   APPROVAL_LINK_DEFAULT_SUCCESS_MESSAGE,
   APPROVAL_LINK_ON_APPROVE_ACTIONS,
   APPROVAL_LINK_ON_APPROVE_ACTION_SET,
+  APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS,
+  APPROVAL_LINK_WRITE_ONLY_REFUSAL_CODES,
+  APPROVAL_LINK_WRITE_ONLY_REFUSAL_CODE_SET,
+  APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTION_SET,
+  APPROVAL_LINK_DEFAULT_ON_APPROVE_ACTION,
   APPROVAL_LINK_PROCESSING_OUTCOMES,
   APPROVAL_LINK_PROCESSING_OUTCOME_SET,
   validateApprovalLinkConfig,
@@ -3817,6 +3949,7 @@ export type {
   ApprovalLinkConfig,
   ApprovalLinkOnActionConfig,
   ApprovalLinkOnApproveAction,
+  ApprovalLinkSupportedOnApproveAction,
   ApprovalLinkProcessingOutcome,
   ApprovalLinkConfigValidationCode,
   ApprovalLinkConfigValidationFailure,
@@ -4216,6 +4349,7 @@ export type {
 // D-148 § A.4 — Thin Webclient contract.
 export {
   WEBCLIENT_LOCAL_STORAGE_FIELDS,
+  WEBCLIENT_PROFILE_STORAGE_FIELDS,
   WEBCLIENT_SNAPSHOT_SURFACES,
   WEBCLIENT_FORBIDDEN_IMPORT_PREFIXES,
   WEBCLIENT_INDEXED_DB_NAME,
@@ -4229,6 +4363,7 @@ export {
 export type {
   WebclientLocalStorage,
   WebclientLocalKey,
+  WebclientServerProfile,
   WebclientTokenRecord,
   WebclientPairMetadata,
   WebclientCertPinState,
@@ -4345,6 +4480,7 @@ export {
   GOOGLE_AUTHORIZE_URL,
   MICROSOFT_AUTHORIZE_URL,
   MICROSOFT_TOKEN_URL,
+  GOOGLE_TOKEN_URL,
   GMAIL_READONLY_SCOPE,
   GMAIL_SEND_SCOPE,
   GOOGLE_USERINFO_EMAIL_SCOPE,
@@ -5807,6 +5943,13 @@ export * from './execution-control.js';
 // Nothing here gates or permits; `outcome.report` is chat-only and is
 // deliberately NOT a kernel op — no OPS entry, no contract toggle, no grant.
 export * from './execution-case.js';
+// D-221 — installed/runtime contract for the fixed, core-owned Records
+// substrate. Pack authoring remains the existing composition schema.
+export * from './records.js';
+// D-226 — the shared aggregation evaluator (one implementation, two callers).
+export * from './records-aggregate.js';
+// D-226 — the declared reverse read (roots + select on the entity).
+export * from './records-root-projection.js';
 // D-172 resumable uploads — webclient binary-WS transport contract (chunk-frame
 // codec + ack shape + the `upload.{create,probe,finalize,delete}` rpc shapes).
 export * from './upload-frame.js';

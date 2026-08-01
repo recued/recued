@@ -194,7 +194,13 @@ describe('startPreListenerRuntime', () => {
       backgroundServices: options.backgroundServices,
       getExposureMachine: options.getExposureMachine,
       getWsHandleForLockout: options.getWsHandleForLockout,
-      env: options.env,
+      // NO `env` — the ingress composer never read it. It was the injection
+      // point for the retired v1 `RECUED_MCP_HTTP_TOKEN` bearer, and the
+      // forwarding outlived its only consumer (removed 2026-07-28). The
+      // client-security assertion below still pins `env`, because THAT path
+      // genuinely reads it (→ cert stack → `RECUED_PRO_ENTITLEMENT_*`), so
+      // these two assertions together are what keep the live seam and the dead
+      // one from being confused again.
       // R26.2 Delta 2 — apex get/set on the exposure rpc deps.
       runtimeConfig: options.runtimeConfig,
     });

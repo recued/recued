@@ -198,6 +198,11 @@ describe('D-169 P2 Slice 3 — renderAskCard', () => {
         '  to: sam@example.test',
         '  subject: Renewal update',
         '  body: The revised proposal is ready.',
+        '  metadata.timeline: asap',
+        '  metadata.budget_range: under_10k',
+        '  metadata.reception_form_submission_id: bfcf3d78-5994-449f-be58-0b911f96e11c',
+        '  metadata.reception_endpoint_id: LRVZ6pi-cSiTnHoUS6Uq3Q',
+        '  metadata.form_definition_id: fd_foundation_client_inquiry_v1',
         '  metadata.internal_id: opaque-1',
         '',
         'Approve?',
@@ -215,7 +220,13 @@ describe('D-169 P2 Slice 3 — renderAskCard', () => {
     expect(renderedText).toContain('Approve write action');
     expect(renderedText).toContain('sam@example.test');
     expect(renderedText).toContain('Renewal update');
-    expect(renderedText).toContain('Internal id');
+    expect(renderedText).not.toContain('Timeline');
+    expect(renderedText).not.toContain('Budget range');
+    expect(renderedText).not.toContain('Reception form submission id');
+    expect(renderedText).not.toContain('Reception endpoint id');
+    expect(renderedText).not.toContain('Form definition id');
+    expect(renderedText).not.toContain('Internal id');
+    expect(renderedText).not.toContain('bfcf3d78-5994-449f-be58-0b911f96e11c');
   });
 
   it('projects generated write asks that do not name a connection target', () => {

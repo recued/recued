@@ -13,9 +13,13 @@
 
 import type { RpcMethodSpec } from './types.js';
 import type { BridgeCapabilityProfile } from '../bridge.js';
-import type { Dish, DishGroup } from '../dish.js';
+import type { Dish, DishGroup, DishLastRun, DishRunRow } from '../dish.js';
 import type { CacheEntry } from '../cache.js';
-import type { RecipeDefinition } from '../recipe.js';
+import type {
+  RecipeDefinition,
+  RecipeInvocation,
+  ResolvedOutputSection,
+} from '../recipe.js';
 import type { RecipeRunnabilityEntry } from '../recipe-runnability.js';
 import type { RecipePiiDisclosureEntry } from '../recipe-pii-trace.js';
 import type { InstancePrefs } from '../prefs.js';
@@ -35,6 +39,7 @@ import type {
   MirrorSearchResponse,
   TimelineRequest,
   TimelineResponse,
+  TimelineRollup,
 } from '../mcp.js';
 import type {
   EngagementsResolverArgs,
@@ -62,6 +67,29 @@ import type {
   FormResponseExportRpcRequest,
   FormResponseExportRpcResponse,
 } from '../form-response.js';
+import type {
+  RecordsExportResponse,
+  RecordsExportRequest,
+  RecordsGlobalQuotaSetRequest,
+  RecordsGlobalQuotaSnapshot,
+  RecordsKindSummary,
+  RecordsNamespaceView,
+  RecordsOutboxListRequest,
+  RecordsOutboxOverview,
+  RecordsOutboxRetireRequest,
+  RecordsOwnerDeleteRequest,
+  RecordsOwnerGetResponse,
+  RecordsOwnerGetRequest,
+  RecordsOwnerSearchRequest,
+  RecordsPackRef,
+  RecordsPurgeRequest,
+  RecordsQuotaSetRequest,
+  RecordsQuotaSnapshot,
+  RecordsRetentionPolicy,
+  RecordsRetentionRunRequest,
+  RecordsRetentionSetRequest,
+  RecordsSearchResult,
+} from '../records.js';
 import type {
   CollectionAuthState,
   CollectionHealth,
@@ -113,6 +141,13 @@ import type {
 } from '../upstream-merge.js';
 import type {
   ConnectionAuth,
+  ConnectionCredentialRejectionCorrection,
+  ConnectionCredentialPostSafeStopVerificationSummary,
+  ConnectionCredentialRotationActivity,
+  ConnectionCredentialRotationOutcome,
+  ConnectionCredentialRotationSafeStopAcknowledgement,
+  ConnectionCredentialRotationSafeStopSummary,
+  ConnectionCredentialVerification,
   ConnectionDataPurgeSummary,
   ConnectionHealth,
   ConnectionKind,
@@ -148,7 +183,10 @@ import type {
   WebhookIngressListResponse,
   WebhookIngressView,
 } from '../webhook-profiles.js';
-import type { OperationGroupGrantView } from '../ingredient-catalog.js';
+import type {
+  OperationGroupGrantView,
+  McpPackReviewRow,
+} from '../ingredient-catalog.js';
 import type { Actor, Channel } from '../commits.js';
 import type { ProvenanceAttribution } from '../provenance-attribution.js';
 import type {
@@ -679,10 +717,17 @@ export interface ServerExecuteResponse {
   recipe_hash: string;
   success: boolean;
   output: {
-    render: ({ type: string; data: unknown } & Record<string, unknown>)[];
-    sidebar: ({ type: string; data: unknown } & Record<string, unknown>)[];
+    render: ResolvedOutputSection[];
+    sidebar: ResolvedOutputSection[];
   };
-  steps: { id: string; type: string; skipped: boolean; duration_ms: number; error: unknown }[];
+  steps: {
+    id: string; type: string; skipped: boolean; duration_ms: number; error: unknown;
+    /** Per-item tally for a `foreach` step. A foreach is continue-on-error, so
+     *  its failures never reach `error` / `errors[]` / `success` — this is the
+     *  only place above the step output where "every item was refused" is
+     *  distinguishable from "every item was written". */
+    foreach?: { items: number; failed: number };
+  }[];
   errors: unknown[];
   duration_ms: number;
   /** D-157 — run paused at the approval gate. Distinct from a terminal failure. */
@@ -998,8 +1043,18 @@ export type ServerRpcRegistry = {
 
   // ── Dishes (D-179 P1 — execution instances) ─────────────────────
   /** List standing dishes, optionally filtered by recipe. Ephemeral
-   *  (manual-run) dishes never appear — they are audit-row ids only. */
-  'dishes.list': RpcMethodSpec<{ recipe_id?: string }, { dishes: Dish[] }>;
+   *  (manual-run) dishes never appear — they are audit-row ids only.
+   *
+   *  D-215 slice 3 — `last_runs` maps `dish_id` → its newest run, for the
+   *  list's last-outcome cell. Resolved in ONE audit scan for the whole
+   *  page (`latestByDishes`), never per row. A dish that has never run is
+   *  ABSENT from the map, not present with nulls. Omitted entirely when
+   *  no audit store is wired, so a caller must treat "no map" and "not in
+   *  the map" alike: unknown, render "never run". */
+  'dishes.list': RpcMethodSpec<
+    { recipe_id?: string },
+    { dishes: Dish[]; last_runs?: Record<string, DishLastRun> }
+  >;
   /** Mint a standing dish. `is_default: true` claims the recipe's
    *  single default-dish slot (`conflict` when one already exists). */
   'dishes.create': RpcMethodSpec<
@@ -1028,6 +1083,19 @@ export type ServerRpcRegistry = {
   >;
   /** Delete a standing dish + its continuity snapshot. */
   'dishes.delete': RpcMethodSpec<{ dish_id: string }, { deleted: true }>;
+  /** D-215 slice 5 — one dish's run history, newest first.
+   *
+   *  Keyed on `dish_id` ALONE and consulting no dish store, so it keeps
+   *  answering for a RETIRED dish (auto-run versioning dissolves the prior
+   *  dish on every config change; a one-shot retires itself on success).
+   *  An unknown id is an empty list, never an error — "this dish has no
+   *  runs" and "this dish is gone" are both legitimate answers here and
+   *  the caller distinguishes them by whether `dishes.list` still has the
+   *  row. */
+  'dishes.history': RpcMethodSpec<
+    { dish_id: string; limit?: number },
+    { runs: DishRunRow[] }
+  >;
 
   // ── Recipe install config (D-179 — the recipe's default-dish overlay)
   /** Read a recipe's INSTALL config — the overlay on its `is_default`
@@ -1981,6 +2049,8 @@ export type ServerRpcRegistry = {
       recipe_id?: string;
       recipe?: unknown;
       config?: Record<string, unknown>;
+      /** D-222 host-derived output-filter provenance. */
+      invocation?: RecipeInvocation;
       context?: Record<string, unknown>;
       vault?: Record<string, unknown>;
       trigger_source?: string;
@@ -2173,8 +2243,20 @@ export type ServerRpcRegistry = {
       phone_exact?: string;
       limit?: number;
       offset?: number;
+      /** D-226 — ask each installed pack what it has to say about the contacts
+       *  on THIS PAGE, in one batched read. Off by default: a list that does
+       *  not render the columns must not pay for them. */
+      with_rollups?: boolean;
     },
-    { contacts: ContactRecord[]; total: number }
+    {
+      contacts: ContactRecord[];
+      total: number;
+      /** D-226 — per-contact, keyed on canonical email, present only when
+       *  `with_rollups` was asked for. ⚠ A contact with an entry whose every
+       *  rollup is zero is DIFFERENT from a contact with no entry: the first
+       *  means the packs answered "nothing", the second that nobody asked. */
+      rollups?: Record<string, TimelineRollup[]>;
+    }
   >;
 
   /** D-145 PA8 follow-on — identifier → contact resolver. Accepts
@@ -2493,8 +2575,9 @@ export type ServerRpcRegistry = {
 
   // ── Connection substrate (D-125 Phase 2.1) ──────────────────────
   //
-  // Five rpcs that own the `connection.*` lifecycle: list / enroll /
-  // update / delete / probe. Server is authoritative — the durable
+  // Core rpcs that own the `connection.*` lifecycle: list / enroll /
+  // metadata update / verified credential rotation / delete / probe. Server is
+  // authoritative — the durable
   // SQLite row lives in `backend/server/src/storage/connection-store
   // .ts`; the ext mirrors via the pair sync wire. Pair sync rides on
   // `contract.connection_record.*` (sync_transport: 'pair' per D-166;
@@ -2515,7 +2598,57 @@ export type ServerRpcRegistry = {
    *  `updated_at` first — drives the Settings → Connections list. */
   'collection.connection.list': RpcMethodSpec<
     { kind?: ConnectionKind } | void,
-    { connections: ConnectionView[] }
+    {
+      connections: ConnectionView[];
+      /** Omitted when empty or unsupported. Entries are ordered by causal
+       * insertion, newest first, and remain bounded to current enrolled rows. */
+      credential_rotation_safe_stops?: ConnectionCredentialRotationSafeStopSummary[];
+      /** Present on current servers, including as an empty array. Unresolved
+       * post-ack checks survive reloads/tabs; successful checks are omitted so
+       * their all-clear receipt is never replayed. */
+      credential_post_safe_stop_verifications?:
+        ConnectionCredentialPostSafeStopVerificationSummary[];
+    }
+  >;
+
+  /** Owner-triggered, read-only setup assistance for an API connection form.
+   *  The request deliberately carries NO credentials or free-form connection
+   *  values: only a cleaned public HTTPS URL, the selected auth discriminant,
+   *  and the closed-list keys of fields currently visible in the form. The
+   *  server supplies labels and descriptions from its own catalog before
+   *  invoking the owner's AI.
+   *
+   *  The response is advisory. Nothing is enrolled, no field is applied, and
+   *  no provider page is fetched or submitted by this method. */
+  'collection.connection.suggestSetup': RpcMethodSpec<
+    {
+      target_url: string;
+      auth_type: ConnectionAuth['type'];
+      field_keys: string[];
+    },
+    {
+      shared_context: {
+        target_url: string;
+        auth_type: ConnectionAuth['type'];
+        field_keys: string[];
+      };
+      guide: {
+        provider_name: string;
+        overview: string;
+        field_suggestions: Array<{
+          field_key: string;
+          suggested_value?: string;
+          guidance: string;
+          confidence: 'high' | 'medium' | 'low';
+        }>;
+        steps: Array<{
+          title: string;
+          instruction: string;
+          field_keys: string[];
+        }>;
+        cautions: string[];
+      };
+    }
   >;
 
   /** Create or replace a connection. ON CONFLICT (kind, name) the row
@@ -2553,21 +2686,85 @@ export type ServerRpcRegistry = {
     }
   >;
 
-  /** Patch an existing connection. `display_name` / `config` / `auth`
-   *  are the patchable fields; identity (`kind`, `name`) is immutable
-   *  — re-enroll under a new name to migrate. The handler bumps
-   *  `updated_at` so sync delta scans pick up the change. */
+  /** Patch non-credential metadata on an existing connection. Identity
+   *  (`kind`, `name`) is immutable; credentials use the dedicated verified
+   *  rotation rpc below. The handler bumps `updated_at` so sync delta scans
+   *  pick up the change. */
   'collection.connection.update': RpcMethodSpec<
     {
       name: string;
       kind: ConnectionKind;
+      /** Optional optimistic-concurrency revision from the latest list read. */
+      expected_updated_at?: number;
       patch: {
         display_name?: string;
         config?: Record<string, unknown>;
-        auth?: ConnectionAuth;
       };
     },
     { connection: ConnectionView }
+  >;
+
+  /** Verify a complete replacement credential against the provider before
+   *  atomically swapping it into an existing connection. A failed check never
+   *  mutates the saved row.
+   *  This is a distinct method (rather than an update flag) so an older server
+   *  rejects the request before writing anything. */
+  'collection.connection.rotateCredentials': RpcMethodSpec<
+    {
+      /** Browser-minted idempotency key. The server durably claims it before
+       * provider I/O so a lost reply can be reconciled without replaying the
+       * credential. */
+      attempt_id: string;
+      name: string;
+      kind: ConnectionKind;
+      /** Optional optimistic-concurrency revision from the editor's list row. */
+      expected_updated_at?: number;
+      patch: {
+        display_name?: string;
+        config?: Record<string, unknown>;
+        auth: ConnectionAuth;
+      };
+      /** Fresh vendor-reported scopes from an OAuth re-authorization. Omitted
+       *  for static credentials and manual rotations that do not rescope. */
+      granted_scopes?: string[];
+      /** Optional trigger edit captured by the same form. Included here so
+       *  credentials and triggers cannot report contradictory save outcomes. */
+      match_patterns?: MessageMatchPattern[];
+    },
+    {
+      connection: ConnectionView;
+      verification: ConnectionCredentialVerification;
+    }
+  >;
+
+  /** Reconcile a rotation whose reply was lost to a reload or reconnect.
+   * Returns only closed lifecycle metadata; neither the candidate nor the
+   * previously saved credential is recoverable through this read. */
+  'collection.connection.credentialRotationStatus': RpcMethodSpec<
+    { attempt_id: string; name: string; kind: ConnectionKind },
+    { outcome: ConnectionCredentialRotationOutcome }
+  >;
+
+  /** Determine whether this exact connection still has server-owned provider
+   * verification in flight and project a still-current bounded safe stop. No
+   * attempt id, credential, endpoint value, or provider prose is returned;
+   * this read gates sibling takeover and server-authoritative admin handoff. */
+  'collection.connection.credentialRotationActivity': RpcMethodSpec<
+    { name: string; kind: ConnectionKind },
+    { activity: ConnectionCredentialRotationActivity }
+  >;
+
+  /** Record an explicit provider/administrator-fix acknowledgement for the
+   * exact still-current safe stop. The opaque token supplies the compare-and-
+   * set boundary: a newer attempt or rejection yields `superseded` and is
+   * never cleared by this stale action. */
+  'collection.connection.acknowledgeCredentialRotationSafeStop': RpcMethodSpec<
+    {
+      name: string;
+      kind: ConnectionKind;
+      acknowledgement_token: string;
+    },
+    { acknowledgement: ConnectionCredentialRotationSafeStopAcknowledgement }
   >;
 
   /** D-192 M4c-UI — read a connection's declared messenger `match_patterns`
@@ -3131,8 +3328,112 @@ export type ServerRpcRegistry = {
    *  Expected auth/reachability failures return `auth_failed` / `unreachable`
    *  as data rather than throwing. */
   'collection.connection.probe': RpcMethodSpec<
+    {
+      name: string;
+      kind: ConnectionKind;
+      /** Optional row revision from the Settings list. When supplied, the
+       * paired server refuses to check a different row than the one the owner
+       * is looking at. */
+      expected_updated_at?: number;
+    },
+    {
+      health: ConnectionHealth;
+      /** Revision written with this exact health snapshot. Optional on the
+       * wire so current clients can degrade safely against an older server. */
+      connection_updated_at?: number;
+      /** Closed-list, value-free correction returned only when the server
+       * authoritatively classified the current saved credential as rejected. */
+      credential_correction?: ConnectionCredentialRejectionCorrection;
+    }
+  >;
+
+  /** D-225 Slice 2 — the pack-detail review screen's data source, and the
+   *  middle of the owner's enrollment chain: `#connections → mcp → create →
+   *  success` → THIS → adjust risk & approval → Save.
+   *
+   *  PROBES the server live and projects its `tools/list` into one review row
+   *  per tool. Installs NOTHING — this is the form, not the commit.
+   *
+   *  ⛔ Every row's `stored` value is `write` / `ask`, whatever the server
+   *  claims about itself. A tool NAME is not evidence of write-ness and neither
+   *  is `annotations.readOnlyHint` (the party a risk tier constrains does not
+   *  get to set it), so a hint renders as an attributed badge beside a
+   *  suggestion the owner must click — never as the stored default. Save
+   *  without reading therefore holds everything. */
+  'collection.connection.mcpPackPreview': RpcMethodSpec<
     { name: string; kind: ConnectionKind },
-    { health: ConnectionHealth }
+    {
+      pack_slug: string;
+      connection: { kind: string; name: string };
+      rows: McpPackReviewRow[];
+    }
+  >;
+
+  /** D-225 Slice 2 — the **Save** of the enrollment chain: install the pack
+   *  generated from this connection's `tools/list`.
+   *
+   *  ⛔ Writes NO risk/approval rulings. Those go through
+   *  `contract.ownerOperation.*`, which enforces the approval floor and refuses
+   *  a risk downgrade without `confirm_risk_downgrade`. A commit path writing
+   *  rulings itself would duplicate those gates or bypass them, and bypassing is
+   *  how a third party's tools end up auto-running with nobody having confirmed
+   *  it. The installed pack is inert — every op `write` + `ask`, every group
+   *  `grant_default: off` — until the owner tunes it through that gated path.
+   *
+   *  ⛔ `reviewed_ops` is a TOCTOU guard. The owner reviewed ONE tool set and is
+   *  authorizing THAT one; the server can change between preview and Save. An op
+   *  id is a hash of `{name, input_schema}`, so comparing the freshly-probed set
+   *  against what was reviewed IS "is this still what I showed you". A
+   *  divergence refuses with `conflict` and asks for a re-review. */
+  'collection.connection.mcpPackCommit': RpcMethodSpec<
+    {
+      name: string;
+      kind: ConnectionKind;
+      reviewed_ops: string[];
+      /** D-228 slice 3 — the install-point grant selection, the SAME field an
+       *  ordinary `packs.install` carries.
+       *
+       *  ⛔ Without it a generated MCP pack installed with `packs.install`'s
+       *  absent-scope behaviour, whose contract is explicit: *"ABSENT ⇒ fail
+       *  closed: grant ONLY the authored read / `approval: ask` defaults"*. So
+       *  every MCP connection's writes were ungrantable at the one point the
+       *  owner is actually looking at the tool list, and Tier-3 write access had
+       *  no install-time consent step at all — it fell back to the per-tool
+       *  presentation-store overrides, which is the D-225 defect this decision
+       *  exists to remove.
+       *
+       *  ⚠ ABSENT STILL MEANS READ-ONLY. This adds the ability to grant at
+       *  install; it does not change what happens when nothing is chosen. */
+      install_scope?: import('../bulk-pack.js').InstallGrantSelection;
+    },
+    { pack_slug: string; operations: number }
+  >;
+
+  /** D-225 Slice 2 — the drift badge. Is this connection's generated pack still
+   *  current with what the server publishes?
+   *
+   *  🔑 Runs with NO probe: the current side is `ConnectionHealth.tool_hashes`
+   *  (persisted at the last probe) and the minted side derives from the
+   *  installed pack's own bindings, so a connections list can render a badge per
+   *  row without touching the network.
+   *
+   *  ⛔ `unknown` is a distinct status from `current`. A connection never probed
+   *  since `tool_hashes` landed has no current side to compare, and reporting
+   *  `current` would be a false all-clear on exactly the connections most likely
+   *  to have drifted — the ones nobody has looked at.
+   *
+   *  ⚠ Counts, not names. Resolving a hash back to a tool needs a probe, which
+   *  is `mcpPackPreview`'s job. The badge exists to prompt one decision —
+   *  "something changed, re-review" — and that is all it should claim to know. */
+  'collection.connection.mcpPackStatus': RpcMethodSpec<
+    { name: string; kind: ConnectionKind },
+    {
+      pack_slug: string;
+      status: 'no_pack' | 'unknown' | 'current' | 'drifted';
+      added: number;
+      removed: number;
+      last_probed_at?: number;
+    }
   >;
 
   /** D-129 P1.2 — vendor OAuth code-exchange. The enrollment dialog
@@ -3950,6 +4251,8 @@ export type ServerRpcRegistry = {
         binding: string;
         ingress_id: string;
       }>;
+      /** D-221 — review anchor returned by packs.list for a Records update. */
+      expected_manifest_hash?: string;
     },
     {
       result: import('../bulk-pack.js').BulkPackInstallResultLike;
@@ -4066,6 +4369,14 @@ export type ServerRpcRegistry = {
   'packs.uninstall': RpcMethodSpec<
     {
       pack_slug: string;
+      /** D-221 full-ref disambiguator. Required when same-slug Records packs
+       * from multiple publishers are retained/installed. */
+      publisher?: string;
+      /** Records data lifecycle; omitted means retain/orphan. */
+      records_disposition?: 'retain' | 'export' | 'purge';
+      expected_records_state_generation?: number;
+      /** Exact `<publisher>/<pack_slug>` phrase required for purge. */
+      records_purge_confirmation?: string;
     },
     {
       result: import('../bulk-pack.js').BulkPackUninstallResultLike;
@@ -4301,6 +4612,47 @@ export type ServerRpcRegistry = {
     FormResponseExportRpcResponse
   >;
 
+  // ── Pack-owned Records owner control plane (D-221) ──────────────
+  // Registered-pair only and structurally excluded from MCP. This is the
+  // sole read path used by #data; Records deliberately has no `data.*` REF.
+  'records.namespace.list': RpcMethodSpec<
+    void,
+    { namespaces: RecordsNamespaceView[]; global_quota: RecordsGlobalQuotaSnapshot }
+  >;
+  'records.kind.list': RpcMethodSpec<{ owner: RecordsPackRef }, { kinds: RecordsKindSummary[] }>;
+  'records.search': RpcMethodSpec<RecordsOwnerSearchRequest, RecordsSearchResult>;
+  'records.get': RpcMethodSpec<RecordsOwnerGetRequest, RecordsOwnerGetResponse>;
+  'records.delete': RpcMethodSpec<
+    RecordsOwnerDeleteRequest,
+    { deleted: true; id: string; revision: number }
+  >;
+  'records.quota.set': RpcMethodSpec<RecordsQuotaSetRequest, RecordsQuotaSnapshot>;
+  'records.quota.set_global': RpcMethodSpec<
+    RecordsGlobalQuotaSetRequest,
+    RecordsGlobalQuotaSnapshot
+  >;
+  'records.retention.list': RpcMethodSpec<
+    { owner: RecordsPackRef },
+    { policies: Record<string, RecordsRetentionPolicy> }
+  >;
+  'records.retention.set': RpcMethodSpec<RecordsRetentionSetRequest, { ok: true }>;
+  'records.retention.run': RpcMethodSpec<
+    RecordsRetentionRunRequest,
+    { deleted: number; blocked: string[] }
+  >;
+  'records.export': RpcMethodSpec<RecordsExportRequest, RecordsExportResponse>;
+  'records.outbox.list': RpcMethodSpec<RecordsOutboxListRequest, RecordsOutboxOverview>;
+  'records.outbox.retire': RpcMethodSpec<RecordsOutboxRetireRequest, { retired: boolean }>;
+  'records.purge': RpcMethodSpec<RecordsPurgeRequest, { rows_deleted: number; events_deleted: number }>;
+  'records.accounting.audit': RpcMethodSpec<
+    { owner: RecordsPackRef },
+    { coherent: boolean; expected_rows: number; expected_bytes: number; expected_outbox: number }
+  >;
+  'records.accounting.repair': RpcMethodSpec<
+    { owner: RecordsPackRef },
+    RecordsNamespaceView
+  >;
+
   // ── data.timeline read pair-RPC (D-174 #22 — mirror-it drill-down) ─
   //
   // Third isolated channel for the `data.timeline()` primitive,
@@ -4429,13 +4781,15 @@ export type ServerRpcRegistry = {
    *  `collection.calendar.enrollOAuth`, which the server exchanges
    *  using its own client_secret (kept server-side).
    *
-   *  `null` for a provider means the matching env var
-   *  (`RECUED_GMAIL_CLIENT_ID` / `RECUED_GRAPH_CLIENT_ID` /
-   *  `RECUED_GCAL_CLIENT_ID`) is unset on this server — the extension
-   *  surfaces a "configure your server first" hint instead of opening
-   *  the OAuth popup. Gmail + Gcal share the Google project's client
-   *  but we expose them independently so a server can configure
-   *  inbound-only (gcal but no gmail) without conflating the two. */
+   *  `null` for a provider means no OAuth app is stored for its issuer on
+   *  this server (`server.setOAuthAppConfig` — Connections → Mail /
+   *  Calendar) — the extension surfaces a "configure your server first"
+   *  hint instead of opening the OAuth popup. This used to also read a
+   *  `RECUED_{GMAIL,GCAL,GRAPH}_CLIENT_ID` env fallback; those six vars
+   *  were deleted 2026-07-28, so the encrypted store is the only source.
+   *  Gmail + Gcal share the Google project's client but we expose them
+   *  independently so a server can configure inbound-only (gcal but no
+   *  gmail) without conflating the two. */
   'server.getOAuthClientConfig': RpcMethodSpec<
     void,
     {
@@ -4829,6 +5183,34 @@ export type ServerRpcRegistry = {
       adapter: 'gcal' | 'graph';
       oauth_code: string;
       oauth_redirect_uri: string;
+      backfill_days?: number;
+      expansion_future_days?: number;
+      expansion_past_days?: number;
+      retention_days?: number;
+      quota_bytes?: number;
+      poll_seconds?: number;
+      calendar_filter?: string[];
+    },
+    { slug: string; caps: CalendarCollectionCaps }
+  >;
+  /** Microsoft-only — adopt the calendar lane onto a `graph` grant the MAIL lane
+   *  already holds, with no second consent.
+   *
+   *  🔑 Sound only because Microsoft's mail and calendar adapters are both named
+   *  `graph`, so their tokens live under ONE `account.graph.<slug>.*` prefix and
+   *  one grant genuinely serves both lanes. An OAuth code is single-use, so the
+   *  mail enroll has already spent it; this path probes caps against the stored
+   *  tokens and writes the calendar row.
+   *
+   *  ⛔ NOT a way to skip consent. It requires a mail instance at the SAME slug
+   *  (proof a consent happened through the mail lane) AND a refresh token already
+   *  at that prefix, and it verifies the grant actually carries the calendar scope
+   *  by probing before writing a row. There is deliberately no `gcal` equivalent:
+   *  Google's `gmail` / `gcal` prefixes differ, so nothing is shared to adopt. */
+  'collection.calendar.attachGraphGrant': RpcMethodSpec<
+    {
+      /** Must match an existing `mail` instance's slug. */
+      slug: string;
       backfill_days?: number;
       expansion_future_days?: number;
       expansion_past_days?: number;
@@ -5252,6 +5634,79 @@ export type ServerRpcRegistry = {
    * transport boundary because the report is versioned independently and is
    * not a model-facing contract. */
   'chat.execution.diagnostics': RpcMethodSpec<void, unknown>;
+  /** D-219 item 2 — WHAT RECUED HAS LEARNED, as the owner sees it.
+   *
+   *  The arc's asset is a corpus built from what the owner said, and until this
+   *  existed they could not see any of it: asked "was that right?", they
+   *  answered, a model got a card, and they got nothing they could look at.
+   *
+   *  ⛔ `flows` is rendered by the SAME function that builds the model-bound
+   *  card, so the page cannot drift from the thing it reports on. Owner-only /
+   *  local-UI; off MCP through the `chat.execution.` reserved prefix, which is
+   *  what keeps an agent from reading (or editing) the owner's precedent. */
+  'chat.execution.learned': RpcMethodSpec<
+    void,
+    { cases: import('../execution-case.js').ExecutionCaseLearnedEntry[] }
+  >;
+  /** D-219 item 2 — unlearn one case, permanently.
+   *
+   *  ⛔ Deleting the materialized row would be a NO-OP THAT LOOKS LIKE A FIX: a
+   *  case is a projection re-derived from its sources on the next compile, i.e.
+   *  the next governed turn. The server removes the source reports and the
+   *  owner verdicts recorded against their roots instead.
+   *
+   *  `removed: false` means no such case — not an error. `cases_remaining` is
+   *  the post-rebuild count, so a caller can see when a shared source report
+   *  took a second case with it. */
+  'chat.execution.forget': RpcMethodSpec<
+    { case_id: string },
+    { removed: boolean; cases_remaining: number }
+  >;
+  /** D-219 item 2b — ask the owner's own model to draft a recipe from a case.
+   *
+   *  ⛔ **DRAFTS, NEVER SAVES.** The result is an unsaved `RecipeDefinition` the
+   *  Kitchen opens for review; saving is `recipe.save` and the owner's decision.
+   *  Validating a machine-written recipe is exactly the manual authoring path —
+   *  there is no separate blessing for one.
+   *
+   *  ⛔ **MANUAL ONLY.** Nothing reaches this but an owner pressing a button:
+   *  no turn, no schedule, no housekeeping cycle. It is a slow call against
+   *  their model quota on their own recorded words, so it is theirs to
+   *  initiate — `RECIPE_DRAFT_CONFIRMATION` is what the surface must show
+   *  first.
+   *
+   *  ⚠ `request_aliased: false` means the owner's request could not be safely
+   *  aliased and was therefore NOT sent — the draft was made from the tool
+   *  shape and their instruction alone, and is likely thinner for it. Owner-only
+   *  / local-UI; off MCP through the `chat.execution.` reserved prefix. */
+  /** D-219 — record that the owner SAVED a recipe drafted from a case.
+   *
+   *  ⛔ **THE CALLER ASSERTS NEITHER THE KEY NOR THE HASH.** It supplies a
+   *  `case_id`; the server resolves the durable `case_key` off the case row and
+   *  hashes the stored recipe itself. Otherwise any paired client could claim an
+   *  arbitrary recipe came from an arbitrary case.
+   *
+   *  ⚠ Written AFTER the save, best effort. `recorded: false` means the case or
+   *  the recipe could not be found — a forgotten case, or a save under a
+   *  different id — and is not an error: the recipe is what mattered, and the
+   *  cost of losing this is an annotation. Owner-only / local-UI; off MCP
+   *  through the `chat.execution.` reserved prefix. */
+  'chat.execution.authored': RpcMethodSpec<
+    { case_id: string; recipe_id: string },
+    { recorded: boolean }
+  >;
+  'chat.execution.draft_recipe': RpcMethodSpec<
+    { case_id: string; prompt?: string; previous_recipe?: unknown },
+    {
+      ok: boolean;
+      recipe?: import('../recipe.js').RecipeDefinition;
+      /** Validator findings — present on failure, and possibly on success. */
+      issues: string[];
+      /** `unknown_case` | `no_json` | `invalid_recipe`, absent when `ok`. */
+      reason?: string;
+      request_aliased?: boolean;
+    }
+  >;
   'chat.session.set_picker': RpcMethodSpec<
     { session_id: string; picker_state: { current: string } },
     { ok: true }
@@ -6176,6 +6631,28 @@ export type ServerRpcRegistry = {
     import('../release-update.js').UpdateRollbackResponse
   >;
 
+  /** Resolve one opaque receipt returned by an accepted apply/rollback.
+   * Read-only and owner-only; returns no version, ledger row, or raw error.
+   * `include_closed: true` opts a closure-aware client into the
+   * `closed_unresolved` status. Older clients omit it and continue to receive
+   * `unknown`, so they cannot mistake a newer closure state for success. */
+  'update.operation_status': RpcMethodSpec<
+    { operation_id: string; include_closed?: boolean },
+    import('../release-update.js').UpdateOperationStatusResponse
+  >;
+
+  /** Durably close a permanently unresolvable receipt without asserting that
+   * its update/rollback succeeded. The server re-resolves the exact receipt,
+   * refuses while any update is in flight, and records the closure in its
+   * out-of-database update ledger. Owner-reviewed and owner-only. */
+  'update.operation_close': RpcMethodSpec<
+    {
+      operation_id: string;
+      expected_operation: 'update' | 'rollback';
+    },
+    import('../release-update.js').UpdateOperationClosureResponse
+  >;
+
   // ── cli reachability grid (D-182 §7.2) ──────────────────────────
   //
   // Owner-only, reserved out of MCP (`cli.reachability.` in
@@ -6251,6 +6728,7 @@ export const SERVER_RPC_METHODS = [
   'dishes.create',
   'dishes.update',
   'dishes.delete',
+  'dishes.history',
   'recipe_config.get',
   'recipe_config.set',
   'dish_groups.list',
@@ -6427,8 +6905,29 @@ export const SERVER_RPC_METHODS = [
   'upstream_merge.list',
   // D-125 Phase 2.1 — connection substrate rpc.
   'collection.connection.list',
+  // ⛔ D-225 slice 2 declared these THREE in the interface above and wired all
+  // three handlers, but never added them HERE — so `SERVER_RPC_METHOD_SET` did
+  // not contain them and `ws-server` refused to start: "handler wired for
+  // 'collection.connection.mcpPackPreview' which is not in SERVER_RPC_METHOD_SET".
+  // HEAD did not boot. The D-225 rpc suite passes 21/21 because it exercises the
+  // handler in isolation and never boots a server, so nothing caught it.
+  //
+  // ⚠ THIS IS THE SECOND TIME, and the comment below already predicted it: the
+  // interface and this array are two hand-maintained copies of one closed list,
+  // a SUBSET TYPECHECKS, and the type side compiles while the runtime side is
+  // short an entry. Deriving this array from the interface's keys is the actual
+  // fix; until then every new method is one forgotten line from an unbootable
+  // server.
+  'collection.connection.mcpPackPreview',
+  'collection.connection.mcpPackStatus',
+  'collection.connection.mcpPackCommit',
+  'collection.connection.suggestSetup',
   'collection.connection.enroll',
   'collection.connection.update',
+  'collection.connection.rotateCredentials',
+  'collection.connection.credentialRotationStatus',
+  'collection.connection.credentialRotationActivity',
+  'collection.connection.acknowledgeCredentialRotationSafeStop',
   'collection.connection.delete',
   // D-192 source-data-removal — the read-only "[N] records" removal-preview count.
   'collection.connection.previewPurge',
@@ -6652,6 +7151,23 @@ export const SERVER_RPC_METHODS = [
   'form_response.set_state',
   'form_response.update',
   'form_response.export',
+  // D-221 — owner-only pack Records explorer and lifecycle controls.
+  'records.namespace.list',
+  'records.kind.list',
+  'records.search',
+  'records.get',
+  'records.delete',
+  'records.quota.set',
+  'records.quota.set_global',
+  'records.retention.list',
+  'records.retention.set',
+  'records.retention.run',
+  'records.export',
+  'records.outbox.list',
+  'records.outbox.retire',
+  'records.purge',
+  'records.accounting.audit',
+  'records.accounting.repair',
   'data.timeline',
   'data.file.read',
   'data.mirror.search',
@@ -6724,6 +7240,12 @@ export const SERVER_RPC_METHODS = [
   'collection.listInstances',
   // D-117 Phase 7 — calendar enroll family.
   'collection.calendar.enrollOAuth',
+  // ⚠ Adding a method to the `ServerRpcRegistry` TYPE above is not enough — this
+  // runtime list is a second, independent source of truth, and `ws-server.ts`
+  // THROWS at wire time for a handler whose method is missing here. A type-only
+  // addition therefore typechecks clean, passes every handler unit test, and
+  // then refuses to boot the server.
+  'collection.calendar.attachGraphGrant',
   'collection.calendar.enrollBasic',
   'collection.calendar.list',
   'collection.calendar.update',
@@ -6782,6 +7304,11 @@ export const SERVER_RPC_METHODS = [
   'chat.execution.feedback',
   'chat.execution.feedback.retract',
   'chat.execution.diagnostics',
+  // D-219 item 2 — the owner-facing corpus view + its unlearn.
+  'chat.execution.learned',
+  'chat.execution.forget',
+  'chat.execution.draft_recipe',
+  'chat.execution.authored',
   'chat.session.set_picker',
   'chat.session.set_model_pref',
   // D-167 chat provider-threading — override lifecycle + global default.
@@ -6919,6 +7446,8 @@ export const SERVER_RPC_METHODS = [
   'update.set_mode',
   'update.apply',
   'update.rollback',
+  'update.operation_status',
+  'update.operation_close',
   // D-182 §7.2 — cli reachability grid rpc. Reserved local-UI / owner only —
   // `cli.reachability.` is in `MCP_RESERVED_RPC_PREFIXES` (the MCP ratchet
   // asserts the prefix stays reserved).

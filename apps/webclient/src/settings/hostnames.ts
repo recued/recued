@@ -26,6 +26,7 @@ import type {
   LocalServerUrl,
   NetworkLocalUrlsResponse,
 } from '@recued/contracts';
+import { formatClientDateTime } from '@recued/ui-shared';
 import type { ReachabilityExternalProbeCaller } from './reachability.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 
@@ -609,9 +610,7 @@ const shortFingerprint = (fp: string | undefined): string => {
 
 const formatDate = (value: number | undefined): string => {
   if (value === undefined) return 'none';
-  const d = new Date(value);
-  if (Number.isNaN(d.getTime())) return 'unknown';
-  return d.toISOString();
+  return formatClientDateTime(value, { invalidText: 'unknown' });
 };
 
 // R26.4 Delta 4 — cert-expiry "near expiry" threshold. Mirrors the

@@ -50,6 +50,34 @@ export const isKernelManifest = (
   manifest: { author?: string } | null | undefined,
 ): boolean => manifest?.author === KERNEL_AUTHOR;
 
+/** D-225 Slice 2 — the publisher handle for a pack the RUNTIME generated on
+ *  this machine, from a third party's declaration, at the owner's enrollment.
+ *  Today: MCP packs minted from a connection's `tools/list`.
+ *
+ *  ⛔ **It is deliberately NOT `KERNEL_AUTHOR`, and that is the whole point.**
+ *  `isKernelManifest` above is not a label — it is a VALIDATOR BYPASS.
+ *  `validateConnectionWrapper` returns on it before `isCatalogForm`, so a
+ *  manifest authored `recued` never reaches catalog-form validation, surface
+ *  validation, or any binding gate. That exemption is sound for real kernel
+ *  content — bundled with the release, identical on every machine, reviewed
+ *  once. A generated pack is the opposite on every axis: per-user,
+ *  per-connection, minted from a third party's `tools/list`, reviewed by
+ *  nobody. Publishing one under `recued` would hand the least-reviewed content
+ *  in the system the exemption reserved for the most-reviewed.
+ *
+ *  D-225 § 4.1 originally decided `recued` here on the reasoning that "the
+ *  runtime authors the derivation"; Slice 1 falsified it by discovering the
+ *  bypass. `recued-local` keeps the true part of that reasoning (Recued minted
+ *  it) without the false part (it was reviewed).
+ *
+ *  ⚠ Both privilege checks that could re-create the exemption are EXACT
+ *  equality, never a `recued*` prefix — `isKernelManifest` (`=== 'recued'`) and
+ *  `publisherMayDeclare` (`=== 'recued-core'`). A generated pack is therefore
+ *  validated like any third-party pack and holds no reserved capability. Pinned
+ *  by test; if either check ever becomes a prefix match, this handle silently
+ *  becomes a bypass again. */
+export const GENERATED_PACK_PUBLISHER = 'recued-local' as const;
+
 /** True when a manifest is a D-118 `data.service` template. Service
  *  manifests describe local-process workloads (CLI tools + long-
  *  running services) and route through the server's service
@@ -343,6 +371,35 @@ export interface IngredientManifest {
   min_version?: number;
   category: IngredientCategory;
   risk_tier: RiskTier;
+  /** ⛔⛔ D-228 slice 2 — MAY A KERNEL INGREDIENT BE OFFERED TO AN EXTERNAL AGENT?
+   *  Read ONLY for `author: 'recued'` manifests (community ingredients clear the
+   *  kernel fence by authorship and are governed by the KIND fence + the grant
+   *  gate instead). Absent / `false` ⇒ fenced out of the MCP tool catalog.
+   *
+   *  🔑 WHY THIS IS A FIELD AND NOT A DERIVATION. Slice 2 first tried to derive
+   *  this from `risk_tier === 'read'`, and was REVERTED: that promoted a
+   *  PRESENTATION HINT into an AUTHORIZATION INPUT, and `risk_tier` is not
+   *  maintained to that standard. But re-authoring `risk_tier` would not have
+   *  rescued the derivation either, and this is the part worth remembering —
+   *  ⛔ **`data-file-read`, the one ingredient that MUST be exposed, has exactly
+   *  the same `(kind: 'storage', risk_tier: 'read')` pair as `webhook-watcher`,
+   *  `time-relative-watcher`, `file-watcher` and `recipe-watcher`, which must
+   *  not be.** No combination of the authored fields separated them, because the
+   *  judgement simply was not written down anywhere: it lived in a
+   *  `new Set(['data-file-read'])` in one server file's private scope.
+   *
+   *  So the fix is to WRITE IT DOWN, next to the thing it describes. That keeps
+   *  what the hand-list got right (it is a judgement, made per ingredient) and
+   *  fixes what it got wrong: the policy is now visible at the definition site
+   *  and in publish review rather than hidden in a const, and a NEW kernel
+   *  ingredient ships FENCED by omission instead of depending on someone
+   *  remembering a list in another file. Fail-closed is the default; exposure is
+   *  the deliberate act.
+   *
+   *  ⚠ GRANTABLE, NOT EXPOSED — this only clears the kernel fence. The caller
+   *  still needs a per-tool grant, and since D-228 slice 6 a caller carrying no
+   *  checklist is offered nothing at all. */
+  mcp_exposed?: boolean;
   /** D-177 P1b (N.2) — volatile-exclusion paths removed from the commit's
    *  `canonical_payload_hash` (client timestamps, correlation tokens) so an
    *  honest exact repeat still hashes equal. SIMPLE-FORM ingredients only —

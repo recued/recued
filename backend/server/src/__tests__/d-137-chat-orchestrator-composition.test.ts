@@ -140,6 +140,17 @@ const expectedBundleKeys = [
   'executionCaseLifecycle',
   // D-214 — deterministic post-write verification evidence producer.
   'executionCaseVerificationRecorder',
+  // D-219 slice 9c — boot hand-off for the owner-facing offer. The notification
+  // block is composed AFTER the chat substrate, so its owner pushes it in; the
+  // ratchet's `not.toBeUndefined()` sweep is what keeps it from riding as an
+  // undefined key.
+  'publishExecutionCaseOfferNotifier',
+  // D-219 — the capture-only argument buffer, surfaced ONLY so the retention
+  // pruner can bound it. ⛔ No read path consumes it.
+  'executionCaseArgumentStore',
+  // D-219 — the source-corpus retention sweep, narrowed to one method so this
+  // hand-off cannot compile, rebuild, or delete a root.
+  'executionCaseSourcePruner',
   // D-177 rule 5 slice B — per-session forwarded-sender candidate index
   'forwardedSenderIndex',
 ].sort();
@@ -164,6 +175,18 @@ const expectedChatDepsKeys = [
   'executionCaseDiagnostics',
   'executionCaseLifecycle',
   'executionSpanAnchorStore',
+  // D-219 item 2/2b — the owner's own view of what became precedent: list it,
+  // unlearn one case, and draft a recipe from one with their own model.
+  'executionCaseLearned',
+  'executionCaseForget',
+  'executionCaseDraftRecipe',
+  // D-219 — records that a drafted recipe was saved, so the Learning list can
+  // say "you already made one of these".
+  'executionCaseAuthored',
+  // D-221 §3.3.3 — granting a Tier-2 recipe tool is an act of NON-OWNER
+  // exposure, so the grant boundary re-runs the Records first-step refusal
+  // check before the token is minted.
+  'preflightExternalToolGrant',
 ].sort();
 
 const annotationValue = (
@@ -863,10 +886,11 @@ describe('composeChatOrchestrator — Lever-2 per-slot catalog modes (Phase 2)',
     expect(resolve('free_pool')).toEqual({ mode: 'full' });
   });
 
-  it('smart-defaults default ON (flag unset) → free_pool leans to index, BYOK slots stay full', async () => {
-    // The proven-safe default flip (2026-07-03): with the flag UNSET the wire
-    // defaults smart-defaults ON, so an unconfigured free_pool source leans to
-    // `index` while BYOK slots stay `full`. `=0` opts back out.
+  it('smart-defaults default ON (flag unset) → every KNOWN source leans to index', async () => {
+    // The proven-safe default flip (2026-07-03) put free_pool on `index`; the
+    // 2026-07-26 same-bundle A/B extended it to the BYOK slots (index measured
+    // 98% cache-served there, −49.9% input, discovery holding). With the flag
+    // UNSET the wire defaults smart-defaults ON. `=0` opts back out.
     delete process.env.RECUED_CHAT_CATALOG_SMART_DEFAULTS; // unset → default ON
     const { compose, createChatOrchestratorMock } = await importComposerWithOrchestratorSpy();
     compose(buildDeps({ getLlmConfig: () => undefined }));
@@ -876,8 +900,8 @@ describe('composeChatOrchestrator — Lever-2 per-slot catalog modes (Phase 2)',
       ) => { mode: ChatCatalogDeliveryMode };
     }).catalogProjectionForSource;
     expect(resolve('free_pool')).toEqual({ mode: 'index' });
-    expect(resolve('slot_1')).toEqual({ mode: 'full' });
-    expect(resolve('slot_2')).toEqual({ mode: 'full' });
+    expect(resolve('slot_1')).toEqual({ mode: 'index' });
+    expect(resolve('slot_2')).toEqual({ mode: 'index' });
     // An unknown/unpinned source never thins (can't predict the matched slot).
     expect(resolve(undefined)).toEqual({ mode: 'full' });
 

@@ -11,10 +11,19 @@
  *  semantics; consumers should treat it as a generic pair-local KV
  *  store, not as an account-namespace mirror.
  *
- *  Plaintext at rest. Per Phase B, this is a gated surface —
- *  `totalBytes()` seeds the `account_store` gate at boot and the
- *  gate-wiring in `bin.ts` wraps `set` / `delete` with `canWrite` +
- *  `addUsed` / `subUsed`.
+ *  ⚠ No application-layer encryption — values are stored exactly as
+ *  written, and this store holds no key of its own. On an enrolled realm
+ *  the bytes are ciphertext on disk only because D-212 encrypts the whole
+ *  database file; that is a property of the file, not of this store. Two
+ *  consequences that matter, since the table currently holds OAuth
+ *  refresh tokens and caldav passwords: any component with the `db`
+ *  handle reads values in the clear, and they stay readable while the
+ *  vault is LOCKED (the lock gates the Master DEK, which this store never
+ *  touches). Do not treat it as vault-equivalent for credentials.
+ *
+ *  Per Phase B, this is a gated surface — `totalBytes()` seeds the
+ *  `account_store` gate at boot and the gate-wiring in `bin.ts` wraps
+ *  `set` / `delete` with `canWrite` + `addUsed` / `subUsed`.
  */
 
 import type Database from 'better-sqlite3';

@@ -93,6 +93,55 @@ export interface Dish {
   created_at: number; // epoch ms
 }
 
+/** D-215 slice 3 — the last-outcome cell a dish row renders.
+ *
+ *  Projected from the newest `AuditEntry` carrying this dish's id
+ *  (`latestByDishes`, one scan for the whole list). Deliberately NOT the
+ *  whole entry: the list needs "did it work, and when", and shipping the
+ *  full audit row would put `config_snapshot` on the wire for every row.
+ *
+ *  A dish with no runs is ABSENT from the map rather than present with
+ *  nulls — "never run" is a different statement from "ran, no status",
+ *  and a caller that conflates them renders a fresh dish as failed. */
+export interface DishLastRun {
+  run_id: string;
+  /** Ingestion time — when the engine recorded the run. */
+  started_at: number;
+  /** The run anchor's terminal state (`'succeeded'` / `'failed'` /
+   *  `'awaiting_approval'` …). Carried verbatim so the surface can
+   *  distinguish a hold from a failure. */
+  commit_status: string;
+}
+
+/** D-215 slice 5 — one run in a dish's history.
+ *
+ *  A wider projection than `DishLastRun` (which is a single list cell) but
+ *  still deliberately NOT the whole `AuditEntry`: `config_snapshot` and the
+ *  full error payloads stay server-side. History answers "what has this
+ *  queued item done", not "replay the run".
+ *
+ *  🔑 A dish's history OUTLIVES the dish. `dish_id` is only an audit-row
+ *  field — auto-run config versioning dissolves the prior dish on every
+ *  change, and a one-shot retires itself on success (§ 5) — so these rows
+ *  keep answering for a `dish_id` that no longer resolves. That is the
+ *  RETIRED case, and a surface must render it as retired, never as an
+ *  error or an empty state. */
+export interface DishRunRow {
+  run_id: string;
+  /** Ingestion time — when the engine recorded the run. */
+  started_at: number;
+  duration_ms: number;
+  /** Run-anchor terminal state (`'succeeded'` / `'failed'` /
+   *  `'awaiting_approval'` …). Verbatim, so a HOLD stays distinguishable
+   *  from a failure. */
+  commit_status: string;
+  /** How the run was triggered (`'schedule'` / `'auto_run'` / …), when the
+   *  audit row recorded one. */
+  trigger_source: string | null;
+  /** First error message, when the run failed. */
+  error: string | null;
+}
+
 /** Prefix for dish-group ids. */
 export const DISH_GROUP_ID_PREFIX = 'dgrp_';
 

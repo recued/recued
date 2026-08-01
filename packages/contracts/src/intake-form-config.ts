@@ -407,8 +407,9 @@ export interface IntakeFormContactMapping {
 }
 
 /** Anti-spam config per spec § A.5.3 line 703-709. Substrate enforces
- *  honeypot field presence + rate limit at request time; PoW + CAPTCHA
- *  are user-installed hooks (substrate ships only the contract). */
+ *  honeypot field presence + rate limit at request time. PoW + CAPTCHA are
+ *  reserved compatibility fields: neither is currently implemented or
+ *  exposed by the authoring UI. */
 export interface IntakeFormAntiSpamConfig {
   /** Bot-bait field names — substrate-rendered hidden inputs. A
    *  submission where ANY honeypot field carries a non-empty value is
@@ -418,11 +419,11 @@ export interface IntakeFormAntiSpamConfig {
   /** Per-IP submission rate ceiling (clamps below the substrate
    *  default; never above). */
   readonly rate_limit_per_ip: number;
-  /** Optional client-side hash-puzzle challenge. Substrate ships the
-   *  contract; the marketplace recipe wires the actual JS solver. */
+  /** Reserved for a possible client-side hash-puzzle challenge; currently
+   *  unimplemented and unenforced. */
   readonly require_proof_of_work: boolean;
-  /** Optional CAPTCHA hook. Substrate ships the contract; user
-   *  installs a marketplace recipe that wires the actual challenge. */
+  /** Reserved for a possible CAPTCHA challenge; currently unimplemented and
+   *  unenforced. */
   readonly require_captcha: boolean;
   /** Optional email-domain allowlist — submissions where the visitor's
    *  email's domain is NOT in this list are tagged `'rejected_domain'`. */

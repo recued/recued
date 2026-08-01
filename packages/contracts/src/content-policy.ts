@@ -24,7 +24,24 @@ import {
 export const RESERVED_HANDLES: ReadonlySet<string> = new Set([
   // System
   'recued', 'recued-core', 'recued-official', 'recued-team', 'recued-admin',
+  // D-225 Slice 2 — the publisher of packs the runtime GENERATES on this
+  // machine (`GENERATED_PACK_PUBLISHER`). Reserved so no third party can
+  // publish under a handle that reads as locally-minted.
+  'recued-local',
   'core', // §5 — the binding-free kernel capability namespace (core-* slugs)
+  // D-225 § 9.9 — the two GRANT-ENTRY prefixes. A STAMPED pack's operation_id
+  // is `<publisher>.<pack>.<key>` (D-221 Records, D-225 generated), so a
+  // publisher holding either handle would mint op ids that collide with the
+  // reserved grant-entry namespace: `opGrantEntry` throws
+  // `grant_entry_op_id_reserved_prefix`, and a stored key would classify as a
+  // `collection` rather than an `op` — the fail-closed admission bug
+  // `grant-entry.ts` warns about, arriving through the publisher handle.
+  //
+  // ⚠ The older SLASH form (`<author>/<entity>.<verb>`) could not collide,
+  // because it carried a `/` before any `.`. That is exactly the invariant the
+  // dotted stamp broke, and reserving these is what restores it by
+  // construction rather than by comment.
+  'data', 'enrichment',
   'system', 'admin', 'administrator', 'moderator', 'mod', 'staff', 'support',
   'official', 'internal', 'test', 'demo', 'example', 'sample',
   // Auth / security

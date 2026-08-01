@@ -327,6 +327,13 @@ const CAPACITY_GAP_ERROR_CODES: ReadonlySet<BridgeErrorCode> = new Set<BridgeErr
   'capacity_gap_permission_missing',
 ]);
 
+/** WS transport writes complete before the remote bridge can inspect
+ *  its queue. The bridge therefore reports the HTTP-429-equivalent as
+ *  a transient rejected result; this predicate keeps that control
+ *  signal out of normal completed-result handling. */
+const isQueueFullResult = (result: BridgeResult): boolean =>
+  result.status === 'rejected' && result.error?.code === 'queue_full';
+
 /** True iff the `BridgeResult` represents a capacity gap (status:
  *  'error' AND error.code is one of the `capacity_gap_*` codes). The
  *  multi-bridge dispatcher branches on this to decide
@@ -459,52 +466,68 @@ export const createBridgeDispatcher = (options: DispatcherOptions): BridgeDispat
     const command_id = generateCommandId();
     const command: BridgeCommand = { ...command_template, command_id };
 
-    // Codex P1 #3 fold — register the result waiter BEFORE sending
-    // so a sub-millisecond bridge response doesn't arrive before the
-    // listener slot exists.
-    const result_p = options.listener.awaitResult(command_id, timeout_ms + 5_000);
-
     let attempt = 0;
     let backoff = initial_backoff_ms;
-    let send_succeeded = false;
     while (attempt < max_attempts) {
       attempt++;
+
+      // Register a fresh waiter BEFORE every send. A remote queue_full
+      // result consumes the prior slot, and the retry can itself return
+      // synchronously on a same-host transport.
+      const result_p = options.listener.awaitResult(command_id, timeout_ms + 5_000);
       inflight.set(command_id, bridge_client_token_id);
-      const send_result = await options.transport.send(bridge_client_token_id, {
-        kind: 'command',
-        command,
-      });
-      if (send_result.ok) {
-        send_succeeded = true;
-        break;
+      let send_result: BridgeSendResult;
+      try {
+        send_result = await options.transport.send(bridge_client_token_id, {
+          kind: 'command',
+          command,
+        });
+      } catch {
+        options.listener.cancelAwait?.(command_id);
+        inflight.delete(command_id);
+        return { kind: 'send_failed', reason: 'transport_error', attempts: attempt };
       }
-      if (send_result.reason === 'queue_full' && attempt < max_attempts) {
-        await sleep(backoff);
-        backoff = Math.min(backoff * 2, max_backoff_ms);
-        continue;
+
+      if (!send_result.ok) {
+        options.listener.cancelAwait?.(command_id);
+        if (send_result.reason === 'queue_full' && attempt < max_attempts) {
+          await sleep(backoff);
+          backoff = Math.min(backoff * 2, max_backoff_ms);
+          continue;
+        }
+        // queue_full exhaustion / bridge_offline / transport_error /
+        // unknown → release listener slot + bubble up.
+        inflight.delete(command_id);
+        return {
+          kind: 'send_failed',
+          reason: send_result.reason ?? 'transport_error',
+          attempts: attempt,
+        };
       }
-      // queue_full exhaustion / bridge_offline / transport_error / unknown
-      // → release listener slot + bubble up.
+
+      const result = await result_p;
+      if (!result) {
+        inflight.delete(command_id);
+        return { kind: 'timeout', command_id, attempts: attempt };
+      }
+      if (isQueueFullResult(result)) {
+        if (attempt < max_attempts) {
+          await sleep(backoff);
+          backoff = Math.min(backoff * 2, max_backoff_ms);
+          continue;
+        }
+        inflight.delete(command_id);
+        return { kind: 'send_failed', reason: 'queue_full', attempts: attempt };
+      }
+
       inflight.delete(command_id);
-      options.listener.cancelAwait?.(command_id);
-      return {
-        kind: 'send_failed',
-        reason: send_result.reason ?? 'transport_error',
-        attempts: attempt,
-      };
+      return { kind: 'completed', result, attempts: attempt };
     }
-    if (!send_succeeded) {
-      // Defensive — loop guard should have caught this.
-      options.listener.cancelAwait?.(command_id);
-      inflight.delete(command_id);
-      return { kind: 'send_failed', reason: 'transport_error', attempts: attempt };
-    }
-    const result = await result_p;
+
+    // Defensive — every loop path returns or continues.
     inflight.delete(command_id);
-    if (!result) {
-      return { kind: 'timeout', command_id, attempts: attempt };
-    }
-    return { kind: 'completed', result, attempts: attempt };
+    options.listener.cancelAwait?.(command_id);
+    return { kind: 'send_failed', reason: 'transport_error', attempts: attempt };
   };
 
   /** Best-effort emit of the `bridge_dispatch_succeeded` activity row

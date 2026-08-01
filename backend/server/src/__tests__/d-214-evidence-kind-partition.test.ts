@@ -93,6 +93,7 @@ const observationOf = (
   report_id: `report-${id}`,
   root_request_id: `root-${id}`,
   root_request: 'send the quarterly report to the customer',
+  session_id: 'session-fixture',
   governing_contract_id: 'owner',
   principal_key: 'user_self',
   policy_fingerprint: 'policy-a',
@@ -129,6 +130,11 @@ interface KindSpec {
   materialContradiction: boolean;
   /** Why this classification, from the spec's evidence table. */
   because: string;
+  /** D-219 slice 3 — the kind DISQUALIFIES an observation from becoming a case,
+   *  whatever its polarity or strength. Kept as a field of this table rather
+   *  than a special case in the generated tests, so the exclusion is reviewable
+   *  in the same place as everything else about the kind. */
+  excluded?: boolean;
 }
 
 // ⛔ `Record<CaseEvidenceKind, …>` — a new union member without an entry here
@@ -171,12 +177,14 @@ const EXPECTED: Record<CaseEvidenceKind, KindSpec> = {
     because: 'the user said what was wrong',
   },
   gateway_denial: {
+    excluded: true,
     polarity: 'negative',
     strong: true,
     materialContradiction: true,
     because: 'a policy fact under a recorded fingerprint',
   },
   execution_failure: {
+    excluded: true,
     polarity: 'negative',
     strong: true,
     materialContradiction: true,
@@ -195,16 +203,35 @@ const EXPECTED: Record<CaseEvidenceKind, KindSpec> = {
     because: 'correction and extension are indistinguishable',
   },
   abandoned: {
+    // ⛔ D-219 slice 10 — EXCLUDED (owner ruling 2026-07-28). ⚠ THIS ENTRY IS IN
+    // A PEER-OWNED RATCHET (`c016c01d8`) and is changed deliberately, flagged in
+    // the commit, exactly as slice 3 did for the two entries above.
+    //
+    // The former reason — "the user saw it and did not proceed" — is the whole
+    // problem: an approval that expired unanswered is SILENCE, and the contracts
+    // already refuse to read silence as a verdict ("no later complaint is not
+    // evidence"). Not proceeding is not a judgement about the approach; the
+    // owner was busy, away, or the moment passed.
+    //
+    // ⚠ Ruled NARROWLY. `flow_superseded` was examined in the same breath and
+    // KEPT: a later turn running a different flow is something that HAPPENED,
+    // not an inference from absence.
+    excluded: true,
     polarity: 'negative',
     strong: false,
     materialContradiction: false,
-    because: 'the user saw it and did not proceed',
+    because: 'an unanswered approval is silence, and silence is not a verdict',
   },
   unverified_success: {
-    polarity: 'positive',
+    // D-219 slice 2 — RETIRED to inert. This entry's own former reason said it:
+    // "success means no terminal error, not fulfilment". It was nonetheless the
+    // only positive that formed in practice, so precedent's entire positive half
+    // was the system asserting its own success. It is NOT negative — an
+    // unwitnessed success is not evidence in either direction.
+    polarity: 'inert',
     strong: false,
     materialContradiction: false,
-    because: 'success means no terminal error, not fulfilment — one is coincidence',
+    because: 'an unwitnessed success is not evidence — only the owner or a check can attest',
   },
   model_claim: {
     polarity: 'inert',
@@ -231,14 +258,20 @@ describe('D-214 §8.2 — evidence polarity, per kind', () => {
     });
   }
 
-  it('model_claim is the ONLY inert kind — every other member moves a counter', () => {
+  it('exactly TWO kinds are inert — every other member moves a counter', () => {
     // Guards the inverse of the ratchet: a new kind could be added to EXPECTED
     // as `inert` to make its per-kind test pass without ever classifying it.
+    //
+    // ⚠ D-219 slice 2 widened this from one to two. `unverified_success` joined
+    // `model_claim` — both are the system's account of its own behaviour, and
+    // the sibling entry already said as much of model_claim: "self-report is not
+    // independent verification". The list is asserted EXACTLY, so a third kind
+    // going quiet still fails here.
     const inert = KINDS.filter((kind) => {
       const s = outcomeStrengthForObservations([observationOf(kind, 'i')]);
       return s.positive === 0 && s.negative === 0;
     });
-    expect(inert).toEqual(['model_claim']);
+    expect(inert).toEqual(['unverified_success', 'model_claim']);
   });
 
   it('an inert kind contributes no evidence family either', () => {
@@ -276,12 +309,25 @@ describe('D-214 §8.2 Layer 2 — strong evidence admits at one, weak needs the 
     const spec = EXPECTED[kind];
     if (spec.polarity === 'inert') continue;
 
-    it(`a single '${kind}' observation ${spec.strong ? 'MATERIALIZES' : 'does NOT materialize'} a case`, () => {
+    it(`a single '${kind}' observation ${spec.excluded ? 'is EXCLUDED from being' : spec.strong ? 'MATERIALIZES' : 'does NOT materialize'} a case`, () => {
       const cases = rebuildExecutionCases([observationOf(kind, 'solo')]).cases;
-      expect(cases.length).toBe(spec.strong ? 1 : 0);
+      expect(cases.length).toBe(spec.excluded ? 0 : spec.strong ? 1 : 0);
     });
 
-    if (!spec.strong) {
+    if (spec.excluded) {
+      it(`'${kind}' stays excluded at ANY volume — exclusion is not a floor`, () => {
+        // ⚠ The discriminating case. A kind that merely failed to clear a
+        // recurrence floor would start admitting once repeated; an EXCLUDED kind
+        // never does, however many independent roots carry it.
+        const many = Array.from(
+          { length: EXECUTION_CASE_RECURRENCE_FLOOR * 2 },
+          (_unused, index) => observationOf(kind, `x${index}`),
+        );
+        expect(rebuildExecutionCases(many).cases.length).toBe(0);
+      });
+    }
+
+    if (!spec.strong && !spec.excluded) {
       it(`'${kind}' materializes once it reaches the recurrence floor of ${EXECUTION_CASE_RECURRENCE_FLOOR}`, () => {
         // Distinct ROOT REQUESTS, not repeats of one — A18 counts request
         // observations ("you have asked this three times"), so N copies of a

@@ -31,6 +31,7 @@ import {
   PROJECT_STATES,
   TASK_PRIORITIES,
   WORK_ENTITY_CONTRACT_SOURCE_KINDS,
+  isRealtimeApiBindingKind,
   WORK_ENTITY_CONTRACT_SOURCE_SURFACES,
   WORK_ENTITY_CONTRACT_SOURCE_TRANSPORT,
   WORK_ENTITY_DATE_CANONICAL_FIELDS,
@@ -305,6 +306,24 @@ export const validateWorkEntitySources = (m: Record<string, unknown>, add: AddFn
         ? (cs.kind as WorkEntityContractSourceKind)
         : 'openapi';
     const expectedBindingKind = WORK_ENTITY_CONTRACT_SOURCE_TRANSPORT[csKindResolved];
+    // ⛔ D-225 Slice 3 — an ABSENT contract_source has NO PINNED DOC, so it has
+    // no prover, so "must match the prover's transport" has nothing to say.
+    //
+    // The gate above resolves a missing `contract_source` to the fail-closed
+    // `openapi`/REST default, which is right for a MALFORMED one (the kind error
+    // is reported separately and a mismatched op must not slip through) and
+    // WRONG for a legally-absent one: it silently confines the EMPIRICAL route —
+    // the one the ladder rates highest — to REST-bound ops. A doc-less Source
+    // over a graphql pack is rejected today for the same reason, so this was
+    // never an mcp-specific limit; widening for mcp alone would have left the
+    // real rule unstated.
+    //
+    // With no document, the only constraint the machine can honestly impose is
+    // that the op is SYNCHRONOUSLY DISPATCHABLE — a realtime webhook / queue /
+    // push binding cannot back a Source op whatever proves it. Everything else
+    // is the human's attestation in the authoring document (ladder §6), exactly
+    // as the absent-contract_source branch above already says.
+    const empiricallyProven = cs === undefined;
     const declaredOps = new Map<WorkEntityOpSlot, string>();
     const ops = d.ops;
     if (!isObjectRecord(ops)) {
@@ -327,7 +346,10 @@ export const validateWorkEntitySources = (m: Record<string, unknown>, add: AddFn
         if (binding === undefined) {
           add('error', 'WORK_ENTITY_SOURCES_OP_INVALID', sp,
             `operation '${opName}' is not declared in surfaces.api.executes`);
-        } else if (!isObjectRecord(binding) || binding.kind !== expectedBindingKind) {
+        } else if (!isObjectRecord(binding)
+          || (empiricallyProven
+            ? isRealtimeApiBindingKind(binding.kind)
+            : binding.kind !== expectedBindingKind)) {
           // The op's binding must be the transport this declaration's
           // contract_source proves — '${expectedBindingKind}' here (REST →
           // `(method, path)` against the pinned OpenAPI/Discovery doc; GraphQL → op +
@@ -338,7 +360,9 @@ export const validateWorkEntitySources = (m: Record<string, unknown>, add: AddFn
           // WORK_ENTITY_CONTRACT_SOURCE_TRANSPORT keeps the kind→transport mapping
           // declarative (a new provable transport adds one entry, no edit here — §0.5).
           add('error', 'WORK_ENTITY_SOURCES_OP_INVALID', sp,
-            `operation '${opName}' must have a ${expectedBindingKind} execution binding to match the '${csKindResolved}' contract_source — every Source op must be provable against the one pinned schema document`);
+            empiricallyProven
+              ? `operation '${opName}' must have a synchronously-dispatchable execution binding — a realtime webhook/queue/push subscription cannot back a Source op, whatever proves it`
+              : `operation '${opName}' must have a ${expectedBindingKind} execution binding to match the '${csKindResolved}' contract_source — every Source op must be provable against the one pinned schema document`);
         }
         declaredOps.set(slot as WorkEntityOpSlot, opName);
       }
@@ -1050,9 +1074,10 @@ export const validateWorkEntitySources = (m: Record<string, unknown>, add: AddFn
     }
 
     // ── op_arg_bindings ──
-    // Per-connection SCOPING args the list walk / targeted read need but the
+    // Per-connection SCOPING args the list walk / targeted operation needs but the
     // canonical model has no column for (Asana `query.workspace`, Google Tasks
-    // `tasklist_id`). Keyed by op slot (`list` | `read`) → the op's own arg key
+    // `tasklist_id`). Keyed by op slot (`list` | `read` | `update` | `delete` |
+    // `complete`) → the op's own arg key
     // → a `connection_config` binding. Optional (Todoist needs none); when
     // PRESENT the shape is strict, each bound slot's op must be declared, and each
     // binding names source `connection_config` + a non-reserved non-empty key —
@@ -1061,13 +1086,14 @@ export const validateWorkEntitySources = (m: Record<string, unknown>, add: AddFn
     if (opArgBindings !== undefined) {
       if (!isObjectRecord(opArgBindings)) {
         add('error', 'WORK_ENTITY_SOURCES_OP_ARG_BINDING_INVALID', `${p}.op_arg_bindings`,
-          'op_arg_bindings must be an object keyed by op slot (list | read)');
+          'op_arg_bindings must be an object keyed by op slot (list | read | update | delete | complete)');
       } else {
         for (const [slot, argMap] of Object.entries(opArgBindings)) {
           const sp = `${p}.op_arg_bindings.${slot}`;
-          if (slot !== 'list' && slot !== 'read') {
+          if (slot !== 'list' && slot !== 'read' && slot !== 'update'
+              && slot !== 'delete' && slot !== 'complete') {
             add('error', 'WORK_ENTITY_SOURCES_OP_ARG_BINDING_INVALID', sp,
-              `op_arg_bindings slot '${slot}' is not supported — only 'list' | 'read' carry config-sourced args (write-slot scoping is a future extension)`);
+              `op_arg_bindings slot '${slot}' is not supported — use list, read, update, delete, or complete (create uses create_arg_bindings)`);
             continue;
           }
           if (!declaredOps.has(slot as WorkEntityOpSlot)) {
@@ -1082,16 +1108,22 @@ export const validateWorkEntitySources = (m: Record<string, unknown>, add: AddFn
           }
           // The record id rides `op_bindings.<slot>.id_arg`; a scoping arg bound to
           // that SAME arg key is dead config — the dispatch writes the id LAST, so
-          // it always overrides the config value. Reject at publish (only `read`
-          // carries an id_arg; `list` walks a collection). Codex review fold.
+          // it always overrides the config value. Reject at publish (`list`
+          // walks a collection and has no id arg). Codex review fold.
           const opBindingsRec = isObjectRecord(d.op_bindings) ? d.op_bindings : undefined;
-          const slotIdArg = slot === 'read' && opBindingsRec !== undefined
-            && isObjectRecord(opBindingsRec.read) ? opBindingsRec.read.id_arg : undefined;
+          const slotBinding = opBindingsRec !== undefined ? opBindingsRec[slot] : undefined;
+          const slotIdArg = slot !== 'list' && isObjectRecord(slotBinding)
+            ? slotBinding.id_arg
+            : undefined;
+          const slotPreconditionArg = slot !== 'list' && isObjectRecord(slotBinding)
+            ? slotBinding.precondition_arg
+            : undefined;
           for (const [argName, binding] of Object.entries(argMap)) {
             const bp = `${sp}.${argName}`;
-            if (argName === slotIdArg) {
+            if (argName === slotIdArg || argName === slotPreconditionArg) {
+              const collision = argName === slotIdArg ? 'id_arg' : 'precondition_arg';
               add('error', 'WORK_ENTITY_SOURCES_OP_ARG_BINDING_INVALID', bp,
-                `op_arg_bindings.read arg '${argName}' collides with op_bindings.read.id_arg — the record id overrides it at dispatch, so this binding is dead config`);
+                `op_arg_bindings.${slot} arg '${argName}' collides with op_bindings.${slot}.${collision} — the targeted operation owns that argument, so this binding is dead config`);
               continue;
             }
             validateConfigArgBinding(binding, bp, 'WORK_ENTITY_SOURCES_OP_ARG_BINDING_INVALID', add);

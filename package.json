@@ -1,6 +1,6 @@
 {
   "name": "recued",
-  "version": "26.7.26",
+  "version": "26.8.1",
   "private": true,
   "description": "Self-hosted Recued server and webclient",
   "license": "AGPL-3.0-only",
@@ -56,8 +56,8 @@
     "build:server": "npm run build --workspace @recued/server",
     "build:webclient": "npm run build:bundle:prod --workspace @recued/webclient",
     "typecheck:tests": "tsc -p tsconfig.test.json --noEmit",
-    "test": "vitest run",
-    "e2e:webclient": "node apps/webclient/e2e/harness/build-harness.mjs && playwright test -c apps/webclient/e2e/playwright.config.ts kitchen-render.spec.ts full-app.spec.ts",
+    "test": "vitest run --pool forks",
+    "e2e:webclient": "node apps/webclient/e2e/harness/build-harness.mjs && playwright test -c apps/webclient/e2e/playwright.config.ts full-app.spec.ts",
     "start": "npm start --workspace @recued/server",
     "dev": "npm run dev --workspace @recued/server",
     "ci": "npm run build && npm run build:server && npm run build:webclient && npm run typecheck:tests && npm test"

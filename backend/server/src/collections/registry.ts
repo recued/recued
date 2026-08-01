@@ -34,6 +34,14 @@ export interface CollectionRegistry {
    *  arguments — the registry keys are interpolated verbatim from
    *  TOML. */
   get(platform: string, slug: string): Collection | undefined;
+  /** Remove a `(platform, slug)` entry. Returns true when one was present.
+   *
+   *  Does NOT close the collection — the caller that took it out of service owns
+   *  that (the mail/calendar stacks close in their own `stopLive`), and closing
+   *  here would double-close. Exists because `register` THROWS on a duplicate:
+   *  without a way out, a delete-then-re-enroll of the same slug either throws
+   *  or silently keeps serving the CLOSED collection from the first enroll. */
+  unregister(platform: string, slug: string): boolean;
   /** Every registered collection in registration order. Returns a
    *  shallow copy so callers can iterate without risk of
    *  mid-iteration mutation. */
@@ -73,6 +81,18 @@ export const createCollectionRegistry = (): CollectionRegistry => {
 
     get(platform, slug) {
       return byKey.get(makeKey(platform, slug));
+    },
+
+    unregister(platform, slug) {
+      const k = makeKey(platform, slug);
+      const existing = byKey.get(k);
+      if (existing === undefined) return false;
+      byKey.delete(k);
+      // `order` backs `list()`, so it has to drop the entry too — leaving it
+      // would keep a removed collection in every heartbeat / retention sweep.
+      const i = order.indexOf(existing);
+      if (i >= 0) order.splice(i, 1);
+      return true;
     },
 
     list() {

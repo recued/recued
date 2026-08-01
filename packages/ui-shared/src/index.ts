@@ -6,6 +6,7 @@
  *  one statement. */
 
 export * from './template.js';
+export * from './date-time.js';
 export * from './icon-render.js';
 export * as Icons from './icons.generated.js';
 export * from './action-dispatcher.js';
@@ -13,6 +14,9 @@ export * from './field-dispatcher.js';
 export * from './recovery-grid-field-handler.js';
 export * from './recovery-words.js';
 export * from './variable-widgets.js';
+export * from './output-filter.js';
+export * from './file-ref-array.js';
+export * from './record-ref-variable.js';
 export * from './config-editor-overlay.js';
 export * as Primitives from './primitives/index.js';
 export * as TopBar from './top-bar/index.js';
@@ -68,10 +72,25 @@ export {
 // D-125 Phase 7 — Settings → Connections page.
 export {
   renderConnectionsPage,
+  connectionFormValidationIssue,
+  connectionFormValidationSummary,
+  connectionFormValidationShouldAnnounce,
+  connectionCredentialRegenerationAdminHandoff,
   validateConnectionForm,
   CONNECTIONS_PAGE_STYLES,
+  MCP_PACK_INSTALL_SCOPE_HOST_ATTR,
   initialConnectionsPageState,
   initialConnectionsDialogState,
+  initialConnectionsSetupGuideState,
+  canonicalizeConnectionSetupGuideUrl,
+  buildConnectionSetupGuidePreview,
+  connectionSetupGuideContextsMatch,
+  canApplyConnectionSetupGuideSuggestion,
+  connectionSetupGuideReturnTarget,
+  connectionOAuthCredentialReadiness,
+  connectionOAuthHttpsEndpointIssue,
+  invalidatesConnectionOAuthResult,
+  isConnectionOAuthLockedField,
   connectionRowKey,
   projectConnectionPayload,
   shouldPatchConnectionAuth,
@@ -79,11 +98,47 @@ export {
   resolveConnectionViewVendor,
   buildConnectionEditDialogPatch,
   type ConnectionsPageProps,
+  type ConnectionsPostSafeStopProfileHandoff,
+  type ConnectionFormValidationIssue,
+  type ConnectionFormValidationSummary,
   type ConnectionsPageState,
   type ConnectionsDialogState,
+  type ConnectionsDialogExternalChangeState,
+  type ConnectionsDialogCredentialCorrectionState,
   type ConnectionsDialogStage,
+  type ConnectionsServerUpdateTriage,
+  type ConnectionsServerUpdateTriageReason,
+  type ServerUpdateReceiptVerificationState,
+  type ConnectionSetupGuideAuthType,
+  type ConnectionSetupGuideConfidence,
+  type ConnectionSetupGuideReturnTarget,
+  type ConnectionSetupGuideRequest,
+  type ConnectionSetupGuideResult,
+  type ConnectionSetupGuidePreview,
+  type ConnectionsSetupGuideStage,
+  type ConnectionsSetupGuideState,
+  type CanonicalConnectionSetupGuideUrl,
+  type BuildConnectionSetupGuidePreviewResult,
+  type ConnectionOAuthCredentialFieldKey,
+  type ConnectionOAuthCredentialIssue,
+  type ConnectionOAuthCredentialReadiness,
+  type ConnectionOAuthCredentialRequirement,
   type ConnectionPayload,
   type ConnectionEditDialogPatch,
+  applyConnectionHints,
+  connectionHintSetupSlug,
+  connectionHintValues,
+  type AppliedConnectionHint,
+  type ConnectionHintSource,
+  // D-225 Slice 2 — the MCP generated-pack owner surfaces.
+  mcpPackBadge,
+  mcpPackReviewView,
+  packRemovalMessage,
+  packRemovalConfirm,
+  type McpPackStatusView,
+  type McpPackBadge,
+  type McpPackReviewRowView,
+  type McpPackReviewView,
 } from './connections/index.js';
 // Connections ▸ foundational account lanes (Mail · Calendar · Files) — the
 // `collection.{mail,calendar,file}.*` half of the restructured surface (R13–R16).
@@ -108,6 +163,7 @@ export {
   type AccountLaneId,
   type AccountProvider,
   type AccountRow,
+  type AccountsOAuthReloadRecovery,
   type AccountsPanelProps,
   type AccountsPanelStage,
   type AccountsPanelState,
@@ -179,6 +235,9 @@ export {
   tradingviewUdfSchema,
   TRADINGVIEW_UDF_DEMO_BASE,
   TRADINGVIEW_UDF_SCHEMA_INITIAL_VALUES,
+  blueskySchema,
+  BLUESKY_API_BASE,
+  BLUESKY_SCHEMA_INITIAL_VALUES,
   apiSchema,
   mcpSchemas,
   notificationSchemas,
@@ -215,6 +274,7 @@ export {
 // "type a name → store an id" field (recipe filters, `data.*` refs, …).
 // Namespaced (generic model verbs like `setQuery`/`closeList` would
 // otherwise pollute the flat barrel).
+export * from './output-table-edit.js';
 export * as RefPicker from './ref-picker/index.js';
 // Shared resumable-upload engine + widget — the CLIENT half of D-172 file
 // uploads (state machine over the binary `/ws/upload` transport + `upload.*`

@@ -10,7 +10,7 @@
  *  success; a timeout is NOT), the schema-too-new gate, and the footgun invariant
  *  (the archive key NEVER reaches pairCode; only `importArchive`). */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { ArchiveImportRebind, ArchiveManifest } from '@recued/contracts';
 
 import {
@@ -18,6 +18,7 @@ import {
 } from './pair-code-input-host.js';
 import { PAIR_CODE_SUCCESS_ERROR_COPY } from './pair-code-success.js';
 import {
+  createBrowserRestoreOps,
   createRestoreOnboarding,
   RESTORE_ONBOARDING_COPY,
   type RestoreChannel,
@@ -25,6 +26,8 @@ import {
   type RestoreOnboardingState,
   type RestoreOps,
 } from './restore-onboarding.js';
+import { createInMemoryWebclientLocalStore } from '../storage/local-store.js';
+import type { WebclientTokenStore } from '../storage/token-store.js';
 import type {
   ArchiveImportCaller,
   ArchiveUploadFile,
@@ -650,5 +653,59 @@ describe('restore-onboarding — lifecycle + guards', () => {
     const before = seen.length;
     await onboarding.confirm();
     expect(seen).toHaveLength(before);
+  });
+});
+
+describe('restore-onboarding — browser boot wiring', () => {
+  it('selects the restored server through ensureProfile, not a server_url field write', async () => {
+    const localStore = createInMemoryWebclientLocalStore();
+    const ensureProfile = vi.spyOn(localStore, 'ensureProfile');
+    const setField = vi.spyOn(localStore, 'set');
+    const tokenStore: WebclientTokenStore = {
+      async wrap({ token_id, bearer }) {
+        return {
+          token_id,
+          ciphertext_b64: `wrapped:${bearer}`,
+          iv_b64: 'iv',
+          issued_at: 1_700_000_000,
+        };
+      },
+      async unwrap() {
+        throw new Error('unwrap not exercised by restore finalization');
+      },
+    };
+    const ops = createBrowserRestoreOps({
+      localStore,
+      profileStore: localStore,
+      tokenStore,
+      instanceId: 'restore-browser-1',
+      invokePassportFetch: async () => {
+        throw new Error('passport.fetch should not run');
+      },
+    });
+
+    const result = await ops.finalize({
+      serverUrl: 'https://restore.example:8443',
+      token: 'restore-bearer',
+      token_id: 'restore-token-1',
+      passport: {
+        identity: {
+          server_public_key: 'restore-spki',
+          current_handle: 'alice',
+        },
+        network: {},
+      },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(ensureProfile).toHaveBeenCalledWith(
+      'wss://restore.example:8443/ws',
+    );
+    expect(setField.mock.calls.some(([key]) => key === 'server_url')).toBe(false);
+    expect(await localStore.inspect()).toMatchObject({
+      server_url: 'wss://restore.example:8443/ws',
+      server_public_key: 'restore-spki',
+      webclient_token: { token_id: 'restore-token-1' },
+    });
   });
 });

@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { RecipeDefinition, RecipePiiPostureSummary } from '@recued/contracts';
 
-import { assessRecipePiiPosture } from '../auto-pii-apply.js';
+import { assessRecipePiiPosture, configureAutoPiiProtection } from '../auto-pii-apply.js';
 
 type Step = Record<string, unknown>;
 
@@ -68,16 +68,13 @@ const expectedManualSummary = (): RecipePiiPostureSummary => ({
 });
 
 describe('assessRecipePiiPosture', () => {
-  let priorAutoPii: string | undefined;
 
   beforeEach(() => {
-    priorAutoPii = process.env.RECUED_AUTO_PII;
-    delete process.env.RECUED_AUTO_PII;
+    configureAutoPiiProtection(() => true); // protection ON (the default)
   });
 
   afterEach(() => {
-    if (priorAutoPii === undefined) delete process.env.RECUED_AUTO_PII;
-    else process.env.RECUED_AUTO_PII = priorAutoPii;
+    configureAutoPiiProtection(() => true); // restore the safe default
   });
 
   it('returns null for a clean recipe', () => {
@@ -88,8 +85,8 @@ describe('assessRecipePiiPosture', () => {
     expect(assessRecipePiiPosture(canonicalInjectableLeak())).toEqual(expectedAutoSummary());
   });
 
-  it('does not claim auto protection when RECUED_AUTO_PII=off', () => {
-    process.env.RECUED_AUTO_PII = 'off';
+  it('does not claim auto protection when privacy.auto_pii_protection is off', () => {
+    configureAutoPiiProtection(() => false);
 
     expect(assessRecipePiiPosture(canonicalInjectableLeak())).toEqual(expectedManualSummary());
   });

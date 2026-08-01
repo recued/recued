@@ -1,14 +1,26 @@
 /** D-187 §6 follow-on — top-level Packs route acceptance.
  *
- *  Packs + Local tools graduated out of Settings into the `#packs` route
+ *  Packs graduated out of Settings into the `#packs` route
  *  (`packs/bootstrap-packs-route.ts`). This drives `bootstrapPacksRoute`
  *  through a fake Document — same fake-DOM pattern as the connections-route
  *  test (`d-174-p3-connections-route.test.ts`) — and asserts the route
  *  concerns only (chrome, section mounts, caller forwarding, unavailable
  *  empty-states, the install→cli-grant-dialog wrapper, dispose). Panel
  *  internals stay covered by the panel-unit tests
- *  (`d-145-*-packs-panel*`, `d-182-local-tools-panel`, `d-182-cli-grant-dialog`).
- */
+ *  (`d-145-*-packs-panel*`, `d-182-cli-grant-dialog`).
+ *
+ *  ── The retired roster-wide "Local tools" section (2026-07-27) ────────
+ *  The route used to append a second section: every installed cli tool ×
+ *  every contract. It rendered under `#packs/<slug>` too (the list↔detail
+ *  toggle is internal to the surface), reading as that pack's local tools
+ *  while showing the whole roster. Deleted — the by-pack ACCESS section and
+ *  `#contracts` are the two pack-honest axes.
+ *
+ *  Its FOUR callers stayed. Each has a surviving consumer, so this file
+ *  asserts them per-consumer rather than "some caller fired": the universe
+ *  read gates supervised-daemon rows on binary-on-PATH, and the list/set pair
+ *  + contracts list drive the ACCESS panel's cli op toggles. Dropping them to
+ *  "disable local tools" silently makes those toggles inert. */
 
 import { describe, expect, it, vi } from 'vitest';
 import type {
@@ -19,7 +31,6 @@ import type {
 
 import {
   PACKS_ROUTE_HEADING_ATTR,
-  PACKS_ROUTE_LOCAL_TOOLS_SECTION_ATTR,
   PACKS_ROUTE_PACKS_SECTION_ATTR,
   PACKS_ROUTE_STYLES,
   PACKS_ROUTE_STYLES_MARKER,
@@ -32,10 +43,13 @@ import {
   bootstrapSettingsRoute,
 } from '../settings/bootstrap-settings-route.js';
 import type {
-  LocalToolsListCaller,
-  LocalToolsSetCaller,
-  LocalToolsUniverseCaller,
-} from '../settings/local-tools-panel.js';
+  GrantCatalogOperationsCaller,
+  GrantCliReachabilityListCaller,
+  GrantCliReachabilitySetCaller,
+  GrantContractsCaller,
+  GrantReadCaller,
+} from '../contracts/contract-grants-panel.js';
+import type { SupervisionReachabilityCaller } from '../settings/supervision-controls.js';
 import { createInMemoryWebclientLocalStore } from '../storage/local-store.js';
 
 // ── Fake DOM (mirrors d-174-p3-connections-route.test.ts) ───────────
@@ -182,6 +196,16 @@ const collectByAttr = (
   return out;
 };
 
+/** Collect by tagName — a STRUCTURAL count that cannot rot the way a
+ *  hard-coded `data-*` literal can (a typo'd attr literal is silently green
+ *  forever). Used to assert the route hosts exactly ONE section. */
+const collectByTag = (root: FakeEl, tag: string, out: FakeEl[] = []): FakeEl[] => {
+  // The fake `createElement` upper-cases, matching the real DOM's `tagName`.
+  if (root.tagName === tag.toUpperCase()) out.push(root);
+  for (const child of root.children) collectByTag(child, tag, out);
+  return out;
+};
+
 const collectText = (root: FakeEl): string =>
   `${root.textContent}${root.children.map(collectText).join('')}`;
 
@@ -248,9 +272,9 @@ const okInstallResult = (): BulkPackInstallResultLike => ({
 // returns an empty tool universe (the snapshot resolves to an empty key set,
 // not null, so the install wrapper still fires `openForNewTools`).
 const makeCliCallers = () => {
-  const runUniverse = vi.fn<LocalToolsUniverseCaller>(async () => ({ tools: [] }));
-  const runList = vi.fn<LocalToolsListCaller>(async () => ({ rows: [] }));
-  const runSet = vi.fn<LocalToolsSetCaller>(async (args) => ({
+  const runUniverse = vi.fn<SupervisionReachabilityCaller>(async () => ({ tools: [] }));
+  const runList = vi.fn<GrantCliReachabilityListCaller>(async () => ({ rows: [] }));
+  const runSet = vi.fn<GrantCliReachabilitySetCaller>(async (args) => ({
     principal: args.principal ?? 'user_self',
     ingredient_id: args.ingredient_id,
     operation_id: args.operation_id,
@@ -261,7 +285,7 @@ const makeCliCallers = () => {
 };
 
 describe('D-187 §6 packs route', () => {
-  it('mounts the Packs + Local tools sections, wires callers, and disposes cleanly', async () => {
+  it('mounts the Packs section only — no roster-wide Local tools section — wires callers, and disposes cleanly', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
     const packsListCaller = vi.fn(async () => ({ packs: [baseEntry({ installed: true })] }));
@@ -289,7 +313,14 @@ describe('D-187 §6 packs route', () => {
     expect(PACKS_ROUTE_STYLES).toContain('[data-recued-install-connect]');
     expect(PACKS_ROUTE_STYLES).toContain('[data-recued-install-grant-picker]');
     expect(route.packsPanel()).not.toBeNull();
-    expect(route.localToolsPanel()).not.toBeNull();
+    // The route hosts exactly ONE section, and it is the Packs one. Asserted
+    // structurally (tag count + the live-imported attr) rather than by a
+    // hard-coded `data-recued-...-local-tools` literal, which would be silently
+    // green forever if the literal were ever typo'd.
+    const sections = collectByTag(root, 'section');
+    expect(sections).toHaveLength(1);
+    expect(sections[0]!.attrs.has(PACKS_ROUTE_PACKS_SECTION_ATTR)).toBe(true);
+    expect(collectText(root)).not.toContain('Local tools');
 
     await route.packsPanel()!.whenLoaded();
     await tick();
@@ -298,14 +329,53 @@ describe('D-187 §6 packs route', () => {
     // the detail panel's roster (both share this caller).
     expect(packsListCaller).toHaveBeenCalledTimes(2);
     expect(route.packsPanel()!.getState()).toBe('ready');
-    // The Local tools grid pulls both the universe + the reachability rows.
+    // The universe read survives the section's deletion because a DIFFERENT
+    // consumer needs it: the supervised-daemon rows' binary-on-PATH gate. This
+    // wiring has no ACCESS trio, so `runList` is correctly NOT pulled here —
+    // the ACCESS path is asserted in its own case below.
     expect(cli.runUniverse).toHaveBeenCalled();
-    expect(cli.runList).toHaveBeenCalled();
     // Supervision discovery list is pulled alongside packs.list (forwarded).
     expect(supervisionListCaller).toHaveBeenCalled();
 
     route.dispose();
     expect(root.children).toHaveLength(0);
+  });
+
+  it('forwards the cli list/set pair to the by-pack ACCESS panel (the retired grid was not their only consumer)', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const cli = makeCliCallers();
+    // ACCESS turns on only with contracts + grant-read + catalog-operations.
+    const accessContractsCaller = vi.fn<GrantContractsCaller>(async () => ({
+      contracts: [],
+    }));
+    const contractGrantReadCaller = vi.fn<GrantReadCaller>(async () => ({ grants: [] }));
+    const catalogOperationsCaller = vi.fn<GrantCatalogOperationsCaller>(async () => ({
+      ingredients: [],
+    }));
+
+    const route = bootstrapPacksRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      packsListCaller: vi.fn(async () => ({ packs: [baseEntry({ installed: true })] })),
+      localToolsListCaller: cli.runList,
+      localToolsSetCaller: cli.runSet,
+      accessContractsCaller,
+      contractGrantReadCaller,
+      catalogOperationsCaller,
+    });
+
+    await route.packsPanel()!.whenLoaded();
+    await tick();
+
+    // The ACCESS panel resolves cli op state from the reachability allowlist —
+    // so `cli.reachability.list` is pulled with NO Local tools section present.
+    // If a future change drops these callers as "local tools cleanup", the cli
+    // op toggles go inert and this red catches it.
+    expect(cli.runList).toHaveBeenCalled();
+    expect(accessContractsCaller).toHaveBeenCalled();
+
+    route.dispose();
   });
 
   it('renders unavailable empty-states + null accessors when no callers are wired', () => {
@@ -317,10 +387,10 @@ describe('D-187 §6 packs route', () => {
     });
 
     expect(route.packsPanel()).toBeNull();
-    expect(route.localToolsPanel()).toBeNull();
     expect(route.cliGrantDialog()).toBeNull();
-    // One unavailable panel in each section (Packs + Local tools).
-    expect(collectByAttr(root, PACKS_ROUTE_UNAVAILABLE_ATTR)).toHaveLength(2);
+    // ONE unavailable panel — the Packs section's. Was 2 before the roster-wide
+    // Local tools section was retired.
+    expect(collectByAttr(root, PACKS_ROUTE_UNAVAILABLE_ATTR)).toHaveLength(1);
     expect(
       findByAttrValue(root, PACKS_ROUTE_PACKS_SECTION_ATTR, '')
         ?? collectByAttr(root, PACKS_ROUTE_PACKS_SECTION_ATTR)[0],
@@ -369,7 +439,7 @@ describe('D-187 §6 packs route', () => {
     // caller flips the flag. (`snapshot()` reads `runUniverse` synchronously at
     // wrapper entry, before the install resolves, so `before` stays empty.)
     let installed = false;
-    const runUniverse = vi.fn<LocalToolsUniverseCaller>(async () => ({
+    const runUniverse = vi.fn<SupervisionReachabilityCaller>(async () => ({
       tools: installed
         ? [
             {
@@ -382,8 +452,8 @@ describe('D-187 §6 packs route', () => {
           ]
         : [],
     }));
-    const runList = vi.fn<LocalToolsListCaller>(async () => ({ rows: [] }));
-    const runSet = vi.fn<LocalToolsSetCaller>(async (args) => ({
+    const runList = vi.fn<GrantCliReachabilityListCaller>(async () => ({ rows: [] }));
+    const runSet = vi.fn<GrantCliReachabilitySetCaller>(async (args) => ({
       principal: args.principal ?? 'user_self',
       ingredient_id: args.ingredient_id,
       operation_id: args.operation_id,

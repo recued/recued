@@ -106,7 +106,13 @@ describe('startListenerExposureRuntime', () => {
     const listeners = {
       serverHandlerSet: { wsHandle },
       listenerCoordinator: { tag: 'listener-coordinator' },
-      lanBindAddress: '192.168.1.44',
+      // DISTINCT values on purpose: the exposure machine must receive what the
+      // listener binds, the post-listener runtime what the server is reachable
+      // at (its cert stack publishes `wss://<addr>/ws` pairing hints, and
+      // `0.0.0.0` is not somewhere a peer dials). Equal values here would let a
+      // swapped wiring pass.
+      lanBindAddress: '0.0.0.0',
+      lanAdvertisedAddress: '192.168.1.44',
       server,
     };
     const runtime = {
@@ -125,7 +131,7 @@ describe('startListenerExposureRuntime', () => {
     bridgeMocks.startPostListenerRuntime.mockImplementation(async (options) => {
       order.push('runtime');
       expect(options.server).toBe(server);
-      expect(options.lanBindAddress).toBe('192.168.1.44');
+      expect(options.lanAdvertisedAddress).toBe('192.168.1.44');
       expect(options.actualPort).toBe(4711);
       return runtime;
     });
@@ -159,13 +165,13 @@ describe('startListenerExposureRuntime', () => {
     expect(bridgeMocks.composeServeExposure).toHaveBeenCalledWith({
       ...options.exposure,
       listenerCoordinator: listeners.listenerCoordinator,
-      lanBindAddress: '192.168.1.44',
+      lanBindAddress: '0.0.0.0',
       wsHandleClientCount: expect.any(Function),
     });
     expect(bridgeMocks.startPostListenerRuntime).toHaveBeenCalledWith({
       ...options.runtime,
       server,
-      lanBindAddress: '192.168.1.44',
+      lanAdvertisedAddress: '192.168.1.44',
       actualPort: 4711,
     });
 

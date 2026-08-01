@@ -38,6 +38,8 @@
  *
  *  Spec: D-148 § A.4.4. */
 
+import type { WebclientTokenRecord } from '@recued/contracts';
+
 import type { WebclientLocalStore } from '../storage/local-store.js';
 import { rewrapBearerForActivePair } from '../storage/rewrap-bearer.js';
 import type { WebclientTokenStore } from '../storage/token-store.js';
@@ -67,6 +69,10 @@ export interface CreateTokenRotationHandlerOptions {
    *  doesn't introduce console noise; production wires it to the audit
    *  / telemetry surface that already exists for transport errors. */
   onError?: (err: Error, context: TokenRotationFailureContext) => void;
+  /** Best-effort success sink after the fresh envelope is durable. Mounted
+   * tab convergence uses it to advance its own generation before notifying
+   * siblings, avoiding a self-remount on the next focus/state hint. */
+  onRotated?: (record: WebclientTokenRecord) => void;
 }
 
 export interface TokenRotationHandler {
@@ -136,6 +142,14 @@ export const createTokenRotationHandler = (
       options.ws.applyRotatedBearer();
     } catch {
       // applyRotatedBearer is documented as non-throwing; defensive.
+    }
+    if (options.onRotated) {
+      try {
+        options.onRotated(result.record);
+      } catch {
+        // Success observers are advisory; the fresh envelope is durable and
+        // must remain usable even when a host callback fails.
+      }
     }
   };
 

@@ -70,3 +70,20 @@ export const signingKeyMatchesPin = (
     Buffer.from(derived.keyId).equals(Buffer.from(pinned.keyId))
   );
 };
+
+/** Filename `release-build` drops into the output dir when it signed with an
+ *  EPHEMERAL in-process key, and `release-publish` refuses to upload alongside.
+ *
+ *  A build with no `RECUED_SIGN_SEED` produces output that is otherwise
+ *  INDISTINGUISHABLE from a real release — same files, same shapes, valid
+ *  signatures under a throwaway key — and warns only on the console. Publishing
+ *  it overwrites the live `manifest.json` with one every consumer rejects,
+ *  taking the update channel down until a correctly signed manifest replaces
+ *  it. The console warning cannot prevent that: the publish happens later, in
+ *  another shell, possibly by another person. This marker carries the warning
+ *  ON DISK, to the step that does the irreversible thing.
+ *
+ *  Shared here (not duplicated in each script) so the writer and the refuser
+ *  cannot drift apart — a copied filename would rot silently, and the failure
+ *  mode of a drifted name is a publish that no longer refuses. */
+export const EPHEMERAL_KEY_MARKER = 'DO-NOT-PUBLISH-EPHEMERAL-KEY.txt';

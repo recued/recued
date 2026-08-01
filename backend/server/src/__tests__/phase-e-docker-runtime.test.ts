@@ -144,4 +144,52 @@ describeDocker('Phase E - Docker runtime artifact smoke', () => {
     expect(out).toContain('--db <path>');
     expect(out).toContain('Pairing:');
   }, 120_000);
+
+  /** ⛔ THE GAP THAT LET A DEAD IMAGE SHIP. Every check above either inspects
+   *  metadata or runs `--version` / `--help` — the two commands that never open
+   *  a database. So nothing loaded the SQLite driver, and the image spent an
+   *  unknown period unable to start at all:
+   *
+   *      Could not locate the bindings file. Tried:
+   *       → …/better-sqlite3-multiple-ciphers/lib/binding/node-v127-linux-arm64/…
+   *
+   *  D-212 made the cipher fork the sole runtime driver and demoted plain
+   *  `better-sqlite3` to dev-only, but the Dockerfile kept rebuilding the plain
+   *  one. A green build, green metadata assertions, and a container that died on
+   *  its first line.
+   *
+   *  🔑 The only test that catches "does it actually run" is running it. This
+   *  one boots the real entrypoint, waits for the server to serve, and asserts
+   *  the HEALTHCHECK the orchestrator will use goes green — which separately
+   *  catches probing with a binary the image does not have (it used `wget`;
+   *  node:22-slim has none, so containers sat `unhealthy` forever). */
+  it('⛔ BOOTS, opens its database, and reaches HEALTHY', () => {
+    const name = `recued-boot-smoke-${process.pid}`;
+    docker(['rm', '-f', name]);
+    try {
+      docker(['run', '-d', '--name', name, IMAGE_TAG]);
+
+      // Poll rather than sleep — the health probe has its own start period.
+      let health = '';
+      let state = '';
+      for (let i = 0; i < 40; i += 1) {
+        state = docker(['inspect', name, '--format', '{{.State.Status}}']).trim();
+        health = docker([
+          'inspect', name, '--format',
+          '{{if .State.Health}}{{.State.Health.Status}}{{else}}none{{end}}',
+        ]).trim();
+        if (state !== 'running' || health === 'healthy' || health === 'unhealthy') break;
+        execFileSync('sleep', ['3']);
+      }
+
+      const logs = docker(['logs', name], { encoding: 'utf8' });
+      // Name the actual failure in the assertion message — a bare `false` here
+      // sends the reader to the wrong place entirely.
+      expect(state, `container exited instead of serving. logs:\n${logs}`).toBe('running');
+      expect(logs).not.toMatch(/Could not locate the bindings file/);
+      expect(health, `HEALTHCHECK never went green. logs:\n${logs}`).toBe('healthy');
+    } finally {
+      docker(['rm', '-f', name]);
+    }
+  }, 180_000);
 });

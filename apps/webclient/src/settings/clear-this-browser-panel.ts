@@ -81,11 +81,12 @@
  *  times across the panel's life so the GC cost is negligible.
  *
  *  DD#7 — Errors are recoverable, not terminal — but the error copy
- *  must NOT imply atomic rollback. `clearThisBrowser` runs four
- *  sequential awaits (local_store / session / cache / crypto-key);
- *  a throw at any step propagates up while earlier steps remain
- *  applied. So the `error` state's copy admits to partial wipe and
- *  points the user at the only safe recovery (re-pair from server).
+ *  must NOT imply atomic rollback. `clearThisBrowser` first clears the
+ *  local credential + crypto-key stores under one cross-tab lock, then
+ *  clears session state and caches; a throw at any step propagates up
+ *  while earlier steps remain applied. The `error` state's copy therefore
+ *  admits to a partial wipe and points the user at the only safe recovery
+ *  (re-pair from server).
  *  Retry stays available because the substrate is idempotent — re-
  *  running clears the same fields again (no-op on already-empty
  *  surfaces) and may push past the previously-failing step. Partial
@@ -164,6 +165,9 @@ export interface MountClearThisBrowserPanelOptions {
    *  (DD#5). When omitted the key store is left in place; the `done`
    *  state's result row reflects that. */
   crypto_keys_wiper?: () => Promise<void>;
+  /** Fires at the durable local-credential clear boundary, before later
+   * privacy cleanup can fail. Best-effort inside `clearThisBrowser`. */
+  onLocalCredentialsCleared?: () => void;
   /** Optional service-worker environment seam — forwarded to
    *  `unregisterServiceWorker`. Tests inject a fake; production lets
    *  the substrate resolve `globalThis.navigator.serviceWorker`. */
@@ -289,6 +293,12 @@ export const mountClearThisBrowserPanel = (
           : {}),
         ...(opts.crypto_keys_wiper !== undefined
           ? { crypto_keys_wiper: opts.crypto_keys_wiper }
+          : {}),
+        ...(opts.onLocalCredentialsCleared !== undefined
+          ? {
+              on_local_credentials_cleared:
+                opts.onLocalCredentialsCleared,
+            }
           : {}),
       };
       const result = await clearThisBrowser(clearOpts);

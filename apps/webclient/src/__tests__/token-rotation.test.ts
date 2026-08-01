@@ -243,11 +243,13 @@ describe('D-148 § A.4.4 — createTokenRotationHandler', () => {
     const tokenControls = buildTokenStore();
     const subscriberControls = buildSubscriber();
     const wsControls = buildWs();
+    const onRotated = vi.fn();
     const handler = createTokenRotationHandler({
       localStore,
       tokenStore: tokenControls.store,
       subscriber: subscriberControls.subscriber,
       ws: wsControls.ws,
+      onRotated,
     });
 
     subscriberControls.fire(targetEvent());
@@ -273,6 +275,35 @@ describe('D-148 § A.4.4 — createTokenRotationHandler', () => {
       issued_at: 1_700_000_999_999, // server's issued_at, not wrap-time
     });
 
+    expect(wsControls.applyCount()).toBe(1);
+    expect(onRotated).toHaveBeenCalledWith({
+      token_id: 'tok-new',
+      ciphertext_b64: 'ct-tok-new',
+      iv_b64: 'iv-tok-new',
+      issued_at: 1_700_000_999_999,
+    });
+    handler.dispose();
+  });
+
+  it('keeps a durable rotation successful when its advisory observer throws', async () => {
+    const localStore = buildLocalStore(PAIRED);
+    const tokenControls = buildTokenStore();
+    const subscriberControls = buildSubscriber();
+    const wsControls = buildWs();
+    const handler = createTokenRotationHandler({
+      localStore,
+      tokenStore: tokenControls.store,
+      subscriber: subscriberControls.subscriber,
+      ws: wsControls.ws,
+      onRotated: () => {
+        throw new Error('observer unavailable');
+      },
+    });
+
+    subscriberControls.fire(targetEvent());
+    await flush();
+
+    expect((await localStore.get('webclient_token'))?.token_id).toBe('tok-new');
     expect(wsControls.applyCount()).toBe(1);
     handler.dispose();
   });

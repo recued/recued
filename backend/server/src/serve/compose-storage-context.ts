@@ -112,6 +112,7 @@ import {
 } from '../storage/hostname-registry.js';
 import type { BaseVaultQuotas } from './compose-base-context.js';
 import type { BootTrace } from '../cli/boot-trace.js';
+import { createRecordsStore, type RecordsStore } from '../records/index.js';
 
 type PerPairStore<K extends keyof PerPairStoresBundle> =
   PerPairStoresBundle[K] | undefined;
@@ -142,6 +143,8 @@ export interface StorageContext {
    *  draft is not yet an installed capability). */
   draftStore: DraftStore;
   recipeStore: RecipeStore;
+  /** D-221 — core-owned, publisher/pack-namespaced Records authority. */
+  recordsStore: RecordsStore;
   eventBus: EventBus;
   approvalStore: ApprovalStore;
   fileStack: FileStack | undefined;
@@ -289,6 +292,7 @@ export const composeStorageContext = async (
   // step: a draft is an in-progress composition, not an installed capability.
   const draftStore = createDraftStore(db);
   const recipeStore = createRecipeStore(undefined, db);
+  const recordsStore = createRecordsStore(db);
   const eventBus = createEventBus();
   const approvalStore = createApprovalStore(undefined, {
     onPending: (id) => emitApprovalPending(eventBus, id),
@@ -682,6 +686,7 @@ export const composeStorageContext = async (
     localManifestStore,
     draftStore,
     recipeStore,
+    recordsStore,
     eventBus,
     approvalStore,
     fileStack,

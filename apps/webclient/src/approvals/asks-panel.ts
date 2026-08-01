@@ -140,6 +140,8 @@ export interface AsksPanelMount {
    *  Test seam + host convenience. Awaits both the submit AND the
    *  follow-up re-fetch so callers can observe the converged list. */
   submitAnswer(askId: string, optionId: string): Promise<void>;
+  /** An answer write has been issued and has not acknowledged yet. */
+  hasInFlightWork(): boolean;
   /** Tear down the panel DOM + remove the broadcast subscription.
    *  Idempotent. */
   dispose(): void;
@@ -195,6 +197,7 @@ export const mountAsksPanel = (
   // DD#7.
   let loadGeneration = 0;
   let pendingLoad: Promise<void> = Promise.resolve();
+  let answersInFlight = 0;
 
   const root = doc.createElement('div');
   root.setAttribute(ASKS_PANEL_HOST_ATTR, '');
@@ -309,7 +312,12 @@ export const mountAsksPanel = (
     askId: string,
     optionId: string,
   ): Promise<void> => {
-    await opts.runSubmitAnswer({ ask_id: askId, option_id: optionId });
+    answersInFlight += 1;
+    try {
+      await opts.runSubmitAnswer({ ask_id: askId, option_id: optionId });
+    } finally {
+      answersInFlight -= 1;
+    }
     // Acked. Reconcile out the answered ask (also covered by the
     // ask_closed bus frame; both idempotent). Not awaited here so the
     // card's onAnswer resolves on the submit alone.
@@ -349,11 +357,17 @@ export const mountAsksPanel = (
     refresh: () => doRefresh(),
     whenLoaded: () => pendingLoad,
     submitAnswer: async (askId, optionId) => {
-      await opts.runSubmitAnswer({ ask_id: askId, option_id: optionId });
+      answersInFlight += 1;
+      try {
+        await opts.runSubmitAnswer({ ask_id: askId, option_id: optionId });
+      } finally {
+        answersInFlight -= 1;
+      }
       // Test seam / host convenience: await the reconcile too, so a
       // caller can observe the converged list (the card path doesn't).
       await doRefresh();
     },
+    hasInFlightWork: () => answersInFlight > 0,
     dispose: () => {
       if (disposed) return;
       disposed = true;

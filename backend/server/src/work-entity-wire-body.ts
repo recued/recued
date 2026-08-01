@@ -22,7 +22,21 @@
 
 import type { IngredientManifest } from '@recued/contracts';
 
-export type WireTransport = 'rest' | 'graphql';
+/** D-225 Slice 1 — `'mcp'` is a member so the "anything not graphql is rest"
+ *  default can no longer absorb it SILENTLY. It has no composer: composing wire
+ *  args for it is D-225 Slice 3's job, which found that mcp composes like
+ *  GRAPHQL — a typed object of named arguments — and NOT like REST.
+ *
+ *  ⛔ This is the whole reason the member exists. Before the `ApiTransport`
+ *  widening, `kind === 'graphql' ? 'graphql' : 'rest'` was EXHAUSTIVE over the
+ *  binding kinds a work-entity Source can reach, so the fallback was correct.
+ *  It stopped being correct the moment `mcp` joined the union — and it still
+ *  READS correct, which is what makes it dangerous. A work-entity Source may
+ *  declare no `contract_source` at all (the pin is optional and the gate
+ *  excludes unpinned declarations), so an mcp-backed pack could reach here
+ *  today and compose a REST `body.*` tree for a transport that reads `args` —
+ *  sending a write whose arguments the tool never sees. Fail closed instead. */
+export type WireTransport = 'rest' | 'graphql' | 'mcp';
 
 const PROTO_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -68,13 +82,24 @@ export const composeWireArgs = (
   entries: ReadonlyArray<readonly [string, unknown]>,
   transport: WireTransport,
 ): { ok: true; args: Record<string, unknown> } | { ok: false; reason: string } => {
-  if (transport === 'graphql') {
+  // 🔑 D-225 Slice 3 — MCP composes exactly like GRAPHQL, not like REST.
+  //
+  // Slice 1 refused mcp here on the reasoning that "MCP tool arguments are a
+  // typed object per the tool inputSchema, not a REST body tree or graphql
+  // variables". The refusal was right (nothing was built) but the reason was
+  // half wrong: a GraphQL operation's variables are ALSO a typed object of
+  // named arguments. REST is the odd one out — only it has a URL plus a body
+  // TREE that needs composing under `body.`.
+  //
+  // So both take the same branch: flat argument names, and a dotted key is a
+  // REST shape that would arrive at the vendor as a literal `"a.b"` property.
+  if (transport === 'graphql' || transport === 'mcp') {
     const args: Record<string, unknown> = {};
     for (const [key, value] of entries) {
       if (key.includes('.')) {
         return {
           ok: false,
-          reason: `graphql wire arg '${key}' must be a flat variable name — a nested body path is a REST shape`,
+          reason: `${transport} wire arg '${key}' must be a flat argument name — a nested body path is a REST shape`,
         };
       }
       if (Object.prototype.hasOwnProperty.call(args, key)) {
@@ -108,8 +133,11 @@ export const composeWireArgs = (
 };
 
 /** The wire transport of one catalog op, from its surface execution binding
- *  (`surfaces.api.executes[opKey].kind`). Anything not graphql (openapi /
- *  google_discovery REST bindings) composes the REST body. */
+ *  (`surfaces.api.executes[opKey].kind`). Anything not graphql or mcp (openapi
+ *  / google_discovery REST bindings) composes the REST body.
+ *
+ *  D-225 Slice 1 — `mcp` is reported as ITSELF rather than falling into the
+ *  rest default; `composeWireArgs` then refuses it. See `WireTransport`. */
 export const wireTransportOf = (
   manifest: IngredientManifest,
   opKey: string,
@@ -117,5 +145,7 @@ export const wireTransportOf = (
   const kind = (
     manifest.surfaces?.api?.executes as Record<string, { kind?: string }> | undefined
   )?.[opKey]?.kind;
-  return kind === 'graphql' ? 'graphql' : 'rest';
+  if (kind === 'graphql') return 'graphql';
+  if (kind === 'mcp') return 'mcp';
+  return 'rest';
 };

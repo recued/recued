@@ -49,13 +49,31 @@
  *  closes the read-path gap Codex found (a door bypassing the scope fence / op
  *  grant / usage cap) — reads are now owner-policy-safe.
  *
- *  ⚠️ STILL DEFERRED (Inc B-writes) — a WRITE / ask-tier op (whether the
- *  policy_matrix admission OR the catalog gateway is the one that asks) still
- *  cannot HOLD on this direct route — there is no recipe/run to checkpoint — so
- *  it surfaces the not-yet-wired ask stub instead of a real approval hold. Inc
- *  B-writes lands the recipe-less hold/checkpoint/resume + `raw_op` session-grant
- *  mint. The reads milestone commits with Inc A + Inc B-admission + Inc D; writes
- *  wait for Inc B-writes.
+ *  ⚠️ **This block used to say "STILL DEFERRED (Inc B-writes) — a WRITE /
+ *  ask-tier op still cannot HOLD on this direct route".** That is no longer
+ *  true and the stale text was quoted as evidence for a wrong conclusion
+ *  (D-225 § 13.3.1: "door-exposed generated packs are read-only in practice").
+ *
+ *  Inc B-writes is BUILT AND WIRED. A write / ask-tier op the gate holds is
+ *  durably HELD here: a recipe-LESS `Checkpoint` carrying the `raw_op`
+ *  discriminant + the D-158 ask, and an `allow_session` answer mints a `raw_op`
+ *  grant so the next identical call auto-admits. The hold substrate
+ *  (`checkpointStore` / `preflightNotifier` / `sessionGrantResolver`) rides
+ *  `deps` (`McpDeps` ⊇ `ExecuteHandlerDeps`) and is composed in
+ *  `compose-listeners.ts`.
+ *
+ *  ⛔ `approvalNotWiredAsk` is the DEGRADED fallback, not the normal path — it
+ *  fires only when `checkpointStore` / `preflightNotifier` are absent (a
+ *  partial harness / dbless boot). Seeing it in a test does NOT mean writes are
+ *  unsupported; it means that harness did not wire the hold substrate.
+ *
+ *  🔑 Grant and approval are two axes and both apply. The contract grant says
+ *  whether this caller may EVER invoke the op; the op's `approval` tier says
+ *  whether THIS call proceeds now. `approval: 'never'` + granted ⇒ executes
+ *  outright. `approval: 'ask'` + granted ⇒ holds, because a grant that could
+ *  silently satisfy an ask would be a second path to auto-run bypassing
+ *  `confirm_risk_downgrade`. The owner closes that gap deliberately by
+ *  answering `allow_session`.
  */
 
 import { randomUUID } from 'node:crypto';

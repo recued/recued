@@ -6,11 +6,11 @@
  *      Possession of any active inbound token granted access to every
  *      registry tool, defeating the Settings → MCP Tokens checklist.
  *      Fold: `McpDeps.inboundTokenAuthorize` callback gates every
- *      `handleToolCall` dispatch path; bin.ts wires the callback over
- *      `isMcpInboundTokenToolAuthorized` for store-backed bearers. The
- *      env-var bearer path leaves the callback undefined (single-
- *      tenant interim — operator full access by design). Stdio
- *      transport unaffected.
+ *      `handleToolCall` dispatch path; the HTTP and stdio composers wire
+ *      `isMcpInboundTokenToolAuthorized` for inbound-token bearers.
+ *      D-228 later retired the env-var exception this fold originally
+ *      carried: a verified CLI owner is now stated positively with
+ *      `ownerAdmitAll`, while an absent callback denies.
  *
  *    - **P2** — Dispatch closure fell through to `baseMcpDeps` when
  *      bearer re-resolution missed inside the dispatch path (token
@@ -21,9 +21,11 @@
  *      resolution misses now.
  *
  *  This test suite exercises the substrate-level invariants. The full
- *  end-to-end MCP wire wiring lives in bin.ts; here we cover the
- *  `inboundTokenAuthorize` callback shape directly and the bin.ts
- *  resolver behaviour through closures that mirror its construction.
+ *  end-to-end HTTP wiring lives in `wire-mcp-http-transport.ts` and its
+ *  dedicated tests; here we cover the grant predicate, store revocation
+ *  seam, and `mcp-server` list/call enforcement directly. Keeping a
+ *  hand-built copy of the transport closure here would only create a
+ *  second stale contract.
  */
 
 import { describe, expect, it, vi } from 'vitest';
@@ -149,70 +151,6 @@ describe('D-137 P5 follow-on Codex P2 fold — verifier-then-revoke race', () =>
       store.verifyBearer({ bearer: issued.bearer_plaintext, now: 2_500 }),
     ).toBeNull();
   });
-
-  it('dispatch closure returns JSON-RPC -32001 envelope on resolve miss (mirrors bin.ts shape)', async () => {
-    // Mirror the dispatch closure's verify + reject path. The full
-    // closure lives in bin.ts; here we exercise the JSON-RPC envelope
-    // shape it constructs so any change to `JsonRpcResponse` surfaces
-    // as a test failure.
-    const resolveBearer = vi.fn().mockReturnValue(null);
-    type Envelope = { id?: unknown; jsonrpc?: string; method?: string };
-    const dispatchClosure = async (envelope: unknown, token?: string) => {
-      const resolved = token ? resolveBearer(token) : null;
-      if (token && token.length > 0 && !resolved) {
-        const id = (
-          envelope
-          && typeof envelope === 'object'
-          && !Array.isArray(envelope)
-          && 'id' in envelope
-        )
-          ? (envelope as Envelope).id ?? null
-          : null;
-        return {
-          jsonrpc: '2.0',
-          id,
-          error: {
-            code: -32001,
-            message: 'Token state changed between verification and dispatch (revoked / expired / deleted) — re-authenticate.',
-          },
-        };
-      }
-      return null;
-    };
-    const result = (await dispatchClosure(
-      { jsonrpc: '2.0', id: 42, method: 'tools/call' },
-      'recued_revoked-bearer',
-    )) as { jsonrpc: string; id: unknown; error: { code: number; message: string } };
-    expect(result.jsonrpc).toBe('2.0');
-    expect(result.id).toBe(42);
-    expect(result.error.code).toBe(-32001);
-    expect(result.error.message).toMatch(/Token state changed/);
-  });
-
-  it('dispatch closure preserves null id on notification-shape envelopes', async () => {
-    const resolveBearer = vi.fn().mockReturnValue(null);
-    const dispatchClosure = async (envelope: unknown, token?: string) => {
-      const resolved = token ? resolveBearer(token) : null;
-      if (token && token.length > 0 && !resolved) {
-        const id = (
-          envelope
-          && typeof envelope === 'object'
-          && !Array.isArray(envelope)
-          && 'id' in envelope
-        )
-          ? (envelope as { id?: unknown }).id ?? null
-          : null;
-        return { jsonrpc: '2.0', id, error: { code: -32001, message: 'x' } };
-      }
-      return null;
-    };
-    // Notification-shape envelope (no id field) → response carries id:null.
-    const result = (await dispatchClosure(
-      { jsonrpc: '2.0', method: 'tools/call' },
-      'recued_revoked',
-    )) as { id: unknown };
-    expect(result.id).toBeNull();
-  });
 });
 
 describe('D-137 P5 follow-on Codex fold — combined behavior', () => {
@@ -235,17 +173,6 @@ describe('D-137 P5 follow-on Codex fold — combined behavior', () => {
     // Pre-fold, this would have invoked the registry; post-fold, the
     // gate returns false and `handleToolCall` surfaces an MCP error.
     expect(gate('contact.search')).toBe(false);
-  });
-
-  it('env-var bearer path leaves callback undefined → no gate (operator full access)', () => {
-    // bin.ts builds the callback only on the `kind: 'store'` branch;
-    // the `kind: 'env'` branch returns deps without `inboundToken-
-    // Authorize`. This test pins that contract — if a future change
-    // accidentally installs a gate on the env-var path, single-tenant
-    // operators would lose access.
-    type DepsShape = { inboundTokenAuthorize?: (n: string) => boolean };
-    const envDeps: DepsShape = {};
-    expect(envDeps.inboundTokenAuthorize).toBeUndefined();
   });
 });
 
@@ -274,19 +201,19 @@ describe('D-137 P5 follow-on Codex P1 fold — handleToolCall gate end-to-end', 
     expect(text).toMatch(/not granted by this token/);
   });
 
-  it('skips the gate entirely when callback is undefined (stdio + env-var paths)', async () => {
+  /** ⛔⛔ REWRITTEN BY DECISION — D-228 slice 6; see the sibling below for why
+   *  the D-137 P5 interim it pinned no longer holds. The OWNER still skips the
+   *  gate; what changed is that the owner now has to SAY SO. */
+  it('the OWNER skips the gate (ownerAdmitAll), reaching the dispatch body', async () => {
     const { _testing } = await import('../mcp-server.js');
-    // Without inboundTokenAuthorize, the gate is bypassed. The unknown-
-    // tool path past the gate throws `Unknown tool: ...` from the
-    // dispatch's default branch — that throw IS the proof the gate
-    // didn't refuse first (a refused gate would've returned the err()
-    // envelope, not thrown). Match on the throw's message to pin the
-    // contract.
+    // The unknown-tool path PAST the gate throws `Unknown tool: ...` from the
+    // dispatch's default branch — that throw IS the proof the gate didn't
+    // refuse first (a refused gate returns the err() envelope, not a throw).
     let threw: unknown = null;
     try {
       await _testing.handleToolCall(
         { name: 'recued_unknown_tool_for_test', arguments: {} },
-        {} as unknown as Parameters<typeof _testing.handleToolCall>[1],
+        { ownerAdmitAll: true } as unknown as Parameters<typeof _testing.handleToolCall>[1],
       );
     } catch (e) {
       threw = e;
@@ -295,6 +222,20 @@ describe('D-137 P5 follow-on Codex P1 fold — handleToolCall gate end-to-end', 
     expect((threw as Error).message).toMatch(/Unknown tool/);
     // Crucially, the gate-refusal copy is NOT in the throw message.
     expect((threw as Error).message).not.toMatch(/not granted by this token/);
+  });
+
+  /** ⛔⛔ THE OTHER HALF, and the one the interim left open: a caller with
+   *  NEITHER a checklist NOR the owner claim. It reaches no dispatch branch at
+   *  all — it is refused, and the refusal names the recovery. Note it does NOT
+   *  throw `Unknown tool`, which is the proof the gate ran FIRST. */
+  it('a caller that presented NOTHING is refused before dispatch', async () => {
+    const { _testing } = await import('../mcp-server.js');
+    const res = (await _testing.handleToolCall(
+      { name: 'recued_unknown_tool_for_test', arguments: {} },
+      {} as unknown as Parameters<typeof _testing.handleToolCall>[1],
+    )) as { isError?: boolean; content: Array<{ text: string }> };
+    expect(res.isError).toBe(true);
+    expect(res.content[0]?.text).toMatch(/presented no MCP token/);
   });
 });
 
@@ -319,12 +260,33 @@ describe('D-171 external-door fold — tools/list per-token catalog filter', () 
     expect(gate.mock.calls.length).toBeGreaterThan(1);
   });
 
-  it('returns the full catalog when the callback is undefined (owner transports)', async () => {
+  /** ⛔⛔ REWRITTEN BY DECISION — D-228 slice 6. This read "returns the full
+   *  catalog when the callback is undefined (owner transports)" and pinned the
+   *  D-137 P5 interim: *"the env-var bearer path leaves the callback undefined
+   *  (single-tenant interim — operator full access by design)"*.
+   *
+   *  🔑 THE INTERIM'S PRECONDITION IS GONE. It existed because this surface had
+   *  NO WAY to present a token; D-228 slice 1 added `--token` / `RECUED_MCP_TOKEN`
+   *  and resolves it against the inbound-token store. What "callback undefined"
+   *  used to mean — the operator — is now said POSITIVELY with `ownerAdmitAll`,
+   *  which only a `client_kind === 'cli'` verified bearer sets. Absence went back
+   *  to meaning what it says: nothing was presented.
+   *
+   *  Both halves are kept, because the pair is the whole point. */
+  it('the OWNER transport still returns the full catalog (ownerAdmitAll)', async () => {
+    const { _testing } = await import('../mcp-server.js');
+    const result = (await _testing.handleToolsList(
+      manifestlessDeps({ ownerAdmitAll: true }),
+    )) as { tools: Array<{ name: string }> };
+    expect(result.tools.length).toBeGreaterThan(1);
+    expect(result.tools.map((t) => t.name)).toContain('recued_listRecipes');
+  });
+
+  it('…while a caller that presented NOTHING gets an empty catalog', async () => {
     const { _testing } = await import('../mcp-server.js');
     const result = (await _testing.handleToolsList(manifestlessDeps())) as {
       tools: Array<{ name: string }>;
     };
-    expect(result.tools.length).toBeGreaterThan(1);
-    expect(result.tools.map((t) => t.name)).toContain('recued_listRecipes');
+    expect(result.tools).toEqual([]);
   });
 });

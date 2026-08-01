@@ -30,6 +30,20 @@ export const FLAGS_WITH_VALUES = new Set([
   '--db-path',
   '--mcp-port',
   '--webhook-port',
+  // ⛔⛔ D-228 — `recued mcp --token <bearer>`. WITHOUT THIS ENTRY THE FLAG DOES
+  // NOT WORK AT ALL: `parsePositionals` skips any `--flag` it does not know but
+  // NOT that flag's VALUE, so the bearer lands as `positionals[0]`, is read as
+  // the subcommand, misses `KNOWN_SUBCOMMANDS`, and the router prints HELP
+  // instead of starting the server.
+  //
+  // 🔑 That made slice 1's advertised recovery path a dead end — the stderr
+  // notice says "pass --token <bearer>", and slice 6 made the token-less refusal
+  // total, so a user following the instruction got the help screen and no
+  // server. `cli-context/mcp.ts` reads the flag correctly; nothing upstream ever
+  // let it through. Found by the first end-to-end boot that actually PRESENTED a
+  // token — the unit tests all called the context directly and skipped the
+  // router entirely.
+  '--token',
 ]);
 
 export const getFlag = (args: string[], name: string): boolean =>

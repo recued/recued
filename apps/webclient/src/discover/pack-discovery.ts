@@ -371,7 +371,6 @@ export const mountPackDiscovery = (
     filterGroups: [
       { key: 'service_kind', label: 'Kind' },
       { key: 'pack_kind', label: 'Type' },
-      { key: 'tag', label: 'Tag' },
     ],
     sortOptions: [
       { key: 'downloads', label: 'Most installed' },

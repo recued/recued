@@ -68,6 +68,9 @@ import {
   PACKS_DIALOG_PERMISSION_ATTR,
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR,
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR,
+  PACKS_DIALOG_RECORDS_REVIEW_ATTR,
+  PACKS_DIALOG_RECORDS_REVIEW_CHANGE_ATTR,
+  PACKS_DIALOG_RECORDS_REVIEW_DESTRUCTIVE_ATTR,
   PACKS_DIALOG_SLUG_ATTR,
   PACKS_EMPTY_ATTR,
   PACKS_LIST_ERROR_ATTR,
@@ -320,6 +323,7 @@ interface SetupResult {
   installCalls: Array<{
     manifest: unknown;
     granted_permissions: ReadonlyArray<string>;
+    expected_manifest_hash?: string;
   }>;
   /** R22 list→detail — every `onSelectSlug` callback value, in order. */
   selectCalls: Array<string | null>;
@@ -714,6 +718,82 @@ describe('D-145 PA10 follow-on — install dialog', () => {
     expect(copy).toContain('Pack approval: ask');
     expect(copy).toContain('Removed operations keep their ruling stored but inactive');
     expect(findByAttr(host, PACKS_DIALOG_INSTALL_BTN_ATTR)?.textContent).toBe('Update');
+  });
+
+  it('renders and echoes the exact Records transition review', async () => {
+    const reviewHash = 'a'.repeat(64);
+    const { host, mount, installCalls } = setupMount([
+      baseEntry({
+        installed: false,
+        installed_any_version: true,
+        manifest_review_hash: reviewHash,
+        records_review: {
+          owner: { publisher: 'recued-core', pack_slug: 'test-pack' },
+          current_state: 'ready',
+          current_version: 2,
+          target_version: 3,
+          current_storage_schema_hash: 'old-schema',
+          target_storage_schema_hash: 'new-schema',
+          row_counts: [{ kind: 'job', rows: 12, payload_bytes: 4096 }],
+          estimated_rows: 12,
+          schema_changes: [{
+            entity: 'job',
+            field: 'legacy_note',
+            change: 'field_removed',
+            current: '{"slot":"t1"}',
+            destructive: true,
+          }],
+          destructive_changes: [{
+            edge: '2->3',
+            kind: 'job',
+            step_id: 'clear-legacy-note',
+            operation: 'clear',
+            from: 'legacy_note',
+          }],
+          quota: {
+            row_count: 12,
+            payload_bytes: 4096,
+            row_limit: 1000,
+            byte_limit: 1_000_000,
+            outbox_count: 2,
+            outbox_limit: 100,
+            data_generation: 14,
+          },
+          global_quota: {
+            row_count: 25,
+            payload_bytes: 8192,
+            outbox_count: 3,
+            reserved_payload_bytes: 1024,
+            row_limit: 10_000,
+            byte_limit: 10_000_000,
+            outbox_limit: 1000,
+          },
+          retention: { job: { mode: 'expire_after_days', days: 90 } },
+          export_checkpoint_available: true,
+          export_recommended: true,
+          active_executions: 1,
+          unacknowledged_events: 2,
+          pending_event_disposition: 'drain_or_explicit_retire',
+          temporary_unavailability: true,
+          resumable: true,
+          reverse_route_exists: false,
+        },
+      }),
+    ]);
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+
+    const review = findByAttr(host, PACKS_DIALOG_RECORDS_REVIEW_ATTR);
+    expect(review).not.toBeNull();
+    expect(collectTextContent(review!)).toContain('Version 2 → 3');
+    expect(collectTextContent(review!)).toContain('12 rows');
+    expect(collectTextContent(review!)).toContain('Potentially destructive migration mappings');
+    expect(collectTextContent(review!)).toContain('2 unacknowledged events');
+    expect(findAllByAttr(review!, PACKS_DIALOG_RECORDS_REVIEW_CHANGE_ATTR)).toHaveLength(1);
+    expect(findAllByAttr(review!, PACKS_DIALOG_RECORDS_REVIEW_DESTRUCTIVE_ATTR)).toHaveLength(1);
+
+    await mount.clickConfirmInstall();
+    expect(installCalls[0]?.expected_manifest_hash).toBe(reviewHash);
   });
 
   it('Cancel closes the dialog + clears permission state', async () => {

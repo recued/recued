@@ -1,16 +1,16 @@
 /** Webclient server-status pill host (D-109 pill, first webclient consumer).
  *
  *  Wraps the shared `mountServerPill` (`@recued/ui-shared/server-pill`) with
- *  the webclient's **B1 policy**: surface the server's health/uptime ONLY
- *  while the connection is `connected`, and hide otherwise so the
- *  connection-status chip (`connection-indicator.ts`) owns the down-signal.
- *  The two are complementary, grouped together in the topbar — chip = "can I
- *  reach the server", pill = "Server · 12h, and it's healthy".
+ *  the webclient's **B1 policy**: surface the current profile's health/uptime
+ *  and pause/restart controls ONLY while the connection is `connected`. During
+ *  an outage the route-independent banner and the active profile row own the
+ *  down-signal. Both states now meet in the Account dialog instead of being
+ *  split across two topbar controls.
  *
  *  ── Why hide instead of letting the pill show its own "offline" ──────
  *  `computePillState` has a gray "offline" state (stale heartbeat), but
- *  showing it would duplicate the chip's "Offline" during an outage. So the
- *  pill is gated on `status() === 'connected'`: not-connected → `getSnapshot`
+ *  showing it would duplicate Account's "not reachable" state during an
+ *  outage. So the pill is gated on `status() === 'connected'`: not-connected → `getSnapshot`
  *  returns null → `renderServerPill` returns '' → the host is cleared. And the
  *  cached snapshot is dropped the moment the socket leaves `connected`, so a
  *  reconnect doesn't briefly flash a STALE pill before the first fresh beat —
@@ -55,14 +55,14 @@ const escapeHtml = (value: string): string =>
 /** Marker the bootstrap guards the one-time `<head>` style injection with. */
 export const SERVER_PILL_STYLES_MARKER = 'data-recued-server-pill-styles';
 
-/** Attribute on the topbar host element — both the shell's find-handle and
+/** Attribute on the Account dialog's current-server host element — both the
  *  the CSS scope (the pill element itself is rendered by the shared component,
  *  so its `server-pill*` classes are scoped under THIS instead of attr'd
  *  directly, keeping them from leaking page-wide). */
 export const SERVER_PILL_HOST_ATTR = 'data-recued-webclient-server-pill-host';
 
-/** Topbar styles for the pill, scoped under {@link SERVER_PILL_HOST_ATTR}.
- *  Mirrors the connection chip's quiet, near-monochrome topbar treatment; the
+/** Account-dialog styles for the pill, scoped under {@link SERVER_PILL_HOST_ATTR}.
+ *  Keeps the status quiet and near-monochrome; the
  *  dot is the only color signal (green = running; the others are
  *  forward-compat for a future richer snapshot). */
 export const SERVER_PILL_STYLES = `
@@ -70,8 +70,8 @@ export const SERVER_PILL_STYLES = `
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 24px;
-  padding: 0 8px;
+  min-height: 44px;
+  padding: 0 10px;
   border: 0;
   border-radius: 999px;
   background: transparent;
@@ -119,6 +119,11 @@ export const SERVER_PILL_STYLES = `
 [${SERVER_PILL_HOST_ATTR}] .server-pill[data-action]:hover {
   background: var(--surface-sunk, rgba(0, 0, 0, 0.04));
 }
+[${SERVER_PILL_HOST_ATTR}] .server-pill[data-action]:focus-visible,
+[${SERVER_PILL_HOST_ATTR}] .server-control-btn:focus-visible {
+  outline: 2px solid var(--accent, #0e7490);
+  outline-offset: 2px;
+}
 [${SERVER_PILL_HOST_ATTR}] .server-control-popover-frame {
   position: absolute;
   top: calc(100% + 8px);
@@ -143,7 +148,7 @@ export const SERVER_PILL_STYLES = `
 [${SERVER_PILL_HOST_ATTR}] .server-control-actions { display: flex; gap: 8px; }
 [${SERVER_PILL_HOST_ATTR}] .server-control-btn {
   flex: 1 1 auto;
-  min-height: 30px;
+  min-height: 44px;
   border: 1px solid var(--border-strong, #d4d4d8);
   border-radius: 8px;
   padding: 0 10px;
@@ -201,7 +206,7 @@ export const isServerHeartbeatSnapshot = (
 };
 
 export interface MountWebclientServerPillOptions {
-  /** Topbar host the pill renders into (carries the styles marker attr). */
+  /** Account-dialog host the pill renders into (carries the style scope attr). */
   host: HTMLElement;
   /** Current connection status — read on every re-render for the B1 gate. */
   status: () => WebclientConnectionStatus;
@@ -242,6 +247,12 @@ export const mountWebclientServerPill = (
   const controllable = runSetPaused !== undefined;
   let latest: ServerHeartbeatSnapshot | null = null;
   let disposed = false;
+
+  // The controllable variant keeps a structural anchor mounted even before a
+  // heartbeat arrives. Hide the OUTER host until there is a fresh connected
+  // snapshot so Account never shows a padded, empty status band during boot or
+  // an outage.
+  opts.host.setAttribute('hidden', '');
 
   // The v1 status pill renders straight into the host — a quiet, non-clickable
   // display (the path the back-compat fake-host tests drive). The D-188
@@ -388,8 +399,8 @@ export const mountWebclientServerPill = (
         return;
       }
       // Drain + supervisor handoff is underway → the WS drops next. Show a
-      // transient note until the disconnect hides the pill (the connection
-      // chip then owns the reconnecting signal).
+      // transient note until the disconnect hides the pill (the global status
+      // announcer then owns the reconnecting signal).
       restarting = true;
       renderPopover();
     } catch (err) {
@@ -443,12 +454,21 @@ export const mountWebclientServerPill = (
   const pill: ServerPillHandle = mountServerPill({
     host: pillHost,
     // B1 gate: health is only meaningful while the socket is up; otherwise the
-    // connection chip owns the down-signal, so the pill hides.
+    // banner + Account recovery copy own the down-signal, so the pill hides.
     getSnapshot: () => (opts.status() === 'connected' ? latest : null),
     clickable: controllable,
     ...(controllable ? { onClick: onPillClick } : {}),
     ...(opts.now !== undefined ? { now: opts.now } : {}),
   });
+
+  const syncHostVisibility = (): void => {
+    if (opts.status() === 'connected' && latest !== null) {
+      opts.host.removeAttribute('hidden');
+    } else {
+      opts.host.setAttribute('hidden', '');
+    }
+  };
+  syncHostVisibility();
 
   if (controllable && popoverHost !== null) {
     const doc = opts.host.ownerDocument;
@@ -464,6 +484,7 @@ export const mountWebclientServerPill = (
     // popover (the pill is about to hide).
     if (status !== 'connected') { latest = null; closePopover(); }
     pill.update();
+    syncHostVisibility();
     renderPopover();
   });
 
@@ -472,6 +493,7 @@ export const mountWebclientServerPill = (
       if (disposed) return;
       latest = snapshot;
       pill.update();
+      syncHostVisibility();
       // Reflect a heartbeat-driven pause change (e.g. paused from another
       // device, or a crash-loop) in an open popover.
       if (open) renderPopover();
@@ -490,6 +512,7 @@ export const mountWebclientServerPill = (
       if (anchor !== null) {
         try { opts.host.removeChild(anchor); } catch { /* already detached */ }
       }
+      opts.host.removeAttribute('hidden');
     },
   };
 };

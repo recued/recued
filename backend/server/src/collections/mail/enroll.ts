@@ -34,7 +34,12 @@
  *      than at first sync.
  */
 
-import { RpcError } from '@recued/contracts';
+import {
+  GMAIL_SEND_SCOPE,
+  GRAPH_CALENDAR_SCOPE,
+  GRAPH_MAIL_SEND_SCOPE,
+  RpcError,
+} from '@recued/contracts';
 import type {
   CollectionAuthState,
   CollectionInstanceRow,
@@ -42,9 +47,19 @@ import type {
 } from '@recued/contracts';
 import type { CollectionInstanceStore } from '../instance-store.js';
 import {
+  defaultHttpFetcher,
+  describeGraphGrantIdentity,
+  grantedScopesInclude,
   exchangeCodeForTokens,
+  fetchGraphGrantIdentity,
+  graphGrantIdentitiesMatch,
   keyPrefix as oauthKeyPrefix,
   OAuthError,
+  readGraphGrantIdentity,
+  restoreGraphGrant,
+  snapshotGraphGrant,
+  writeGraphGrantIdentity,
+  type GraphGrantSnapshot,
   type HttpFetcher,
   type OAuthAccountStore,
   type OAuthProvider,
@@ -425,7 +440,7 @@ export const handleMailEnrollOAuth = async (
   if (!deps.oauthConfig) {
     throw new RpcError(
       'not_configured',
-      `collection.mail.enrollOAuth: server has no OAuth client configured — set RECUED_GMAIL_CLIENT_ID / RECUED_GRAPH_CLIENT_ID`,
+      `collection.mail.enrollOAuth: server has no OAuth client configured — add your Google or Microsoft OAuth app under Connections → Mail`,
       503,
     );
   }
@@ -437,6 +452,29 @@ export const handleMailEnrollOAuth = async (
       503,
     );
   }
+
+  // ── Shared-grant protection (Microsoft only) ──────────────────
+  //
+  // A `graph` calendar row at this slug reads the SAME
+  // `account.graph.<slug>.*` grant this enroll is about to overwrite. Two things
+  // can strand it: a DIFFERENT Microsoft account (the slug is a name, not an
+  // identity) or the SAME account re-consenting WITHOUT the calendar scope.
+  //
+  // Neither is knowable until after the exchange — the identity comes from `/me`
+  // and the scopes come from the token response — and the exchange has already
+  // clobbered the old credential by then. So snapshot first and put it back if
+  // the new grant turns out not to cover the calendar. Refusing without the
+  // restore would be strictly worse than the bug: it would leave BOTH lanes
+  // broken.
+  const sharesGrantWithCalendar =
+    adapter === 'graph'
+    && deps.instances.get('calendar', slug)?.adapter_type === 'graph';
+  const priorIdentity = sharesGrantWithCalendar
+    ? await readGraphGrantIdentity(deps.accountStore, slug)
+    : null;
+  const snapshot: GraphGrantSnapshot | null = sharesGrantWithCalendar
+    ? await snapshotGraphGrant(deps.accountStore, slug)
+    : null;
 
   let exchange: { access_token: string; granted_scopes: string[] };
   try {
@@ -461,19 +499,71 @@ export const handleMailEnrollOAuth = async (
     throw err;
   }
 
+  // A single normalized fetcher, reused by the profile + identity reads below.
+  const httpFetcher: HttpFetcher = deps.fetcher ?? defaultHttpFetcher;
+
+  // ── Verify the new grant still serves the calendar lane ────────
+  if (adapter === 'graph') {
+    const identity = await fetchGraphGrantIdentity(exchange.access_token, httpFetcher);
+
+    const refuse = async (reason: string): Promise<never> => {
+      const restored = snapshot === null
+        ? true
+        : await restoreGraphGrant(deps.accountStore, slug, snapshot);
+      throw new RpcError(
+        'conflict',
+        `collection.mail.enrollOAuth: ${reason}`
+        + (restored
+          ? ' The previous sign-in was left in place, so the calendar keeps working.'
+          : ' ⚠ The previous sign-in could NOT be fully restored — re-authorize both'
+            + ' the mail and calendar accounts.'),
+        409,
+      );
+    };
+
+    if (sharesGrantWithCalendar) {
+      // A DIFFERENT account would re-point the calendar at someone else's data.
+      // Only refuse on a known mismatch: an unknown prior identity (grant
+      // predates this check) or an unreadable new one is not evidence of a
+      // different account, and refusing on absence would strand every owner who
+      // enrolled before this shipped.
+      if (
+        priorIdentity !== null
+        && identity !== null
+        && !graphGrantIdentitiesMatch(priorIdentity, identity)
+      ) {
+        await refuse(
+          `this sign-in is a different Microsoft account than the one calendar `
+          + `'${slug}' uses (${describeGraphGrantIdentity(priorIdentity)} → `
+          + `${describeGraphGrantIdentity(identity)}). Enroll it under another name, `
+          + 'or delete that calendar first.',
+        );
+      }
+      // The SAME account re-consenting WITHOUT the calendar scope silently
+      // demotes the calendar to a dead row. Checked against what Microsoft
+      // actually GRANTED, not what we asked for.
+      if (!grantedScopesInclude(exchange.granted_scopes, GRAPH_CALENDAR_SCOPE)) {
+        await refuse(
+          `calendar '${slug}' shares this sign-in, but the new consent does not `
+          + `include ${GRAPH_CALENDAR_SCOPE}. Re-run it with "Also connect Calendar" `
+          + 'ticked, or delete that calendar first.',
+        );
+      }
+    }
+
+    // Record whose grant this is, so a later lane can check. Written for EVERY
+    // graph enroll — the value of the check depends on the data existing before
+    // the sharing starts.
+    if (identity !== null) {
+      await writeGraphGrantIdentity(deps.accountStore, slug, identity);
+    }
+  }
+
   // Best-effort profile fetch for the canonical account email.
   const accountEmail = await fetchAccountEmail(
     adapter,
     exchange.access_token,
-    deps.fetcher ?? (async (url, init) => {
-      const r = await fetch(url, init as RequestInit);
-      return {
-        status: r.status,
-        ok: r.ok,
-        json: () => r.json(),
-        text: () => r.text(),
-      };
-    }),
+    httpFetcher,
   );
 
   const config: Record<string, unknown> = {
@@ -527,9 +617,14 @@ export const handleMailEnrollOAuth = async (
   // computation in the provider config callback; this rpc-layer check
   // is the source of truth for the UI surfacing send_capable on the
   // listing.
-  const sendCapable = adapter === 'gmail'
-    ? exchange.granted_scopes.includes('https://www.googleapis.com/auth/gmail.send')
-    : exchange.granted_scopes.includes('Mail.Send');
+  // Tolerant match, and against the CONSTANTS rather than inline literals — the
+  // hand-typed strings here could drift from the ones the providers compare, so
+  // the rpc's `send_capable` and the provider's `sendCapable` could disagree
+  // about the same account.
+  const sendCapable = grantedScopesInclude(
+    exchange.granted_scopes,
+    adapter === 'gmail' ? GMAIL_SEND_SCOPE : GRAPH_MAIL_SEND_SCOPE,
+  );
 
   return {
     slug,
@@ -642,11 +737,27 @@ export const handleMailDelete = async (
     await deps.accountStore.delete(imapPasswordKey(slug));
     await deps.accountStore.delete(imapSmtpPasswordKey(slug));
   } else if (existing.adapter_type === 'gmail' || existing.adapter_type === 'graph') {
-    const prefix = oauthKeyPrefix(existing.adapter_type as OAuthProvider, slug);
-    await deps.accountStore.delete(`${prefix}.access_token`);
-    await deps.accountStore.delete(`${prefix}.refresh_token`);
-    await deps.accountStore.delete(`${prefix}.expires_at`);
-    await deps.accountStore.delete(`${prefix}.granted_scopes`);
+    // ⚠ A `graph` grant is SHARED with the calendar lane at the same slug —
+    // Microsoft's mail and calendar adapters are both named `graph`, so both
+    // read `account.graph.<slug>.*` (`collections/calendar/enroll.ts` § 2, and
+    // the `attachGraphGrant` path that deliberately relies on it). Purging the
+    // credential here while a calendar row still references it left that
+    // calendar visible-but-dead the moment its cached access token expired:
+    // deleting a MAILBOX silently broke a CALENDAR. So the credential is only
+    // reclaimed when nothing else is using it.
+    //
+    // `gmail` needs no such check — its calendar sibling is `gcal`, a different
+    // prefix, so nothing is shared to strand.
+    const sharedWithCalendar =
+      existing.adapter_type === 'graph'
+      && deps.instances.get('calendar', slug)?.adapter_type === 'graph';
+    if (!sharedWithCalendar) {
+      const prefix = oauthKeyPrefix(existing.adapter_type as OAuthProvider, slug);
+      await deps.accountStore.delete(`${prefix}.access_token`);
+      await deps.accountStore.delete(`${prefix}.refresh_token`);
+      await deps.accountStore.delete(`${prefix}.expires_at`);
+      await deps.accountStore.delete(`${prefix}.granted_scopes`);
+    }
   }
   deps.instances.delete('mail', slug);
   return { ok: true };

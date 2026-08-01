@@ -26,6 +26,7 @@
  *  Spec: D-187 AMENDMENT block §3; handover
  *  `handover_grant_foundation_slice3_amended.md`. */
 
+import { GENERATED_PACK_PUBLISHER } from './ingredient.js';
 import { OWNER_CONTRACT_ID } from './contract-definition.js';
 
 /** The three-state grant rule. `explicit` is the contract's stored value for the
@@ -120,7 +121,39 @@ export const OWNER_DEFAULT_ONLY_GRANT_ENTRIES: ReadonlySet<string> = new Set([
 /** True iff `entryKey` is an OWNER-default-only sensitive surface
  *  ({@link OWNER_DEFAULT_ONLY_GRANT_ENTRIES}). */
 export const isOwnerDefaultOnlyEntry = (entryKey: string): boolean =>
-  OWNER_DEFAULT_ONLY_GRANT_ENTRIES.has(entryKey);
+  OWNER_DEFAULT_ONLY_GRANT_ENTRIES.has(entryKey)
+  || isGeneratedPackOpEntry(entryKey);
+
+/** D-225 § 9.6 — every op of a RUNTIME-GENERATED pack is owner-default-only.
+ *
+ *  ⛔ **The hole this closes.** `opAuthorDefault` is PERMISSIVE for a wildcard
+ *  door (empty / absent `scope.operation_ids`), and `isOpGranted` resolves
+ *  `explicit grant row ?? author-default` — so on a wildcard door an op with NO
+ *  grant row is ADMITTED. A generated pack's ops are minted from a THIRD
+ *  PARTY's `tools/list`, and that party can add a tool at any time: a re-mint
+ *  gives it a new op id, a new op id has no grant row, and on a wildcard door
+ *  no grant row means admitted. The owner never acted.
+ *
+ *  The three MCP terms meet exactly here: enrolling an **outbound**
+ *  mcp-connection mints ops, those ops are visible at the **inbound** mcp-door,
+ *  and a wildcard door waives the grant axis that was supposed to stand between
+ *  them.
+ *
+ *  ⇒ Generated-pack ops are never covered by a blanket waiver. They must be
+ *  NAMED. This is a TIGHTEN and only a tighten (`ownerOnlyAdjustedAuthorDefault`
+ *  can turn a permissive default into a deny for a door, never the reverse), the
+ *  OWNER keeps them by default so owner chat is unaffected, and an explicit
+ *  stored grant row still wins — a door the owner deliberately granted is
+ *  unchanged.
+ *
+ *  ⚠ A CLASS, not an enumeration, because a generated op id is per-user derived
+ *  (`recued-local.mcp-<hash>.<op>_<hash8>`) and can never appear in a hardcoded
+ *  list. Prefix-matching the publisher is exact here: an op grant entry is the
+ *  BARE operation id `<publisher>.<pack>.<op>`, a collection entry is
+ *  `data.<collection>`, and `recued-local` is in `RESERVED_HANDLES` — so no
+ *  third party can mint an entry that answers to this. */
+export const isGeneratedPackOpEntry = (entryKey: string): boolean =>
+  entryKey.startsWith(`${GENERATED_PACK_PUBLISHER}.`);
 
 /** The author-default for an entry, honoring the OWNER-default-only override. A
  *  sensitive entry ({@link isOwnerDefaultOnlyEntry}) defaults ON for the owner and OFF

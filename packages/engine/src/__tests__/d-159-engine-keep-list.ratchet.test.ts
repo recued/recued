@@ -31,7 +31,12 @@ const SRC = resolve(__dirname, '..'); // packages/engine/src
 // wrapper, on the same deterministic step/prefetch dispatch path.
 // D-182 step 7 added require-recipe.ts -- the `ExecutionContext.recipe`
 // optional-narrowing guard the recipe-run path asserts now that a raw
-// op can form a recipe-less context.)
+// op can form a recipe-less context.
+//
+// D-217 slice 2a added chunked-upload-walk.ts and the s8a AMENDMENT
+// took it back out: the walk moved BELOW the commit boundary, into
+// @recued/ingredients, so the engine no longer owns it. The fence is
+// NARROWER than before this D, not wider.)
 const KEEP_FILES = [
   'catalog-gateway.ts',
   'condition.ts',

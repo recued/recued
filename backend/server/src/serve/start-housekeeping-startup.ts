@@ -55,6 +55,10 @@ export interface StartHousekeepingStartupOptions {
    *  exist). Undefined ⇒ the task doesn't register. */
   readonly sellerAccessReconcileDeps?:
     StartServeHousekeepingSchedulerOptions['sellerAccessReconcileDeps'];
+  /** D-225 § 12 — deps for the mcp tool-drift probe. Absent ⇒ the task does not
+   *  register and drift detection stays inert. */
+  readonly mcpToolsDriftProbeDeps?:
+    StartServeHousekeepingSchedulerOptions['mcpToolsDriftProbeDeps'];
 }
 
 export const startHousekeepingStartup = async (
@@ -99,6 +103,9 @@ export const startHousekeepingStartup = async (
     enrichmentProducers: options.enrichmentProducers,
     ...(options.sellerAccessReconcileDeps
       ? { sellerAccessReconcileDeps: options.sellerAccessReconcileDeps }
+      : {}),
+    ...(options.mcpToolsDriftProbeDeps
+      ? { mcpToolsDriftProbeDeps: options.mcpToolsDriftProbeDeps }
       : {}),
   });
 };

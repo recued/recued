@@ -796,7 +796,9 @@ describe('D-164 P6.3 tool-loop prompt threading', () => {
 
     await orchestrator.runTurn({
       session_id: sessionId,
-      message: 'Explain the linked evidence without changing anything.',
+      // Ground the model-supplied recipient so argument grounding admits the
+      // call and this test reaches the later guided-diagnosis write fence.
+      message: 'Explain the linked evidence for owner@example.com without changing anything.',
       picker_state: { current: 'self' },
       data_diagnosis: {
         kind: 'data_verification',

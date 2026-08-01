@@ -357,6 +357,10 @@ export interface ApprovalsRoute {
     decision: ApprovalCardDecision,
   ): Promise<void>;
   whenLoaded(): Promise<void>;
+  getRecoveryContextFreshness(): 'current' | 'unavailable';
+  /** Re-read every queue and re-arm the live approval snapshot. */
+  retryRecoveryContext(): Promise<void>;
+  hasInFlightWork(): boolean;
   dispose(): void;
 }
 
@@ -1133,6 +1137,25 @@ export const bootstrapApprovalsRoute = (
         opts.chatPlans?.whenLoaded?.() ?? Promise.resolve(),
       ]);
     },
+    getRecoveryContextFreshness: () =>
+      approvalState.listError === null
+      && approvalState.liveError === null
+      && panel.getListError() === null
+      && (opts.chatPlans?.state?.().error ?? null) === null
+        ? 'current'
+        : 'unavailable',
+    retryRecoveryContext: async () => {
+      startApprovalSubscription({ resetSeqBaseline: true });
+      await Promise.all([
+        doRefreshApprovals(),
+        pendingApprovalSubscribe,
+        panel.refresh(),
+        opts.chatPlans?.refresh?.() ?? Promise.resolve(),
+      ]);
+    },
+    hasInFlightWork: () => resolving.size > 0
+      || resolvingPlans.size > 0
+      || panel.hasInFlightWork(),
     dispose: () => {
       if (disposed) return;
       disposed = true;

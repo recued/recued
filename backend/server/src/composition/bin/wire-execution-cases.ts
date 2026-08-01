@@ -4,12 +4,13 @@
  * absent unless a complete bounded experiment definition is supplied.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
   OWNER_CONTRACT_ID,
   executionSourceContractId,
   type ExecutionSource,
+  type InstancePrefs,
   type InternalToolRegistry,
 } from '@recued/contracts';
 
@@ -31,6 +32,16 @@ import {
   type ExecutionCaseFeedbackRecorder,
 } from '../../execution-case-feedback.js';
 import {
+  createExecutionCaseOfferLifecycle,
+  executionCaseOfferEnabled,
+  type ExecutionCaseOfferLifecycle,
+  type ExecutionCaseOfferNotifier,
+} from '../../execution-case-offer-lifecycle.js';
+import {
+  executionCaseKey,
+  requestShapeHash,
+} from '../../execution-case-core.js';
+import {
   createExecutionCaseExperimentReporter,
   type CaseExperimentReport,
   type ExecutionCaseExperimentReporter,
@@ -45,6 +56,10 @@ import {
   type ExecutionCaseExperimentDefinition,
   type RequestAugmentationDeps,
 } from '../../execution-case-retrieval.js';
+import type {
+  ExecutionCasePrecedentDeps,
+  ExecutionCasePrecedentObservation,
+} from '../../execution-case-precedent.js';
 import {
   createCaseInterventionStore,
   type CaseInterventionStore,
@@ -57,6 +72,10 @@ import {
   createExecutionCaseStore,
   type ExecutionCaseStore,
 } from '../../storage/execution-case-store.js';
+import {
+  createExecutionCaseArgumentStore,
+  type ExecutionCaseArgumentStore,
+} from '../../storage/execution-case-argument-store.js';
 import {
   createExecutionReportStore,
   type ExecutionReportStore,
@@ -79,8 +98,32 @@ export interface ComposedExecutionCases {
   registry: InternalToolRegistry;
   lifecycle: ExecutionCaseLifecycle;
   getExecutionCaseLifecycle: () => ExecutionCaseLifecycle;
+  /** D-219 slice 9c — resolves only once a notification block has been
+   *  published. Until then the finalizer middleware's offer halves are no-ops:
+   *  there is nowhere to raise an ask, and inventing a surface here would be
+   *  worse than staying silent. */
+  getExecutionCaseOfferLifecycle: () => ExecutionCaseOfferLifecycle | undefined;
+  /** D-219 slice 9c — boot hand-off, called ONCE by the composer that owns the
+   *  notification block (which is built after the chat substrate). Building the
+   *  lifecycle here rather than lazily per turn is deliberate: this is also
+   *  where the ANSWER handler registers, and the block's boot recovery
+   *  re-dispatches answered-but-unhandled asks exactly once — an answer given
+   *  while the server was down would be lost if registration waited for the
+   *  first live turn. */
+  publishExecutionCaseOfferNotifier(
+    notifier: ExecutionCaseOfferNotifier,
+  ): void;
   getExecutionCaseAugmentationDeps?:
     () => RequestAugmentationDeps | undefined;
+  /** D-219 — the ordinary-path precedent surface. Present iff NO experiment is
+   *  configured; the two are mutually exclusive by construction, so a reader can
+   *  tell which surface a server is running from this object alone. */
+  getExecutionCasePrecedentDeps?:
+    () => ExecutionCasePrecedentDeps | undefined;
+  /** D-219 — per-boot retrieval tally. Present exactly when the precedent
+   *  surface is, so its absence on `chat.execution.diagnostics` is the same
+   *  fact as "an experiment is configured", not a missing feature. */
+  precedentObservation?: () => ExecutionCasePrecedentObservation;
   getExecutionCaseProposalCritic?:
     () => ExecutionCaseProposalCritic | undefined;
   feedbackRecorder: ExecutionCaseFeedbackRecorder;
@@ -90,6 +133,9 @@ export interface ComposedExecutionCases {
   feedbackStore: ExecutionCaseFeedbackStore;
   verificationStore: ExecutionCaseVerificationStore;
   interventionStore: CaseInterventionStore;
+  /** D-219 capture-only argument buffer. Surfaced so the retention pruner and
+   *  the privacy cascade can reach it; ⛔ no read path consumes it. */
+  argumentStore: ExecutionCaseArgumentStore;
   compiler: ExecutionCaseCompiler;
   experimentReporter: ExecutionCaseExperimentReporter;
   /** Present only for a complete pre-registered experiment definition. */
@@ -215,6 +261,17 @@ export const composeExecutionCases = (input: {
   getSpanAnchorDeps: () => SpanAnchorDeps;
   experiment?: ExecutionCaseExperimentDefinition;
   experimentSecret?: string;
+  /** D-219 slice 9c — every paired device's `chat.execution_case_offer`, read
+   *  LIVE per candidate turn. Resolved off-anywhere-wins by
+   *  `executionCaseOfferEnabled`; absent ⇒ the ask stays ON (the registry
+   *  default), because a missing roster is not an opt-out. */
+  getOfferPrefsRoster?: () => ReadonlyArray<Partial<InstancePrefs> | undefined>;
+  /** D-219 — the owner's contact index, for skeleton matching's hole predicate.
+   *  Absent ⇒ no skeleton signal; the surface degrades to lexical ranking. */
+  getContactStore?: () => { list(input: {
+    name_contains: string;
+    limit?: number;
+  }): ReadonlyArray<{ name?: string | null }> } | undefined;
 }): ComposedExecutionCases => {
   if (input.experiment) {
     validateExecutionCaseExperimentDefinition(input.experiment);
@@ -266,9 +323,28 @@ export const composeExecutionCases = (input: {
     registry: input.registry,
     interventionStore,
   });
+  // D-219 — CAPTURE-ONLY argument buffer. Fire-and-forget at the dispatch seam:
+  // a slow or failing write must never delay or fail a tool call, and a missed
+  // capture costs a future lesson rather than a turn. ⛔ Nothing reads it.
+  const argumentStore = createExecutionCaseArgumentStore(
+    input.db,
+    input.chatKeyProvider,
+  );
   const registry = wrapRegistryWithExecutionCaseTools(
     input.registry,
     lifecycle,
+    (captured) => {
+      void argumentStore.capture({
+        capture_id: randomUUID(),
+        session_id: captured.session_id,
+        turn_id: captured.turn_id,
+        tool_name: captured.tool_name,
+        captured_at: Date.now(),
+        args: captured.args,
+      }).catch(() => {
+        // Best-effort by contract — see the store header.
+      });
+    },
   );
   const experiment = input.experiment;
   const resolveOwnerScope = (context: {
@@ -310,6 +386,48 @@ export const composeExecutionCases = (input: {
           resolveScope: resolveOwnerScope,
         } satisfies RequestAugmentationDeps
       : undefined;
+  // D-219 — THE ORDINARY PATH, and the only reader the corpus has on a normal
+  // self-hosted server. Composed when NO experiment is configured at all.
+  //
+  // ⛔ `!experiment`, not `experiment?.surface !== 'request_augmentation'`. A
+  // `proposal_critique` pre-registration measures a fixed prompt too: adding a
+  // precedent block to every turn of both its arms changes the prompt the study
+  // recorded a fingerprint for, which invalidates the study without failing
+  // anything. One study at a time, and the study wins.
+  // Per-boot retrieval tally, surfaced on `chat.execution.diagnostics`. In RAM
+  // and never persisted: it is an operational read for whoever is looking at a
+  // server now, not a metric with a retention story, and the D-219 arc has
+  // enough stores already.
+  // ⛔⛔ THE PRECEDENT CARD IS REMOVED FROM THE CHAT SURFACE — MEASURED HARM,
+  // NOT A PREFERENCE. Three pre-registered A/B rounds found no benefit and the
+  // last two found the opposite: a card multiplied INVENTED ARGUMENTS at ~5.5x
+  // odds (round 2 11/60 vs 2/60, p = 0.016; round 3 29/60 vs 8/60, p = 0.00006).
+  //
+  // The mechanism is not subtle. A card names tools and, by design, omits their
+  // arguments — SHAPE WITHOUT VALUES. A model told "this route was right" runs
+  // the route AT ONCE: single-round turns went 31/61 with a card vs 17/63
+  // without (p = 0.0096), and every one of the 73 invented arguments observed
+  // across both arms was issued INSIDE such a batch, beside the very read that
+  // would have supplied its value. The invention is then carried onward.
+  //
+  // 🔑 AND THERE IS NO REMAINING SCENARIO. V22 admits only flows with three
+  // distinct non-core rounds — the one depth a shape-only card could have
+  // helped with — and bench 181 showed the model does not PRODUCE that depth:
+  // handed a chain that cannot be batched (`list-buildings` → building_id →
+  // `add-unit` → unit_id → `open-rental-contract`) it batched anyway and
+  // invented the joins, `building_1` and then the placeholder `__first__`.
+  // Depth 1 where the chain is 3.
+  //
+  // ⚠ WHAT SURVIVES, DELIBERATELY: case compilation, the "Worth remembering?"
+  // offer, Settings → Privacy → Learning, and the two-press recipe draft. Every
+  // one of those is OWNER-REVIEWED — the owner reads and presses, and a draft
+  // lands UNSAVED in the Kitchen editor. The card was the only surface that
+  // acted on the corpus with no human in the loop, which is why it is the one
+  // removed. Restoring it means re-running the A/B, not re-adding a builder.
+  //
+  // The deps builder is DELETED rather than left unsupplied: an inert
+  // constructor still typechecks, still reads as live, and invites a future
+  // edit to re-wire it without re-measuring.
   const proposalCritic =
     experiment?.surface === 'proposal_critique'
       ? createExecutionCaseProposalCritic({
@@ -342,13 +460,44 @@ export const composeExecutionCases = (input: {
     interventionStore,
     caseStore,
   });
+  // D-219 slice 9c — the offer lifecycle, built when (and only when) a
+  // notification block is published. The key an observation would file under is
+  // derived here rather than inside the lifecycle so that module stays free of
+  // the compiler's hashing internals.
+  let offerLifecycle: ExecutionCaseOfferLifecycle | undefined;
+  const publishExecutionCaseOfferNotifier = (
+    notifier: ExecutionCaseOfferNotifier,
+  ): void => {
+    // Idempotent: a second publish would register a SECOND answer handler for
+    // the same kind and record the owner's one verdict twice.
+    if (offerLifecycle) return;
+    offerLifecycle = createExecutionCaseOfferLifecycle({
+      notifier,
+      compiler,
+      caseStore,
+      feedback: feedbackRecorder,
+      caseKeyOf: (observation) => executionCaseKey({
+        governing_contract_id: observation.governing_contract_id,
+        principal_key: observation.principal_key,
+        request_shape_hash: requestShapeHash(observation.request_shape),
+        policy_fingerprint: observation.policy_fingerprint,
+      }),
+      ...(input.getOfferPrefsRoster
+        ? {
+            isOfferEnabled: () =>
+              executionCaseOfferEnabled(input.getOfferPrefsRoster!()),
+          }
+        : {}),
+    });
+    offerLifecycle.registerAnswerHandler();
+  };
   const deleteRoot = async (root_request_id: string) => {
     // Keep a crash between source removal and reprojection from leaving a
     // current-version stamp over an unsupported materialized case.
     caseStore.clearCompilerVersion();
     const reports = await reportStore.listForRoot(root_request_id);
-    const observations = (await caseStore.listObservations())
-      .filter((item) => item.root_request_id === root_request_id).length;
+    const observations =
+      (await caseStore.listObservationsForRoot(root_request_id)).length;
     const affectedCaseIds = new Set<string>();
     for (const stored of reports) {
       for (const caseId of caseStore.deleteUnsupported(
@@ -358,6 +507,15 @@ export const composeExecutionCases = (input: {
       }
       reportStore.delete(stored.report.report_id);
     }
+    // ⛔ D-219 — the capture buffer joins the privacy cascade. A captured
+    // argument that outlived a forget request would be the worst version of
+    // this feature: raw values, kept after the record they belong to is gone.
+    argumentStore.deleteForTurns(
+      anchorStore.listAnchors(root_request_id).map((anchor) => ({
+        session_id: anchor.session_id,
+        turn_id: anchor.turn_id,
+      })),
+    );
     const feedback = feedbackStore.deleteForRoot(root_request_id);
     const verifications =
       verificationStore.deleteForRoot(root_request_id);
@@ -383,11 +541,14 @@ export const composeExecutionCases = (input: {
     registry,
     lifecycle,
     getExecutionCaseLifecycle: () => lifecycle,
+    getExecutionCaseOfferLifecycle: () => offerLifecycle,
+    publishExecutionCaseOfferNotifier,
     ...(augmentationDeps
       ? {
           getExecutionCaseAugmentationDeps: () => augmentationDeps,
         }
       : {}),
+
     ...(proposalCritic
       ? {
           getExecutionCaseProposalCritic: () => proposalCritic,
@@ -400,6 +561,7 @@ export const composeExecutionCases = (input: {
     feedbackStore,
     verificationStore,
     interventionStore,
+    argumentStore,
     compiler,
     experimentReporter,
     ...(experiment
@@ -414,6 +576,11 @@ export const composeExecutionCases = (input: {
       for (const rootRequestId of roots) {
         await deleteRoot(rootRequestId);
       }
+      // ⚠ Session-wide, AFTER the per-root sweep: a capture whose turn was
+      // never anchored (no root — the span anchor skips a turn with no user
+      // text) has no root to be deleted by, and forgetting a session must not
+      // leave it behind.
+      argumentStore.deleteForSession(session_id);
       return roots.length;
     },
   };

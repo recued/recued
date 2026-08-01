@@ -130,7 +130,7 @@ import {
   createWebhookConsumerStore,
   type WebhookConsumerStore,
 } from '../storage/webhook-consumer-store.js';
-import { reconcileOwnerGrants } from '../owner-grant-reconcile.js';
+import { grandfatherPrimitiveGrants, reconcileOwnerGrants } from '../owner-grant-reconcile.js';
 import { catalogSlugForConnection } from '../connection-operation-profile-boot.js';
 import { createLocalManifestStore } from '../ingredient-authoring/local-manifest-store.js';
 import { liveVendorRegistry } from '../connection-convention-families.js';
@@ -320,6 +320,21 @@ export interface AppContext extends LlmSubstrate {
   chatOrchestratorRef: ChatOrchestrator | undefined;
   chatDeps: ChatRpcDeps | undefined;
   executionCaseLifecycle: ExecutionCaseLifecycle | undefined;
+  /** D-219 slice 9c — boot hand-off for the owner-facing execution-case offer.
+   *  The notification block is composed in the EXECUTION context, after this
+   *  one, so the block's owner publishes it here. `undefined` on the db-less /
+   *  chat-less path ⇒ no offer is ever raised (silence, not a half-wired ask). */
+  publishExecutionCaseOfferNotifier:
+    ChatOrchestratorBundle['publishExecutionCaseOfferNotifier'] | undefined;
+  /** D-219 — the capture-only argument buffer. Surfaced ONLY so the retention
+   *  pruner can bound it: an unread store of raw arguments with no age sweep
+   *  would be an archive nobody decided to keep. ⛔ No read path consumes it. */
+  executionCaseArgumentStore:
+    ChatOrchestratorBundle['executionCaseArgumentStore'] | undefined;
+  /** D-219 — the source-corpus retention sweep (reports + observations that
+   *  back no case). Surfaced for the pruner family only. */
+  executionCaseSourcePruner:
+    ChatOrchestratorBundle['executionCaseSourcePruner'] | undefined;
   internalRegistryRef: InternalToolRegistry | undefined;
   /** D-177 N.11 rule 5 (slice D) — the chat bundle's per-session
    *  forwarded-sender candidate index, retained so the execution-context
@@ -973,6 +988,11 @@ export const composeAppContext = (
     // policy-matrix seed. Makes the owner's "fully-granted contract" DB state mirror the
     // 3c UI 1:1; the owner-permissive author-default covers ids not enumerated here.
     reconcileOwnerGrants(contractStoreRef);
+    // D-228 slice 5 — grandfather EXISTING non-owner contracts onto the Tier-1
+    // primitives before the gate can deny them. Must run beside the owner
+    // reconcile on BOTH surfaces: a scoped door / D-196 customer is fail-closed
+    // by author default and could hold no `primitive.*` row before this slice.
+    grandfatherPrimitiveGrants(contractStoreRef);
     // D-165 P3.grant migration — operation-group grants live as `contract.grant`
     // rows (the centralized permission profile). The user-grant store wraps the
     // contract store; the boot profile seed merges these grants + the grant rpcs
@@ -1430,6 +1450,10 @@ export const composeAppContext = (
     chatOrchestratorRef: chatBundle?.orchestrator,
     chatDeps: chatBundle?.chatDeps,
     executionCaseLifecycle: chatBundle?.executionCaseLifecycle,
+    publishExecutionCaseOfferNotifier:
+      chatBundle?.publishExecutionCaseOfferNotifier,
+    executionCaseArgumentStore: chatBundle?.executionCaseArgumentStore,
+    executionCaseSourcePruner: chatBundle?.executionCaseSourcePruner,
     internalRegistryRef: chatBundle?.internalRegistry,
     chatForwardedSenderIndexRef: chatBundle?.forwardedSenderIndex,
     warehouseBus,

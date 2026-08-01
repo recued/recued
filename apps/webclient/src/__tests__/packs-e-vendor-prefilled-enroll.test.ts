@@ -4,6 +4,7 @@ import {
   buildConnectionEditDialogPatch,
   projectConnectionPayload,
   resolveConnectionSchema,
+  BLUESKY_API_BASE,
   TAVILY_API_BASE,
 } from '@recued/ui-shared';
 
@@ -361,6 +362,22 @@ describe('packs item E — vendor-prefilled connection enroll deep link', () => 
     expect(dialog.values['config.vendor']).toBe('tavily');
     expect(dialog.values['config.base_url']).toBe(TAVILY_API_BASE);
     expect(dialog.values['auth.type']).toBe('bearer');
+    panel.dispose();
+  });
+
+  it('auto-opens Bluesky with AT Protocol session auth, not generic bearer', async () => {
+    const { panel } = mountPanel({ initialVendor: 'bluesky' });
+
+    await panel.whenLoaded();
+    await flush();
+
+    const { dialog } = panel.getState();
+    expect(dialog.stage).toBe('form');
+    expect(dialog.kind).toBe('api');
+    expect(dialog.vendor).toBe('bluesky');
+    expect(dialog.values['config.vendor']).toBe('bluesky');
+    expect(dialog.values['config.base_url']).toBe(BLUESKY_API_BASE);
+    expect(dialog.values['auth.type']).toBe('atproto_session');
     panel.dispose();
   });
 

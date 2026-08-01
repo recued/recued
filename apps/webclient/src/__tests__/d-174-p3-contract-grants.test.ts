@@ -51,8 +51,10 @@ import {
   KERNEL_OP_REGISTRY,
   OWNER_CONTRACT_ID,
   READABLE_COLLECTIONS,
+  TIER1_TOOL_NAMES,
   collectionGrantEntry,
   opGrantEntry,
+  primitiveGrantEntry,
   topicGrantEntry,
   type CatalogIngredientView,
   type ContractDefinitionView,
@@ -217,6 +219,11 @@ const OWNER_ONLY_COLLECTIONS = [
 ] as const;
 
 const KERNEL_OP_COUNT = KERNEL_OP_REGISTRY.length;
+/** D-228 slice 5 — the Tier-1 chat primitives are a COMPILED-IN op slice, like
+ *  the kernel registry: present whether or not the dynamic catalog / registry
+ *  callers resolve. Derived, never a literal — a primitive added later must move
+ *  this count automatically or the assertion below stops meaning anything. */
+const PRIMITIVE_OP_COUNT = TIER1_TOOL_NAMES.length;
 
 const catalog: { ingredients: ReadonlyArray<CatalogIngredientView> } = {
   ingredients: [
@@ -453,6 +460,49 @@ describe('contract-grants panel — D-192 Slice 7 transitive-read disclosure', (
   });
 });
 
+describe('D-228 slice 5 — the Tier-1 primitives are reachable in the UI', () => {
+  /** ⛔⛔ THE POINT OF THE SLICE. `owner-grant-reconcile.ts` seeds a `granted:true`
+   *  row per primitive, and this panel is what the reconcile means by "the owner's
+   *  grant rows mirror the UI 1:1". A row the panel cannot RENDER is a permission
+   *  that exists in the store with no way for a human to reach it — which is what
+   *  `mail.search` was until this slice, because the op universe was derived from
+   *  installed ingredient catalogs and a primitive is an engine handler. */
+  it('renders a CELL for a primitive, not merely an entry', async () => {
+    const { panel } = mountPanelWith({});
+    await panel.whenLoaded();
+    expect(cellFor(opsRootEl(panel), primitiveGrantEntry('mail.search'))).toBeDefined();
+  });
+
+  /** ⚠ THE HALF THAT MAKES IT A CAPABILITY. Rendering is not governing: the
+   *  toggle has to reach `contract.grant.write` with the NAMESPACED key, which is
+   *  the same id the reconcile seeds and the gate would read. A cell wired to the
+   *  bare tool name would look identical and write to nothing. */
+  it('toggling a primitive writes the NAMESPACED entry key', async () => {
+    const { panel, runGrantWrite } = mountPanelWith({});
+    await panel.whenLoaded();
+    await panel.toggleEntry(primitiveGrantEntry('mail.search'));
+    const calls = (runGrantWrite as unknown as { mock: { calls: Array<[{ entry_key: string }]> } })
+      .mock.calls;
+    expect(calls.map((c) => c[0].entry_key)).toContain(primitiveGrantEntry('mail.search'));
+    // ⛔ …and NOT the bare tool name: a cell wired to `mail.search` would look
+    // identical in the UI and write to an id neither the reconcile nor the gate
+    // ever reads.
+    expect(calls.map((c) => c[0].entry_key)).not.toContain('mail.search');
+  });
+
+  /** ⚠ Risk comes from `TIER1_TOOL_DESCRIPTORS`, never from the `.write` /
+   *  `.search` suffix — `memory.write` and `recipe.run` are classified `unknown`
+   *  deliberately, so a name-derived guess would mislabel them. */
+  it('labels a search primitive read and recipe.run not-read', async () => {
+    const { panel } = mountPanelWith({});
+    await panel.whenLoaded();
+    const entries = panel.getEntries();
+    const find = (n: string) => entries.find((e) => e.entry_key === primitiveGrantEntry(n));
+    expect(find('mail.search')?.risk_tier).toBe('read');
+    expect(find('recipe.run')?.risk_tier).not.toBe('read');
+  });
+});
+
 describe('contract-grants panel — universe split across Ops / Entities', () => {
   it('routes op entries to opsRoot and collections + topics to entitiesRoot', async () => {
     const { panel } = mountPanelWith();
@@ -686,13 +736,18 @@ describe('contract-grants panel — write / reconcile + chrome', () => {
 });
 
 describe('contract-grants panel — degrade + lifecycle', () => {
-  it('no catalog ⇒ kernel ops only (still renders); no registry ⇒ no topics', async () => {
+  it('no catalog ⇒ the COMPILED-IN op slices only (still renders); no registry ⇒ no topics', async () => {
     const { panel } = mountPanelWith({ withCatalog: false, withRegistry: false });
     await panel.whenLoaded();
     expect(panel.getState()).toBe('ready');
-    // pack ops gone, kernel ops remain.
+    // pack ops gone; the compiled-in slices (kernel ops + Tier-1 primitives) remain.
     expect(cellFor(opsRootEl(panel), READ_OP)).toBeUndefined();
-    expect(panel.getEntries().filter((e) => e.kind === 'op')).toHaveLength(KERNEL_OP_COUNT);
+    expect(panel.getEntries().filter((e) => e.kind === 'op'))
+      .toHaveLength(KERNEL_OP_COUNT + PRIMITIVE_OP_COUNT);
+    // ⚠ And the primitives are actually THERE, not merely counted — a count-only
+    // assertion passes if some other slice happens to contribute the same total.
+    expect(panel.getEntries().map((e) => e.entry_key))
+      .toContain(primitiveGrantEntry('mail.search'));
     expect(panel.getEntries().some((e) => e.kind === 'topic')).toBe(false);
     // entities still has the collections, but the topics kind-group is absent.
     expect(

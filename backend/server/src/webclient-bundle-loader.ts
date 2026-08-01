@@ -34,8 +34,9 @@
  *  drift) is thrown later, by the handler, not here. */
 
 import { createHash } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { readFile, realpath } from 'node:fs/promises';
-import { dirname, join, sep } from 'node:path';
+import { dirname, join, resolve, sep } from 'node:path';
 import {
   WEBCLIENT_BUNDLE_MANIFEST_FILENAME,
   WEBCLIENT_BUNDLE_PATH_REGEX,
@@ -112,6 +113,64 @@ export const resolveWebclientBundleDir = (
 ): string | undefined =>
   dirOverride?.trim() ||
   (cacheBlobsRoot ? join(dirname(cacheBlobsRoot), 'webclient') : undefined);
+
+/** True iff `dir` holds a bundle manifest — the cheap "is there anything to
+ *  load here" probe the candidate walk below uses to choose between dirs.
+ *  Absence is the loader's benign null path, so this never distinguishes a
+ *  missing dir from a missing manifest: both mean "nothing here". */
+const hasBundleManifest = (dir: string): boolean =>
+  existsSync(join(dir, WEBCLIENT_BUNDLE_MANIFEST_FILENAME));
+
+/** The webclient build output inside a SOURCE CHECKOUT — `apps/webclient/build`,
+ *  resolved from this module's own directory (`backend/server/src/../../..` =
+ *  repo root), the same trick `recipe-store.ts` uses for `community/recipes`.
+ *
+ *  Returns undefined unless that path actually holds a built bundle, which is
+ *  true only in a git clone that has run `apps/webclient/scripts/build.mjs`. In
+ *  a packaged install (npm / binary / Docker) the path does not exist, so this
+ *  tier is structurally dev-only — no env var, no flag, nothing to leave set. */
+export const resolveSourceTreeWebclientDir = (): string | undefined => {
+  const dir = resolve(
+    import.meta.dirname ?? __dirname,
+    '..',
+    '..',
+    '..',
+    'apps',
+    'webclient',
+    'build',
+  );
+  return hasBundleManifest(dir) ? dir : undefined;
+};
+
+/** The dir the SERVING path reads — `resolveWebclientBundleDir` plus a
+ *  source-checkout fallback, so `tsx backend/server/src/bin.ts serve` in a
+ *  clone serves the webclient it just built without an env var.
+ *
+ *  Precedence is deliberately "a real bundle always wins":
+ *    1. the deployment dir (`RECUED_WEBCLIENT_DIR` / CAS sibling) when it holds
+ *       a manifest — an installed bundle is never shadowed by a stale checkout,
+ *       and its present-but-untrusted / drifted outcomes still surface as the
+ *       loader's typed error rather than being silently skipped;
+ *    2. the source-tree build, when one exists;
+ *    3. the deployment dir as-is (the common "nothing anywhere" → dormant path,
+ *       keeping the absent-dir semantics identical to before).
+ *
+ *  Serving + the servability probe share this so they agree. The self-update
+ *  EXTRACT target deliberately does NOT: it stays on `resolveWebclientBundleDir`
+ *  so an update can never write into a developer's source tree.
+ *
+ *  `sourceTreeDir` is a test seam — the source tier's answer depends on whether
+ *  the checkout happens to have been built, which a test must not inherit.
+ *  Production callers pass two arguments and get the real probe. */
+export const resolveServedWebclientBundleDir = (
+  cacheBlobsRoot: string | undefined,
+  dirOverride: string | undefined,
+  sourceTreeDir: () => string | undefined = resolveSourceTreeWebclientDir,
+): string | undefined => {
+  const deployed = resolveWebclientBundleDir(cacheBlobsRoot, dirOverride);
+  if (deployed && hasBundleManifest(deployed)) return deployed;
+  return sourceTreeDir() ?? deployed;
+};
 
 /** R26.2 Delta 3 — boot-time servability probe for the apex `serve_webclient`
  *  consistency gate. Returns true iff a VERIFIED bundle is present at `dir` —

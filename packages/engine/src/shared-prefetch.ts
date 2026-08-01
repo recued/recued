@@ -59,6 +59,26 @@ export interface AnnotationLinkResolvers {
     id: string,
     direction: 'outbound' | 'inbound',
   ): Promise<Link[]>;
+  /** D-226 — every installed pack's declared projection onto this identity.
+   *  Returns `[]` when nothing declares onto it, so a recipe distinguishes
+   *  "no pack has anything to say" from "no resolver wired" the same way the
+   *  annotation and link groups do. */
+  rollupsForRecord?(
+    collection: string,
+    id: string,
+  ): Promise<RootRollup[]>;
+}
+
+/** One pack's answer about one identity. Mirrors the server's
+ *  `RecordsRootProjectionResult` without importing it — the engine is
+ *  portable and must not reach into server storage types. */
+export interface RootRollup {
+  publisher: string;
+  pack_slug: string;
+  label?: string;
+  value: Record<string, unknown>;
+  complete: boolean;
+  incomplete_reason?: string;
 }
 
 export interface SharedResolvers extends AnnotationLinkResolvers {
@@ -103,8 +123,19 @@ const ANNOTATION_LINK_TAGS = new Set([
   'annotations',
   'links',
   'inbound_links',
+  // D-226 — declared reverse reads. What every installed pack has to say about
+  // this identity, computed from the pack's live rows at read time.
+  'rollups',
 ] as const);
-type AnnotationLinkTag = 'annotations' | 'links' | 'inbound_links';
+type AnnotationLinkTag = 'annotations' | 'links' | 'inbound_links' | 'rollups';
+
+/** ⚠ `rollups` takes a DEEPER tail than the other tags. An annotation ref names
+ *  one key and a link ref one role, so the tag sits at the last or
+ *  second-to-last segment. A rollup names a PACK and then an output
+ *  (`…rollups.billable-hours.unbilled_minutes`), so it needs one more. The
+ *  relaxation is scoped to this tag alone — widening it for the others would
+ *  start matching refs the resolver never serves. */
+const ROLLUPS_MAX_TAIL = 2;
 
 const hasPrototypeSensitiveSegment = (segments: readonly string[]): boolean =>
   segments.some((seg) => PROTOTYPE_SENSITIVE_KEYS.has(seg));
@@ -119,7 +150,7 @@ const isAnnotationLinkTag = (segment: string): segment is AnnotationLinkTag =>
  *  this prefetch resolves places the tag at the last or second-to-last
  *  segment, so `rest` is at most one segment by construction. */
 export interface AnnotationLinkRef {
-  kind: 'annotation' | 'outbound-link' | 'inbound-link';
+  kind: 'annotation' | 'outbound-link' | 'inbound-link' | 'rollup';
   collection: string;
   id: string;
   rest: string[];
@@ -157,6 +188,13 @@ export const parseAnnotationLinkRef = (
   } else if (previousSegment && isAnnotationLinkTag(previousSegment)) {
     tag = previousSegment;
     tagIndex = last - 1;
+  } else {
+    // `rollups` only — one segment deeper, for `<pack_slug>.<output>`.
+    const rollupIndex = last - ROLLUPS_MAX_TAIL;
+    if (rollupIndex > 1 && segments[rollupIndex] === 'rollups') {
+      tag = 'rollups';
+      tagIndex = rollupIndex;
+    }
   }
   if (!tag || tagIndex <= 1) return null;
   const id = segments.slice(1, tagIndex).join('.');
@@ -170,6 +208,9 @@ export const parseAnnotationLinkRef = (
   }
   if (tag === 'inbound_links') {
     return { kind: 'inbound-link', collection, id, rest };
+  }
+  if (tag === 'rollups') {
+    return { kind: 'rollup', collection, id, rest };
   }
   return null;
 };
@@ -235,6 +276,7 @@ export const prefetchSharedRefs = async (
     && !resolvers.dataShared
     && !resolvers.annotationsForRecord
     && !resolvers.linksForRecord
+    && !resolvers.rollupsForRecord
   ) {
     return;
   }
@@ -246,6 +288,7 @@ export const prefetchSharedRefs = async (
   // `data.mail.m1.annotations.*` should fire one rpc, not two).
   const annotationFetches = new Set<string>();
   const linkFetches = new Set<string>();
+  const rollupFetches = new Set<string>();
 
   for (const ref of refs) {
     if (hasPrototypeSensitiveSegment(ref.path.split('.'))) continue;
@@ -289,6 +332,45 @@ export const prefetchSharedRefs = async (
     if (ref.ns === 'data') {
       const parsed = parseAnnotationLinkRef(ref.path);
       if (!parsed) continue;
+      if (parsed.kind === 'rollup' && resolvers.rollupsForRecord) {
+        const dedupe = `${parsed.collection}.${parsed.id}`;
+        if (rollupFetches.has(dedupe)) continue;
+        rollupFetches.add(dedupe);
+        const { collection, id } = parsed;
+        tasks.push(
+          (async () => {
+            const rollups = await resolvers.rollupsForRecord!(collection, id);
+            // Keyed on PACK SLUG for readability in a recipe. Two publishers
+            // CAN ship the same slug, and silently letting one win would put
+            // the wrong numbers under a name that looks right — so a collision
+            // becomes an obviously-broken marker instead, and both publishers
+            // are named so it can be diagnosed.
+            const folded: Record<string, unknown> = Object.create(null);
+            const owners: Record<string, string[]> = Object.create(null);
+            for (const rollup of rollups) {
+              const slug = rollup.pack_slug;
+              if (PROTOTYPE_SENSITIVE_KEYS.has(slug)) continue;
+              (owners[slug] ??= []).push(rollup.publisher);
+              folded[slug] = owners[slug]!.length > 1
+                ? { error: 'ambiguous_pack_slug', publishers: [...owners[slug]!] }
+                : {
+                    ...rollup.value,
+                    _complete: rollup.complete,
+                    ...(rollup.label === undefined ? {} : { _label: rollup.label }),
+                    ...(rollup.incomplete_reason === undefined
+                      ? {}
+                      : { _incomplete_reason: rollup.incomplete_reason }),
+                  };
+            }
+            seedDataNamespace(
+              stores,
+              annotationLinkSeedSegments(collection, id, 'rollups'),
+              folded,
+            );
+          })(),
+        );
+        continue;
+      }
       if (parsed.kind === 'annotation' && resolvers.annotationsForRecord) {
         const dedupe = `${parsed.collection}.${parsed.id}`;
         if (annotationFetches.has(dedupe)) continue;

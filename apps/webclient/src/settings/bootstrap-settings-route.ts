@@ -126,8 +126,10 @@ import {
   type NotificationsSetVerificationPhraseCaller,
 } from './notifications-panel.js';
 // D-187 §6 follow-on — the Packs panel, the {Access × Scope} install grant
-// picker, the Local tools reachability grid, and the install-time cli grant
-// dialog all moved with the Packs surface to `packs/bootstrap-packs-route.ts`.
+// picker, and the install-time cli grant dialog all moved with the Packs
+// surface to `packs/bootstrap-packs-route.ts`. (The roster-wide Local tools
+// reachability grid moved there too and was deleted outright on 2026-07-27 —
+// the by-pack ACCESS tab and `#contracts` are the two surviving axes.)
 import { type ConnectionsEnrollPanelMount } from './connections-enroll-panel.js';
 import { type PermissionsPanelMount } from './permissions-panel.js';
 import { type ContractsPanelMount } from './contracts-panel.js';
@@ -144,6 +146,16 @@ import {
   type TransparencyPrefsGetCaller,
   type TransparencyPrefsSetCaller,
 } from './transparency-panel.js';
+import {
+  mountLearningPanel,
+  LEARNING_PANEL_STYLES,
+  type LearningCaseForgetCaller,
+  type LearningCasesListCaller,
+  type LearningDraftRecipeCaller,
+  type LearningPanelMount,
+  type LearningPrefsGetCaller,
+  type LearningPrefsSetCaller,
+} from './learning-panel.js';
 import {
   AI_MODELS_PAGE_STYLES,
   mountAiModelsPage,
@@ -188,6 +200,8 @@ import {
 } from './seller-page.js';
 import {
   mountUpdatesPage,
+  UPDATES_PAGE_STYLES,
+  type MountUpdatesPageOptions,
   type UpdatesPageMount,
   type UpdateCheckCaller,
   type UpdateModeGetCaller,
@@ -321,6 +335,11 @@ export const SETTINGS_ROUTE_PRIVACY_DIRECTORY_ATTR =
   'data-recued-settings-privacy-directory';
 export const SETTINGS_ROUTE_PRIVACY_TRANSPARENCY_ATTR =
   'data-recued-settings-privacy-transparency';
+/** D-219 slice 9c — the Learning block, folded into Privacy beside
+ *  Transparency. Marker so the host / tests can assert it renders there
+ *  rather than as its own rail section. */
+export const SETTINGS_ROUTE_PRIVACY_LEARNING_ATTR =
+  'data-recued-settings-privacy-learning';
 
 // ════════════════════════════════════════════════════════════════
 // Options + handle
@@ -339,6 +358,10 @@ export interface BootstrapSettingsRouteOptions {
    *  `data-recued-settings-section`, the route scrolls that section into view
    *  once after mount. Unknown / absent ids are a safe no-op. */
   initialSectionId?: string | null;
+  /** Optional `#settings/server/<tab>` deep-link target. The requested tab is
+   *  activated when it exists; stale or unavailable ids safely fall back to
+   *  the first mounted Server tab. */
+  initialServerTabId?: string | null;
   /** Optional intent-specific view within AI / Models. The normal settings
    * route stays on `manage`; Chat links to the focused `chat-setup` journey. */
   initialAiModelsView?: AiModelsInitialView | null;
@@ -361,6 +384,9 @@ export interface BootstrapSettingsRouteOptions {
    *  omitted the panel still works but the `done` state's result row
    *  reports `cleared_crypto_keys: false`. */
   cryptoKeysWiper?: () => Promise<void>;
+  /** Host lifecycle hook at the exact five-field credential-clear boundary.
+   * Used for sibling-tab convergence even if later cleanup is partial. */
+  onLocalCredentialsCleared?: () => void;
   /** Reload callback fired when the user clicks "Reload to re-pair"
    *  after a successful clear. Defaults to `globalThis.location.reload`
    *  inside the panel. */
@@ -380,6 +406,10 @@ export interface BootstrapSettingsRouteOptions {
   /** R26.4 M1 — `server.archive.status` rpc caller (export poll). See
    *  `archiveExportCaller` for the gate. */
   archiveStatusCaller?: ArchiveStatusCaller;
+  /** Boot-scoped archive continuity. A remounted Backup section calls this to
+   * reattach to the same start/job without retaining recovery-key material. */
+  archiveResumeExportStart?: () => Promise<{ job_id: string }> | null;
+  archiveExportSettled?: (jobId?: string) => void;
   /** R26.4 M1 — `server.archive.import` rpc caller (dry-run preview + the Q2
    *  realm-gated destructive restore). See `archiveExportCaller` for the gate. */
   archiveImportCaller?: ArchiveImportCaller;
@@ -517,10 +547,10 @@ export interface BootstrapSettingsRouteOptions {
    *  to the panel for the anti-phishing phrase field. Optional; absent ⇒
    *  the phrase field renders read-only. */
   notificationsSetVerificationPhraseCaller?: NotificationsSetVerificationPhraseCaller;
-  // D-187 §6 follow-on — Packs + Local tools graduated out of Settings into
-  // the top-level `#packs` route (`packs/bootstrap-packs-route.ts`). The
-  // packs.* + cli.reachability callers + the install-time cli grant dialog
-  // moved with them.
+  // D-187 §6 follow-on — Packs graduated out of Settings into the top-level
+  // `#packs` route (`packs/bootstrap-packs-route.ts`). The packs.* +
+  // cli.reachability callers + the install-time cli grant dialog moved with
+  // it; the roster-wide Local tools grid was later deleted there.
   /** D-174 D14 — Settings -> AI / Models model-preference read/write.
    *  These are independently optional so tests can mount honest pending
    *  controls when a server seam is absent. */
@@ -597,6 +627,21 @@ export interface BootstrapSettingsRouteOptions {
   updateModeSetCaller?: UpdateModeSetCaller;
   updateApplyCaller?: UpdateApplyCaller;
   updateRollbackCaller?: UpdateRollbackCaller;
+  /** Exact, secret-free return path from a required server update to the
+   * credential-replacement preflight that requested it. */
+  credentialRotationServerUpdateContinuity?:
+    MountUpdatesPageOptions['credentialRotationServerUpdateContinuity'];
+  serverUpdateTabConvergence?:
+    MountUpdatesPageOptions['serverUpdateTabConvergence'];
+  serverConnectionStatus?: MountUpdatesPageOptions['serverConnectionStatus'];
+  serverUpdateReceiptVerification?:
+    MountUpdatesPageOptions['serverUpdateReceiptVerification'];
+  serverUpdateReceiptDiagnosticContext?:
+    MountUpdatesPageOptions['serverUpdateReceiptDiagnosticContext'];
+  serverUpdateReceiptDiagnosticWriter?:
+    MountUpdatesPageOptions['serverUpdateReceiptDiagnosticWriter'];
+  onReturnToCredentialRotationRetry?:
+    MountUpdatesPageOptions['onReturnToCredentialRotationRetry'];
   /** Periodic availability re-check scheduler (returns a cancel fn) + interval.
    *  Production wires a `setInterval` wrapper; omit → check-on-mount only. */
   updatesStartPoll?: (cb: () => void, ms: number) => () => void;
@@ -622,6 +667,31 @@ export interface BootstrapSettingsRouteOptions {
    *  policy). */
   transparencyPrefsGetCaller?: TransparencyPrefsGetCaller;
   transparencyPrefsSetCaller?: TransparencyPrefsSetCaller;
+  /** D-219 slice 9c — Settings → Learning panel callers (the same
+   *  `prefs.get` / `prefs.set` pair rpc, carrying
+   *  `chat.execution_case_offer`). Separate seams from the Transparency
+   *  pair by the same DD#1 discipline: one panel, one caller pair, so a
+   *  test can drive either in isolation. Mounts only when BOTH are
+   *  wired — a read-only view of a single toggle serves no purpose. */
+  learningPrefsGetCaller?: LearningPrefsGetCaller;
+  /** D-219 item 2 — wired as a pair with `learningCaseForgetCaller`. */
+  learningCasesListCaller?: LearningCasesListCaller;
+  learningCaseForgetCaller?: LearningCaseForgetCaller;
+  /** D-219 item 2b — wired as a pair with `onLearningDraftReady`. */
+  learningDraftRecipeCaller?: LearningDraftRecipeCaller;
+  /** ⛔ Returns FALSE when the hand-off could not be completed (no storage, a
+   *  full quota) — the panel then says so instead of clearing a draft the
+   *  owner just paid for. Declared `void` here once, which type-erased that
+   *  contract at the one seam it crosses: the host still returned a boolean
+   *  and the panel still read it, so nothing broke, but the signature said the
+   *  answer was ignored. */
+  onLearningDraftReady?: (draft: {
+    case_id: string;
+    recipe: unknown;
+    request_aliased: boolean;
+  }) => boolean | void;
+  learningDraftConfirmation?: string;
+  learningPrefsSetCaller?: LearningPrefsSetCaller;
   /** D-132/D-133 — Settings → Housekeeping trust-panel callers. The
    *  panel mounts only when the four read/write seams below are all
    *  wired (config read+write, status read, trust read); Run-now +
@@ -737,6 +807,9 @@ export interface SettingsRoute {
   update(): void;
   /** Tear down the route's DOM + every mounted section panel. Idempotent. */
   dispose(): void;
+  /** User-started Settings work whose outcome is not known yet. This includes
+   * multi-step local cleanup and server jobs that outlive their initial RPC. */
+  hasInFlightWork(): boolean;
   /** Expose the "This browser" clear-local-data panel mount for host /
    *  test introspection (DD#4). The Privacy section is a directory now;
    *  this is the one disposable local panel it hosts. */
@@ -801,6 +874,9 @@ export interface SettingsRoute {
    *  Tests use this to read panel state + drive the toggles; the chat
    *  surface picks the change up on its next mount via `prefs.get`. */
   transparencyPanel(): TransparencyPanelMount | null;
+  /** D-219 slice 9c — expose the Learning section's panel mount. Returns
+   *  `null` when the bootstrap omitted either prefs caller. */
+  learningPanel(): LearningPanelMount | null;
   /** D-145 PA11 — expose the AI / Models section's "LLM result cache" card
    *  mount. Returns `null` when the bootstrap omitted
    *  `housekeepingCacheStatsCaller`. Tests use this to read snapshot
@@ -1120,14 +1196,21 @@ export const bootstrapSettingsRoute = (
       CERT_PIN_STALE_PANEL_STYLES,
       NOTIFICATIONS_PANEL_STYLES,
       // D-187 §6 follow-on — PACKS_PANEL_STYLES / INSTALL_GRANT_PICKER_STYLES /
-      // LOCAL_TOOLS_PANEL_STYLES / CLI_GRANT_DIALOG_STYLES moved to the
-      // `#packs` route bundle (`PACKS_ROUTE_STYLES`).
+      // CLI_GRANT_DIALOG_STYLES moved to the `#packs` route bundle
+      // (`PACKS_ROUTE_STYLES`). LOCAL_TOOLS_PANEL_STYLES went with them and was
+      // deleted there on 2026-07-27 with its panel.
       // D-145 § B.8.9 — `TRANSPARENCY_PANEL_STYLES` joins the bundle so a
       // cold `#settings` load renders the Transparency section styled.
       // Selectors scope to `[data-recued-transparency-panel]`, so the
       // rules are inert when the bootstrap omits the prefs callers + the
       // section never mounts.
       TRANSPARENCY_PANEL_STYLES,
+      // D-219 — same reasoning, and it was MISSING until a live browser run on
+      // 2026-07-29 showed the Learning rows rendering as one run-together
+      // unstyled sentence directly beneath the styled Transparency rows. The
+      // panel had set `learning-row*` classes from the start; nothing defined
+      // them. Structure-and-text render tests cannot see a missing stylesheet.
+      LEARNING_PANEL_STYLES,
       // D-145 PA11 — `LLM_RESULT_CACHE_CARD_STYLES` joins the bundle
       // so a cold `#settings` load renders the cache card fully
       // styled. Selectors scope to `.housekeeping-cache-card` so the
@@ -1136,6 +1219,7 @@ export const bootstrapSettingsRoute = (
       LLM_RESULT_CACHE_CARD_STYLES,
       AI_MODELS_PAGE_STYLES,
       SELLER_PAGE_STYLES,
+      UPDATES_PAGE_STYLES,
       ACCOUNT_BINDING_PANEL_STYLES,
       // R26.4 M1 — the consolidated Backup & Recovery surface's styles join the
       // bundle so a cold `#settings/backup` load renders fully styled. Selectors
@@ -1228,6 +1312,7 @@ export const bootstrapSettingsRoute = (
   const buildSectionTabs = (
     section: HTMLElement,
     tabs: ReadonlyArray<{ id: string; label: string }>,
+    initialTabId?: string | null,
   ): Record<string, HTMLElement> => {
     const hosts: Record<string, HTMLElement> = {};
     if (tabs.length === 0) return hosts;
@@ -1269,7 +1354,10 @@ export const bootstrapSettingsRoute = (
     }
     section.appendChild(strip);
     for (const it of items) section.appendChild(it.panel);
-    activate(items[0]!.id);
+    const requestedTabId = initialTabId?.trim();
+    const initialTab =
+      items.find((item) => item.id === requestedTabId)?.id ?? items[0]!.id;
+    activate(initialTab);
     return hosts;
   };
 
@@ -1350,6 +1438,12 @@ export const bootstrapSettingsRoute = (
       runExport: opts.archiveExportCaller as ArchiveExportCaller,
       runStatus: opts.archiveStatusCaller as ArchiveStatusCaller,
       runImport: opts.archiveImportCaller as ArchiveImportCaller,
+      ...(opts.archiveResumeExportStart !== undefined
+        ? { resumeExportStart: opts.archiveResumeExportStart }
+        : {}),
+      ...(opts.archiveExportSettled !== undefined
+        ? { onExportSettled: opts.archiveExportSettled }
+        : {}),
       ...(opts.passportExportCaller !== undefined
         ? { runPassportExport: opts.passportExportCaller }
         : {}),
@@ -1589,6 +1683,45 @@ export const bootstrapSettingsRoute = (
       ...(opts.updatesPollIntervalMs !== undefined
         ? { pollIntervalMs: opts.updatesPollIntervalMs }
         : {}),
+      ...(opts.credentialRotationServerUpdateContinuity !== undefined
+        ? {
+            credentialRotationServerUpdateContinuity:
+              opts.credentialRotationServerUpdateContinuity,
+          }
+        : {}),
+      ...(opts.serverUpdateTabConvergence !== undefined
+        ? {
+            serverUpdateTabConvergence:
+              opts.serverUpdateTabConvergence,
+          }
+        : {}),
+      ...(opts.serverConnectionStatus !== undefined
+        ? { serverConnectionStatus: opts.serverConnectionStatus }
+        : {}),
+      ...(opts.serverUpdateReceiptVerification !== undefined
+        ? {
+            serverUpdateReceiptVerification:
+              opts.serverUpdateReceiptVerification,
+          }
+        : {}),
+      ...(opts.serverUpdateReceiptDiagnosticContext !== undefined
+        ? {
+            serverUpdateReceiptDiagnosticContext:
+              opts.serverUpdateReceiptDiagnosticContext,
+          }
+        : {}),
+      ...(opts.serverUpdateReceiptDiagnosticWriter !== undefined
+        ? {
+            serverUpdateReceiptDiagnosticWriter:
+              opts.serverUpdateReceiptDiagnosticWriter,
+          }
+        : {}),
+      ...(opts.onReturnToCredentialRotationRetry !== undefined
+        ? {
+            onReturnToCredentialRotationRetry:
+              opts.onReturnToCredentialRotationRetry,
+          }
+        : {}),
     });
     registerSubview('updates', 'Updates', updatesSection, { badgeable: true });
   }
@@ -1600,6 +1733,7 @@ export const bootstrapSettingsRoute = (
   // callers). Declared here so the Privacy block + the dispose cascade can
   // see the handle.
   let transparencyPanel: TransparencyPanelMount | null = null;
+  let learningPanel: LearningPanelMount | null = null;
 
   // ── Housekeeping section (D-132/D-133 trust core) ────────────────
   // Per-topic AI-trust radios + pool policy + schedule + Run-now. The
@@ -1797,6 +1931,50 @@ export const bootstrapSettingsRoute = (
     });
   }
 
+  // ── Learning — whether Recued asks how a multi-step turn turned out ─
+  // D-219 slice 9c. Sits beside Transparency because both answer "what
+  // does Recued do around my turns"; this one governs the PRINCIPAL signal
+  // (⚠ not the only one — an independently verified outcome is strong evidence
+  // and does not run through the ask; the panel's copy says so)
+  // that becomes precedent, so it is a real control rather than a
+  // display preference.
+  if (
+    opts.learningPrefsGetCaller !== undefined
+    && opts.learningPrefsSetCaller !== undefined
+  ) {
+    const learningBlock = doc.createElement('div');
+    learningBlock.setAttribute(SETTINGS_ROUTE_PRIVACY_LEARNING_ATTR, '');
+    const learningHeading = doc.createElement('h3');
+    learningHeading.textContent = 'Learning';
+    learningBlock.appendChild(learningHeading);
+    const learningHost = doc.createElement('div');
+    learningBlock.appendChild(learningHost);
+    privacySection.appendChild(learningBlock);
+    learningPanel = mountLearningPanel({
+      host: learningHost,
+      document: doc,
+      runPrefsGet: opts.learningPrefsGetCaller,
+      runPrefsSet: opts.learningPrefsSetCaller,
+      ...(opts.learningCasesListCaller !== undefined
+        && opts.learningCaseForgetCaller !== undefined
+        ? {
+            runCasesList: opts.learningCasesListCaller,
+            runCaseForget: opts.learningCaseForgetCaller,
+          }
+        : {}),
+      ...(opts.learningDraftRecipeCaller !== undefined
+        && opts.onLearningDraftReady !== undefined
+        ? {
+            runDraftRecipe: opts.learningDraftRecipeCaller,
+            onDraftReady: opts.onLearningDraftReady,
+            ...(opts.learningDraftConfirmation !== undefined
+              ? { draftConfirmation: opts.learningDraftConfirmation }
+              : {}),
+          }
+        : {}),
+    });
+  }
+
   // ── This browser — clear local device data + crypto keys ──────────
   // Local-only, destructive (two-tap guard), no server rpc. Lives only
   // here; placed last so it sits away from the directory links.
@@ -1813,6 +1991,9 @@ export const bootstrapSettingsRoute = (
     localStore: opts.localStore,
     ...(opts.cryptoKeysWiper !== undefined
       ? { crypto_keys_wiper: opts.cryptoKeysWiper }
+      : {}),
+    ...(opts.onLocalCredentialsCleared !== undefined
+      ? { onLocalCredentialsCleared: opts.onLocalCredentialsCleared }
       : {}),
     ...(opts.reloader !== undefined ? { reloader: opts.reloader } : {}),
     ...(opts.onCleared !== undefined ? { onCleared: opts.onCleared } : {}),
@@ -1863,12 +2044,12 @@ export const bootstrapSettingsRoute = (
     registerSubview('devices', 'Devices', devicesSection);
   }
 
-  // ── Packs + Local tools ── moved to the `#packs` route ────────────
-  // D-187 §6 follow-on — the Packs section, the Local tools reachability
-  // grid, and the install-time cli grant dialog graduated out of Settings
-  // into the top-level `#packs` route (`packs/bootstrap-packs-route.ts`).
-  // The install→cli-grant-dialog flow binds Packs to the Local tools
-  // callers, so the three travel together.
+  // ── Packs ── moved to the `#packs` route ──────────────────────────
+  // D-187 §6 follow-on — the Packs section and the install-time cli grant
+  // dialog graduated out of Settings into the top-level `#packs` route
+  // (`packs/bootstrap-packs-route.ts`). The install→cli-grant-dialog flow
+  // binds Packs to the cli.reachability callers, so the two travel together.
+  // The roster-wide Local tools grid that also moved there is now deleted.
 
   // ── Notifications section (D-163 Slice C) ─────────────────────────
   // Sits before Server in document order — the operator's mental model
@@ -2016,20 +2197,28 @@ export const bootstrapSettingsRoute = (
     // are cert lifecycle).
     const hasCertificates =
       opts.tlsRenewCaller !== undefined || opts.certPinWatcher !== undefined;
-    const serverHosts = buildSectionTabs(serverSection, [
-      ...(canMountExposure ? [{ id: 'exposure', label: 'Exposure' }] : []),
-      ...(canMountReachability
-        ? [{ id: 'reachability', label: 'Reachability' }]
-        : []),
-      ...(canMountHostnames ? [{ id: 'hostnames', label: 'Hostnames' }] : []),
-      ...(hasCertificates
-        ? [{ id: 'certificates', label: 'Certificates' }]
-        : []),
-      ...(canMountKeyHealth ? [{ id: 'key-health', label: 'Key Health' }] : []),
-      ...(canMountMaintenance
-        ? [{ id: 'maintenance', label: 'Maintenance' }]
-        : []),
-    ]);
+    const serverHosts = buildSectionTabs(
+      serverSection,
+      [
+        ...(canMountExposure ? [{ id: 'exposure', label: 'Exposure' }] : []),
+        ...(canMountReachability
+          ? [{ id: 'reachability', label: 'Reachability' }]
+          : []),
+        ...(canMountHostnames
+          ? [{ id: 'hostnames', label: 'Hostnames' }]
+          : []),
+        ...(hasCertificates
+          ? [{ id: 'certificates', label: 'Certificates' }]
+          : []),
+        ...(canMountKeyHealth
+          ? [{ id: 'key-health', label: 'Key Health' }]
+          : []),
+        ...(canMountMaintenance
+          ? [{ id: 'maintenance', label: 'Maintenance' }]
+          : []),
+      ],
+      opts.initialServerTabId,
+    );
 
     if (canMountExposure) {
       exposure = mountExposurePanel({
@@ -2265,6 +2454,17 @@ export const bootstrapSettingsRoute = (
     update: () => {
       /* v1 has no per-broadcast update path */
     },
+    hasInFlightWork: () => {
+      if (disposed) return false;
+      if (panel.getState() === 'busy') return true;
+      if (archiveBackup === null) return false;
+      const archiveView = archiveBackup.getView();
+      return archiveView === 'export-running'
+        || archiveView === 'restore-uploading'
+        || archiveView === 'restore-busy'
+        || archiveView === 'passport-exporting'
+        || archiveBackup.isDownloading();
+    },
     dispose: () => {
       if (disposed) return;
       disposed = true;
@@ -2297,6 +2497,7 @@ export const bootstrapSettingsRoute = (
       // `#contracts` route; the egress panel was retired by D-191.)
       panel.dispose();
       if (transparencyPanel !== null) transparencyPanel.dispose();
+      if (learningPanel !== null) learningPanel.dispose();
       if (updatesPage !== null) updatesPage.dispose();
       if (sellerPage !== null) sellerPage.dispose();
       if (aiModels !== null) aiModels.dispose();
@@ -2318,6 +2519,7 @@ export const bootstrapSettingsRoute = (
     sellerPage: () => sellerPage,
     updatesPage: () => updatesPage,
     transparencyPanel: () => transparencyPanel,
+    learningPanel: () => learningPanel,
     llmResultCacheCard: () => aiModels?.cacheCard() ?? null,
     hostnamesPanel: () => hostnames,
     reachabilityPanel: () => reachability,

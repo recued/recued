@@ -320,7 +320,24 @@ import type {
   PacksResolveResult,
   PackServiceKind,
   SellerOverview,
+  ServerRecipeListEntry,
 } from '@recued/contracts';
+// The Use tab — the pack rendered as the app it is. The model derives the
+// view / operation split (and owns why a view is safe to run on selection);
+// the view is the surface over it.
+import {
+  hasAppSurface,
+  packAppSurface,
+  rosterForUsage,
+  type PackAppSurface,
+} from '../packs/pack-app-model.js';
+import {
+  mountPackAppView,
+  type PackAppExecuteCaller,
+  type PackAppRecordRefSearchCaller,
+  type PackAppViewMount,
+} from '../packs/pack-app-view.js';
+import type { ResultFileReadResult } from '../recipes/recipe-result-panel.js';
 // R22 — value imports for the Installed section's service_kind kind-grouping.
 // D-194 2b-2 — the pack's connection requirement (interim seed) + the
 // endpoint-match candidate lookup that feeds the install dialog's Connect section.
@@ -427,6 +444,7 @@ import type {
 // so this panel and the #recipes route's pack modal cannot drift; the
 // panel renders the returned blocks via createElement/textContent.
 import {
+  connectionHintSetupSlug,
   installDisclosureBlocks,
   uninstallDisclosureBlocks,
   type PackDisclosureBlock,
@@ -455,7 +473,15 @@ export const PACKS_DETAIL_BACK_ATTR = 'data-recued-packs-detail-back';
 export const PACKS_DETAIL_TABS_ATTR = 'data-recued-packs-detail-tabs';
 export const PACKS_DETAIL_TAB_ATTR = 'data-recued-packs-detail-tab';
 export const PACKS_DETAIL_TAB_PANEL_ATTR = 'data-recued-packs-detail-tab-panel';
-export type PacksDetailTab = 'detail' | 'permissions' | 'access';
+/** Pack-detail subviews. `use` is the pack AS AN APP (its views + actions);
+ *  the other three are the control-plane surfaces, grouped behind Manage.
+ *  A pack that owns no runnable recipes never reaches `use` — see
+ *  `hasAppSurface`. */
+export type PacksDetailTab = 'use' | 'detail' | 'permissions' | 'access';
+
+/** The three subviews that sit behind Manage. `use` is the sibling of the
+ *  whole group, not a member of it. */
+const MANAGE_TABS: ReadonlyArray<PacksDetailTab> = ['detail', 'permissions', 'access'];
 // R22 3-section LIST — the section wrapper carries `data-section`
 // (`installed` / `discover` / `add`); the Installed section's per-service_kind
 // group carries `data-kind` (a PackServiceKind or `other`).
@@ -493,6 +519,9 @@ export {
   PACKS_DIALOG_GRANT_OVERLAP_ITEM_ATTR,
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR,
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR,
+  PACKS_DIALOG_RECORDS_REVIEW_ATTR,
+  PACKS_DIALOG_RECORDS_REVIEW_CHANGE_ATTR,
+  PACKS_DIALOG_RECORDS_REVIEW_DESTRUCTIVE_ATTR,
 } from './packs-install-dialog.js';
 // D-145 PA10 follow-on Slice B — per-row Delete affordance attributes.
 export const PACKS_ROW_DELETE_BTN_ATTR = 'data-recued-packs-row-delete';
@@ -588,6 +617,8 @@ export type PacksListCaller = () => Promise<{
 export type PacksInstallCaller = (args: {
   manifest: unknown;
   granted_permissions: ReadonlyArray<string>;
+  /** Exact server-produced review anchor for a bundled Records update. */
+  expected_manifest_hash?: string;
   /** D-182 §7.1 / D-196 — Access × Audience for a pack with grantable ops. */
   install_scope?: InstallGrantSelection;
   /** D-194 2b-2 — the connection the owner picked in the dialog's Connect
@@ -687,6 +718,27 @@ export interface MountPacksPanelOptions {
    *  prior post-rpc-auto-refresh cadence (refresh fires on mount +
    *  after every successful local install / uninstall). */
   subscribe?: BroadcastSubscriber['on'];
+  // ── The Use tab (pack as an app) ──────────────────────────────────
+  /** `recipes.list` — the pack's own recipe BODIES, which is what the view /
+   *  operation split is derived from. Absent ⇒ no pack gets a Use tab and the
+   *  detail is exactly the control-plane page it was. */
+  runRecipeList?: () => Promise<{ recipes: ReadonlyArray<ServerRecipeListEntry> }>;
+  /** Runs a view. Absent ⇒ the Use tab still lists what the pack does but says
+   *  running is unavailable, rather than rendering dead tabs. */
+  runRecipeExecute?: PackAppExecuteCaller;
+  /** Opens the shared Run | Schedule modal for an operation. Owned by the HOST
+   *  so the one-modal-at-a-time rule holds across the whole route rather than
+   *  per panel. Absent ⇒ the actions bar is omitted. */
+  openRunModal?: (
+    entry: ServerRecipeListEntry,
+    onRan?: (result: import('@recued/contracts').ServerExecuteResponse) => void,
+    prefill?: { config?: Record<string, unknown>; context?: Record<string, unknown> },
+  ) => void;
+  /** `data.file.read` — the authenticated owner read behind a Use-tab file
+   *  card's preview / download. Absent ⇒ those controls render disabled. */
+  runFileRead?: (args: { record_id: string }) => Promise<ResultFileReadResult>;
+  /** Pack-owned Records inventory for editable ref cells in a Use-tab view. */
+  runRecordRefSearch?: PackAppRecordRefSearchCaller;
   /** Supervision feature (Slice 4) — `supervision.list` discovery caller. When
    *  present (with `runSupervisionSet`), the panel renders the pack-detail
    *  supervised-daemon controls. Omitted ⇒ no controls (read-only host). */
@@ -695,7 +747,7 @@ export interface MountPacksPanelOptions {
    *  start / stop). Independent of install/uninstall; omitting it hides the
    *  daemon controls even when `runSupervisionList` is present. */
   runSupervisionSet?: SupervisionSetCaller;
-  /** `cli.reachability.universe` caller (reused from the Local-tools surface).
+  /** `cli.reachability.universe` caller — the binary-on-PATH readiness read.
    *  When present, a daemon row whose binary isn't on PATH shows a "not installed"
    *  badge + gates its enrol/start controls. Omitted ⇒ no readiness signal. */
   runReachabilityUniverse?: SupervisionReachabilityCaller;
@@ -756,6 +808,11 @@ export interface MountPacksPanelOptions {
 export interface PacksPanelMount {
   /** Current panel state — primary surface for tests + host introspection. */
   getState(): PacksPanelState;
+  /** Re-run the Use tab's open view for an external refresh signal. Pack task
+   *  results refresh themselves when the owner returns. No-op when unmounted. */
+  refreshAppView(): void;
+  /** The Use tab's open view, or null when it isn't mounted. Test surface. */
+  getActiveViewId(): string | null;
   /** Currently-rendered packs in display order. Empty when state !=
    *  `'ready'`. */
   getPacks(): ReadonlyArray<PackListEntry>;
@@ -887,6 +944,9 @@ const COPY = {
   foundation_badge: 'Foundation',
   detail_back_label: '← Packs',
   detail_tabs_label: 'Pack sections',
+  detail_use_tab_label: 'Use',
+  detail_manage_tab_label: 'Manage',
+  detail_manage_tabs_label: 'Pack management sections',
   detail_tab_label: 'Detail',
   detail_permissions_tab_label: 'Permissions',
   detail_access_tab_label: 'Access',
@@ -1057,9 +1117,93 @@ export const mountPacksPanel = (
    *  tolerated — `renderReady` falls back to the list until it appears (and
    *  clears a slug that's gone after a refresh, mirroring recipes/data). */
   let selectedSlug: string | null = opts.initialSlug ?? null;
-  /** Active pack-detail subview. Pack navigation always starts at Detail;
-   *  controller-driven re-renders preserve the current subview. */
+  /** Active pack-detail subview. Controller-driven re-renders preserve it.
+   *
+   *  ⚠ This is the LAST EXPLICIT choice, not necessarily what is shown — see
+   *  `effectiveDetailTab`. A pack that owns runnable recipes opens on Use, and
+   *  whether it does is only known once `recipes.list` has answered, which is
+   *  after the first paint. */
   let activeDetailTab: PacksDetailTab = 'detail';
+  /** True once the user has actually picked a tab, which suppresses the
+   *  open-on-Use default. Without it, the async recipe load would yank someone
+   *  out of Access and into Use the moment the list arrived. */
+  let detailTabPinned = false;
+  // ── Use tab state ────────────────────────────────────────────────
+  /** Installed recipe bodies. `null` = not loaded yet (or the read failed);
+   *  distinct from `[]`, which is a real answer meaning this server has none. */
+  let installedRecipes: ReadonlyArray<ServerRecipeListEntry> | null = null;
+  let recipesLoading = false;
+  let appView: PackAppViewMount | null = null;
+  /** Slug the mounted app view belongs to, so a pack switch tears it down
+   *  instead of leaving one pack's views over another pack's page. */
+  let appViewSlug: string | null = null;
+
+  /** Memoised app surface.
+   *
+   *  ⛔ THIS CACHE IS NOT AN OPTIMISATION, it is what makes the Use tab usable.
+   *  Classifying a recipe resolves every Tier-P op it names against the whole
+   *  installed roster, and that index is rebuilt per call — so one 18-recipe
+   *  pack costs ~932k op visits across the ~26k operations the shipped corpus
+   *  declares. The panel repaints wholesale on every controller event (DD#5),
+   *  which would pay that on each one.
+   *
+   *  Keyed on IDENTITY of the three inputs, so it is observationally pure: a
+   *  hit returns exactly what a recompute would. `packs` is replaced wholesale
+   *  by `refreshRows`, and `installedRecipes` is assigned once, so an install /
+   *  uninstall invalidates this by construction rather than by remembering to. */
+  let surfaceMemo: {
+    pack: PackListEntry;
+    installed: ReadonlyArray<ServerRecipeListEntry>;
+    packs: ReadonlyArray<PackListEntry>;
+    value: PackAppSurface;
+  } | null = null;
+
+  const appSurfaceFor = (pack: PackListEntry): PackAppSurface | null => {
+    if (installedRecipes === null) return null;
+    if (
+      surfaceMemo !== null
+      && surfaceMemo.pack === pack
+      && surfaceMemo.installed === installedRecipes
+      && surfaceMemo.packs === packs
+    ) {
+      return surfaceMemo.value;
+    }
+    const value = packAppSurface(pack, installedRecipes, rosterForUsage(packs));
+    surfaceMemo = { pack, installed: installedRecipes, packs, value };
+    return value;
+  };
+
+  /** What the detail actually shows. Defaults to Use for a pack that has one,
+   *  falls back to Detail otherwise, and never strands the user on a Use tab
+   *  that has just stopped existing (an uninstall mid-visit). */
+  const effectiveDetailTab = (surface: PackAppSurface | null): PacksDetailTab => {
+    const canUse = surface !== null && hasAppSurface(surface);
+    if (!detailTabPinned) return canUse ? 'use' : 'detail';
+    return activeDetailTab === 'use' && !canUse ? 'detail' : activeDetailTab;
+  };
+
+  /** Load recipe bodies once, on first need. Failure is SOFT: `installedRecipes`
+   *  stays null, no pack gets a Use tab, and the detail is the control-plane
+   *  page it has always been — a degraded read must not invent an empty app. */
+  const ensureRecipesLoaded = (): void => {
+    if (installedRecipes !== null || recipesLoading) return;
+    const run = opts.runRecipeList;
+    if (run === undefined) return;
+    recipesLoading = true;
+    void run()
+      .then((res) => {
+        if (disposed) return;
+        installedRecipes = res.recipes;
+      })
+      .catch(() => {
+        // Soft: leave `installedRecipes` null.
+      })
+      .finally(() => {
+        if (disposed) return;
+        recipesLoading = false;
+        render();
+      });
+  };
 
   /** The resolved-but-not-yet-installed marketplace pack, projected from its
    *  fetched manifest (a pack absent from `packs[]`, opened in the detail via
@@ -1131,6 +1275,8 @@ export const mountPacksPanel = (
   const projectAddedManifest = (
     manifest: BulkPackManifest,
     ownerOperationReview?: PackListEntry['owner_operation_review'],
+    recordsReview?: PackListEntry['records_review'],
+    manifestReviewHash?: string,
   ): PackListEntry => ({
     slug: manifest.slug,
     publisher: manifest.publisher,
@@ -1145,6 +1291,10 @@ export const mountPacksPanel = (
     manifest,
     ...(ownerOperationReview !== undefined && ownerOperationReview.length > 0
       ? { owner_operation_review: ownerOperationReview }
+      : {}),
+    ...(recordsReview !== undefined ? { records_review: recordsReview } : {}),
+    ...(manifestReviewHash !== undefined
+      ? { manifest_review_hash: manifestReviewHash }
       : {}),
   });
 
@@ -1177,6 +1327,8 @@ export const mountPacksPanel = (
           pendingAddEntry = projectAddedManifest(
             result.manifest,
             result.owner_operation_review,
+            result.records_review,
+            result.manifest_review_hash,
           );
           pendingAddManifestHash = result.manifest_review_hash ?? null;
           detailResolveError = null;
@@ -1506,6 +1658,10 @@ export const mountPacksPanel = (
     detailResolveError = null;
     selectedSlug = slug;
     activeDetailTab = 'detail';
+    detailTabPinned = false;
+    // Kick the recipe read as the detail opens, so the Use tab is usually
+    // resolved by first paint rather than appearing a beat later.
+    ensureRecipesLoaded();
     opts.onSelectSlug?.(slug);
     if (!disposed) render();
   };
@@ -1783,6 +1939,9 @@ export const mountPacksPanel = (
           : await (opts.runInstall as PacksInstallCaller)({
               manifest: target.manifest,
               granted_permissions: granted,
+              ...(target.manifest_review_hash !== undefined
+                ? { expected_manifest_hash: target.manifest_review_hash }
+                : {}),
               ...(installScope !== undefined ? { install_scope: installScope } : {}),
               ...(chosenConnection !== undefined
                 ? { chosen_connection: chosenConnection }
@@ -2080,6 +2239,13 @@ export const mountPacksPanel = (
     // pre-selected default). All three feed the dialog's Connect section.
     const connectionRequirement = dialogConnectionRequirement(pack.slug);
     const connectionCandidates = dialogConnectionCandidates(connectionRequirement);
+    // D-223 — a pack that declares hints but no descriptor still needs a way in.
+    // Only consulted when there is no requirement: a descriptor already provides
+    // the Connect section, and a hint must never add adoption to it.
+    const connectionHintSetup = connectionHintSetupSlug(
+      findPackBySlug(pack.slug)?.manifest.connection_hints,
+      connectionRequirement !== undefined,
+    );
     return renderPacksInstallDialog({
       document: doc,
       pack,
@@ -2092,6 +2258,7 @@ export const mountPacksPanel = (
       contractOptions: contractAudienceOptions,
       connectionRequirement,
       connectionCandidates,
+      connectionHintSetup,
       chosenConnection: effectiveChosenConnection(pack.slug, connectionCandidates),
       connectExpanded: dialogConnectExpanded.has(pack.slug),
       installing,
@@ -2556,37 +2723,131 @@ export const mountPacksPanel = (
       wrapper.appendChild(renderDialog(pack, collision, grantOverlap));
     }
 
-    const tabs: ReadonlyArray<{ id: PacksDetailTab; label: string }> = [
-      { id: 'detail', label: COPY.detail_tab_label },
-      { id: 'permissions', label: COPY.detail_permissions_tab_label },
-      { id: 'access', label: COPY.detail_access_tab_label },
-    ];
-    const tabStrip = doc.createElement('nav');
-    tabStrip.setAttribute(PACKS_DETAIL_TABS_ATTR, '');
-    tabStrip.setAttribute('role', 'tablist');
-    tabStrip.setAttribute('aria-label', COPY.detail_tabs_label);
-    for (const tab of tabs) {
+    // ── Tabs ─────────────────────────────────────────────────────────
+    // A pack that gives you something to DO leads with it; its control-plane
+    // surfaces group behind Manage. A capability pack has no Use tab, so its
+    // strip stays exactly the three it always had.
+    const appSurface = appSurfaceFor(pack);
+    const showUse = appSurface !== null && hasAppSurface(appSurface);
+    const shownTab = effectiveDetailTab(appSurface);
+
+    const makeTabButton = (
+      id: PacksDetailTab,
+      label: string,
+      selected: boolean,
+      onPick: () => void,
+    ): HTMLElement => {
       const button = doc.createElement('button');
       button.type = 'button';
-      button.setAttribute(PACKS_DETAIL_TAB_ATTR, tab.id);
+      button.setAttribute(PACKS_DETAIL_TAB_ATTR, id);
       button.setAttribute('role', 'tab');
-      button.setAttribute('aria-selected', activeDetailTab === tab.id ? 'true' : 'false');
-      button.textContent = tab.label;
-      button.addEventListener('click', () => {
-        if (activeDetailTab === tab.id) return;
-        activeDetailTab = tab.id;
-        render();
-      });
-      tabStrip.appendChild(button);
+      button.setAttribute('aria-selected', selected ? 'true' : 'false');
+      button.textContent = label;
+      button.addEventListener('click', onPick);
+      return button;
+    };
+
+    if (showUse) {
+      const topStrip = doc.createElement('nav');
+      topStrip.setAttribute(PACKS_DETAIL_TABS_ATTR, '');
+      topStrip.setAttribute('role', 'tablist');
+      topStrip.setAttribute('aria-label', COPY.detail_tabs_label);
+      topStrip.appendChild(makeTabButton(
+        'use', COPY.detail_use_tab_label, shownTab === 'use',
+        () => {
+          if (shownTab === 'use') return;
+          activeDetailTab = 'use';
+          detailTabPinned = true;
+          render();
+        },
+      ));
+      // Manage re-enters the group at whichever member was last open, so
+      // Use → Manage → Use → Manage returns you to Access, not to Detail.
+      topStrip.appendChild(makeTabButton(
+        'detail', COPY.detail_manage_tab_label, shownTab !== 'use',
+        () => {
+          if (shownTab !== 'use') return;
+          activeDetailTab = MANAGE_TABS.includes(activeDetailTab)
+            ? activeDetailTab
+            : 'detail';
+          detailTabPinned = true;
+          render();
+        },
+      ));
+      wrapper.appendChild(topStrip);
     }
-    wrapper.appendChild(tabStrip);
+
+    // The management strip: the whole strip when there is no Use tab, the
+    // second level when Manage is open.
+    if (!showUse || shownTab !== 'use') {
+      const tabStrip = doc.createElement('nav');
+      tabStrip.setAttribute(PACKS_DETAIL_TABS_ATTR, '');
+      tabStrip.setAttribute('role', 'tablist');
+      tabStrip.setAttribute(
+        'aria-label',
+        showUse ? COPY.detail_manage_tabs_label : COPY.detail_tabs_label,
+      );
+      if (showUse) tabStrip.className = 'packs-detail-tabs-nested';
+      const manageTabs: ReadonlyArray<{ id: PacksDetailTab; label: string }> = [
+        { id: 'detail', label: COPY.detail_tab_label },
+        { id: 'permissions', label: COPY.detail_permissions_tab_label },
+        { id: 'access', label: COPY.detail_access_tab_label },
+      ];
+      for (const tab of manageTabs) {
+        tabStrip.appendChild(makeTabButton(
+          tab.id, tab.label, shownTab === tab.id,
+          () => {
+            if (shownTab === tab.id) return;
+            activeDetailTab = tab.id;
+            detailTabPinned = true;
+            render();
+          },
+        ));
+      }
+      wrapper.appendChild(tabStrip);
+    }
 
     const tabPanel = doc.createElement('div');
-    tabPanel.setAttribute(PACKS_DETAIL_TAB_PANEL_ATTR, activeDetailTab);
+    tabPanel.setAttribute(PACKS_DETAIL_TAB_PANEL_ATTR, shownTab);
     tabPanel.setAttribute('role', 'tabpanel');
     tabPanel.className = 'packs-detail-tab-panel';
 
-    if (activeDetailTab === 'permissions') {
+    if (shownTab === 'use') {
+      // The app view owns its own DOM + run lifecycle, so it is MOUNTED rather
+      // than re-rendered with the panel: a whole-panel repaint mid-run would
+      // otherwise discard the result the person is reading. Remounted only when
+      // the pack changes.
+      if (appViewSlug !== pack.slug && appView !== null) {
+        appView.dispose();
+        appView = null;
+      }
+      if (appView === null && appSurface !== null) {
+        appViewSlug = pack.slug;
+        appView = mountPackAppView({
+          host: tabPanel,
+          document: doc,
+          pack,
+          surface: appSurface,
+          ...(opts.runRecipeExecute !== undefined
+            ? { execute: opts.runRecipeExecute }
+            : {}),
+          ...(opts.openRunModal !== undefined
+            ? { openRunModal: opts.openRunModal }
+            : {}),
+          // The result panel validates every row action against this roster.
+          // Non-null by construction here: the Use tab only renders once the
+          // surface resolved, which requires the recipes to have loaded.
+          ...(installedRecipes !== null ? { installedRecipes } : {}),
+          ...(opts.runFileRead !== undefined ? { fileRead: opts.runFileRead } : {}),
+          ...(opts.runRecordRefSearch !== undefined
+            ? { recordRefSearchCaller: opts.runRecordRefSearch }
+            : {}),
+        });
+      } else if (appView !== null) {
+        // Same pack, panel repainted around it — re-adopt the existing node.
+        appView.adopt(tabPanel);
+      }
+    } else if (shownTab === 'permissions') {
       // D-211 global owner replacements. They are pack-wide defaults shared by
       // every contract, so Permissions is deliberately separate from Access.
       const defaults = makeDetailSection(
@@ -2605,7 +2866,7 @@ export const mountPacksPanel = (
         defaults.appendChild(note);
       }
       tabPanel.appendChild(defaults);
-    } else if (activeDetailTab === 'access') {
+    } else if (shownTab === 'access') {
       // R3 by-PACK contract×op panel (contract-first nested list; the second
       // axis of the one grant matrix). Falls back when access isn't wired or
       // the pack ships no catalog operations.
@@ -2675,6 +2936,12 @@ export const mountPacksPanel = (
   // (the surface hides this host).
   const renderReady = (): void => {
     if (selectedSlug === null) return;
+    // ⚠ HERE, not only in `selectPack`. A deep-link (`#packs/<slug>`, the normal
+    // way this surface is reached) seeds `selectedSlug` at construction and
+    // never goes through `selectPack` — wiring the recipe read only there meant
+    // a linked or refreshed pack detail silently had no Use tab at all, while
+    // reaching the same pack by clicking did. Idempotent + self-guarding.
+    ensureRecipesLoaded();
     const detailPack = findPackBySlug(selectedSlug);
     if (detailPack !== undefined) {
       renderDetail(detailPack);
@@ -2779,6 +3046,8 @@ export const mountPacksPanel = (
 
   return {
     getState: () => state,
+    refreshAppView: () => appView?.refresh(),
+    getActiveViewId: () => appView?.activeViewId() ?? null,
     // Codex review fold (MINOR 5) — return defensive copies so a test
     // caller / host that mutates the returned value cannot corrupt
     // panel state behind the renderer. `packs` is a Map-key in
@@ -2875,6 +3144,13 @@ export const mountPacksPanel = (
       connectionsReadiness.dispose();
       packAccess.dispose();
       ownerOperations.dispose();
+      // The Use tab's app view holds its own listener + in-flight run token;
+      // disposing it is what stops a late run painting into a removed tree.
+      if (appView !== null) {
+        appView.dispose();
+        appView = null;
+        appViewSlug = null;
+      }
       // Slice D — drop broadcast subscriptions BEFORE detaching the
       // wrapper so any in-flight event listener can't try to render
       // into a removed DOM tree. Each unsubscribe call is wrapped

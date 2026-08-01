@@ -5,7 +5,7 @@
  *    - EXTRACTION_EVENT_CLASSES = exactly 3 entries (resolution / extraction / derived_effect)
  *    - EVENT_DISPATCH_KINDS = exactly 3 entries (auto_save / queue_for_confirm / annotate_only)
  *    - EXTRACTION_EVENT_VALIDATION_KINDS = exactly 3 entries
- *    - AI_OUTPUT_VALIDATION_KINDS = exactly 3 entries
+ *    - AI_OUTPUT_VALIDATION_KINDS = exactly 4 entries (contracts pins membership too)
  *    - AI_OUTPUT_COMPOSER_ISSUE_KINDS = exactly 2 entries
  *    - HIGH_CONFIDENCE_FLOOR = 0.85; MEDIUM_CONFIDENCE_FLOOR = 0.6
  *    - MULTI_EVENT_COLLAPSE_THRESHOLD = 6
@@ -50,8 +50,30 @@ describe('D-145 PB6 — closed-list ratchets', () => {
     expect(EXTRACTION_EVENT_VALIDATION_KINDS.length).toBe(3);
   });
 
-  it('AI_OUTPUT_VALIDATION_KINDS pinned at 3 entries', () => {
-    expect(AI_OUTPUT_VALIDATION_KINDS.length).toBe(3);
+  // Bumped 3 → 4 on 2026-07-27 for `tool_call_not_shaped`, added by
+  // `61868a195 fix(contracts): reject a tool call with no name instead of
+  // crashing the turn`. The member is justified: measured live on
+  // qwen3.7-plus (substrate-bench task 155), a `tool_calls` entry with no
+  // `tool` key passed the array-shape gate, reached
+  // `registry.getByName(undefined)` and threw inside
+  // `topicOfEnrichmentToolName`'s `name.startsWith(...)`, taking the whole
+  // turn down. The number is recorded here rather than silently bumped —
+  // a ratchet's job is to force exactly this review when the list grows.
+  //
+  // ⚠⚠ NOT a one-off — verified 2026-07-27: ALL FIVE contracts constants
+  // pinned in this file (EXTRACTION_EVENT_KINDS, EXTRACTION_EVENT_CLASSES,
+  // EVENT_DISPATCH_KINDS, EXTRACTION_EVENT_VALIDATION_KINDS, and this one)
+  // are ALSO pinned contracts-side, there with count AND exact membership.
+  // These copies pin only `.length` over the same imported constant, so they
+  // add no signal contracts doesn't already carry — only a second place to
+  // forget. `AI_OUTPUT_VALIDATION_KINDS` is simply the first to grow and
+  // expose it; the other four carry the identical drift, and the next person
+  // to add an extraction-event kind reddens a DIFFERENT package for a change
+  // that was already correctly ratcheted. Fold these five into the contracts
+  // ratchet; keep only genuinely middleware-local lists here (e.g.
+  // AI_OUTPUT_COMPOSER_ISSUE_KINDS, whose source IS this package).
+  it('AI_OUTPUT_VALIDATION_KINDS pinned at 4 entries', () => {
+    expect(AI_OUTPUT_VALIDATION_KINDS.length).toBe(4);
   });
 
   it('AI_OUTPUT_COMPOSER_ISSUE_KINDS pinned at 2 entries', () => {

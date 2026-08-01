@@ -164,3 +164,65 @@ describe('handleContactDelete', () => {
     ).rejects.toThrow(RpcError);
   });
 });
+
+describe('⛔ contact.list rollups — batched, page-scoped, opt-in', () => {
+  beforeEach(() => {
+    store.observe({ email: 'alice@x.com', name: 'Alice', source: 'email_from', event_at: 100 });
+    store.observe({ email: 'bob@x.com', name: 'Bob', source: 'calendar_attendee', event_at: 200 });
+    store.upsertManual({ email: 'charlie@x.com', name: 'Charlie' }, 300);
+  });
+
+  const spy = () => {
+    const calls: readonly string[][] = [];
+    const seen: string[][] = calls as string[][];
+    return {
+      seen,
+      rollupsForKeys: (emails: readonly string[]) => {
+        seen.push([...emails]);
+        return Object.fromEntries(emails.map((email) => [email, [{
+          publisher: 'recued-core', pack_slug: 'invoice-book', label: 'Owes you',
+          value: { outstanding: '10.0000' }, complete: true,
+        }]]));
+      },
+    };
+  };
+
+  it('⛔ OFF by default — a list that does not draw them must not pay for them', () => {
+    const s = spy();
+    return handleContactList({ store, rollupsForKeys: s.rollupsForKeys }, {}).then((r) => {
+      expect(r.rollups).toBeUndefined();
+      expect(s.seen, 'the batched read must not run unasked').toEqual([]);
+    });
+  });
+
+  it('asked for, it returns one entry per contact ON THE PAGE', async () => {
+    const s = spy();
+    const r = await handleContactList(
+      { store, rollupsForKeys: s.rollupsForKeys }, { with_rollups: true });
+    expect(Object.keys(r.rollups!).sort()).toEqual(['alice@x.com', 'bob@x.com', 'charlie@x.com']);
+  });
+
+  it('⛔⛔ ONE call for the whole page — never one per row', () => {
+    // The N+1 this whole path exists to avoid, and the only place a caller
+    // could quietly reintroduce it. `seen` is the number of BATCHED reads.
+    const s = spy();
+    return handleContactList(
+      { store, rollupsForKeys: s.rollupsForKeys }, { with_rollups: true }).then(() => {
+      expect(s.seen).toHaveLength(1);
+      expect(s.seen[0]).toHaveLength(3);
+    });
+  });
+
+  it('⚠ pages with the rows — a limit narrows what is asked for', async () => {
+    const s = spy();
+    await handleContactList(
+      { store, rollupsForKeys: s.rollupsForKeys }, { with_rollups: true, limit: 2 });
+    expect(s.seen[0]).toEqual(['charlie@x.com', 'bob@x.com']);
+  });
+
+  it('unwired, the list still works and simply carries none', async () => {
+    const r = await handleContactList({ store }, { with_rollups: true });
+    expect(r.contacts).toHaveLength(3);
+    expect(r.rollups).toBeUndefined();
+  });
+});

@@ -467,11 +467,13 @@ describe('D-169 P0 Slice 4 - dispatcher multi-bridge fall-through', () => {
   it('returns timeout for the first bridge timeout and does not try another bridge', async () => {
     vi.useFakeTimers();
     const setup = buildSetup();
+    const auditLog = buildAuditLog();
     setup.registry.attach(buildRecord('bridge-a', 3_000, 'A'));
     setup.registry.attach(buildRecord('bridge-b', 2_000, 'B'));
 
     const out_promise = buildDispatcher(setup, {
       generateCommandId: () => 'cmd-timeout-a',
+      auditLog,
     }).dispatch(buildRequest({ timeout_ms: 1 }));
     await Promise.resolve();
     await vi.advanceTimersByTimeAsync(5_001);
@@ -480,6 +482,7 @@ describe('D-169 P0 Slice 4 - dispatcher multi-bridge fall-through', () => {
     expect(out).toEqual({ kind: 'timeout', command_id: 'cmd-timeout-a', attempts: 1 });
     expect(setup.send).toHaveBeenCalledTimes(1);
     expect(setup.sent.map((entry) => entry.client_token_id)).toEqual(['bridge-a']);
+    expect(await auditLog.listActivities()).toEqual([]);
   });
 
   it('returns immediately on a non-gap bridge error and does not try another bridge', async () => {

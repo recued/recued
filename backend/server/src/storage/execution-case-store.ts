@@ -8,7 +8,14 @@
 import type Database from 'better-sqlite3';
 import type { ExecutionCase } from '@recued/contracts';
 
-import type { CaseSourceObservation } from '../execution-case-core.js';
+// ⛔ The key derivation is IMPORTED, never re-implemented. The compiler groups
+// observations with these exact two functions; a local copy here would let the
+// scoped read and the rebuild disagree about which rows belong to a case.
+import {
+  executionCaseKey,
+  requestShapeHash,
+  type CaseSourceObservation,
+} from '../execution-case-core.js';
 import {
   openD214Json,
   sealD214Json,
@@ -69,6 +76,39 @@ export const ensureExecutionCaseSchema = (db: Database.Database): void => {
       compiler_version INTEGER NOT NULL
     );
   `);
+  // ⛔ D-219 — `case_key` in PLAINTEXT on the observation row, so one compile can
+  // read the observations of the keys it touched instead of decrypting the whole
+  // corpus. Measured: the full scan was ~6 ms per compile at 100 observations and
+  // rising, i.e. quadratic over a session's life.
+  //
+  // ⚠ NO NEW EXPOSURE. `case_key` is already a plaintext UNIQUE column on
+  // `execution_cases`; it is a hash over (contract, principal, request-shape
+  // hash, policy fingerprint) and carries no prompt text. This adds a second
+  // copy of a value the same database already stores in the clear, not a new
+  // class of readable data.
+  //
+  // ⚠ NULLABLE, and that is the migration. A row written before this column
+  // existed has none, and the compiler treats "any affected row without a key"
+  // as "cannot scope — do the full rebuild". Backfilling would mean decrypting
+  // the corpus at boot; the next full recompile writes them anyway.
+  //
+  // ⛔ AND NO INDEX ON IT, deliberately. A22 forbids adding an index to these
+  // tables until the D-213 §6.4 bar is cleared (no decrypted text outside the
+  // realm encryption, plus measured RSS against a real corpus), and a ratchet in
+  // `d-214-execution-case-integration` pins it. The index is not what the fix
+  // needed: the cost being removed is the AEAD OPEN PER ROW (~0.06 ms), not the
+  // row scan (microseconds for a short TEXT compare over a retention-bounded
+  // table). If the scan ever becomes the bottleneck, that is the moment to clear
+  // the bar with measurements — not before.
+  const observationColumns = new Set(
+    (db.prepare(`PRAGMA table_info(${EXECUTION_CASE_OBSERVATIONS_TABLE})`).all() as
+      Array<{ name: string }>).map((row) => row.name),
+  );
+  if (!observationColumns.has('case_key')) {
+    db.exec(`
+      ALTER TABLE execution_case_observations ADD COLUMN case_key TEXT;
+    `);
+  }
 };
 
 interface ObservationRow {
@@ -100,6 +140,29 @@ export interface ScopedExecutionCase {
 export interface ExecutionCaseStore {
   putObservation(observation: CaseSourceObservation): Promise<boolean>;
   listObservations(): Promise<CaseSourceObservation[]>;
+  /** ⛔ D-219 — the observations of these case keys ONLY, so a compile is
+   *  proportional to what it touched rather than to the whole corpus.
+   *
+   *  ⚠ Returns rows for the keys as STORED. A caller must first establish that
+   *  every affected row HAS a key (see {@link keylessObservationCount}) — a
+   *  pre-migration row carries none, and silently omitting it would drop a
+   *  member of the group and change what admits. */
+  listObservationsForCaseKeys(
+    case_keys: readonly string[],
+  ): Promise<CaseSourceObservation[]>;
+  /** How many stored observations predate the `case_key` column. Non-zero means
+   *  a scoped rebuild cannot be trusted and the caller must do the full one. */
+  keylessObservationCount(): number;
+  /** The case keys an observation of these reports files under, WITHOUT opening
+   *  a sealed payload. This is how a compile learns which keys it touched. */
+  caseKeysForReports(report_ids: readonly string[]): string[];
+  /** One span's observations, oldest first. D-219 slice 9c — the offer needs
+   *  the turn it is asking ABOUT, and after 9a every governed turn records one,
+   *  so scanning the whole corpus per turn to find it would make a per-turn cost
+   *  that already grows with the corpus grow twice. */
+  listObservationsForRoot(
+    root_request_id: string,
+  ): Promise<CaseSourceObservation[]>;
   observationCount(report_id: string): number;
   deleteObservation(report_id: string): boolean;
   compilerVersion(): number | undefined;
@@ -112,6 +175,20 @@ export interface ExecutionCaseStore {
     rows: readonly ExecutionCase[],
     sourceReportIdsByCase: ReadonlyMap<string, readonly string[]>,
     representativePromptByCase: ReadonlyMap<string, string>,
+    options?: {
+      /** ⛔ D-219 scoped rebuild. A rebuild that only re-derived SOME case keys
+       *  has no observation in hand for the others, so its prompt map covers
+       *  only what it touched — and the default (absent ⇒ NULL) would erase the
+       *  representative prompt of every case it deliberately left alone,
+       *  silently degrading stage-1 retrieval to a surface-term join.
+       *
+       *  With this set, a case absent from the map keeps its stored ciphertext
+       *  VERBATIM: carried across as bytes, never opened, so preserving costs no
+       *  decrypt and moves no plaintext. Default OFF, so the full rebuild —
+       *  which genuinely means "no observation backs this prompt any more" —
+       *  behaves exactly as before. */
+      preserveMissingPrompts?: boolean;
+    },
   ): Promise<void>;
   get(case_id: string): Promise<ExecutionCase | undefined>;
   getByKey(case_key: string): Promise<ExecutionCase | undefined>;
@@ -138,17 +215,23 @@ export const createExecutionCaseStore = (
     INSERT INTO execution_case_observations (
       observation_id, report_id, root_request_id,
       governing_contract_id, principal_key,
-      observed_at, payload_encrypted
+      observed_at, case_key, payload_encrypted
     ) VALUES (
       @observation_id, @report_id, @root_request_id,
       @governing_contract_id, @principal_key,
-      @observed_at, @payload_encrypted
+      @observed_at, @case_key, @payload_encrypted
     )
     ON CONFLICT (observation_id) DO NOTHING
   `);
   const selectObservations = db.prepare(`
     SELECT observation_id, report_id, payload_encrypted
       FROM execution_case_observations
+     ORDER BY observed_at ASC, observation_id ASC
+  `);
+  const selectObservationsForRoot = db.prepare(`
+    SELECT observation_id, report_id, payload_encrypted
+      FROM execution_case_observations
+     WHERE root_request_id = ?
      ORDER BY observed_at ASC, observation_id ASC
   `);
   const removeObservation = db.prepare(`
@@ -239,6 +322,19 @@ export const createExecutionCaseStore = (
     VALUES (?, ?)
   `);
 
+  const selectObservationsForCaseKeys = (count: number) => db.prepare(`
+    SELECT observation_id, report_id, payload_encrypted
+      FROM execution_case_observations
+     WHERE case_key IN (${new Array(count).fill('?').join(', ')})
+     ORDER BY observed_at ASC, observation_id ASC
+  `);
+  const selectCasePrompts = db.prepare(`
+    SELECT case_id, representative_prompt_encrypted FROM execution_cases
+  `);
+  const selectKeylessCount = db.prepare(`
+    SELECT COUNT(*) AS n FROM execution_case_observations WHERE case_key IS NULL
+  `);
+
   const decodeCase = (row: CaseRow): Promise<ExecutionCase> =>
     openD214Json<ExecutionCase>(
       row.payload_encrypted,
@@ -262,12 +358,65 @@ export const createExecutionCaseStore = (
         governing_contract_id: observation.governing_contract_id,
         principal_key: observation.principal_key,
         observed_at: observation.observed_at,
+        // ⛔ Derived HERE, through the same two functions the compiler groups
+        // with. A second derivation of this key — even a correct-looking one —
+        // is the hand-copied-vocabulary shape that has already cost this arc
+        // five surviving mutations: the scoped read would then return a
+        // different set from the one the rebuild groups by, and the divergence
+        // would be silent.
+        case_key: executionCaseKey({
+          governing_contract_id: observation.governing_contract_id,
+          principal_key: observation.principal_key,
+          request_shape_hash: requestShapeHash(observation.request_shape),
+          policy_fingerprint: observation.policy_fingerprint || 'none',
+        }),
         payload_encrypted,
       }).changes === 1;
     },
 
+    async listObservationsForCaseKeys(case_keys) {
+      if (case_keys.length === 0) return [];
+      const rows = selectObservationsForCaseKeys(case_keys.length)
+        .all(...case_keys) as ObservationRow[];
+      return Promise.all(rows.map((row) =>
+        openD214Json<CaseSourceObservation>(
+          row.payload_encrypted,
+          'case-observation',
+          row.observation_id,
+          keyProvider,
+        )));
+    },
+
+    keylessObservationCount() {
+      return (selectKeylessCount.get() as { n: number }).n;
+    },
+
+    caseKeysForReports(report_ids) {
+      if (report_ids.length === 0) return [];
+      const rows = db.prepare(`
+        SELECT DISTINCT case_key
+          FROM execution_case_observations
+         WHERE case_key IS NOT NULL
+           AND report_id IN (${new Array(report_ids.length).fill('?').join(', ')})
+      `).all(...report_ids) as Array<{ case_key: string }>;
+      return rows.map((row) => row.case_key);
+    },
+
     async listObservations() {
       const rows = selectObservations.all() as ObservationRow[];
+      return Promise.all(rows.map((row) =>
+        openD214Json<CaseSourceObservation>(
+          row.payload_encrypted,
+          'case-observation',
+          row.observation_id,
+          keyProvider,
+        )));
+    },
+
+    async listObservationsForRoot(root_request_id) {
+      const rows = selectObservationsForRoot.all(
+        root_request_id,
+      ) as ObservationRow[];
       return Promise.all(rows.map((row) =>
         openD214Json<CaseSourceObservation>(
           row.payload_encrypted,
@@ -336,7 +485,19 @@ export const createExecutionCaseStore = (
       rows,
       sourceReportIdsByCase,
       representativePromptByCase,
+      options,
     ) {
+      // Read BEFORE the delete below, and as ciphertext: preserving a prompt is
+      // a byte carry-over, not a round trip through plaintext.
+      const storedPrompts = options?.preserveMissingPrompts === true
+        ? new Map(
+            (selectCasePrompts.all() as Array<{
+              case_id: string;
+              representative_prompt_encrypted: string | null;
+            }>).map((row) =>
+              [row.case_id, row.representative_prompt_encrypted] as const),
+          )
+        : new Map<string, string | null>();
       const prepared = await Promise.all(rows.map(async (row) => ({
         row,
         payload_encrypted: await sealD214Json(
@@ -353,7 +514,7 @@ export const createExecutionCaseStore = (
                 row.case_id,
                 keyProvider,
               )
-            : null,
+            : storedPrompts.get(row.case_id) ?? null,
       })));
       const replace = db.transaction(() => {
         removeAllSources.run();

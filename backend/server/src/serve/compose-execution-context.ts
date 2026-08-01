@@ -108,6 +108,7 @@ export interface ComposeExecutionContextOptions {
     | 'db'
     | 'manifests'
     | 'recipeStore'
+    | 'recordsStore'
     | 'eventBus'
     | 'serverInstanceId'
     | 'auditLog'
@@ -165,6 +166,10 @@ export interface ComposeExecutionContextOptions {
     | 'chatForwardedSenderIndexRef'
     // D-188 — the master pause flag feeds the op-admission gate's pause-deny.
     | 'serverState'
+    // D-219 slice 9c — the chat substrate's boot hand-off for the owner-facing
+    // execution-case offer. Published here because this composer is where the
+    // notification block first exists.
+    | 'publishExecutionCaseOfferNotifier'
   > & Partial<Pick<
     AppContext,
     | 'webhookConsumerStoreRef'
@@ -187,6 +192,7 @@ export interface ComposeExecutionContextOptions {
     | 'channelDispatchers'
     | 'workEntityDispatchers'
     | 'inboundFileCollection'
+    | 'uploadStagingRegistry'
   >;
   baseVault: Record<string, unknown>;
   lateBound: ExecutionLateBoundRefs;
@@ -290,6 +296,39 @@ export const composeExecutionContext = async (
   lateBound.publishCollectionRegistry(collection.collectionRegistry);
 
   const executorConfig = await composeExecutorConfig({
+    // D-216 — the same CAS byte reader the cli `input_materialize` path
+    // uses, so a `connection.api` op declaring `bind.upload` can send a file.
+    ...(collection.inboundFileCollection
+      ? { readFileBytes: (id: string) => collection.inboundFileCollection!.readBytes(id) }
+      : {}),
+    // D-217 — the adapter owns a chunked upload's whole staging lifecycle:
+    // stage before the walk, read one range per APPEND, dispose in a `finally`.
+    // All three come from the SAME registry.
+    //
+    // ⛔ Staging is HERE, not in the engine, and that is a correctness
+    // requirement. The engine used to stage and put the token on the dispatch
+    // input; the action-identity hash covers that input, so a per-attempt token
+    // meant a fresh `canonical_payload_hash` every run and no D-177 grant could
+    // ever match an honest repeat. It failed CLOSED — re-asking every upload —
+    // which is why nothing surfaced it. The wire names the file; this stages
+    // it, below the commit boundary, for exactly the walk's duration.
+    ...(collection.uploadStagingRegistry
+      ? {
+          readUploadChunk: (token: string, offset: number, length: number) =>
+            collection.uploadStagingRegistry!.read(token, offset, length),
+          uploadStaging: {
+            stage: async (input: {
+              file_ref: string;
+              expect_sha256?: string;
+              max_bytes: number;
+            }) => {
+              const staged = await collection.uploadStagingRegistry!.stage(input);
+              return { token: staged.token, size_bytes: staged.size_bytes };
+            },
+            dispose: (token: string) => collection.uploadStagingRegistry!.dispose(token),
+          },
+        }
+      : {}),
     manifests: storage.manifests,
     baseVault,
     llmQuota: app.llmQuota,
@@ -550,6 +589,7 @@ export const composeExecutionContext = async (
     // deployment can never end up with a link on one surface and not the other.
     ...(askAnswerLink ? { askAnswerLink } : {}),
     recipeStore: storage.recipeStore,
+    recordsStore: storage.recordsStore,
     executorConfig,
     baseVault,
     serverInstanceId: storage.serverInstanceId,
@@ -577,6 +617,13 @@ export const composeExecutionContext = async (
     // file as a `tool_output` data.file and returns `result.file_ref`.
     ...(collection.inboundFileCollection
       ? { inboundFileCollection: collection.inboundFileCollection }
+      : {}),
+    // D-217 slice 2b-ii — the engine half of chunked-upload staging: stage a
+    // file's plaintext once before the walk, dispose it after. The adapter half
+    // (`readUploadChunk`, wired into the executor config above) reads the same
+    // registry by token, so the chunk's bytes never cross the dispatch input.
+    ...(collection.uploadStagingRegistry
+      ? { uploadStagingRegistry: collection.uploadStagingRegistry }
       : {}),
     // D-188 — the master pause flag so the op-admission gate freezes every
     // governed dispatch (owner-AI + doors) while paused. Read live per
@@ -671,6 +718,21 @@ export const composeExecutionContext = async (
 
   const executeDeps = executeDepsBundle.executeDeps;
   lateBound.publishExecuteDeps(executeDeps);
+
+  // D-219 slice 9c — hand the chat substrate its notification surface. This is
+  // the first moment both halves exist: the chat orchestrator (which owns the
+  // turn boundary the offer is raised and retired on) is composed in the APP
+  // context, and the notification block only here.
+  //
+  // ⛔ Before boot recovery, deliberately. `recoverPendingAsks` re-dispatches
+  // answered-but-unhandled asks ONCE, so an offer the owner answered while the
+  // server was down is recorded only if the handler is already registered —
+  // publishing registers it.
+  if (executeDepsBundle.notificationBlock) {
+    app.publishExecutionCaseOfferNotifier?.(
+      executeDepsBundle.notificationBlock,
+    );
+  }
 
   return {
     executorConfig,

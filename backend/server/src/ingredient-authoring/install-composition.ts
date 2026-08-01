@@ -49,6 +49,7 @@
 
 import {
   decomposeComposition,
+  stampGeneratedMcpCatalog,
   validateComposition,
   validatePack,
   type CompositionValidationIssue,
@@ -82,6 +83,7 @@ import {
   CATALOG_VENDOR_SLUGS,
   CONNECTION_VENDOR_ENTITIES,
   assertEngagementRegistryInvariants,
+  GENERATED_PACK_PUBLISHER,
 } from '@recued/contracts';
 import type {
   AuthoringValidationIssue,
@@ -1986,18 +1988,37 @@ const prepareComposedPack = (
   } catch (e) {
     return { ok: false, result: { ok: false, code: 'unexpected', message: (e as Error).message ?? String(e), issues } };
   }
-  // The decomposed body is either a catalog (wide) or a 1×1 ingredient — both
-  // install as pack-owned. Exactly one is set on a valid decomposition.
-  const body = decomposed.catalog ?? decomposed.ingredient;
-  if (body === undefined) {
-    return { ok: false, result: { ok: false, code: 'unexpected', message: 'composition decomposed to no body', issues } };
-  }
-  const bodyVersion = body.version ?? 1; // decomposer always emits 1 (see above)
-  const packSlug = String(manifest.slug);
-  const packVersion = typeof manifest.version === 'number' ? manifest.version : 1;
   const publisher = typeof manifest.publisher === 'string' && manifest.publisher.length > 0
     ? manifest.publisher
     : DEFAULT_AUTHOR;
+  // The decomposed body is either a catalog (wide) or a 1×1 ingredient — both
+  // install as pack-owned. Exactly one is set on a valid decomposition.
+  const decomposedBody = decomposed.catalog ?? decomposed.ingredient;
+  if (decomposedBody === undefined) {
+    return { ok: false, result: { ok: false, code: 'unexpected', message: 'composition decomposed to no body', issues } };
+  }
+  // D-225 — restamp a GENERATED pack's catalog with the publisher that minted
+  // it. `decomposeComposition` stamps every body with `DEFAULT_AUTHOR`
+  // (`recued-core`), so without this the catalog carries a first-party author
+  // and legacy slash-form op ids.
+  //
+  // ⚠ NOT a reserved-capability hole — `publisherMayDeclare` reads the PACK
+  // MANIFEST's publisher (always `recued-local`), never the catalog's author.
+  // What it DOES break: `opGrantEntry` returns the operation_id verbatim, so a
+  // slash-form id makes `isGeneratedPackOpEntry` miss and § 9.6's
+  // owner-default-only treatment silently does not apply.
+  //
+  // ⚠ Deliberately narrow: it fires only for `recued-local`, so no existing
+  // pack's stored author or op ids move. The general case — ANY third-party
+  // composition pack's catalog also inheriting `recued-core` — is the same bug
+  // with a wider blast radius, and is recorded in the spec rather than fixed
+  // here under a D-225 commit.
+  const body = publisher === GENERATED_PACK_PUBLISHER
+    ? stampGeneratedMcpCatalog(decomposedBody)
+    : decomposedBody;
+  const bodyVersion = body.version ?? 1; // decomposer always emits 1 (see above)
+  const packSlug = String(manifest.slug);
+  const packVersion = typeof manifest.version === 'number' ? manifest.version : 1;
 
   if (slugConflict(deps, body.slug)) {
     return {

@@ -33,6 +33,7 @@ import {
   type ConnectionVendorEntityMetaField,
   type EnrichmentMeta,
   type TimelineEntry,
+  type TimelineRollup,
 } from '@recued/contracts';
 import { e } from '../template.js';
 
@@ -91,6 +92,10 @@ export interface EntityDetailPanelProps {
   enrichments: ReadonlyArray<EnrichmentSummary>;
   /** Mixed-source timeline feed for the entity, newest first. */
   timelineEntries: ReadonlyArray<TimelineEntry>;
+  /** D-226 — per-pack standing aggregates from the same `data.timeline`
+   *  response. Undefined ⇒ the section is omitted entirely (the collection has
+   *  no declared roots); `[]` ⇒ it renders "nothing tracks this contact". */
+  rollups?: ReadonlyArray<TimelineRollup>;
   /** Wall-clock now for relative-time formatting. Tests pass a fixed
    *  timestamp so renders stay deterministic. */
   now: number;
@@ -464,6 +469,69 @@ const renderTimelineEntry = (
   `;
 };
 
+/** D-226 — what each installed pack says about this identity, right now.
+ *
+ *  ⛔ Rendered ABOVE the feed and never inside it. A rollup is a standing
+ *  aggregate with no event time; putting it in the chronology would either
+ *  claim a moment it did not happen at or sit permanently at the top. "Where
+ *  things stand" and "what happened" are two questions, and the panel answers
+ *  them in two places.
+ *
+ *  ⛔ `complete: false` is rendered LOUDLY. The pack's walk hit a bound, so the
+ *  numbers are a FLOOR, not a total — and a partial figure read as a total is
+ *  the exact failure this whole path was built to avoid. It must never look
+ *  like an ordinary value.
+ *
+ *  ⚠ Every pack that declares onto the root appears here with no per-pack UI
+ *  work: the declaration IS the registration, server-side and here. */
+export const renderRollupsSection = (
+  rollups: ReadonlyArray<TimelineRollup> | undefined,
+): string => {
+  // Absent (the collection has no rollup surface) renders NOTHING; an empty
+  // array (nothing declares onto this identity) says so. Same distinction the
+  // wire makes, carried to the pixel.
+  if (rollups === undefined) return '';
+  if (rollups.length === 0) {
+    return `
+      <section class="memory-entity-detail-section memory-entity-detail-section--rollups">
+        <h3 class="memory-entity-detail-section-title">Where things stand</h3>
+        <p class="memory-entity-detail-empty">No installed pack tracks anything for this contact.</p>
+      </section>
+    `;
+  }
+  const cards = rollups.map((rollup) => {
+    const label = rollup.label ?? rollup.pack_slug;
+    const rows = Object.entries(rollup.value)
+      .map(([key, value]) => `
+        <div class="memory-rollup-row">
+          <span class="memory-rollup-key">${e(key)}</span>
+          <span class="memory-rollup-value">${e(summarizeEnrichmentValue(value))}</span>
+        </div>
+      `).join('');
+    const partial = rollup.complete
+      ? ''
+      : `<p class="memory-rollup-partial" role="status">Partial — at least this much. ${
+          e(rollup.incomplete_reason ?? 'the pack could not walk every row')}</p>`;
+    return `
+      <article class="memory-rollup-card${rollup.complete ? '' : ' memory-rollup-card--partial'}">
+        <header class="memory-rollup-card-header">
+          <h4 class="memory-rollup-card-title">${e(label)}</h4>
+          ${rollup.complete ? '' : '<span class="memory-rollup-badge">floor</span>'}
+        </header>
+        ${rows === '' ? '<p class="memory-entity-detail-empty">Nothing yet.</p>' : `<div class="memory-rollup-rows">${rows}</div>`}
+        ${partial}
+        <footer class="memory-rollup-card-footer">${e(rollup.publisher)}/${e(rollup.pack_slug)}</footer>
+      </article>
+    `;
+  }).join('');
+  return `
+    <section class="memory-entity-detail-section memory-entity-detail-section--rollups">
+      <h3 class="memory-entity-detail-section-title">Where things stand</h3>
+      <div class="memory-rollup-grid">${cards}</div>
+    </section>
+  `;
+};
+
 /** D-210 step 3 — exported so a host that renders its OWN entity header
  *  (the collection explorer's calendar detail) can slot JUST the timeline
  *  section without the full panel's header/meta/enrichments. The full
@@ -507,6 +575,7 @@ export const renderEntityDetailPanel = (props: EntityDetailPanelProps): string =
       ? ''
       : renderMetaSection(props.scope, props.vendorEntity, props.metaSnapshot)}
     ${renderEnrichmentsSection(props.enrichments, props.now)}
+    ${renderRollupsSection(props.rollups)}
     ${renderTimelineSection(props.timelineEntries, props.now, props.runHref, props.summarizePayload)}
   </article>
 `;
@@ -584,6 +653,19 @@ export const ENTITY_DETAIL_PANEL_STYLES = `
 .memory-enrichment-card-description { margin: 0; color: var(--fg-muted); font-size: 11px; }
 .memory-enrichment-card-summary { margin: 0; font-weight: 600; }
 .memory-enrichment-card-footer { display: flex; justify-content: space-between; gap: 8px; color: var(--fg-muted); font-size: 11px; }
+
+.memory-rollup-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.memory-rollup-card { display: flex; flex-direction: column; gap: 6px; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-sunk); }
+.memory-rollup-card--partial { border-color: var(--danger); }
+.memory-rollup-card-header { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.memory-rollup-card-title { margin: 0; font-size: 13px; font-weight: 600; }
+.memory-rollup-badge { padding: 1px 6px; border-radius: 999px; font-size: 10px; border: 1px solid currentColor; color: var(--danger); text-transform: uppercase; letter-spacing: 0.04em; }
+.memory-rollup-rows { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; }
+.memory-rollup-row { display: contents; }
+.memory-rollup-key { color: var(--fg-muted); font-size: 12px; }
+.memory-rollup-value { font-weight: 600; font-variant-numeric: tabular-nums; }
+.memory-rollup-partial { margin: 0; color: var(--danger); font-size: 11px; }
+.memory-rollup-card-footer { color: var(--fg-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 
 .memory-timeline-feed { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .memory-timeline-entry { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; padding: 6px 0; border-bottom: 1px solid var(--border); font-size: 12px; }

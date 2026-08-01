@@ -142,6 +142,26 @@ export interface PreflightSignalDetails {
    *  raise site, or a gate with no quality dep) ⇒ no signal is recorded — behaviour-
    *  preserving. Spec: D-202 §3 (S4). */
   quality_relevant?: boolean;
+  /** D-217 § 6.1 — the AMPLIFICATION BOUND of a multi-request act.
+   *
+   *  ⛔ **N requests per approval is a multiplier a reviewer must be able to see
+   *  BEFORE approving.** Every other gated call in this system is one approval
+   *  buying one request; a chunked upload is one approval buying up to 103 — and
+   *  an ask that says "an upload" while meaning "103 requests and 512 MB leaving
+   *  this machine" is asking the owner to consent to something it did not
+   *  describe. The bound is fixed before the first dispatch (§ 8a), so it is
+   *  knowable at raise time; nothing about it is an estimate.
+   *
+   *  ⚠ It is NOT sufficient that the numbers are inside `args_preview`. That is
+   *  raw resolved JSON — a reader looking for the blast radius should not have
+   *  to find `__cu_walk.count` in it. Absent for every ordinary single-request
+   *  hold. */
+  egress_bound?: {
+    /** Requests this ONE approval authorizes — the reviewable multiplier. */
+    readonly requests: number;
+    /** Plaintext bytes that will leave if the walk completes. */
+    readonly total_bytes: number;
+  };
   /** D-211 — standing-ruling affordance for this exact held operation. */
   owner_override_offer?: PreflightOverrideOffer;
   /** D-211 — stored approval that resolved below the effective risk floor. */
@@ -193,10 +213,22 @@ export class PreflightRequiredSignal extends Error {
   /** D-202 Slice 1b — quality-relevance marker (`quality_not_delegated` ask).
    *  See `PreflightSignalDetails.quality_relevant`. */
   readonly quality_relevant?: boolean;
+  /** D-217 § 6.1 — how many requests this ONE approval authorizes, and how
+   *  many bytes leave. See `PreflightSignalDetails['egress_bound']`. */
+  readonly egress_bound?: PreflightSignalDetails['egress_bound'];
   readonly owner_override_offer?: PreflightOverrideOffer;
   readonly approval_clamped_from?: OperationApproval;
   readonly authorization_provenance?: AuthorizationProvenance;
 
+  /** ⚠⚠ **This copies field-by-field, so a new member of
+   *  `PreflightSignalDetails` is SILENTLY ABSENT on the instance until it is
+   *  added below.** Declaring it on the interface and the class typechecks
+   *  perfectly and populates nothing — the raise site passes it, the reader
+   *  gets `undefined`, and nothing anywhere complains. (D-217 § 6.1 lost an
+   *  hour to exactly this.) The enumeration is deliberate — `Object.assign`
+   *  would let a raise site smuggle arbitrary keys onto a signal the engine
+   *  forwards — so the cost is real and the discipline is: ADD YOUR FIELD
+   *  HERE TOO. */
   constructor(message?: string, details?: PreflightSignalDetails) {
     super(message ?? 'preflight approval required');
     if (details?.tool_slug !== undefined) this.tool_slug = details.tool_slug;
@@ -222,6 +254,9 @@ export class PreflightRequiredSignal extends Error {
     }
     if (details?.open_projection_preview !== undefined) {
       this.open_projection_preview = details.open_projection_preview;
+    }
+    if (details?.egress_bound !== undefined) {
+      this.egress_bound = details.egress_bound;
     }
     if (details?.quality_relevant !== undefined) {
       this.quality_relevant = details.quality_relevant;

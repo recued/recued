@@ -27,6 +27,7 @@ import {
   type DoorType,
   type MintContractRequest,
 } from '@recued/contracts';
+import { formatClientDateTime } from '@recued/ui-shared';
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
 import { serializeShellRoute } from '../shell/route.js';
 
@@ -833,6 +834,10 @@ export interface ContractsRoute {
   scopedGrantPanel(): ScopedGrantPanelMount | null;
   /** Resolves after the initial contract load + first render. */
   whenLoaded(): Promise<void>;
+  getRecoveryContextFreshness(): 'current' | 'unavailable';
+  /** Re-read the privacy-safe inventory landing without reconstructing a
+   * contract detail that was deliberately withheld during recovery. */
+  retryRecoveryContext?(): Promise<void>;
   dispose(): void;
 }
 
@@ -901,7 +906,7 @@ const nextDoorTypes = (
 };
 
 const formatDateTime = (ts: number): string =>
-  new Date(ts).toISOString().replace('T', ' ').replace('.000Z', 'Z');
+  formatClientDateTime(ts, { invalidText: String(ts) });
 
 const errMessage = (err: unknown): string =>
   humanizeRpcError(err);
@@ -2133,6 +2138,32 @@ export const bootstrapContractsRoute = (
     }
   })();
 
+  const retryRecoveryContext = async (): Promise<void> => {
+    if (disposed || listPageBusy) return;
+    listPageBusy = true;
+    loadErrorMessage = null;
+    renderList();
+    try {
+      // Recovery markers retain only the broad Contracts area. Start again at
+      // the active category's first page; never infer an old contract id or
+      // carry an opaque cursor across server/profile boundaries.
+      await requestListPage();
+      if (disposed) return;
+      currentListCursor = undefined;
+      previousListCursors = [];
+      loadErrorMessage = null;
+    } catch (err) {
+      if (disposed) return;
+      rows = [];
+      nextListCursor = null;
+      totalContractsOnTab = 0;
+      loadErrorMessage = errMessage(err);
+    } finally {
+      listPageBusy = false;
+      if (!disposed) renderList();
+    }
+  };
+
   return {
     getContracts: () =>
       activeListTab === 'built-in' ? [SELF_ROW, ...rows] : rows,
@@ -2145,6 +2176,13 @@ export const bootstrapContractsRoute = (
     suggestedRulesPanel: () => suggestedRulesPanel,
     scopedGrantPanel: () => scopedGrantPanel,
     whenLoaded: () => initialLoad,
+    getRecoveryContextFreshness: () =>
+      opts.contractsListCaller !== undefined && loadErrorMessage === null
+        ? 'current'
+        : 'unavailable',
+    ...(opts.contractsListCaller !== undefined
+      ? { retryRecoveryContext }
+      : {}),
     dispose: () => {
       if (disposed) return;
       disposed = true;

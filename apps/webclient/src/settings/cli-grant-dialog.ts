@@ -2,14 +2,14 @@
  *
  *  Installing a pack is the single explicit consent moment (spec §7.1). When a
  *  pack adds a local-binary (`cli`) tool — whisper / ffmpeg / magick / docling —
- *  this dialog is the install-time projection of the §7.2 Local tools surface: it
- *  lets the owner choose, per tool, which OPS a recipe they run may reach the
- *  binary at. Scope is fixed to **You only** (the owner): §8 makes `cli`
- *  `external_exposable: false`, so a cli tool can never be granted to a door
- *  actor — only the Access axis is live for cli (the per-contract scope lives in
- *  the §7.2 surface). The vertical slice writes the same per-(principal ×
- *  cli-ingredient × operation) reachability allowlist the surface does, at the
- *  owner principal, via `cli.reachability.set`.
+ *  this dialog is the install-time projection of the §7.2 reachability
+ *  allowlist: it lets the owner choose, per tool, which OPS a recipe they run
+ *  may reach the binary at. Scope is fixed to **You only** (the owner): §8 makes
+ *  `cli` `external_exposable: false`, so a cli tool can never be granted to a
+ *  door actor — only the Access axis is live for cli (the per-contract scope
+ *  lives on the pack's ACCESS tab). The vertical slice writes the same
+ *  per-(principal × cli-ingredient × operation) reachability allowlist that tab
+ *  does, at the owner principal, via `cli.reachability.set`.
  *
  *  ── install → dialog → confirm ───────────────────────────────────────
  *  cli reachability is fail-closed (absent ⇒ denied), so a freshly-installed cli
@@ -33,19 +33,27 @@
  *  unattended execution.
  *
  *  ── Skip is fail-closed, not an error ────────────────────────────────
- *  "Skip for now" grants nothing and closes; the owner completes scope later in
- *  Settings → Local tools (the §7.2 surface). Confirm with everything left at the
+ *  "Skip for now" grants nothing and closes; the owner completes scope later on
+ *  the pack's ACCESS tab (`#packs/<slug>`). Confirm with everything left at the
  *  default grants only the pre-selected read ops (nothing, for a write-only tool
- *  like whisper) — the safe posture, with the Local tools surface as the
- *  adjustment lens.
+ *  like whisper) — the safe posture, with ACCESS as the adjustment lens.
+ *
+ *  ⚠ 2026-07-27 — the roster-wide "Local tools" section this used to point at
+ *  (`local-tools-panel.ts`, §7.2) is deleted: it rendered every installed cli
+ *  tool × every contract on the `#packs` route including under a pack's detail,
+ *  where it read as that pack's tools. The two surviving adjustment lenses are
+ *  by-pack (`pack-access-controls.ts` → ACCESS) and by-contract
+ *  (`contract-grants-panel.ts` → `#contracts`); both write the same allowlist
+ *  rows this dialog does, so the §7.2 SUBSTRATE is untouched.
  *
  *  ── Render model: DOM nodes, not innerHTML ───────────────────────────
  *  Checkboxes + buttons carry real listeners, so the dialog builds via
- *  `createElement` (the same shape as `local-tools-panel.ts`), not an HTML string.
+ *  `createElement` (the same shape as `pack-access-controls.ts`), not an HTML
+ *  string.
  *
  *  Spec: D-182 §7.1 (the install grant dialog); the rpc shapes live
  *  in `packages/contracts/src/cli-reachability-rpc.ts`; the post-install
- *  adjustment lens is `local-tools-panel.ts` (§7.2). */
+ *  adjustment lens is `pack-access-controls.ts` (ACCESS). */
 
 import {
   CLI_REACHABILITY_OWNER_PRINCIPAL,
@@ -181,7 +189,7 @@ interface DialogTool {
 const COPY = {
   heading: 'Grant access to local tools',
   intro:
-    'This pack added local tools that run on your server. Choose which operations each may run when a recipe you run uses it. Nothing is granted until you confirm — you can change this anytime in Settings → Local tools.',
+    "This pack added local tools that run on your server. Choose which operations each may run when a recipe you run uses it. Nothing is granted until you confirm — you can change this anytime on the pack's Access tab.",
   read_hint: 'Reading is safe and idempotent — pre-selected.',
   write_hint: 'Each run still asks for approval before the binary runs.',
   confirm_label: 'Grant access',
@@ -535,8 +543,8 @@ export const mountCliGrantDialog = (
 // ════════════════════════════════════════════════════════════════
 
 /** Self-scoped CSS for the install-time cli grant dialog, scoped under
- *  `[data-recued-cli-grant-dialog]`. The settings route joins this into its one
- *  style bundle (mirrors `LOCAL_TOOLS_PANEL_STYLES`). */
+ *  `[data-recued-cli-grant-dialog]`. The `#packs` route joins this into its one
+ *  style bundle (mirrors `PACK_ACCESS_STYLES`). */
 export const CLI_GRANT_DIALOG_STYLES = `
 [data-recued-cli-grant-dialog] {
   position: fixed;

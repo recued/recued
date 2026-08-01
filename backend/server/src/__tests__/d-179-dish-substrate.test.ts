@@ -145,7 +145,7 @@ describe('dish-handler', () => {
     };
   };
 
-  it('creates with defaults and lists by recipe', () => {
+  it('creates with defaults and lists by recipe', async () => {
     const deps = makeDeps();
     const { dish: created } = createDish(deps, {
       recipe_id: 'recipe-a',
@@ -156,8 +156,8 @@ describe('dish-handler', () => {
     expect(created.enabled).toBe(true);
     expect(created.is_default).toBe(false);
     expect(created.created_at).toBe(5_000);
-    expect(listDishes(deps, { recipe_id: 'recipe-a' }).dishes).toEqual([created]);
-    expect(listDishes(deps, { recipe_id: 'recipe-zzz' }).dishes).toEqual([]);
+    expect((await listDishes(deps, { recipe_id: 'recipe-a' })).dishes).toEqual([created]);
+    expect((await listDishes(deps, { recipe_id: 'recipe-zzz' })).dishes).toEqual([]);
   });
 
   it.each([

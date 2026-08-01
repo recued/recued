@@ -35,6 +35,7 @@ import {
 import {
   decodeAuthFromStorage,
   handleConnectionEnroll,
+  handleConnectionRotateCredentials,
   handleConnectionUpdate,
 } from '../connection-handler.js';
 
@@ -189,7 +190,7 @@ describe('encodeAuthForStorage — AEAD path', () => {
     ).rejects.toBeInstanceOf(RpcError);
   });
 
-  it('locked keyProvider on update auth-patch throws RpcError "locked"', async () => {
+  it('locked keyProvider on credential rotation throws RpcError "locked"', async () => {
     const key = connectionKey(fixedMaster(6));
     await handleConnectionEnroll(
       { store, getEncryptionKey: () => key },
@@ -201,9 +202,10 @@ describe('encodeAuthForStorage — AEAD path', () => {
     // After enrollment, the server "locks" — keyProvider returns null.
     let unlocked = false;
     await expect(
-      handleConnectionUpdate(
+      handleConnectionRotateCredentials(
         { store, getEncryptionKey: () => (unlocked ? key : null) },
         {
+          attempt_id: 'rotation-locked-test-0001',
           name: 'hubspot', kind: 'api',
           patch: { auth: bearer('rotated') },
         },

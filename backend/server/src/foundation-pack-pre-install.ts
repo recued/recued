@@ -54,6 +54,8 @@ import {
   BULK_INSTALL_PACK_VERSION,
   BULK_PACK_INSTALL_PERMISSION,
   parseBulkPackManifest,
+  publisherMayDeclare,
+  reservedCapabilityMessage,
   type BulkPackManifest,
   type IngredientManifest,
   type PackContentRef,
@@ -255,11 +257,11 @@ const loadFoundationPackManifests = (
       continue;
     }
     if (result.manifest.pre_install !== true) continue;
-    if (result.manifest.publisher !== 'recued-core') {
+    if (!publisherMayDeclare(result.manifest.publisher, 'pre_install')) {
       outcomes.push({
         slug: result.manifest.slug,
         status: 'skipped_third_party',
-        reason: `pre_install: true is reserved for 'recued-core'; manifest declared ${JSON.stringify(result.manifest.publisher)}`,
+        reason: reservedCapabilityMessage('pre_install', result.manifest.publisher),
       });
       continue;
     }

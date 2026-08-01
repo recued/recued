@@ -5,6 +5,7 @@ export { executeHTTP } from './http.js';
 export { executeDOM, type DOMContext, type DOMWriteResult } from './dom.js';
 export { createChatAdapter, type ChatAdapterDeps, type ChatConfig, type ChatAuditEntry } from './chat.js';
 export { matchUrlPattern } from './url-match.js';
+export { composeApiUrl } from './url-template.js';
 export {
   fetchOriginPinned,
   CrossOriginRedirectError,
@@ -23,6 +24,7 @@ export {
   createKernelAdapter,
   RECEPTION_LOCAL_BASE_URL,
   RECEPTION_MATERIALIZE_SLUG,
+  RECIPE_KEYED_WATCHER_SLUGS,
   type KernelDispatchers,
   type KernelCollectionPlatform,
   type KernelCollectionRecord,
@@ -105,3 +107,32 @@ export type {
   ValidationResult,
   ValidateIngredientOptions,
 } from './validate.js';
+
+// D-217 — the chunked-upload walk. It lives in THIS package, not the engine,
+// because the § 8a amendment moved the walk BELOW the commit boundary: the
+// sequencer runs here, and `packages/ingredients` cannot import the engine
+// (the project graph runs engine → ingredients). The engine imports
+// `planChunkedUpload` from here to size the act before it dispatches.
+export {
+  planChunkedUpload,
+  startChunkedWalk,
+  nextChunkedAction,
+  advanceChunkedWalk,
+  buildChunkedPhaseInput,
+  ChunkedUploadPlanError,
+  ChunkedPhaseInputError,
+  type ChunkPlan,
+  type ChunkPlanEntry,
+  type ChunkedWalkAction,
+  type ChunkedWalkOutcome,
+  type ChunkedWalkResult,
+  type ChunkedWalkState,
+  type ChunkedPhaseTokens,
+} from './chunked-upload-walk.js';
+export {
+  runChunkedUpload,
+  parseChunkedWalkInput,
+  ChunkedWalkInputError,
+  type ChunkedUploadRunResult,
+  type PerformChunkedPhase,
+} from './chunked-upload-runner.js';

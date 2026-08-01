@@ -16,6 +16,8 @@
  *  - recued_saveRecipe      — persist an MCP-authored recipe to the server's
  *                             store (extension picks it up on next pair-sync)
  *  - recued_dataTimeline    — chronological feed across raw collections +
+ *                             (D-226) plus per-pack `rollups` for a contact —
+ *                             standing aggregates, not feed entries +
  *                             annotations + memory for one entity (D-120)
  *
  *  Removed vs original: addSchedule, listSchedules, removeSchedule,
@@ -33,7 +35,18 @@ import {
 } from './run-result-agent-projection.js';
 import { dispatchRawOp } from './raw-op-dispatch.js';
 import { buildPackOpResolution, type InstalledPackScan } from './pack-inventory.js';
+// D-225 § 9.5.1 — the raw-op projection now lives in a shared module so the
+// CHAT catalog can consume the same source the door does. Behaviour unchanged.
+import {
+  OP_TOOL_PREFIX,
+  RAW_OP_TOOL_INPUT_SCHEMA,
+  buildRawOpToolDescriptors,
+  ingredientRiskToGrantClassification,
+  rawOpToolEntries,
+  type RawOpToolDescriptor,
+} from './raw-op-tool-catalog.js';
 import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
+import { checkFormContract, type FormDefinitionReader } from './form-contract-gate.js';
 import type { ExecuteRequest } from './types.js';
 import type { VaultStore } from '@recued/storage';
 import type {
@@ -56,6 +69,7 @@ import {
   ENGAGEMENT_VENDOR_VALUES,
   isCliIngredient,
   isExternallyExposableIngredient,
+  primitiveGrantEntry,
   readOwnerOperationOverride,
   resolveTrustCeiling,
   STDIO_MCP_TOKEN_ID,
@@ -95,6 +109,7 @@ import type { HousekeepingStateStore } from './housekeeping/state-store.js';
 import type { AnnotationStore } from './storage/annotation-store.js';
 import type { ManifestRegistry } from './manifest-loader.js';
 import type { RecipeStore } from './recipe-store.js';
+import { readRootProjections } from './records/root-projection.js';
 import {
   DIRECT_MCP_TOOL_CALL_BASE_RESERVATION_KEY,
   type CustomerSurfaceUsageAdmission,
@@ -105,6 +120,10 @@ import {
   D201_WEBHOOK_RUNTIME_UNAVAILABLE,
   hasNonEmptyWebhookDeclarations,
 } from './webhook-declaration-gate.js';
+import {
+  assertRecordsNonOwnerRecipeExposure,
+  recipeUsesInstalledRecordsOperation,
+} from './records/non-owner-exposure.js';
 
 // ────────────────────────────────────────────────────────────────
 // JSON-RPC 2.0 types
@@ -141,10 +160,38 @@ const INGREDIENT_TOOL_PREFIX = 'recued_ingredient_';
  *  `INGREDIENT_TOOL_PREFIX`; the dotted op id remainder is fine on the wire
  *  (registry Tier-1 names already carry dots; `parseOpId` handles multi-dot
  *  operations). Gate A keys on this full name. */
-const OP_TOOL_PREFIX = 'recued_op_';
 const CUSTOMER_STATUS_TOOL_NAME = 'recued_customerStatus';
 const CUSTOMER_STATUS_OP_ID = 'core.customer.status';
-const MCP_EXPOSED_KERNEL_INGREDIENTS = new Set(['data-file-read']);
+/** ⛔⛔ D-228 slice 2 (2nd attempt) — THE HAND-LIST IS GONE AND SO IS THE
+ *  DERIVATION. Kernel MCP exposure is now an AUTHORED per-ingredient field,
+ *  `IngredientManifest.mcp_exposed`, read only for `author: 'recued'`.
+ *
+ *  This was `new Set(['data-file-read'])` — one element, and the entire
+ *  visibility policy for 136 kernel ingredients, hidden in this file's private
+ *  scope. The first attempt replaced it with `risk_tier === 'read'` and was
+ *  REVERTED: that promoted a PRESENTATION HINT to an AUTHORIZATION INPUT, and a
+ *  Codex review found four `read`-tier kernel manifests that are not safe reads
+ *  (`http-watcher` SSRF; `webhook-watcher`, which DELETES a queue;
+ *  `time-relative-watcher`, scoped to `data.time` but scanning the caller's
+ *  chosen collection; `connection-mcp-read`, the Tier-3 confused deputy).
+ *
+ *  ⛔⛔ AND RE-AUTHORING `risk_tier` WOULD NOT HAVE SAVED IT. `data-file-read` —
+ *  the one kernel ingredient that MUST be exposed — carries exactly the same
+ *  `(kind: 'storage', risk_tier: 'read')` pair as `webhook-watcher`,
+ *  `time-relative-watcher`, `file-watcher` and `recipe-watcher`. No authored
+ *  field separated them, because the judgement had never been written down. A
+ *  derivation cannot recover a decision that was never recorded.
+ *
+ *  🔑 So it is recorded now, at the definition site. The original complaint is
+ *  answered — the policy is no longer a const in one server file, it is on the
+ *  manifest, visible in publish review — while the part the hand-list had RIGHT
+ *  is kept: this is a judgement, made once per ingredient. And it fails closed in
+ *  the direction that matters: a new kernel ingredient ships FENCED by omission,
+ *  rather than exposed by a rule nobody re-examined.
+ *
+ *  ⚠ Only the KERNEL half of `isMcpExposedIngredient`. The KIND fence
+ *  (`isExternallyExposableIngredient`) is untouched — see D-228 decision (3) and
+ *  the open D-221 §3.3 question about business-role checks living in pack code. */
 /** Direct MCP setup, status, and catalog affordances are explicitly free. */
 const MCP_FREE_CUSTOMER_TOOL_NAMES: ReadonlySet<string> = new Set([
   CUSTOMER_STATUS_TOOL_NAME,
@@ -158,7 +205,7 @@ const MCP_FREE_CUSTOMER_TOOL_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 const isMcpExposedKernelIngredient = (manifest: IngredientManifest): boolean =>
-  manifest.author !== 'recued' || MCP_EXPOSED_KERNEL_INGREDIENTS.has(manifest.slug);
+  manifest.author !== 'recued' || manifest.mcp_exposed === true;
 
 /** D-182 §8 fence — a manifest may surface as a `recued_ingredient_<slug>` MCP
  *  tool only when it is BOTH a non-kernel (or explicitly whitelisted) ingredient
@@ -356,6 +403,35 @@ const buildMcpContractSnapshot = (
     );
   }
   const allSlugs = deps.executorConfig.manifests.slugs();
+  // D-221 §3.3 — a Records catalog is deliberately absent from every raw
+  // MCP tool/grant surface, so its slug can never enter `allowed_tools` through
+  // the ordinary `recued_ingredient_*` alias below. A granted recipe remains a
+  // legitimate receiving boundary, however. Admit the hidden catalog only when
+  // this token can invoke the generic recipe umbrella or an exact Tier-2 recipe
+  // whose immutable body uses an installed Records operation. Raw guessed calls
+  // remain structurally fenced at list, grant, and dispatch.
+  const tokenAdmitsRecordsRecipe = deps.inboundTokenAuthorize !== undefined
+    && deps.recordsStore !== undefined
+    && (
+      deps.inboundTokenAuthorize('recued_runRecipe')
+      || deps.inboundTokenAuthorize('recipe.run')
+      || (deps.internalRegistry?.listByTier(2).some((entry) => {
+        if (!deps.inboundTokenAuthorize!(entry.name)) return false;
+        const separator = entry.name.indexOf('/');
+        if (separator <= 0 || separator === entry.name.length - 1) return false;
+        const recipe = deps.recipeStore.get(entry.name.slice(separator + 1));
+        return recipe !== null && recipeUsesInstalledRecordsOperation(recipe, {
+          isOperationId: (operationId) =>
+            deps.recordsStore!.isInstalledOperationId(operationId),
+          isCatalogOperation: (catalogSlug, operationKey) =>
+            deps.recordsStore!.isInstalledCatalogOperation(catalogSlug, operationKey),
+        });
+      }) ?? false)
+    );
+  const recordsRecipeSlugs = tokenAdmitsRecordsRecipe
+    ? allSlugs.filter((slug) =>
+        deps.executorConfig.manifests.get(slug)?.surfaces?.records !== undefined)
+    : [];
   // D-166 P2 token↔contract binding kill-switch — a token bound to a minted
   // contract that is no longer live (revoked / expired / exhausted / deleted)
   // authorizes NOTHING: the snapshot allowlist collapses to empty so every tool
@@ -395,9 +471,30 @@ const buildMcpContractSnapshot = (
               // stays §8-fenced (dispatch backstop). The dead-contract kill-switch
               // (`[]` above) is reached first, so a revoked door admits nothing.
               ...cliReachableSlugsForSnapshot(source, deps, allSlugs),
+              ...recordsRecipeSlugs,
             ]),
           )
-        : allSlugs;
+        // ⛔⛔ D-228 slice 1 — NO AUTHORIZER MEANS NO CATALOG, never `allSlugs`.
+        //
+        // This branch used to hand back every slug clearing the two hardcoded
+        // fences, unfiltered. Only `wire-mcp-http-transport` supplies an
+        // authorizer, so the branch belonged to `cli-context/mcp.ts` — the
+        // stdio / local-client server — and `buildMcpExecutionSource`'s own
+        // comment described the result as *"governed by no contract (the owner
+        // reads all)"*.
+        //
+        // 🔑 PROXIMITY IS NOT IDENTITY. Claude Desktop is a third-party
+        // application, and so is any local process that can reach a stdio
+        // server. A surface does not become the owner by running on the owner's
+        // machine, so it derives its catalog from the contract its caller
+        // carries like every other surface (D-225: *the door answers whether*)
+        // — and a caller carrying nothing gets nothing.
+        //
+        // ⚠ RECOVERABLE BY DESIGN: `recued mcp --token <bearer>` (or
+        // `RECUED_MCP_TOKEN`) resolves an inbound token and supplies the
+        // authorizer, so this is a configuration step rather than a dead end.
+        // The CLI logs that instruction to stderr when it starts without one.
+        : [];
   return buildVersionedContractSnapshot({
     contract_id: source.contract_id,
     allowed_tools,
@@ -419,7 +516,7 @@ const buildMcpContractSnapshot = (
  *
  *  No-op for an unbound token (the synthetic per-token `contract_id` names no
  *  `contract_definition`, so `shouldMeterUse` is false) or when no overlay is wired
- *  (stdio / env-var transport). Mirrors `handleExecute`'s recordUse condition
+ *  (for example a db-less harness). Mirrors `handleExecute`'s recordUse condition
  *  (`shouldMeterUse(...)` → `recordUse`) so the two layers count consistently;
  *  out-of-scope likewise falls back to the per-token grant gate, matching the
  *  execute path (which also does NOT fail-closed on out-of-scope — metering only
@@ -508,6 +605,9 @@ export const _testing = {
   /** Build the extension-first route map. Test harnesses use this to
    *  assert catalog-merge semantics without spinning up full JSON-RPC. */
   buildRouteMap: (deps: McpDeps) => buildRouteMap(deps),
+  /** D-228 slice 2 — the kernel exposure predicate, so a test can pin that the
+   *  outcome is DERIVED from `risk_tier` rather than remembered in a list. */
+  isMcpExposedKernelIngredient,
   /** Invoke a tool by name. Used by end-to-end tests of the per-ingredient
    *  dispatch paths (server-route via handleExecute vs extension-route via
    *  wsServer.runKernelRecipeOnExtension). */
@@ -623,7 +723,7 @@ const TOOLS = [
   },
   {
     name: 'recued_dataTimeline',
-    description: 'Get a chronological feed for one entity, merging raw collection records, annotations (recipe-derived facts), typed cross-collection links, and memory entries (recipe runs that touched the entity). entity_id format is `<collection>:<id>` (e.g. `mail:msg-abc123`). Sorted newest-first; supports since/until window + cursor pagination. Use this to answer "what happened with this entity?" without juggling per-collection tools.',
+    description: 'Get a chronological feed for one entity, merging raw collection records, annotations (recipe-derived facts), typed cross-collection links, and memory entries (recipe runs that touched the entity). entity_id format is `<collection>:<id>` (e.g. `mail:msg-abc123`). Sorted newest-first; supports since/until window + cursor pagination. Use this to answer "what happened with this entity?" without juggling per-collection tools. For a contact, the response may also carry `rollups`: one standing summary per installed pack that declares onto that person (e.g. unbilled time, open jobs), computed live from the pack\'s own records. Rollups are NOT feed entries and carry no timestamp — they answer "where do things stand?" rather than "what happened?". Each carries `complete`; when it is false the pack\'s walk hit a bound and the numbers are a floor, not a total.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -747,12 +847,6 @@ const LEGACY_MCP_META_TOOL_CLASSIFICATION: Readonly<
  *  only; `write` / `admin` / `destructive` all mutate or are privileged →
  *  surfaced as `'write'` so the grant badge + capability summary never
  *  under-state a direct ingredient call (Codex review P2). */
-const ingredientRiskToGrantClassification = (
-  risk: RiskTier,
-): 'read' | 'write' | 'unknown' => {
-  if (risk === 'read') return 'read';
-  return 'write';
-};
 
 /** D-171 contract-broadcast follow-on — the `RiskTier` of a direct-return native
  *  `recued_*` tool, for the policy-overlay ceiling check. `recued_saveRecipe`
@@ -889,31 +983,6 @@ const admitMcpDirectDispatch = (
  *  reserved `connection` arg (Model 1) + accepts the op's own args (opaque —
  *  the gateway validates them downstream). A future slice can enrich this from
  *  the op's `request_schema` when the catalog declares a clean object shape. */
-const RAW_OP_TOOL_INPUT_SCHEMA = {
-  type: 'object',
-  properties: {
-    connection: {
-      type: 'string',
-      description:
-        'Name of the enrolled connection to run this operation against (omit for ops that need none).',
-    },
-  },
-  additionalProperties: true,
-} as const;
-
-/** A raw catalog-op tool descriptor — the shape BOTH door surfaces (the grant
- *  catalog + `tools/list`) map into their own entry shape. */
-interface RawOpToolDescriptor {
-  /** wire name `recued_op_<publisher>.<pack>.<operation>`. */
-  wireName: string;
-  /** the Tier-P op id `<publisher>.<pack>.<operation>`. */
-  opId: string;
-  description: string;
-  inputSchema: unknown;
-  classification: 'read' | 'write' | 'unknown';
-  /** D-192 Slice 7 — the container reads granting THIS op transitively admits. */
-  also_reads?: ReadonlyArray<DependencyReadAdmission>;
-}
 
 /** D-182 §8 — the set of Tier-P op ids any installed recipe already covers. The
  *  recipe-preferred catalog filter uses it to suppress a raw WRITE op a recipe
@@ -998,49 +1067,6 @@ export const buildRecipeOpCoverage = (
  *  1), never the wrapper manifest's static tier. Absent inventory ⇒ no raw ops.
  *  Absent `recipeOpCoverage` ⇒ no suppression (every write emitted). Pure;
  *  never throws. */
-const buildRawOpToolDescriptors = (
-  scanInstalledPacks: InstalledPackScan,
-  getManifest: (slug: string) => IngredientManifest | null,
-  recipeOpCoverage?: ReadonlySet<string>,
-): RawOpToolDescriptor[] => {
-  const out: RawOpToolDescriptor[] = [];
-  const resolution = buildPackOpResolution(scanInstalledPacks, getManifest);
-  for (const [packRef, binding] of resolution) {
-    const manifest = getManifest(binding.catalog_slug);
-    // §8 KIND fence — cli/service catalogs never expose raw ops (combined fence).
-    if (!manifest || !isExternallyExposableIngredient(manifest)) continue;
-    // D-192 Slice 7 — op_key → the container reads granting it admits, computed
-    // ONCE per manifest (the SAME admission the gate + #contracts grid apply).
-    const operations = manifest.operations ?? {};
-    const perOpReads = derivePerOpDependencyReads({
-      sources: manifest.work_entity_sources,
-      riskOfOp: (op) =>
-        Object.prototype.hasOwnProperty.call(operations, op) ? operations[op]?.risk_tier : undefined,
-    });
-    for (const operation of binding.operations) {
-      const opSpec = manifest.operations?.[operation];
-      if (!opSpec) continue; // defensive — `operations` came from the same table
-      const classification = ingredientRiskToGrantClassification(opSpec.risk_tier);
-      const opId = `${packRef}.${operation}`;
-      // §8 recipe-preferred suppression — a WRITE op a recipe already provides
-      // is the recipe's to expose (guardrailed); drop the raw primitive. Reads
-      // are unaffected (AI-open).
-      if (classification === 'write' && recipeOpCoverage?.has(opId)) continue;
-      const also_reads = perOpReads.get(operation);
-      out.push({
-        wireName: `${OP_TOOL_PREFIX}${opId}`,
-        opId,
-        description:
-          `[${opSpec.risk_tier}] ${opSpec.description ?? operation} (pack ${packRef}) `
-          + '— raw catalog operation; pass "connection" to bind an enrolled connection.',
-        inputSchema: RAW_OP_TOOL_INPUT_SCHEMA,
-        classification,
-        ...(also_reads !== undefined ? { also_reads } : {}),
-      });
-    }
-  }
-  return out;
-};
 
 export const buildMcpGrantCatalogLegacyEntries = (
   manifests: Pick<ManifestRegistry, 'slugs' | 'get'>,
@@ -1094,23 +1120,18 @@ export const buildMcpGrantCatalogLegacyEntries = (
   // ones, and the per-token gate enforces. The §8 KIND fence + recipe-preferred
   // write suppression are inside `buildRawOpToolDescriptors`.
   if (scanInstalledPacks) {
-    for (const d of buildRawOpToolDescriptors(
+    // D-225 § 9.5.1 — the descriptor→entry mapping moved to
+    // `rawOpToolEntries` so the CHAT catalog emits byte-identical rows. A raw op
+    // describing itself differently to chat than to the door would be one op
+    // wearing two faces, while the owner's single grant covers both.
+    // (`also_reads` still discloses the container reads a raw write transitively
+    // admits — D-192 Slice 7 — it just does so from the shared mapping now.)
+    for (const entry of rawOpToolEntries(
       scanInstalledPacks,
       (s) => manifests.get(s),
       recipeOpCoverage,
     )) {
-      entries.push({
-        name: d.wireName,
-        tier: 2,
-        description: d.description,
-        arg_schema: d.inputSchema,
-        topic_tags: [],
-        classification: d.classification,
-        concurrency_safe: false,
-        // D-192 Slice 7 — disclose the container reads granting this raw write op
-        // transitively admits, so the door per-tool grant checklist is legible.
-        ...(d.also_reads !== undefined ? { also_reads: d.also_reads } : {}),
-      });
+      entries.push(entry as ToolEntry);
     }
   }
   return entries;
@@ -1256,8 +1277,25 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
   // The catalog names here are already wire names (the same keys the
   // grants map and gate A use), so this is the same predicate, applied
   // at enumeration time: an ungranted tool's name/description/schema is
-  // not leaked to the external agent. Owner transports (stdio /
-  // canonical CLI bearer) leave the callback undefined ⇒ full catalog.
+  // not leaked to the external agent.
+  //
+  // ⛔⛔ D-228 slice 6 — AN ABSENT CHECKLIST DENIES. This read
+  // `gate ? gate(t.name) : true` — "owner transports (stdio / canonical CLI
+  // bearer) leave the callback undefined ⇒ full catalog" — and that fallback was
+  // the ungoverned half of the surface slice 1 only half-closed: slice 1 emptied
+  // `buildMcpContractSnapshot`, while THIS path and `handleToolCall` went on
+  // treating "no callback" as "the owner, allow everything". A caller with no
+  // checklist is not the owner; it is a caller that presented no contract.
+  //
+  // 🔑 This makes stdio behave EXACTLY as the HTTP door already did, rather than
+  // special-casing it: the HTTP transport always supplies a checklist, so its
+  // tokens must already be granted `recued_listRecipes` et al. to see the meta
+  // tools. Absent ⇒ deny is the same rule an empty checklist already produced.
+  // A D-196 customer instance is unaffected — `customerRawOpGrant` answers
+  // BEFORE this line, so a customer contract still grants its own tools without
+  // a per-token checklist. What loses access is precisely a caller carrying
+  // NEITHER, which on stdio means no `--token` / `RECUED_MCP_TOKEN`; the CLI
+  // prints that instruction to stderr, so the refusal is recoverable.
   const allTools = [...TOOLS, ...ingredientTools, ...registryTools, ...rawOpTools];
   const gate = deps.inboundTokenAuthorize;
   return {
@@ -1270,12 +1308,21 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
       }
       const customerGrant = customerRawOpGrant(deps, t.name);
       if (customerGrant !== null) return customerGrant;
-      return gate ? gate(t.name) : true;
+      // The authenticated owner (verified CLI bearer) carries no checklist and
+      // is admit-all by design; everyone else needs one and is denied without.
+      if (deps.ownerAdmitAll === true) return true;
+      return gate !== undefined && gate(t.name);
     }),
   };
 };
 
 export interface McpDeps extends ExecuteHandlerDeps {
+  /** D-220 — read a live intake form so `recued_saveRecipe` is gated by the SAME
+   *  form-field contract as the `recipe.save` rpc. Absent ⇒ the gate is inert,
+   *  which is what shipped: an authenticated MCP caller could arm a
+   *  `form_response.accepted` trigger against a form that does not collect the
+   *  field the recipe declares, and every submission after it stored nothing. */
+  formDefinitionReader?: FormDefinitionReader;
   vaultStore?: VaultStore;
   /** When set, the MCP server uses this to query the paired extension's
    *  ingredient catalog (for the extension-first tool merge) and to
@@ -1355,15 +1402,37 @@ export interface McpDeps extends ExecuteHandlerDeps {
    *  true; missing keys default-deny per spec § A.9 new-tool default-
    *  off).
    *
-   *  Stdio transport (single-user, no inbound-token store) leaves this
-   *  undefined → no gate; matches the pre-fold "owner has full
-   *  access" semantics. HTTP MCP now authenticates with canonical
-   *  `client_tokens` and also leaves this undefined for CLI tokens.
+   *  ⛔⛔ D-228 slice 6 — ABSENT NO LONGER MEANS "NO GATE". It means NO TOKEN,
+   *  and is DENIED at both `handleToolsList` and `handleToolCall`. The
+   *  authenticated owner path is now the POSITIVE {@link McpDeps.ownerAdmitAll}
+   *  flag below, because absence was conflating two callers that must not share
+   *  an answer: a verified canonical CLI bearer, and a local process that
+   *  presented nothing at all.
    *
    *  Codex review P1 — without this gate, possession of any active
    *  inbound token grants access to every MCP tool, defeating the
    *  Settings → MCP Tokens checklist entirely. */
   inboundTokenAuthorize?: (tool_name: string) => boolean;
+  /** ⛔⛔ D-228 slice 6 — THE AUTHENTICATED OWNER, stated POSITIVELY.
+   *
+   *  Set ONLY by a caller that presented a canonical `client_tokens` bearer
+   *  verified with `client_kind === 'cli'` (see `wire-mcp-http-transport.ts`) —
+   *  the owner's own CLI / webclient. Such a caller is admit-all by design and
+   *  carries no per-tool checklist, which is why it cannot be expressed as an
+   *  absent {@link McpDeps.inboundTokenAuthorize}.
+   *
+   *  🔑 THE DISCRIMINATOR HAD TO BECOME POSITIVE. Before this, THREE different
+   *  callers arrived with no authorizer and all three were admitted:
+   *    1. a verified CLI bearer            — legitimately the owner
+   *    2. stdio with no `--token`          — presented NOTHING (the D-228 hole)
+   *    3. an UNRESOLVED bearer on HTTP     — `if (!resolved) return baseMcpDeps`,
+   *                                          the very "one more call after the
+   *                                          token was revoked" that D-137 P5's
+   *                                          own P2 fold set out to close
+   *  Denying on absence alone would have dark-booted (1); admitting on absence
+   *  leaves (2) and (3) open. Only a positive claim separates them, and the two
+   *  paths that can honestly make it are the two that authenticated. */
+  ownerAdmitAll?: boolean;
   /** D-166 P2 token↔contract binding — the minted `contract_id` the inbound
    *  token is bound to (from `McpInboundTokenRecord.contract_id`). When set,
    *  `buildMcpExecutionSource` stamps it as `ExecutionSource.contract_id` so the
@@ -1403,7 +1472,15 @@ export interface McpDeps extends ExecuteHandlerDeps {
   customerStatus?: McpCustomerStatusProvider;
 }
 
-const text = (data: unknown) => ({ content: [{ type: 'text', text: JSON.stringify(data, null, 2) }] });
+/** Preserve the human/LLM text representation while also publishing the MCP
+ *  structured-result channel. Declared MCP operations and work-entity Sources
+ *  must be able to traverse recipe output without parsing presentation text. */
+const text = (data: unknown) => ({
+  content: [{ type: 'text', text: JSON.stringify(data, null, 2) }],
+  ...(data !== null && typeof data === 'object' && !Array.isArray(data)
+    ? { structuredContent: data as Record<string, unknown> }
+    : {}),
+});
 const err = (msg: string) => ({ content: [{ type: 'text', text: msg }], isError: true });
 const MCP_ZERO_CUSTOMER_USAGE = Symbol('mcp.zero-customer-usage');
 
@@ -1755,8 +1832,9 @@ const handleToolCall = async (
   // granted by Mary's per-token checklist" without leaking which other
   // tools the token covers. Spec § A.9 new-tool default-off applies —
   // a tool name absent from the grants map resolves to `false` at the
-  // substrate predicate level. Stdio + env-var verifier paths leave
-  // the callback undefined ⇒ no gate (matches pre-fold semantics).
+  // substrate predicate level. D-228 superseded the D-137 interim here:
+  // `ownerAdmitAll` is the positive verified-owner bypass; an absent
+  // callback by itself means no token/checklist and denies below.
   if (params.name === CUSTOMER_STATUS_TOOL_NAME) {
     if (!deps.customerStatus) {
       return err('customer.status is available only to an admitted seller customer token.');
@@ -1772,13 +1850,26 @@ const handleToolCall = async (
     if (customerGrant === false) {
       return err(`Tool '${params.name}' is not granted by this customer contract.`);
     }
+    // ⛔⛔ D-228 slice 6 — AN ABSENT CHECKLIST DENIES, and the missing `deps.
+    // inboundTokenAuthorize &&` term is the whole change. That term made an
+    // ABSENT callback SKIP the deny — so `recued mcp` with no token listed and
+    // DISPATCHED the entire registry catalog, while slice 1 had emptied only
+    // `buildMcpContractSnapshot`. The enumeration mirror is in `handleToolsList`;
+    // both now read "no checklist ⇒ nothing", the same answer an empty checklist
+    // already gave. A D-196 customer is unaffected (`customerGrant !== null`
+    // returns above), so this denies exactly the caller that presented neither a
+    // token checklist nor a customer contract.
     if (
       customerGrant === null
-      && deps.inboundTokenAuthorize
-      && !deps.inboundTokenAuthorize(params.name)
+      && deps.ownerAdmitAll !== true
+      && deps.inboundTokenAuthorize?.(params.name) !== true
     ) {
       return err(
-        `Tool '${params.name}' is not granted by this token's per-tool checklist (Settings → MCP Tokens).`,
+        deps.inboundTokenAuthorize === undefined
+          ? `Tool '${params.name}' is not available: this connection presented no MCP token, `
+            + 'so it carries no per-tool checklist. Pass --token <bearer> or set '
+            + 'RECUED_MCP_TOKEN; create one in Settings → MCP Tokens.'
+          : `Tool '${params.name}' is not granted by this token's per-tool checklist (Settings → MCP Tokens).`,
       );
     }
   }
@@ -1814,6 +1905,33 @@ const handleToolCall = async (
       return err(
         `Tool '${params.name}' is a connection.mcp.* passthrough and is not exposed on the MCP wire (call the upstream MCP server directly).`,
       );
+    }
+    // ⛔⛔ D-228 slice 5 — THE CONTRACT GATE ON TIER-1 PRIMITIVES, wired here and
+    // ONLY here. This is the seam where a contract identity exists: the internal
+    // chat channel leaves `execution_source` / `contract_snapshot` undefined by
+    // design, so there is nothing to gate against there, and gating "the owner
+    // against themselves" would be a no-op anyway.
+    //
+    // 🔑 The per-token checklist above is a DIFFERENT axis and both must pass:
+    // the checklist is what THIS TOKEN may use, the contract is what this DOOR
+    // may ever be granted. A token cannot widen past its contract, which is the
+    // property D-228 exists for — "the contract governs the catalog on every
+    // surface". `isOpGranted` resolves explicit row ?? author default, so the
+    // owner (no governing contract on an unbound token) and a wildcard door both
+    // admit; a scoped door / D-196 customer resolves its own posture.
+    //
+    // ⚠ SAFE ONLY BECAUSE OF `grandfatherPrimitiveGrants` — a scoped door and a
+    // customer instance are FAIL-CLOSED by author default, and no `primitive.*`
+    // row could have existed before this slice, so without the one-time
+    // grandfather at boot this line would strip the always-on tools from every
+    // such contract on upgrade. Do not land one without the other.
+    if (registryEntry.tier === 1 && deps.opAdmissionGate !== undefined) {
+      const source = buildMcpExecutionSource(deps);
+      if (!deps.opAdmissionGate.isOpGranted(source, primitiveGrantEntry(params.name))) {
+        return err(
+          `Tool '${params.name}' is not granted by this contract (Settings → Contracts → Ops).`,
+        );
+      }
     }
     // D-153 P2.C — resolve the per-call `ExecutionSource` +
     // `ContractSnapshot` for the registry-routed dispatch so Tier 1
@@ -2161,6 +2279,26 @@ const handleToolCall = async (
         contract_snapshot: contractSnapshot,
       };
       try {
+        // D-221 §3.3.3 — the legacy umbrella is an exposure seam too. Tier 2
+        // registry tools and `recipe.run` preflight in chat-tool-handlers, but a
+        // caller granted only `recued_runRecipe` can supply the same stored or
+        // inline recipe here. Re-resolve the body at dispatch time and apply the
+        // identical installed-operation inventory before the engine can run its
+        // prefetch/trigger phases. Missing recipes keep their established
+        // `recipe_not_found` response from handleExecute.
+        const exposedRecipe = args.recipe !== undefined
+          ? args.recipe as import('@recued/contracts').RecipeDefinition
+          : typeof args.recipe_id === 'string'
+            ? deps.recipeStore.get(args.recipe_id)
+            : null;
+        if (exposedRecipe !== null && deps.recordsStore !== undefined) {
+          assertRecordsNonOwnerRecipeExposure(exposedRecipe, 'mcp', {
+            isOperationId: (operationId) =>
+              deps.recordsStore!.isInstalledOperationId(operationId),
+            isCatalogOperation: (catalogSlug, operationKey) =>
+              deps.recordsStore!.isInstalledCatalogOperation(catalogSlug, operationKey),
+          });
+        }
         const result = await handleExecute(deps, req);
         // Project a preflight-HELD run to its clean agent-facing shape (no
         // bare `success:false`, which an MCP agent reads as a silent failure).
@@ -2255,6 +2393,25 @@ const handleToolCall = async (
         // P7.G — MCP-channel always applies the read-grant gate. Recipe-channel paths
         // set this per call based on `trigger_source`.
         gateMcpPrivate: true,
+        // D-226 — what every installed pack declares about this identity,
+        // computed from the pack's live rows. Read AFTER the whole-tool grant
+        // fence inside `handleTimelineRequest`, so a door refused the feed is
+        // refused the aggregate too.
+        ...(deps.recordsStore
+          ? { rollupsForEntity: (collection: string, id: string) =>
+              collection === 'contact'
+                ? readRootProjections(deps.recordsStore!, 'contact', id).map((projection) => ({
+                    publisher: projection.publisher,
+                    pack_slug: projection.pack_slug,
+                    ...(projection.label === undefined ? {} : { label: projection.label }),
+                    value: projection.value,
+                    complete: projection.complete,
+                    ...(projection.incomplete_reason === undefined
+                      ? {}
+                      : { incomplete_reason: projection.incomplete_reason }),
+                  }))
+                : [] }
+          : {}),
       };
       try {
         const result = await handleTimelineRequest(timelineDeps, req);
@@ -2484,6 +2641,16 @@ const handleToolCall = async (
       if (opCheck.errors.length > 0) {
         return err(`Recipe op-step validation failed:\n${opCheck.errors.join('\n')}`);
       }
+
+      // D-220 — the form-field contract, via the SAME implementation the
+      // `recipe.save` rpc uses. This call site is the one finding 3.2 named: the
+      // comment above claimed to mirror the local seam, and did not.
+      const formContract = checkFormContract(
+        deps.formDefinitionReader,
+        recipeDefinition,
+        'recued_saveRecipe',
+      );
+      if (formContract.kind !== 'ok') return err(formContract.message);
 
       const publisher = (args.publisher_id as string) ?? 'mcp';
       deps.recipeStore.save(

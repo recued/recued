@@ -18,7 +18,7 @@
  *  tone). Enrol requires the op's `required_args` (e.g. cloudflared
  *  `tunnel_name`) — collected inline; the server rejects a missing one.
  *
- *  Optimistic flow mirrors `local-tools-panel.ts`: mark the op pending +
+ *  Optimistic flow mirrors `pack-access-controls.ts`: mark the op pending +
  *  invalidate any in-flight list, fire `supervision.set`, then ALWAYS re-list to
  *  reconcile true server state, surfacing the first failure on a per-row error.
  */
@@ -37,7 +37,7 @@ export type SupervisionSetCaller = (
   req: SupervisionSetRequest,
 ) => Promise<SupervisionDaemonRow | null>;
 /** `cli.reachability.universe` caller — the installed cli-tool universe, reused
- *  from the Local-tools surface. The controller maps each tool's `catalog_slugs`
+ *  from `cli.reachability.universe`. The controller maps each tool's `catalog_slugs`
  *  → `reachable` so a daemon row can show whether its binary is on the server's
  *  PATH (and gate Start/Auto when it definitively is not). */
 export type SupervisionReachabilityCaller = () => Promise<CliReachabilityUniverseResponse>;

@@ -68,7 +68,11 @@ const binName = binaryFileName(triple);
 console.log(`[build-binary] host triple: ${triple} → ${binName}`);
 
 // ── 2. Require the esbuild bundle (run `npm run build` first) ───────────
-const ENTRY = join(DIST, 'bin.js');
+// D-178 S1 rev 2 item 0a — the CJS twin, NOT `bin.js`. Node's SEA embedder runs
+// the blob as CommonJS, so an ESM entry produces a binary that dies on its first
+// line. `bin.js` stays ESM because `package.json` is `type: module` and every
+// normal run path uses it; `bin.cjs` exists solely for this step.
+const ENTRY = join(DIST, 'bin.cjs');
 if (!existsSync(ENTRY)) {
   fail(`missing ${ENTRY} — run the esbuild step (npm run build) first.`);
 }

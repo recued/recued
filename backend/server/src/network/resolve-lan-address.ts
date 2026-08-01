@@ -50,13 +50,47 @@ export type ResolvedLanAddressSource =
   | 'ambiguous_lan_candidates'
   | 'loopback_fallback';
 
+/** Why a non-empty override was not used. Single member today: the address
+ *  is not one this host can bind. */
+export type LanOverrideIgnoredReason = 'not_bindable_on_this_host';
+
 export interface ResolvedLanAddress {
-  /** The chosen bind address — pass through to
-   *  `createPathListenerSet`'s `lan_bind_address`. When
-   *  `source === 'ambiguous_lan_candidates'` this is
-   *  `LOOPBACK_FALLBACK` (safe fallback while the caller surfaces the
-   *  ambiguity to the user). */
+  /** The ADVERTISED address — the one a human or a peer would use to reach
+   *  this server on the LAN, and what the pairing address hints publish
+   *  (`wss://<address>:<port>/ws`). NOT the bind address: see `bind_address`.
+   *  When `source === 'ambiguous_lan_candidates'` this is `LOOPBACK_FALLBACK`
+   *  (safe fallback while the caller surfaces the ambiguity to the user). */
   address: string;
+  /** What the listener actually binds — `createPathListenerSet`'s
+   *  `lan_bind_address`.
+   *
+   *  Diverges from `address` on purpose. Binding a single LAN address means
+   *  LOOPBACK IS NOT SERVED: with the listener on `192.168.1.121`, both
+   *  `http://127.0.0.1:<port>` and `http://localhost:<port>` are refused. That
+   *  kills the one flow that works end to end — the bundled webclient opened
+   *  on the server machine, where a loopback origin is a secure context and
+   *  Web Crypto is available. A LAN origin is not a secure context, so the
+   *  page loads and the app refuses to boot.
+   *
+   *  So a DETECTED LAN address binds `0.0.0.0` (loopback + every interface),
+   *  matching what the public listener has always done, while `address` keeps
+   *  naming the LAN IP for hints and docs. An explicit override is bound
+   *  verbatim — including `127.0.0.1` to force loopback-only, or `0.0.0.0` to
+   *  ask for everything. */
+  bind_address: string;
+  /** Present iff a non-empty override was supplied and REJECTED, in which
+   *  case `address` / `source` describe the detection result used instead.
+   *
+   *  Why reject rather than obey: a LAN listener that fails to bind is fatal
+   *  (`assertLanListenerBoundOrExit` → `process.exit(4)`, deliberately not
+   *  restart-looped). The override is typed by hand into Settings and names a
+   *  HOST-dependent fact, so it goes stale on its own — a new network, a new
+   *  DHCP lease, a VM image moved to another machine. Binding it verbatim
+   *  turns any of those into "the server will not start", with the setting
+   *  that caused it reachable only through the server that will not start.
+   *  Ignoring it loudly keeps the admin channel up; the address is reported
+   *  here so the boot log + Reachability Doctor can say what was skipped. */
+  override_ignored?: { value: string; reason: LanOverrideIgnoredReason };
   /** Why this address was chosen (rendered by the Reachability Doctor). */
   source: ResolvedLanAddressSource;
   /** Every RFC1918 IPv4 address the detector considered + the
@@ -67,8 +101,15 @@ export interface ResolvedLanAddress {
 }
 
 export interface ResolveLanAddressOptions {
-  /** Settings → Server → Network override. When non-empty, used
-   *  verbatim (no validation — the user opted in). */
+  /** The owner's `network.lan_bind_address` — a runtime-config key, set in
+   *  `config.toml` or through `server.setConfigField`. (No generic
+   *  runtime-config page exists in the webclient yet; the AI / Models page is
+   *  the only consumer of that rpc pair today, for `llm.budget`.)
+   *  When non-empty it wins over detection, PROVIDED this host can
+   *  actually bind it — an address on one of its interfaces, or a
+   *  wildcard (`0.0.0.0` / `::`). Anything else is reported through
+   *  `override_ignored` and detection proceeds; see that field for why
+   *  obeying it verbatim is not safe. */
   override?: string | null | undefined;
   /** Optional default-route gateway IPv4 address. Production callers
    *  on Linux read `/proc/net/route` (or `ip route show default`);
@@ -86,6 +127,28 @@ export interface ResolveLanAddressOptions {
  *  so callers passing through this helper land on the same conservative
  *  scope when no LAN interface is detected. */
 export const LOOPBACK_FALLBACK = '127.0.0.1' as const;
+
+/** Bind every IPv4 interface — what a DETECTED LAN address binds, so the
+ *  loopback origin the webclient needs stays served alongside the LAN one.
+ *  Matches the public listener, which has always bound `0.0.0.0`.
+ *
+ *  IPv4-only, deliberately: `localhost` resolves to `::1` first on many
+ *  systems, so a dual-stack story would need `::` with ipv6Only off. Callers
+ *  advertise `127.0.0.1` rather than `localhost` for exactly this reason. */
+const BIND_ALL_IPV4 = '0.0.0.0' as const;
+
+/** Bind-any addresses. Never appear on an interface list, always bindable,
+ *  and a deliberate self-hoster choice ("serve on every interface"), so the
+ *  override check has to admit them explicitly. */
+const WILDCARD_BIND_ADDRESSES: ReadonlyArray<string> = ['0.0.0.0', '::'];
+
+/** Canonical form for comparing a typed-in address to an interface address:
+ *  lowercase (IPv6 hex is case-insensitive) and without the `%en0` zone
+ *  suffix Node appends to link-local IPv6. */
+const normalizeBindAddress = (addr: string): string => {
+  const zone = addr.indexOf('%');
+  return (zone === -1 ? addr : addr.slice(0, zone)).toLowerCase();
+};
 
 const RFC1918_PATTERNS: ReadonlyArray<RegExp> = [
   /^10\./,
@@ -138,20 +201,29 @@ const sharesPrefix = (a: string, b: string, prefixOctets: 1 | 2 | 3): boolean =>
 export const resolveLanAddress = (
   opts: ResolveLanAddressOptions = {},
 ): ResolvedLanAddress => {
-  // Explicit override always wins. Trim whitespace; empty string falls
-  // through to detection (matches the "Settings clear → re-detect"
-  // UX flow).
+  // Trim whitespace; empty falls through to detection (matches the
+  // "Settings clear → re-detect" UX flow).
   const trimmed = typeof opts.override === 'string' ? opts.override.trim() : '';
-  if (trimmed.length > 0) {
-    return {
-      address: trimmed,
-      source: 'override',
-      candidates: [],
-    };
-  }
 
   const read = opts.readInterfaces ?? networkInterfaces;
   const ifaces = read();
+
+  // Every address this host owns — ALL families, loopback + internal
+  // included. This is the bindable set, deliberately wider than the
+  // RFC1918 candidate list below: forcing loopback-only, binding a public
+  // VPS address, or binding IPv6 are all legitimate overrides that
+  // detection would never propose on its own.
+  const bindable = new Set<string>(WILDCARD_BIND_ADDRESSES);
+  for (const list of Object.values(ifaces)) {
+    if (!list) continue;
+    for (const entry of list) {
+      const addr = entry?.address;
+      if (typeof addr === 'string' && addr.length > 0) {
+        bindable.add(normalizeBindAddress(addr));
+      }
+    }
+  }
+
   const candidates: Array<{ address: string; iface: string }> = [];
   const seen = new Set<string>();
   for (const [name, list] of Object.entries(ifaces)) {
@@ -177,19 +249,40 @@ export const resolveLanAddress = (
 
   candidates.sort((a, b) => a.address.localeCompare(b.address));
 
+  // The override decision sits AFTER the interface read (it needs the
+  // bindable set) but BEFORE every detection branch — an accepted override
+  // is the answer, and a rejected one only annotates whatever detection
+  // then picks. `candidates` is reported either way so the Doctor can show
+  // what else was on offer.
+  if (trimmed.length > 0) {
+    if (bindable.has(normalizeBindAddress(trimmed))) {
+      // Verbatim: an explicit override says exactly what to bind, including
+      // `127.0.0.1` for loopback-only or `0.0.0.0` for everything.
+      return { address: trimmed, bind_address: trimmed, source: 'override', candidates };
+    }
+  }
+  const ignored: Pick<ResolvedLanAddress, 'override_ignored'> =
+    trimmed.length > 0
+      ? { override_ignored: { value: trimmed, reason: 'not_bindable_on_this_host' } }
+      : {};
+
   if (candidates.length === 0) {
     return {
       address: LOOPBACK_FALLBACK,
+      bind_address: LOOPBACK_FALLBACK,
       source: 'loopback_fallback',
       candidates: [],
+      ...ignored,
     };
   }
 
   if (candidates.length === 1) {
     return {
       address: candidates[0]!.address,
+      bind_address: BIND_ALL_IPV4,
       source: 'detected',
       candidates,
+      ...ignored,
     };
   }
 
@@ -206,8 +299,10 @@ export const resolveLanAddress = (
         if (sharesPrefix(c.address, gateway, prefix)) {
           return {
             address: c.address,
+            bind_address: BIND_ALL_IPV4,
             source: 'detected_via_default_route',
             candidates,
+            ...ignored,
           };
         }
       }
@@ -223,7 +318,9 @@ export const resolveLanAddress = (
   // surfaces both the source label + the candidate list to Mary.
   return {
     address: LOOPBACK_FALLBACK,
+    bind_address: LOOPBACK_FALLBACK,
     source: 'ambiguous_lan_candidates',
     candidates,
+    ...ignored,
   };
 };

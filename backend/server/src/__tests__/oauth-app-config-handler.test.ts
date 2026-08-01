@@ -2,23 +2,14 @@
 
 import Database from 'better-sqlite3';
 import { describe, it, expect } from 'vitest';
-import type { OAuthAppIssuer } from '@recued/contracts';
 import { makeOAuthAppConfigHandlers } from '../oauth-app-config-handler.js';
 import { createOAuthAppConfigStore, type OAuthAppConfigStore } from '../oauth-app-config-store.js';
 
 const KEY = new Uint8Array(32).fill(9);
-type EnvStatus = { client_id: string | null; has_secret: boolean };
-const NO_ENV: Record<OAuthAppIssuer, EnvStatus> = {
-  google: { client_id: null, has_secret: false },
-  microsoft: { client_id: null, has_secret: false },
-};
 
-const setup = (
-  env: Record<OAuthAppIssuer, EnvStatus> = NO_ENV,
-  store?: OAuthAppConfigStore,
-) => {
+const setup = (store?: OAuthAppConfigStore) => {
   const s = store ?? createOAuthAppConfigStore(new Database(':memory:'), { getEncryptionKey: () => KEY });
-  const slice = makeOAuthAppConfigHandlers({ store: s, envConfigFor: (issuer) => env[issuer] })!;
+  const slice = makeOAuthAppConfigHandlers({ store: s })!;
   const get = () => slice.handlers['server.getOAuthAppConfig'](undefined as never, {} as never);
   const set = (args: unknown) => slice.handlers['server.setOAuthAppConfig'](args as never, {} as never);
   const clear = (args: unknown) => slice.handlers['server.clearOAuthAppConfig'](args as never, {} as never);
@@ -42,30 +33,33 @@ describe('OAuth app config handlers', () => {
     expect(JSON.stringify(snap)).not.toContain('client_secret');
   });
 
-  it('env fallback (nothing stored) → source "env"', async () => {
-    const env = {
-      google: { client_id: 'env-gid', has_secret: true },
-      microsoft: NO_ENV.microsoft,
-    };
-    const snap = await setup(env).get();
-    expect(snap.google).toEqual({ client_id: 'env-gid', has_secret: true, source: 'env' });
-    expect(snap.microsoft.source).toBeNull();
-  });
+  // The store is the ONLY credential source since the six `RECUED_*` OAuth env
+  // vars were deleted (2026-07-28). Three tests died with that fallback: "env
+  // fallback (nothing stored) → source 'env'", "stored overrides env in the
+  // status", and the old "clear reverts to env (or null)". The first two have
+  // no surviving claim — the fallback tier they described is gone, and their
+  // store-side kernel is already covered above. The third survives with an
+  // INVERTED expectation and is kept below, because what happens after a clear
+  // is still a real behaviour with a real answer — it is just a different one.
 
-  it('stored overrides env in the status', async () => {
-    const env = { google: { client_id: 'env-gid', has_secret: true }, microsoft: NO_ENV.microsoft };
-    const { get, set } = setup(env);
+  it('clear leaves the issuer unconfigured — nothing sits behind the store', async () => {
+    const { get, set, clear } = setup();
     await set({ issuer: 'google', client_id: 'ui-gid', client_secret: 's' });
-    const snap = await get();
-    expect(snap.google).toEqual({ client_id: 'ui-gid', has_secret: true, source: 'stored' });
-  });
-
-  it('clear reverts to env (or null)', async () => {
-    const env = { google: { client_id: 'env-gid', has_secret: true }, microsoft: NO_ENV.microsoft };
-    const { get, set, clear } = setup(env);
-    await set({ issuer: 'google', client_id: 'ui-gid', client_secret: 's' });
+    expect((await get()).google).toEqual({ client_id: 'ui-gid', has_secret: true, source: 'stored' });
     await clear({ issuer: 'google' });
-    expect((await get()).google).toEqual({ client_id: 'env-gid', has_secret: true, source: 'env' });
+    expect((await get()).google).toEqual({ client_id: null, has_secret: false, source: null });
+  });
+
+  it('a client_id is only ever reported with source "stored"', async () => {
+    // The narrowed union's runtime counterpart: no code path can surface a
+    // client_id attributed to anything but the encrypted store. Re-adding a
+    // fallback tier that reports through this handler fails here.
+    const { get, set } = setup();
+    await set({ issuer: 'microsoft', client_id: 'mid', client_secret: 'ms' });
+    const snap = await get();
+    for (const status of Object.values(snap)) {
+      expect(status.source).toBe(status.client_id === null ? null : 'stored');
+    }
   });
 
   it('set rejects an unknown issuer + empty fields with bad_request', async () => {
@@ -83,7 +77,7 @@ describe('OAuth app config handlers', () => {
 
   it('set on a locked store surfaces RpcError locked', async () => {
     const locked = createOAuthAppConfigStore(new Database(':memory:'), { getEncryptionKey: () => null });
-    const { set } = setup(NO_ENV, locked);
+    const { set } = setup(locked);
     await expect(set({ issuer: 'google', client_id: 'gid', client_secret: 'gsecret' })).rejects.toMatchObject({
       code: 'locked',
     });

@@ -902,8 +902,6 @@ const renderIntakeFormBody = (m: IntakeFormFormModel): string => {
     formSection('Anti-spam', [
       renderMultiSelectField(m.honeypot_fields),
       renderNumberField(m.rate_limit_per_ip),
-      renderToggleField(m.require_proof_of_work),
-      renderToggleField(m.require_captcha),
       renderRepeaterField(m.known_domain_allowlist, (row, i) =>
         renderStringRowCells(
           m.known_domain_allowlist.key,

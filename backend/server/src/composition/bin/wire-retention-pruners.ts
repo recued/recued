@@ -38,6 +38,16 @@
 
 import type { BackgroundServiceRegistry } from './wire-background-services.js';
 import type { AuditRetention } from '../../audit-retention.js';
+import {
+  EXECUTION_CASE_ARGUMENT_RETENTION_MS,
+  type ExecutionCaseArgumentStore,
+} from '../../storage/execution-case-argument-store.js';
+import {
+  EXECUTION_CASE_SOURCE_RETENTION_MS,
+} from '../../execution-case-core.js';
+import type {
+  ExecutionCaseCompiler,
+} from '../../execution-case-compiler.js';
 import { createCheckpointRetention } from '../../checkpoint-retention.js';
 import type { RuntimeConfigStore } from '@recued/config';
 import { HANDLED_ASK_RETENTION_MS, type NotificationBlock } from '@recued/notification';
@@ -54,6 +64,19 @@ export interface ComposeRetentionPrunersDeps {
   readonly auditRetention: AuditRetention | undefined;
   readonly s2sPreviewStore: S2SPreviewStore | undefined;
   readonly correctionEventsStore: CorrectionEventsStore | undefined;
+  /** D-219 — the capture-only tool-argument buffer. ⛔ Nothing READS it, which
+   *  is exactly why it needs a pruner: an unread store of raw arguments with no
+   *  age bound is an archive nobody decided to keep. Absent ⇒ no sweep (db-less
+   *  harness), same posture as every other store here. */
+  readonly executionCaseArgumentStore?:
+    | Pick<ExecutionCaseArgumentStore, 'pruneOlderThan'>
+    | undefined;
+  /** D-219 — retention for the source corpus slice 9a made grow on ~87% of
+   *  turns. Narrowed to the one method: this registration must not be able to
+   *  compile, rebuild, or delete a root. Absent ⇒ no sweep (db-less harness). */
+  readonly executionCaseSourcePruner?:
+    | Pick<ExecutionCaseCompiler, 'pruneSourcesOlderThan'>
+    | undefined;
   /** D-157 N.8 — the checkpoint sweep's stores. Both required for the
    *  registration (the sweep classifies rows against their run
    *  anchors); absent on the db-less harness. */
@@ -83,7 +106,7 @@ const DAY_MS = 24 * HOUR_MS;
  *  schema default for `preflight.stale_after_days`). */
 const DEFAULT_STALE_AFTER_DAYS = 30;
 
-/** Register up to four pruner intervals with `backgroundServices`.
+/** Register up to six pruner intervals with `backgroundServices`.
  *  Each registration is gated independently — a missing store skips
  *  that pruner but doesn't block the others. */
 export const composeRetentionPruners = (
@@ -156,6 +179,51 @@ export const composeRetentionPruners = (
         } catch {
           // Best-effort — a prune failure must not crash the server.
         }
+      },
+      fireImmediate: true,
+    });
+  }
+
+  // D-219 — the capture-only argument buffer's age sweep. Daily, like the
+  // correction-events pruner: the window is 90 days and does not need tight
+  // passes. ⚠ This window IS the horizon a future argument-consuming slice can
+  // backfill from — shortening it shortens what that decision can ever see.
+  if (deps.executionCaseArgumentStore) {
+    const store = deps.executionCaseArgumentStore;
+    deps.backgroundServices.registerInterval({
+      name: 'execution-case-arguments-prune',
+      intervalMs: DAY_MS,
+      tick: () => {
+        try {
+          store.pruneOlderThan(
+            nowOf() - EXECUTION_CASE_ARGUMENT_RETENTION_MS,
+          );
+        } catch {
+          // Best-effort — a prune failure must not crash the server.
+        }
+      },
+      fireImmediate: true,
+    });
+  }
+
+  // D-219 — the execution-case SOURCE sweep: reports + observations that are
+  // older than the window AND back no materialized case. Daily, and the last of
+  // the pruners deliberately — it ends in a full corpus rebuild when it deletes
+  // anything, so it should run against an already-swept database.
+  //
+  // ⛔ It never touches a report a case rests on; see `pruneSourcesOlderThan`.
+  // Retention that eats what it is retaining is amnesia, not retention.
+  if (deps.executionCaseSourcePruner) {
+    const pruner = deps.executionCaseSourcePruner;
+    deps.backgroundServices.registerInterval({
+      name: 'execution-case-sources-prune',
+      intervalMs: DAY_MS,
+      tick: () => {
+        void pruner
+          .pruneSourcesOlderThan(nowOf() - EXECUTION_CASE_SOURCE_RETENTION_MS)
+          .catch(() => {
+            // Best-effort — a prune failure must not crash the server.
+          });
       },
       fireImmediate: true,
     });

@@ -894,6 +894,10 @@ describe('D-139 P5 — recued_contactEngagementsList per-token gate', () => {
       { name: 'recued_contactEngagementsList', arguments: { email: 'bob@acme.com' } },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       {
+        // ⛔ NO `ownerAdmitAll` HERE, deliberately. This test's whole subject is
+        // that the checklist REFUSES, and the owner claim outranks the checklist
+        // — adding it (a blanket fixture sweep did, and this test caught it)
+        // turns a refusal assertion into a test of nothing.
         engagementsResolveDeps: makeBundle({ store, db }),
         inboundTokenAuthorize: () => false,
       } as any,
@@ -907,7 +911,11 @@ describe('D-139 P5 — recued_contactEngagementsList per-token gate', () => {
     const res = (await _testing.handleToolCall(
       { name: 'recued_contactEngagementsList', arguments: { email: 'bob@acme.com' } },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      {} as any,
+      // D-228 slice 6 — the owner claim is what keeps this test's subject alive:
+      // "resolver bundle absent" must be the reason for the error, not "no
+      // checklist". Without it the tool gate refuses first and the assertion
+      // below would pass on the wrong message.
+      { ownerAdmitAll: true } as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     )) as any;
     expect(res.isError).toBe(true);
@@ -921,7 +929,7 @@ describe('D-139 P5 — recued_contactEngagementsList per-token gate', () => {
     const res = (await _testing.handleToolCall(
       { name: 'recued_contactEngagementsList', arguments: { email: 'bob@acme.com', since: 0 } },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      { engagementsResolveDeps: makeBundle({ store, db }) } as any,
+      { ownerAdmitAll: true, engagementsResolveDeps: makeBundle({ store, db }) } as any,
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     )) as any;
     expect(res.isError).toBeUndefined();
@@ -937,6 +945,8 @@ describe('D-139 P5 — recued_contactEngagementsList per-token gate', () => {
     const res = (await _testing.handleToolCall(
       { name: 'recued_contactEngagementsList', arguments: { email: 'bob@acme.com', since: 0 } },
       {
+        // D-228 slice 6 — owner principal declared; absent now denies.
+        ownerAdmitAll: true,
         engagementsResolveDeps: makeBundle({ store, db }),
         // Server-scoped grant present (as if crm-commitment-tracker installed).
         mcpBodyVisibilityStore: { isGranted: () => true },
@@ -957,6 +967,8 @@ describe('D-139 P5 — recued_contactEngagementsList per-token gate', () => {
     const res = (await _testing.handleToolCall(
       { name: 'recued_contactEngagementsList', arguments: { email: 'bob@acme.com', since: 0 } },
       {
+        // D-228 slice 6 — owner principal declared; absent now denies.
+        ownerAdmitAll: true,
         engagementsResolveDeps: makeBundle({ store, db }),
         mcpBodyVisibilityStore: { isGranted: () => false },
         // eslint-disable-next-line @typescript-eslint/no-explicit-any

@@ -100,6 +100,8 @@ export const initialRunModalState = (
   result: null,
   schedules: null,
   preset_expression: presetExpression,
+  repeat: true,
+  run_at_local: '',
   mutating: false,
   schedule_error: null,
   triggers: null,

@@ -341,6 +341,16 @@ export type ActivityAction =
   // reserve — retention pruner reclaims like every other adapter call
   // breadcrumb.
   | 'connection_api' | 'connection_mcp' | 'connection_notification'
+  // D-218 — a refreshed credential could not be written back to the connection
+  // store. ⛔ **An own row because for a SINGLE-USE rotating token the swallow
+  // is not free.** The exchange already invalidated the stored credential, so
+  // the durable row now holds a dead token: the next call pays an extra
+  // round trip to discover that and log in again. That is recoverable — which
+  // is why the call is NOT failed (D-218 § 7.5d) — but it signals a storage
+  // problem, and a silently swallowed write leaves nothing to notice it by.
+  // `target` = `<connection_name>`; `detail` carries the auth type + the
+  // non-secret error text.
+  | 'connection_credential_persist_failed'
   // D-165 P0 — one row per gateway-routed catalog-form operation call
   // (Invariant 5), emitted on success, execution failure, AND gate
   // denial. Target carries the connection record `name`; `detail` is
@@ -1066,6 +1076,33 @@ export interface AuditLogStore {
     limit?: number,
     axis?: TimelineAxis,
   ): Promise<AuditEntry[]>;
+  /** D-215 slice 2 — list entries produced by one DISH: the "what has
+   *  this queued item actually done?" query behind the dish detail's
+   *  history. Empty result when `id` is empty or matches no rows.
+   *  `axis` follows the same rules as `listByChannelSession`.
+   *
+   *  A RETIRED dish still matches — `dish_id` outlives the dish row by
+   *  design (an auto-run config change dissolves the prior dish and a
+   *  one-shot retires itself on success, both leaving audit intact), so
+   *  callers render an unresolvable id as *retired*, never as an error. */
+  listByDish(
+    dish_id: string,
+    limit?: number,
+    axis?: TimelineAxis,
+  ): Promise<AuditEntry[]>;
+  /** D-215 slice 2 — the NEWEST entry for each of many dishes, in ONE
+   *  pass. The dish LIST needs a last-outcome cell per row; calling
+   *  `listByDish` per dish would be N full scans of the log, so this
+   *  buckets a single scan instead. Dishes with no runs are absent from
+   *  the map (callers render "never run"), and an empty/duplicate-laden
+   *  input is tolerated.
+   *
+   *  Ordering is `started_at` (ingestion) — "the last time this dish
+   *  ran" is a question about the engine's record, not about real-world
+   *  event time, so it deliberately does NOT take a `TimelineAxis`. */
+  latestByDishes(
+    dish_ids: readonly string[],
+  ): Promise<Map<string, AuditEntry>>;
   /** Fetch one entry by run_id, or null if missing. */
   get(run_id: string): Promise<AuditEntry | null>;
   /** Delete entries older than the cutoff (epoch ms). Returns count deleted.
@@ -1257,6 +1294,43 @@ export const createAuditLogStore = (
       return limit !== undefined && limit >= 0
         ? filtered.slice(0, limit)
         : filtered;
+    },
+
+    // D-215 slice 2 — app-side filter, matching every sibling above.
+    // ⚠ A `json_extract(data,'$.dish_id')` INDEX was specced and then
+    // DROPPED: `Collection` exposes no predicate query (get/set/list/
+    // listByPrefix only), so every `listBy*` here scans `backing.list()`
+    // in JS and an index would have had no reader. The only raw-SQL
+    // consumer of `audit_entries` is the retention pruner. The house
+    // posture is already stated at `reception-inbox-handler.ts:952` —
+    // "the audit store has no 'list by commit_status' query, so this is
+    // an app-side filter … (a thin index is a future optimization)".
+    async listByDish(dish_id, limit, axis) {
+      if (dish_id === '') return [];
+      const all = await backing.list();
+      const filtered = all
+        .filter((e) => e.dish_id === dish_id)
+        .sort(sortForAxis(axis));
+      return limit !== undefined && limit >= 0
+        ? filtered.slice(0, limit)
+        : filtered;
+    },
+
+    async latestByDishes(dish_ids) {
+      const wanted = new Set(dish_ids.filter((id) => id !== ''));
+      const latest = new Map<string, AuditEntry>();
+      if (wanted.size === 0) return latest;
+      // ONE scan, keep the newest per dish — the whole reason this is not
+      // `dish_ids.map(listByDish)`.
+      for (const entry of await backing.list()) {
+        const id = entry.dish_id;
+        if (id === undefined || !wanted.has(id)) continue;
+        const held = latest.get(id);
+        if (held === undefined || entry.started_at > held.started_at) {
+          latest.set(id, entry);
+        }
+      }
+      return latest;
     },
 
     async get(run_id) {

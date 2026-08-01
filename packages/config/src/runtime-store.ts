@@ -62,8 +62,27 @@ export const createRuntimeConfigStore = (
         throw new ConfigValidationError(`Unknown runtime key '${key}'`, key);
       }
       validate(entry, value);
-      state[key] = value;
+      // PERSIST BEFORE MUTATING (fixed 2026-07-28). The order used to be
+      // reversed, so a failed write left the value APPLIED in memory while the
+      // caller was handed the error: the rpc reported failure, the running
+      // server behaved as if it had succeeded, `onChange` listeners never fired
+      // (so live propagation was skipped for a value that HAD changed), and a
+      // restart silently reverted it.
+      //
+      // Not hypothetical — the shipped `docker-compose.yml` bind-mounts
+      // `config.toml` read-only by design (config-as-code: edit on the host and
+      // restart), so every Settings write under docker takes this path.
+      //
+      // For a safety toggle it failed in the dangerous direction: turning
+      // `privacy.auto_pii_protection` OFF surfaced an error suggesting nothing
+      // happened, while PII aliasing was in fact off for the rest of the run.
+      //
+      // Persist-first makes `set` atomic — a throw leaves the file AND memory
+      // untouched, so "it failed" and "nothing changed" are the same statement.
+      // `writeConfigField` is itself atomic (tmp + rename), so a partial file
+      // is not a state this can land in.
       if (path) writeConfigField({ path, section: 'runtime', key, value });
+      state[key] = value;
       for (const listener of listeners) {
         try { listener(key, value); } catch (_err) { /* never break callers */ }
       }

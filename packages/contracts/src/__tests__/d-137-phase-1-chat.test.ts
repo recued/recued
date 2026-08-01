@@ -353,6 +353,15 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       'chat.execution.feedback',
       'chat.execution.feedback.retract',
       'chat.execution.diagnostics',
+      // D-219 item 2/2b — the owner's own view of what became precedent:
+      // list it, unlearn one case, and turn one into a draft recipe. Local-UI
+      // only; the `chat.execution.` reserved prefix keeps all three off MCP.
+      'chat.execution.learned',
+      'chat.execution.forget',
+      'chat.execution.draft_recipe',
+      // D-219 — records that a drafted recipe was saved, keyed on the durable
+      // case_key server-side.
+      'chat.execution.authored',
       'chat.session.set_picker',
       'chat.session.set_model_pref',
       // D-167 chat provider-threading — per-session override lifecycle +
@@ -382,7 +391,12 @@ describe('D-137 P1 — CHAT_RPC_METHODS closed list (§ Wire A)', () => {
       // D-171 slice 2c — the grant checklist's live self tool catalog.
       'chat.inbound_token.tool_catalog',
     ]);
-    expect(CHAT_RPC_METHOD_SET.size).toBe(34);
+    // ⛔ Compared against the LIST's own length, not a literal. The exact
+    // membership is already pinned by the `toEqual` above, so the only thing
+    // this adds is "the set has no duplicates" — and a hand-kept count states
+    // that badly: it goes stale on every legitimate addition, which is a red
+    // that says "you added a method" rather than "you added it twice".
+    expect(CHAT_RPC_METHOD_SET.size).toBe(CHAT_RPC_METHODS.length);
   });
 
   it('isChatRpcMethod accepts every method + rejects unknown', () => {

@@ -119,10 +119,20 @@ export const kitchenEditRecipeId = (route: ShellRoute): string | null =>
  * addresses an UNSAVED recipe seed narrowed to one form definition. Keeping
  * `new` as a sibling of `recipe` means an installed recipe whose actual id is
  * `new` remains reachable at `#kitchen/recipe/new` without ambiguity. */
-export interface KitchenNewRecipeSeed {
-  readonly kind: 'form_response';
-  readonly form_definition_id: string;
-}
+export type KitchenNewRecipeSeed =
+  | {
+      readonly kind: 'form_response';
+      readonly form_definition_id: string;
+    }
+  /** D-219 item 2b — `#kitchen/new/execution-case/<draft_key>`. ⚠ The key
+   *  addresses a draft the SETTINGS panel already generated and stashed; unlike
+   *  the form-response seed, this route cannot rebuild its own recipe (that
+   *  would spend the owner's model quota again), so an unmatched key is a
+   *  not-found rather than a regeneration. */
+  | {
+      readonly kind: 'execution_case';
+      readonly draft_key: string;
+    };
 
 export const kitchenNewRecipeSeed = (
   route: ShellRoute,
@@ -130,13 +140,17 @@ export const kitchenNewRecipeSeed = (
   if (
     route.surface !== 'kitchen'
     || route.segments[0] !== 'new'
-    || route.segments[1] !== 'form-response'
     || route.segments.length !== 3
   ) return null;
-  const formDefinitionId = route.segments[2] ?? '';
-  return formDefinitionId.trim().length > 0
-    ? { kind: 'form_response', form_definition_id: formDefinitionId }
-    : null;
+  const value = route.segments[2] ?? '';
+  if (value.trim().length === 0) return null;
+  if (route.segments[1] === 'form-response') {
+    return { kind: 'form_response', form_definition_id: value };
+  }
+  if (route.segments[1] === 'execution-case') {
+    return { kind: 'execution_case', draft_key: value };
+  }
+  return null;
 };
 
 /** Edit→Kitchen — the draft id a `#kitchen/pack/<draft_id>` hash addresses (the
@@ -170,6 +184,14 @@ export type SourceRecordDataTab = 'mail' | 'calendar' | 'files';
 export interface ChatAnswerAddress {
   readonly sessionId: string;
   readonly messageId: string;
+}
+
+/** Durable address for an ordinary Chat conversation. Answer and plan
+ * addresses extend this same `#chat/session/<id>` spine with a typed tail;
+ * keeping the session-only form explicit lets history selection survive
+ * reload/back without pretending that one message or action is focused. */
+export interface ChatSessionAddress {
+  readonly sessionId: string;
 }
 
 /** The strongest relationship the persisted execution provenance can truthfully
@@ -292,6 +314,22 @@ const DATA_VERIFICATION_REVIEW_RESULTS: ReadonlySet<string> = new Set([
   'reviewed',
   'needs_help',
 ]);
+
+export const serializeChatSessionAddress = (
+  address: ChatSessionAddress,
+): string => serializeShellRoute('chat', 'session', address.sessionId);
+
+export const parseChatSessionAddress = (
+  route: ShellRoute,
+): ChatSessionAddress | null => {
+  if (
+    route.surface !== 'chat'
+    || route.segments.length !== 2
+    || route.segments[0] !== 'session'
+  ) return null;
+  const sessionId = route.segments[1] ?? '';
+  return sessionId.length > 0 ? { sessionId } : null;
+};
 
 /** Durable route to one assistant answer. The explicit `answer` marker keeps
  * future session subviews unambiguous. */

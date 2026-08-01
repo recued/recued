@@ -340,6 +340,23 @@ describe('D-169 P2 Slice 3b — webclient Approvals panel', () => {
     mount.dispose();
   });
 
+  it('reports an answer write as in flight only until the source server acknowledges it', async () => {
+    const answer = deferred<{ ok: true }>();
+    const runList = vi.fn(async () => ({ asks: [ask('a1')] }));
+    const runSubmitAnswer = vi.fn(() => answer.promise);
+    const { host, mount } = mountFor(runList, runSubmitAnswer);
+    await mount.whenLoaded();
+
+    expect(mount.hasInFlightWork()).toBe(false);
+    optionButton(host, 'yes')!.click();
+    expect(mount.hasInFlightWork()).toBe(true);
+
+    answer.resolve({ ok: true });
+    await tick();
+    expect(mount.hasInFlightWork()).toBe(false);
+    mount.dispose();
+  });
+
   it('a submit FAILURE re-enables the card (the option button is clickable again) + does not drop the ask', async () => {
     const runList = vi.fn(async () => ({ asks: [ask('a1')] }));
     const runSubmitAnswer = vi

@@ -55,7 +55,7 @@ import {
   parseTimelineEntityId,
 } from '@recued/contracts';
 
-import { RefPicker } from '@recued/ui-shared';
+import { formatClientDateTime, RefPicker } from '@recued/ui-shared';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import {
@@ -321,6 +321,8 @@ export interface RunsRoute {
   promoteCall(queued_call_id: string): Promise<void>;
   /** D-186 Slice C — revoke one active session grant (expire it early). */
   revokeGrant(contract_id: string): Promise<void>;
+  /** Owner control/revocation write still awaiting its source-server result. */
+  hasInFlightWork(): boolean;
   dispose(): void;
 }
 
@@ -1210,9 +1212,7 @@ const messageForError = (err: unknown): string =>
   humanizeRpcError(err);
 
 const formatDateTime = (ts: number): string => {
-  const d = new Date(ts);
-  if (Number.isNaN(d.getTime())) return String(ts);
-  return d.toISOString();
+  return formatClientDateTime(ts, { invalidText: String(ts) });
 };
 
 const formatDuration = (ms: number): string => {
@@ -2190,7 +2190,7 @@ const renderErrors = (errors: ReadonlyArray<RecipeError>): string => {
             <span>step ${e(err.source.step_id ?? 'n/a')}</span>
             ${err.source.ingredient_slug ? `<span>op ${e(err.source.ingredient_slug)}</span>` : ''}
             <span>retryable ${e(String(err.retryable))}</span>
-            <span>${e(err.timestamp)}</span>
+            <span>${e(formatClientDateTime(err.timestamp, { invalidText: 'Unknown time' }))}</span>
           </div>
         </li>
       `;
@@ -3119,6 +3119,7 @@ export const bootstrapLogsRoute = (
     cancelCall,
     promoteCall,
     revokeGrant,
+    hasInFlightWork: () => busyControlIds.size > 0 || busyGrantIds.size > 0,
     dispose: () => {
       if (disposed) return;
       disposed = true;

@@ -165,7 +165,7 @@ describe('buildIntakeFormTemplateCardModel', () => {
     expect(card.anti_spam.summary_label).toBe('1 submission per IP per hour · 1 honeypot field');
   });
 
-  it('appends proof-of-work + CAPTCHA to the anti-spam summary when enabled', () => {
+  it('does not advertise unimplemented proof-of-work or CAPTCHA flags', () => {
     const card = buildIntakeFormTemplateCardModel(
       mkTemplate({
         anti_spam_defaults: {
@@ -177,7 +177,7 @@ describe('buildIntakeFormTemplateCardModel', () => {
       }),
     );
     expect(card.anti_spam.summary_label).toBe(
-      '5 submissions per IP per hour · 1 honeypot field · proof-of-work challenge · CAPTCHA',
+      '5 submissions per IP per hour · 1 honeypot field',
     );
   });
 

@@ -79,13 +79,22 @@ export interface RunOAuthPopupParams {
   timeoutMs?: number;
   /** Popup-closed poll cadence (default 500 ms). */
   pollMs?: number;
+  /** Boot teardown / explicit owner cancellation. Route changes deliberately
+   * do not abort this signal; they only detach the presentation. */
+  signal?: AbortSignal;
 }
 
 export type RunOAuthPopupResult =
   | { ok: true; code: string; state: string }
   | {
       ok: false;
-      reason: 'popup_blocked' | 'denied' | 'timeout' | 'closed' | 'error';
+      reason:
+        | 'popup_blocked'
+        | 'denied'
+        | 'timeout'
+        | 'closed'
+        | 'error'
+        | 'cancelled';
       detail?: string;
     };
 
@@ -112,6 +121,7 @@ export const runOAuthPopup = async (
     let offMessage = (): void => {};
     let cancelTimeout = (): void => {};
     let cancelPoll = (): void => {};
+    let offAbort = (): void => {};
 
     const settle = (r: RunOAuthPopupResult): void => {
       if (settled) return;
@@ -119,6 +129,7 @@ export const runOAuthPopup = async (
       offMessage();
       cancelTimeout();
       cancelPoll();
+      offAbort();
       // Close only if not already closed — on the happy path the same-origin
       // callback page self-closes, so skipping here avoids calling close()
       // across a COOP-severed boundary (which logs a "Cross-Origin-Opener-Policy
@@ -154,6 +165,15 @@ export const runOAuthPopup = async (
     cancelPoll = env.setInterval(() => {
       if (popup.closed) settle({ ok: false, reason: 'closed' });
     }, params.pollMs ?? DEFAULT_POLL_MS);
+    if (params.signal !== undefined) {
+      const onAbort = (): void => settle({ ok: false, reason: 'cancelled' });
+      if (params.signal.aborted) {
+        onAbort();
+        return;
+      }
+      params.signal.addEventListener('abort', onAbort, { once: true });
+      offAbort = () => params.signal?.removeEventListener('abort', onAbort);
+    }
 
     // Build the authorize URL (may await — e.g. fetch the client_id) and
     // navigate, all inside the guarded scope.

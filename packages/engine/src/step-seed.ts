@@ -80,9 +80,10 @@ const PURE_TRANSFORMS: ReadonlySet<string> = new Set([
   'filter', 'sort', 'map', 'reduce', 'unique', 'flatten', 'slice',
   'group_by', 'to_list', 'partition',
   // Object
-  'merge', 'prefix_keys', 'pick', 'omit', 'rename', 'set',
+  'merge', 'prefix_keys', 'pick', 'omit', 'rename', 'set', 'json_byte_length',
+  'json_stringify', 'json_parse', 'utf8_byte_length', 'sha256',
   // String
-  'lowercase', 'uppercase', 'trim', 'split', 'concat', 'replace', 'template',
+  'lowercase', 'uppercase', 'trim', 'string_length', 'split', 'concat', 'replace', 'template',
   'truncate',
   // Numeric
   'round', 'clamp', 'to_number', 'math', 'weighted_score',

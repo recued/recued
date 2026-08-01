@@ -46,9 +46,9 @@ const THEME_COLOR: Readonly<Record<'light' | 'dark', string>> = {
 
 type StorageSeam = Pick<Storage, 'getItem' | 'setItem'>;
 
-const safeStorage = (): StorageSeam | null => {
+const safeStorage = (doc: Document): StorageSeam | null => {
   try {
-    return (globalThis as { localStorage?: Storage }).localStorage ?? null;
+    return doc.defaultView?.localStorage ?? null;
   } catch {
     // Accessing localStorage can throw in sandboxed / blocked contexts.
     return null;
@@ -72,7 +72,7 @@ export interface MountThemeToggleOptions {
   document?: Document;
   /** Element that carries `data-theme`. Defaults to `document.documentElement`. */
   root?: HTMLElement;
-  /** Persistence seam. Defaults to `localStorage` (null when unavailable). */
+  /** Persistence seam. Defaults to this document's `localStorage` (null when unavailable). */
   storage?: StorageSeam | null;
   /** Fired after each change with the new preference. */
   onChange?: (pref: ThemePreference) => void;
@@ -117,7 +117,7 @@ export const mountThemeToggle = (
   // unit-test shells) may omit it — tolerate that so the toggle still mounts.
   const root: HTMLElement | undefined =
     opts.root ?? doc.documentElement ?? undefined;
-  const storage = opts.storage !== undefined ? opts.storage : safeStorage();
+  const storage = opts.storage !== undefined ? opts.storage : safeStorage(doc);
 
   let pref = readStored(storage);
   let disposed = false;

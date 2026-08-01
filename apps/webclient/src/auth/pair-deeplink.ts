@@ -3,7 +3,7 @@
  *  Parses `?code=…` (CLI pairing code) from `URLSearchParams` into a
  *  `PairCodeInputDeeplinkSeed` + an `active` flag the bootstrap reads
  *  to decide whether to flip `useNewPairCodeInput` and mount the D-156
- *  P3 form pre-filled. The CLI's `recued-server pair` command emits
+ *  P3 form pre-filled. The CLI's `recued pair` command emits
  *  the canonical deeplink shape `https://app.recued.com/pair?code=<8-char>`
  *  (D-121 P5 + `backend/server/src/commands/pair.ts`). The webclient's
  *  static shell maps `/pair` path to the same SPA entry as `/` — a
@@ -24,12 +24,10 @@
  *  pre-filling the destination from a query parameter trades a small
  *  copy-paste convenience (which the CLI doesn't emit anyway — it
  *  prints `?code=` only) for an exfiltration vector against the
- *  master credential. Users type the server URL themselves so the
- *  destination of the recovery-key POST is always self-authored. The
- *  host's `seed.serverUrl` option stays on the type — future flows
- *  (e.g. Settings → Devices "Pair this device" with a trusted
- *  same-origin pre-fill) can populate it via paths that don't carry
- *  the attacker-controlled-URL risk.
+ *  master credential. The destination must therefore be self-authored or
+ *  derived from the live page origin. `secure-access-resume.ts` implements
+ *  the latter: it recognizes only a non-authoritative marker, then seeds the
+ *  current HTTPS/loopback origin without ever reading `?url=`.
  *
  *  DD#2 — `active === true` iff `?code=` carries a non-empty trimmed
  *  value. Empty `?code=` is ignored — the CLI never emits an empty
@@ -38,9 +36,9 @@
  *  no-op signal. `.trim()` the value so a stray space-after-`=` from
  *  a chat client's URL encoding still resolves.
  *
- *  DD#3 — Pure function over `URLSearchParams | string`. The bootstrap
- *  reads `globalThis.location.search` (a `string`) directly; tests pass
- *  a literal string. No DOM, no globals, no side effects. Returns the
+ *  DD#3 — Pure function over `URLSearchParams | string`. Pair-entry callers
+ *  pass the live URL's search params; tests can pass a literal string. No DOM,
+ *  no globals, no side effects. Returns the
  *  same shape whether `active` or not so callers can spread `seed`
  *  unconditionally if desired.
  *
@@ -65,9 +63,9 @@ export interface ParsedPairDeeplink {
 }
 
 /** Parse `?code=…` from a `URLSearchParams` (or raw search string
- *  starting with `?` or not) into a pair-form seed. The bootstrap
- *  typically passes `globalThis.location.search`; tests pass a literal
- *  string. `?url=` is intentionally NOT parsed (see DD#1). */
+ *  starting with `?` or not) into a pair-form seed. The secure-arrival
+ *  composer passes the live URL's params; tests and lower-level callers may
+ *  pass a literal string. `?url=` is intentionally NOT parsed (see DD#1). */
 export const parsePairDeeplink = (
   source: string | URLSearchParams,
 ): ParsedPairDeeplink => {

@@ -653,14 +653,21 @@ describe('renderAccountsPanel', () => {
     }
   });
 
-  it('OAuth "Signing in…" overlay renders with an immediate escape; hides the form', () => {
+  it('OAuth waiting state preserves work elsewhere and offers safe cancellation', () => {
     const html = renderAccountsPanel({
-      state: base({ stage: 'form', providerId: 'gmail', oauthFinishing: true }),
+      state: base({
+        stage: 'form',
+        providerId: 'gmail',
+        oauthFinishing: true,
+        oauthProgressStage: 'waiting_for_consent',
+      }),
     });
-    expect(html).toContain('Signing in');
-    expect(html).toContain('Connecting your Gmail account');
-    // Escape present immediately.
+    expect(html).toContain('Waiting for sign-in');
+    expect(html).toContain('Complete sign-in for your Gmail account');
+    expect(html).toContain('keep working elsewhere');
     expect(html).toContain('data-action="accounts-oauth-dismiss"');
+    expect(html).toContain('>Keep working<');
+    expect(html).toContain('data-action="accounts-oauth-cancel"');
     // The OAuth form (Connect button + redirect hint) is hidden while signing in.
     expect(html).not.toContain('data-action="accounts-oauth-connect"');
     expect(html).not.toContain('accounts-oauth-redirect');
@@ -670,7 +677,76 @@ describe('renderAccountsPanel', () => {
     const html = renderAccountsPanel({
       state: base({ stage: 'form', providerId: null, oauthFinishing: true }),
     });
-    expect(html).toContain('Connecting your account');
+    expect(html).toContain('Finishing connection');
+    expect(html).toContain('Sign-in for your account is complete');
+    expect(html).not.toContain('accounts-oauth-cancel');
+  });
+
+  it('OAuth preparation explains the blank popup without calling it consent', () => {
+    const html = renderAccountsPanel({
+      state: base({
+        stage: 'form',
+        providerId: 'gmail',
+        oauthFinishing: true,
+        oauthProgressStage: 'preparing',
+      }),
+    });
+    expect(html).toContain('Preparing sign-in');
+    expect(html).toContain('getting sign-in for your Gmail account ready');
+    expect(html).toContain('Keep the popup open');
+    expect(html).toContain('accounts-oauth-cancel');
+  });
+
+  it('renders an accessible verify-before-retry reload handoff', () => {
+    const checking = renderAccountsPanel({
+      state: base({
+        loading: true,
+        oauthReloadRecovery: {
+          providerLabel: 'Gmail',
+          slug: 'work',
+          status: 'checking',
+        },
+      }),
+    });
+    expect(checking).toContain('data-accounts-oauth-recovery');
+    expect(checking).toContain('role="status"');
+    expect(checking).toContain('aria-live="polite"');
+    expect(checking).toContain('Checking Gmail connection');
+    expect(checking).toContain('before another sign-in');
+    expect(checking).not.toContain('accounts-oauth-recovery-restart');
+    expect(checking).not.toContain('Loading mail');
+
+    const retry = renderAccountsPanel({
+      state: base({
+        loading: false,
+        oauthReloadRecovery: {
+          providerLabel: 'Gmail',
+          slug: 'work',
+          status: 'ready_to_retry',
+        },
+      }),
+    });
+    expect(retry).toContain('Safe to restart sign-in');
+    expect(retry).toContain('data-action="accounts-oauth-recovery-check"');
+    expect(retry).toContain('data-action="accounts-oauth-recovery-restart"');
+    expect(retry).toContain('Restart sign-in');
+    expect(retry.indexOf('accounts-oauth-recovery-restart')).toBeLessThan(
+      retry.indexOf('accounts-oauth-recovery-check'),
+    );
+
+    const waiting = renderAccountsPanel({
+      state: base({
+        loading: false,
+        oauthReloadRecovery: {
+          providerLabel: 'Gmail',
+          slug: 'work',
+          status: 'check_again',
+          retryAfterSeconds: 4,
+        },
+      }),
+    });
+    expect(waiting).toContain('wait about 4 seconds');
+    expect(waiting).not.toContain('accounts-oauth-recovery-restart');
   });
 
   // ── BYO OAuth-app credentials: rendered INLINE on the provider form ──
@@ -714,6 +790,15 @@ describe('renderAccountsPanel', () => {
     expect(html).toContain('target="_blank" rel="noopener noreferrer"');
     expect(html).toContain('aria-label="Open Google Cloud Console (opens in a new tab)"');
     expect(html).toContain('One Google app covers both Gmail and Google Calendar');
+    // The Google guide MUST steer an External app to "In production" and say why.
+    // Left in Testing status, Google issues refresh tokens that expire after 7
+    // days, so mail sync dies weekly — and (before the durable sync-outcome
+    // reporting) did so silently. This is a ratchet: the warning is the whole
+    // reason the step exists, so losing it must break a test rather than a
+    // stranger's mailbox a week after they set it up.
+    expect(html).toContain('In production');
+    expect(html).toMatch(/expire after 7 days/);
+    expect(html).toMatch(/Do NOT leave it in Testing/);
   });
 
   it('OAuth form, unknown config (null): preserves the legacy optional-settings path', () => {
@@ -751,32 +836,30 @@ describe('renderAccountsPanel', () => {
     expect(html).not.toContain('One-time server setup');
   });
 
-  it('OAuth form, configured via env: renders the same lightweight ready state', () => {
-    const html = renderAccountsPanel({
-      state: base({
-        stage: 'form',
-        providerId: 'gmail',
-        values: { name: 'work' },
-        oauthAppConfig: cfg(status({ client_id: 'ENV-CID', has_secret: true, source: 'env' })),
-      }),
-    });
-    expect(html).toContain('Google sign-in is ready');
-    expect(html).toContain('Provided by this server');
-  });
+  // 'OAuth form, configured via env: renders the same lightweight ready state'
+  // was deleted with the six `RECUED_*` OAuth env vars (2026-07-28). Its whole
+  // claim was that an env-sourced status renders the SAME ready state as a
+  // stored one — with `source: 'env'` gone from the union, that is verbatim the
+  // preceding test, not a second case. No coverage is lost.
 
-  it('OAuth form, env client_id but NO secret: explains the partial setup', () => {
+  it('OAuth form, client_id present but NO secret: still demands the secret', () => {
     const html = renderAccountsPanel({
       state: base({
         stage: 'form',
         providerId: 'gmail',
         values: { name: 'work' },
-        // source set but has_secret false → NOT reusable without entering a secret.
-        oauthAppConfig: cfg(status({ client_id: 'ENV-CID', has_secret: false, source: 'env' })),
+        // has_secret false → NOT reusable, whatever the client_id says. The
+        // store writes id+secret atomically so the product cannot produce this
+        // row, but `isReusableOAuthApp` gates on has_secret and that gate is
+        // what this pins: drop the has_secret conjunct and the panel would
+        // wrongly render "ready" and stop asking for a secret it does not have.
+        oauthAppConfig: cfg(status({ client_id: 'STORED-CID', has_secret: false, source: 'stored' })),
       }),
     });
     expect(html).toContain('data-oauth-app-state="setup"');
-    expect(html).toContain('only partly configured');
+    expect(html).toContain('needs a Google OAuth app');
     expect(html).toContain('Stored encrypted on your server');
+    expect(html).not.toContain('Google sign-in is ready');
   });
 
   it('Calendar OAuth (graph) renders the microsoft app section + Entra guide', () => {
@@ -794,6 +877,22 @@ describe('renderAccountsPanel', () => {
     });
     expect(html).toContain('Set up Microsoft sign-in');
     expect(html).toContain('1. Create a Microsoft OAuth app');
+    // Entra only issues a scope the app registration LISTS, so every scope
+    // Recued can request must appear in this checklist. The guide previously
+    // omitted Mail.Send, so anyone who followed it and then ticked "Allow
+    // sending mail" had a registration that could not grant it. Ratcheted per
+    // scope, because a partial list is the failure mode — it reads complete.
+    for (const scope of [
+      'Mail.Read',
+      'offline_access',
+      'User.Read',
+      'Mail.Send',
+      'Calendars.ReadWrite',
+    ]) {
+      expect(html).toContain(scope);
+    }
+    // offline_access is the one whose absence looks like "it worked, then died".
+    expect(html).toMatch(/without offline_access there is no refresh token/);
     expect(html).toContain('href="https://entra.microsoft.com/"');
     expect(html).toContain('One Microsoft app covers both Outlook mail and calendar');
     expect(html).toContain('data-action="accounts-oauth-connect"');

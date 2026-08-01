@@ -58,7 +58,22 @@ export const TRIGGER_TEST_DEDUPE_MS = 1_500;
 export const TEMPLATE_TAG_PREFIX = 'template:';
 
 /** Why a `process_id` was retired. Recorded on the install registry
- *  entry when the previous process_id is rotated out. */
+ *  entry when the previous process_id is rotated out.
+ *
+ *  ⚠ **Bookkeeping only — this is NOT a continuity boundary** (decoupled
+ *  2026-07-27). D-120's `context.recipe.*` design named "a
+ *  `ProcessRetireReason` boundary" as where reactive recipes would commit
+ *  their prior-run snapshot. That was never built and is now closed:
+ *  reactive continuity is a paired recipe over a convergent write
+ *  ({@link ConvergentWriteResult}), not an engine snapshot. Do not wire a
+ *  `context.recipe.*` write to this union — see `context.ts` and
+ *  internal design notes.
+ *
+ *  ⚠ Also unwritten in its OWN role: `installation.process_retired_reason`
+ *  declares the field, and nothing in the tree assigns it (only tests set
+ *  it on a literal). Kept because the retirement-bookkeeping intent is
+ *  still sound and the D-115 test pins the union's exhaustiveness; if it
+ *  is still unwritten when that changes, retire the field with it. */
 export type ProcessRetireReason =
   | 'stopped'          // user clicked Stop
   | 'paused'           // user clicked Pause

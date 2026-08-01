@@ -9,24 +9,45 @@ export interface LogBootBannerOptions {
   /** Distribution version — `yy.mm.dd` (Pacific). Shown in the box. */
   version: string;
   port: number;
-  /** LAN bind address the listener resolved to. Used for the local webclient
-   *  URL + the Server URL the user enters in the webclient. Loopback when the
-   *  interface is ambiguous (still valid for a same-machine browser). */
-  lanBindAddress: string;
   /** True iff the bundled webclient is served at `/webclient/` on this server —
    *  gates whether the banner advertises the local webclient URL. */
   webclientServed: boolean;
   dbPath: string;
   recipeCount: number;
-  ingredientCount: number;
   llmConfig: BootBannerLlmConfig | undefined;
   pairingCode: string | null | undefined;
   notEnrolled: boolean;
+  /** True when the owner's `privacy.auto_pii_protection` setting is OFF, so
+   *  the dispatch seam does not alias PII (`isAutoPiiDisabled()`). Renders a
+   *  standing warning block.
+   *
+   *  Why the banner cares: the hatch is legitimate (debugging / comparing model
+   *  behaviour with and without aliasing), but its ONLY previous trace was the
+   *  ABSENCE of auto-protection claims in recipe disclosures — a negative
+   *  signal nobody notices. A server left with the hatch engaged sends
+   *  unaliased PII to models and looks, from the terminal, exactly like one
+   *  that does not. */
+  autoPiiDisabled?: boolean;
   log?: (message?: unknown, ...optionalParams: unknown[]) => void;
 }
 
 /** The hosted webclient — always reachable, always a secure context. */
 const HOSTED_WEBCLIENT_URL = 'https://app.recued.com';
+
+/** The banner advertises LOOPBACK, never the LAN IP, for both the local
+ *  webclient URL and the Server URL typed into it.
+ *
+ *  Not a display choice — a correctness one. A loopback origin is a SECURE
+ *  CONTEXT, so `crypto.subtle` exists and the webclient boots; `http://<lan-ip>`
+ *  is not, so the page loads and the app stops at the secure-context guard
+ *  with no way forward on that origin. Printing the LAN URL here would be
+ *  handing every operator a link that cannot work. Reaching the server from
+ *  another device needs TLS in front (or a per-device browser opt-in) and
+ *  lives in the docs, not on a line that reads like the happy path.
+ *
+ *  `127.0.0.1`, not `localhost`: the LAN listener binds `0.0.0.0` (IPv4), and
+ *  `localhost` resolves to `::1` first on many systems. */
+const LOOPBACK_HOST = '127.0.0.1';
 
 const H = '\u2500';
 const V = '\u2502';
@@ -59,14 +80,13 @@ export const renderBootBanner = (options: LogBootBannerOptions): string => {
   const {
     version,
     port,
-    lanBindAddress,
     webclientServed,
     dbPath,
     recipeCount,
-    ingredientCount,
     llmConfig,
     pairingCode,
     notEnrolled,
+    autoPiiDisabled,
   } = options;
 
   const status = notEnrolled ? 'Not enrolled' : 'Running';
@@ -76,13 +96,18 @@ export const renderBootBanner = (options: LogBootBannerOptions): string => {
 
   // Build the label/value rows, align the value column, then size the box to
   // the widest row (capped) so every right border lands on the same column.
+  //
+  // No `Ingredients:` row. The count it would print is the manifest REGISTRY
+  // size — kernel substrate (`KERNEL_MANIFESTS`, inlined in code) plus locally
+  // authored bodies — not anything the owner installed, chose, or can act on.
+  // It reads like inventory and is really a build constant, so the row was
+  // dropped rather than left as decoration.
   const title = 'Recued Server';
   const rows: ReadonlyArray<readonly [string, string]> = [
     ['Version:', version],
     ['Port:', String(port)],
     ['Database:', dbPath],
     ['Recipes:', String(recipeCount)],
-    ['Ingredients:', String(ingredientCount)],
     ['LLM:', llmLabel],
     ['WebSocket:', '/ws'],
     ['Status:', status],
@@ -102,11 +127,10 @@ export const renderBootBanner = (options: LogBootBannerOptions): string => {
 
   // Where to open the webclient. The hosted app is always reachable + a secure
   // context; the LOCAL bundled webclient is advertised only when this server
-  // actually serves it (baked image / RECUED_WEBCLIENT_DIR). `lanBindAddress`
-  // is the reachable host (loopback when the interface is ambiguous — still
-  // valid for a same-machine browser) and is also the Server URL the user
-  // types into the webclient (localhost would not reach it from a LAN device).
-  const localBase = `http://${lanBindAddress}:${port}`;
+  // actually serves it (baked image / RECUED_WEBCLIENT_DIR / a source-tree
+  // build). Both this and the Server URL below are loopback — see
+  // `LOOPBACK_HOST` for why the LAN address is deliberately absent.
+  const localBase = `http://${LOOPBACK_HOST}:${port}`;
   const webclientTargets = webclientServed
     ? `     ${HOSTED_WEBCLIENT_URL}   (hosted ${EM_DASH} any device)
      ${localBase}/webclient/   (this server)`
@@ -135,8 +159,21 @@ ${webclientTargets}
   Pairing code: ${pairingCode}  (expires in 15 min)
 ` : '';
 
+  // Posture warning — printed on EVERY boot while the hatch is engaged, not
+  // once at the moment it is set. An operator who inherits a server (or comes
+  // back to one after a week) has no other way to learn that model egress is
+  // running unaliased.
+  const autoPiiBlock = autoPiiDisabled
+    ? `
+  ${WARN}  PII aliasing is OFF (Settings ${EM_DASH} Privacy).
+     Recipes send personal data to models WITHOUT aliasing, and recipe
+     disclosures will not claim auto-protection. Re-enable
+     "Alias personal data before sending it to models" to restore it.
+`
+    : '';
+
   return `
-  ${box.join('\n  ')}${pairingBlock}
+  ${box.join('\n  ')}${pairingBlock}${autoPiiBlock}
   Press Ctrl+C to stop.
 `;
 };

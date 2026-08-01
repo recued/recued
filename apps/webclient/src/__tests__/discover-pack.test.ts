@@ -79,6 +79,43 @@ describe('pack-discovery config', () => {
     expect(t).toContain('crm');
     expect(t).toContain('entity_platform');
   });
+  it('keeps tags searchable without rendering a tag filter', async () => {
+    const host = makeEl('div');
+    const tags = ['crm', 'sales-ops', 'pipeline'];
+    const { panel, dispose } = mountPackDiscovery({
+      host: host as unknown as HTMLElement,
+      document: fakeDoc(),
+      onSelect: vi.fn(),
+      listInstalled: vi.fn(async () => ({ packs: [] })),
+      fetchCatalog: async () => ({
+        status: 'ok',
+        rows: [
+          pr({
+            slug: 'tagged-pack',
+            name: 'Tagged pack',
+            service_kind: 'entity_platform',
+            tags,
+          }),
+          pr({ slug: 'other-pack', name: 'Other pack', service_kind: 'workflow' }),
+        ],
+      }),
+    });
+    await panel.whenLoaded();
+
+    const facetKeys: string[] = [];
+    const collectFacetKeys = (node: ReturnType<typeof makeEl>): void => {
+      const facet = node.getAttribute('data-facet');
+      if (facet !== null) facetKeys.push(facet);
+      for (const child of node.children) collectFacetKeys(child);
+    };
+    collectFacetKeys(host);
+    expect(facetKeys).toContain('service_kind');
+    expect(facetKeys).not.toContain('tag');
+
+    panel.setSearch('sales-ops');
+    expect(panel.getRenderedIdentities()).toEqual(['tagged-pack']);
+    dispose();
+  });
   it('badges: certified (accent) + humanized service_kind (muted)', () => {
     const b = packBadges(pr({ publisher_certified: true, service_kind: 'cli' }));
     expect(b[0]).toMatchObject({ label: '✓ Certified', tone: 'accent' });

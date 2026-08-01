@@ -11,14 +11,16 @@
  * Mirrors the reception / connections route-tab pattern: a `nav` of `<a>` links
  * whose href is a shell deep link; a click changes the hash and the shell
  * re-mounts the (deep-link) kitchen route on the new surface. The two surfaces
- * self-center at their own max-width, so the bar is a full-width strip (inset
- * to match the 24px surface gutter) rather than a width-constrained column.
+ * share a 1200px workbench width, so the bar and both editors keep one stable
+ * left edge while the route background still fills the scroll surface.
  */
 import { serializeShellRoute } from '../shell/route.js';
 
 export const KITCHEN_ROUTE_HOST_ATTR = 'data-recued-kitchen-route';
 export const KITCHEN_ROUTE_TABS_ATTR = 'data-recued-kitchen-route-tabs';
 export const KITCHEN_ROUTE_CONTENT_ATTR = 'data-recued-kitchen-route-content';
+/** Visible workspace label that keeps the two editor tabs anchored to Kitchen. */
+export const KITCHEN_ROUTE_LABEL_ATTR = 'data-recued-kitchen-route-label';
 /** Per-tab marker; value is the surface id (`'recipe' | 'pack'`). */
 export const KITCHEN_ROUTE_TAB_ATTR = 'data-recued-kitchen-route-tab';
 const KITCHEN_ROUTE_STYLES_MARKER = 'data-recued-kitchen-route-styles';
@@ -52,30 +54,71 @@ const KITCHEN_TABS: ReadonlyArray<{ id: KitchenSurface; label: string }> = [
 ];
 
 const KITCHEN_ROUTE_STYLES = `
+[${KITCHEN_ROUTE_HOST_ATTR}] {
+  min-height: 100vh;
+  background: var(--bg);
+}
+[data-recued-webclient-content] [${KITCHEN_ROUTE_HOST_ATTR}] {
+  min-height: 100%;
+}
 [${KITCHEN_ROUTE_TABS_ATTR}] {
   display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
-  padding: 0 24px;
+  gap: 6px;
+  align-items: center;
+  box-sizing: border-box;
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 12px 24px 0;
   border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+[${KITCHEN_ROUTE_LABEL_ATTR}] {
+  display: inline-flex;
+  align-items: center;
+  align-self: stretch;
+  margin-right: 8px;
+  padding-right: 16px;
+  border-right: 1px solid var(--border);
+  color: var(--fg-strong);
+  font-size: 14px;
+  font-weight: 720;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
 }
 [${KITCHEN_ROUTE_TABS_ATTR}] .kitchen-route-tab {
   appearance: none;
   text-decoration: none;
   border-bottom: 2px solid transparent;
   margin-bottom: -1px;
-  padding: 12px 14px;
+  padding: 10px 14px 12px;
   font-weight: 600;
   font-size: 14px;
   color: var(--muted);
   cursor: pointer;
+  transition: color 120ms ease, border-color 120ms ease, background 120ms ease;
 }
 [${KITCHEN_ROUTE_TABS_ATTR}] .kitchen-route-tab:hover {
   color: var(--fg);
+  background: var(--surface-sunk);
 }
 [${KITCHEN_ROUTE_TABS_ATTR}] .kitchen-route-tab--active {
   color: var(--fg);
   border-bottom-color: var(--accent);
+  background: var(--accent-weak);
+}
+@media (max-width: 560px) {
+  [${KITCHEN_ROUTE_TABS_ATTR}] {
+    gap: 2px;
+    padding-inline: 12px;
+  }
+  [${KITCHEN_ROUTE_LABEL_ATTR}] {
+    margin-right: 2px;
+    padding-right: 10px;
+  }
+  [${KITCHEN_ROUTE_TABS_ATTR}] .kitchen-route-tab {
+    padding-inline: 10px;
+    font-size: 13px;
+  }
 }
 `;
 
@@ -119,6 +162,12 @@ export const mountKitchenChrome = (
   const tabBar = doc.createElement('nav');
   tabBar.setAttribute(KITCHEN_ROUTE_TABS_ATTR, '');
   tabBar.setAttribute('aria-label', 'Kitchen surfaces');
+
+  const kitchenLabel = doc.createElement('span');
+  kitchenLabel.setAttribute(KITCHEN_ROUTE_LABEL_ATTR, '');
+  kitchenLabel.textContent = 'Kitchen';
+  tabBar.appendChild(kitchenLabel);
+
   let recipeTab: HTMLAnchorElement | null = null;
   for (const tab of KITCHEN_TABS) {
     const isActive = tab.id === opts.active;

@@ -200,6 +200,13 @@ export const createSigningAuditLog = (
       underlying.listByCognitionSession(id, limit, axis),
     listByCorrelation: (id, limit, axis) =>
       underlying.listByCorrelation(id, limit, axis),
+    // D-215 slice 2 — read-only pass-throughs like every sibling here.
+    // ⚠ This decorator is EXHAUSTIVE by construction: `AuditLogStore` is
+    // an interface, so a store method added without a line here fails to
+    // compile rather than silently reaching the signing path unwrapped.
+    listByDish: (dish_id, limit, axis) =>
+      underlying.listByDish(dish_id, limit, axis),
+    latestByDishes: (dish_ids) => underlying.latestByDishes(dish_ids),
     get: (run_id) => underlying.get(run_id),
     clearOlderThan: (cutoff_ms) => underlying.clearOlderThan(cutoff_ms),
     clearByRecipe: (recipe_id) => underlying.clearByRecipe(recipe_id),

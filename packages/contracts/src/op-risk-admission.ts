@@ -251,8 +251,15 @@ export const resolveTrustCeiling = (
   //                      `admin` (destructive still holds pending the §1.6 FULL refinement).
   //   - everything else (`reactive` materialize, `schedule`, a source-less / legacy fire)
   //     is UNATTENDED and not owner-direct → fail closed to the LOW `read` ceiling (HOLD).
-  //     The owner's own AUTOMATION carries `OWNER_CONTRACT_ID` and already took the `read`
-  //     (has-contract) branch above; this is the safe interim, never a silent admit.
+  //     ⚠ D-215 slice 1a CORRECTION: this branch is where the owner's own AUTOMATION
+  //     (schedule / auto-run) actually lands. The prior text claimed it "carries
+  //     `OWNER_CONTRACT_ID` and already took the `read` (has-contract) branch above" —
+  //     that stamp (D-209 §1.4) was REMOVED because it reached the SAME ceiling this
+  //     line already gives, resolved to the same `undefined` on the grant axis
+  //     (`gateGrantGoverningContractId` rejects the owner sentinel outright), and made
+  //     the source contract-bearing — which made `gateRecipeAgainstPolicy` throw
+  //     "requires a ContractSnapshot" on every fire. Background automation is
+  //     CONTRACT-FREE by design; the HOLD posture is reached by CHANNEL, right here.
   // D-209 #1 (W3) — the flat `webhook → admin` interim branch is DELETED: the webhook
   // source is now `(webhook, anonymous)` and takes the per-door authored ceiling in the
   // anonymous branch above. A `(webhook, system)` source no longer exists

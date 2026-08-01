@@ -276,7 +276,9 @@ describe('run-modal model', () => {
 
 describe('run-modal render', () => {
   it('Run tab: title, tabs, variable widget, raw-JSON field, Run button', () => {
-    const recipe = recipeEntry('daily-brief', { variables: { topic: 'news' } });
+    const recipe = recipeEntry('daily-brief', {
+      variables: { topic: { label: 'Topic', type: 'text', default: 'news' } },
+    });
     const html = renderRunModal(stateWith(), recipe, CAPS_FULL);
     expect(html).toContain(RUN_MODAL_OVERLAY_ATTR);
     expect(html).toContain('Daily brief');
@@ -308,6 +310,59 @@ describe('run-modal render', () => {
     expect(picker).toContain('data-ref-picker="run-modal-var-file-ref-template_file_ref"');
     expect(picker).toContain('role="combobox"');
     expect(picker).toContain('type="hidden" data-var-key="template_file_ref"');
+  });
+
+  it('upgrades file_ref[] variables to the ordered list only when wired', () => {
+    const recipe = recipeEntry('social-post', {
+      variables: {
+        images: {
+          label: 'Post images',
+          type: 'file_ref[]',
+          default: ['file:a', 'file:b'],
+        },
+      },
+    });
+    const fallback = renderRunModal(stateWith(), recipe, CAPS_FULL);
+    expect(fallback).toContain('data-var-type="file_ref_array"');
+    expect(fallback).toContain('value="file:a, file:b"');
+    expect(fallback).not.toContain('data-recued-file-refs-list');
+
+    const picker = renderRunModal(stateWith(), recipe, {
+      ...CAPS_FULL,
+      canPickFiles: true,
+    });
+    expect(picker).toContain('data-recued-file-refs-variable="images"');
+    expect(picker).toContain('data-recued-file-refs-list="images"');
+    expect(picker).toContain('data-ref-picker="run-modal-var-file-refs-images"');
+    // Seeded in DECLARED order — the value is a sequence, and the modal is
+    // where a wrong one would ship.
+    expect(picker.indexOf('file:a')).toBeLessThan(picker.indexOf('file:b'));
+  });
+
+  it('upgrades scoped record_ref variables only when a record inventory is wired', () => {
+    const recipe = recipeEntry('tag-lines', {
+      variables: {
+        tree: {
+          label: 'Which tree',
+          type: 'record_ref',
+          entity: 'tag',
+          entity_filter: { root_ref: 'tag/departments' },
+        },
+      },
+    });
+    const fallback = renderRunModal(stateWith(), recipe, CAPS_FULL);
+    expect(fallback).toContain('data-var-type="record_ref"');
+    expect(fallback).not.toContain('data-ref-picker="run-modal-var-record-ref-tree"');
+
+    const picker = renderRunModal(stateWith(), recipe, {
+      ...CAPS_FULL,
+      canPickRecords: true,
+    });
+    expect(picker).toContain('data-ref-picker="run-modal-var-record-ref-tree"');
+    expect(picker).toContain('data-recued-record-ref-entity="tag"');
+    expect(picker).toContain(
+      'data-recued-record-ref-filter="{&quot;root_ref&quot;:&quot;tag/departments&quot;}"',
+    );
   });
 
   it('Run tab: result + error blocks', () => {
@@ -407,6 +462,58 @@ describe('run-modal render', () => {
     expect(noVars).not.toContain('Config for every scheduled run');
   });
 
+  it('D-222 keeps invoke fields labeled while configure surfaces stay total', () => {
+    const recipe = recipeEntry('d-222-fields', {
+      variables: {
+        labeled: { label: 'Labeled input', type: 'text', default: 'shown' },
+        bare_default: 'configure-only',
+        required_compatibility: null,
+      },
+    });
+
+    const invoke = renderRunModal(stateWith(), recipe, CAPS_FULL);
+    expect(invoke).toContain('var-labeled');
+    expect(invoke).toContain('var-required_compatibility');
+    expect(invoke).not.toContain('var-bare_default');
+
+    const schedule = renderRunModal(
+      stateWith({ tab: 'schedule', schedules: [] }),
+      recipe,
+      CAPS_FULL,
+    );
+    expect(schedule).toContain('var-labeled');
+    expect(schedule).toContain('var-required_compatibility');
+    expect(schedule).toContain('var-bare_default');
+  });
+
+  it('D-222 gives primitive-only recipes an explicit raw override path', () => {
+    const recipe = recipeEntry('d-222-defaults', {
+      variables: { limit: 25, include_closed: false },
+    });
+    const html = renderRunModal(stateWith(), recipe, CAPS_FULL);
+    expect(html).toContain('<summary>Run with overrides</summary>');
+    expect(html).toContain(RUN_MODAL_CONFIG_ATTR);
+    expect(html).not.toContain('var-limit');
+    expect(html).not.toContain('var-include_closed');
+    expect(html).toContain('confirm-run');
+    // ...and the raw editor must not claim fields the invoke filter withheld.
+    // The qualifier describes "the fields above", and there are none here: the
+    // copy keyed on `varKeys` (declared) rather than on rendered rows, so a
+    // primitive-only recipe pointed a reader at an empty panel.
+    expect(html).not.toContain('overrides the fields above');
+  });
+
+  // The positive case that keeps the assertion above a fix and not a deletion:
+  // where fields DO render, the qualifier must still be there.
+  it('D-222 keeps the "fields above" qualifier where invoke fields do render', () => {
+    const recipe = recipeEntry('d-222-labeled', {
+      variables: { status: { label: 'Status', type: 'text', default: 'open' } },
+    });
+    const html = renderRunModal(stateWith(), recipe, CAPS_FULL);
+    expect(html).toContain('var-status');
+    expect(html).toContain('overrides the fields above');
+  });
+
   it('shows a per-row Config button only when the recipe has variables (D-179 edit)', () => {
     const recipe = recipeEntry('daily-brief', { variables: { topic: 'news' } });
 
@@ -464,6 +571,20 @@ describe('run-modal wire', () => {
     expect(handle.getState().result?.success).toBe(true);
     expect(handle.element.innerHTML).toContain('Run completed');
     expect(onRan).toHaveBeenCalledTimes(1);
+  });
+
+  it('D-222 raw overrides still reach a bare primitive variable', async () => {
+    const execute = vi.fn(async () => executeResponse());
+    const handle = wire({
+      recipe: recipeEntry('daily-brief', { variables: { limit: 25 } }),
+      execute,
+    });
+    handle.setConfigText('{"limit":50}');
+    await handle.confirmRun();
+    expect(execute).toHaveBeenCalledWith({
+      recipe_id: 'daily-brief',
+      config: { limit: 50 },
+    });
   });
 
   it('confirmRun rejects invalid config without calling execute', async () => {

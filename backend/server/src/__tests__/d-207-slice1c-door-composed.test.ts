@@ -349,7 +349,10 @@ describe('D-207 slice 1c — the bind rpc HANGS the door', () => {
     h.savedRecipes.set(RECIPE_ID, recipe(
       [{ id: 'dyn', ingredient: '{{config.ingredient_slug}}', input: '{{config.input}}' }],
       1,
-      { ingredient_slug: null, input: {} },
+      {
+        ingredient_slug: null,
+        input: { label: 'Ingredient input', type: 'json', default: {} },
+      },
     ));
 
     const refused = await bind(h);

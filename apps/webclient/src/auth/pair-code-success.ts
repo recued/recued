@@ -26,8 +26,9 @@
  *       is cleared).
  *    5. Build `WebclientPairMetadata` (paired_at + the passport's
  *       server_public_key as fingerprint + the current_handle).
- *    6. Persist all 5 fields atomically per-key. The local-store
- *       backend has no transaction primitive; the bootstrap's
+ *    6. Select the server profile explicitly, then persist its other
+ *       4 fields per-key. The local-store backend has no transaction
+ *       primitive; the bootstrap's
  *       `hydratePairState` rejects half-paired states so a mid-write
  *       failure leaves the user in the unpaired form for a clean
  *       retry.
@@ -81,7 +82,10 @@ import type {
 } from '@recued/contracts';
 
 import type { PairPassportInvoker } from './pair-passport-invoker.js';
-import type { WebclientLocalStore } from '../storage/local-store.js';
+import type {
+  WebclientLocalStore,
+  WebclientProfileStore,
+} from '../storage/local-store.js';
 import type {
   WebclientTokenAad,
   WebclientTokenStore,
@@ -286,8 +290,13 @@ export interface PairCodeSuccessOptions {
   /** Passport projection returned directly by `/auth/pair`. When
    *  absent, finalize falls back to one-shot `passport.fetch`. */
   passport?: unknown;
-  /** Local store the 5 fields write into. */
+  /** Local store the active profile's 4 mutable fields write into. */
   localStore: WebclientLocalStore;
+  /** Roster selector for profile-aware hosts. Production pairing supplies
+   *  this explicitly so choosing the paired server does not depend on the
+   *  five-key store's legacy `set('server_url')` compatibility interception.
+   *  Optional only for older embedders and narrow hand-rolled tests. */
+  profileStore?: Pick<WebclientProfileStore, 'ensureProfile'>;
   /** Token store that wraps the bearer with the non-extractable
    *  AES-GCM key. */
   tokenStore: WebclientTokenStore;
@@ -452,13 +461,13 @@ const finalizePairCodeSuccessLocked = async (
   //
   //    Vector: the webclient is multi-tab. Two tabs each boot unpaired
   //    + mount the pair form; one tab submits + lands paired; the
-  //    SECOND tab still has the unpaired form open (no
-  //    `chrome.storage.onChanged`-style cross-tab dismissal in
-  //    webclient land — the in-memory bootstrap state is per-tab) and
-  //    the user submits it. Inside the lock the second tab observes
+  //    SECOND tab can still submit in the short window before the
+  //    credential-free pair-tab signal/poll dismisses its in-memory form.
+  //    Inside the lock the second tab observes
   //    the fully-written `webclient_token` from the first tab's
   //    finalize and short-circuits with the tagged error so the
-  //    user's onPaired catch arm can render the "reload" copy.
+  //    user's onPaired catch arm can render the reload fallback while the
+  //    passive convergence path verifies and adopts the durable pair.
   //    Without the entrance guard, the second tab would proceed
   //    through passport.fetch + wrap + the 5-field write sequence over
   //    a store that already has a valid `webclient_token`. With the
@@ -522,7 +531,7 @@ const finalizePairCodeSuccessLocked = async (
       ok: false,
       error: 'pair_code_success_already_paired',
       detail:
-        'strict pair triple already populated — another tab finished pairing first; reload to use the existing pair',
+        'strict pair triple already populated — another tab finished pairing first; adopt that durable pair or reload as fallback',
     };
   }
 
@@ -615,8 +624,8 @@ const finalizePairCodeSuccessLocked = async (
     fields.cert_expires_at,
   );
 
-  // 5. Write 5 fields. Per-key; the local-store has no transaction
-  //    primitive.
+  // 5. Select the profile + write its mutable fields. Per-key; the local-store
+  //    has no transaction primitive.
   //
   //    Codex 2026-05-28 HIGH #2 symmetric fold — mirrors the bridge's
   //    HIGH #2 fix in [[apps/bridge/src/popup/pair-completion]]
@@ -640,21 +649,31 @@ const finalizePairCodeSuccessLocked = async (
   //    `webclient_token` last, a failure mid-sequence leaves
   //    `webclient_token === null` → strict discriminant rejects →
   //    unpaired form re-renders → user retries cleanly. Stale residual
-  //    `pair_metadata` / `cert_pin_state` from a prior incomplete pair
-  //    get overwritten by this write sequence; the discriminant only
-  //    flips on the final `webclient_token` set. A prior fully-paired
-  //    state can't reach this code path — the step-0 entrance guard
-  //    short-circuits it.
+  //    fields from a prior incomplete pair get overwritten by this write
+  //    sequence. A selected profile can already carry an OLD complete token
+  //    when an add-server attempt resolves to a URL already in the roster, so
+  //    that token is cleared immediately after selection; otherwise a later
+  //    write failure could leave the old token completing a mixed generation.
+  //    The discriminant only flips again on the final token set.
   //
-  //    Order: pair_metadata → cert_pin_state → server_url →
-  //    server_public_key → webclient_token. `server_url` carries the
-  //    canonical WS form so the bootstrap's long-lived ws-client opens
-  //    against the same endpoint the passport-fetch one-shot just
-  //    authenticated against.
+  //    Order: ensureProfile → clear stale token → pair_metadata →
+  //    cert_pin_state → server_public_key → webclient_token. Selecting FIRST
+  //    matters when an add-server attempt resolves to a URL already in the
+  //    roster: any pending record is retired by `ensureProfile`, so fields
+  //    written before it would be discarded with that record. The selected
+  //    profile carries the canonical WS form so the bootstrap's long-lived
+  //    ws-client opens against the same endpoint the passport-fetch one-shot
+  //    just authenticated against. The bare `server_url` write remains only
+  //    for older callers that do not yet expose the roster surface.
   try {
+    if (options.profileStore !== undefined) {
+      await options.profileStore.ensureProfile(wsServerUrl);
+    } else {
+      await options.localStore.set('server_url', wsServerUrl);
+    }
+    await options.localStore.remove('webclient_token');
     await options.localStore.set('pair_metadata', pair_metadata);
     await options.localStore.set('cert_pin_state', cert_pin_state);
-    await options.localStore.set('server_url', wsServerUrl);
     await options.localStore.set('server_public_key', fields.server_public_key);
     await options.localStore.set('webclient_token', tokenRecord);
   } catch (err) {

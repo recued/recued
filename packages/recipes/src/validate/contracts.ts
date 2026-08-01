@@ -19,7 +19,7 @@ import { AI_FUNCTION_REQUIRED_INPUTS } from './constants.js';
 import { REF_PATTERN, validateConditionField, type AddFn } from './helpers.js';
 
 const ACTION_VARIANTS = new Set(['primary', 'secondary', 'danger']);
-const ACTION_CONTEXT_RESERVED_KEYS = new Set(['event', 'server', 'recipe', 'tabs']);
+const ACTION_CONTEXT_RESERVED_KEYS = new Set(['event', 'server', 'recipe', 'tabs', 'caller']);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);

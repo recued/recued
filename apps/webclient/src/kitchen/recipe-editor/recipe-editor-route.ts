@@ -6,8 +6,8 @@
  *  (`../ingredient-builder/operation-family-table.ts`) one-for-one: a single
  *  mutable `state`, a full `rerender()` from the working `RecipeDefinition`,
  *  the `makeButton` primitive, the card/field-grid CSS, and the canonical
- *  `@recued/ui-shared` design tokens (no raw hex; light + dark; 4/8/12/16/24
- *  spacing; card r10 / control r6; sentence-case labels; accent focus rings).
+ *  `@recued/ui-shared` design tokens (no raw hex; light + dark; responsive
+ *  12–24px spacing; card r14 / control r9; sentence-case labels; accent rings).
  *
  *  Callers are INJECTED (`validateCaller` / `saveCaller`) — wiring this into
  *  `webclient-bootstrap` (a `recipe.validate` / `recipe.save` `Conn`) is a
@@ -247,6 +247,8 @@ export interface RecipeEditorRoute {
   /** True while the working recipe has edits that navigating away would
    *  discard — the shell's leave-guard seam. */
   hasUnsavedChanges(): boolean;
+  /** Validate/save request already dispatched to the source server. */
+  hasInFlightWork(): boolean;
 }
 
 interface RecipeEditorState {
@@ -338,9 +340,22 @@ const KIND_PILL_LABEL: Record<StepKind, string> = {
  *  render, reveal buttons, rename carry-over, removal pruning) shares. */
 const CONDITION_FIELDS = ['skip_when', 'fail_on'] as const;
 
+/** Fill the optional list fields the editor reads as if they were required.
+ *  ⛔ Only ADDS empty lists — never changes a value the recipe actually
+ *  carries, so what the owner saves is what they wrote plus nothing. */
+const adoptRecipe = (
+  recipe: RecipeDefinition | undefined,
+): RecipeDefinition | undefined => {
+  if (recipe === undefined) return undefined;
+  if (Array.isArray(recipe.prefetch_steps)) return recipe;
+  return { ...recipe, prefetch_steps: [] };
+};
+
 /** All step ids across prefetch + steps — for rename uniqueness checks. */
 const allStepIds = (recipe: RecipeDefinition): string[] => [
-  ...recipe.prefetch_steps.map((s) => s.id),
+  // ⚠ Same optional-field hazard as the Prefetch section guard below: the key
+  // is absent on a valid recipe, and unguarded this threw on every rename.
+  ...(recipe.prefetch_steps ?? []).map((s) => s.id),
   ...recipe.steps.map((s) => s.id),
 ];
 
@@ -393,43 +408,66 @@ const plural = (count: number, singular: string): string =>
 
 export const RECIPE_EDITOR_STYLES = `
 [${RECIPE_EDITOR_ROUTE_ATTR}] {
-  max-width: 1080px;
+  box-sizing: border-box;
+  max-width: 1200px;
   margin: 0 auto;
-  padding: 24px 24px 32px;
+  padding: 20px 24px 40px;
   color: var(--fg);
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-topbar {
   position: sticky;
-  top: 0;
+  top: 12px;
   z-index: 5;
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 14px;
   align-items: center;
   justify-content: space-between;
-  margin: -4px -4px 16px;
-  padding: 12px 4px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg);
+  margin: 0 0 24px;
+  padding: 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgba(24, 24, 27, 0.06), 0 1px 2px rgba(24, 24, 27, 0.04);
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-header {
   display: flex;
   flex-wrap: wrap;
-  gap: 12px;
+  gap: 14px;
   align-items: end;
-  flex: 1 1 420px;
+  flex: 1 1 620px;
   min-width: 0;
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-heading {
+  display: grid;
+  gap: 2px;
+  align-self: center;
+  flex: 0 0 170px;
+  min-width: 0;
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-eyebrow {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-subtitle {
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.35;
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-header .recipe-editor-field {
   flex: 1 1 200px;
   min-width: 180px;
-  max-width: 360px;
+  max-width: 320px;
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-actions {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+  justify-content: flex-end;
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-statusbar {
   flex-basis: 100%;
@@ -437,14 +475,15 @@ export const RECIPE_EDITOR_STYLES = `
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] h1 {
   margin: 0;
-  align-self: center;
-  font-size: 18px;
-  line-height: 1.2;
-  font-weight: 650;
-  white-space: nowrap;
+  font-size: 21px;
+  line-height: 1.15;
+  font-weight: 720;
+  letter-spacing: -0.02em;
   color: var(--fg-strong);
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-field {
@@ -462,10 +501,10 @@ export const RECIPE_EDITOR_STYLES = `
 [${RECIPE_EDITOR_ROUTE_ATTR}] textarea {
   width: 100%;
   box-sizing: border-box;
-  min-height: 34px;
+  min-height: 38px;
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  padding: 6px 10px;
+  border-radius: 9px;
+  padding: 8px 11px;
   color: var(--fg);
   background: var(--surface);
   font: inherit;
@@ -491,8 +530,13 @@ export const RECIPE_EDITOR_STYLES = `
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-section {
   display: grid;
-  gap: 12px;
-  margin-top: 16px;
+  gap: 14px;
+  margin-top: 20px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.035);
 }
 [${RECIPE_EDITOR_WEBHOOKS_ATTR}] .recipe-editor-webhook-row {
   display: grid;
@@ -551,8 +595,9 @@ export const RECIPE_EDITOR_STYLES = `
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] h2 {
   margin: 0;
-  font-size: 14px;
-  font-weight: 650;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   color: var(--fg-strong);
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-section-meta {
@@ -568,17 +613,52 @@ export const RECIPE_EDITOR_STYLES = `
   font-weight: 600;
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-add {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
+  flex: 1 0 100%;
+  display: grid;
+  gap: 10px;
   align-items: end;
+  box-sizing: border-box;
+  margin-top: 4px;
+  padding: 12px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface-sunk);
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-add--step {
+  grid-template-columns: minmax(150px, 0.8fr) minmax(150px, 0.8fr) minmax(220px, 1fr) auto;
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-add--compact {
+  grid-template-columns: minmax(180px, 0.8fr) minmax(260px, 1.2fr) auto;
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-add--compact > .rx-btn {
+  min-height: 38px;
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-add-copy {
+  display: grid;
+  gap: 3px;
+  align-self: center;
+  min-width: 0;
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-add-copy strong {
+  color: var(--fg-strong);
+  font-size: 13px;
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-add-copy span {
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.35;
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-card {
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--surface);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
   overflow: hidden;
+  transition: border-color 120ms ease, box-shadow 120ms ease;
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 5px 16px rgba(24, 24, 27, 0.055);
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-summary {
   list-style: none;
@@ -588,6 +668,21 @@ export const RECIPE_EDITOR_STYLES = `
   gap: 8px;
   align-items: center;
   padding: 12px 16px;
+  transition: background 120ms ease;
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-summary:hover {
+  background: var(--surface-sunk);
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-summary::before {
+  content: "▸";
+  flex: 0 0 auto;
+  color: var(--fg-muted);
+  font-size: 12px;
+  transform-origin: center;
+  transition: transform 120ms ease;
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-card[open] > .recipe-editor-step-summary::before {
+  transform: rotate(90deg);
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-summary::-webkit-details-marker {
   display: none;
@@ -601,6 +696,17 @@ export const RECIPE_EDITOR_STYLES = `
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-summary .rx-btn {
   flex: 0 0 auto;
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  gap: 6px;
+  align-items: center;
+  margin-left: auto;
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-actions .rx-btn {
+  min-width: 30px;
+  min-height: 30px;
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-id {
   flex: 0 1 200px;
@@ -770,6 +876,10 @@ export const RECIPE_EDITOR_STYLES = `
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-hint {
   font-size: 11px;
   color: var(--fg-subtle);
+  line-height: 1.45;
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] p.recipe-editor-hint {
+  margin: 0;
 }
 [${RECIPE_EDITOR_OP_NOTICE_ATTR}] {
   display: block;
@@ -783,13 +893,17 @@ export const RECIPE_EDITOR_STYLES = `
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-empty {
   display: grid;
   gap: 4px;
-  padding: 24px 16px;
+  padding: 28px 18px;
   text-align: center;
   border: 1px dashed var(--border-strong);
-  border-radius: 10px;
-  background: var(--surface);
+  border-radius: 12px;
+  background: var(--surface-sunk);
   color: var(--fg-muted);
   font-size: 13px;
+}
+[${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-empty strong {
+  color: var(--fg-strong);
+  font-size: 14px;
 }
 [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-dirty-dot {
   display: inline-flex;
@@ -884,12 +998,75 @@ export const RECIPE_EDITOR_STYLES = `
   color: var(--fg-subtle);
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
+@media (max-width: 980px) {
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-topbar {
+    position: static;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-add--step {
+    grid-template-columns: minmax(140px, 0.7fr) minmax(180px, 1fr) auto;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-add--step .recipe-editor-add-copy {
+    grid-column: 1 / -1;
+  }
+}
 @media (max-width: 760px) {
   [${RECIPE_EDITOR_ROUTE_ATTR}] {
     padding: 16px 12px 24px;
   }
   [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-topbar {
-    position: static;
+    padding: 14px;
+    border-radius: 12px;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-heading {
+    flex-basis: 100%;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-header .recipe-editor-field {
+    max-width: none;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-actions {
+    flex: 1 1 100%;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-section {
+    padding: 16px;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-add {
+    grid-template-columns: 1fr;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-add > .rx-btn {
+    width: 100%;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-summary {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    padding: 12px;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-summary::before {
+    grid-column: 1;
+    grid-row: 1;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-kind-pill {
+    grid-column: 2;
+    grid-row: 1;
+    justify-self: start;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-actions {
+    grid-column: 3;
+    grid-row: 1;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-actions .rx-btn {
+    min-width: 34px;
+    min-height: 34px;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-id {
+    grid-column: 2 / -1;
+    grid-row: 2;
+    width: 100%;
+    min-width: 0;
+  }
+  [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-step-disc {
+    grid-column: 2 / -1;
+    grid-row: 3;
+    white-space: normal;
   }
   [${RECIPE_EDITOR_ROUTE_ATTR}] .recipe-editor-condition-row {
     grid-template-columns: 1fr;
@@ -1021,6 +1198,9 @@ const addField = (
   field.className = wide ? 'recipe-editor-field span-full' : 'recipe-editor-field';
   const label = doc.createElement('label');
   label.textContent = labelText;
+  if (child.getAttribute('aria-label') === null) {
+    child.setAttribute('aria-label', labelText);
+  }
   field.appendChild(label);
   field.appendChild(child);
   grid.appendChild(field);
@@ -1072,7 +1252,19 @@ export const bootstrapRecipeEditorRoute = (
   injectStyles(doc);
 
   const state: RecipeEditorState = {
-    recipe: options.initialRecipe ?? blankRecipe(),
+    // ⛔ NORMALISE, don't guard each read. `prefetch_steps` is OPTIONAL in a
+    // valid recipe (`parseRecipe` accepts one without the key), but this editor
+    // was written against `blankRecipe()`, which always seeds it — so dozens of
+    // reads assume an array and any one of them throws on a recipe that omits
+    // it. Three such reads were found by hand and that was clearly not all of
+    // them; seeding once here fixes the ones nobody has hit yet too.
+    //
+    // Hit live on 2026-07-29 by the first D-219 AI draft, but nothing about it
+    // is AI-specific: an imported or hand-written recipe omitting the key
+    // crashed the editor at mount with "Cannot read properties of undefined".
+    // ⚠ Seeding an EMPTY list changes no behaviour — an absent list and an
+    // empty one mean the same thing to every reader and to save.
+    recipe: adoptRecipe(options.initialRecipe) ?? blankRecipe(),
     saveStage: 'idle',
     issues: [],
     status: '',
@@ -1804,6 +1996,7 @@ export const bootstrapRecipeEditorRoute = (
     const card = doc.createElement('details');
     card.className = 'recipe-editor-step-card';
     card.setAttribute(RECIPE_EDITOR_ROW_ATTR, step.id);
+    card.setAttribute('data-step-kind', kind);
     // Open unless the user collapsed this card — the summary (kind + id +
     // discriminator) is the collapsed overview, and the choice survives
     // rerenders via state.collapsed keyed on the step id.
@@ -1886,14 +2079,12 @@ export const bootstrapRecipeEditorRoute = (
     moveUp.setAttribute('aria-label', `Move step ${step.id} up`);
     moveUp.setAttribute('title', 'Move up');
     moveUp.disabled = index <= 0;
-    summary.appendChild(moveUp);
 
     const moveDown = makeButton(doc, '↓', 'secondary', 'xs', () => moveTo(1));
     moveDown.setAttribute(RECIPE_EDITOR_MOVE_DOWN_ATTR, step.id);
     moveDown.setAttribute('aria-label', `Move step ${step.id} down`);
     moveDown.setAttribute('title', 'Move down');
     moveDown.disabled = index >= listLength - 1;
-    summary.appendChild(moveDown);
 
     const remove = makeButton(doc, 'Remove', 'danger-text', 'xs', () => {
       const nextList = removeStepById(
@@ -1914,7 +2105,16 @@ export const bootstrapRecipeEditorRoute = (
     });
     remove.setAttribute(RECIPE_EDITOR_REMOVE_ATTR, step.id);
     remove.setAttribute('aria-label', `Remove step ${step.id}`);
-    summary.appendChild(remove);
+    remove.setAttribute('title', `Remove ${step.id}`);
+
+    const actions = doc.createElement('div');
+    actions.className = 'recipe-editor-step-actions';
+    actions.setAttribute('role', 'group');
+    actions.setAttribute('aria-label', `Step ${step.id} actions`);
+    actions.appendChild(moveUp);
+    actions.appendChild(moveDown);
+    actions.appendChild(remove);
+    summary.appendChild(actions);
 
     card.appendChild(summary);
 
@@ -2073,7 +2273,13 @@ export const bootstrapRecipeEditorRoute = (
 
   const buildAddStepControl = (): HTMLElement => {
     const wrap = doc.createElement('div');
-    wrap.className = 'recipe-editor-add';
+    wrap.className = 'recipe-editor-add recipe-editor-add--step';
+
+    const copy = doc.createElement('div');
+    copy.className = 'recipe-editor-add-copy';
+    appendText(doc, copy, 'strong', 'Add a step');
+    appendText(doc, copy, 'span', 'Steps run in order, from top to bottom.');
+    wrap.appendChild(copy);
 
     // Local picker state lives on the control until Add fires.
     const draft = { kind: 'transform' as AddStepKind, name: '' };
@@ -2089,6 +2295,7 @@ export const bootstrapRecipeEditorRoute = (
       rebuildNameControl();
     });
     kindSelect.setAttribute(RECIPE_EDITOR_ADD_KIND_ATTR, '');
+    kindSelect.setAttribute('aria-label', 'Step kind');
     kindField.appendChild(kindSelect);
     wrap.appendChild(kindField);
 
@@ -2117,12 +2324,14 @@ export const bootstrapRecipeEditorRoute = (
           draft.name = next;
         });
         sel.setAttribute(RECIPE_EDITOR_ADD_NAME_ATTR, '');
+        sel.setAttribute('aria-label', 'Step name');
         nameField.appendChild(sel);
       } else {
         const inp = makeTextInput(doc, draft.name, 'add_name', (next) => {
           draft.name = next;
         });
         inp.setAttribute(RECIPE_EDITOR_ADD_NAME_ATTR, '');
+        inp.setAttribute('aria-label', 'Step name');
         const placeholder =
           draft.kind === 'ingredient'
             ? 'ingredient-slug'
@@ -2869,7 +3078,7 @@ export const bootstrapRecipeEditorRoute = (
       event: '',
     };
     const addWrap = doc.createElement('div');
-    addWrap.className = 'recipe-editor-add';
+    addWrap.className = 'recipe-editor-add recipe-editor-add--compact';
 
     const kindField = doc.createElement('div');
     kindField.className = 'recipe-editor-field';
@@ -2886,6 +3095,7 @@ export const bootstrapRecipeEditorRoute = (
       },
     );
     kindSelect.setAttribute(RECIPE_EDITOR_TRIGGER_ADD_KIND_ATTR, '');
+    kindSelect.setAttribute('aria-label', 'Trigger type');
     kindField.appendChild(kindSelect);
     addWrap.appendChild(kindField);
 
@@ -2915,6 +3125,7 @@ export const bootstrapRecipeEditorRoute = (
           syncAddTrigger();
         });
         input.setAttribute(RECIPE_EDITOR_TRIGGER_ADD_EVENT_ATTR, '');
+        input.setAttribute('aria-label', 'Event pattern');
         input.setAttribute('placeholder', 'data.platform.slug.entity.created or run.recipe.*.completed');
         eventField.appendChild(input);
         const patternHint = appendText(
@@ -3040,7 +3251,7 @@ export const bootstrapRecipeEditorRoute = (
     // Add-variable control — name + kind + Add.
     const draft = { name: '', kind: CONNECTION_KINDS[0] as string };
     const addWrap = doc.createElement('div');
-    addWrap.className = 'recipe-editor-add';
+    addWrap.className = 'recipe-editor-add recipe-editor-add--compact';
 
     const nameField = doc.createElement('div');
     nameField.className = 'recipe-editor-field';
@@ -3049,6 +3260,7 @@ export const bootstrapRecipeEditorRoute = (
       draft.name = next;
     });
     nameInput.setAttribute(RECIPE_EDITOR_CONN_VAR_NAME_ATTR, '');
+    nameInput.setAttribute('aria-label', 'New connection variable');
     nameInput.setAttribute('placeholder', 'crm');
     nameField.appendChild(nameInput);
     addWrap.appendChild(nameField);
@@ -3060,6 +3272,7 @@ export const bootstrapRecipeEditorRoute = (
       draft.kind = next;
     });
     kindSelect.setAttribute(RECIPE_EDITOR_CONN_VAR_KIND_ATTR, '');
+    kindSelect.setAttribute('aria-label', 'Connection kind');
     kindField.appendChild(kindSelect);
     addWrap.appendChild(kindField);
 
@@ -3180,10 +3393,24 @@ export const bootstrapRecipeEditorRoute = (
     // Slim sticky header.
     const topbar = doc.createElement('section');
     topbar.className = 'recipe-editor-topbar';
+    topbar.setAttribute('aria-label', 'Recipe editor controls');
 
     const header = doc.createElement('div');
     header.className = 'recipe-editor-header';
-    appendText(doc, header, 'h1', 'Recipe editor');
+
+    const heading = doc.createElement('div');
+    heading.className = 'recipe-editor-heading';
+    const eyebrow = appendText(doc, heading, 'span', 'Recipe workspace');
+    eyebrow.className = 'recipe-editor-eyebrow';
+    appendText(doc, heading, 'h1', 'Recipe editor');
+    const subtitle = appendText(
+      doc,
+      heading,
+      'span',
+      'Build, validate, and save this automation.',
+    );
+    subtitle.className = 'recipe-editor-subtitle';
+    header.appendChild(heading);
 
     const idField = doc.createElement('div');
     idField.className = 'recipe-editor-field';
@@ -3193,6 +3420,7 @@ export const bootstrapRecipeEditorRoute = (
       markDirty();
     });
     idInput.setAttribute(RECIPE_EDITOR_RECIPE_ID_ATTR, '');
+    idInput.setAttribute('aria-label', 'Recipe id');
     idField.appendChild(idInput);
     header.appendChild(idField);
 
@@ -3207,6 +3435,7 @@ export const bootstrapRecipeEditorRoute = (
       markDirty();
     });
     nameInput.setAttribute(RECIPE_EDITOR_RECIPE_NAME_ATTR, '');
+    nameInput.setAttribute('aria-label', 'Recipe name');
     nameField.appendChild(nameInput);
     header.appendChild(nameField);
 
@@ -3223,10 +3452,12 @@ export const bootstrapRecipeEditorRoute = (
 
     validateBtn = makeButton(doc, 'Validate', 'secondary', 'sm', runValidate);
     validateBtn.setAttribute(RECIPE_EDITOR_VALIDATE_ATTR, '');
+    validateBtn.setAttribute('title', 'Check this recipe without saving');
     actions.appendChild(validateBtn);
 
     saveBtn = makeButton(doc, saveLabel(), 'primary', 'sm', runSave);
     saveBtn.setAttribute(RECIPE_EDITOR_SAVE_ATTR, '');
+    saveBtn.setAttribute('title', 'Save recipe (⌘S or Ctrl+S)');
     actions.appendChild(saveBtn);
 
     topbar.appendChild(actions);
@@ -3244,7 +3475,14 @@ export const bootstrapRecipeEditorRoute = (
     // bindings (connection variables + depends_on) stay last.
     renderWebhooksSection(content);
     renderTriggersSection(content);
-    if (state.recipe.prefetch_steps.length > 0) {
+    // ⛔ OPTIONAL FIELD, and the editor assumed it was always there. Only
+    // `blankRecipe()` seeds `prefetch_steps: []`; an `initialRecipe` is used
+    // as given, and `parseRecipe` accepts a recipe without the key at all — so
+    // a perfectly VALID recipe crashed the editor at mount with "Cannot read
+    // properties of undefined (reading 'length')". Hit live on 2026-07-29 by
+    // the first D-219 AI draft, but nothing about it is AI-specific: a
+    // hand-written or imported recipe omitting the key crashed identically.
+    if ((state.recipe.prefetch_steps?.length ?? 0) > 0) {
       renderStepsSection(content, 'Prefetch', 'prefetch_steps', []);
     }
     renderStepsSection(content, 'Steps', 'steps', [
@@ -3309,6 +3547,9 @@ export const bootstrapRecipeEditorRoute = (
     },
     hasUnsavedChanges() {
       return state.dirty;
+    },
+    hasInFlightWork() {
+      return rpcInFlight || webhookBusy;
     },
   };
 };

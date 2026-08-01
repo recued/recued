@@ -13,6 +13,11 @@
 
 import type { WebclientLocalStore } from '../storage/local-store.js';
 import { WEBCLIENT_SHELL_CACHE_NAME } from '../runtime/service-worker.js';
+import {
+  resolveBrowserPairFinalizeLockProvider,
+  withPairFinalizeLock,
+  type PairFinalizeLockProvider,
+} from './pair-code-success.js';
 
 export interface ClearThisBrowserOptions {
   /** Closed-list 5-field store. Always wiped. */
@@ -38,6 +43,13 @@ export interface ClearThisBrowserOptions {
    *  survives the reset, which is wrong for a paired browser but
    *  cannot be fixed inside this module without an IDB handle. */
   crypto_keys_wiper?: () => Promise<void>;
+  /** Best-effort boundary hook invoked immediately after the five-field
+   * credential store is clear. It runs before unrelated session/cache/key
+   * cleanup so sibling tabs converge even if one of those later steps fails. */
+  on_local_credentials_cleared?: () => void;
+  /** Shared browser credential-transition lock. The default resolves Web
+   * Locks; tests can inject a deterministic provider or `null`. */
+  pair_lock_provider?: PairFinalizeLockProvider | null;
 }
 
 export interface ClearThisBrowserResult {
@@ -109,19 +121,45 @@ export const clearThisBrowser = async (
     deleted_cache_names: [],
     cleared_crypto_keys: false,
   };
+  const pairLockProvider = options.pair_lock_provider !== undefined
+    ? options.pair_lock_provider
+    : resolveBrowserPairFinalizeLockProvider();
+  // Keep only the shared credential + key transition inside the pairing lock.
+  // SessionStorage and CacheStorage are unrelated cleanup surfaces and can be
+  // slow or blocked; holding the cross-tab lock over them would strand a
+  // sibling's otherwise-safe re-pair.
+  await withPairFinalizeLock(
+    pairLockProvider,
+    async () => {
+      // 1. Closed-list 5-field IDB store.
+      await options.local_store.clear();
+      result.cleared_local_store = true;
+      if (options.on_local_credentials_cleared) {
+        try {
+          options.on_local_credentials_cleared();
+        } catch {
+          // The durable clear already succeeded; observers are advisory.
+        }
+      }
 
-  // 1. Closed-list 5-field IDB store.
-  await options.local_store.clear();
-  result.cleared_local_store = true;
+      // 2. AES-GCM key store (crypto_keys per § A.4.1). Pairing cannot
+      // resume until the old key is gone, or a new bearer could be wrapped
+      // with the key this clear is about to delete.
+      if (options.crypto_keys_wiper) {
+        await options.crypto_keys_wiper();
+        result.cleared_crypto_keys = true;
+      }
+    },
+  );
 
-  // 2. sessionStorage (ephemeral_session_state per § A.4.1).
+  // 3. sessionStorage (ephemeral_session_state per § A.4.1).
   const ss = resolveSessionStorage(options.session_storage);
   if (ss) {
     ss.clear();
   }
   result.cleared_session_storage = true;
 
-  // 3. SW caches (cached_assets per § A.4.1).
+  // 4. SW caches (cached_assets per § A.4.1).
   const cs = resolveCacheStorage(options.cache_storage);
   const cache_names =
     options.sw_cache_names && options.sw_cache_names.length > 0
@@ -138,13 +176,6 @@ export const clearThisBrowser = async (
     }
   }
   result.cleared_sw_caches = true;
-
-  // 4. AES-GCM key store (crypto_keys per § A.4.1) — wiped via the
-  //    caller-supplied hook so this module stays IDB-handle-free.
-  if (options.crypto_keys_wiper) {
-    await options.crypto_keys_wiper();
-    result.cleared_crypto_keys = true;
-  }
 
   return result;
 };

@@ -175,14 +175,37 @@ describe('D-129 P1 — assertConnectionVendorProviderShape', () => {
       oauth: { ...validHubSpot().oauth, authorize_url: 'http://app.hubspot.com/oauth/authorize' },
     };
     expect(assertConnectionVendorProviderShape(httpAuth).join(';')).toContain(
-      'oauth.authorize_url must be https://',
+      'oauth.authorize_url must be a complete HTTPS URL',
     );
     const httpToken = {
       ...validHubSpot(),
       oauth: { ...validHubSpot().oauth, token_endpoint: 'http://api.hubapi.com/oauth/v1/token' },
     };
     expect(assertConnectionVendorProviderShape(httpToken).join(';')).toContain(
-      'oauth.token_endpoint must be https://',
+      'oauth.token_endpoint must be a complete HTTPS URL',
+    );
+    const embeddedCredentials = {
+      ...validHubSpot(),
+      oauth: {
+        ...validHubSpot().oauth,
+        token_endpoint: 'https://owner:password@api.hubapi.com/oauth/v1/token',
+      },
+    };
+    const embeddedCredentialIssues = assertConnectionVendorProviderShape(embeddedCredentials)
+      .join(';');
+    expect(embeddedCredentialIssues).toContain(
+      'oauth.token_endpoint must be a complete HTTPS URL',
+    );
+    expect(embeddedCredentialIssues).not.toContain('owner:password');
+    const fragmentAuthorize = {
+      ...validHubSpot(),
+      oauth: {
+        ...validHubSpot().oauth,
+        authorize_url: 'https://app.hubspot.com/oauth/authorize#ignored',
+      },
+    };
+    expect(assertConnectionVendorProviderShape(fragmentAuthorize).join(';')).toContain(
+      'oauth.authorize_url must be a complete HTTPS URL',
     );
   });
 

@@ -56,7 +56,9 @@ export interface OAuthAppConfigStore {
    *  encrypted). Throws when the server is locked (won't write a fresh secret
    *  as plaintext on a runtime that's supposed to encrypt — bait-and-switch). */
   setIssuer(issuer: OAuthAppIssuer, clientId: string, clientSecret: string): void;
-  /** Remove the issuer's stored config (effective config reverts to env). */
+  /** Remove the issuer's stored config. Nothing sits behind the store since
+   *  the `RECUED_*` OAuth env vars were deleted, so the issuer is then simply
+   *  unconfigured and enroll surfaces `not_configured`. */
   clearIssuer(issuer: OAuthAppIssuer): void;
 }
 

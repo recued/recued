@@ -10,8 +10,9 @@
  *  Fake DOM mirrors the Delta-1 recovery-panel test (`createElement` element
  *  tree + per-element listeners) with a `checked` field for the two checkboxes. */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { generateRecoveryKey } from '@recued/crypto';
+import { formatClientDateTime } from '@recued/ui-shared';
 import type {
   ArchiveImportRebind,
   ArchiveJobStatus,
@@ -28,6 +29,7 @@ import {
   ARCHIVE_BACKUP_BLOBS_ATTR,
   ARCHIVE_BACKUP_PASSPORT_ATTR,
   ARCHIVE_BACKUP_RUN_BTN_ATTR,
+  ARCHIVE_BACKUP_RECHECK_BTN_ATTR,
   ARCHIVE_BACKUP_PROGRESS_ATTR,
   ARCHIVE_BACKUP_PATH_OUT_ATTR,
   ARCHIVE_RESTORE_MANIFEST_ATTR,
@@ -182,6 +184,8 @@ interface SetupOptions {
   archiveUpload?: ArchiveUploadFn;
   stashRebind?: ArchiveRebindStashFn;
   scheduler?: ArchivePollScheduler;
+  resumeExportStart?: () => Promise<{ job_id: string }> | null;
+  onExportSettled?: () => void;
 }
 
 const setupMount = (overrides: SetupOptions = {}) => {
@@ -247,6 +251,12 @@ const setupMount = (overrides: SetupOptions = {}) => {
     ...(overrides.archiveUpload ? { archiveUpload: overrides.archiveUpload } : {}),
     ...(overrides.stashRebind ? { stashRebind: overrides.stashRebind } : {}),
     poll: overrides.scheduler ?? noopScheduler,
+    ...(overrides.resumeExportStart !== undefined
+      ? { resumeExportStart: overrides.resumeExportStart }
+      : {}),
+    ...(overrides.onExportSettled !== undefined
+      ? { onExportSettled: overrides.onExportSettled }
+      : {}),
   });
   return { host, mount, exportLog, importLog, passportLog, downloadLog };
 };
@@ -503,6 +513,65 @@ describe('R26.4 Delta 2b — export', () => {
     mount.dispose();
     expect(cancelCount).toBe(1);
   });
+
+  it('reattaches a remounted panel to the existing export job without starting another', async () => {
+    const runExport = vi.fn<ArchiveExportCaller>();
+    const runStatus = statusSequence(
+      { state: 'running', bytes_written: 512, progress_pct: 25 },
+      { state: 'done', bytes_written: 2048, progress_pct: 100, path: DONE_PATH },
+    );
+    const onExportSettled = vi.fn();
+    const { mount } = setupMount({
+      runExport,
+      runStatus,
+      resumeExportStart: () => Promise.resolve({ job_id: 'job-existing' }),
+      onExportSettled,
+    });
+
+    expect(mount.getView()).toBe('export-running');
+    await flush();
+    expect(runExport).not.toHaveBeenCalled();
+    expect(mount.getProgress()).toEqual({ pct: 25, bytes: 512 });
+
+    await mount.tickPoll();
+    expect(mount.getView()).toBe('export-done');
+    expect(mount.getExportPath()).toBe(DONE_PATH);
+    expect(onExportSettled).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a resumed job recoverable after a transient status failure', async () => {
+    let checks = 0;
+    const runStatus: ArchiveStatusCaller = async () => {
+      checks += 1;
+      if (checks === 1) throw new Error('connection interrupted');
+      return {
+        state: 'done',
+        bytes_written: 2048,
+        progress_pct: 100,
+        path: DONE_PATH,
+      };
+    };
+    const onExportSettled = vi.fn();
+    const { host, mount } = setupMount({
+      runStatus,
+      resumeExportStart: () => Promise.resolve({ job_id: 'job-existing' }),
+      onExportSettled,
+    });
+    await flush();
+
+    expect(mount.getView()).toBe('export-error');
+    expect(mount.getError()).toContain('connection interrupted');
+    expect(onExportSettled).not.toHaveBeenCalled();
+    findByAttr(host, ARCHIVE_BACKUP_CANCEL_BTN_ATTR)?.click();
+    expect(mount.getView()).toBe('menu');
+    expect(findByAttr(host, ARCHIVE_BACKUP_RECHECK_BTN_ATTR)?.textContent)
+      .toBe('Continue active backup');
+    findByAttr(host, ARCHIVE_BACKUP_RECHECK_BTN_ATTR)?.click();
+    await flush();
+
+    expect(mount.getView()).toBe('export-done');
+    expect(onExportSettled).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════
@@ -524,7 +593,8 @@ describe('R26.4 Delta 2b — restore preview', () => {
     expect(manifest).not.toBeNull();
     const text = textOf(host);
     expect(text).toContain('1,243 records');
-    expect(text).toContain('2026-06-25T12:00:00.000Z');
+    expect(text).toContain(formatClientDateTime('2026-06-25T12:00:00.000Z'));
+    expect(text).not.toContain('2026-06-25T12:00:00.000Z');
     expect(text).toContain('Includes files: yes');
     expect(mount.getManifest()?.record_count).toBe(1243);
   });

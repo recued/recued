@@ -50,6 +50,7 @@
  *  half); the `contract.*` schema + write-validator live in
  *  `packages/contracts/src/contract-schema.ts`. */
 
+import { OWNER_OPERATION_SCOPE } from '@recued/contracts';
 import type { CatalogKind, IngredientManifest, PackContentRef } from '@recued/contracts';
 import type { PackOpBinding, PackOpResolution } from '@recued/recipes';
 
@@ -677,4 +678,53 @@ export const buildPackOpResolution = (
     map.set(packRef, catalogs[0]);
   }
   return map;
+};
+
+/** D-225 Slice 2 — drop the OWNER RULINGS a pack's operations carry.
+ *
+ *  ⛔ **Deliberately NOT part of `removePackInventory`, and not called on the
+ *  ordinary uninstall path.** For a marketplace pack, retaining an owner's
+ *  per-op risk/approval tuning across an uninstall/reinstall is the friendly
+ *  behaviour and is what ships today — they tuned it, they reinstalled the same
+ *  pack, their settings come back.
+ *
+ *  A GENERATED MCP pack is the opposite case. Its slug is derived from
+ *  `{kind, name}` and is therefore stable, so deleting the connection and later
+ *  enrolling a different server under the same name would silently re-adopt
+ *  rulings the owner made about a server that is gone. Deleting a connection is
+ *  the owner saying "this is gone" — most sharply when they removed it BECAUSE
+ *  they stopped trusting it — and leaving invisible policy state that reattaches
+ *  later contradicts that.
+ *
+ *  ⚠ Descriptor-hashed op ids keep the re-adoption technically SAFE (a ruling
+ *  can only reattach to a byte-identical tool), which is exactly why this is
+ *  worth writing down: the danger here is not privilege, it is an owner
+ *  believing they had a clean slate when they did not.
+ *
+ *  Scoped by `ingredient_id` — the leading row segment — so only this pack's
+ *  rulings go. Atomic + idempotent: a pack with no rulings removes nothing. */
+export const removePackOwnerRulings = (
+  store: ContractStore,
+  ingredient_ids: readonly string[],
+): { removed_rulings: number } => {
+  const targets = new Set(ingredient_ids);
+  // ⛔ An empty target list is a NO-OP, never a wildcard. Read the other way,
+  // the first caller that passed a pack with no ingredient ids would wipe every
+  // owner ruling on the server.
+  if (targets.size === 0) return { removed_rulings: 0 };
+  let removed = 0;
+  store.transaction(() => {
+    const doomed: string[][] = [];
+    for (const row of store.scan(OWNER_OPERATION_SCOPE)) {
+      if (row.segments.length !== 2) continue;
+      if (!targets.has(row.segments[0]!)) continue;
+      doomed.push([...row.segments]);
+    }
+    // Collected before deleting — mutating a store mid-scan is the kind of
+    // thing that works until the store's iterator stops being a snapshot.
+    for (const segments of doomed) {
+      if (store.delete(OWNER_OPERATION_SCOPE, segments)) removed += 1;
+    }
+  });
+  return { removed_rulings: removed };
 };

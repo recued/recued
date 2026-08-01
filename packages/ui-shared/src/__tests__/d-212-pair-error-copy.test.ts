@@ -75,6 +75,18 @@ describe('D-212 tail #6 — the codes that used to render as "check the URL"', (
     expect(describePairServerError('not_found').copy).toMatch(/check the url/i);
   });
 
+  it('treats a missing recovery verifier as server setup, not a code refresh', () => {
+    const { copy } = describePairServerError(
+      'server_not_configured',
+      'Server has no recovery-key check store.',
+    );
+
+    expect(copy).toMatch(/not ready to verify a recovery key/i);
+    expect(copy).toMatch(/check the server logs and configuration/i);
+    expect(copy).toMatch(/fresh pairing code will not fix/i);
+    expect(copy).not.toContain('recued-server pair');
+  });
+
   it('does not quote the raw server message when it has tailored copy', () => {
     // The D-212 realm messages carry internal markers
     // (`D212_REALM_WOULD_ORPHAN_SIBLING`) that no user should have to read.

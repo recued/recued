@@ -66,6 +66,43 @@ export const COLLECTION_GRANT_PREFIX = 'data.';
  *  collide with a `data.<collection>` collection key.) */
 export const TOPIC_GRANT_PREFIX = 'enrichment.';
 
+/** D-228 slice 5 — the namespace for a Tier-1 chat PRIMITIVE's op id:
+ *  `primitive.<tool>`, e.g. `primitive.enrichment.search`.
+ *
+ *  ⛔⛔ WHY NOT THE BARE TOOL NAME. Ten of the eleven Tier-1 names classify as
+ *  `op` unchanged, but `enrichment.search` — a live chat primitive — collides
+ *  head-on with {@link TOPIC_GRANT_PREFIX}, so `opGrantEntry` THROWS
+ *  `grant_entry_op_id_reserved_prefix` on it. Any scheme using bare tool names
+ *  is dead on that one, and special-casing a single primitive is how a
+ *  vocabulary starts growing exceptions.
+ *
+ *  ⛔⛔ AND WHY NOT `core.` — the obvious choice, which is the dangerous one.
+ *  `core.*` is the kernel op namespace (`core.mail.send`, `core.ai.*`,
+ *  `core.acct.*`), and this codebase already documents the confusion twice:
+ *  *"`mail.search` is a fenced fan-out over every mailbox and
+ *  `core.mail.email.search` is one mailbox by slug, so the 'obvious' mapping
+ *  silently narrows the work and drops a read fence"*
+ *  (`execution-case-recipe-draft.ts`). Minting the primitive as
+ *  `core.mail.search` would put a FENCED FAN-OUT one segment from a
+ *  single-mailbox read, in the one namespace where readers already mix them up
+ *  — and a grant reviewer would have no way to tell which they were approving.
+ *
+ *  ⚠ `primitive.` rather than `tier1.`: a tier number reads as a PRIORITY to
+ *  anyone who has not memorised the catalog's three tiers.
+ *
+ *  ⚠ NO DESCRIPTOR HASH, unlike `ingredient.<slug>_<hash8>`. That hash exists
+ *  because an installed manifest can be MUTATED IN PLACE under a live grant. A
+ *  Tier-1 primitive is a hard-coded engine handler shipped in the binary — it
+ *  cannot change without a release, and a release is not a silent mutation. If
+ *  primitives ever gain authored schemas, revisit this before granting them. */
+export const PRIMITIVE_GRANT_PREFIX = 'primitive.';
+
+/** Compose the `op`-kind entry-key for a Tier-1 chat primitive. Typed at
+ *  `string` rather than a union because the primitive table lives server-side;
+ *  the caller derives the names from the handler table so they cannot drift. */
+export const primitiveGrantEntry = (toolName: string): string =>
+  `${PRIMITIVE_GRANT_PREFIX}${toolName}`;
+
 /** The reserved prefixes an `op`-kind entry-key (an `operation_id`) must NOT
  *  start with — the invariant that lets `classifyGrantEntry` treat "neither
  *  reserved prefix" as `op`. Kernel ops start `core.`; pack ops carry a `/`
@@ -91,19 +128,34 @@ export const topicGrantEntry = (topic: EnrichmentTopic): string =>
   `${TOPIC_GRANT_PREFIX}${topic}`;
 
 /** Compose the `op`-kind entry-key for an operation: the declared
- *  `operation_id` verbatim (the form the grant substrate binds —
- *  `core.mail.send` / `recued-core/hubspot.deal.read`).
+ *  `operation_id` verbatim.
+ *
+ *  ⚠ **There is no single pack form, and this comment used to claim there
+ *  was.** Three shapes reach here today and all are legitimate:
+ *    - kernel — `core.mail.send`
+ *    - decomposed pack — `recued-core/hubspot.deal.read`, the SLASH form
+ *      `decomposeComposition` emits with its unconditional `DEFAULT_AUTHOR`
+ *      (so the publisher segment reads `recued-core` whoever shipped the pack)
+ *    - STAMPED pack — `<publisher>.<pack>.<key>`, the DOTTED form
+ *      `stampRecordsCatalog` (D-221) and `stampGeneratedMcpCatalog` (D-225)
+ *      emit, which is also the Tier-P shape `parseOpId` reads
+ *
+ *  ⛔ Do NOT "canonicalize" these to one form to tidy it up. This value is a
+ *  STORED GRANT KEY: rewriting it changes which entry an existing grant row
+ *  matches, so a normalization pass would silently re-point or orphan live
+ *  authorizations. The mixture is a wart, not a bug — see D-225
+ *  § 9.9, which walks the paths that consume it and finds none that parse it.
  *
  *  Fail-LOUD if `operationId` starts with a reserved prefix: such an id would
  *  be mis-classified as a collection/topic at the gate (silently un-matching
  *  its op grant — a fail-closed admission bug). No real `operation_id` leads
- *  with `data.` / `enrichment.` (kernel `core.*`, pack `<publisher>/…`), so
- *  this only fires on a malformed/hostile id, where throwing is correct. */
+ *  with `data.` / `enrichment.`, so this only fires on a malformed/hostile id,
+ *  where throwing is correct. */
 export const opGrantEntry = (operationId: string): string => {
   for (const prefix of RESERVED_GRANT_ENTRY_PREFIXES) {
     if (operationId.startsWith(prefix)) {
       throw new Error(
-        `grant_entry_op_id_reserved_prefix: operation_id '${operationId}' starts with the reserved grant-entry prefix '${prefix}' — an op grant entry-key must be a plain operation_id (kernel 'core.*' or pack '<publisher>/<entity>.<verb>').`,
+        `grant_entry_op_id_reserved_prefix: operation_id '${operationId}' starts with the reserved grant-entry prefix '${prefix}' — an op grant entry-key must be a plain operation_id (kernel 'core.*', decomposed pack '<author>/<entity>.<verb>', or stamped pack '<publisher>.<pack>.<key>').`,
       );
     }
   }

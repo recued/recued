@@ -23,6 +23,11 @@ import {
   buildKnownValueIndex,
   seedKnownValuesFromContent,
   aliasKnownValuesInContent,
+  decorateOverlapReveal,
+  tokenizeForOverlap,
+  containsPotentialPiiAliasLiteral,
+  derivePiiRestoreAuthority,
+  restoreInStringWithAuthority,
 } from '../pii-alias.js';
 
 /* ──────────────── ledgerKindForAlias (D-167 B3) ──────────────── */
@@ -1719,5 +1724,179 @@ describe('P1 — seed and replace consult ONE rule', () => {
     aliasIdentifierField(ledger, 'phone', '+14155550199');
     const out = scanContent(ledger, 'call 4155550199 now');
     expect(out.text).not.toContain('4155550199');
+  });
+});
+
+describe('D-167 overlap-reveal — email composite (2026-07-30)', () => {
+  /** The failure this closes, observed live: the model held the owner's own
+   *  "Northwind Traders" AND a bare `m1@d1.invalid`, could not join them, and
+   *  gave up — "it looks like the name and email were redacted". Name/org
+   *  aliases had carried a disclosed-overlap tail since D-167; email composites
+   *  were excluded, so the one coreference that mattered stayed severed. */
+  const seeded = () => {
+    const ledger = createLedger('email-overlap-reveal');
+    const real = 'pat.lee@northwind-traders.com';
+    const alias = aliasIdentifierField(ledger, 'email', real);
+    return { ledger, real, alias };
+  };
+
+  it('puts the disclosed tail on the LOCAL part', () => {
+    const { ledger, alias } = seeded();
+    const out = decorateOverlapReveal(
+      ledger, `Mail from ${alias}.`, tokenizeForOverlap('Northwind Traders'),
+    );
+    expect(out).toContain('m1.northwind.traders@d1.invalid');
+  });
+
+  it('⛔ keeps `.invalid` TERMINAL — the non-resolving guarantee', () => {
+    // RFC 2606 reserves `.invalid` so an escaped alias can never resolve, and it
+    // is the ONLY reason this family skips the `pii.` prefix. A trailing tail
+    // (`d1.invalid.northwind`) would make the effective TLD the tail — and brand
+    // gTLDs are real (`.bmw`, `.ford`), so an escaped alias could RESOLVE and a
+    // send could actually deliver. This assertion is that property, not cosmetics.
+    const { ledger, alias } = seeded();
+    const out = decorateOverlapReveal(
+      ledger, `Mail from ${alias}.`, tokenizeForOverlap('Northwind Traders'),
+    );
+    const token = out.match(/\S*invalid/)![0];
+    expect(token.endsWith('.invalid')).toBe(true);
+    expect(token).not.toMatch(/\.invalid\./);
+  });
+
+  it('⛔ ROUND-TRIPS — the hard zero-failure-restore invariant', () => {
+    const { ledger, real, alias } = seeded();
+    const decorated = decorateOverlapReveal(
+      ledger, `Mail from ${alias} today.`, tokenizeForOverlap('Northwind Traders'),
+    );
+    const restored = restoreInString(ledger, decorated);
+    expect(restored).toBe(`Mail from ${real} today.`);
+    expect(restored).not.toContain('invalid');
+  });
+
+  it('stays recognisable to the kind resolver and the cheap literal gate', () => {
+    // Five regexes encode the composite shape; a missed one fails SILENTLY —
+    // the decorated alias stops being recognised and survives restore unchanged.
+    const { ledger, alias } = seeded();
+    const decorated = decorateOverlapReveal(
+      ledger, alias, tokenizeForOverlap('Northwind Traders'),
+    );
+    expect(ledgerKindForAlias(decorated)).toBe('email_local');
+    expect(containsPotentialPiiAliasLiteral(decorated)).toBe(true);
+  });
+
+  it('is idempotent, and reveals nothing when nothing was disclosed', () => {
+    const { ledger, alias } = seeded();
+    const disclosed = tokenizeForOverlap('Northwind Traders');
+    const once = decorateOverlapReveal(ledger, alias, disclosed);
+    expect(decorateOverlapReveal(ledger, once, disclosed)).toBe(once);
+    // The permitting witness: an unrelated disclosure leaves the alias opaque,
+    // so this cannot pass by decorating unconditionally.
+    expect(decorateOverlapReveal(ledger, alias, tokenizeForOverlap('Globex')))
+      .toBe(alias);
+  });
+});
+
+describe('D-227 — an email whose local part renders a known name carries that person', () => {
+  /** `m1@d1.invalid` says nothing about WHOSE address it is, and the counters do
+   *  not even correlate: with two contacts, Alice can be `pii.Person1` while her
+   *  address is `m2`. Where the local part RENDERS the name, the composite can
+   *  say so — `pii.Person1@d1.invalid` — disclosing nothing the alias did not
+   *  already carry, and making the person↔email link the design always claimed. */
+  const seeded = () => {
+    const ledger = createLedger('known-name-email');
+    getOrAllocate(ledger, 'name', 'Sarah Chen');
+    return ledger;
+  };
+
+  it('⛔ requires a MULTI-TOKEN name — a bare first name earns nothing', () => {
+    // The Slice-2 prefix test caught this: it seeds the contact "Alice" and
+    // expects `alice@acme.com` to stay `m1@d1.invalid`. A single common first
+    // name could be anyone; a full name rendered as a local part could not.
+    const ledger = createLedger('single-name-email');
+    getOrAllocate(ledger, 'name', 'Alice');
+    expect(aliasIdentifierField(ledger, 'email', 'alice@acme.com'))
+      .toMatch(/^m\d+@d\d+\.invalid$/);
+  });
+
+  it('links the four renderings of the name, and nothing else', () => {
+    for (const local of ['sarah.chen', 'sarah_chen', 'sarah-chen', 'sarahchen']) {
+      expect(aliasIdentifierField(seeded(), 'email', `${local}@acme.com`))
+        .toBe('pii.Person1@d1.invalid');
+    }
+    // ⛔ The permitting witness, and the reason the rule is narrow: these are
+    // PROBABLY Sarah too, and "probably" asserted inside an alias is an invented
+    // fact whose failure mode is addressing the wrong person.
+    for (const local of ['sc', 'sarah.s', 'chen.sarah', 's.chen', 'sarah.chen2']) {
+      expect(aliasIdentifierField(seeded(), 'email', `${local}@acme.com`))
+        .toMatch(/^m\d+@d\d+\.invalid$/);
+    }
+  });
+
+  it('⛔ mints the link ONCE — a second earner falls back, at ANY domain', () => {
+    // `byKindBaseAlias` keys on the BASE alone, so two composites sharing
+    // `pii.Person1` collapse to one row and restore returns whichever was
+    // written last. A first cut scoped this per-DOMAIN and a round-trip probe
+    // caught it: `sarah.chen@acme.com` restored to `sarah-chen@other.com`.
+    const ledger = seeded();
+    expect(aliasIdentifierField(ledger, 'email', 'sarah.chen@acme.com'))
+      .toBe('pii.Person1@d1.invalid');
+    expect(aliasIdentifierField(ledger, 'email', 'sarahchen@acme.com'))
+      .toMatch(/^m\d+@d1\.invalid$/);
+    expect(aliasIdentifierField(ledger, 'email', 'sarah-chen@other.com'))
+      .toMatch(/^m\d+@d2\.invalid$/);
+  });
+
+  it('⛔ ROUND-TRIPS every form — the hard zero-failure-restore invariant', () => {
+    const ledger = seeded();
+    const reals = [
+      'sarah.chen@acme.com', 'sc@acme.com', 'sarahchen@acme.com', 'sarah-chen@other.com',
+    ];
+    const aliased = reals.map((r) => aliasIdentifierField(ledger, 'email', r));
+    expect(restoreInString(ledger, aliased.join(' | '))).toBe(reals.join(' | '));
+  });
+
+  it('⛔ types the composite by its `@`, never by the local part', () => {
+    // `kindFromBase('pii.Person1')` answers `'name'`. Typing the composite by its
+    // local half would resolve an EMAIL token to the NAME row and restore
+    // "Sarah Chen" into a `mail.send(to:)`.
+    expect(ledgerKindForAlias('pii.Person1@d1.invalid')).toBe('email_local');
+    expect(ledgerKindForAlias('pii.Person1')).toBe('name');
+    expect(ledgerKindForAlias('m1@d1.invalid')).toBe('email_local');
+  });
+
+  it('⛔ is RESTORABLE — the authority derivation must type it as an email too', () => {
+    // ⛔⛔ THE BUG THIS PINS REACHED THE OWNER. `reverseKeyForAliasToken` is a
+    // THIRD site that typed a composite by its LOCAL part, and it is the one
+    // that decides whether an alias may be restored AT ALL:
+    // `kindFromBase('pii.Person2')` answers 'name', so the person-linked
+    // composite resolved to the NAME key, authority was granted for the name
+    // instead of the email, and the token reached the user verbatim —
+    // "loop in Sarah Chen (pii.Person2@d1.invalid)".
+    //
+    // ⚠ `restoreInString` round-tripped it perfectly in isolation, which is why
+    // the unit tests were green. Only a bench task reading the USER-VISIBLE
+    // output caught it. An alias that reaches the model but fails to restore is
+    // worse than no aliasing at all.
+    const ledger = createLedger('person-linked-email-restore');
+    getOrAllocate(ledger, 'name', 'Theo Marsh');
+    getOrAllocate(ledger, 'name', 'Sarah Chen');
+    const theo = aliasIdentifierField(ledger, 'email', 'tm@northwind-bench.example');
+    const sarah = aliasIdentifierField(ledger, 'email', 'sarah.chen@northwind-bench.example');
+    expect(sarah).toBe('pii.Person2@d1.invalid');
+    const authority = derivePiiRestoreAuthority(
+      ledger, JSON.stringify({ prefetch: [theo, sarah] }),
+    );
+    // ⚠ signature is (authority, text) — the authority CARRIES its ledger, which
+    // is the point: a restricted authority cannot reach rows it was not granted.
+    expect(restoreInStringWithAuthority(authority, `loop in ${theo} and ${sarah}`))
+      .toBe('loop in tm@northwind-bench.example and sarah.chen@northwind-bench.example');
+  });
+
+  it('keeps the domain half shared, so "same company" survives', () => {
+    const ledger = seeded();
+    getOrAllocate(ledger, 'name', 'Dana Okonkwo');
+    const a = aliasIdentifierField(ledger, 'email', 'sarah.chen@acme.com');
+    const b = aliasIdentifierField(ledger, 'email', 'dana.okonkwo@acme.com');
+    expect(a.split('@')[1]).toBe(b.split('@')[1]);
   });
 });

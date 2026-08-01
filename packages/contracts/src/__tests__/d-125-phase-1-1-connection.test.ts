@@ -21,6 +21,7 @@ import {
   MAX_HEADER_AUTH_ENTRIES,
   NS,
   OAUTH2_REFRESH_LEAD_MS,
+  isValidOAuthEndpointUrl,
   resolveBearerAccessToken,
   resolveRef,
   validateHeaderAuthEntries,
@@ -300,6 +301,29 @@ describe('validateHeaderAuthEntries (shared header-auth validator)', () => {
     const inherited = Object.create({ header_name: 'X-Inherited', value: 'v' }) as Record<string, unknown>;
     expect(validateHeaderAuthEntries([inherited]))
       .toEqual({ ok: false, issue: { code: 'name_missing', index: 0 } });
+  });
+});
+
+describe('isValidOAuthEndpointUrl (shared credential-destination authority)', () => {
+  it.each([
+    'https://oauth.example.com/token',
+    'HTTPS://oauth.example.com/token?audience=api',
+    '  https://oauth.example.com/token  ',
+  ])('accepts a complete HTTPS endpoint: %s', (endpoint) => {
+    expect(isValidOAuthEndpointUrl(endpoint)).toBe(true);
+  });
+
+  it.each([
+    '',
+    'not-a-url',
+    'http://oauth.example.com/token',
+    'https:oauth.example.com/token',
+    'https://client:secret@oauth.example.com/token',
+    'https://oauth.example.com/token#not-sent-to-server',
+    'javascript:alert(1)',
+    null,
+  ])('rejects an unsafe or incomplete endpoint: %s', (endpoint) => {
+    expect(isValidOAuthEndpointUrl(endpoint)).toBe(false);
   });
 });
 

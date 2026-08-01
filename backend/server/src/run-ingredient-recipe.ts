@@ -38,7 +38,10 @@ export const RUN_INGREDIENT_RECIPE: Readonly<RecipeDefinition> = Object.freeze({
     supported_platforms: [],
     tags: ['kernel', 'mcp'],
   },
-  variables: { ingredient_slug: null, input: {} },
+  variables: {
+    ingredient_slug: null,
+    input: { label: 'Ingredient input', type: 'json', default: {} },
+  },
   prefetch_steps: [],
   steps: [
     {

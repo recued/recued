@@ -2153,6 +2153,36 @@ const projectDelete = (deps: WorkEntityIngredientDeps) =>
  *  the task/note deletes use (one place owns warehouse-event emission).
  */
 export const createWorkEntityDispatchers = (deps: WorkEntityIngredientDeps) => ({
+  workEntityList: async (input: {
+    kind: WorkEntityKind;
+    source_id?: string;
+    sync_states?: readonly import('@recued/contracts').SyncState[];
+    include_deleted?: boolean;
+    include_disabled?: boolean;
+    parent_project_id?: string;
+    limit?: number;
+    offset?: number;
+  }) => {
+    const query = {
+      ...(input.source_id !== undefined ? { source_id: input.source_id } : {}),
+      ...(input.sync_states !== undefined ? { sync_states: input.sync_states } : {}),
+      ...(input.include_deleted !== undefined ? { include_deleted: input.include_deleted } : {}),
+      ...(input.include_disabled !== undefined ? { include_disabled: input.include_disabled } : {}),
+      ...(input.parent_project_id !== undefined
+        ? { parent_project_id: input.parent_project_id }
+        : {}),
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      ...(input.offset !== undefined ? { offset: input.offset } : {}),
+    };
+    return {
+      entities: deps.resolver.listByKind(input.kind, query),
+      total: deps.store.countByKind(input.kind, query),
+    };
+  },
+  workEntityGet: async (input: { kind: WorkEntityKind; id: string }) => {
+    const entity = deps.resolver.readEntity(input.kind, input.id);
+    return { entity, found: entity !== null };
+  },
   taskCreate: taskCreate(deps),
   taskUpdate: taskUpdate(deps),
   taskDelete: taskDelete(deps),

@@ -617,7 +617,7 @@ describe('D-137 P5 follow-on — verifier swap-in: store.verifyBearer threads to
     expect(verified).toBeNull();
   });
 
-  it('verifyBearer rejects after revoke (covers the dual-verifier window correctness)', async () => {
+  it('verifyBearer rejects a revoked per-pair bearer', async () => {
     const rig = setup();
     const issued = await handleInboundTokenIssue(rig.deps, validIssuanceArgs());
     await handleInboundTokenRevoke(rig.deps, { token_id: issued.record.token_id });

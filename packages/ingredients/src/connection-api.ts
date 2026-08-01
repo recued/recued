@@ -67,14 +67,32 @@
 import {
   CONNECTION_API_TIMEOUT_MS,
   OAUTH2_REFRESH_LEAD_MS,
+  isValidOAuthEndpointUrl,
   walkPath,
   validateHeaderAuthEntries,
   describeHeaderAuthIssue,
+  HTTP_UPLOAD_MAX_BYTES_CEILING,
+  HTTP_UPLOAD_WIRE_FIELD_KEY,
+  HTTP_UPLOAD_WIRE_KIND_KEY,
+  HTTP_UPLOAD_WIRE_MAX_BYTES_KEY,
+  CHUNKED_UPLOAD_WIRE_TOKEN_KEY,
+  CHUNKED_UPLOAD_WIRE_OFFSET_KEY,
+  CHUNKED_UPLOAD_WIRE_LENGTH_KEY,
+  CHUNKED_UPLOAD_WIRE_FIELD_KEY,
+  CHUNKED_UPLOAD_WIRE_WALK_KEY,
+  HTTP_CHUNKED_UPLOAD_MAX_BYTES_CEILING,
 } from '@recued/contracts';
+import { sha256Hex } from '@recued/crypto/hash';
 import type {
   ConnectionAuth,
   ConnectionRow,
 } from '@recued/contracts';
+import {
+  encodeMultipart,
+  makeBoundary,
+  type MultipartField,
+  type MultipartFile,
+} from './multipart.js';
 import type { ConnectionHandlerCtx, ConnectionKindHandler } from './connection.js';
 import { IngredientError, type ResolvedCall } from './types.js';
 import {
@@ -83,6 +101,7 @@ import {
 } from './timeout.js';
 import { assertUrlSafe, composeApiUrl, interpolateUrl, UrlRefInvalidError } from './url-template.js';
 import { CrossOriginRedirectError, fetchOriginPinned } from './origin-pinned-fetch.js';
+import { parseChunkedWalkInput, runChunkedUpload } from './chunked-upload-runner.js';
 
 const ALLOWED_METHODS = new Set([
   'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS',
@@ -104,6 +123,72 @@ export interface ConnectionApiHandlerDeps {
    *  at the handler level so a re-enrollment between calls is
    *  picked up immediately. */
   decodeAuth: (row: ConnectionRow) => Promise<ConnectionAuth>;
+
+  /** D-216 — resolve a `file_ref` to bytes for an upload op. The SAME dep
+   *  shape the cli `input_materialize` path uses, and wired from the same
+   *  boot site: resolution was already solved, only encoding is new.
+   *
+   *  ⚠ Takes a REF, never a path. A path parameter here would turn this
+   *  handler into an arbitrary-file-read primitive pointed at the network
+   *  (D-216 § 5.2). Absent ⇒ an upload op fails closed. */
+  readFileBytes?: (
+    record_id: string,
+  ) => Promise<{ bytes: Uint8Array; mime_type: string; filename: string }>;
+
+  /** D-217 slice 2b-ii — read ONE chunk out of a staged plaintext for a
+   *  chunked upload's APPEND.
+   *
+   *  ⚠ **A separate dep from `readFileBytes` on purpose, and the difference is
+   *  the whole point of D-217 slice 0.** `readFileBytes` returns the WHOLE
+   *  file; calling it per chunk would decrypt a 512 MB blob 103 times. The
+   *  engine stages the plaintext ONCE and the wire carries the resulting
+   *  token, so this reads a range out of an already-open, already-verified
+   *  handle.
+   *
+   *  ⚠ Takes a TOKEN, never a path and never a record id — the same
+   *  refusal-to-be-a-file-read-primitive `readFileBytes` makes. The token
+   *  addresses a handle the engine minted for a walk it is already running;
+   *  the adapter cannot open a file of its own. Absent ⇒ a chunked upload
+   *  fails closed. */
+  readUploadChunk?: (
+    token: string,
+    offset: number,
+    length: number,
+  ) => Promise<{ bytes: Uint8Array; mime_type: string }>;
+
+  /** D-217 slice 2b-ii-β2 — stage a warehouse file's plaintext for a chunked
+   *  walk, and dispose it after.
+   *
+   *  ⛔ **Staging happens HERE, below the commit boundary, and that is a
+   *  correctness requirement rather than a tidiness one.** The § 8a amendment
+   *  first had the ENGINE stage and put the resulting token on the dispatch
+   *  input. But the action-identity hash basis covers the full wire input and
+   *  drops nothing engine-owned, so a fresh token per attempt yields a fresh
+   *  `canonical_payload_hash` and a D-177 session grant can never match an
+   *  honest repeat — failing CLOSED, re-asking every upload, which is why
+   *  nothing would have surfaced it. The wire names the FILE; this stages it.
+   *
+   *  🔑 A second reason it belongs here: the owner's DECRYPTED plaintext then
+   *  exists only for the walk itself, rather than from input-build time through
+   *  hashing, admission and a possible approval hold.
+   *
+   *  ⚠ **Both halves or neither** — the same rule `ExecutionContext.uploadStaging`
+   *  states. A `stage` without a `dispose` leaves that plaintext on disk for the
+   *  life of the process, so they are ONE dep. `readUploadChunk` above is the
+   *  third leg of the same registry. Absent ⇒ a chunked upload fails closed. */
+  uploadStaging?: {
+    stage: (input: {
+      file_ref: string;
+      expect_sha256?: string;
+      max_bytes: number;
+    }) => Promise<{ token: string; size_bytes: number }>;
+    dispose: (token: string) => Promise<void>;
+  };
+
+  /** D-218 § 7.5d — a refreshed credential could not be written back. Forwarded
+   *  to the shared freshness gate; see `EnsureFreshAuthDeps.onPersistFailure`
+   *  for why the write stays non-fatal and why it must not stay silent. */
+  onPersistFailure?: (row: ConnectionRow, error: unknown) => void;
 
   /** Persist a refreshed OAuth2 auth back to the connection store.
    *  Boot site re-encodes via `encodeAuthForStorage` (the same
@@ -240,6 +325,255 @@ const stringifyJsonBodyWithDecimalIntegers = (
   }).join(',') + '}';
 };
 
+/** D-216 slice 2 / D-217 slice 2b-ii — resolve + encode an UPLOAD body.
+ *
+ *  Three wire pieces. Not one of them carries BYTES: each names something the
+ *  handler resolves through an injected dep, so the dispatch input stays small
+ *  and the owner's file never rides through the layers above this one.
+ *
+ *    `body_file.<field>` → one multipart part per entry, with `body.<k>`
+ *                          scalars riding along as TEXT parts so a caption
+ *                          and its image go in ONE request. (`file_ref` →
+ *                          `readFileBytes`.)
+ *    `body_binary`       → the file IS the whole body, raw, with the
+ *                          record's own Content-Type. (`file_ref` →
+ *                          `readFileBytes`.)
+ *    `__cu_staged`       → ONE chunk of a staged plaintext, raw, with the
+ *                          staged record's Content-Type. (staging token +
+ *                          range → `readUploadChunk`.) Engine-owned: the
+ *                          gateway strips the `__cu_` prefix from recipe args,
+ *                          so a recipe can never address staged plaintext.
+ *
+ *  ⛔ Every refusal below is `bad_request` and every one is deliberate:
+ *  a silent precedence rule is how a caller ships the wrong body and never
+ *  learns. `body_raw` already wins over `body.*`; a THIRD silent winner
+ *  would make the wire unreadable.
+ *
+ *  ⚠ filename + mime come from the RESOLVED RECORD, never from the caller.
+ *  Letting a recipe name the file would let it misrepresent what it sends.
+ *
+ *  Returns `undefined` when no upload piece is present — the ordinary
+ *  JSON/form path then runs unchanged. */
+const buildUploadBody = async (
+  params: Record<string, unknown>,
+  headers: Headers,
+  deps: ConnectionApiHandlerDeps,
+): Promise<{
+  body: Uint8Array;
+  contentType: string;
+  contentSha256?: string;
+} | undefined> => {
+  const fileFields = extractDotPrefix(params, 'body_file');
+  const hasBinary = hasOwn(params, 'body_binary');
+  const hasFiles = Object.keys(fileFields).length > 0;
+  const hasChunk = hasOwn(params, CHUNKED_UPLOAD_WIRE_TOKEN_KEY);
+  const declaredKind = own(params, HTTP_UPLOAD_WIRE_KIND_KEY);
+  const hasDeclaration = declaredKind !== undefined;
+  if (!hasFiles && !hasBinary && !hasChunk && !hasDeclaration) return undefined;
+
+  if (hasChunk && (hasBinary || hasFiles)) {
+    throw new IngredientError('BAD_INPUT', `connection.api: ${CHUNKED_UPLOAD_WIRE_TOKEN_KEY} is exclusive — it cannot combine with body_file.* or body_binary`, {});
+  }
+  if (!hasChunk) {
+    if (declaredKind !== 'multipart' && declaredKind !== 'binary') {
+      throw new IngredientError(
+        'BAD_INPUT',
+        'connection.api: body_file.* / body_binary requires an engine-owned bind.upload declaration',
+        {},
+      );
+    }
+    if (declaredKind === 'binary' && (!hasBinary || hasFiles)) {
+      throw new IngredientError(
+        'BAD_INPUT',
+        'connection.api: declared binary upload must carry exactly body_binary',
+        {},
+      );
+    }
+    if (declaredKind === 'multipart') {
+      const expectedField = own(params, HTTP_UPLOAD_WIRE_FIELD_KEY);
+      const actualFields = Object.keys(fileFields);
+      if (typeof expectedField !== 'string'
+        || expectedField.trim().length === 0
+        || hasBinary
+        || actualFields.length !== 1
+        || actualFields[0] !== expectedField) {
+        throw new IngredientError(
+          'BAD_INPUT',
+          'connection.api: declared multipart upload must carry exactly its declared body_file field',
+          {},
+        );
+      }
+    }
+  }
+  // ⚠ **`body.*` beside a chunk is legal ONLY for a MULTIPART chunk**, and the
+  // asymmetry is the encoding, not a policy. A `binary` chunk IS the whole
+  // request body — there is nowhere for a sibling field to go, so accepting one
+  // would mean silently dropping it. A `multipart` chunk is one part among
+  // several, exactly like the one-shot `body_file.*` path, which has carried
+  // `body.*` scalars as TEXT PARTS since D-216.
+  //
+  // ⛔ **Slice 4 is what forced this, and § 9.6 predicted it would.** X's v2
+  // APPEND is `POST /2/media/upload/{id}/append` with `media` (the chunk) AND
+  // `segment_index` as a sibling form field. Refusing every `body.*` made the
+  // one protocol this whole D exists to unblock INEXPRESSIBLE — discovered, as
+  // the encoding split was, by asking what the real pack actually needs.
+  const chunkTextFields = extractDotPrefix(params, 'body');
+  const chunkIsMultipart = typeof own(params, CHUNKED_UPLOAD_WIRE_FIELD_KEY) === 'string';
+  if (hasChunk && hasOwn(params, 'body_raw')) {
+    throw new IngredientError('BAD_INPUT', `connection.api: ${CHUNKED_UPLOAD_WIRE_TOKEN_KEY} is exclusive — it cannot combine with body_raw`, {});
+  }
+  if (hasChunk && !chunkIsMultipart && Object.keys(chunkTextFields).length > 0) {
+    throw new IngredientError('BAD_INPUT', `connection.api: a raw (binary) chunk IS the request body — body.* has nowhere to go. Declare chunk_encoding 'multipart' with a chunk_field to send fields beside the chunk`, {});
+  }
+  if (hasBinary && hasFiles) {
+    throw new IngredientError('BAD_INPUT', 'connection.api: body_binary is exclusive — it cannot combine with body_file.*', {});
+  }
+  if (hasBinary && (hasOwn(params, 'body_raw') || Object.keys(extractDotPrefix(params, 'body')).length > 0)) {
+    throw new IngredientError('BAD_INPUT', 'connection.api: body_binary is exclusive — it cannot combine with body.* or body_raw', {});
+  }
+  if (hasFiles && hasOwn(params, 'body_raw')) {
+    throw new IngredientError('BAD_INPUT', 'connection.api: body_file.* cannot combine with body_raw — a multipart body is built from body.* text parts', {});
+  }
+  // A hand-set Content-Type cannot be honoured: multipart needs the
+  // GENERATED boundary, and a binary body takes the record's own type.
+  // Silently overwriting it would be worse than refusing.
+  if (headers.get('Content-Type') !== null) {
+    throw new IngredientError('BAD_INPUT', 'connection.api: an upload body sets its own Content-Type — remove the pinned header.content-type', {});
+  }
+  // D-217 slice 2b-ii — ONE chunk of a staged plaintext. The engine already
+  // staged and content-verified the file (slice 0) and fixed the request count
+  // (slice 2a); what arrives here is a token plus a range, and the bytes are
+  // resolved on THIS side of the wire so they never enter the dispatch input
+  // — which the commit gateway persists as `args` and hashes.
+  if (hasChunk) {
+    if (deps.readUploadChunk === undefined) {
+      throw new IngredientError('SERVER_NOT_REACHABLE', 'connection.api: this host cannot read a staged upload chunk — a chunked upload fails closed', {});
+    }
+    const token = own(params, CHUNKED_UPLOAD_WIRE_TOKEN_KEY);
+    if (typeof token !== 'string' || token.length === 0) {
+      throw new IngredientError('BAD_INPUT', `connection.api: ${CHUNKED_UPLOAD_WIRE_TOKEN_KEY} must be a non-empty staging token`, {});
+    }
+    const offset = own(params, CHUNKED_UPLOAD_WIRE_OFFSET_KEY);
+    const length = own(params, CHUNKED_UPLOAD_WIRE_LENGTH_KEY);
+    if (typeof offset !== 'number' || !Number.isSafeInteger(offset) || offset < 0) {
+      throw new IngredientError('BAD_INPUT', `connection.api: ${CHUNKED_UPLOAD_WIRE_OFFSET_KEY} must be a non-negative safe integer`, {});
+    }
+    if (typeof length !== 'number' || !Number.isSafeInteger(length) || length <= 0) {
+      throw new IngredientError('BAD_INPUT', `connection.api: ${CHUNKED_UPLOAD_WIRE_LENGTH_KEY} must be a positive safe integer`, {});
+    }
+    // ONE chunk is ONE request body held in memory, so it inherits the
+    // one-shot ceiling for exactly the reason D-216 § 4 set it — the 512 MB
+    // chunked ceiling bounds the WALK, never a single buffer. A plan that
+    // asked for more than this was mis-computed; refuse before the socket.
+    if (length > HTTP_UPLOAD_MAX_BYTES_CEILING) {
+      throw new IngredientError('BAD_INPUT', `connection.api: a single chunk of ${length} bytes exceeds the ${HTTP_UPLOAD_MAX_BYTES_CEILING}-byte per-request ceiling`, { max_bytes: HTTP_UPLOAD_MAX_BYTES_CEILING });
+    }
+    const field = own(params, CHUNKED_UPLOAD_WIRE_FIELD_KEY);
+    if (field !== undefined && (typeof field !== 'string' || field.trim().length === 0)) {
+      throw new IngredientError('BAD_INPUT', `connection.api: ${CHUNKED_UPLOAD_WIRE_FIELD_KEY} must be a non-empty form-field name when present`, {});
+    }
+    const chunk = await deps.readUploadChunk(token, offset, length);
+    // The staging handle refuses a short read (slice 0), but it is a dep here
+    // and a dep is whatever the host wired. A truncated chunk is accepted and
+    // stored by most targets, so it is worth the one comparison.
+    if (chunk.bytes.byteLength !== length) {
+      throw new IngredientError('BAD_INPUT', `connection.api: staged chunk returned ${chunk.bytes.byteLength} bytes for a ${length}-byte range`, {});
+    }
+    // Presence of a field name IS the encoding — set ⇒ one named form part,
+    // absent ⇒ the chunk is the raw body. ⚠ The part's filename is the literal
+    // `chunk`, NOT the staged record's: a chunk is one slice of a multi-request
+    // upload, not a file in its own right, and repeating the owner's filename
+    // on every APPEND would disclose it N times for no protocol benefit.
+    if (typeof field === 'string') {
+      // The declaration's `body.*` ride along as TEXT PARTS — same coercion the
+      // one-shot path uses below, so a caption beside a file and a
+      // `segment_index` beside a chunk are the same mechanism, not two.
+      const chunkParts: MultipartField[] = Object.entries(chunkTextFields)
+        .map(([name, value]) => ({ name, value: value == null ? '' : String(value) }));
+      const encoded = encodeMultipart(chunkParts, [{
+        name: field.trim(),
+        filename: 'chunk',
+        mime_type: chunk.mime_type,
+        bytes: new Uint8Array(chunk.bytes),
+      }], makeBoundary());
+      return { body: encoded.body, contentType: encoded.content_type };
+    }
+    return { body: chunk.bytes, contentType: chunk.mime_type };
+  }
+
+  if (deps.readFileBytes === undefined) {
+    throw new IngredientError('SERVER_NOT_REACHABLE', 'connection.api: this host cannot resolve file_ref bytes — an upload op fails closed', {});
+  }
+
+  const maxBytes = resolveUploadMaxBytes(own(params, HTTP_UPLOAD_WIRE_MAX_BYTES_KEY));
+  let total = 0;
+  const resolveRef = async (ref: unknown, where: string) => {
+    if (typeof ref !== 'string' || ref.length === 0) {
+      throw new IngredientError('BAD_INPUT', `connection.api: ${where} must be a non-empty file_ref string`, {});
+    }
+    const file = await deps.readFileBytes!(ref);
+    total += file.bytes.length;
+    // Checked AFTER each resolution and BEFORE any socket opens: a truncated
+    // body is accepted and stored by most targets, so a partial upload is
+    // worse than a refusal.
+    if (total > maxBytes) {
+      throw new IngredientError('BAD_INPUT', `connection.api: upload exceeds the ${maxBytes}-byte ceiling`, { max_bytes: maxBytes });
+    }
+    return { ...file, contentSha256: sha256Hex(file.bytes) };
+  };
+
+  if (hasBinary) {
+    const file = await resolveRef(own(params, 'body_binary'), 'body_binary');
+    return {
+      body: new Uint8Array(file.bytes),
+      contentType: file.mime_type,
+      contentSha256: file.contentSha256,
+    };
+  }
+
+  const textParts: MultipartField[] = Object.entries(extractDotPrefix(params, 'body'))
+    .map(([name, value]) => ({ name, value: value == null ? '' : String(value) }));
+  const files: MultipartFile[] = [];
+  for (const [field, ref] of Object.entries(fileFields)) {
+    const file = await resolveRef(ref, `body_file.${field}`);
+    files.push({
+      name: field,
+      filename: file.filename,
+      mime_type: file.mime_type,
+      bytes: new Uint8Array(file.bytes),
+    });
+  }
+  const encoded = encodeMultipart(textParts, files, makeBoundary());
+  return {
+    body: encoded.body,
+    contentType: encoded.content_type,
+    contentSha256: sha256Hex(files[0]!.bytes),
+  };
+};
+
+/** A pack op may LOWER the handler ceiling, never raise it (D-216 § 4). An
+ *  absent / malformed / raised value falls back to the ceiling rather than
+ *  failing — the authoring validator is where a bad declaration is caught,
+ *  and the handler's job is to stay bounded regardless. */
+export const resolveUploadMaxBytes = (declared: unknown): number => {
+  if (typeof declared !== 'number' || !Number.isFinite(declared) || declared <= 0) {
+    return HTTP_UPLOAD_MAX_BYTES_CEILING;
+  }
+  return Math.min(Math.trunc(declared), HTTP_UPLOAD_MAX_BYTES_CEILING);
+};
+
+/** D-216 slice 3 — the request body's true size on the wire.
+ *
+ *  ⚠ The pre-D-216 telemetry was `TextEncoder().encode(body).byteLength`,
+ *  which silently mis-measures a `Uint8Array` (it stringifies it to
+ *  "0,255,27,…" and reports that length). An upload is exactly the case
+ *  where `bytes_out` matters most, so it gets the real number. */
+const bodyByteLength = (body: string | Uint8Array | undefined): number => {
+  if (body === undefined) return 0;
+  if (typeof body === 'string') return new TextEncoder().encode(body).byteLength;
+  return body.byteLength;
+};
+
 const buildBody = (
   params: Record<string, unknown>,
   headers: Headers,
@@ -335,6 +669,24 @@ const requireAuthString = (
   return value;
 };
 
+/** Final credential-use gate for restored/legacy rows. Enrollment validation
+ * prevents new unsafe endpoints, but token exchange must remain authoritative
+ * even when auth material came from an older database or an internal caller. */
+const requireOAuthTokenEndpoint = (
+  auth: ConnectionAuth,
+  operation: 'OAuth2 refresh' | 'OAuth2 client-credentials exchange',
+): string => {
+  const endpoint = requireAuthString(auth, 'token_endpoint');
+  if (!isValidOAuthEndpointUrl(endpoint)) {
+    throw new IngredientError(
+      'TOKEN_REFRESH_FAILED',
+      `${operation} refused: auth.token_endpoint must be a complete HTTPS URL with no embedded username or password and no URL fragment`,
+      { cause: 'unsafe_token_endpoint' },
+    );
+  }
+  return endpoint.trim();
+};
+
 const requireAuthNameString = (
   auth: ConnectionAuth,
   field: string,
@@ -395,6 +747,28 @@ const injectAuth = (
         throw new IngredientError(
           'OAUTH_EXPIRED',
           'OAuth2 access token has not been acquired yet — refresh flow did not run or failed silently',
+          { auth_type: auth.type },
+        );
+      }
+      headers.set('Authorization', `Bearer ${auth.current_access_token}`);
+      return;
+    // D-218 — the `accessJwt` an AT Protocol session exchange produced. Sent as
+    // an ordinary bearer, because that is what the protocol asks for.
+    //
+    // ⚠ **Slice 0 has no exchange yet, so this is the ONLY behaviour it can
+    // have and it must FAIL rather than send nothing.** A row enrolls, no
+    // session has been minted, and every dispatch stops here with an actionable
+    // code. Slice 1 makes the absent-token case reachable-and-fixable by
+    // performing the exchange; slice 2 makes an EXPIRED one recoverable by
+    // reacting to the 401 that a stale token earns.
+    case 'atproto_session':
+      if (
+        typeof auth.current_access_token !== 'string' ||
+        auth.current_access_token.trim() === ''
+      ) {
+        throw new IngredientError(
+          'OAUTH_EXPIRED',
+          'AT Protocol session has not been established yet — no accessJwt has been exchanged for this connection',
           { auth_type: auth.type },
         );
       }
@@ -659,7 +1033,7 @@ export const exchangeOAuth2ClientCredentials = async (
 ): Promise<ConnectionAuth> => {
   const clientId = requireAuthString(auth, 'client_id');
   const clientSecret = requireAuthString(auth, 'client_secret');
-  const tokenEndpoint = requireAuthString(auth, 'token_endpoint');
+  const tokenEndpoint = requireOAuthTokenEndpoint(auth, 'OAuth2 client-credentials exchange');
   const body = new URLSearchParams({ grant_type: 'client_credentials' });
   const headers: Record<string, string> = {
     'Content-Type': 'application/x-www-form-urlencoded',
@@ -683,16 +1057,7 @@ export const exchangeOAuth2ClientCredentials = async (
     body.set('scope', scope);
   }
 
-  let tokenOrigin: string;
-  try {
-    tokenOrigin = new URL(tokenEndpoint).origin;
-  } catch {
-    throw new IngredientError(
-      'TOKEN_REFRESH_FAILED',
-      `OAuth2 client-credentials exchange: malformed token_endpoint '${tokenEndpoint}'`,
-      { token_endpoint: tokenEndpoint },
-    );
-  }
+  const tokenOrigin = new URL(tokenEndpoint).origin;
 
   let resp: Response;
   try {
@@ -785,7 +1150,7 @@ export const refreshOAuth2 = async (
 ): Promise<ConnectionAuth> => {
   const refreshToken = requireAuthString(auth, 'refresh_token');
   const clientId = requireAuthString(auth, 'client_id');
-  const tokenEndpoint = requireAuthString(auth, 'token_endpoint');
+  const tokenEndpoint = requireOAuthTokenEndpoint(auth, 'OAuth2 refresh');
   const body = new URLSearchParams({
     grant_type: 'refresh_token',
     refresh_token: refreshToken,
@@ -808,16 +1173,7 @@ export const refreshOAuth2 = async (
   // host (method + body preserved on 307/308). Same-origin redirects
   // re-send to the same trusted origin only; cross-origin is refused
   // before the secret leaves the box.
-  let tokenOrigin: string;
-  try {
-    tokenOrigin = new URL(tokenEndpoint).origin;
-  } catch {
-    throw new IngredientError(
-      'TOKEN_REFRESH_FAILED',
-      `OAuth2 refresh: malformed token_endpoint '${tokenEndpoint}'`,
-      { token_endpoint: tokenEndpoint },
-    );
-  }
+  const tokenOrigin = new URL(tokenEndpoint).origin;
   let resp: Response;
   try {
     resp = await fetchOriginPinned(fetchImpl, tokenEndpoint, {
@@ -879,6 +1235,193 @@ export const refreshOAuth2 = async (
   return next;
 };
 
+// ────────────────────────────────────────────────────────────────
+// D-218 — AT Protocol session exchange
+// ────────────────────────────────────────────────────────────────
+
+/** The two XRPC procedures a session lives on. Constants, not configuration —
+ *  see `atprotoSessionUrl`. */
+const ATPROTO_CREATE_SESSION_NSID = 'com.atproto.server.createSession';
+const ATPROTO_REFRESH_SESSION_NSID = 'com.atproto.server.refreshSession';
+
+type AtprotoSessionAuth = Extract<ConnectionAuth, { type: 'atproto_session' }>;
+
+/** What both session procedures return. ⚠ Read as OPAQUE strings — the AT
+ *  Protocol spec says "the JWT fields and semantics are not a stable part of
+ *  the specification", so nothing here parses one. */
+interface AtprotoSessionResponse {
+  accessJwt?: unknown;
+  refreshJwt?: unknown;
+}
+
+/** Derive a session endpoint from the connection's OWN base URL.
+ *
+ *  ⛔ **This is § 7.5b's ruling as code, and the derivation IS the security
+ *  property.** Every other exchanging auth type carries a `token_endpoint`
+ *  field; this one deliberately has none, because a credential-only
+ *  destination is the highest-value exfiltration primitive in the system — a
+ *  place an account password gets POSTed that no reviewer would think to audit.
+ *  Deriving from `base_url` means the password can only ever reach the host
+ *  this connection already talks to.
+ *
+ *  Uses the same `composeApiUrl` every op path goes through, so a PDS mounted
+ *  under a base path resolves identically to the ops beside it. */
+const atprotoSessionUrl = (baseUrl: string, nsid: string): URL => {
+  try {
+    return composeApiUrl(baseUrl, `/xrpc/${nsid}`);
+  } catch (e) {
+    throw new IngredientError(
+      'TOKEN_REFRESH_FAILED',
+      `AT Protocol session: cannot resolve '${nsid}' against base_url '${baseUrl}': ${(e as Error).message}`,
+      { nsid },
+    );
+  }
+};
+
+/** POST one session procedure and read the token pair out of it.
+ *
+ *  ⚠ **Origin-pinned, and it matters more here than anywhere else in this
+ *  file.** A 307/308 preserves method AND body, so an open redirect on a
+ *  compromised PDS would re-POST `createSession`'s body — **the app password
+ *  itself** — to the redirect target. `fetchOriginPinned` refuses before the
+ *  credential leaves the box.
+ *
+ *  ⚠ **No error path may echo the request body.** The message carries the
+ *  status and the procedure name; the response text is deliberately not
+ *  included, because a PDS that rejects a login commonly quotes what it was
+ *  sent. */
+const postAtprotoSession = async (
+  url: URL,
+  init: { headers: Record<string, string>; body?: string },
+  fetchImpl: typeof fetch,
+  nsid: string,
+): Promise<{ accessJwt: string; refreshJwt?: string }> => {
+  let resp: Response;
+  try {
+    resp = await fetchOriginPinned(fetchImpl, url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...init.headers },
+      ...(init.body !== undefined ? { body: init.body } : {}),
+    }, url.origin);
+  } catch (e) {
+    if (e instanceof CrossOriginRedirectError) {
+      throw new IngredientError(
+        'TOKEN_REFRESH_FAILED',
+        `AT Protocol ${nsid} refused: ${e.message} — credentials not sent to the redirect target`,
+        { nsid, cause: 'cross_origin_redirect' },
+      );
+    }
+    throw new IngredientError(
+      'TOKEN_REFRESH_FAILED',
+      `AT Protocol ${nsid} failed: ${(e as Error).message}`,
+      { nsid, cause: 'network' },
+    );
+  }
+  if (!resp.ok) {
+    throw new IngredientError(
+      'TOKEN_REFRESH_FAILED',
+      `AT Protocol ${nsid} returned ${resp.status} ${resp.statusText}`,
+      { nsid, status: resp.status },
+    );
+  }
+  let data: AtprotoSessionResponse;
+  try {
+    data = await resp.json() as AtprotoSessionResponse;
+  } catch (e) {
+    throw new IngredientError(
+      'TOKEN_REFRESH_FAILED',
+      `AT Protocol ${nsid} returned malformed JSON: ${(e as Error).message}`,
+      { nsid },
+    );
+  }
+  const accessJwt = data.accessJwt;
+  if (typeof accessJwt !== 'string' || accessJwt === '') {
+    throw new IngredientError(
+      'TOKEN_REFRESH_FAILED',
+      `AT Protocol ${nsid} response missing accessJwt`,
+      { nsid },
+    );
+  }
+  const refreshJwt = data.refreshJwt;
+  return {
+    accessJwt,
+    ...(typeof refreshJwt === 'string' && refreshJwt !== '' ? { refreshJwt } : {}),
+  };
+};
+
+/** Fold a fresh token pair back onto the auth row, preserving the credential.
+ *
+ *  ⛔ **A missing `refreshJwt` DROPS the stored one — it does not keep it.**
+ *  `refreshOAuth2` falls back to the old refresh token when a response omits
+ *  one, which is right for OAuth2 where rotation is optional and the old token
+ *  usually still works. Here rotation is mandatory and **using the refresh
+ *  token invalidates it**, so the stored copy is already dead. Keeping it would
+ *  store a credential guaranteed to fail; dropping it says "log in again",
+ *  which is exactly what the retained app password (§ 7.5c) makes possible. */
+const withAtprotoTokens = (
+  auth: AtprotoSessionAuth,
+  tokens: { accessJwt: string; refreshJwt?: string },
+): ConnectionAuth => ({
+  type: 'atproto_session',
+  identifier: auth.identifier,
+  app_password: auth.app_password,
+  current_access_token: tokens.accessJwt,
+  ...(tokens.refreshJwt !== undefined ? { refresh_token: tokens.refreshJwt } : {}),
+});
+
+/** Log in with the stored app password — `com.atproto.server.createSession`.
+ *
+ *  ⚠ The ONLY call in this file that puts a long-lived account credential on
+ *  the wire. Everything about it is deliberate: derived endpoint, origin pin,
+ *  JSON body (the protocol's shape, and the reason `basic` could not express
+ *  this type), and an error path that never quotes what was sent. */
+export const createAtprotoSession = async (
+  auth: AtprotoSessionAuth,
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+): Promise<ConnectionAuth> => {
+  const identifier = requireAuthString(auth, 'identifier');
+  const appPassword = requireAuthString(auth, 'app_password');
+  const url = atprotoSessionUrl(baseUrl, ATPROTO_CREATE_SESSION_NSID);
+  const tokens = await postAtprotoSession(
+    url,
+    {
+      headers: {},
+      body: JSON.stringify({ identifier, password: appPassword }),
+    },
+    fetchImpl,
+    ATPROTO_CREATE_SESSION_NSID,
+  );
+  return withAtprotoTokens(auth, tokens);
+};
+
+/** Renew with the stored refresh token — `com.atproto.server.refreshSession`.
+ *
+ *  🔑 **The refresh token goes in the AUTHORIZATION HEADER, not the body**, and
+ *  that single fact is most of why `oauth2_refresh` could not express this
+ *  type: its whole shape is a form-encoded grant with the token in the payload.
+ *
+ *  ⛔ **Calling this INVALIDATES the token it sent.** By the time it returns,
+ *  the caller's stored copy is dead whether or not the new one is ever
+ *  persisted — which is why the persist failure that follows is not
+ *  recoverable by retrying, and why (§ 7.5d) failing the call would help
+ *  nobody. */
+export const refreshAtprotoSession = async (
+  auth: AtprotoSessionAuth,
+  baseUrl: string,
+  fetchImpl: typeof fetch,
+): Promise<ConnectionAuth> => {
+  const refreshToken = requireAuthString(auth, 'refresh_token');
+  const url = atprotoSessionUrl(baseUrl, ATPROTO_REFRESH_SESSION_NSID);
+  const tokens = await postAtprotoSession(
+    url,
+    { headers: { Authorization: `Bearer ${refreshToken}` } },
+    fetchImpl,
+    ATPROTO_REFRESH_SESSION_NSID,
+  );
+  return withAtprotoTokens(auth, tokens);
+};
+
 /** Deps for the shared OAuth2 refresh gate — a subset of `ConnectionApiHandlerDeps`.
  *  The `connection.mcp` handler supplies the same shape so both kinds share ONE
  *  refresh implementation (single source for the single-flight + lead-time +
@@ -893,6 +1436,18 @@ export interface EnsureFreshAuthDeps {
   fetchImpl?: typeof fetch;
   /** Wall-clock source. Defaults to `Date.now`. */
   now?: () => number;
+  /** D-218 § 7.5d — a refreshed credential could not be written back.
+   *
+   *  ⛔ **The swallow stays non-fatal and stops being SILENT.** Failing the call
+   *  would help nobody: the exchange already invalidated the stored token one
+   *  step earlier, so failing destroys a successful call and recovers nothing.
+   *  But for a single-use rotating credential the swallow is not free either —
+   *  the durable row now holds a DEAD token, and the next call pays an extra
+   *  round trip to discover that and log in again. Recoverable, and worth
+   *  seeing.
+   *
+   *  Absent ⇒ silent, exactly as before (test harnesses, dbless boots). */
+  onPersistFailure?: (row: ConnectionRow, error: unknown) => void;
 }
 
 /** Build the "refresh the OAuth2 access token if it's missing or within the
@@ -922,7 +1477,118 @@ export const createEnsureFreshAuth = (
   const now = deps.now ?? (() => Date.now());
   const refreshFlight = new Map<string, Promise<ConnectionAuth>>();
 
+  /** Run ONE credential exchange per row at a time, then persist it.
+   *
+   *  ⚠ **Extracted by D-218 so both auth families share it**, rather than the
+   *  new one growing a second copy of the single-flight and drifting from this
+   *  one. `produce` is the only difference between them.
+   *
+   *  ⛔ **The persist failure is NOT recoverable by retrying, and the comment
+   *  that used to sit here said the opposite.** It read: *"the next call just
+   *  re-refreshes from the un-persisted state — wasteful but safe."* That is
+   *  true for OAuth2, where the old refresh token generally still works. It is
+   *  FALSE for a single-use rotating credential: the exchange already
+   *  invalidated the stored token, so the un-persisted state is not
+   *  stale-but-usable, it is dead.
+   *
+   *  🔑 Failing the call here would not help either — the invalidation happened
+   *  one step earlier, inside `produce`, so failing would destroy a SUCCESSFUL
+   *  call and recover nothing (§ 7.5d). The recovery is the retained app
+   *  password: the next call finds a dead refresh token and logs in again, and
+   *  `onPersistFailure` makes the cost of that visible instead of silent.
+   *
+   *  ⚠ **The same recovery covers the CROSS-RUNTIME race, and it is the only
+   *  thing that does.** This map is per handler instance, so a server and an
+   *  extension refreshing the same connection concurrently each get a token and
+   *  one of them ends up holding a copy the other already invalidated. For
+   *  OAuth2 that is benign — the comment below says LWW plus issuer revocation
+   *  resolve it, and for OAuth2 they do. **There is no issuer here that
+   *  tolerates it** (D-218 § 5b). What makes it survivable is that a dead
+   *  refresh token is not a dead connection: it is one extra login. */
+  const exchangeInFlight = (
+    row: ConnectionRow,
+    produce: () => Promise<ConnectionAuth>,
+  ): Promise<ConnectionAuth> => {
+    const existing = refreshFlight.get(row.pk);
+    if (existing) return existing;
+    const flight = (async () => {
+      try {
+        const next = await produce();
+        // Still within the single-flight, before the map clears in `finally`.
+        try {
+          await deps.persistAuth(row, next);
+        } catch (e) {
+          // Non-fatal by ruling, not by convenience — see the block comment
+          // above. ⚠ But no longer silent: a swallowed write costs a real extra
+          // round trip on the next call and points at a storage problem.
+          // The sink itself must never break dispatch.
+          try { deps.onPersistFailure?.(row, e); } catch { /* sink is advisory */ }
+        }
+        return next;
+      } finally {
+        refreshFlight.delete(row.pk);
+      }
+    })();
+    refreshFlight.set(row.pk, flight);
+    return flight;
+  };
+
   return async (row: ConnectionRow, auth: ConnectionAuth): Promise<ConnectionAuth> => {
+    // D-218 — an AT Protocol session takes the same single-flight and the same
+    // persist, and a DIFFERENT freshness rule.
+    //
+    // ⛔ **There is no clock here, deliberately (§ 7.5a).** The protocol
+    // supplies no `expires_in` and tells clients its tokens are opaque, so
+    // there is no honest number to compare against `now()`. A row that HAS a
+    // token is treated as fresh; an expired one earns a 401, and reacting to
+    // that is slice 2. Until then a stale session surfaces as an auth error
+    // rather than silently renewing on a guessed schedule — which is the
+    // honest failure, not a convenient one.
+    if (auth.type === 'atproto_session') {
+      // ⚠ `.trim()`, matching `injectAuth` exactly. A whitespace-only token
+      // would otherwise read as "fresh" here and be REJECTED there — the row
+      // would fail every dispatch with no exchange ever attempted, which a
+      // slice-0 test caught by asserting the whitespace case.
+      if (typeof auth.current_access_token === 'string'
+        && auth.current_access_token.trim() !== '') {
+        return auth;
+      }
+      return exchangeInFlight(row, async () => {
+        const baseUrl = readBaseUrl(row);
+        const hasRefresh = typeof auth.refresh_token === 'string'
+          && auth.refresh_token.trim() !== '';
+        if (!hasRefresh) return createAtprotoSession(auth, baseUrl, fetchImpl);
+        try {
+          return await refreshAtprotoSession(auth, baseUrl, fetchImpl);
+        } catch (e) {
+          // D-218 § 7.5c — the retained app password earning its keep. A
+          // refresh token dies for ordinary reasons: it aged out, the session
+          // was revoked, or a previous rotation failed to persist. Logging in
+          // again turns every one of those from a dead connection into one
+          // extra request.
+          //
+          // ⛔ **But only when the server actually REJECTED the refresh.** The
+          // app password is the most valuable thing this row holds, and it is
+          // sent only where there is reason to believe it will help:
+          //
+          //   - a status-carrying rejection (4xx/5xx) ⇒ the TOKEN is the
+          //     problem, and a fresh login is exactly the fix;
+          //   - a cross-origin redirect refusal ⇒ ⛔ NEVER. Our own guard just
+          //     refused to hand this endpoint a REFRESH token; handing it the
+          //     account credential instead is the worst possible response;
+          //   - a network failure or a malformed response ⇒ the request never
+          //     landed or the server is broken. A login would fail the same
+          //     way, so it buys nothing and transmits the credential for
+          //     nothing.
+          //
+          // ONE attempt. A failed login throws, and the caller sees the login's
+          // error rather than the refresh's — the more actionable of the two.
+          const status = (e as IngredientError)?.details?.status;
+          if (typeof status !== 'number') throw e;
+          return await createAtprotoSession(auth, baseUrl, fetchImpl);
+        }
+      });
+    }
     if (!isRenewableOAuth2(auth)) return auth;
     const expiresAt = auth.expires_at;
     const haveAccessToken = typeof auth.current_access_token === 'string'
@@ -932,32 +1598,11 @@ export const createEnsureFreshAuth = (
       && expiresAt - OAUTH2_REFRESH_LEAD_MS > now();
     if (fresh) return auth;
 
-    const existing = refreshFlight.get(row.pk);
-    if (existing) return existing;
-
-    const flight = (async () => {
-      try {
-        const next = auth.type === 'oauth2_refresh'
-          ? await refreshOAuth2(auth, fetchImpl, now)
-          : await exchangeOAuth2ClientCredentials(auth, fetchImpl, now);
-        // Persist the rotated token (still within the single-flight, before the
-        // map clears in `finally`). Best-effort: a failure is swallowed so it
-        // never fails the current call — we already hold the fresh token; the
-        // next call just re-refreshes from the un-persisted state.
-        try {
-          await deps.persistAuth(row, next);
-        } catch {
-          // Best-effort — the new access token is still used for this
-          // request. The next call will see the un-persisted state and
-          // refresh again, which is wasteful but safe.
-        }
-        return next;
-      } finally {
-        refreshFlight.delete(row.pk);
-      }
-    })();
-    refreshFlight.set(row.pk, flight);
-    return flight;
+    return exchangeInFlight(row, () => (
+      auth.type === 'oauth2_refresh'
+        ? refreshOAuth2(auth, fetchImpl, now)
+        : exchangeOAuth2ClientCredentials(auth, fetchImpl, now)
+    ));
   };
 };
 
@@ -986,14 +1631,32 @@ export const createConnectionApiHandler = (
     persistAuth: deps.persistAuth,
     fetchImpl,
     now,
+    ...(deps.onPersistFailure ? { onPersistFailure: deps.onPersistFailure } : {}),
   });
 
-  return async (
+  const handler: ConnectionKindHandler = async (
     record: ConnectionRow,
     params: Record<string, unknown>,
     call: ResolvedCall,
     ctx?: ConnectionHandlerCtx,
   ): Promise<unknown> => {
+    // ────────────── D-217 slice 2b-ii-β — the chunked walk ──────────────
+    // ⚠ FIRST, before `method` / `path` validation, because a walk HAS no
+    // single method or path — it is N requests, each with its own, declared by
+    // the op. The commit Gateway above saw exactly one dispatch; the protocol
+    // runs here, below it, so one act stays one commit row and one approval
+    // (§ 8a amendment).
+    //
+    // 🔑 The runner calls THIS handler back, once per phase — see
+    // `runChunkedUpload`. So every chunk gets the same auth injection, SSRF
+    // origin-pinning, redirect policy and response parse as any other request,
+    // rather than a second implementation of them that can drift. A phase input
+    // never carries the walk key, so the recursion is exactly two deep and
+    // `assertNoNestedWalk` pins it.
+    if (hasOwn(params, CHUNKED_UPLOAD_WIRE_WALK_KEY)) {
+      return runWalk(record, params, call, ctx);
+    }
+
     // ────────────── input validation ──────────────
     const rawMethod = own(params, 'method');
     if (typeof rawMethod !== 'string' || rawMethod === '') {
@@ -1103,9 +1766,21 @@ export const createConnectionApiHandler = (
     for (const [k, v] of Object.entries(headerInputs)) {
       headers.set(k, String(v));
     }
-    const body = method === 'GET' || method === 'HEAD'
+    // D-216 — an upload body short-circuits the JSON/form path and brings
+    // its own Content-Type (a generated multipart boundary, or the record's
+    // own type). GET/HEAD never carry one.
+    const upload = method === 'GET' || method === 'HEAD'
       ? undefined
-      : buildBody(params, headers);
+      : await buildUploadBody(params, headers, deps);
+    if (upload !== undefined) headers.set('Content-Type', upload.contentType);
+    if (upload?.contentSha256 !== undefined) {
+      ctx?.setUploadContentSha256?.(upload.contentSha256);
+    }
+    const body = upload !== undefined
+      ? upload.body
+      : method === 'GET' || method === 'HEAD'
+        ? undefined
+        : buildBody(params, headers);
 
     // ────────────── auth (decrypt + maybe refresh + inject) ──────────────
     const auth = await deps.decodeAuth(record);
@@ -1116,9 +1791,16 @@ export const createConnectionApiHandler = (
     const timeoutMs = resolveTimeoutMs(
       own(params, 'timeout_ms') ?? CONNECTION_API_TIMEOUT_MS,
     );
+    const isWrite = isWriteRiskTier(call.risk_tier);
+    /** One trip to the target, with its own timeout budget.
+     *
+     *  ⚠ Extracted by D-218 slice 2 so the 401 path can run it a SECOND time.
+     *  Each attempt gets a fresh controller — a retry that inherited an
+     *  already-fired abort signal would fail instantly and look like a target
+     *  problem. */
+    const attempt = async (): Promise<Response> => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const isWrite = isWriteRiskTier(call.risk_tier);
     let response: Response;
     try {
       // SSRF: follow redirects manually, pinned to base_url's origin.
@@ -1129,7 +1811,7 @@ export const createConnectionApiHandler = (
       response = await fetchOriginPinned(fetchImpl, url.toString(), {
         method,
         headers,
-        body,
+        body: body as BodyInit | undefined,
         signal: controller.signal,
       }, baseOrigin);
     } catch (e) {
@@ -1169,6 +1851,66 @@ export const createConnectionApiHandler = (
       );
     }
     clearTimeout(timer);
+      return response;
+    };
+
+    let response = await attempt();
+
+    // ────────────── D-218 § 7.5a — reactive re-auth on a 401 ──────────────
+    //
+    // 🔑 **This is the ONLY retry on this dispatch path, and it is narrow
+    // BECAUSE a 401 is a clean rejection.** `ACTION_DELIVERY_UNCERTAIN` exists
+    // for 5xx and timeouts because the target may have COMMITTED before the ack
+    // was lost. A 401 is different in kind: the request was refused at auth,
+    // before the handler, so re-sending it cannot double-apply a write. That is
+    // a property of the status code — provable, not a hope about the target —
+    // which is why this carve-out does NOT generalise to any other status and
+    // must not be widened into one.
+    //
+    // ⛔ Bounded by four conditions, every one of them load-bearing:
+    //
+    //   1. **401 ONLY.** ⚠ `classifyHttpError` buckets `401 || 403` into a
+    //      single `OAUTH_EXPIRED` throw, so the retry reads the STATUS, not the
+    //      error code. A 403 is *authenticated but forbidden* — refreshing
+    //      changes nothing and re-sending is pure amplification.
+    //   2. **An auth type that can exchange.** `atproto_session` only; OAuth2
+    //      has a working expiry gate and widening to it would change a shipped
+    //      path with no ruling behind it.
+    //   3. **ONCE.** No loop, no ladder. A second 401 is the answer.
+    //   4. **Only if the exchange actually CHANGED the token** — otherwise the
+    //      retry is byte-identical to the call that just failed.
+    //
+    // ⚠ A re-exchange that THROWS propagates instead of the 401. That is the
+    // more actionable error: "your app password no longer works" tells the
+    // owner what to do, where a bare 401 on the op does not.
+    if (response.status === 401 && liveAuth.type === 'atproto_session') {
+      const staleToken = liveAuth.current_access_token;
+      // Clearing the cached token is how the existing gate is asked to exchange
+      // — it then refreshes or logs in by its own rule, and the single-flight
+      // still collapses concurrent 401s into ONE exchange, which matters
+      // doubly when the refresh token is single-use. The cleared copy is local;
+      // what gets persisted is built from the row's own credential fields.
+      const reauthed = await ensureFreshAuth(record, {
+        ...liveAuth,
+        current_access_token: undefined,
+      });
+      // ⚠ This narrowing is what the TYPE SYSTEM needs to read the field off a
+      // `ConnectionAuth`, NOT a second guard — the behavioural one is
+      // `liveAuth.type` above. A mutation sweep confirmed it: casting past this
+      // changes nothing, while deleting the outer check lets an
+      // `oauth2_refresh` row retry. Do not "simplify" by trusting this one.
+      const freshToken = reauthed.type === 'atproto_session'
+        ? reauthed.current_access_token
+        : undefined;
+      if (freshToken !== undefined && freshToken !== staleToken) {
+        // Release the refused response before replacing it — an unread body
+        // holds its socket open, and this is the one path that discards a
+        // response instead of throwing on it.
+        await response.body?.cancel().catch(() => {});
+        injectAuth(reauthed, headers, url);
+        response = await attempt();
+      }
+    }
 
     // ────────────── status classification + body parse ──────────────
     classifyHttpError(response, call.slug, isWrite);
@@ -1213,7 +1955,7 @@ export const createConnectionApiHandler = (
         argFilename
         || filenameFromContentDisposition(response.headers.get('content-disposition'))
         || 'download';
-      ctx?.setBytes(bytes.byteLength, body !== undefined ? new TextEncoder().encode(body).byteLength : 0);
+      ctx?.setBytes(bytes.byteLength, bodyByteLength(body));
       return {
         status: response.status,
         headers: responseHeadersToObject(response.headers),
@@ -1226,7 +1968,7 @@ export const createConnectionApiHandler = (
     // P4.2 — surface bytes_out (request body length) before body parse.
     // bytes_in lands after parseResponseBody so we know the actual
     // content length even when the server omitted the response header.
-    const bytesOut = body !== undefined ? new TextEncoder().encode(body).byteLength : 0;
+    const bytesOut = bodyByteLength(body);
     const result = await parseResponseBody(
       response,
       call.slug,
@@ -1257,4 +1999,198 @@ export const createConnectionApiHandler = (
     }
     return mapOutput(data, call.output, call.fallback);
   };
+
+  /** D-217 slice 2b-ii-β — one act, N requests, below the commit boundary.
+   *
+   *  ⚠ **`call.output` is deliberately EMPTIED for the phases.** A wrapper's
+   *  `output` mapping describes the ACT's result, and the act's result is what
+   *  FINALIZE returned. Mapping every phase would rewrite the INIT response
+   *  before `session_from` — which a manifest writes against the raw
+   *  `{status, headers, result}` shape — ever reads it, and the walk would fail
+   *  for a reason no author could see. Everything else on `call` is preserved:
+   *  `risk_tier` in particular, so each request classifies its errors as the
+   *  write it is. */
+  const runWalk = async (
+    record: ConnectionRow,
+    params: Record<string, unknown>,
+    call: ResolvedCall,
+    ctx?: ConnectionHandlerCtx,
+  ): Promise<unknown> => {
+    // ⛔ Exclusive, and REFUSED rather than ignored. The walk branch returns
+    // before the body builder runs, so a one-shot body shape riding along here
+    // would be silently dropped — a caller shipping the wrong body and never
+    // learning, which is the precedence hazard `buildUploadBody` refuses for
+    // exactly the same reason.
+    const collides = [
+      CHUNKED_UPLOAD_WIRE_TOKEN_KEY, 'body_binary', 'body_raw',
+    ].find((k) => hasOwn(params, k))
+      ?? (Object.keys(extractDotPrefix(params, 'body_file')).length > 0
+        ? 'body_file.*'
+        : undefined);
+    if (collides !== undefined) {
+      throw new IngredientError(
+        'BAD_INPUT',
+        `connection.api: ${CHUNKED_UPLOAD_WIRE_WALK_KEY} is exclusive — it cannot combine with ${collides}. The walk builds each request's body itself, one phase at a time`,
+        { slug: call.slug, name: record.name },
+      );
+    }
+    let walkInput;
+    try {
+      walkInput = parseChunkedWalkInput(own(params, CHUNKED_UPLOAD_WIRE_WALK_KEY));
+    } catch (e) {
+      throw new IngredientError(
+        'BAD_INPUT',
+        `connection.api (${call.slug}): ${(e as Error).message}`,
+        { slug: call.slug, name: record.name },
+      );
+    }
+
+    if (deps.uploadStaging === undefined) {
+      throw new IngredientError(
+        'SERVER_NOT_REACHABLE',
+        'connection.api: this host cannot stage a file for a chunked upload — the walk fails closed',
+        { slug: call.slug, name: record.name },
+      );
+    }
+
+    // ⛔ Bounded BEFORE decrypting anything. `stagePlaintext` sizes off the
+    // metadata path, so an over-ceiling file is refused without touching the
+    // ciphertext — and refusing to stage means the walk never starts, so no
+    // bytes leave.
+    const maxBytes = Math.min(
+      walkInput.spec.max_bytes ?? HTTP_CHUNKED_UPLOAD_MAX_BYTES_CEILING,
+      HTTP_CHUNKED_UPLOAD_MAX_BYTES_CEILING,
+    );
+    let staged: { token: string; size_bytes: number };
+    try {
+      staged = await deps.uploadStaging.stage({
+        file_ref: walkInput.file_ref,
+        ...(walkInput.expect_sha256 !== undefined
+          ? { expect_sha256: walkInput.expect_sha256 }
+          : {}),
+        max_bytes: maxBytes,
+      });
+    } catch (e) {
+      // A content-pin mismatch lands here: the file changed between the engine
+      // sizing it and this staging it. Nothing has been sent.
+      throw new IngredientError(
+        'BAD_INPUT',
+        `connection.api (${call.slug}): cannot stage '${walkInput.file_ref}' for a chunked upload: ${(e as Error).message}`,
+        { slug: call.slug, name: record.name },
+      );
+    }
+
+    let run;
+    try {
+      run = await runChunkedUpload({
+        input: walkInput,
+        staged,
+        connectionName: record.name,
+        now,
+        performPhase: (phaseParams, phaseCtx) =>
+          handler(record, phaseParams, { ...call, output: {} }, phaseCtx),
+      });
+    } catch (e) {
+      // Refused before the first request — a declaration that fails the § 8a
+      // predicate at run time, an over-ceiling file, a size that no longer
+      // matches the plan, or a count that does not match the one approved. No
+      // bytes left, so there is nothing to record.
+      if (e instanceof IngredientError) throw e;
+      throw new IngredientError(
+        'BAD_INPUT',
+        `connection.api (${call.slug}): ${(e as Error).message}`,
+        { slug: call.slug, name: record.name },
+      );
+    } finally {
+      // ⚠ Not best-effort housekeeping — this is the owner's decrypted
+      // plaintext. The boot sweep is the backstop for a SIGKILL, not a
+      // substitute for disposing on every exit path including a throw.
+      // A failing dispose must not mask the walk's own outcome.
+      await deps.uploadStaging.dispose(staged.token).catch(() => {});
+    }
+
+    // ⛔ BEFORE the throw below, never after. § 6.3 — a walk that failed at
+    // chunk k still sent k chunks to a third party, and the audit records what
+    // LEFT rather than what was intended. The adapter's emit closure reads
+    // these on the error path too, so this is what makes a failed upload a
+    // truthful row instead of a no-op.
+    ctx?.setBytes(run.bytes_in, run.bytes_out);
+    // ⚠ The bytes alone cannot tell a complete upload from an abandoned one
+    // that moved the same volume — and `committed_unconfirmed` is an `ok` row
+    // like `committed`, so without this the § 8.1 distinction dies here.
+    ctx?.setChunkedUpload?.({
+      outcome: run.outcome,
+      chunks_sent: run.chunks_sent,
+      chunk_count: walkInput.count,
+      requests: run.requests,
+    });
+
+    if (run.outcome === 'processing_failed') {
+      throw new IngredientError(
+        'NETWORK_ERROR',
+        `Chunked upload via connection '${record.name}' was finalized, but the target reported terminal processing failure: ${run.message ?? 'no detail'}`,
+        {
+          slug: call.slug,
+          name: record.name,
+          chunks_sent: run.chunks_sent,
+          bytes_sent: run.bytes_sent,
+          requests: run.requests,
+        },
+      );
+    }
+
+    if (run.outcome === 'failed') {
+      const detail = {
+        slug: call.slug,
+        name: record.name,
+        chunks_sent: run.chunks_sent,
+        bytes_sent: run.bytes_sent,
+        requests: run.requests,
+      };
+      // ⛔ A failed FINALIZE is NOT a definite failure. Fail-closed guarantees
+      // the commit request is unreachable after a bad chunk — so `failed` means
+      // "never created" for every phase EXCEPT this one, where the commit
+      // request did go out and its outcome is precisely what could not be
+      // confirmed. Reporting it as definite invites the retry that double-posts,
+      // which is the same hazard § 8.1 rules on for the poll.
+      if (run.failed_phase === 'finalize') {
+        throw new IngredientError(
+          'ACTION_DELIVERY_UNCERTAIN',
+          `Chunked upload via connection '${record.name}' sent all ${run.chunks_sent} chunk(s) but could not confirm the commit request: ${run.message ?? 'no detail'} — verify in the target system before retrying, a retry may double-post`,
+          detail,
+        );
+      }
+      // Everything else fails closed: FINALIZE was never sent, so the asset was
+      // never created. Re-thrown under the code the single request produced, so
+      // a 403 on chunk 3 still reads as a 403.
+      const cause = run.failed_error;
+      throw new IngredientError(
+        cause?.code ?? 'BAD_INPUT',
+        `Chunked upload via connection '${record.name}' failed at ${run.failed_phase ?? 'the walk'} after ${run.chunks_sent} of ${walkInput.count} chunk(s); no commit request was sent, so nothing was created. ${run.message ?? ''}`.trim(),
+        detail,
+      );
+    }
+
+    // ⚠ FINALIZE's response, and no other phase's — the INIT handle is state
+    // the WALK owns and must not become a step value (§ 4.1).
+    const data = {
+      ...(isRecord(run.result) ? run.result : { result: run.result }),
+      upload: {
+        outcome: run.outcome,
+        requests: run.requests,
+        chunks_sent: run.chunks_sent,
+        bytes_sent: run.bytes_sent,
+        ...(run.message !== undefined ? { message: run.message } : {}),
+      },
+    };
+    if (Object.keys(call.output).length === 0) {
+      return data;
+    }
+    return mapOutput(data, call.output, call.fallback);
+  };
+
+  return handler;
 };
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);

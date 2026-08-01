@@ -126,7 +126,14 @@ export interface StartPreListenerRuntimeOptions {
   readonly getServerHealth?:
     StartListenerExposureRuntimeOptions['runtime']['getServerHealth'];
   readonly cascade: StartListenerExposureRuntimeOptions['runtime']['cascade'];
-  readonly env?: ComposeIngressRpcContextOptions['env'];
+  /** Process-env override, forwarded to `composeClientSecurityContext` →
+   *  `composeCertStack`, which reads `RECUED_PRO_ENTITLEMENT_MINT_URL` /
+   *  `RECUED_PRO_ENTITLEMENT_PUBLIC_KEY_B64` from it (defaulting to
+   *  `process.env`). It used to be typed off `ComposeIngressRpcContextOptions`
+   *  and forwarded there too, for the retired `RECUED_MCP_HTTP_TOKEN` bearer —
+   *  that consumer never existed after the D-171 door-token swap, so the type
+   *  now points at the seam that actually reads it. */
+  readonly env?: ComposeClientSecurityContextOptions['env'];
 }
 
 export const startPreListenerRuntime = async (
@@ -146,7 +153,9 @@ export const startPreListenerRuntime = async (
     // R26.2 Delta 2 — thread the runtime-config store so the exposure rpc
     // deps expose the apex (`network.apex_mode`) get/set.
     runtimeConfig: options.runtimeConfig,
-    env: options.env,
+    // `env` is NOT forwarded here — the ingress composer never read it (see the
+    // note on `ComposeIngressRpcContextOptions`). It still goes to
+    // `composeClientSecurityContext` below, which does.
   });
 
   const cloudBaseUrl: string = options.runtimeConfig.get('cloud.base_url') as string;

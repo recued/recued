@@ -168,6 +168,13 @@ export const TRANSFORM_SCHEMAS: Record<string, TransformSchema> = {
     source: OPT('object'),
     sources: OPT('array'),
   },
+  enrich_by: {
+    array: REQ('array'),
+    with: REQ('array'),
+    key: REQ('string'),
+    with_key: OPT('string'),
+    fields: REQ('object'),
+  },
   prefix_keys: {
     source: REQ('object'),
     prefix: REQ('string'),
@@ -188,11 +195,34 @@ export const TRANSFORM_SCHEMAS: Record<string, TransformSchema> = {
     field: REQ('string'),
     value: REQ('any'),
   },
+  json_byte_length: {
+    input: REQ('any'),
+  },
+  json_stringify: {
+    input: REQ('any'),
+  },
+  json_parse: {
+    input: REQ('string'),
+  },
+  csv_parse: {
+    input: REQ('string'),
+    delimiter: OPT('string'),
+    quote: OPT('string'),
+    has_header: OPT('boolean'),
+    ragged: OPT('string'),
+  },
+  utf8_byte_length: {
+    input: REQ('string'),
+  },
+  sha256: {
+    input: REQ('string'),
+  },
 
   // ── String ────────────────────────────────────────────────
   lowercase: { input: REQ('string') },
   uppercase: { input: REQ('string') },
   trim:      { input: REQ('string') },
+  string_length: { input: REQ('string') },
   encode_base64: { input: REQ('string') },
   decode_base64: { input: REQ('string') },
   split: {

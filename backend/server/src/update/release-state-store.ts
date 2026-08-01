@@ -21,6 +21,12 @@ export interface ReleaseCheckState {
   salt: string;
   /** Highest manifest sequence ever accepted (anti-replay floor). */
   highest_accepted_sequence: number;
+  /** The available version the scheduled check last told the owner about
+   *  (audit row today; a D-158 notify when that lands). Absent until the first
+   *  `update-available` cycle. Purely a de-duplication marker — it gates
+   *  REPORTING, never the resolve: a scheduled check on a daily cadence would
+   *  otherwise re-announce the same pending release every cycle forever. */
+  last_reported_version?: string;
 }
 
 export interface ReleaseStateStore {
@@ -51,12 +57,18 @@ export const createReleaseStateStore = (db: Database.Database): ReleaseStateStor
       if (!row) return null;
       const parsed = JSON.parse(row.value) as Partial<ReleaseCheckState>;
       if (typeof parsed.salt !== 'string' || parsed.salt.length === 0) return null;
+      // ⛔ ENUMERATING COPIER — a field absent HERE is dropped on every read
+      // and re-written away by the next save, however correct the interface
+      // looks. Add new state to both places or it silently never persists.
       return {
         salt: parsed.salt,
         highest_accepted_sequence:
           typeof parsed.highest_accepted_sequence === 'number' && Number.isFinite(parsed.highest_accepted_sequence)
             ? parsed.highest_accepted_sequence
             : 0,
+        ...(typeof parsed.last_reported_version === 'string' && parsed.last_reported_version.length > 0
+          ? { last_reported_version: parsed.last_reported_version }
+          : {}),
       };
     } catch {
       return null;

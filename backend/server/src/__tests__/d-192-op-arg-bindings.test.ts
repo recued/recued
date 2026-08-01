@@ -1,5 +1,5 @@
 /** D-192 — `op_arg_bindings` substrate: the connection_config → op-arg resolver
- *  and its threading into the SYNC-RUNNER LIST dispatch. The generalization of
+ *  and its threading into sync LIST plus targeted read/write dispatch. The generalization of
  *  `create_arg_bindings` that makes a vendor whose list op needs a per-connection
  *  scoping arg (Asana `workspace`, Google Tasks `tasklist`) a viable read-only
  *  Source — the sync runner used to walk with hard-coded `args: {}`.
@@ -90,6 +90,31 @@ const validReadOnly = (): Record<string, unknown> => ({
   projection: { canonical: { title: 'title', state: 'status' } },
 });
 
+const validReadWrite = (): Record<string, unknown> => {
+  const declaration = validReadOnly();
+  (declaration.contract_source as Record<string, unknown>).operations = [
+    'task.search', 'task.read', 'task.update',
+  ];
+  declaration.ops = { list: 'task.search', read: 'task.read', update: 'task.update' };
+  declaration.op_bindings = {
+    read: { id_arg: 'task_id' },
+    update: { id_arg: 'task_id' },
+  };
+  declaration.sync = {
+    mode: 'read_write', depth: 'meta', tombstones: 'none',
+    list_scope: 'filtered', stale_after_ms: 3_600_000,
+  };
+  declaration.read_resolution = {
+    ...(declaration.read_resolution as Record<string, unknown>),
+    remote_when: ['field_missing', 'write_preflight'],
+  };
+  declaration.writable_fields = ['title'];
+  declaration.write_policy = {
+    conditional_write: 'none', stale_write: 'manual_merge', field_conflicts: 'manual_merge',
+  };
+  return declaration;
+};
+
 describe('D-192 validator — op_arg_bindings', () => {
   it('accepts a valid list+read binding', () => {
     const decl = validReadOnly();
@@ -100,11 +125,32 @@ describe('D-192 validator — op_arg_bindings', () => {
     expect(validateOne(decl)).toEqual([]);
   });
 
-  it('rejects an unsupported slot (write-slot scoping is a future extension)', () => {
-    const decl = validReadOnly();
-    (decl.ops as Record<string, string>).update = 'task.update';
-    decl.op_arg_bindings = { update: { tasklist_id: { source: 'connection_config', config_key: 't' } } };
-    expect(validateOne(decl).some((p) => p.includes('op_arg_bindings.update'))).toBe(true);
+  it('accepts a targeted update binding and rejects an id-arg collision', () => {
+    const decl = validReadWrite();
+    decl.op_arg_bindings = {
+      update: { project_ref: { source: 'connection_config', config_key: 'project_ref' } },
+    };
+    expect(validateOne(decl)).toEqual([]);
+
+    decl.op_arg_bindings = {
+      update: { task_id: { source: 'connection_config', config_key: 'wrong' } },
+    };
+    expect(validateOne(decl).some((p) => p.includes('op_arg_bindings.update.task_id'))).toBe(true);
+  });
+
+  it('rejects a targeted binding that collides with the write precondition arg', () => {
+    const decl = validReadWrite();
+    (decl.op_bindings as Record<string, Record<string, unknown>>).update!.precondition_arg = 'revision';
+    decl.op_arg_bindings = {
+      update: { revision: { source: 'connection_config', config_key: 'project_revision' } },
+    };
+    expect(validateOne(decl).some((p) => p.includes('op_arg_bindings.update.revision'))).toBe(true);
+  });
+
+  it('rejects create in op_arg_bindings because create has its own binding lane', () => {
+    const decl = validReadWrite();
+    decl.op_arg_bindings = { create: { project_ref: { source: 'static', value: 'p' } } };
+    expect(validateOne(decl).some((p) => p.includes('op_arg_bindings.create'))).toBe(true);
   });
 
   it('rejects a binding for a slot whose op is not declared', () => {

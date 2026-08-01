@@ -70,6 +70,13 @@ export interface WebhookDoorEnrollDeps extends MintDoorDeps {
    *  grants is derived from the config the run will actually use. */
   readonly resolveConfig: (recipeId: string) => Record<string, unknown> | undefined;
   readonly resolveOp?: OpResolver;
+  /** D-221 §3.3.3 — arming/minting is the non-owner exposure act. A
+   * refusing preflight leaves trigger rows NULL-stamped and therefore
+   * uncallable; saving the draft itself remains allowed. */
+  readonly preflightNonOwnerRecipeExposure?: (
+    recipe: RecipeDefinition,
+    surface: 'webhook',
+  ) => void;
 }
 
 export type WebhookDoorOutcome =
@@ -173,6 +180,15 @@ export const reconcileWebhookDoors = (
 
   for (const entry of input.recipes) {
     const priorIds = snapshotDoorContractIds(input.prior, entry);
+    try {
+      deps.preflightNonOwnerRecipeExposure?.(entry.recipe, 'webhook');
+    } catch (error) {
+      outcomes.set(entry.recipe_id, {
+        kind: 'failed',
+        message: error instanceof Error ? error.message : String(error),
+      });
+      continue;
+    }
     const config = deps.resolveConfig(entry.recipe_id);
     const derived = deriveRecipeCapability(entry.recipe, {
       ...(config === undefined ? {} : { config }),

@@ -87,6 +87,9 @@ export interface StartServeHousekeepingSchedulerOptions {
   /** D-196 §6.3 (s2b) — the pre-built seller-access reconcile deps. Undefined on
    *  a boot without the seller substrate ⇒ the task doesn't register. */
   readonly sellerAccessReconcileDeps?: ComposeHousekeepingSchedulerDeps['sellerAccessReconcileDeps'];
+  /** D-225 § 12 — the pre-built mcp tool-drift probe deps. Undefined on a boot
+   *  without the connection substrate ⇒ the task doesn't register. */
+  readonly mcpToolsDriftProbeDeps?: ComposeHousekeepingSchedulerDeps['mcpToolsDriftProbeDeps'];
 }
 
 export const startSchedulers = (

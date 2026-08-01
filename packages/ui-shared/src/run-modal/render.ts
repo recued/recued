@@ -12,10 +12,15 @@ import {
   CRON_PRESETS,
   describeCron,
   type ServerRecipeListEntry,
+  type ServerSchedule,
 } from '@recued/contracts';
 
 import { e } from '../template.js';
-import { renderVariableWidget, toWidgetShape } from '../variable-widgets.js';
+import {
+  isInvocationVariable,
+  renderVariableWidget,
+  toWidgetShape,
+} from '../variable-widgets.js';
 
 import { parseRunConfig, plural, recipeDisplayName, runTargetGate } from './model.js';
 import type { RunModalState } from './types.js';
@@ -31,6 +36,11 @@ export const RUN_MODAL_CONTEXT_ATTR = 'data-recued-run-modal-context';
 export const RUN_MODAL_IDENTITY_ATTR = 'data-recued-run-modal-identity';
 export const RUN_MODAL_RESULT_ATTR = 'data-recued-run-modal-result';
 export const RUN_MODAL_PRESET_ATTR = 'data-recued-run-modal-preset';
+/** D-215 slice 5 — the Repeat toggle. Off ⇒ the datetime control replaces
+ *  the CRON preset picker and Add creates a ONE-SHOT. */
+export const RUN_MODAL_REPEAT_ATTR = 'data-recued-run-modal-repeat';
+/** D-215 slice 5 — the one-shot datetime-local input. */
+export const RUN_MODAL_RUN_AT_ATTR = 'data-recued-run-modal-run-at';
 export const RUN_MODAL_RULE_ID_ATTR = 'data-recued-run-modal-rule-id';
 export const RUN_MODAL_SCHEDULE_ERROR_ATTR = 'data-recued-run-modal-schedule-error';
 export const RUN_MODAL_PATTERN_ATTR = 'data-recued-run-modal-pattern';
@@ -44,6 +54,8 @@ export interface RunModalCaps {
   canTrigger: boolean;
   /** D-200 — whether `file_ref` variables can use an owner-file picker. */
   canPickFiles?: boolean;
+  /** Whether `record_ref` variables can use their pack-owned inventory. */
+  canPickRecords?: boolean;
 }
 
 /** Render one variable widget per `recipe.variables` key, pre-filled
@@ -53,10 +65,13 @@ export interface RunModalCaps {
 const renderVariableRows = (
   recipe: ServerRecipeListEntry,
   config_text: string,
-  fileRefPicker: boolean,
+  caps: Pick<RunModalCaps, 'canPickFiles' | 'canPickRecords'>,
+  surface: 'invoke' | 'configure',
 ): string => {
   const variables = recipe.recipe.variables ?? {};
-  const varKeys = Object.keys(variables);
+  const varKeys = Object.keys(variables).filter((key) =>
+    surface === 'configure' || isInvocationVariable(variables[key]!),
+  );
   if (varKeys.length === 0) return '';
   let overrides: Record<string, unknown> = {};
   try {
@@ -70,7 +85,8 @@ const renderVariableRows = (
       return def === undefined
         ? ''
         : renderVariableWidget(toWidgetShape(key, def, overrides[key]), {
-            fileRefPicker,
+            fileRefPicker: caps.canPickFiles === true,
+            recordRefPicker: caps.canPickRecords === true,
             idPrefix: 'run-modal-var',
           });
     })
@@ -84,9 +100,9 @@ const renderConfigSection = (
   recipe: ServerRecipeListEntry,
   config_text: string,
   label: string,
-  fileRefPicker: boolean,
+  caps: Pick<RunModalCaps, 'canPickFiles' | 'canPickRecords'>,
 ): string => {
-  const rows = renderVariableRows(recipe, config_text, fileRefPicker);
+  const rows = renderVariableRows(recipe, config_text, caps, 'configure');
   if (rows.length === 0) return '';
   return `
       <label class="run-modal-copy">${e(label)}</label>
@@ -109,7 +125,8 @@ const renderRunTab = (
   const widgetRows = renderVariableRows(
     recipe,
     state.config_text,
-    caps.canPickFiles === true,
+    caps,
+    'invoke',
   );
   let hasConfigValues = false;
   try {
@@ -117,19 +134,30 @@ const renderRunTab = (
   } catch {
     // The raw editor stays visible below and confirmRun surfaces the parse error.
   }
+  // ⚠ The qualifier describes the FIELDS ABOVE, so it follows `widgetRows` — not
+  // `varKeys`. D-222 Slice 0 split the two: a recipe whose variables are all
+  // defaulted primitives declares variables (`varKeys` non-empty) and renders NO
+  // invoke fields, so keying the copy on `varKeys` promised "the fields above" to
+  // a reader looking at an empty "Run with overrides" panel.
   const jsonField = `
         <label class="run-modal-copy" for="run-modal-config">Config JSON${
-          varKeys.length > 0 ? ' (advanced — overrides the fields above)' : ''
+          widgetRows.length > 0 ? ' (advanced — overrides the fields above)' : ''
         }</label>
         <textarea id="run-modal-config" ${RUN_MODAL_CONFIG_ATTR}>${e(state.config_text)}</textarea>`;
-  const configBody = varKeys.length > 0
+  const configBody = widgetRows.length > 0
     ? `
         <div class="run-modal-fields">${widgetRows}</div>
         <details class="run-modal-advanced"${hasConfigValues ? ' open' : ''}>
           <summary>Advanced — raw config JSON</summary>
           ${jsonField}
         </details>`
-    : jsonField;
+    : varKeys.length > 0
+      ? `
+        <details class="run-modal-advanced"${hasConfigValues ? ' open' : ''}>
+          <summary>Run with overrides</summary>
+          ${jsonField}
+        </details>`
+      : jsonField;
 
   // Targeting guard (design § 8) — warn + disable Run until the target is
   // supplied. Context targets get dedicated inputs; config targets ride
@@ -223,18 +251,37 @@ const renderRunTab = (
       ${result}`;
 };
 
+/** D-215 slice 5 — a schedule's cadence line, MODE-FIRST.
+ *
+ *  ⛔ Never pass a one-shot's `cron_expression` to `describeCron`. The
+ *  server SYNTHESIZES that expression from `run_at`
+ *  (`${d.getMinutes()} ${d.getHours()} ${d.getDate()} ${d.getMonth()+1} *`),
+ *  which is a VALID ANNUAL cron — `describeCron` matches no preset and no
+ *  pattern branch, and returns the raw string. A one-shot would render as
+ *  `30 14 3 8 *`, which reads as a recurring rule that does not exist.
+ *  The expression is an internal artifact and is never shown. */
+const cadenceLine = (s: ServerSchedule): string =>
+  s.mode === 'one_shot'
+    ? `Once — ${e(
+        typeof s.run_at === 'number'
+          ? new Date(s.run_at).toLocaleString()
+          : 'time not set',
+      )}`
+    : `${e(describeCron(s.cron_expression))} <code>${e(s.cron_expression)}</code>`;
+
 const renderScheduleRow = (
-  scheduleId: string,
-  cron: string,
+  schedule: ServerSchedule,
   enabled: boolean,
   nextRunAt: number | null,
   lastError: string | null,
   mutating: boolean,
   showConfig: boolean,
-): string => `
+): string => {
+  const scheduleId = schedule.schedule_id;
+  return `
   <li class="run-modal-rule-row">
     <div>
-      <div>${e(describeCron(cron))} <code>${e(cron)}</code>${enabled ? '' : ' — paused'}</div>
+      <div>${cadenceLine(schedule)}${enabled ? '' : ' — paused'}</div>
       <div class="run-modal-meta">next ${
         enabled && nextRunAt !== null ? e(new Date(nextRunAt).toLocaleString()) : '—'
       }${lastError ? ` · ${e(lastError)}` : ''}</div>
@@ -253,6 +300,7 @@ const renderScheduleRow = (
         ${RUN_MODAL_RULE_ID_ATTR}="${e(scheduleId)}"${mutating ? ' disabled' : ''}>Remove</button>
     </div>
   </li>`;
+};
 
 const renderScheduleTab = (
   state: RunModalState,
@@ -271,14 +319,13 @@ const renderScheduleTab = (
     recipe,
     state.config_text,
     'Config for every scheduled run',
-    caps.canPickFiles === true,
+    caps,
   );
   const hasVars = Object.keys(recipe.recipe.variables ?? {}).length > 0;
   const rows = state.schedules
     .map((s) =>
       renderScheduleRow(
-        s.schedule_id,
-        s.cron_expression,
+        s,
         s.enabled,
         s.next_run_at,
         s.last_error,
@@ -299,12 +346,21 @@ const renderScheduleTab = (
       ${configSection}
       <label class="run-modal-copy" for="run-modal-preset">Run on a schedule</label>
       <div class="run-modal-actions">
-        <select id="run-modal-preset" class="run-modal-select" ${RUN_MODAL_PRESET_ATTR}>
+        <label class="run-modal-copy">
+          <input type="checkbox" ${RUN_MODAL_REPEAT_ATTR}
+            ${state.repeat ? 'checked' : ''} />
+          Repeat
+        </label>
+        ${state.repeat
+          ? `<select id="run-modal-preset" class="run-modal-select" ${RUN_MODAL_PRESET_ATTR}>
           ${CRON_PRESETS.map((p) => `<option value="${e(p.expression)}"${p.expression === state.preset_expression ? ' selected' : ''}>${e(p.label)}</option>`).join('')}
-        </select>
+        </select>`
+          : `<input type="datetime-local" id="run-modal-preset" class="run-modal-select"
+             ${RUN_MODAL_RUN_AT_ATTR} value="${e(state.run_at_local)}"
+             aria-label="Run once at" />`}
         <button type="button" class="run-modal-button run-modal-button--primary"
           ${RUN_MODAL_ACTION_ATTR}="add-schedule"${state.mutating ? ' disabled' : ''}>
-          Add schedule
+          ${state.repeat ? 'Add schedule' : 'Schedule once'}
         </button>
       </div>`;
 };
@@ -331,7 +387,7 @@ const renderTriggerTab = (
     recipe,
     state.config_text,
     'Config for runs from this trigger',
-    caps.canPickFiles === true,
+    caps,
   );
   const hasVars = Object.keys(recipe.recipe.variables ?? {}).length > 0;
   const rows = state.triggers

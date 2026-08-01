@@ -183,15 +183,25 @@ describe('PII ledger checkpoint round-trip', () => {
 
     expect(approval.pii_ledgers).toBeDefined();
     expect(approval.pii_ledgers!.handles).toEqual([protect.ledger_handle]);
+    // ⚠ D-227 — NAME now leads. `aliasIdentifierPass` partitions name fields to
+    // the front so an email whose local part renders a contact's name can carry
+    // that person (`pii.Person1@d1.invalid`), which needs the name in the ledger
+    // FIRST. Ledger order is insertion order, so the serialized checkpoint
+    // reflects it.
+    //
+    // ⚠ ORDER IS NOT LOAD-BEARING for the round-trip this test guards: both maps
+    // are rebuilt by KEY on rehydrate, and the ALIASES are unchanged — `m1` and
+    // `pii.Person1` below are the same values as before, because "Alice Smith"
+    // folds to `alicesmith` and the local part is `alice`, so no link is earned.
     expect(approval.pii_ledgers!.by_kind_real_value.map(([key]) => key)).toEqual([
+      'name::Alice Smith',
       'domain::example.test',
       'email_local::alice@example.test',
-      'name::Alice Smith',
     ]);
     expect(approval.pii_ledgers!.by_kind_base_alias.map(([key]) => key)).toEqual([
+      'name::pii.Person1',
       'domain::d1.invalid',
       'email_local::m1',
-      'name::pii.Person1',
     ]);
     expect(result.steps.map((step) => step.id)).toEqual(['reader', 'protect']);
   });

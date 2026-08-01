@@ -231,15 +231,29 @@ export const PII_FLOW_RULES: Readonly<Record<string, PiiFlowRule>> = {
   partition: { rule: 'pass_array', arg: 'array' },
   // ── Object ──
   merge: { rule: 'union_values', args: ['source', 'sources'] },
+  // Copies values from `with` onto items of `array`, so the result is tainted by
+  // BOTH inputs — the same class as `merge`, not `pass_array`.
+  enrich_by: { rule: 'union_values', args: ['array', 'with'] },
   prefix_keys: { rule: 'structural' },
   pick: { rule: 'structural' },
   omit: { rule: 'structural' },
   rename: { rule: 'structural' },
   set: { rule: 'structural' },
+  // Like count: the scalar byte length reveals no recoverable content.
+  json_byte_length: { rule: 'destroy' },
+  // Serialization and parsing preserve every value and therefore its taint.
+  json_stringify: { rule: 'string_preserve', arg: 'input' },
+  json_parse: { rule: 'string_preserve', arg: 'input' },
+  // A bank export is full of names and account references, and parsing moves
+  // every one of them into the rows unchanged — the taint travels with them.
+  csv_parse: { rule: 'string_preserve', arg: 'input' },
+  utf8_byte_length: { rule: 'destroy' },
+  sha256: { rule: 'destroy' },
   // ── String ──
   lowercase: { rule: 'string_preserve', arg: 'input' },
   uppercase: { rule: 'string_preserve', arg: 'input' },
   trim: { rule: 'string_preserve', arg: 'input' },
+  string_length: { rule: 'destroy' },
   // encode_base64 is an ENCODING, not a hash and not redaction: the value
   // survives whole and `atob` reverses it. It reads as obscuring because the
   // output is unreadable, which is exactly why it must not be a `destroy` —

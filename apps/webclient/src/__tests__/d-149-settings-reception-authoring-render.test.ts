@@ -234,6 +234,27 @@ describe('D-149 follow-on — renderAuthoringForm: field controls', () => {
     expect(html).toContain('data-option-value="30"');
     expect(html).toContain('data-option-value="60"');
   });
+
+  it('hides the unimplemented proof-of-work and CAPTCHA controls', () => {
+    const config = intakeFormConfig();
+    const html = renderAuthoringForm({
+      kind: 'intake_form',
+      model: buildIntakeFormFormModel({
+        ...config,
+        anti_spam: {
+          ...config.anti_spam,
+          require_proof_of_work: true,
+          require_captcha: true,
+        },
+      }),
+      validation: null,
+    });
+
+    expect(html).not.toContain('Require proof-of-work');
+    expect(html).not.toContain('Require CAPTCHA');
+    expect(html).not.toContain('data-field-key="anti_spam.require_proof_of_work"');
+    expect(html).not.toContain('data-field-key="anti_spam.require_captcha"');
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════

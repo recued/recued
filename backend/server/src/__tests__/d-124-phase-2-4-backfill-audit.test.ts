@@ -78,6 +78,8 @@ const newFakeAuditLog = (): FakeAuditLog => {
     listByChannelSession: async () => [],
     listByCognitionSession: async () => [],
     listByCorrelation: async () => [],
+    listByDish: async () => [],
+    latestByDishes: async () => new Map(),
     get: async () => null as AuditEntry | null,
     clearOlderThan: async () => 0,
     clearByRecipe: async () => 0,

@@ -202,6 +202,12 @@ const makeRegistryMcpHarness = (
   capturedRequests: ExecuteRequest[];
   registry: ReturnType<typeof createInternalToolRegistry>;
 } => {
+  // ⚠ D-228 slice 1 — an MCP harness must now carry an AUTHORIZER, because a
+  // caller carrying no contract is offered nothing (`buildMcpContractSnapshot`
+  // used to fall back to every slug). These tests are about the POLICY GATE —
+  // whether a dispatch is admitted once the snapshot names its slug — so the
+  // harness grants everything and their subject is unchanged. A test that wants
+  // to pin the EMPTY case overrides this.
   const executeDeps = makeDeps(recipe, manifests, overrides);
   const capturedRequests: ExecuteRequest[] = [];
   const execute = async (request: ExecuteRequest): Promise<ExecuteResponse> => {
@@ -226,6 +232,9 @@ const makeRegistryMcpHarness = (
   return {
     deps: {
       ...executeDeps,
+      // Grants everything; `overrides` still wins, so a test can pin the empty
+      // case by supplying its own (or an undefined) authorizer.
+      inboundTokenAuthorize: () => true,
       ...overrides,
       internalRegistry: registry,
     } as Parameters<typeof _testing.handleToolCall>[1],
@@ -970,7 +979,10 @@ describe('D-153 P2.C handleExecute — mcp policy gate wiring', () => {
     const recipe = buildRecipe({
       recipe_id: 'mcp-run-ingredient-inline',
       ttl: 0,
-      variables: { ingredient_slug: null, input: {} } as unknown as RecipeDefinition['variables'],
+      variables: {
+        ingredient_slug: null,
+        input: { label: 'Ingredient input', type: 'json', default: {} },
+      } as unknown as RecipeDefinition['variables'],
       steps: [
         {
           id: 'call',

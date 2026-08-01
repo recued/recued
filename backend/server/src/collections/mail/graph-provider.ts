@@ -46,6 +46,9 @@ import {
 } from '@recued/contracts';
 import { IngredientError } from '@recued/ingredients';
 import {
+  classifyMailApiStatus,
+  classifyOAuthFailure,
+  createMailSyncOutcomeReporter,
   assertMailSentReconciliationQuery,
   evaluateMailSentReconciliationCandidates,
   MAIL_SENT_RECONCILIATION_MAX_SCAN,
@@ -57,6 +60,8 @@ import {
   type InitialScanOptions,
   type InboundMailAttachmentPart,
   type MailProvider,
+  type MailSyncFailureKind,
+  type MailSyncOutcomeListener,
   type MailSentAttachmentReconciliationQuery,
   type MailSentReconciliationCandidate,
   type MailSentReconciliationQuery,
@@ -69,12 +74,12 @@ import {
 } from './provider.js';
 import {
   getAccessToken,
+  grantedScopesInclude,
   keyPrefix,
   OAuthError,
   requireProviderConfig,
   type HttpFetcher,
   type OAuthAccountStore,
-  type OAuthProviderConfig,
   type OAuthProviderConfigSource,
 } from './oauth.js';
 
@@ -393,6 +398,27 @@ export const createGraphProvider = (
     opts.log?.('warn', msg, { err: err instanceof Error ? err.message : String(err) });
   };
 
+  // Per-attempt outcome reporting — see `MailSyncOutcome` in provider.ts.
+  const outcomes = createMailSyncOutcomeReporter({
+    now: nowOf,
+    classifyError: (err): MailSyncFailureKind =>
+      err instanceof OAuthError
+        ? classifyOAuthFailure(err.status, err.oauth_error)
+        : 'transient',
+  });
+
+  /** Record a swallowed read failure so the enclosing attempt reports it —
+   *  `getWithRetry` returns `null` and callers early-return, which is
+   *  indistinguishable from a clean empty tick without this. */
+  const noteReadFailure = (status: number, msg: string, body: unknown): void => {
+    // The BODY is threaded in, not just the status: a 403 is quota far more often
+    // than it is a scope problem, and only the body's `reason` tells them apart.
+    outcomes.noteFailure(
+      classifyMailApiStatus(status, typeof body === 'string' ? body : undefined),
+    );
+    markError(msg, body);
+  };
+
   const ensureToken = async (force: boolean): Promise<string> => {
     if (accessToken && !force) return accessToken;
     accessToken = await getAccessToken({
@@ -416,11 +442,11 @@ export const createGraphProvider = (
         fetcher,
       });
       if (second.ok) return second.data;
-      markError(`graph ${url} → ${second.status}`, second.text);
+      noteReadFailure(second.status, `graph ${url} → ${second.status}`, second.text);
       return null;
     }
     if (first.status === 404) return null;
-    markError(`graph ${url} → ${first.status}`, first.text);
+    noteReadFailure(first.status, `graph ${url} → ${first.status}`, first.text);
     return null;
   };
 
@@ -915,7 +941,13 @@ export const createGraphProvider = (
   // from the user's granted-scope list. Re-enrollment with new
   // scopes recreates the provider so a later config() mutation can't
   // desync the field from the method.
-  const sendCapable = (opts.config().granted_scopes ?? []).includes(GRAPH_SEND_SCOPE);
+  // Tolerant match — Microsoft may return `https://graph.microsoft.com/Mail.Send`
+  // for a `Mail.Send` request, and an exact miss makes send silently unavailable
+  // (see `grantedScopesInclude`).
+  const sendCapable = grantedScopesInclude(
+    opts.config().granted_scopes ?? [],
+    GRAPH_SEND_SCOPE,
+  );
   const accountEmail = opts.config().account_email ?? '';
 
   return {
@@ -934,28 +966,33 @@ export const createGraphProvider = (
     },
 
     async initialScan(scanOpts) {
-      await runInitialScan(scanOpts);
-      // Seed delta links for each folder AFTER the initial scan so
-      // later poll ticks catch messages arriving during the scan
-      // window too.
-      for (const folder of folders()) {
-        await seedDeltaLink(folder);
-      }
+      await outcomes.run('initial_scan', async () => {
+        await runInitialScan(scanOpts);
+        // Seed delta links for each folder AFTER the initial scan so
+        // later poll ticks catch messages arriving during the scan
+        // window too.
+        for (const folder of folders()) {
+          await seedDeltaLink(folder);
+        }
+      });
     },
 
     async startSync(cb) {
       const scheduler = opts.scheduler ?? defaultScheduler;
       const intervalMs = Math.max(1, opts.config().poll_seconds) * 1000;
+      // ONE outcome per sweep, not per folder: a tick is the unit the user
+      // experiences ("did my mail update"), and a per-folder outcome would let a
+      // healthy inbox mask a broken archive folder in the same attempt.
+      const tick = (): Promise<void> =>
+        outcomes.run('poll', async () => {
+          for (const folder of folders()) {
+            await runDeltaTick(folder, cb);
+          }
+        });
       // Fire an initial tick so tests + healthchecks don't wait on
       // the first interval.
-      for (const folder of folders()) {
-        await runDeltaTick(folder, cb);
-      }
-      pollStop = scheduler(async () => {
-        for (const folder of folders()) {
-          await runDeltaTick(folder, cb);
-        }
-      }, intervalMs);
+      await tick();
+      pollStop = scheduler(tick, intervalMs);
       return async () => {
         if (pollStop) { pollStop(); pollStop = null; }
       };
@@ -963,6 +1000,10 @@ export const createGraphProvider = (
 
     async close() {
       if (pollStop) { pollStop(); pollStop = null; }
+    },
+
+    onSyncOutcome(listener: MailSyncOutcomeListener) {
+      return outcomes.subscribe(listener);
     },
 
     health(): ProviderHealth {
@@ -983,8 +1024,13 @@ export const createGraphProvider = (
 // Shipped OAuth client config
 // ────────────────────────────────────────────────────────────────
 
-export const GRAPH_OAUTH_CONFIG: OAuthProviderConfig = {
-  tokenUrl: MICROSOFT_TOKEN_URL,
-  clientId: process.env.RECUED_GRAPH_CLIENT_ID ?? '',
-  clientSecret: process.env.RECUED_GRAPH_CLIENT_SECRET ?? undefined,
-};
+/** Graph mail's token endpoint — a PROTOCOL constant, not a credential.
+ *
+ *  This used to be `GRAPH_OAUTH_CONFIG`, an `OAuthProviderConfig` whose
+ *  `clientId` / `clientSecret` were read from `RECUED_GRAPH_CLIENT_ID` /
+ *  `_SECRET`. Those two env vars were DELETED (2026-07-28) — and with them the
+ *  "generic name for a non-generic slot" problem: one global env pair per
+ *  issuer, while the encrypted store models credentials per issuer properly.
+ *  Credentials now come ONLY from `OAuthAppConfigStore` under issuer
+ *  `microsoft`. */
+export const GRAPH_TOKEN_URL = MICROSOFT_TOKEN_URL;

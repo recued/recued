@@ -38,6 +38,12 @@ import { validateCalendarCaps } from '../../collections/calendar/caps.js';
 import type { BlobStore } from '../../storage/index.js';
 
 export interface ComposeCalendarStackBootDeps {
+  /** LAZY accessor for the shared `CollectionRegistry`, forwarded to the stack
+   *  so a post-boot enroll registers immediately.
+   *
+   *  ⚠ Field-by-field copier below — a field added at the caller but not
+   *  forwarded here is silently absent and typechecks clean. Add to BOTH. */
+  getCollectionRegistry?: () => import('../../collections/registry.js').CollectionRegistry | undefined;
   /** SQLite handle. Undefined-or-`cacheBlobs`-undefined → composer
    *  returns `undefined`. */
   db: Database.Database | undefined;
@@ -89,6 +95,7 @@ export const composeCalendarBoot = (
     accountStore,
     resolveOAuthConfig,
     isVaultUnlocked,
+    getCollectionRegistry,
   } = deps;
 
   if (!db || !cacheBlobs) return undefined;
@@ -117,6 +124,7 @@ export const composeCalendarBoot = (
       blobs: cacheBlobs,
       bus: warehouseBus,
       ...(auditLog ? { auditLog } : {}),
+      ...(getCollectionRegistry ? { getCollectionRegistry } : {}),
       ...(contactStore
         ? {
             onEventUpserted: (payload) => {

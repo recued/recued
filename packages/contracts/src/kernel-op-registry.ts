@@ -233,6 +233,8 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   op('core.work-entity.booking.create', 'work-entity', 'booking-create', 'write'),
   op('core.work-entity.booking.update', 'work-entity', 'booking-update', 'write'),
   op('core.work-entity.booking.delete', 'work-entity', 'booking-delete', 'destructive'),
+  op('core.work-entity.list', 'work-entity', 'work-entity-list', 'read'),
+  op('core.work-entity.get', 'work-entity', 'work-entity-get', 'read'),
   /** NATIVE verb-op for the Tier-1 `work.search` + `work.read` tools — the READ
    *  half of this domain, which had no grant handle at all while all 15 writes
    *  above had one. No backing ingredient (the tools are registry-native, not
@@ -512,8 +514,40 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   //    routed through the server's `KernelDispatchers.watcher` slot, producing a
   //    `should_run` gate. The op id is the `KernelWatcherSlug` minus the
   //    `-watcher` suffix (`time-relative-watcher` → `core.watch.time-relative`).
-  //    All `risk: read` (predicates / warehouse-reads / a polled fetch — none make
-  //    a gated side effect). Connection-less closed-kind: the mail/calendar/file
+  //    All `risk: read` — but ⛔⛔ NOT because none make a side effect, which is
+  //    what this comment used to claim and is FALSE. `webhook-watcher` DELETES the
+  //    queue it returns (`watchers/webhook-watcher.ts` — drain-on-read), and
+  //    `time-relative-watcher` MUTATES firing state. Both were found by a Codex
+  //    review of D-228, 2026-07-31.
+  //
+  //    🔑 They stay `read` because this is the TRIGGER position and `risk` here
+  //    feeds the APPROVAL gate (`admitByOpRisk`: read→admit, write/admin→ask,
+  //    destructive→always). A trigger predicate is evaluated every tick, so any
+  //    asking tier makes it nonfunctional — `core.watch.time-relative` alone backs
+  //    5 shipped recipes, which a bump to `write` would have broken. Raising the
+  //    tier was tried and reverted for exactly that reason.
+  //
+  //    ✅ THE WEBHOOK DRAIN IS FIXED (2026-07-31) — and NOT by making the read
+  //    non-destructive, which an earlier note here wrongly prescribed. The
+  //    DESTRUCTIVE drain is correct: it is the at-most-once consume that stops a
+  //    webhook re-firing on every tick. What was wrong is WHOSE queue a caller
+  //    could name — `recipe_id` was ordinary authored input, so one recipe could
+  //    drain another's queue, reading its headers / body / source IP and leaving
+  //    the owner to miss those deliveries. The kernel adapter now injects the
+  //    trusted `stepMeta.recipe_id` (`packages/ingredients/src/kernel.ts`),
+  //    exactly as it already did for `time-relative-watcher`'s firing ledger.
+  //    ⚠ Residual, pinned by test: a caller with NO engine context (the
+  //    `runtime.runWatcher` pair-rpc, which no client calls today) still supplies
+  //    its own id.
+  //
+  //    ⛔ Either way it was never a tiering question. `risk_tier` cannot express
+  //    "reads someone else's queue and empties it"; binding the identity can. Do
+  //    not re-tier these to paper over such a thing: the tier would be wrong on
+  //    the approval axis in order to be right on an axis it does not represent —
+  //    the same mistake slice 2 made with MCP exposure, which is now the authored
+  //    `mcp_exposed` field instead.
+  //
+  //    Connection-less closed-kind: the mail/calendar/file
   //    watchers read warehouse state (like `core.mail.email.list`), http-watcher
   //    polls an args-supplied URL — none bind a per-instance connection. (There is
   //    NO `core.watch.dom`: DOM watching is not a server-local watcher — it runs

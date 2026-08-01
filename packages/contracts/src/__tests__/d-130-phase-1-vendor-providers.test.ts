@@ -217,7 +217,7 @@ describe('D-130 P1 — assertConnectionVendorProviderShape sandbox rules', () =>
       sandbox_authorize_url: 'http://test.salesforce.com/services/oauth2/authorize',
     };
     expect(assertConnectionVendorProviderShape(httpAuth).join(';')).toContain(
-      'oauth.sandbox_authorize_url must be https://',
+      'oauth.sandbox_authorize_url must be a complete HTTPS URL',
     );
   });
 
@@ -228,7 +228,7 @@ describe('D-130 P1 — assertConnectionVendorProviderShape sandbox rules', () =>
       sandbox_token_endpoint: 'http://test.salesforce.com/services/oauth2/token',
     };
     expect(assertConnectionVendorProviderShape(httpToken).join(';')).toContain(
-      'oauth.sandbox_token_endpoint must be https://',
+      'oauth.sandbox_token_endpoint must be a complete HTTPS URL',
     );
   });
 

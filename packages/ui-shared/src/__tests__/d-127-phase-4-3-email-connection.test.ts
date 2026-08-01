@@ -179,6 +179,17 @@ describe('renderConnectionsPage — email form dynamic options', () => {
     expect(html).toContain('grant Send permission');
     // Disabled select carries the empty placeholder.
     expect(html).toContain('— no options available —');
+    // The top checkpoint routes to one labelled, described field-level note;
+    // the exact guidance is not duplicated or asserted on initial render.
+    expect(html.match(/No send-capable mail accounts/gu)).toHaveLength(1);
+    expect(html).toContain('Review the prerequisite shown with this field.');
+    expect(html).toContain('role="note"');
+    expect(html).toMatch(
+      /data-field-key="config\.sender_mail_instance" role="group"[^>]*aria-labelledby="conn-field-config-sender_mail_instance-label"[^>]*aria-describedby="conn-field-config-sender_mail_instance-empty-guidance"[^>]*tabindex="-1"/u,
+    );
+    expect(html).toMatch(
+      /<section[^>]*data-connection-form-validation[^>]*role="status"[^>]*aria-live="polite"[^>]*>/u,
+    );
   });
 
   it('treats missing dynamicOptions entry as empty (defensive default)', () => {

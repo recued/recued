@@ -552,16 +552,42 @@ export const isChatCatalogDeliveryMode = (
 
 /** Lever-2 per-slot — the smart auto-default catalog mode per LLM source
  *  (applied when the server's smart-defaults are on — ON by default as of
- *  2026-07-03): zero-harvest free-pool models lean to `index` (thinning pays
- *  every call), cache-harvesting BYOK slots stay `full` (the prefix is nearly
- *  free after the first call). Lives in contracts because BOTH the server
- *  resolver (`resolveCatalogModeForSource`) and the webclient AI/Models page
- *  read it — the server to route, the webclient to show what "Automatic"
- *  resolves to. A single source of truth so the UI hint can never drift from
- *  what the server actually serves. */
+ *  2026-07-03). Lives in contracts because BOTH the server resolver
+ *  (`resolveCatalogModeForSource`) and the webclient AI/Models page read it —
+ *  the server to route, the webclient to show what "Automatic" resolves to. A
+ *  single source of truth so the UI hint can never drift from what the server
+ *  actually serves.
+ *
+ *  ⛔ **`index` EVERYWHERE as of 2026-07-26.** The original split kept BYOK on
+ *  `full` because "the prefix is nearly free after the first call". That is
+ *  true, but it compares full-cached against full-UNCACHED — it never compared
+ *  full against `index`, which ALSO caches. A same-bundle A/B over the 33-task
+ *  llm lane settled it:
+ *
+ *    | | full | index |
+ *    |---|---|---|
+ *    | pass | 24/33, 1 hard-fail | 26/33, 0 hard-fail |
+ *    | input | 3,847,666 | 1,929,302 (−49.9%) |
+ *    | fresh | 102,329 | 79,414 (−22.4%) |
+ *
+ *  `index` on a BYOK slot measured **98% cache-served** (36,852 input/call vs
+ *  full's ~82,014) — cacheability is a PROVIDER property, never a catalog-mode
+ *  one. Discovery held (`catalog-mode-lane`: index matched or beat full on all
+ *  5 probes, incl. 3/3 vs 2/3 on the over-expansion guard) and `tools.search`
+ *  stayed at 0 in index mode, so there is no extra-round tax.
+ *
+ *  ⚠ NOT `lean-core`, which is cheaper again (−51.2% vs full) but DROPS the
+ *  Tier-2 listing: the model then substitutes a visible core tool instead of
+ *  searching (81 open-commitments 2/3 here, 0/3 on qwen; 0/4 on 90). `index`
+ *  lists every recipe, so nothing has to be discovered blind.
+ *
+ *  ⚠ Open: the A/B was ONE pass per arm. The PII probes are unstable in BOTH
+ *  modes (full failed {69,70}, index {31,67,70}); a 2-task delta is inside the
+ *  noise band. Settle with `run-llm-baseline.sh 3` per arm before treating the
+ *  pass-count difference as real. */
 export const CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE: Readonly<
   Record<ChatModelSourceId, ChatCatalogDeliveryMode>
-> = { free_pool: 'index', slot_1: 'full', slot_2: 'full' };
+> = { free_pool: 'index', slot_1: 'index', slot_2: 'index' };
 
 /** § A.14 — the BYOK slot capability hint carried ALONGSIDE the routing
  *  layer so chat can target the user's FAST (slot_1) vs QUALITY/THINKING
@@ -1164,6 +1190,12 @@ export type ChatRpcMethod =
   /** Owner-only aggregate D-214 diagnostics. No raw source, case,
    * intervention, prompt, argument, result, or error row is returned. */
   | 'chat.execution.diagnostics'
+  // D-219 item 2 — what Recued has learned, and unlearning one case.
+  // Owner-only; off MCP through the `chat.execution.` reserved prefix.
+  | 'chat.execution.learned'
+  | 'chat.execution.forget'
+  | 'chat.execution.draft_recipe'
+  | 'chat.execution.authored'
   | 'chat.session.set_picker'
   | 'chat.session.set_model_pref'
   // D-167 chat provider-threading — per-session model-pref override
@@ -1271,6 +1303,10 @@ export const CHAT_RPC_METHODS: ReadonlyArray<ChatRpcMethod> = [
   'chat.execution.feedback',
   'chat.execution.feedback.retract',
   'chat.execution.diagnostics',
+  'chat.execution.learned',
+  'chat.execution.forget',
+  'chat.execution.draft_recipe',
+  'chat.execution.authored',
   'chat.session.set_picker',
   'chat.session.set_model_pref',
   'chat.session.clear_model_pref',
@@ -2565,6 +2601,14 @@ export interface McpToolDescriptor {
    *  the classification UI; Mary's `Tier3ToolClassification` override
    *  is the load-bearing gate (the hint is informational only). */
   destructive_hint?: boolean;
+  /** D-225 Slice 2 — upstream `annotations.readOnlyHint`. The sibling of
+   *  `destructive_hint`, and under the SAME rule: it is the server's claim
+   *  about its own tool, so it renders as an attributed badge and seeds a
+   *  one-click suggestion, and it decides NOTHING. It is deliberately absent
+   *  from the D-225 descriptor hash and from every gate — a value a third
+   *  party controls must not be able to move a tier, an identity, or a
+   *  stored default. See `mcpPackReviewRows`. */
+  read_only_hint?: boolean;
 }
 
 /** § A.10 — Mary's per-tool override. One entry per upstream tool name
@@ -3547,9 +3591,10 @@ export const validateConnectionMcpAnnotationInput = (
 // Bob's server-side per-token permission checklist + token issuance /
 // revoke + expiry + per-token concurrency rate-limit + default-deny
 // posture + capability summary projection. The shape Bob renders the
-// checklist over; the runtime that the rpc handler binds to; the
-// verifier the MCP port handler delegates to once per-pair token
-// issuance graduates from the v1 single-tenant interim env-var token.
+// checklist over; the runtime that the rpc handler binds to; and the
+// verifier both HTTP and stdio MCP ingress delegate to for per-pair
+// tokens. The v1 unrestricted env-var bearer is retired; old opaque
+// values are rejected rather than treated as an owner credential.
 //
 // Per-pair only — table lives in Bob's per-pair SQLite db; no
 // cross-cloud sync (D-097 / D-168). The substrate is inbound —
@@ -3574,8 +3619,7 @@ export const validateConnectionMcpAnnotationInput = (
 // issuance + handed to Bob via the issuance rpc result; the store
 // persists only the sha256 hash (constant-time compare at verify
 // time). The first 16 hex of the sha256 digest is the stable
-// `token_id` — same derivation pattern as `createMcpHttpDispatch`'s
-// `http_<sha256-16>` interim id.
+// `token_id`; the full digest remains the possession proof.
 // ────────────────────────────────────────────────────────────────
 
 /** § A.9 — closed list of concurrency rate-limit tiers per token.

@@ -52,7 +52,9 @@ import type {
   InternalToolRegistry,
   WebChatTab,
 } from '@recued/contracts';
+import { primitiveGrantEntry } from '@recued/contracts';
 import {
+  KERNEL_OP_REGISTRY,
   CHAT_CATALOG_DELIVERY_MODES,
   isEnrichmentTopic,
   resolveEnrichmentTrustDefault,
@@ -62,7 +64,7 @@ import {
 import { createMiddlewareRegistry } from '@recued/middleware';
 
 import { createInternalToolRegistry } from '@recued/middleware/internal-tool-registry/index.js';
-import { createOpKindLookup } from '@recued/recipes';
+import { createOpKindLookup, hashRecipe, parseRecipe } from '@recued/recipes';
 import { registerFirstPartyMiddlewares } from '@recued/middleware-recued';
 import { registerPromptCacheMiddleware } from '@recued/middleware-prompt-cache';
 import { buildPackOpResolution } from '../../pack-inventory.js';
@@ -88,6 +90,30 @@ import {
 import type {
   ExecutionCaseLifecycle,
 } from '../../chat-execution-case-tools.js';
+import {
+  eligiblePrecedentRowFlows,
+  executionCaseLearnedEntry,
+  selectOriginObservation,
+} from '../../execution-case-precedent.js';
+import {
+  buildRecipeAuthoringVocabulary,
+  draftRecipeForCase,
+  recipeShapeExample,
+  RECIPE_DRAFT_MANIFEST,
+  RECIPE_DRAFT_FIELDS,
+} from '../../execution-case-recipe-draft.js';
+import {
+  aliasCasePromptForAuthoring,
+} from '../../execution-case-draft-egress.js';
+import {
+  createChatPiiSlotOrderingSeeder,
+} from '../../chat-pii-slot-ordering.js';
+import { KERNEL_MANIFESTS } from '../../kernel-manifests.js';
+import {
+  createExecutionCaseAuthoredStore,
+  recordAuthoredLink,
+  resolveAuthoredState,
+} from '../../storage/execution-case-authored-store.js';
 import { createScopedGrantSuggestionStore } from '../../storage/scoped-grant-suggestion-store.js';
 import { createConnectionCatalogBindingStore } from '../../storage/connection-catalog-binding-store.js';
 import type { ContractStore } from '../../storage/contract-store.js';
@@ -142,6 +168,7 @@ import {
   type LlmPromptSurface,
 } from '../../llm-system-prompt.js';
 import type { ChatRpcDeps } from '../../chat-handler.js';
+import { assertRecordsNonOwnerRecipeExposure } from '../../records/non-owner-exposure.js';
 import { buildChatToolRegistryInputs } from '../../chat-tool-handlers.js';
 import { tokenUsageToReport } from '../../chat-token-usage.js';
 import type { EventBus } from '../../events/bus.js';
@@ -239,6 +266,19 @@ export interface ChatOrchestratorBundle {
   executionCaseLifecycle: ExecutionCaseLifecycle;
   executionCaseVerificationRecorder:
     ComposedExecutionCases['verificationRecorder'];
+  /** D-219 slice 9c — the boot hand-off for the owner-facing offer. The
+   *  notification block is composed AFTER the chat substrate, so the block's
+   *  owner pushes it here rather than this composer pulling it. Until it is
+   *  called, the offer is never raised and never retired. */
+  publishExecutionCaseOfferNotifier:
+    ComposedExecutionCases['publishExecutionCaseOfferNotifier'];
+  /** D-219 — the capture-only argument buffer, surfaced so the retention
+   *  pruner can bound it. ⛔ No read path consumes it. */
+  executionCaseArgumentStore: ComposedExecutionCases['argumentStore'];
+  /** D-219 — the source-corpus retention sweep, narrowed to the one method so
+   *  this hand-off cannot compile, rebuild, or delete a root. */
+  executionCaseSourcePruner:
+    Pick<ComposedExecutionCases['compiler'], 'pruneSourcesOlderThan'>;
   /** D-177 N.11 rule 5 (5.d hot-path) — the per-session forwarded-sender
    *  candidate index; slice D threads `candidates()` into the gateway's
    *  scoped-grant match context. */
@@ -380,6 +420,9 @@ export const composeChatOrchestrator = (
   // persisted, never synced) the always-on `pii-protect` / `pii-restore`
   // bookend hooks allocate against.
   const sessionLedgerStore = piiEgress.createSessionLedgerStore();
+  /** D-219 item 2b — per-case singleflight for recipe drafting. Server-side
+   *  because the panel's guard only covers one mounted instance. */
+  const draftsInFlight = new Set<string>();
 
   // D-167 activation — the runtime `MetaField.privacy` source that replaces
   // `noopFieldPrivacyResolver`. D-170 persists decomposed entity schemas in the
@@ -499,6 +542,24 @@ export const composeChatOrchestrator = (
         ? (req) => handleExecute(executeDeps, req)
         : undefined;
     },
+    // D-225 § 9.5.1 step 2b — the raw-op dispatch deps, late-bound for the same
+    // reason `getExecuteRecipe` is: this composes before the executor exists.
+    // `dispatchRawOp` takes a Pick of the execute deps, so this is the same
+    // handle, narrowed by the callee rather than here.
+    getRawOpDispatchDeps: () => getExecuteDeps(),
+    preflightExternalRecipeDispatch: (recipe) => {
+      const recordsStore = getExecuteDeps()?.recordsStore;
+      if (recordsStore === undefined) return;
+      assertRecordsNonOwnerRecipeExposure(
+        recipe,
+        'mcp',
+        {
+          isOperationId: (operationId) => recordsStore.isInstalledOperationId(operationId),
+          isCatalogOperation: (catalogSlug, operationKey) =>
+            recordsStore.isInstalledCatalogOperation(catalogSlug, operationKey),
+        },
+      );
+    },
     getConnectionMcpAnnotations: () => listLiveMcpAnnotations(),
     // D-187 AMENDMENT — the chat `enrichment.search` mcp-wire reject resolves a topic's
     // `enrichment.<topic>` grant against the chat's bound contract, gated to standing
@@ -605,6 +666,27 @@ export const composeChatOrchestrator = (
 
   const internalRegistry = createInternalToolRegistry({
     tier1Handlers: chatToolRegistryInputs.tier1Handlers,
+    // ⛔⛔ D-228 slice 5 — the contract gates Tier-1 primitives on the INTERNAL
+    // chat channel too, not only `mcp_wire`. `buildInternalDispatchCtx` always
+    // sets `execution_source` (a `(chat, user_self)` source), and
+    // `resolveGrantGoverningContractId` maps that to `OWNER_CONTRACT_ID` — so
+    // the principal here is the OWNER and the gate reads the owner's own rows.
+    //
+    // 🔑 SAFE BY CONSTRUCTION, and only because the seeding landed first: the
+    // owner's author-default is permissive AND the boot reconcile writes an
+    // explicit `granted:true` row per primitive, so this changes nothing until
+    // the owner REVOKES one in Settings → Contracts. That revoke is the whole
+    // point — "permissive, tightenable" had no enforcement on this channel.
+    //
+    // ⚠ Late-bound off execute deps, matching `getOpAdmissionGate` above:
+    // pre-wire / dbless boots have no gate, and there the callback admits
+    // rather than dark-booting a chat turn that has no contract substrate to
+    // consult in the first place.
+    admitTier1: (name, ctx) => {
+      const gate = getExecuteDeps()?.opAdmissionGate;
+      if (gate === undefined || ctx.execution_source === undefined) return true;
+      return gate.isOpGranted(ctx.execution_source, primitiveGrantEntry(name));
+    },
     tier2Source: chatToolRegistryInputs.tier2Source,
     manifestLookup: chatToolRegistryInputs.manifestLookup,
     opKindLookup,
@@ -742,8 +824,13 @@ export const composeChatOrchestrator = (
   if (!getSpanAnchorDeps) {
     throw new Error('D-214 span-anchor composition is unavailable');
   }
+  // D-219 — which cases the owner already authored a recipe from. ⛔ A separate
+  // table because a case row is a PROJECTION; keyed on `case_key` because
+  // `case_id` is version-scoped. Read the store's header before touching either.
+  const authoredStore = createExecutionCaseAuthoredStore(db);
   const executionCases = composeExecutionCases({
     db,
+    getContactStore,
     ...(chatKeyProvider ? { chatKeyProvider } : {}),
     registry: baseChatRegistry,
     getSpanAnchorDeps,
@@ -752,6 +839,19 @@ export const composeChatOrchestrator = (
       ? {
           experimentSecret:
             process.env.RECUED_D214_EXPERIMENT_SECRET,
+        }
+      : {}),
+    // D-219 slice 9c — the owner's switch for the "worth remembering?" ask.
+    // Read LIVE per candidate turn off the paired-instance roster, so a toggle
+    // in Settings applies to the next turn without a reconnect. Absent store
+    // (db-less boot) ⇒ the option is omitted entirely and the ask stays ON,
+    // which is the registry default: no roster is not an opt-out.
+    ...(pairedInstances
+      ? {
+          getOfferPrefsRoster: () =>
+            pairedInstances
+              .listAllActive()
+              .map((row) => pairedInstances.getPrefs(row.instance_id)),
         }
       : {}),
   });
@@ -869,10 +969,24 @@ export const composeChatOrchestrator = (
     getSpanAnchorDeps,
     getExecutionCaseLifecycle:
       executionCases.getExecutionCaseLifecycle,
+    // D-219 slice 9c — resolves undefined until a notification block is
+    // published, so the offer halves stay faithful no-ops on a db-less or
+    // notification-less boot.
+    getExecutionCaseOfferLifecycle:
+      executionCases.getExecutionCaseOfferLifecycle,
     ...(executionCases.getExecutionCaseAugmentationDeps
       ? {
           getExecutionCaseAugmentationDeps:
             executionCases.getExecutionCaseAugmentationDeps,
+        }
+      : {}),
+    // D-219 — the ordinary-path precedent surface, live with no env at all.
+    // This is the line that makes the corpus readable on a normal self-host;
+    // `composeExecutionCases` supplies it iff no experiment is configured.
+    ...(executionCases.getExecutionCasePrecedentDeps
+      ? {
+          getExecutionCasePrecedentDeps:
+            executionCases.getExecutionCasePrecedentDeps,
         }
       : {}),
     ...(executionCases.getExecutionCaseProposalCritic
@@ -882,6 +996,10 @@ export const composeChatOrchestrator = (
         }
       : {}),
     registry: chatRegistry,
+    // D-225 § 9.8.1 — raw catalog ops, DERIVED per turn from the caller's
+    // contract. The source fails closed on an absent turn source, so a bare
+    // harness gets no raw ops rather than an unfiltered catalog.
+    rawOpSource: chatToolRegistryInputs.rawOpSource,
     // Lever-2 (2026-07-02) — prototype catalog-delivery knob. `full`
     // (default) is the launch baseline; `RECUED_CHAT_CATALOG_MODE=index`
     // leans Tier-2 entries to slug+description for on-demand `tools.search`
@@ -963,15 +1081,255 @@ export const composeChatOrchestrator = (
     selfSignature,
     planApprovalStore: planApprovalStoreShared,
     inboundTokenStore,
+    preflightExternalToolGrant: (toolName) => {
+      const entry = internalRegistry.getByName(toolName);
+      if (entry === null) {
+        throw new Error(`tool '${toolName}' is not currently grantable`);
+      }
+      if (entry.tier !== 2) return;
+      const separator = toolName.indexOf('/');
+      if (separator <= 0 || separator === toolName.length - 1) return;
+      const recipe = recipeStore.get(toolName.slice(separator + 1));
+      const recordsStore = getExecuteDeps()?.recordsStore;
+      if (recipe === null || recordsStore === undefined) return;
+      assertRecordsNonOwnerRecipeExposure(
+        recipe,
+        'mcp',
+        {
+          isOperationId: (operationId) => recordsStore.isInstalledOperationId(operationId),
+          isCatalogOperation: (catalogSlug, operationKey) =>
+            recordsStore.isInstalledCatalogOperation(catalogSlug, operationKey),
+        },
+      );
+    },
     executionCaseFeedbackRecorder:
       executionCases.feedbackRecorder,
     executionCaseLifecycle: executionCases.lifecycle,
     executionSpanAnchorStore: getSpanAnchorDeps().store,
     deleteSessionExecutionCases: executionCases.deleteSession,
+    // D-219 item 2 — the owner's view of their own corpus, and its unlearn.
+    // Both go straight to the case store / compiler: there is no experiment
+    // gate here and there must not be one. The owner may always see what was
+    // learned from them, whatever a study happens to be running.
+    executionCaseLearned: async () => {
+      await executionCases.compiler.ensureCurrent();
+      const rows = (await executionCases.caseStore.listAll())
+        .filter((row) => row.superseded_by === undefined);
+      // ⛔ ONE query for the whole list, keyed on `case_key` — see the store's
+      // header for why not `case_id`. ⚠ `.map(executionCaseLearnedEntry)` would
+      // pass the ARRAY INDEX as the second argument now that one exists; the
+      // arrow is not stylistic.
+      const authored = authoredStore.listForKeys(rows.map((row) => row.case_key));
+      // ⛔ Resolve the stored hash against the recipe as it is NOW. Without this
+      // the hash was write-only and the annotation could point at a recipe the
+      // owner had deleted. Local reads, bounded by what the panel renders.
+      const resolved = new Map(
+        [...authored].map(([case_key, links]) => [case_key, links.map((link) => ({
+          ...link,
+          state: resolveAuthoredState(link, (recipe_id) => {
+            const recipe = recipeStore.get(recipe_id);
+            return recipe ? hashRecipe(recipe) : undefined;
+          }),
+        }))]),
+      );
+      return rows
+        .map((row) => executionCaseLearnedEntry(row, resolved.get(row.case_key)))
+        .sort((left, right) => right.last_seen_at - left.last_seen_at);
+    },
+    // D-219 — the owner SAVED a recipe they drafted from a case. Recorded here
+    // rather than inside `recipe.save`, which knows nothing about cases and
+    // should not learn: a missing link costs an annotation, never a recipe.
+    //
+    // ⛔ The CLIENT SUPPLIES NO HASH AND NO KEY. It knows only `case_id`; this
+    // resolves the durable `case_key` off the case row and hashes the stored
+    // recipe itself, so a caller cannot assert that some arbitrary recipe came
+    // from some arbitrary case.
+    executionCaseAuthored: async (input) => recordAuthoredLink({
+      loadCaseKey: async (case_id) =>
+        (await executionCases.caseStore.get(case_id))?.case_key,
+      loadRecipeHash: (recipe_id) => {
+        const recipe = recipeStore.get(recipe_id);
+        return recipe ? hashRecipe(recipe) : undefined;
+      },
+      store: authoredStore,
+      now: () => Date.now(),
+    }, input),
+    executionCaseForget: async (case_id) => {
+      const result = await executionCases.compiler.forgetCase(case_id);
+      return {
+        removed: result.removed,
+        cases_remaining: result.cases_remaining,
+      };
+    },
+    // D-219 item 2b — the owner's model drafts a recipe from one case.
+    // ⛔ Composed, never invoked from here: only the rpc reaches it, and only
+    // an owner pressing a button reaches the rpc.
+    //
+    // ⚠ ONE DRAFT PER CASE AT A TIME, enforced HERE rather than in the panel.
+    // The panel's own guard covers one mounted instance; a second tab, a
+    // reconnect, or any paired rpc client can fire concurrently, and each call
+    // is a slow one against the owner's quota. Concurrent drafts of the SAME
+    // case can only produce the same answer twice.
+    executionCaseDraftRecipe: async (input) => {
+      if (draftsInFlight.has(input.case_id)) {
+        return {
+          ok: false as const,
+          // ⛔ NOT `invalid_recipe`. Nothing was drafted and the model is
+          // blameless — a second press landed while the first call is still
+          // out. Saying so is the difference between "wait" and "rewrite your
+          // instruction", and only one of them is true.
+          reason: 'already_running' as const,
+          issues: ['A draft for this turn is already being written. '
+            + 'Wait for it to finish.'],
+        };
+      }
+      draftsInFlight.add(input.case_id);
+      try {
+        // ⛔ RECORDED BEFORE THE CALL, not after. The owner is billed the moment
+        // the model runs, so the provenance fact must exist even if the response
+        // is unusable or the client vanishes mid-flight — otherwise a draft they
+        // paid for cannot be annotated when they later save it.
+        // ⚠ A draft that fails validation still counts: they paid, and the guard
+        // is about "did this server draft for this case", not about the result.
+        {
+          const row = await executionCases.caseStore.get(input.case_id);
+          if (row) authoredStore.recordDraftIssued(row.case_key, Date.now());
+        }
+        return await draftRecipeForCase(
+      {
+        // The owner's own model, on the same adapters + quota as everything
+        // else. No config resolves ⇒ the call throws and the surface says so,
+        // rather than silently drafting from nothing.
+        generate: async (prompt) => {
+          const cfg = getLlmConfig();
+          if (!cfg) {
+            throw new LLMError('AI_LLM_UNAVAILABLE', 'no LLM config', {});
+          }
+          return executeLLM(RECIPE_DRAFT_MANIFEST, {
+            'llm.data': prompt,
+            // Names the recipe's top-level keys in the system prompt, so the
+            // model returns the recipe OBJECT rather than a string holding one.
+            'llm.fields': [...RECIPE_DRAFT_FIELDS],
+          }, {
+            config: cfg,
+            adapters: llmAdapterRegistry,
+            quota: llmQuota,
+            tabProbe: emptyTabProbe,
+            webChatSupported: false,
+          }).then((body) => {
+            const content = (body as { content?: unknown })?.content;
+            return typeof content === 'string' ? content : JSON.stringify(body);
+          });
+        },
+        parse: (value) => {
+          const parsed = parseRecipe(value);
+          return parsed.ok
+            ? { ok: true, recipe: parsed.recipe, issues: parsed.issues }
+            : { ok: false, issues: parsed.issues };
+        },
+        loadEntry: async (case_id) => {
+          const row = await executionCases.caseStore.get(case_id);
+          return row ? executionCaseLearnedEntry(row) : undefined;
+        },
+        // ⚠ `session_id`'s first consumer — slice 5 recorded it (V14) and
+        // nothing read it until now. The case itself does not carry one; its
+        // OBSERVATIONS do, reached through the source reports.
+        // ⛔ THE OBSERVATION MUST BE THE ONE THE OWNER IS LOOKING AT. An
+        // earlier version took the lexically-first source report's OLDEST
+        // observation, while the prompt renders the case's TOP-RANKED flow
+        // (weight, then recency). Those disagree the moment a case has more
+        // than one flow: the model would get flow B's tool sequence beside
+        // flow A's request and example — a description of one turn stitched to
+        // the evidence of another.
+        //
+        // The join is `flow_basis` + the tool sequence, and among matches the
+        // NEWEST observation wins — the display orders by weight then recency,
+        // so anything else stitches one turn's request to another's recipe.
+        // ⚠ Not `exact_signature`, which would be exact: `ExecutionCaseFlow`
+        // does not carry it (only the OBSERVATION's `flow_pattern` does), so
+        // using it means adding a field to a sealed materialized shape and
+        // bumping the compiler version. Two flows with the same basis AND the
+        // same tool sequence but different recipes are still indistinguishable
+        // here; that is the residual, and it is why this is narrowed rather
+        // than called solved.
+        loadOrigin: async (case_id) => {
+          const row = await executionCases.caseStore.get(case_id);
+          // ⛔ THE SAME FLOW THE OWNER SEES, off the shared ordering.
+          const top = row ? eligiblePrecedentRowFlows(row)[0] : undefined;
+          const observations = [];
+          for (const reportId of
+            executionCases.caseStore.sourceReportIds(case_id)) {
+            const stored = await executionCases.reportStore.get(reportId);
+            if (!stored) continue;
+            observations.push(...await executionCases.caseStore
+              .listObservationsForRoot(stored.report.root_request_id));
+          }
+          const chosen = selectOriginObservation(observations, top);
+          return chosen === undefined ? undefined : {
+            session_id: chosen.session_id,
+            root_request: chosen.root_request,
+            recipes: chosen.flow_pattern.recipe_refs.map((ref) => ({
+              recipe_id: ref.recipe_id,
+              recipe_hash: ref.recipe_hash,
+            })),
+          };
+        },
+        aliasRequest: (aliasInput) => aliasCasePromptForAuthoring(
+          {
+            harvest: chatStore.harvestPiiSources!,
+            // ⛔ A DETACHED ledger store, never `sessionLedgerStore`. Drafting
+            // is an offline read that can overlap a live turn, and the live
+            // path stages/commits a ledger clone per request precisely so two
+            // overlapping requests cannot allocate one alias to two people.
+            // Allocating into the live ledger from outside that lease lets a
+            // later commit erase this allocation or publish conflicting
+            // numbering in a session the owner is reading. The ordering seed
+            // still runs, so numbering is derived from the same durable rows.
+            ledgers: piiEgress.createSessionLedgerStore(),
+            seedSlotOrdering: createChatPiiSlotOrderingSeeder({
+              store: chatStore,
+            }),
+          },
+          aliasInput,
+        ),
+        // ⛔ Two gates, both load-bearing. The HASH: `recipeStore.get` resolves
+        // by id, and a recipe the owner edited since is a different thing under
+        // the same name — offering v2 as "what this flow ran" is false, and it
+        // is a fresh egress surface for whatever they hard-coded into it. The
+        // SHAPE projection: a stored recipe may carry literal argument values
+        // and string defaults, and this path bypasses the egress boundary the
+        // request beside it goes through.
+        loadRecipeShape: (ref) => {
+          const recipe = recipeStore.get(ref.recipe_id);
+          if (!recipe || hashRecipe(recipe) !== ref.recipe_hash) return undefined;
+          return recipeShapeExample(recipe);
+        },
+        vocabulary: () =>
+          buildRecipeAuthoringVocabulary(KERNEL_MANIFESTS, KERNEL_OP_REGISTRY),
+      },
+          {
+            case_id: input.case_id,
+            ownerPrompt: input.prompt,
+            ...(input.previous_recipe !== undefined
+              ? { previousRecipe: input.previous_recipe }
+              : {}),
+          },
+        );
+      } finally {
+        draftsInFlight.delete(input.case_id);
+      }
+    },
     executionCaseDiagnostics: async () => ({
       active_experiment:
         executionCases.activeExperimentReport !== undefined,
       compiler: await executionCases.compiler.diagnostics(),
+      // D-219 — what RETRIEVAL did this boot. `attached / ranked` is the rate
+      // the relevance filter exists to hold down, and `single_term_cards` is
+      // the residual it cannot: a filter that is language-bound has to be
+      // observable per deployment, or an unlisted language degrades in silence.
+      ...(executionCases.precedentObservation
+        ? { precedent: executionCases.precedentObservation() }
+        : {}),
       ...(executionCases.activeExperimentReport
         ? {
             experiment:
@@ -1054,6 +1412,10 @@ export const composeChatOrchestrator = (
     chatDeps,
     executionCaseLifecycle: executionCases.lifecycle,
     executionCaseVerificationRecorder: executionCases.verificationRecorder,
+    publishExecutionCaseOfferNotifier:
+      executionCases.publishExecutionCaseOfferNotifier,
+    executionCaseArgumentStore: executionCases.argumentStore,
+    executionCaseSourcePruner: executionCases.compiler,
     forwardedSenderIndex,
   };
 };

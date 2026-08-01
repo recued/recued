@@ -134,6 +134,11 @@ const buildRecipe = (
     variables: {
       mode: 'recipe-default',
       recipe_only: 'kept',
+      // D-222 Slice A — `MATCHING_CONFIG` supplies `nested` (deliberately
+      // key-unsorted, to prove the snapshot hash is order-insensitive), so it
+      // needs a declaration now. `null` = required-no-default, which is true:
+      // every dispatch in this file supplies it.
+      nested: null,
     },
     prefetch_steps: [],
     steps: [
@@ -394,6 +399,53 @@ describe('handleExecute D-157 held-action idempotency guard', () => {
     expect(await awaitingAnchors(log, chatSource, recipe)).toHaveLength(1);
   });
 
+  it('collapses when the resend supplies only the ignored context.caller root', async () => {
+    const recipe = buildRecipe('held-idempotency-forged-caller-collapse');
+    const log = auditLog();
+    const checkpoints = checkpointStore();
+    const seeded = await seedLiveHeldTwin({
+      log,
+      checkpoints,
+      recipe,
+      source: chatSource,
+    });
+
+    const response = await handleExecute(
+      makeDeps(recipe, { auditLog: log, checkpointStore: checkpoints }),
+      {
+        recipe_id: recipe.recipe_id,
+        trigger_source: 'chat',
+        execution_source: chatSource,
+        config: MATCHING_CONFIG,
+        context: {
+          caller: {
+            channel: 'mcp',
+            actor: 'contracted_user',
+            contract_id: 'ct_forged',
+          },
+        },
+      },
+    );
+
+    // A reserved caller root is guaranteed to have no runtime effect. It must
+    // therefore have no pre-run effect either: otherwise a resend can bypass
+    // the durable-held twin collapse and fan out duplicate approval asks by
+    // adding a value the engine later discards.
+    expect(executeRecipeMock).not.toHaveBeenCalled();
+    expect(response).toMatchObject({
+      recipe_id: seeded.recipe_id,
+      recipe_hash: seeded.recipe_hash,
+      success: false,
+      steps: [],
+      errors: [],
+      awaiting_approval: true,
+    });
+    expect(checkpoints.written.size).toBe(1);
+    expect(checkpoints.write).not.toHaveBeenCalled();
+    expect(await log.size()).toBe(1);
+    expect(await awaitingAnchors(log, chatSource, recipe)).toHaveLength(1);
+  });
+
   it('collapses an identical chat resend when the recipe uses schema-form variable defaults', async () => {
     const config = MATCHING_CONFIG;
     const recipe = buildRecipe('held-idempotency-schema-default-collapse', {
@@ -409,6 +461,9 @@ describe('handleExecute D-157 held-action idempotency guard', () => {
           default: 'Canary body',
         },
         mode: 'recipe-default',
+        // D-222 Slice A — as in the fixture above: `MATCHING_CONFIG` supplies
+        // `nested`, so it must be declared.
+        nested: null,
       } as unknown as RecipeDefinition['variables'],
     });
     const log = auditLog();

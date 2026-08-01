@@ -18,6 +18,7 @@
 
 import {
   validateApprovalLinkConfig,
+  APPROVAL_LINK_WRITE_ONLY_REFUSAL_CODE_SET,
   type ApprovalLinkActionKind,
   type ApprovalLinkConfig,
   type ApprovalLinkContextRaw,
@@ -41,7 +42,13 @@ export interface ApprovalLinkSourceView {
 export const parseApprovalLinkConfig = (
   raw: Readonly<Record<string, unknown>> | unknown,
 ): ApprovalLinkConfig | null => {
-  const failures = validateApprovalLinkConfig(raw);
+  // ⛔ This is the ONLY read caller of the shared validator, and it returns
+  // `null` for any failure — so a refusal added to gate new WRITES would, from
+  // here, refuse to read rows written before the refusal existed. Drop the
+  // write-only policy codes; every SHAPE failure still nulls the parse.
+  // See `APPROVAL_LINK_WRITE_ONLY_REFUSAL_CODES` for what this cost once.
+  const failures = validateApprovalLinkConfig(raw)
+    .filter((f) => !APPROVAL_LINK_WRITE_ONLY_REFUSAL_CODE_SET.has(f.code));
   if (failures.length > 0) return null;
   // Validator only confirms shape; the `as ApprovalLinkConfig` cast
   // is sound because validateApprovalLinkConfig gates every required

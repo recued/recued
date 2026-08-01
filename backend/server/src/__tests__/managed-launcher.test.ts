@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtempSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import Database from 'better-sqlite3';
+import { generateKeypair, sign } from '@recued/release';
 import {
   decideLaunch,
   runLauncher,
@@ -12,6 +14,9 @@ import {
   recordLedgerRevert,
   seedIfAbsent,
   verifyBinarySignature,
+  verifyPayloadSignature,
+  addonPathFor,
+  ADDON_RELATIVE_PATH,
   LAUNCHER_VERSION,
   BOOT_FAILURE_THRESHOLD,
   type LaunchInput,
@@ -102,6 +107,111 @@ describe('verifyBinarySignature', () => {
   });
 });
 
+// ── D-178 item 6 — the launcher verifies the WHOLE payload ────────────────
+//    The re-verify exists because the data volume is mutable and outside the
+//    image's trust boundary. Checking only the exe leaves the EASIER attack
+//    open: `lib/better_sqlite3.node` is dlopen'd into the server's own address
+//    space, so swapping it is native code execution with all of the server's
+//    privileges, without touching the file that was being checked.
+describe('verifyPayloadSignature — exe AND addon', () => {
+  const kp = generateKeypair();
+  const signBytes = (content: Buffer): string =>
+    sign({ content, secretSeed: kp.secretSeed, keyId: kp.keyId, trustedComment: 'test' });
+
+  /** A volume with a validly-signed exe, plus whatever the case needs. */
+  const volume = (): { bin: string; addon: string } => {
+    const d = mkdtempSync(join(tmpdir(), 'launcher-payload-'));
+    const bin = join(d, 'recued');
+    const body = Buffer.from('EXE BYTES');
+    writeFileSync(bin, body);
+    writeFileSync(`${bin}.minisig`, signBytes(body));
+    return { bin, addon: addonPathFor(bin) };
+  };
+  const putAddon = (addon: string, body: Buffer, sig?: string): void => {
+    mkdirSync(dirname(addon), { recursive: true });
+    writeFileSync(addon, body);
+    if (sig !== undefined) writeFileSync(`${addon}.minisig`, sig);
+  };
+
+  it('accepts a volume with NO addon — a pre-sidecar install must still boot', () => {
+    // Refusing here would brick every docker-thin install created before the
+    // sidecar existed, on the very upgrade meant to fix them.
+    const { bin, addon } = volume();
+    expect(verifyPayloadSignature(bin, addon, kp.publicKeyText)).toBe(true);
+  });
+
+  it('accepts a validly-signed addon', () => {
+    const { bin, addon } = volume();
+    const body = Buffer.from('ADDON BYTES');
+    putAddon(addon, body, signBytes(body));
+    expect(verifyPayloadSignature(bin, addon, kp.publicKeyText)).toBe(true);
+  });
+
+  it('⛔ rejects a TAMPERED addon even though the exe verifies', () => {
+    const { bin, addon } = volume();
+    putAddon(addon, Buffer.from('EVIL NATIVE CODE'), signBytes(Buffer.from('ADDON BYTES')));
+    expect(verifyBinarySignature(bin, kp.publicKeyText)).toBe(true); // exe is fine…
+    expect(verifyPayloadSignature(bin, addon, kp.publicKeyText)).toBe(false); // …payload is not
+  });
+
+  it('⛔ rejects an addon with no signature at all', () => {
+    // "Present but unsigned" is the shape an attacker who cannot sign produces.
+    const { bin, addon } = volume();
+    putAddon(addon, Buffer.from('UNSIGNED ADDON'));
+    expect(verifyPayloadSignature(bin, addon, kp.publicKeyText)).toBe(false);
+  });
+
+  it('bypasses everything with no pinned key (pre-GA), like the exe check', () => {
+    const { bin, addon } = volume();
+    putAddon(addon, Buffer.from('whatever'));
+    expect(verifyPayloadSignature(bin, addon, '')).toBe(true);
+  });
+
+  it('⛔ pairs the OLD exe with the OLD addon, not the live one', () => {
+    // `dirname('<bin>/recued.old')` is still `<bin>`, so DERIVING the addon path
+    // from the old exe yields the LIVE addon — and the rollback candidate would
+    // be pronounced verified against the very addon it is rolling away from.
+    // The caller passes `<addon>.old` explicitly; this pins that it matters.
+    const { bin, addon } = volume();
+    const old = `${bin}.old`;
+    const oldBody = Buffer.from('OLD EXE');
+    writeFileSync(old, oldBody);
+    writeFileSync(`${old}.minisig`, signBytes(oldBody));
+    // Live addon: valid. Old addon: tampered.
+    const liveBody = Buffer.from('LIVE ADDON');
+    putAddon(addon, liveBody, signBytes(liveBody));
+    putAddon(`${addon}.old`, Buffer.from('CORRUPT OLD ADDON'), signBytes(Buffer.from('OLD ADDON')));
+
+    expect(verifyPayloadSignature(old, `${addon}.old`, kp.publicKeyText)).toBe(false);
+    // Derived-from-the-old-exe would have consulted the LIVE addon and passed:
+    expect(verifyPayloadSignature(old, addonPathFor(old), kp.publicKeyText)).toBe(true);
+  });
+});
+
+describe('⛔ launcher/server addon-path lockstep', () => {
+  it('addonPathFor agrees with what the server actually swaps', async () => {
+    // The launcher duplicates this path (I-9: it imports nothing from the server
+    // bundle). Two independent derivations of one on-disk location — drift means
+    // the launcher seeds, verifies and reverts a file the binary never loads,
+    // and nothing else would notice.
+    const { buildApplyOrchestratorDeps } = await import('../update/release-config.js');
+    const binDir = mkdtempSync(join(tmpdir(), 'launcher-lockstep-'));
+    const binaryPath = join(binDir, 'recued');
+    const deps = buildApplyOrchestratorDeps({
+      db: new Database(':memory:'),
+      releaseCheckDeps: { trustedPubkey: 'PUB' } as never,
+      requestRestart: () => {},
+      isQuiesced: () => true,
+      env: { RECUED_DISTRIBUTION_CHANNEL: 'binary' },
+      binaryPath,
+      dataDir: binDir,
+    });
+    const serverLivePath = deps!.ports.stagedLibPath!.replace(/\.staged$/, '');
+    expect(addonPathFor(binaryPath)).toBe(serverLivePath);
+    expect(serverLivePath.endsWith(ADDON_RELATIVE_PATH)).toBe(true);
+  });
+});
+
 describe('revertToOld', () => {
   it('moves old binary + sig sidecar into the current path', () => {
     const d = mkdtempSync(join(tmpdir(), 'launcher-rev-'));
@@ -115,6 +225,41 @@ describe('revertToOld', () => {
     expect(readFileSync(cur, 'utf8')).toBe('OLD');
     expect(readFileSync(`${cur}.minisig`, 'utf8')).toBe('oldsig');
     expect(existsSync(old)).toBe(false);
+  });
+
+  it('⛔ reverts the ADDON with the exe, sig and all', () => {
+    // Restoring only the executable pairs it with the addon of the release being
+    // abandoned — the same N-API ABI mismatch that fails at the first database
+    // open. The revert would "succeed" and the container still could not serve.
+    const d = mkdtempSync(join(tmpdir(), 'launcher-rev-addon-'));
+    const cur = join(d, 'recued');
+    const old = `${cur}.old`;
+    const addon = addonPathFor(cur);
+    mkdirSync(dirname(addon), { recursive: true });
+    writeFileSync(cur, 'NEW');
+    writeFileSync(`${cur}.minisig`, 'newsig');
+    writeFileSync(old, 'OLD');
+    writeFileSync(`${old}.minisig`, 'oldsig');
+    writeFileSync(addon, 'NEW-ADDON');
+    writeFileSync(`${addon}.minisig`, 'new-addon-sig');
+    writeFileSync(`${addon}.old`, 'OLD-ADDON');
+    writeFileSync(`${addon}.old.minisig`, 'old-addon-sig');
+
+    revertToOld(cur, old);
+
+    expect(readFileSync(addon, 'utf8')).toBe('OLD-ADDON');
+    expect(readFileSync(`${addon}.minisig`, 'utf8')).toBe('old-addon-sig');
+    expect(existsSync(`${addon}.old`)).toBe(false);
+  });
+
+  it('leaves the live addon alone on a pre-sidecar volume (no .old addon)', () => {
+    const d = mkdtempSync(join(tmpdir(), 'launcher-rev-nolib-'));
+    const cur = join(d, 'recued');
+    const old = `${cur}.old`;
+    writeFileSync(cur, 'NEW');
+    writeFileSync(old, 'OLD');
+    expect(() => revertToOld(cur, old)).not.toThrow();
+    expect(readFileSync(cur, 'utf8')).toBe('OLD');
   });
 });
 
@@ -140,6 +285,38 @@ describe('seedIfAbsent', () => {
   it('is a no-op with no seed configured', () => {
     const volDir = mkdtempSync(join(tmpdir(), 'launcher-seed-none-'));
     expect(seedIfAbsent(join(volDir, 'recued'), volDir, undefined)).toBe(false);
+  });
+
+  it('⛔ seeds the ADDON beside the exe, sig and all', () => {
+    // First boot is the worst place to get this wrong: there is no `.old` to
+    // revert to, so an exe seeded without its addon just burns the three
+    // boot-failure attempts and halts.
+    const seedDir = mkdtempSync(join(tmpdir(), 'launcher-seed-addon-src-'));
+    const volDir = mkdtempSync(join(tmpdir(), 'launcher-seed-addon-vol-'));
+    const seed = join(seedDir, 'recued');
+    const seedAddon = join(seedDir, ...ADDON_RELATIVE_PATH.split('/'));
+    writeFileSync(seed, 'SEED');
+    writeFileSync(`${seed}.minisig`, 'seedsig');
+    mkdirSync(dirname(seedAddon), { recursive: true });
+    writeFileSync(seedAddon, 'SEED-ADDON');
+    writeFileSync(`${seedAddon}.minisig`, 'seed-addon-sig');
+    const cur = join(volDir, 'recued');
+
+    expect(seedIfAbsent(cur, volDir, seed)).toBe(true);
+
+    const addon = addonPathFor(cur);
+    expect(readFileSync(addon, 'utf8')).toBe('SEED-ADDON');
+    expect(readFileSync(`${addon}.minisig`, 'utf8')).toBe('seed-addon-sig');
+  });
+
+  it('still seeds when the image bakes no addon (pre-sidecar image)', () => {
+    const seedDir = mkdtempSync(join(tmpdir(), 'launcher-seed-noaddon-src-'));
+    const volDir = mkdtempSync(join(tmpdir(), 'launcher-seed-noaddon-vol-'));
+    const seed = join(seedDir, 'recued');
+    writeFileSync(seed, 'SEED');
+    const cur = join(volDir, 'recued');
+    expect(seedIfAbsent(cur, volDir, seed)).toBe(true);
+    expect(existsSync(addonPathFor(cur))).toBe(false);
   });
 });
 

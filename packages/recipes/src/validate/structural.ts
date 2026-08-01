@@ -10,8 +10,9 @@
  *  is decided by `validate.ts` orchestrator.
  */
 
-import type { OutputType } from '@recued/contracts';
+import type { OutputType, TableColumnControl } from '@recued/contracts';
 import {
+  TABLE_COLUMN_CONTROLS,
   AUTO_RUN_SERVER_FLOOR_MS,
   WAIT_TRANSFORM_MAX_MS,
   ACCT_ALIAS_VALUES,
@@ -35,6 +36,10 @@ import {
   validateWebhookRequirements,
   validateWebhookTriggerBindings,
   validateRecipeBundleKey,
+  validateRecipeFormFields,
+  collectFormValueRefs,
+  collectWholeFormRecordRefs,
+  VALUE_HINT_KEYS,
   type EnrichmentDefinition,
   type EnrichmentTopic,
   type RecipeStep,
@@ -1459,10 +1464,128 @@ export const validateVariables = (
     // scalar default, not an enum).
     if (Array.isArray(value)) {
       validateEnumVariable(name, value, add);
+    } else if (value !== null && typeof value === 'object') {
+      validateValueHint(name, value as Record<string, unknown>, add);
     }
   }
 
   // Usage check comes in validateReferences (needs full ref walk first)
+};
+
+/** D-222 Slice 0 — TypeScript's `ValueHint` interface is not an install-time
+ *  guarantee. An arbitrary object used to pass validation, then the widget
+ *  layer treated an object without `label` as a primitive default and silently
+ *  synthesized a field. Close that third state here: admitted object-form
+ *  variables have a non-empty label/type and correctly shaped known options.
+ *  Unknown non-empty type strings remain valid for authored-corpus forward
+ *  compatibility (`connection`, `service_ref`, `array`, ...). */
+const validateValueHint = (
+  name: string,
+  hint: Record<string, unknown>,
+  add: AddFn,
+): void => {
+  const path = `variables.${name}`;
+  const issue = (field: string, message: string): void => {
+    add('error', 'variable_hint_invalid', `${path}.${field}`, message);
+  };
+
+  // ⛔ The unknown-KEY fence (2026-07-30). Before it, this function type-checked
+  // only the members it knew and ignored everything else, so an invented cell
+  // validated perfectly clean and did nothing. Three of them were live:
+  // `required` (1,968 occurrences across 1,133 recipes — `optional` is the real
+  // member and its absence already means required) and `min`/`max`. The AI
+  // recipe-draft brief and this repo's own schema reference both actively taught
+  // `required`, which is how it reached 58% of the corpus without one reader.
+  //
+  // ⚠ Deliberately asymmetric with the `type` check below: an unknown TYPE stays
+  // admitted (the authored corpus legitimately runs ahead of `ValueHintType` and
+  // renderers fall back to `text` — a D-222 § 7 ruling), while an unknown KEY
+  // refuses. An unknown type has a fallback; an unknown key has none. Silence is
+  // the worst failure mode available: the author believes the field is doing
+  // something and every reader sees nothing.
+  //
+  // The allow-list is `VALUE_HINT_KEYS`, derived from `keyof ValueHint` and
+  // machine-checked complete in both directions at the contract. There is no
+  // second copy of the vocabulary here — a copy is what let `required` survive.
+  for (const key of Object.keys(hint)) {
+    if ((VALUE_HINT_KEYS as readonly string[]).includes(key)) continue;
+    add('error', 'variable_hint_unknown_key', `${path}.${key}`,
+      `object-form variable "${name}" has unknown field "${key}" — `
+      + `nothing reads it. Admitted fields: ${VALUE_HINT_KEYS.join(', ')}`
+      + (key === 'required'
+        ? '. Use "optional": true for a skippable variable; omit it to require one'
+        : ''));
+  }
+
+  if (typeof hint.label !== 'string' || hint.label.trim().length === 0) {
+    issue('label', `object-form variable "${name}" requires a non-empty string label`);
+  }
+  if (typeof hint.type !== 'string' || hint.type.trim().length === 0) {
+    issue('type', `object-form variable "${name}" requires a non-empty string type`);
+  }
+  if (hint.optional !== undefined && typeof hint.optional !== 'boolean') {
+    issue('optional', 'ValueHint.optional must be a boolean when present');
+  }
+
+  for (const field of ['help', 'link', 'provider'] as const) {
+    const value = hint[field];
+    if (value !== undefined && typeof value !== 'string') {
+      issue(field, `ValueHint.${field} must be a string when present`);
+    }
+  }
+
+  for (const field of ['options', 'scopes', 'accept_mime_types'] as const) {
+    const value = hint[field];
+    if (value === undefined) continue;
+    if (!Array.isArray(value) || value.some((entry) =>
+      typeof entry !== 'string' || entry.trim().length === 0)) {
+      issue(field, `ValueHint.${field} must be an array of non-empty strings when present`);
+    }
+  }
+
+  if (hint.type === 'enum'
+      && (!Array.isArray(hint.options) || hint.options.length === 0)) {
+    issue('options', 'an enum ValueHint requires at least one option');
+  }
+
+  // ⛔ A `record_ref` with no entity is a picker over nothing. It would render
+  // as a plain text box — the raw-id field the type exists to replace — and
+  // look like it worked, which is the failure mode the key fence above was
+  // written for. Refuse it while the author is looking at the recipe.
+  if (hint.type === 'record_ref'
+      && (typeof hint.entity !== 'string' || hint.entity.trim().length === 0)) {
+    issue('entity', "a record_ref ValueHint requires the entity kind its picker searches");
+  }
+  // …and the converse: an entity on any other type reads as a binding that
+  // nothing honours.
+  if (hint.entity !== undefined && hint.type !== 'record_ref') {
+    issue('entity', `ValueHint.entity is only meaningful on a record_ref, not on '${String(hint.type)}'`);
+  }
+  // ⛔ A scope with nothing to scope is a filter nobody applies — it reads as a
+  // narrowed picker in the recipe and offers everything at the keyboard.
+  if (hint.entity_filter !== undefined && hint.type !== 'record_ref') {
+    issue('entity_filter',
+      `ValueHint.entity_filter is only meaningful on a record_ref, not on '${String(hint.type)}'`);
+  }
+  if (hint.entity_filter !== undefined) {
+    const filter = hint.entity_filter as unknown;
+    if (filter === null || typeof filter !== 'object' || Array.isArray(filter)) {
+      issue('entity_filter', 'entity_filter must be an object of { field: value }');
+    } else {
+      const entries = Object.entries(filter as Record<string, unknown>);
+      if (entries.length === 0) {
+        issue('entity_filter', 'entity_filter must name at least one field');
+      }
+      for (const [key, value] of entries) {
+        // ⚠ Strings only. A picker filter is compared against a stored field,
+        // and a number or boolean here would be an equality that never matches
+        // — a picker that silently offers nothing rather than everything.
+        if (typeof value !== 'string' || value.length === 0) {
+          issue('entity_filter', `entity_filter.${key} must be a non-empty string`);
+        }
+      }
+    }
+  }
 };
 
 /** Validate an array-form enum variable. The convention is "first element
@@ -1524,12 +1647,34 @@ const validateEnumVariable = (name: string, value: unknown[], add: AddFn): void 
  *  `output.content` as late as 2026-07-16. Silence is the worst possible failure mode: the
  *  author believes the detail is surfaced, and every reader — owner AND model — sees nothing.
  *
- *  The rule is DERIVED, never a hand-typed list: `OutputSection` is `{type, source, label?}`
+ *  The rule is DERIVED, never a hand-typed list: ordinary `OutputSection`s are
+ *  `{type, source, label?}` and the D-222 `filter` discriminator adds exactly
+ *  `fields`, `hidden`, and `submit`
  *  and `RecipeOutput` is `{render?, sidebar?}`. Widen a shape in contracts and widen the
  *  matching const here in the same change — a copy that silently disagrees is the drift this
  *  very fence exists to catch. */
 const KNOWN_OUTPUT_KEYS: ReadonlySet<string> = new Set(['render', 'sidebar']);
 const KNOWN_SECTION_KEYS: ReadonlySet<string> = new Set(['type', 'source', 'label']);
+const KNOWN_FILTER_SECTION_KEYS: ReadonlySet<string> = new Set([
+  ...KNOWN_SECTION_KEYS,
+  'fields',
+  'hidden',
+  'submit',
+]);
+const KNOWN_RECORD_FIELDS_SECTION_KEYS: ReadonlySet<string> = new Set([
+  ...KNOWN_SECTION_KEYS,
+  'entity',
+  'fields',
+]);
+/** A `table` may derive its columns from an entity schema. The keys are the
+ *  same two `record_fields` uses, and deliberately so — one vocabulary for
+ *  "these fields of that entity", whichever block is asking. */
+const KNOWN_TABLE_SECTION_KEYS: ReadonlySet<string> = new Set([
+  ...KNOWN_SECTION_KEYS,
+  'entity',
+  'fields',
+  'edit',
+]);
 
 export const validateOutput = (
   r: Record<string, unknown>,
@@ -1586,14 +1731,21 @@ export const validateOutput = (
       continue;
     }
     const s = section as Record<string, unknown>;
+    const sectionKeys = s.type === 'filter'
+      ? KNOWN_FILTER_SECTION_KEYS
+      : s.type === 'record_fields'
+        ? KNOWN_RECORD_FIELDS_SECTION_KEYS
+        : s.type === 'table'
+          ? KNOWN_TABLE_SECTION_KEYS
+          : KNOWN_SECTION_KEYS;
     // The section half of the fence — same rule, same reason. `title` was authored 442 times
     // and read by nothing (the display field is `label`); `copy_button: true` on a `text`
     // section was reaching for the `copyable` kind that already existed.
     for (const key of Object.keys(s)) {
-      if (KNOWN_SECTION_KEYS.has(key)) continue;
+      if (sectionKeys.has(key)) continue;
       add('error', 'output_section_unknown_key', `${path}.${key}`,
         `${key} is not a field on an output section — a section carries only `
-        + `${[...KNOWN_SECTION_KEYS].join(' / ')}. It would be silently ignored.`
+        + `${[...sectionKeys].join(' / ')}. It would be silently ignored.`
         + (key === 'title' ? ' Use `label`.' : ''));
     }
     if (typeof s.type !== 'string' || !OUTPUT_TYPES.has(s.type as OutputType)) {
@@ -1613,6 +1765,524 @@ export const validateOutput = (
     } else if (!declaredStepIds.has(sourceId)) {
       add('error', 'output_source_not_a_step', `${path}.source`,
         `output source references "${sourceId}" but no step with that id exists`);
+    }
+
+    if (s.type === 'filter') {
+      validateFilterOutputSection(s, path, r.variables, add);
+    }
+    if (s.type === 'record_fields') {
+      validateRecordFieldsOutputSection(s, path, add);
+    }
+    if (s.type === 'table') {
+      validateTableOutputSection(s, path, add,
+        (r.variables ?? {}) as Record<string, unknown>);
+    }
+  }
+};
+
+/** A `table`'s optional entity binding. `entity` is what makes the block
+ *  schema-derived; `fields` without it names columns of nothing, which would
+ *  render an empty table rather than say so — hence an install-time refusal.
+ *
+ *  Same limit as its sibling: whether the entity and its keys EXIST needs the
+ *  installed catalog manifest, which this validator cannot see. The resolver
+ *  reports that as `unresolved: 'no_schema'`. */
+const validateTableOutputSection = (
+  section: Record<string, unknown>,
+  path: string,
+  add: AddFn,
+  variables: Record<string, unknown>,
+): void => {
+  const hasEntity = typeof section.entity === 'string' && section.entity.trim().length > 0;
+  if (section.entity !== undefined && !hasEntity) {
+    add('error', 'table_entity_invalid', `${path}.entity`,
+      'table.entity must be the non-empty entity kind whose schema supplies the columns');
+  }
+  if (section.fields !== undefined && !hasEntity) {
+    add('error', 'table_fields_without_entity', `${path}.fields`,
+      'table.fields names columns of an entity, so it requires table.entity — '
+      + 'a hand-written table carries its columns on the to_table step instead');
+  }
+  // The editable grid — a repeating group. `into` names the variable the rows
+  // submit as, and it must be DECLARED: that declaration is the argument
+  // boundary the server bounds the submission against.
+  if (section.edit !== undefined) {
+    const edit = section.edit as Record<string, unknown> | null;
+    if (edit === null || typeof edit !== 'object' || Array.isArray(edit)) {
+      add('error', 'table_edit_shape', `${path}.edit`, 'table.edit must be an object');
+    } else {
+      // ⛔ No entity is fine — the grid collects values and the receiving
+      // recipe decides what they mean. But then nothing can DERIVE which cells
+      // are typeable, so the author must name them: without `columns` the grid
+      // would render read-only and look broken.
+      if (!hasEntity
+        && (!Array.isArray(edit.columns) || (edit.columns as unknown[]).length === 0)) {
+        add('error', 'table_edit_columns_required', `${path}.edit.columns`,
+          'a table.edit without table.entity must name its editable columns — '
+          + 'with no schema to derive them from, nothing else says which cells accept typing');
+      }
+      // ⛔⛔ The combination that cannot work. A `fixed` grid CORRECTS rows that
+      // already exist, so its submission has to say which row each one is — and
+      // that identity comes from the shown-but-not-editable columns, which only
+      // an entity can resolve. Without one the carried set is necessarily empty,
+      // every row submits as bare edited values, and the receiving recipe writes
+      // them against nothing. That failure is silent where it matters: a write
+      // inside a `foreach` refuses per item, which never fails the run, so the
+      // recipe reports success having done nothing. Composing NEW rows
+      // (`add_remove`) is fine without an entity — a new row has no identity to
+      // carry yet.
+      if (!hasEntity && edit.rows === 'fixed') {
+        add('error', 'table_edit_fixed_without_entity', `${path}.edit.rows`,
+          "a 'fixed' table.edit corrects rows that already exist, so it needs "
+          + 'table.entity — without one nothing resolves the shown columns that carry '
+          + 'each row\'s identity, and the submission cannot say which row it is');
+      }
+      if (typeof edit.into !== 'string' || edit.into.trim().length === 0) {
+        add('error', 'table_edit_shape', `${path}.edit.into`,
+          'table.edit.into must name the variable the collected rows submit as');
+      } else if (!Object.prototype.hasOwnProperty.call(variables, edit.into)) {
+        add('error', 'table_edit_into_undeclared', `${path}.edit.into`,
+          `table.edit.into names '${edit.into}', which this recipe does not declare — `
+          + 'the variable IS the argument boundary the submission is bounded by');
+      }
+      if (typeof edit.submit !== 'string' || edit.submit.trim().length === 0) {
+        add('error', 'table_edit_shape', `${path}.edit.submit`,
+          'table.edit.submit must be a non-empty button label');
+      }
+      // `hidden` rides run-level values back with the rows. Each name is an
+      // argument the server will admit, so it gets exactly the rule `into` gets.
+      if (edit.hidden !== undefined) {
+        if (!Array.isArray(edit.hidden)
+          || edit.hidden.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
+          add('error', 'table_edit_shape', `${path}.edit.hidden`,
+            'table.edit.hidden must be an array of declared variable names');
+        } else {
+          const seen = new Set<string>();
+          for (const key of edit.hidden as string[]) {
+            if (!Object.prototype.hasOwnProperty.call(variables, key)) {
+              add('error', 'table_edit_hidden_undeclared', `${path}.edit.hidden`,
+                `table.edit.hidden names '${key}', which this recipe does not declare — `
+                + 'the variable IS the argument boundary the submission is bounded by');
+            }
+            // ⛔ The rows key is not a run setting. Listing it would send a
+            // snapshot of the rows alongside the rows themselves — one of the
+            // two must lose, and which one is an ordering accident.
+            if (key === edit.into) {
+              add('error', 'table_edit_shape', `${path}.edit.hidden`,
+                `table.edit.hidden names '${key}', which is already the rows variable`);
+            }
+            if (seen.has(key)) {
+              add('error', 'table_edit_shape', `${path}.edit.hidden`,
+                `table.edit.hidden lists '${key}' twice`);
+            }
+            seen.add(key);
+          }
+        }
+      }
+      if (edit.rows !== undefined && edit.rows !== 'fixed' && edit.rows !== 'add_remove') {
+        add('error', 'table_edit_shape', `${path}.edit.rows`,
+          "table.edit.rows must be 'fixed' or 'add_remove' when present");
+      }
+      if (edit.columns !== undefined) {
+        if (!Array.isArray(edit.columns)
+          || edit.columns.some((entry) => typeof entry !== 'string' || entry.trim() === '')) {
+          add('error', 'table_edit_shape', `${path}.edit.columns`,
+            'table.edit.columns must be an array of non-empty column keys');
+        } else if (hasEntity && Array.isArray(section.fields)) {
+          // A typeable column the table does not SHOW is a cell with nowhere to
+          // appear — and an author who meant to widen the grid would see
+          // nothing happen. An AUTHORED column counts as shown by its `field`:
+          // a joined column the recipe appended is exactly the kind of cell a
+          // collection sheet exists to be typed into.
+          const shown = new Set((section.fields as unknown[]).map((entry) =>
+            typeof entry === 'string'
+              ? entry
+              : String((entry as Record<string, unknown> | null)?.field ?? '')));
+          for (const key of edit.columns as string[]) {
+            if (!shown.has(key)) {
+              add('error', 'table_edit_column_unshown', `${path}.edit.columns`,
+                `table.edit.columns names '${key}', which table.fields does not show`);
+            }
+          }
+        }
+      }
+      // ⛔ A picker scope must name an EDITABLE column, or it reads as a
+      // narrowed chooser in the recipe and offers everything at the keyboard.
+      if (edit.scopes !== undefined) {
+        const scopes = edit.scopes as unknown;
+        if (scopes === null || typeof scopes !== 'object' || Array.isArray(scopes)) {
+          add('error', 'table_edit_shape', `${path}.edit.scopes`,
+            'table.edit.scopes must be an object of { column: { field: value } }');
+        } else {
+          const editable = new Set(
+            Array.isArray(edit.columns) ? edit.columns as string[] : []);
+          for (const [column, filter] of Object.entries(scopes as Record<string, unknown>)) {
+            if (editable.size > 0 && !editable.has(column)) {
+              add('error', 'table_edit_shape', `${path}.edit.scopes.${column}`,
+                `'${column}' is scoped but not editable — a scope on a read-only cell is a filter nobody applies`);
+            }
+            if (filter === null || typeof filter !== 'object' || Array.isArray(filter)
+              || Object.keys(filter as Record<string, unknown>).length === 0) {
+              add('error', 'table_edit_shape', `${path}.edit.scopes.${column}`,
+                'a scope must name at least one { field: value }');
+              continue;
+            }
+            for (const [field, value] of Object.entries(filter as Record<string, unknown>)) {
+              // ⚠ Strings only — a number compared against a stored field is an
+              // equality that never matches, so the picker offers NOTHING
+              // rather than everything, which is the harder failure to spot.
+              if (typeof value !== 'string' || value.length === 0) {
+                add('error', 'table_edit_shape', `${path}.edit.scopes.${column}.${field}`,
+                  'a scope value must be a non-empty string');
+              }
+            }
+          }
+        }
+      }
+      for (const key of Object.keys(edit)) {
+        if (['into', 'submit', 'rows', 'columns', 'hidden', 'scopes'].includes(key)) continue;
+        add('error', 'table_edit_shape', `${path}.edit.${key}`,
+          `table.edit has no field '${key}' — nothing reads it`);
+      }
+    }
+  }
+
+  if (section.fields === undefined) return;
+  if (!Array.isArray(section.fields)) {
+    add('error', 'table_shape', `${path}.fields`,
+      'table.fields must be an array of entity field keys (omit it for every declared field)');
+    return;
+  }
+  const seen = new Set<string>();
+  section.fields.forEach((entry, index) => {
+    const key = tableFieldKey(entry, `${path}.fields[${index}]`, add);
+    if (key === null) return;
+    if (seen.has(key)) {
+      add('error', 'table_duplicate', `${path}.fields[${index}]`,
+        `table.fields lists '${key}' twice — one column cannot appear at two positions`);
+    }
+    seen.add(key);
+  });
+};
+
+/** One `table.fields` entry — a schema field key, or an authored column that
+ *  brings its own label and type. Returns the column key, or null once it has
+ *  reported why the entry is not one.
+ *
+ *  An authored entry is how a recipe extends the entity's model (a joined
+ *  column the schema has no slot for) and how it overrides presentation (a
+ *  different caption, a picker instead of a text box) WITHOUT the pack bumping
+ *  a version — so this validates the shape and says nothing about whether the
+ *  key exists, which only the installed catalog knows. */
+const tableFieldKey = (
+  entry: unknown,
+  path: string,
+  add: AddFn,
+): string | null => {
+  if (typeof entry === 'string') {
+    if (entry.trim().length === 0) {
+      add('error', 'table_shape', path,
+        'table.fields entries must be non-empty entity field keys');
+      return null;
+    }
+    return entry;
+  }
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    add('error', 'table_shape', path,
+      'table.fields entries must be an entity field key, or an authored column '
+      + '{ field, label, kind?, control?, options? }');
+    return null;
+  }
+  const column = entry as Record<string, unknown>;
+  let ok = true;
+  if (typeof column.field !== 'string' || column.field.trim().length === 0) {
+    add('error', 'table_shape', `${path}.field`,
+      'an authored table column needs `field` — the key it reads on each row');
+    ok = false;
+  }
+  // ⛔ Required, and not derived. An authored column has no schema to take a
+  // label from, and title-casing the key silently is how a joined column ends
+  // up captioned by its variable name.
+  if (typeof column.label !== 'string' || column.label.trim().length === 0) {
+    add('error', 'table_shape', `${path}.label`,
+      'an authored table column needs `label` — there is no schema to derive one from');
+    ok = false;
+  }
+  if (column.kind !== undefined
+    && (typeof column.kind !== 'string' || column.kind.trim().length === 0)) {
+    add('error', 'table_shape', `${path}.kind`,
+      'table column `kind` must be a non-empty type name (omit it to keep the schema\'s)');
+    ok = false;
+  }
+  if (column.control !== undefined
+    && !TABLE_COLUMN_CONTROLS.has(column.control as TableColumnControl)) {
+    add('error', 'table_shape', `${path}.control`,
+      `table column \`control\` must be one of: ${[...TABLE_COLUMN_CONTROLS].join(' / ')}`);
+    ok = false;
+  }
+  if (column.options !== undefined
+    && (!Array.isArray(column.options)
+      || column.options.some((o) => typeof o !== 'string' || o.trim() === ''))) {
+    add('error', 'table_shape', `${path}.options`,
+      'table column `options` must be an array of non-empty choices');
+    ok = false;
+  }
+  // A picker with nothing to pick renders an empty box the owner cannot use —
+  // and looks like a bug in the grid rather than an omission in the recipe.
+  if ((column.control === 'select' || column.control === 'radio')
+    && (!Array.isArray(column.options) || column.options.length === 0)) {
+    add('error', 'table_shape', `${path}.options`,
+      `a '${String(column.control)}' column needs \`options\` — with none it renders `
+      + 'a control the owner cannot use');
+    ok = false;
+  }
+  if (column.options !== undefined && column.control === undefined) {
+    add('error', 'table_shape', `${path}.control`,
+      'table column `options` needs `control: \'select\' | \'radio\'` — on a text '
+      + 'column nothing reads them');
+    ok = false;
+  }
+  for (const key of Object.keys(column)) {
+    if (['field', 'label', 'kind', 'control', 'options'].includes(key)) continue;
+    add('error', 'table_shape', `${path}.${key}`,
+      `an authored table column has no field '${key}' — nothing reads it`);
+    ok = false;
+  }
+  return ok ? (column.field as string) : null;
+};
+
+/** Shape of the schema-bound field list. Install-time like the filter's, and
+ *  for the same reason: an author who misspells `entity` or a field key must
+ *  learn it while they are looking at the recipe, not from a block that
+ *  renders one blank row per typo at run time.
+ *
+ *  What is NOT checked here: whether the entity and its fields actually exist
+ *  in the pack's schema. That needs the installed catalog manifest, which the
+ *  recipe validator has no access to — it validates one recipe body. The
+ *  resolver reports it as `unresolved: 'no_schema'` instead. */
+const validateRecordFieldsOutputSection = (
+  section: Record<string, unknown>,
+  path: string,
+  add: AddFn,
+): void => {
+  if (typeof section.entity !== 'string' || section.entity.trim().length === 0) {
+    add('error', 'record_fields_entity_invalid', `${path}.entity`,
+      'record_fields.entity must be the non-empty entity kind whose schema resolves the display');
+  }
+  if (section.fields === undefined) return; // omitted = every declared field
+  if (!Array.isArray(section.fields)) {
+    add('error', 'record_fields_shape', `${path}.fields`,
+      'record_fields.fields must be an array of entity field keys (omit it to show every declared field)');
+    return;
+  }
+  const seen = new Set<string>();
+  section.fields.forEach((entry, index) => {
+    if (typeof entry !== 'string' || entry.trim().length === 0) {
+      add('error', 'record_fields_shape', `${path}.fields[${index}]`,
+        'record_fields.fields entries must be non-empty entity field keys');
+      return;
+    }
+    if (seen.has(entry)) {
+      add('error', 'record_fields_duplicate', `${path}.fields[${index}]`,
+        `record_fields.fields lists "${entry}" more than once`);
+      return;
+    }
+    seen.add(entry);
+  });
+};
+
+/** D-222 Slices 1/2 — filter shape and eligibility. This is deliberately
+ *  install-time: overlap, credential echo, or a field without authored label
+ *  never reaches a renderer where DOM ordering or synthesized copy could make
+ *  the decision for us. */
+const validateFilterOutputSection = (
+  section: Record<string, unknown>,
+  path: string,
+  rawVariables: unknown,
+  add: AddFn,
+): void => {
+  const variables = rawVariables !== null
+    && typeof rawVariables === 'object'
+    && !Array.isArray(rawVariables)
+    ? rawVariables as Record<string, unknown>
+    : {};
+
+  const readKeys = (field: 'fields' | 'hidden'): string[] | null => {
+    const value = section[field];
+    if (!Array.isArray(value)) {
+      add('error', `filter_${field}_shape`, `${path}.${field}`,
+        `filter.${field} must be an array of declared variable keys`);
+      return null;
+    }
+    const keys: string[] = [];
+    const seen = new Set<string>();
+    value.forEach((entry, index) => {
+      if (typeof entry !== 'string' || entry.trim().length === 0) {
+        add('error', `filter_${field}_shape`, `${path}.${field}[${index}]`,
+          `filter.${field} entries must be non-empty strings`);
+        return;
+      }
+      if (seen.has(entry)) {
+        add('error', 'filter_variable_duplicate', `${path}.${field}[${index}]`,
+          `filter.${field} lists "${entry}" more than once`);
+        return;
+      }
+      seen.add(entry);
+      keys.push(entry);
+    });
+    return keys;
+  };
+
+  const fields = readKeys('fields');
+  const hidden = readKeys('hidden');
+  if (typeof section.submit !== 'string' || section.submit.trim().length === 0) {
+    add('error', 'filter_submit_invalid', `${path}.submit`,
+      'filter.submit must be a non-empty display string');
+  }
+
+  if (fields !== null && hidden !== null) {
+    const fieldSet = new Set(fields);
+    for (const key of hidden) {
+      if (!fieldSet.has(key)) continue;
+      add('error', 'filter_fields_hidden_overlap', `${path}.hidden`,
+        `filter variable "${key}" cannot be both visible and hidden`);
+    }
+  }
+
+  const declared = (key: string, field: 'fields' | 'hidden'): unknown => {
+    if (!Object.prototype.hasOwnProperty.call(variables, key)) {
+      add('error', 'filter_variable_undeclared', `${path}.${field}`,
+        `filter.${field} names "${key}", which is absent from recipe.variables`);
+      return undefined;
+    }
+    return variables[key];
+  };
+
+  for (const key of fields ?? []) {
+    const def = declared(key, 'fields');
+    if (def === undefined) continue;
+    const hint = def !== null && typeof def === 'object' && !Array.isArray(def)
+      ? def as Record<string, unknown>
+      : null;
+    if (hint === null
+        || typeof hint.label !== 'string' || hint.label.trim().length === 0
+        || typeof hint.type !== 'string' || hint.type.trim().length === 0) {
+      add('error', 'filter_field_not_labeled', `${path}.fields`,
+        `filter field "${key}" must name a valid labeled ValueHint`);
+      continue;
+    }
+    if (hint.type === 'secret' || hint.type === 'oauth') {
+      add('error', 'filter_field_credential_ineligible', `${path}.fields`,
+        `filter field "${key}" has credential type "${hint.type}" and cannot be rendered`);
+    }
+  }
+
+  for (const key of hidden ?? []) {
+    const def = declared(key, 'hidden');
+    if (def === undefined) continue;
+    const type = def !== null && typeof def === 'object' && !Array.isArray(def)
+      ? (def as Record<string, unknown>).type
+      : undefined;
+    if (type === 'secret' || type === 'oauth') {
+      add('error', 'filter_hidden_credential_ineligible', `${path}.hidden`,
+        `filter hidden variable "${key}" has credential type "${type}" and cannot be echoed into output`);
+    }
+  }
+};
+
+/** D-220 Slice A1 — `metadata.requires_form_fields` shape + the static
+ *  cross-check that makes it a contract rather than a comment.
+ *
+ *  A recipe consuming an accepted Reception submission reads named answers by
+ *  STATIC path (`{{step.<reader>.record.values.<name>}}`) — dynamic indexing
+ *  raises `nested_template` — so the field names are a hard contract with
+ *  whatever form the owner pairs it to. Declaring them here lets the wiring
+ *  surfaces (Slice A2: pair-bind / "Automate this form") refuse a mismatched
+ *  form while the OWNER is present, instead of at fire, where a misspelled
+ *  field resolves `undefined`, a `default` fallback covers for it, and the run
+ *  reports success having stored nothing.
+ *
+ *  This function enforces BOTH directions of the claim, because a declaration
+ *  that is merely *present* would be a second place to write a comment:
+ *
+ *    - `requires_form_fields_unread` (warn) — declared, but no ref reads it.
+ *      Warn, not error: an author may legitimately declare a field the form
+ *      must collect for the OWNER's benefit (it lands in the sealed response
+ *      and on the Inbox review card) without the recipe reading it.
+ *    - `requires_form_fields_undeclared` (error) — a ref reads it and nothing
+ *      declares it. This is the defect the slice exists to close, so it blocks.
+ *      Only checked when the field is PRESENT: an absent declaration is the
+ *      pre-D-220 undeclared recipe, legal and unchecked. `[]` is a positive
+ *      claim and IS checked — which is what makes the seller-opener shape
+ *      ("reads no named answers") provable rather than merely asserted. */
+export const validateRequiresFormFields = (
+  r: Record<string, unknown>,
+  add: AddFn,
+): void => {
+  const metadataOk = !!r.metadata && typeof r.metadata === 'object' && !Array.isArray(r.metadata);
+  const metadata = metadataOk ? (r.metadata as Record<string, unknown>) : null;
+  const declared = metadata === null ? undefined : metadata.requires_form_fields;
+  const read = collectFormValueRefs(r);
+  // ⚠ A whole-object read (`record.values` / `record`, no field after it) takes
+  // EVERY visitor answer while naming none, so the named-field scan above sees
+  // nothing. Found by adversarial review: a `[]` declaration then validated as
+  // accurate while the recipe consumed the lot via `json_stringify`. A
+  // declaration cannot enumerate what a whole-object read takes, so any
+  // declaration at all is incompatible with one.
+  const wholeReads = collectWholeFormRecordRefs(r);
+
+  if (declared === undefined) {
+    // Undeclared recipe. Nudge only when it actually reads named answers —
+    // there is a contract here and nothing is checking it.
+    if (wholeReads.length > 0) {
+      add('warn', 'requires_form_fields_absent', 'metadata.requires_form_fields',
+        `recipe reads the WHOLE submitted-answer object (${wholeReads.join(', ')}) and declares nothing — `
+          + 'every visitor field reaches this recipe and no gate can check it against a form');
+      return;
+    }
+    if (read.length > 0) {
+      add('info', 'requires_form_fields_absent', 'metadata.requires_form_fields',
+        `recipe reads ${read.length} named form answer(s) (${read.join(', ')}) by static path but declares none — `
+          + 'add metadata.requires_form_fields so a mismatched form is refused at pairing rather than storing nothing at fire');
+    }
+    return;
+  }
+
+  for (const failure of validateRecipeFormFields(declared)) {
+    add('error', failure.code, 'metadata.requires_form_fields', failure.detail);
+  }
+  if (wholeReads.length > 0) {
+    add('error', 'requires_form_fields_whole_object_read', 'metadata.requires_form_fields',
+      `recipe reads the whole submitted-answer object (${wholeReads.join(', ')}), which takes every `
+        + 'visitor field while naming none — a declaration cannot enumerate that. Read the answers '
+        + 'you need by name, or drop metadata.requires_form_fields and accept that nothing checks '
+        + 'this recipe against its form');
+  }
+  if (!Array.isArray(declared)) return;
+
+  const declaredNames = new Set<string>();
+  for (const entry of declared) {
+    if (
+      !!entry && typeof entry === 'object' && !Array.isArray(entry)
+      && typeof (entry as Record<string, unknown>).name === 'string'
+    ) {
+      declaredNames.add((entry as Record<string, unknown>).name as string);
+    }
+  }
+
+  for (const name of read) {
+    if (!declaredNames.has(name)) {
+      add('error', 'requires_form_fields_undeclared', 'metadata.requires_form_fields',
+        `recipe reads record.values.${name} but does not declare it — add it to metadata.requires_form_fields `
+          + 'or the pairing check cannot know the form must collect it');
+    }
+  }
+  const readNames = new Set(read);
+  for (const name of declaredNames) {
+    if (!readNames.has(name)) {
+      add('warn', 'requires_form_fields_unread', 'metadata.requires_form_fields',
+        `metadata.requires_form_fields declares '${name}' but no step reads record.values.${name} — `
+          + 'drop it, or keep it if the form must collect it for the owner rather than for this recipe');
     }
   }
 };

@@ -48,9 +48,22 @@ COPY apps/ ./apps/
 # esbuild can resolve @recued/* packages from the copied source tree.
 RUN npm ci --ignore-scripts
 
-# Rebuild native addons (better-sqlite3) for the target arch now
-# that node_modules is in place.
-RUN npm rebuild better-sqlite3
+# Rebuild the native SQLite addon for the target arch now that node_modules is
+# in place (`npm ci --ignore-scripts` above fetched no prebuild).
+#
+# ⛔ `better-sqlite3-multiple-ciphers`, NOT plain `better-sqlite3`. D-212 made
+# the cipher fork the SOLE runtime driver and demoted the plain package to
+# dev-only — but this line kept rebuilding the plain one, so the driver the
+# server actually loads had no binding for the container's platform and the
+# image DIED ON STARTUP:
+#
+#     Could not locate the bindings file. Tried:
+#      → …/better-sqlite3-multiple-ciphers/lib/binding/node-v127-linux-arm64/…
+#
+# The baked image could not open its database at all. Nothing caught it: the
+# build succeeds, `phase-e-docker-runtime` asserts on image METADATA, and the
+# only test that would have noticed is starting the thing.
+RUN npm rebuild better-sqlite3-multiple-ciphers
 
 # ── Stage 2: build ───────────────────────────────────────────────
 FROM deps AS build
@@ -118,10 +131,20 @@ EXPOSE 7717 7718 7719
 
 VOLUME ["/var/lib/recued", "/var/log/recued"]
 
-# wget is preinstalled on node:22-slim; probes the D-103 /health
-# endpoint exposed by Phase A.
+# Probes the D-103 /health endpoint exposed by Phase A.
+#
+# ⛔ NOT `wget`. The comment here used to claim "wget is preinstalled on
+# node:22-slim" — it is not, and `docker exec … command -v wget` says so. The
+# healthcheck therefore ALWAYS failed (`/bin/sh: 1: wget: not found`) and the
+# container sat permanently `unhealthy` while serving 200s perfectly well. That
+# is not cosmetic: `depends_on: condition: service_healthy` never proceeds, and
+# an orchestrator with a health-based restart policy kills and restarts a
+# HEALTHY server on a loop.
+#
+# `node` is the one binary guaranteed present — it is this image's runtime — so
+# the probe uses it instead of adding an apt layer for wget or curl.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://localhost:7717/health || exit 1
+  CMD node -e "fetch('http://localhost:7717/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 ENTRYPOINT ["/usr/local/bin/recued-entrypoint"]
 CMD ["--db", "/var/lib/recued/recued.db", "--config", "/etc/recued/config.toml"]

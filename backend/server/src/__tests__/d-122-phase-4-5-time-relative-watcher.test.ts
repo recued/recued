@@ -42,6 +42,7 @@ const fakeRegistry = (records: Record<string, unknown>[]): CollectionRegistry =>
   return {
     register: () => undefined,
     get: () => collection,
+    unregister: () => false,
     list: () => [collection],
     dispose: async () => undefined,
   };
@@ -439,6 +440,7 @@ describe('handleTimeRelativeWatcher', () => {
     const registry: CollectionRegistry = {
       register: () => undefined,
       get: () => undefined,
+      unregister: () => false,
       list: () => [],
       dispose: async () => undefined,
     };

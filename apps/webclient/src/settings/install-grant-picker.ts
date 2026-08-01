@@ -29,16 +29,18 @@
  *  `Read` so the happy path stays one click (spec §7.1 "Default off,
  *  everywhere", recommend pre-selecting You / Read).
  *
- *  ── Two derivation entry points, one model ────────────────────────────
+ *  ── Three derivation entry points, one model ──────────────────────────
  *  The marketplace path (`packs.install`) holds the pack's by-value composition
  *  on the manifest, so it derives tiers from `composition.operations[].risk`
  *  filtered to non-`cli` ingredients (`installGrantModelFromManifest`). The
  *  kitchen authoring path (`ingredient.install`) has run the decompose preview,
  *  so it derives from the review's per-op `operation_families`
  *  (`risk_tier` + `surface`, where `surface === 'api'` is connection-backed and
- *  `'connector'` is cli) — `installGrantModelFromReviewFamilies`. Both lower to
- *  the same `TieredOp[]` and the same model. (The handover's "read the decompose
- *  preview's `operation_groups`, NOT `default_grants`" footgun is moot here: we
+ *  `'connector'` is cli) — `installGrantModelFromReviewFamilies`.
+ *  The MCP enrollment path has the generated pack's reviewed operation rows;
+ *  their conservative stored risk feeds `installGrantModelFromMcpReviewRows`.
+ *  All three lower to the same `TieredOp[]` and model. (The handover's "read
+ *  the decompose preview's `operation_groups`, NOT `default_grants`" footgun is moot here: we
  *  read per-op risk tiers, never `default_grants` — which still carries the OLD
  *  pre-5c union.)
  *
@@ -51,7 +53,7 @@
  *
  *  ── Render model: DOM nodes, not innerHTML ───────────────────────────
  *  Radios carry real listeners, so the picker builds via `createElement` (the
- *  same shape as `cli-grant-dialog.ts` / `local-tools-panel.ts`), not an HTML
+ *  same shape as `cli-grant-dialog.ts` / `pack-access-controls.ts`), not an HTML
  *  string. It is STATELESS — the host owns the selected access tier and re-runs
  *  `renderInstallGrantPicker` each render, reading the current selection and
  *  wiring `onAccess` back to its own state + re-render.
@@ -68,6 +70,7 @@ import {
   type InstallAccessTier,
   type InstallAudienceSelection,
   type InstallScopeWho,
+  type McpPackReviewRow,
   type OpKind,
   type RiskTier,
 } from '@recued/contracts';
@@ -191,6 +194,16 @@ export const installGrantModelFromReviewFamilies = (
     .map((f) => ({ id: f.key, risk: f.risk_tier }));
   return buildInstallGrantModel(connOps);
 };
+
+/** MCP enrollment path — derive from the exact rows the owner reviewed. The
+ *  generated composition stores every tool at the conservative `write` /
+ *  `ask` floor, so the default Read selection grants none and stepping up to
+ *  Read + write explicitly grants precisely these TOCTOU-bound op ids. */
+export const installGrantModelFromMcpReviewRows = (
+  rows: ReadonlyArray<McpPackReviewRow>,
+): InstallGrantPickerModel | null => buildInstallGrantModel(
+  rows.map((row) => ({ id: row.op, risk: row.stored.risk })),
+);
 
 // ════════════════════════════════════════════════════════════════
 // Attribute constants — stable hooks for tests + host introspection

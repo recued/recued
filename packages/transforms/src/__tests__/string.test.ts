@@ -1,8 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { lowercase, uppercase, trim, split, contains_any, concat, replace, template, truncate, strip_html, encode_base64, decode_base64 } from '../string.js';
+import { lowercase, uppercase, trim, string_length, split, contains_any, concat, replace, template, truncate, strip_html, encode_base64, decode_base64 } from '../string.js';
 import { ctx } from './helpers.js';
 
 const c = ctx();
+
+describe('string_length', () => {
+  it('counts UTF-16 code units without materializing a character array', () => {
+    expect(string_length({ input: '界😀' }, c)).toBe(3);
+    expect(string_length({ input: null }, c)).toBeNull();
+  });
+});
 
 describe('encode_base64', () => {
   // The contract that matters is the round-trip through the SAME decode the

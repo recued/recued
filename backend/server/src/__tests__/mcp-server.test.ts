@@ -38,7 +38,24 @@ const SIMPLE_RECIPE: RecipeDefinition = {
   output: { sidebar: [{ type: 'text', source: 'step.msg' }] },
 };
 
-const makeDeps = (): ExecuteHandlerDeps => {
+/** ⛔⛔ D-228 slice 6 — the permissive checklist is a DEFAULT, and every test
+ *  whose subject IS the gate overrides it. An absent checklist now DENIES at
+ *  both `handleToolsList` and `handleToolCall`, so without a default here the
+ *  metering / overlay / recipe-save tests below would all go green for the wrong
+ *  reason — refused by the gate before ever reaching what they assert.
+ *
+ *  ⚠ SAFE ONLY BECAUSE OF ORDERING, which is checked: every gate test writes
+ *  `{...makeDeps(), inboundTokenAuthorize: vi.fn(() => false)}` — the spread
+ *  comes FIRST, so an explicit authorizer always shadows this one. A default
+ *  that could silently disable a refusal assertion would be the exact hazard
+ *  this comment exists to rule out.
+ *
+ *  ⚠ And it is production-faithful: `inboundTokenAuthorize: undefined` means NO
+ *  TOKEN AT ALL, which is not the same as `boundContractId: undefined` (an
+ *  UNBOUND token — a real caller that presented a bearer carrying no contract,
+ *  and which therefore DOES have a checklist). Tests that mean "unbound owner"
+ *  want this default, not its absence. */
+const makeDeps = (): ExecuteHandlerDeps & Pick<McpDeps, 'inboundTokenAuthorize'> => {
   const manifests = createManifestRegistry('/nonexistent');
   const recipeStore = createRecipeStore('/nonexistent');
   recipeStore.register(SIMPLE_RECIPE);
@@ -46,6 +63,7 @@ const makeDeps = (): ExecuteHandlerDeps => {
     recipeStore,
     executorConfig: { manifests },
     baseVault: {},
+    inboundTokenAuthorize: () => true,
   };
 };
 
@@ -820,6 +838,10 @@ describe('MCP per-ingredient tool catalog', () => {
   const dataFileReadIngredient: IngredientManifest = {
     ...kernelIngredient,
     slug: 'data-file-read',
+    // D-228 slice 2 — exposure is an AUTHORED field now, so the fixture has to
+    // carry it exactly as the shipped manifest does. Its absence is what
+    // fences every OTHER kernel ingredient in these tests.
+    mcp_exposed: true,
     name: 'Read inbound file content',
     input: { record_id: null },
   };
@@ -877,12 +899,23 @@ describe('MCP per-ingredient tool catalog', () => {
     expect(Object.prototype.hasOwnProperty.call(tool.inputSchema.properties, '__proto__')).toBe(false);
   });
 
+  /** ⛔⛔ RESTORED — D-228 slice 2 moved this test's contract, and slice 2 was
+   *  REVERTED. `kernel-only` is a kernel READ, and the assertion that it stays
+   *  HIDDEN is the regression guard: it fails the moment kernel exposure is
+   *  re-derived from `risk_tier`, which is exactly the change that must not
+   *  re-land while `http-watcher` (SSRF) and `webhook-watcher` (destructive,
+   *  labelled `read`) are still authored `read`. See the fence's own comment in
+   *  `mcp-server.ts` for the two preconditions. */
   it('kernel-authored ingredients stay hidden except the D-172 file content read surface', async () => {
     const manifests = createManifestRegistry('/nonexistent');
     manifests.register(aiClassify);
     manifests.register(kernelIngredient);
     manifests.register(dataFileReadIngredient);
     const deps = {
+      // ⚠ D-228 slice 1 — a caller carrying no contract is offered nothing,
+      // so an MCP harness must carry an authorizer. Grants everything: these
+      // tests are about DISPATCH, not about catalog derivation.
+      inboundTokenAuthorize: () => true,
       recipeStore: createRecipeStore('/nonexistent'),
       executorConfig: { manifests },
       baseVault: {},
@@ -894,6 +927,9 @@ describe('MCP per-ingredient tool catalog', () => {
     const names = res.tools.map((tool) => tool.name);
     expect(names).toContain('recued_ingredient_ai-classify');
     expect(names).toContain('recued_ingredient_data-file-read');
+    // ⛔ `kernel-only` is author `recued`, risk_tier `read`, and NOT on the
+    // whitelist — so it stays hidden. A kernel READ being hidden is the whole
+    // point: `risk_tier` is a presentation hint, not an authorization input.
     expect(names).not.toContain('recued_ingredient_kernel-only');
   });
 
@@ -901,12 +937,20 @@ describe('MCP per-ingredient tool catalog', () => {
     const manifests = createManifestRegistry('/nonexistent');
     manifests.register(aiClassify);
     const base = {
+      // ⚠ D-228 slice 6 — UNBOUND IS NOT UNGATED, and this fixture is where the
+      // two used to be conflated. `boundContractId: undefined` means a token
+      // carrying no CONTRACT; `inboundTokenAuthorize: undefined` means no token
+      // at all. Production only ever produces the first here (a bearer resolves
+      // to a record, hence a checklist), so the checklist belongs in the base
+      // fixture — and this suite's subject is LIVENESS, which must be shown to
+      // empty the catalog independently of the checklist.
+      inboundTokenAuthorize: () => true,
       recipeStore: createRecipeStore('/nonexistent'),
       executorConfig: { manifests },
       baseVault: {},
     } as unknown as Parameters<typeof _testing.handleToolsList>[0];
 
-    // Unbound (no boundContractId — stdio / CLI owner) → full catalog.
+    // Unbound but token-carrying (no boundContractId) → full catalog.
     const unbound = (await _testing.handleToolsList(base)) as {
       tools: Array<{ name: string }>;
     };
@@ -1027,6 +1071,10 @@ describe('MCP tool: recued_runRecipe held projection', () => {
       } as unknown as ExecuteHandlerDeps['auditLog'],
       contractOverlay,
       customerUsage,
+      // ⚠ D-228 slice 1 — this harness passes deps inline rather than through a
+      // `const deps` literal, so it needs the authorizer of its own. Grants
+      // everything: the subject is the HELD PROJECTION, not catalog derivation.
+      inboundTokenAuthorize: () => true,
     } as unknown as McpDeps);
     const envelope = await dispatch({
       jsonrpc: '2.0',
@@ -1112,6 +1160,10 @@ describe('D-153 P2.C — MCP registry-routed source + snapshot dispatch', () => 
     manifests.register(registryHttpManifest('alpha-http'));
     manifests.register(registryHttpManifest('beta-http'));
     const deps = {
+      // ⚠ D-228 slice 1 — a caller carrying no contract is offered nothing,
+      // so an MCP harness must carry an authorizer. Grants everything: these
+      // tests are about DISPATCH, not about catalog derivation.
+      inboundTokenAuthorize: () => true,
       recipeStore: createRecipeStore('/nonexistent'),
       executorConfig: { manifests },
       baseVault: {},
@@ -1153,6 +1205,10 @@ describe('D-153 P2.C — MCP registry-routed source + snapshot dispatch', () => 
 
   it('does not resolve mcp source/snapshot for unknown registry names', async () => {
     const deps = {
+      // ⚠ D-228 slice 1 — a caller carrying no contract is offered nothing,
+      // so an MCP harness must carry an authorizer. Grants everything: these
+      // tests are about DISPATCH, not about catalog derivation.
+      inboundTokenAuthorize: () => true,
       internalRegistry: registryStub([]),
     } as unknown as Parameters<typeof _testing.handleToolCall>[1];
 
@@ -1167,6 +1223,10 @@ describe('D-153 P2.C — MCP registry-routed source + snapshot dispatch', () => 
   it('short-circuits Tier 3 entries before mcp source/snapshot resolution', async () => {
     let dispatchCalls = 0;
     const deps = {
+      // ⚠ D-228 slice 1 — a caller carrying no contract is offered nothing,
+      // so an MCP harness must carry an authorizer. Grants everything: these
+      // tests are about DISPATCH, not about catalog derivation.
+      inboundTokenAuthorize: () => true,
       internalRegistry: registryStub(
         [registryTool('exa.web_search', 3)],
         async () => {
@@ -1276,6 +1336,10 @@ describe('MCP extension-first tool catalog', () => {
     const manifests = createManifestRegistry('/nonexistent');
     manifests.register(serverOnly);
     const deps = {
+      // ⚠ D-228 slice 1 — a caller carrying no contract is offered nothing,
+      // so an MCP harness must carry an authorizer. Grants everything: these
+      // tests are about DISPATCH, not about catalog derivation.
+      inboundTokenAuthorize: () => true,
       recipeStore: createRecipeStore('/nonexistent'),
       executorConfig: { manifests },
       baseVault: {},
@@ -1355,6 +1419,10 @@ describe('MCP per-ingredient dispatch', () => {
     const delegations: Array<{ recipe: string; config: unknown }> = [];
     const audit = emptyAuditLog();
     const deps = {
+      // ⚠ D-228 slice 1 — a caller carrying no contract is offered nothing,
+      // so an MCP harness must carry an authorizer. Grants everything: these
+      // tests are about DISPATCH, not about catalog derivation.
+      inboundTokenAuthorize: () => true,
       recipeStore: createRecipeStore('/nonexistent'),
       executorConfig: { manifests },
       baseVault: {},
@@ -1389,6 +1457,10 @@ describe('MCP per-ingredient dispatch', () => {
     const manifests = createManifestRegistry('/nonexistent');
     const audit = emptyAuditLog();
     const deps = {
+      // ⚠ D-228 slice 1 — a caller carrying no contract is offered nothing,
+      // so an MCP harness must carry an authorizer. Grants everything: these
+      // tests are about DISPATCH, not about catalog derivation.
+      inboundTokenAuthorize: () => true,
       recipeStore: createRecipeStore('/nonexistent'),
       executorConfig: { manifests },
       baseVault: {},
@@ -1414,6 +1486,10 @@ describe('MCP per-ingredient dispatch', () => {
     manifests.register(httpTool);
     const recipeStore = createRecipeStore('/nonexistent');
     const deps = {
+      // ⚠ D-228 slice 1 — a caller carrying no contract is offered nothing,
+      // so an MCP harness must carry an authorizer. Grants everything: these
+      // tests are about DISPATCH, not about catalog derivation.
+      inboundTokenAuthorize: () => true,
       recipeStore,
       executorConfig: { manifests },
       baseVault: {},
@@ -1482,6 +1558,10 @@ describe('MCP per-ingredient dispatch', () => {
   it('unknown slug on server route surfaces a clear error', async () => {
     const manifests = createManifestRegistry('/nonexistent');
     const deps = {
+      // ⚠ D-228 slice 1 — a caller carrying no contract is offered nothing,
+      // so an MCP harness must carry an authorizer. Grants everything: these
+      // tests are about DISPATCH, not about catalog derivation.
+      inboundTokenAuthorize: () => true,
       recipeStore: createRecipeStore('/nonexistent'),
       executorConfig: { manifests },
       baseVault: {},
@@ -1501,6 +1581,10 @@ describe('MCP per-ingredient dispatch', () => {
     manifests.register(httpTool);
     const audit = emptyAuditLog();
     const deps = {
+      // ⚠ D-228 slice 1 — a caller carrying no contract is offered nothing,
+      // so an MCP harness must carry an authorizer. Grants everything: these
+      // tests are about DISPATCH, not about catalog derivation.
+      inboundTokenAuthorize: () => true,
       recipeStore: createRecipeStore('/nonexistent'),
       executorConfig: { manifests },
       baseVault: {},
@@ -1566,10 +1650,20 @@ describe('D-171 slice-2c follow-on #1 — buildMcpGrantCatalogLegacyEntries', ()
     manifests.register(ingredient('writer-thing', 'write'));
     manifests.register(ingredient('admin-thing', 'admin'));
     // Kernel-authored ingredient — implementation detail, never a grantable tool.
+    // ⛔ RESTORED to `read` (D-228 slice 2 made it `write`, and was reverted).
+    // A kernel READ that is not whitelisted must classify as ungrantable; a
+    // `write` fixture would pass under risk-derived exposure too, and so could
+    // not witness the difference.
     manifests.register(ingredient('kernel-thing', 'read', 'recued'));
     // D-172 explicit exception — file content leaves through a Gateway-gated
     // run-ingredient MCP tool, so it must be grantable by door tokens.
-    manifests.register(ingredient('data-file-read', 'read', 'recued'));
+    manifests.register({
+      // D-228 slice 2 — the shipped manifest authors `mcp_exposed: true`; the
+      // generic helper does not, and that asymmetry IS the policy: every other
+      // kernel ingredient here is fenced by omitting it.
+      ...ingredient('data-file-read', 'read', 'recued'),
+      mcp_exposed: true,
+    });
     return manifests;
   };
 
@@ -1632,7 +1726,13 @@ describe('D-171 slice-2c follow-on #1 — buildMcpGrantCatalogLegacyEntries', ()
 
   it('returns the data-file-read tool even when it is the only kernel-authored exposed ingredient', () => {
     const manifests = createManifestRegistry('/nonexistent');
-    manifests.register(ingredient('data-file-read', 'read', 'recued'));
+    manifests.register({
+      // D-228 slice 2 — the shipped manifest authors `mcp_exposed: true`; the
+      // generic helper does not, and that asymmetry IS the policy: every other
+      // kernel ingredient here is fenced by omitting it.
+      ...ingredient('data-file-read', 'read', 'recued'),
+      mcp_exposed: true,
+    });
     const entries = buildMcpGrantCatalogLegacyEntries(manifests);
     expect(entries.map((entry) => entry.name)).toContain('recued_ingredient_data-file-read');
     expect(entries).toHaveLength(grantCatalogMetaToolNames().length + 1);
@@ -1723,6 +1823,10 @@ describe('D-171 slice-2c follow-on #1 — direct-return native tools record a co
   it('records exactly one use for a direct-return native tool (closes the cap bypass)', async () => {
     const { overlay, recordUse } = activeOverlay();
     const deps = {
+      // ⚠ D-228 slice 1 — a caller carrying no contract is offered nothing,
+      // so an MCP harness must carry an authorizer. Grants everything: these
+      // tests are about DISPATCH, not about catalog derivation.
+      inboundTokenAuthorize: () => true,
       recipeStore: createRecipeStore('/nonexistent'),
       executorConfig: { manifests: createManifestRegistry('/nonexistent') },
       baseVault: {},
@@ -1739,6 +1843,10 @@ describe('D-171 slice-2c follow-on #1 — direct-return native tools record a co
   it('does not record a use for an unbound token (overlay resolves INERT)', async () => {
     const { overlay, recordUse } = inertOverlay();
     const deps = {
+      // ⚠ D-228 slice 1 — a caller carrying no contract is offered nothing,
+      // so an MCP harness must carry an authorizer. Grants everything: these
+      // tests are about DISPATCH, not about catalog derivation.
+      inboundTokenAuthorize: () => true,
       recipeStore: createRecipeStore('/nonexistent'),
       executorConfig: { manifests: createManifestRegistry('/nonexistent') },
       baseVault: {},
@@ -1753,6 +1861,10 @@ describe('D-171 slice-2c follow-on #1 — direct-return native tools record a co
   it('excludes recued_runRecipe from the direct-return recording (it records per dispatch in handleExecute)', async () => {
     const { overlay, recordUse } = activeOverlay();
     const deps = {
+      // ⚠ D-228 slice 1 — a caller carrying no contract is offered nothing,
+      // so an MCP harness must carry an authorizer. Grants everything: these
+      // tests are about DISPATCH, not about catalog derivation.
+      inboundTokenAuthorize: () => true,
       recipeStore: createRecipeStore('/nonexistent'),
       executorConfig: { manifests: createManifestRegistry('/nonexistent') },
       baseVault: {},
@@ -1790,6 +1902,12 @@ describe('D-187: direct-return native tools are op-risk gated — the retired po
   // LOW, whether or not it also carries a bound contract).
   const depsWith = (overlay: unknown, mcpTokenId?: string, contractScan?: ScanFn) =>
     ({
+      // D-228 slice 6 — an absent checklist denies, and this suite's subject is
+      // the OVERLAY (what a door's policy matrix does to a native read/write),
+      // which only has meaning once gate A has admitted. Without this the
+      // overlay would never be consulted and every assertion here would pass
+      // for the wrong reason.
+      inboundTokenAuthorize: () => true,
       recipeStore: createRecipeStore('/nonexistent'),
       executorConfig: { manifests: createManifestRegistry('/nonexistent') },
       baseVault: {},
@@ -1947,6 +2065,10 @@ describe('MCP tool: recued_saveRecipe — op-step acceptance (D-182)', () => {
   const dbDeps = (): Parameters<typeof _testing.handleToolCall>[1] => {
     saveDb = new Database(':memory:');
     return {
+      // D-228 slice 6 — an absent checklist denies. This suite's subject is
+      // `recued_saveRecipe`'s VALIDATION (op-step slots, D-201 webhook ingress),
+      // which runs only after the gate admits the call.
+      inboundTokenAuthorize: () => true,
       recipeStore: createRecipeStore('/nonexistent', saveDb),
       executorConfig: { manifests: createManifestRegistry('/nonexistent') },
       baseVault: {},
@@ -2075,5 +2197,109 @@ describe('MCP tool: recued_saveRecipe — op-step acceptance (D-182)', () => {
     expect(errText(res)).toContain('owner-selected ingress binding');
     expect(deps.recipeStore.get(kitchenWebhook.recipe_id)?.webhook_triggers)
       .toHaveLength(1);
+  });
+});
+
+describe('D-220 — recued_saveRecipe is gated by the form-field contract', () => {
+  // ⛔⛔ Codex 3.2. The MCP tool called `recipeStore.save` directly, so the whole
+  // D-220 gate was bypassable: an authenticated caller could save a recipe
+  // requiring a field the live form does not collect, trigger reconciliation
+  // would arm it, and every accepted submission after that fired the recipe with
+  // the declared answer absent. The tool's own comment claimed to mirror the
+  // local `recipe.save` seam; it validated schema and op-steps and nothing else.
+  const FORM_ID = 'form_intake_1';
+
+  const recipeRequiring = (field: string): Record<string, unknown> => ({
+    recipe_id: 'intake-pair',
+    version: 1,
+    ttl: 0,
+    metadata: {
+      name: 'Intake pair',
+      description: 'Pairs with an intake form.',
+      author: 'mcp',
+      requires_form_fields: [{ name: field, type: 'text', required: true }],
+      supported_platforms: [],
+    },
+    event_triggers: [
+      { on: 'form_response.accepted', where: { form_definition_id: FORM_ID } },
+    ],
+    steps: [{ id: 'noop', transform: 'trim', input: 'x' }],
+    output: { render: [] },
+  });
+
+  const formCollecting = (...names: string[]): unknown => ({
+    form_definition_id: FORM_ID,
+    fields: names.map((name) => ({ name, type: 'text', required: true })),
+  });
+
+  /** The UNBOUND owner path — a delegated door refuses a `write` before the gate
+   *  is ever reached, so a door bearer here would test door trust, not D-220. */
+  const saveAsOwner = async (
+    recipe: Record<string, unknown>,
+    reader: ((id: string) => unknown) | undefined,
+  ): Promise<{ isError: boolean; text: string; saved: unknown[] }> => {
+    const saved: unknown[] = [];
+    const deps = {
+      // ⚠ D-228 slice 1 — a caller carrying no contract is offered nothing,
+      // so an MCP harness must carry an authorizer. Grants everything: these
+      // tests are about DISPATCH, not about catalog derivation.
+      inboundTokenAuthorize: () => true,
+      recipeStore: {
+        ids: () => [],
+        get: () => null,
+        getStored: () => null,
+        save: (definition: unknown) => { saved.push(definition); },
+      },
+      executorConfig: { manifests: createManifestRegistry('/nonexistent') },
+      baseVault: {},
+      contractOverlay: null,
+      ...(reader === undefined ? {} : { formDefinitionReader: reader }),
+    } as unknown as Parameters<typeof _testing.handleToolCall>[1];
+    const res = await _testing.handleToolCall(
+      { name: 'recued_saveRecipe', arguments: { recipe } },
+      deps,
+    );
+    return {
+      isError: (res as { isError?: boolean }).isError === true,
+      text: JSON.stringify(res),
+      saved,
+    };
+  };
+
+  it('⛔ REFUSES a recipe whose declared field the live form does not collect', async () => {
+    const result = await saveAsOwner(recipeRequiring('item'), () => formCollecting('email'));
+    expect(result.isError, result.text).toBe(true);
+    expect(result.text).toContain('does not collect');
+    // ⛔ And nothing was persisted — a refusal that still saved would be worse
+    // than none, because trigger reconciliation arms from the stored row.
+    expect(result.saved).toEqual([]);
+  });
+
+  it('accepts the same recipe when the form DOES collect it — the permitting case', async () => {
+    // Without this the gate could be a blanket refusal of every MCP save, and a
+    // refusal-only test could not tell the two apart.
+    const result = await saveAsOwner(
+      recipeRequiring('item'),
+      () => formCollecting('item', 'email'),
+    );
+    expect(result.isError, result.text).toBe(false);
+    expect(result.saved).toHaveLength(1);
+  });
+
+  it('fails CLOSED when the live form cannot be read', async () => {
+    const result = await saveAsOwner(recipeRequiring('item'), () => {
+      throw new Error('registry unavailable');
+    });
+    expect(result.isError, result.text).toBe(true);
+    expect(result.text).toContain('unverified');
+    expect(result.saved).toEqual([]);
+  });
+
+  it('stays inert with no reader wired, rather than refusing every save', async () => {
+    // The absent-reader posture must match the rpc's: inert, not fail-closed, or
+    // a host without the endpoint registry could save nothing at all.
+    const result = await saveAsOwner(recipeRequiring('item'), undefined);
+    expect(result.isError, result.text).toBe(false);
+    expect(result.saved).toHaveLength(1);
   });
 });

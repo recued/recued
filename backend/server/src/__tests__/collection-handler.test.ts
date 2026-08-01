@@ -363,6 +363,18 @@ describe('makeCollectionHandlers', () => {
   it('declares every method name (D-118 Phase 10 follow-up adds listTemplates + lifecycle)', () => {
     const slice = makeCollectionHandlers(deps);
     expect(slice?.methods.slice().sort()).toEqual([
+      // D-118 mail-setup "Also connect Calendar" (5c3f8c832) — adopts the
+      // existing Microsoft Graph grant from an enrolled mail account instead of
+      // re-consenting, so one consent covers both lanes.
+      //
+      // ⚠ This is the THIRD place the rpc surface is enumerated: the typed
+      // `ServerRpcRegistry`, the runtime `SERVER_RPC_METHODS`, and this slice's
+      // own `methods`. That method shipped missing from the runtime list —
+      // green across the suite, dead on boot — which is what
+      // `server-rpc-registry-method-list-ratchet.test.ts` now closes at
+      // typecheck time. It stayed missing HERE too; this list is hand-kept and
+      // nothing derives it.
+      'collection.calendar.attachGraphGrant',
       'collection.calendar.delete',
       'collection.calendar.enrollBasic',
       'collection.calendar.enrollOAuth',

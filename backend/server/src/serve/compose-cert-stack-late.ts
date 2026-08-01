@@ -6,7 +6,7 @@ import type {
 export interface ComposeCertStackLateOptions {
   readonly certStack: CertStack;
   readonly tlsDomainStore: CertStackLateDeps['tlsDomainStore'];
-  readonly lanBindAddress: CertStackLateDeps['lanBindAddress'];
+  readonly lanAdvertisedAddress: CertStackLateDeps['lanAdvertisedAddress'];
   readonly actualPort: CertStackLateDeps['actualPort'];
 }
 
@@ -21,11 +21,11 @@ export const composeCertStackLate = async (
   const {
     certStack,
     tlsDomainStore,
-    lanBindAddress,
+    lanAdvertisedAddress,
     actualPort,
   } = options;
 
-  await certStack.composeLate({ tlsDomainStore, lanBindAddress, actualPort });
+  await certStack.composeLate({ tlsDomainStore, lanAdvertisedAddress, actualPort });
 
   return {
     tlsCertSource: certStack.getTlsCertSourceRef(),

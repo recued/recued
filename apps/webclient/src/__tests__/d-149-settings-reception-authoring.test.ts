@@ -18,6 +18,7 @@ import {
   INTAKE_FORM_VISITOR_FIELD_TYPES,
   RECEPTION_PAGE_PREFERRED_CONTACT_METHODS,
   STATUS_LINK_PROJECTION_KINDS,
+  APPROVAL_LINK_DEFAULT_ON_APPROVE_ACTION,
   type ApprovalLinkConfig,
   type DropLinkConfig,
   type IntakeFormConfig,
@@ -162,7 +163,14 @@ const mkApprovalLinkConfig = (
   expiry_days: 7,
   on_action: {
     target_id: 'proposal-1',
-    on_approve_action: 'mark_resolved',
+    // The VALID baseline every approval_link test here builds on. It moved to
+    // `create_commitment` when `mark_resolved` stopped being an acceptable
+    // WRITE (its effect seam is unwired, so the visitor's answer reaches
+    // nobody). These tests are about form validity and model shape, not about
+    // which action is supported — so the FIXTURE moves and the expectations
+    // stay. Same correction as the backend fixtures in f79683d5b; this one was
+    // missed because that sweep did not reach the webclient.
+    on_approve_action: 'create_commitment',
   },
   ...override,
 });
@@ -728,7 +736,11 @@ describe('D-149 authoring — approval_link', () => {
     expect(model.action_kind.value).toBe('approve_wording');
     // approve_wording does not need options.
     expect(model.action_kind_requires_options).toBe(false);
-    expect(model.on_approve_action.value).toBe('mark_resolved');
+    // Derived, not hardcoded: the picker's default IS
+    // `APPROVAL_LINK_DEFAULT_ON_APPROVE_ACTION`, which is itself derived from
+    // the supported list — so a future change to what is supported cannot leave
+    // this asserting a default the form no longer offers.
+    expect(model.on_approve_action.value).toBe(APPROVAL_LINK_DEFAULT_ON_APPROVE_ACTION);
     expect(model.visitor_name_constraint.value).toBe('required');
   });
 

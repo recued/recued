@@ -322,6 +322,7 @@ describe('D-120 Phase 4 — `extractContextRecipeRefs` static analyzer', () => {
     const r = recipeWith([
       '{{context.server.available}}',
       '{{context.event.payload}}',
+      '{{context.caller.contract_id}}',
       '{{context.url}}',
     ]);
     expect(extractContextRecipeRefs(r)).toEqual([]);

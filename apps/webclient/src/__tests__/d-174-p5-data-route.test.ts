@@ -21,6 +21,7 @@ import {
   DATA_ROUTE_CONTACT_DIALOG_ATTR,
   DATA_ROUTE_CONTACT_LINKS_ATTR,
   DATA_ROUTE_CONTACT_LOAD_MORE_ATTR,
+  DATA_ROUTE_CONTACT_ROLLUP_ATTR,
   DATA_ROUTE_CONTACT_PROVENANCE_ATTR,
   DATA_ROUTE_CONTACT_SCAN_ATTR,
   DATA_ROUTE_CONTACT_SOURCES_ATTR,
@@ -853,7 +854,7 @@ describe('D-174 P5 Data route', () => {
     expect(shell.innerHTML).toContain('Connected');
     expect(shell.innerHTML).toContain('Sam Rivera');
     expect(rig.sourceListCaller).not.toHaveBeenCalled();
-    expect(rig.contactListCaller).toHaveBeenCalledWith({ limit: 100 });
+    expect(rig.contactListCaller).toHaveBeenCalledWith({ limit: 100, with_rollups: true });
 
     rig.route.dispose();
     expect(rig.root.children).toHaveLength(0);
@@ -4018,6 +4019,46 @@ describe('D-174 P5 Data route — R18 contact load-more pagination', () => {
       return { contacts, total };
     });
 
+  it('⛔ D-226 — a pack\'s rollup reaches the LIST ROW, under its own label', async () => {
+    // `contactRollupChips` is proved pure elsewhere; what is only provable here
+    // is that the row actually CALLS it. A pure function nobody invokes passes
+    // every test it has and renders nothing.
+    const contactListCaller = vi.fn<DataContactListCaller>(async () => ({
+      contacts: [contactRecord()],
+      total: 1,
+      rollups: {
+        [contactRecord().email]: [
+          { publisher: 'recued-core', pack_slug: 'invoice-book', label: 'Owes you',
+            value: { outstanding: '1220.0000' }, complete: true },
+          { publisher: 'recued-core', pack_slug: 'billable-hours', label: 'Unbilled time',
+            value: { unbilled_minutes: 90 }, complete: false },
+        ],
+      },
+    }));
+    const rig = mountRoute({ contactListCaller });
+    await rig.route.whenLoaded();
+
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(DATA_ROUTE_CONTACT_ROLLUP_ATTR);
+    expect(html).toContain('Owes you');
+    expect(html).toContain('1220.0000');
+    // ⛔ the incomplete one must arrive hedged, both ways: the words the server's
+    // `complete: false` earns, and the class that survives a truncated cell.
+    expect(html).toContain('at least');
+    expect(html).toContain('data-contact-rollup--partial');
+    rig.route.dispose();
+  });
+
+  it('a contact no pack has anything to say about draws no chips', async () => {
+    const contactListCaller = vi.fn<DataContactListCaller>(async () => ({
+      contacts: [contactRecord()], total: 1, rollups: {},
+    }));
+    const rig = mountRoute({ contactListCaller });
+    await rig.route.whenLoaded();
+    expect(rig.root.children[0]?.innerHTML ?? '').not.toContain(DATA_ROUTE_CONTACT_ROLLUP_ATTR);
+    rig.route.dispose();
+  });
+
   it('shows a "N of M loaded" footer and appends the next page at offset = loaded', async () => {
     const contactListCaller = pagedContactCaller(5);
     const rig = mountRoute({ contactListCaller });
@@ -4030,13 +4071,13 @@ describe('D-174 P5 Data route — R18 contact load-more pagination', () => {
     expect(html).toContain('Contact 1');
     expect(html).not.toContain('Contact 2');
     // Initial fetch is offset-0 (no `offset` key).
-    expect(contactListCaller).toHaveBeenCalledWith({ limit: 100 });
+    expect(contactListCaller).toHaveBeenCalledWith({ limit: 100, with_rollups: true });
 
     emitClick(rig.root.children[0]!, 'load-more-contacts');
     await rig.route.whenLoaded();
 
     html = rig.root.children[0]?.innerHTML ?? '';
-    expect(contactListCaller).toHaveBeenCalledWith({ limit: 100, offset: 2 });
+    expect(contactListCaller).toHaveBeenCalledWith({ limit: 100, offset: 2, with_rollups: true });
     expect(html).toContain('4 of 5 loaded');
     expect(html).toContain('Contact 0'); // kept
     expect(html).toContain('Contact 2'); // appended
@@ -4085,6 +4126,7 @@ describe('D-174 P5 Data route — R18 contact load-more pagination', () => {
     expect(contactListCaller).toHaveBeenCalledWith({
       limit: 100,
       name_contains: 'rivera',
+      with_rollups: true,
     });
 
     emitClick(rig.root.children[0]!, 'load-more-contacts');
@@ -4093,6 +4135,7 @@ describe('D-174 P5 Data route — R18 contact load-more pagination', () => {
       limit: 100,
       offset: 2,
       name_contains: 'rivera',
+      with_rollups: true,
     });
 
     rig.route.dispose();

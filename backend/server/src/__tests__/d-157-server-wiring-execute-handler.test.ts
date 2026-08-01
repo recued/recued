@@ -297,6 +297,13 @@ describe('handleExecute D-157 server-wiring audit and ask fields', () => {
       variables: {
         mode: 'default',
         untouched: 'recipe-default',
+        // D-222 Slice A — `request_only` used to be supplied with no
+        // declaration, which asserted the pre-D-222 behaviour: an undeclared
+        // caller key merged into the snapshot. That is now
+        // `undeclared_config_argument`. Declaring it keeps this test's actual
+        // subject — request config OVERRIDING defaults, per its name — and the
+        // expected snapshot below is unchanged.
+        request_only: false,
       },
     });
     const log = auditLog();

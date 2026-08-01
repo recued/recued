@@ -536,6 +536,9 @@ const makeMcpDeps = () => ({
   recipeStore: createRecipeStore('/nonexistent'),
   executorConfig: { manifests: createManifestRegistry('/nonexistent') },
   baseVault: {},
+  // D-228 slice 6 — this suite models the OWNER (no per-tool checklist);
+  // absent now DENIES, so the principal is stated positively.
+  ownerAdmitAll: true,
   enrichmentStore: store,
   db,
 });

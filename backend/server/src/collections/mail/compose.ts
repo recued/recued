@@ -62,16 +62,15 @@ import {
   createImapProvider,
   type ImapProviderConfig,
   type ImapSmtpConfig,
+  type SmtpTransportFactory,
 } from './imap-provider.js';
 import {
   createGmailProvider,
-  GMAIL_OAUTH_CONFIG,
   GMAIL_SEND_SCOPE,
   type GmailProviderConfig,
 } from './gmail-provider.js';
 import {
   createGraphProvider,
-  GRAPH_OAUTH_CONFIG,
   GRAPH_SEND_SCOPE,
   type GraphProviderConfig,
 } from './graph-provider.js';
@@ -133,16 +132,44 @@ export interface ComposeMailStackOptions {
 }
 
 export interface MailAdapterBundle {
+  /** LAZY accessor for the shared `CollectionRegistry`.
+   *
+   *  ⚠ Lazy because the registry is constructed AFTER the mail stack in the boot
+   *  composer (`compose-collection-context.ts`) — a direct reference would be
+   *  undefined at construction. By the time a collection goes live it exists.
+   *
+   *  Without this, a mail account enrolled AFTER boot went live in this stack's
+   *  own map but was never added to the SHARED registry (which happened once, in
+   *  `startCollectionAdapters`), so every `collection.*` read answered
+   *  `COLLECTION_NOT_FOUND: no collection registered for mail:<slug>` until the
+   *  server restarted. */
+  getCollectionRegistry?: () => CollectionRegistry | undefined;
   /** Account store shared with calendar's OAuth path. When absent
    *  every enroll surfaces `not_configured` and live providers can't
    *  refresh their tokens — bin.ts always wires this in production. */
   accountStore?: OAuthAccountStore;
   /** OAuth client config resolver. Returning `null` for a provider
-   *  surfaces `not_configured` on `enrollOAuth`. Defaults to the
-   *  process-env-driven `GMAIL_OAUTH_CONFIG` / `GRAPH_OAUTH_CONFIG`. */
+   *  surfaces `not_configured` on `enrollOAuth`. Production ALWAYS supplies
+   *  this (bin.ts → wire-mail-stack → the store-backed per-use resolver);
+   *  absent (harness / db-less) there is nothing behind it, so every provider
+   *  reads `not_configured`. It used to fall back to the process-env-driven
+   *  `GMAIL_OAUTH_CONFIG` / `GRAPH_OAUTH_CONFIG` — deleted 2026-07-28. */
   oauthConfig?: (provider: 'gmail' | 'graph') => OAuthProviderConfig | null;
   /** Test-friendly HTTP fetcher hook. */
   fetcher?: HttpFetcher;
+  /** SMTP transport factory for imap-adapter sends. Absent ⇒
+   *  `defaultSmtpTransportFactory` (nodemailer, the production path).
+   *
+   *  THE seam for running a real server without real network sends. It exists
+   *  because the alternative was worse: `defaultSmtpTransportFactory` used to
+   *  read `RECUED_BENCH_SMTP_OUTBOX` itself, which put a silent mail-diversion
+   *  switch into every release artifact (see the note there). Injection keeps
+   *  that decision at the composition root, where the caller can see it.
+   *
+   *  The substrate-bench sets this from its own patch over
+   *  `wire-mail-stack.ts`, so the bench transport is bundled ONLY into the
+   *  bench's `dist-bench/bin.js`. Nothing in production supplies it. */
+  smtpFactory?: SmtpTransportFactory;
   now?: () => number;
   /** Vault-lock predicate. When it returns false (the server vault is LOCKED —
    *  enrolled but the Master DEK is not in memory), a live collection's poll
@@ -234,11 +261,8 @@ export const composeMailStack = (
 
   const oauthConfigFor = (
     provider: 'gmail' | 'graph',
-  ): OAuthProviderConfig | null => {
-    if (bundle.oauthConfig) return bundle.oauthConfig(provider);
-    const fallback = provider === 'gmail' ? GMAIL_OAUTH_CONFIG : GRAPH_OAUTH_CONFIG;
-    return fallback.clientId ? fallback : null;
-  };
+  ): OAuthProviderConfig | null =>
+    bundle.oauthConfig ? bundle.oauthConfig(provider) : null;
 
   const buildProvider = async (
     row: CollectionInstanceRecord,
@@ -263,6 +287,9 @@ export const composeMailStack = (
         slug,
         config: () => captured,
         ...(bundle.now ? { now: bundle.now } : {}),
+        // Absent in production ⇒ createImapProvider falls back to
+        // `defaultSmtpTransportFactory` (nodemailer).
+        ...(bundle.smtpFactory ? { smtpFactory: bundle.smtpFactory } : {}),
         log: (level, msg, data) => log(level, msg, data),
       });
     }
@@ -403,6 +430,18 @@ export const composeMailStack = (
     }
 
     live.set(row.slug, collection);
+    // Register with the SHARED registry the moment the collection goes live, so
+    // an enroll is readable immediately instead of only after a restart. Guarded
+    // because `register` throws on a duplicate and both `startAll` and the boot
+    // `registerMailCollections` sweep can reach the same slug.
+    try {
+      const shared = bundle.getCollectionRegistry?.();
+      if (shared && !shared.get('mail', row.slug)) shared.register(collection);
+    } catch (err) {
+      log('warn', `mail-stack: registry register failed for '${row.slug}'`, {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     if (syncDeferredWhileLocked(bundle.isVaultUnlocked)) {
       // Vault LOCKED → defer the poll loop. The collection stays live (its
@@ -428,6 +467,11 @@ export const composeMailStack = (
     const collection = live.get(slug);
     if (!collection) return;
     live.delete(slug);
+    // Drop it from the shared registry too. `register` throws on a duplicate and
+    // there is no other way out, so a stale entry means a delete → re-enroll of
+    // the same slug keeps serving the CLOSED collection from the first enroll.
+    try { bundle.getCollectionRegistry?.()?.unregister('mail', slug); }
+    catch { /* registry teardown races drain; never block a stop */ }
     try {
       await collection.close();
     } catch (err) {

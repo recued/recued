@@ -5,10 +5,19 @@
  *  can embed the SAME constant without the launcher pulling the server graph —
  *  esbuild inlines it into each bundle at build time.
  *
- *  EMPTY until the signing identity is generated + custody is set up (D-178
- *  rev 4 / pre-GA): an empty key makes every verifier fail/short-circuit closed
- *  (the server resolves `update.check` to `not-configured`; the launcher's
- *  re-verify is bypassed pre-GA — see `verifyBinarySignature`). Override only via
- *  the build-time pin once the key exists — NEVER accept it from runtime config
- *  (that would defeat I-2). */
-export const TRUSTED_RELEASE_PUBKEY = '';
+ *  PINNED 2026-07-31 — key id `e297ddfab6e5a170`. Before this it was empty,
+ *  which made every verifier short-circuit closed (the server resolved
+ *  `update.check` to `not-configured`). With a key pinned, the check is live:
+ *  a release this key cannot verify is REJECTED, not merely unreported.
+ *
+ *  ⛔ NEVER accept this from runtime config — a runtime-supplied trust root is
+ *  no trust root at all (I-2). The build-time pin is the only input, and it is
+ *  the bare minisign body (no `untrusted comment:` line) because
+ *  `distribution/install/install.sh` passes the same string straight to
+ *  `minisign -P`, which takes the body alone. The server's own `parsePublicKey`
+ *  accepts either form, so the installer is the constraint.
+ *
+ *  ⚠ Rotating this is not a one-line edit: it must change here, in BOTH
+ *  installers, and in the CI `RECUED_EXPECTED_PUBKEY` at the same time, or some
+ *  consumer verifies against a key that no longer signs. */
+export const TRUSTED_RELEASE_PUBKEY = 'RWTil936tuWhcHNYDf4Ras3oygZ3YYRo1VNcslibSfACY9e6piKLxf8v';

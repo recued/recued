@@ -402,6 +402,24 @@ export const formatResult = (result: ExecuteResponse): string => {
     }
   }
 
+  // ⛔ Per-item failures inside a `foreach`. They are NOT in `errors[]` and they
+  // do not make `success` false — a partial write is not a failed run — so
+  // without this line a run that refused every single item prints exactly like
+  // one that wrote them all. That is how three defects shipped in one pack.
+  const partial = (result.steps as ReadonlyArray<{
+    id?: string; foreach?: { items: number; failed: number };
+  }>).filter((s) => s.foreach !== undefined && s.foreach.failed > 0);
+  if (partial.length > 0) {
+    lines.push('');
+    lines.push(`${YELLOW}${BOLD}Items refused:${RESET}`);
+    for (const step of partial) {
+      const { items, failed } = step.foreach!;
+      lines.push(`  ${YELLOW}!${RESET} ${DIM}[${step.id ?? '?'}]${RESET} `
+        + `${failed} of ${items} ${items === 1 ? 'item' : 'items'} failed`
+        + `${failed === items ? ` ${DIM}— every one${RESET}` : ''}`);
+    }
+  }
+
   // Errors — show step source + code + message
   if (result.errors.length > 0) {
     lines.push('');

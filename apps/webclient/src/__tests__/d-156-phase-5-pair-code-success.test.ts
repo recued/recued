@@ -103,6 +103,8 @@ const seamOptions = () => ({
 describe('finalizePairCodeSuccess — happy path', () => {
   it('writes 5 IDB fields + binds AAD on the wrapped bearer', async () => {
     const localStore = createInMemoryWebclientLocalStore();
+    const ensureProfile = vi.spyOn(localStore, 'ensureProfile');
+    const setField = vi.spyOn(localStore, 'set');
     const { store: tokenStore, calls: wrapCalls } = buildFakeTokenStore();
     const invokePassportFetch = vi.fn(async () => ({
       passport: buildPassport({
@@ -117,6 +119,7 @@ describe('finalizePairCodeSuccess — happy path', () => {
       serverUrl: 'http://localhost:3001',
       bearer: 'realm-bearer-xyz',
       localStore,
+      profileStore: localStore,
       tokenStore,
       invokePassportFetch,
       ...seamOptions(),
@@ -159,6 +162,9 @@ describe('finalizePairCodeSuccess — happy path', () => {
       server_url: 'ws://localhost:3001/ws',
       bearer: 'realm-bearer-xyz',
     });
+    expect(ensureProfile).toHaveBeenCalledOnce();
+    expect(ensureProfile).toHaveBeenCalledWith('ws://localhost:3001/ws');
+    expect(setField.mock.calls.some(([key]) => key === 'server_url')).toBe(false);
   });
 
   it('persists the D-151 paired instance_id into pair_metadata when supplied', async () => {
@@ -193,6 +199,61 @@ describe('finalizePairCodeSuccess — happy path', () => {
       server_passport_fingerprint: 'PUBKEY_BASE64',
       server_handle_at_pair: 'alice',
       instance_id: 'wc-instance-1',
+    });
+  });
+
+  it('selects an existing URL before writing, so adopting it does not discard fresh metadata', async () => {
+    const localStore = createInMemoryWebclientLocalStore();
+    const serverUrl = 'wss://alice.example:8443/ws';
+    await localStore.ensureProfile(serverUrl);
+    await localStore.set('pair_metadata', {
+      paired_at: 1,
+      server_passport_fingerprint: 'OLD_PUBKEY',
+      server_handle_at_pair: 'old-handle',
+    });
+    await localStore.set('server_public_key', 'OLD_PUBKEY');
+    await localStore.set('webclient_token', {
+      token_id: 'old-token',
+      ciphertext_b64: 'old-ciphertext',
+      iv_b64: 'old-iv',
+      issued_at: 1,
+    });
+    // "Add another server" opens a pending active record. Entering a URL
+    // already in the roster must retire that pending record, select the known
+    // profile, and only then write the replacement generation into it.
+    await localStore.beginNewProfile();
+
+    const { store: tokenStore } = buildFakeTokenStore();
+    const result = await finalizePairCodeSuccess({
+      serverUrl: 'https://alice.example:8443',
+      bearer: 'replacement-bearer',
+      localStore,
+      profileStore: localStore,
+      tokenStore,
+      invokePassportFetch: vi.fn(async () => ({
+        passport: buildPassport({
+          server_public_key: 'NEW_PUBKEY',
+          current_handle: 'new-handle',
+          cert_fingerprint: 'NEW_CERT',
+          cert_expires_at: 2_000_000_000,
+        }) as ServerPassportProjection,
+      })),
+      ...seamOptions(),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(await localStore.listProfiles()).toHaveLength(1);
+    expect(await localStore.inspect()).toMatchObject({
+      server_url: serverUrl,
+      server_public_key: 'NEW_PUBKEY',
+      webclient_token: { token_id: FIXED_TOKEN_ID },
+      pair_metadata: {
+        server_passport_fingerprint: 'NEW_PUBKEY',
+        server_handle_at_pair: 'new-handle',
+      },
+      cert_pin_state: {
+        current_fingerprint: 'NEW_CERT',
+      },
     });
   });
 
@@ -491,6 +552,85 @@ describe('finalizePairCodeSuccess — failures leave IDB untouched', () => {
     if (result.ok) return;
     expect(result.error).toBe('pair_code_success_persist_failed');
     expect(result.detail).toContain('IDB quota');
+  });
+
+  it('profile selection failure → persist_failed before the strict token triple lands', async () => {
+    const localStore = createInMemoryWebclientLocalStore();
+    const { store: tokenStore } = buildFakeTokenStore();
+    const invokePassportFetch = vi.fn(async () => ({
+      passport: buildPassport({ server_public_key: 'PUBKEY' }) as ServerPassportProjection,
+    }));
+
+    const result = await finalizePairCodeSuccess({
+      serverUrl: 'https://alice.example:8443',
+      bearer: 'b',
+      localStore,
+      profileStore: {
+        ensureProfile: async () => {
+          throw new Error('profile roster unavailable');
+        },
+      },
+      tokenStore,
+      invokePassportFetch,
+      ...seamOptions(),
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('pair_code_success_persist_failed');
+    expect(result.detail).toContain('profile roster unavailable');
+    const inspected = await localStore.inspect();
+    expect(inspected.server_url).toBeNull();
+    expect(inspected.server_public_key).toBeNull();
+    expect(inspected.webclient_token).toBeNull();
+    expect(inspected.pair_metadata).toBeNull();
+    expect(inspected.cert_pin_state).toBeNull();
+  });
+
+  it('clears an existing target token before replacement writes can fail', async () => {
+    const localStore = createInMemoryWebclientLocalStore();
+    const serverUrl = 'wss://known.example:8443/ws';
+    await localStore.ensureProfile(serverUrl);
+    await localStore.set('server_public_key', 'OLD_PUBKEY');
+    await localStore.set('webclient_token', {
+      token_id: 'old-token',
+      ciphertext_b64: 'old-ciphertext',
+      iv_b64: 'old-iv',
+      issued_at: 1,
+    });
+    await localStore.beginNewProfile();
+    const originalSet = localStore.set.bind(localStore);
+    localStore.set = async <K extends keyof WebclientLocalStorage>(
+      key: K,
+      value: WebclientLocalStorage[K],
+    ): Promise<void> => {
+      if (key === 'server_public_key') throw new Error('write interrupted');
+      await originalSet(key, value);
+    };
+    const { store: tokenStore } = buildFakeTokenStore();
+
+    const result = await finalizePairCodeSuccess({
+      serverUrl: 'https://known.example:8443',
+      bearer: 'replacement-bearer',
+      localStore,
+      profileStore: localStore,
+      tokenStore,
+      invokePassportFetch: vi.fn(async () => ({
+        passport: buildPassport({ server_public_key: 'NEW_PUBKEY' }) as ServerPassportProjection,
+      })),
+      ...seamOptions(),
+    });
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error).toBe('pair_code_success_persist_failed');
+    // The known profile may retain its old public key, but its old token can
+    // no longer make that mixed generation pass the strict boot discriminant.
+    expect(await localStore.inspect()).toMatchObject({
+      server_url: serverUrl,
+      server_public_key: 'OLD_PUBKEY',
+      webclient_token: null,
+    });
   });
 });
 

@@ -10,13 +10,16 @@
  *  side snapshot/inject contract that hosts wire to a per-pair store.
  *
  *  The helpers are pure over `(recipe, stores, snapshot)` —
- *  persistence is host-side. Reactive recipes
- *  (`auto_run`) snapshot at process retire boundaries only — host
- *  buffers per-tick output in memory and commits on
- *  `ProcessRetireReason`. Non-reactive (cron + manual) snapshot
- *  every run.
+ *  persistence is host-side. Cron + manual runs snapshot every run.
  *
- *  Spec: D-120.
+ *  ⛔ Reactive (`auto_run`) does NOT snapshot — deliberately, and the
+ *  validator rejects `{{context.recipe.*}}` in an `auto_run` recipe
+ *  (`context_recipe_in_auto_run`). The original design's "commit at a
+ *  `ProcessRetireReason` boundary" was never built and is now CLOSED
+ *  (2026-07-27): reactive continuity is a PAIRED RECIPE with a
+ *  convergent write. See internal design notes.
+ *
+ *  Spec: D-120 (§ context.recipe.* durability, AMENDED).
  */
 
 import {

@@ -17,6 +17,7 @@ import {
   normalizeShellHash,
   parseChatAnswerAddress,
   parseChatPlanAddress,
+  parseChatSessionAddress,
   parseDataEntityVerificationAddress,
   parseLogsRunAddress,
   parseRouteFromHash,
@@ -25,6 +26,7 @@ import {
   parseSourceRecordVerificationAddress,
   serializeChatAnswerAddress,
   serializeChatPlanAddress,
+  serializeChatSessionAddress,
   serializeDataEntityVerificationAddress,
   serializeLogsRunAddress,
   serializeShellRoute,
@@ -161,6 +163,20 @@ describe('§D.shell — kitchenNewRecipeSeed', () => {
       kind: 'form_response',
       form_definition_id: 'forms/client intake',
     });
+    // D-219 item 2b — the sibling seed. ⚠ Narrowed on `kind` before either
+    // payload is read: the seed became a UNION, and reading a member's field
+    // off the union is exactly what the discriminator exists to prevent.
+    const draftRoute = parseShellRoute(
+      serializeShellRoute('kitchen', 'new', 'execution-case', 'abc123'),
+    );
+    expect(kitchenNewRecipeSeed(draftRoute)).toEqual({
+      kind: 'execution_case',
+      draft_key: 'abc123',
+    });
+    // …and an unknown seed kind is not a seed at all.
+    expect(kitchenNewRecipeSeed(parseShellRoute(
+      serializeShellRoute('kitchen', 'new', 'nonsense', 'x'),
+    ))).toBeNull();
     expect(kitchenEditRecipeId(route)).toBeNull();
     expect(kitchenEditRecipeId(parseShellRoute('#kitchen/recipe/new'))).toBe('new');
 
@@ -170,7 +186,8 @@ describe('§D.shell — kitchenNewRecipeSeed', () => {
       'new',
       'form-response',
       paddedId,
-    )))?.form_definition_id).toBe(paddedId);
+    ))))
+      .toEqual({ kind: 'form_response', form_definition_id: paddedId });
   });
 
   it('fails closed for incomplete, unrelated, and empty seed routes', () => {
@@ -291,6 +308,18 @@ describe('§D.shell — Chat citation round-trip routes', () => {
       },
       verificationRelationship: 'derived',
     });
+  });
+
+  it('round-trips an ordinary durable Chat session without claiming an answer target', () => {
+    const href = serializeChatSessionAddress({ sessionId: 'chat/1' });
+    expect(href).toBe('#chat/session/chat%2F1');
+    expect(parseChatSessionAddress(parseShellRoute(href))).toEqual({
+      sessionId: 'chat/1',
+    });
+    expect(parseChatSessionAddress(
+      parseShellRoute('#chat/session/chat-1/answer/message-1'),
+    )).toBeNull();
+    expect(parseChatSessionAddress(parseShellRoute('#chat/session'))).toBeNull();
   });
 
   it('round-trips a durable Chat answer and rejects incomplete route tails', () => {

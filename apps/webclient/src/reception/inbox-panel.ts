@@ -83,6 +83,7 @@ export interface ReceptionInboxPanelMount {
     error: string | null;
   };
   refresh(view?: ReceptionInboxView): Promise<void>;
+  hasInFlightWork(): boolean;
   select(holdId: string): void;
   dispose(): void;
 }
@@ -1277,6 +1278,7 @@ export const mountReceptionInboxPanel = (
       error: state.error,
     }),
     refresh,
+    hasInFlightWork: () => state.in_flight,
     select: (holdId) => {
       if (!state.items.some((item) => item.hold_id === holdId)) return;
       state = { ...state, selected_hold_id: holdId, error: null, acknowledge_risk: false };

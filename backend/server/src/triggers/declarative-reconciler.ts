@@ -155,6 +155,12 @@ const isSyntheticMarker = (pattern: string): boolean =>
   pattern === 'composition' || pattern.startsWith('composition.')
   || pattern === 'schedule' || pattern.startsWith('schedule.');
 
+const isRecordsDurablePointer = (pattern: string): boolean =>
+  pattern === 'record.*'
+  || pattern === 'record.created'
+  || pattern === 'record.updated'
+  || pattern === 'record.deleted';
+
 export const reconcileDeclarativeTriggers = (
   deps: ReconcileDeclarativeTriggersDeps,
 ): ReconcileResult => {
@@ -212,6 +218,14 @@ export const reconcileDeclarativeTriggers = (
         continue;
       }
       if (isSyntheticMarker(pattern)) {
+        skipped += 1;
+        continue;
+      }
+      // D-221 record pointers are delivered from their transactional outbox,
+      // not the best-effort warehouse bus. Materializing a second mutable
+      // trigger row would create a misleading arm/config surface that the
+      // durable subscriber snapshot could not safely reinterpret.
+      if (isRecordsDurablePointer(pattern)) {
         skipped += 1;
         continue;
       }

@@ -47,6 +47,7 @@ import {
   type SellerOrderBucket,
   type SellerTier,
 } from '@recued/contracts';
+import { formatClientDateTime } from '@recued/ui-shared';
 
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
 import { serializeShellRoute } from '../shell/route.js';
@@ -434,7 +435,7 @@ const appendButton = (
 
 const formatTimestamp = (value: number | null): string =>
   typeof value === 'number' && Number.isFinite(value)
-    ? new Date(value).toISOString()
+    ? formatClientDateTime(value, { invalidText: 'Not set' })
     : 'Not set';
 
 const formatOptional = (value: string | null): string =>

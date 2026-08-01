@@ -32,6 +32,7 @@ import {
   SETTINGS_ROUTE_DATA_LINK_ATTR,
   SETTINGS_ROUTE_PRIVACY_DIRECTORY_ATTR,
   SETTINGS_ROUTE_PRIVACY_TRANSPARENCY_ATTR,
+  SETTINGS_ROUTE_PRIVACY_LEARNING_ATTR,
   SETTINGS_ROUTE_NAV_ITEM_ATTR,
   SETTINGS_ROUTE_ROOT_ATTR,
   SETTINGS_ROUTE_SECTION_ATTR,
@@ -48,10 +49,24 @@ import {
   CLEAR_THIS_BROWSER_RELOAD_BTN_ATTR,
 } from '../settings/clear-this-browser-panel.js';
 import { AI_MODELS_CHAT_SETUP_ATTR } from '../settings/ai-models-page.js';
+import { UPDATES_PAGE_STYLES } from '../settings/updates-page.js';
 import type {
   TransparencyPrefsGetCaller,
   TransparencyPrefsSetCaller,
 } from '../settings/transparency-panel.js';
+import {
+  LEARNING_PANEL_CASE_ATTR,
+  LEARNING_PANEL_STYLES,
+  LEARNING_PANEL_CASES_ATTR,
+  LEARNING_PANEL_DRAFT_ATTR,
+  LEARNING_PANEL_DRAFT_CONFIRM_ATTR,
+  LEARNING_PANEL_FORGET_ATTR,
+  type LearningCaseForgetCaller,
+  type LearningCasesListCaller,
+  type LearningDraftRecipeCaller,
+  type LearningPrefsGetCaller,
+  type LearningPrefsSetCaller,
+} from '../settings/learning-panel.js';
 import {
   PERMISSIONS_DOORS_SECTION_ATTR,
   PERMISSIONS_MCP_DOOR_CONTROLS_ATTR,
@@ -518,6 +533,10 @@ describe('bootstrapSettingsRoute: Privacy directory + Server in-section sub-tabs
         (async () => ({ prefs: {} })) as unknown as TransparencyPrefsGetCaller,
       transparencyPrefsSetCaller:
         (async () => ({ prefs: {} })) as unknown as TransparencyPrefsSetCaller,
+      learningPrefsGetCaller:
+        (async () => ({ prefs: {} })) as unknown as LearningPrefsGetCaller,
+      learningPrefsSetCaller:
+        (async () => ({ prefs: {} })) as unknown as LearningPrefsSetCaller,
     });
 
     // R29 — Privacy is a directory, NOT a sub-tab strip: the old
@@ -552,6 +571,15 @@ describe('bootstrapSettingsRoute: Privacy directory + Server in-section sub-tabs
     expect(
       findByAttrValue(host, SETTINGS_ROUTE_SECTION_ATTR, 'transparency'),
     ).toBeNull();
+
+    // D-219 slice 9c — Learning sits beside Transparency inside Privacy. ⛔ The
+    // panel module having a test of its own proves nothing about the ROUTE
+    // mounting it: this is the seam, and the accessor below is how a host
+    // reaches it.
+    expect(
+      findByAttr(privacy, SETTINGS_ROUTE_PRIVACY_LEARNING_ATTR),
+    ).not.toBeNull();
+    expect(route.learningPanel()).not.toBeNull();
 
     // The "This browser" wipe panel still mounts (accessor stays live).
     expect(route.clearThisBrowserPanel().getState()).toBe('idle');
@@ -604,6 +632,49 @@ describe('bootstrapSettingsRoute: Privacy directory + Server in-section sub-tabs
     expect(certsPanel.getAttribute('data-active')).toBe('true');
     route.dispose();
   });
+
+  it('activates an exact Server sub-tab deep link and safely falls back when it is stale', () => {
+    const mount = (initialServerTabId: string) => {
+      const host = makeFakeElement('div');
+      const route = bootstrapSettingsRoute({
+        root: host as unknown as HTMLElement,
+        document: makeFakeDocument() as unknown as Document,
+        localStore: createInMemoryWebclientLocalStore(),
+        initialSectionId: 'server',
+        initialServerTabId,
+        reachabilityExternalProbeCaller: async () => ({
+          account_id: 'acct-1',
+          hostname: 'alice.recued.cloud',
+          detected_public_ip: '203.0.113.5',
+          resolved_ips: ['203.0.113.5'],
+          probed_at: 1_700_000_000_000,
+          results: [],
+        }),
+        tlsRenewCaller: async () => SUCCESS_RESULT,
+      });
+      return { host, route };
+    };
+
+    const exact = mount('certificates');
+    expect(
+      findByAttrValue(
+        exact.host,
+        SETTINGS_ROUTE_SUBTAB_ATTR,
+        'certificates',
+      )?.getAttribute('aria-selected'),
+    ).toBe('true');
+    exact.route.dispose();
+
+    const stale = mount('removed-tab');
+    expect(
+      findByAttrValue(
+        stale.host,
+        SETTINGS_ROUTE_SUBTAB_ATTR,
+        'reachability',
+      )?.getAttribute('aria-selected'),
+    ).toBe('true');
+    stale.route.dispose();
+  });
 });
 
 // ──────────────────────────────────────────────────────────────────
@@ -626,6 +697,12 @@ describe('D-148 § A.4.1 — bootstrapSettingsRoute: style injection', () => {
     expect(style.textContent).toContain(SETTINGS_ROUTE_STYLES.trim());
     expect(style.textContent).toContain(CLEAR_THIS_BROWSER_PANEL_STYLES.trim());
     expect(style.textContent).toContain(SELLER_PAGE_STYLES.trim());
+    expect(style.textContent).toContain(UPDATES_PAGE_STYLES.trim());
+    // ⛔ D-219 — the panel's own test proves its rules are complete and
+    // host-scoped; only THIS proves they reach the document. The Learning
+    // section shipped unstyled because the constant did not exist at all, and
+    // dropping this one line reproduces exactly that from the user's side.
+    expect(style.textContent).toContain(LEARNING_PANEL_STYLES.trim());
   });
 
   it('Codex slice-110 P2 fold — bundle includes PRIMITIVE_STYLES so direct #settings loads are styled', () => {
@@ -672,6 +749,24 @@ describe('D-148 § A.4.1 — bootstrapSettingsRoute: style injection', () => {
 // ──────────────────────────────────────────────────────────────────
 
 describe('D-148 § A.4.1 — bootstrapSettingsRoute: forwarded seams', () => {
+  it('reports the full clear-this-browser lifecycle as in-flight work', async () => {
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+    });
+    const panel = route.clearThisBrowserPanel();
+
+    panel.clickClear();
+    const clearing = panel.clickConfirm();
+    expect(route.hasInFlightWork()).toBe(true);
+    await clearing;
+    expect(route.hasInFlightWork()).toBe(false);
+    route.dispose();
+  });
+
   it('threads cryptoKeysWiper through to the panel (DD#2)', async () => {
     let wiped = 0;
     const host = makeFakeElement('div');
@@ -1664,6 +1759,34 @@ describe('R26.4 M1 — consolidated Backup & Recovery surface: wiring', () => {
     route.dispose();
   });
 
+  it('keeps a polled backup job in-flight until it reaches a terminal state', async () => {
+    let statusCalls = 0;
+    const { route } = mountRoute({
+      archiveExportCaller: archiveExport,
+      archiveImportCaller: archiveImport,
+      archiveStatusCaller: async () => {
+        statusCalls += 1;
+        return statusCalls === 1
+          ? { state: 'running', bytes_written: 1, progress_pct: 25 }
+          : {
+              state: 'done',
+              bytes_written: 4,
+              progress_pct: 100,
+              path: '/data/exports/backup.recued.archive',
+            };
+      },
+    });
+    const panel = route.archiveBackupPanel()!;
+
+    panel.clickBackup();
+    panel.setExportMnemonic(generateRecoveryKey().mnemonic);
+    await panel.clickStartBackup();
+    expect(route.hasInFlightWork()).toBe(true);
+    await panel.tickPoll();
+    expect(route.hasInFlightWork()).toBe(false);
+    route.dispose();
+  });
+
   it('partial archive (two of three callers) → surface does NOT mount', () => {
     const { host, route } = mountRoute({
       archiveExportCaller: archiveExport,
@@ -1747,6 +1870,132 @@ describe('R26.4 M1 — consolidated Backup & Recovery surface: wiring', () => {
     await panel!.clickCommit();
     expect(stashed).toEqual([REBIND]);
     expect(panel!.getView()).toBe('restore-committed');
+    route.dispose();
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────
+// D-219 item 2/2b — the Learning CASE callers reach the panel
+// ──────────────────────────────────────────────────────────────────
+
+/** ⛔ The panel's own test proves the panel; the route test above proves the
+ *  BLOCK mounts. Neither proves the route forwards the three CASE callers into
+ *  it — that forwarding is four conditional spreads, and dropping any one of
+ *  them leaves every other test green while the owner sees a Learning section
+ *  with no list, no Forget, or a draft button that hands back nothing.
+ *
+ *  So each assertion below is the input that would DO THE THING if its forward
+ *  were gone: a list that renders a row, a two-tap that reaches the forget
+ *  caller, a two-press that reaches the draft caller, and the confirmation copy
+ *  arriving verbatim from the host rather than the panel. */
+describe('bootstrapSettingsRoute: D-219 — Learning case callers reach the panel', () => {
+  const entry = {
+    case_id: 'case_alpha',
+    request: ['send a weekly summary'],
+    flows: [],
+    shown_to_model: false,
+    request_observations: 3,
+    last_seen_at: 1_750_000_000_000,
+  };
+  const CONFIRMATION = 'This spends your model quota and needs your review.';
+
+  const build = (): {
+    host: FakeElement;
+    route: ReturnType<typeof bootstrapSettingsRoute>;
+    forgot: string[];
+    drafted: Array<{ case_id: string; prompt: string }>;
+    handed: Array<{ case_id: string; recipe: unknown }>;
+  } => {
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    const forgot: string[] = [];
+    const drafted: Array<{ case_id: string; prompt: string }> = [];
+    const handed: Array<{ case_id: string; recipe: unknown }> = [];
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      learningPrefsGetCaller:
+        (async () => ({ prefs: {} })) as unknown as LearningPrefsGetCaller,
+      learningPrefsSetCaller:
+        (async () => ({ prefs: {} })) as unknown as LearningPrefsSetCaller,
+      learningCasesListCaller:
+        (async () => ({ cases: [entry] })) as unknown as LearningCasesListCaller,
+      learningCaseForgetCaller: (async (args: { case_id: string }) => {
+        forgot.push(args.case_id);
+        return { ok: true };
+      }) as unknown as LearningCaseForgetCaller,
+      learningDraftRecipeCaller: (async (args: {
+        case_id: string;
+        prompt: string;
+      }) => {
+        drafted.push(args);
+        return { ok: true, recipe: { recipe_id: 'drafted' }, issues: [] };
+      }) as unknown as LearningDraftRecipeCaller,
+      onLearningDraftReady: (draft: {
+        case_id: string;
+        recipe: unknown;
+        request_aliased: boolean;
+      }) => {
+        handed.push({ case_id: draft.case_id, recipe: draft.recipe });
+        return true;
+      },
+      learningDraftConfirmation: CONFIRMATION,
+    } as unknown as BootstrapSettingsRouteOptions);
+    return { host, route, forgot, drafted, handed };
+  };
+
+  it('forwards runCasesList — the route renders the learned case, not just the toggle', async () => {
+    const { host, route } = build();
+    await route.learningPanel()!.whenLoaded();
+    // Without the forward `runCasesList` is undefined and `renderCases`
+    // returns before creating the block at all.
+    expect(findByAttr(host, LEARNING_PANEL_CASES_ATTR)).not.toBeNull();
+    expect(
+      findByAttrValue(host, LEARNING_PANEL_CASE_ATTR, 'case_alpha'),
+    ).not.toBeNull();
+    route.dispose();
+  });
+
+  it('forwards runCaseForget — two taps reach the host caller with the case id', async () => {
+    const { host, route, forgot } = build();
+    const panel = route.learningPanel()!;
+    await panel.whenLoaded();
+    const press = (): void => {
+      findByAttrValue(host, LEARNING_PANEL_FORGET_ATTR, 'case_alpha')!.click();
+    };
+    press();
+    // ⚠ Still nothing after ONE tap: the arm is what makes this a guard, and a
+    // test that only checked the end state could not tell the two apart.
+    expect(forgot).toEqual([]);
+    press();
+    await panel.whenForgetSettled();
+    expect(forgot).toEqual(['case_alpha']);
+    route.dispose();
+  });
+
+  it('forwards runDraftRecipe + onDraftReady + the confirmation copy', async () => {
+    const { host, route, drafted, handed } = build();
+    const panel = route.learningPanel()!;
+    await panel.whenLoaded();
+    const press = (): void => {
+      findByAttrValue(host, LEARNING_PANEL_DRAFT_ATTR, 'case_alpha')!.click();
+    };
+    press();
+    expect(drafted).toEqual([]);
+    // The host's wording, verbatim — the panel is given the server's copy
+    // rather than writing its own, so a surface that could paraphrase the cost
+    // could also soften it.
+    const confirm = findByAttrValue(
+      host, LEARNING_PANEL_DRAFT_CONFIRM_ATTR, 'case_alpha',
+    );
+    expect(confirm?.textContent).toContain(CONFIRMATION);
+    press();
+    await panel.whenDraftSettled();
+    expect(drafted.map((d) => d.case_id)).toEqual(['case_alpha']);
+    expect(handed).toEqual([
+      { case_id: 'case_alpha', recipe: { recipe_id: 'drafted' } },
+    ]);
     route.dispose();
   });
 });

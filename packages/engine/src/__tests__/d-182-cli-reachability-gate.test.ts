@@ -15,6 +15,7 @@ import { describe, expect, it } from 'vitest';
 
 import type {
   ConnectorExecutionBinding,
+  ExecutionSource,
   GatewayCallAudit,
   IngredientManifest,
   OperationRiskTier,
@@ -113,6 +114,7 @@ interface CtxOpts {
   reachability?: (p: string | null, ing: string, op: string) => boolean;
   actor?: string;
   contract_id?: string;
+  execution_source?: ExecutionSource;
   profileAdmits?: boolean;
 }
 
@@ -136,8 +138,13 @@ const makeCtx = (opts: CtxOpts) => {
           },
         }
       : {}),
-    ...(opts.actor !== undefined ? { actor: opts.actor as any } : {}),
+    ...((opts.actor ?? opts.execution_source?.actor) !== undefined
+      ? { actor: (opts.actor ?? opts.execution_source?.actor) as any }
+      : {}),
     ...(opts.contract_id !== undefined ? { contract_id: opts.contract_id } : {}),
+    ...(opts.execution_source !== undefined
+      ? { execution_source: opts.execution_source }
+      : {}),
     onGatewayCall: (event) => {
       auditCalls.push(event);
     },
@@ -172,6 +179,73 @@ describe('D-182 §7.2 gateway — cli reachability is ENFORCED (the authoritativ
     expect(auditCalls[0]).toMatchObject({ outcome: 'success', risk_tier: 'read' });
     // The resolver was keyed on (owner principal, this ingredient, the dispatched op id).
     expect(reachCalls).toEqual([{ principal: 'user_self', ingredient_id: SLUG, operation_id: 'x' }]);
+  });
+
+  it('a scheduled cli op uses the owner reachability row, then dispatches when that exact op is granted', async () => {
+    const { ctx, reachCalls } = makeCtx({
+      execution_source: {
+        channel: 'schedule',
+        actor: 'system',
+        cron: '0 9 * * *',
+        source_recipe: 'r1',
+      },
+      reachability: (principal, ingredient, op) =>
+        principal === 'user_self' && ingredient === SLUG && op === 'x',
+    });
+
+    await expect(dispatchCli(ctx)).resolves.toBe(CLI_RESULT);
+    expect(reachCalls).toEqual([
+      { principal: 'user_self', ingredient_id: SLUG, operation_id: 'x' },
+    ]);
+  });
+
+  it('a scheduled cli op still denies when the owner has not granted that op', async () => {
+    const { ctx, auditCalls, reachCalls } = makeCtx({
+      execution_source: {
+        channel: 'schedule',
+        actor: 'system',
+        cron: '0 9 * * *',
+        source_recipe: 'r1',
+      },
+      reachability: () => false,
+    });
+
+    await expect(dispatchCli(ctx)).rejects.toThrow(/cli_reachability_disabled/);
+    expect(reachCalls[0]?.principal).toBe('user_self');
+    expect(auditCalls[0]).toMatchObject({
+      outcome: 'failed',
+      failure_mode: 'cli_reachability_disabled',
+    });
+  });
+
+  it('a granted scheduled cli write reaches the approval gate instead of being denied as unreachable', async () => {
+    const { ctx, reachCalls } = makeCtx({
+      execution_source: {
+        channel: 'schedule',
+        actor: 'system',
+        cron: '0 9 * * *',
+        source_recipe: 'r1',
+      },
+      reachability: (principal) => principal === 'user_self',
+    });
+
+    await expect(dispatchCli(ctx, 'write')).rejects.toThrow(/requires approval/);
+    expect(reachCalls[0]?.principal).toBe('user_self');
+  });
+
+  it('a contract-free reactive system fire does not inherit owner cli reachability', async () => {
+    const { ctx, reachCalls } = makeCtx({
+      execution_source: {
+        channel: 'reactive',
+        actor: 'system',
+        event_kind: 'auto_run_tick',
+        source_recipe: 'r1',
+      },
+      reachability: (principal) => principal !== null,
+    });
+
+    await expect(dispatchCli(ctx)).rejects.toThrow(/cli_reachability_disabled/);
+    expect(reachCalls[0]?.principal).toBeNull();
   });
 
   it('an UNREACHABLE cli op denies cli_reachability_disabled (NOT no_connection_profile)', async () => {

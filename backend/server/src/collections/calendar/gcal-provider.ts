@@ -31,6 +31,7 @@ import { createHash } from 'node:crypto';
 
 import {
   CalendarAdapterError,
+  GOOGLE_TOKEN_URL,
   type CanonicalEvent,
 } from '@recued/contracts';
 
@@ -58,7 +59,6 @@ import {
   requireProviderConfig,
   type HttpFetcher,
   type OAuthAccountStore,
-  type OAuthProviderConfig,
   type OAuthProviderConfigSource,
 } from '../mail/oauth.js';
 
@@ -1110,13 +1110,11 @@ export const createGcalAdapterFactory = (
 // Shipped OAuth client config
 // ────────────────────────────────────────────────────────────────
 
-/** OAuth constants shipped in the server binary. Users only provide
- *  the authorization `code` (via the ext popup) — never the client
- *  credentials. The client id is meant to be replaced at build time
- *  per-distribution via env or a patching step; the default here is
- *  a placeholder so the code compiles standalone. */
-export const GCAL_OAUTH_CONFIG: OAuthProviderConfig = {
-  tokenUrl: 'https://oauth2.googleapis.com/token',
-  clientId: process.env.RECUED_GCAL_CLIENT_ID ?? '',
-  clientSecret: process.env.RECUED_GCAL_CLIENT_SECRET ?? undefined,
-};
+/** Google Calendar's token endpoint — a PROTOCOL constant, not a credential.
+ *
+ *  This used to be `GCAL_OAUTH_CONFIG`, an `OAuthProviderConfig` whose
+ *  `clientId` / `clientSecret` were read from `RECUED_GCAL_CLIENT_ID` /
+ *  `_SECRET`. Those two env vars were DELETED (2026-07-28). Credentials now
+ *  come ONLY from the encrypted `OAuthAppConfigStore` — under issuer `google`,
+ *  the SAME record gmail uses (one Google Cloud app covers both). */
+export const GCAL_TOKEN_URL = GOOGLE_TOKEN_URL;

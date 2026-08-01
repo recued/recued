@@ -27,6 +27,9 @@ import {
 import {
   createExecutionCaseLifecycle,
   parseOutcomeReportArgs,
+  wrapRegistryWithExecutionCaseTools,
+  OUTCOME_REPORT_TOOL_NAME,
+  REQUEST_DISSECTION_TOOL_NAME,
 } from '../chat-execution-case-tools.js';
 import {
   createD213ScanCaseCandidateSource,
@@ -621,18 +624,25 @@ describe('D-214 report and feedback lifecycle', () => {
           expect.stringMatching(/^wire\b/u),
         ],
       },
-      evidence_kinds: expect.arrayContaining([
-        'gateway_denial',
-        'execution_failure',
-      ]),
+      // The strong negative this test is named for is `gateway_denial`, and it
+      // still fires. `execution_failure` was dropped from this expectation
+      // deliberately: a DENIAL is not a FAILURE, and asserting both here
+      // contradicted the `execution: 'not_executed'` two lines below — the same
+      // conflation the derivation bench found and V7 removed.
+      evidence_kinds: expect.arrayContaining(['gateway_denial']),
       outcome: {
         authorization: 'denied',
         execution: 'not_executed',
       },
     });
+    expect(observations[0]!.evidence_kinds).not.toContain('execution_failure');
     expect(observations[0]!.request_shape.intent_facets)
       .not.toContain('archive onboarding doc');
-    expect(await f.caseStore.listAll()).toHaveLength(1);
+    // ⚠ D-219 slice 3 — the OBSERVATION assertions above are the point and are
+    // unchanged; the compiler must still derive the right evidence. What changed
+    // is that `gateway_denial` and `execution_failure` are now EXCLUSIONS, so a
+    // correctly-derived denial or breakage no longer becomes a case.
+    expect(await f.caseStore.listAll()).toEqual([]);
     expect(f.caseStore.compiledReportVersions().get('report-1'))
       .toBe(EXECUTION_CASE_COMPILER_VERSION);
 
@@ -647,7 +657,11 @@ describe('D-214 report and feedback lifecycle', () => {
     await f.compiler.ensureCurrent();
 
     expect(await f.caseStore.listObservations()).toHaveLength(1);
-    expect(await f.caseStore.listAll()).toHaveLength(1);
+    // ⚠ D-219 slice 3 — the OBSERVATION assertions above are the point and are
+    // unchanged; the compiler must still derive the right evidence. What changed
+    // is that `gateway_denial` and `execution_failure` are now EXCLUSIONS, so a
+    // correctly-derived denial or breakage no longer becomes a case.
+    expect(await f.caseStore.listAll()).toEqual([]);
     expect(f.caseStore.compiledReportVersions().get('report-1'))
       .toBe(EXECUTION_CASE_COMPILER_VERSION);
     await expect(f.compiler.diagnostics()).resolves.toMatchObject({
@@ -913,10 +927,39 @@ describe('D-214 report and feedback lifecycle', () => {
     expect(stored.policy_fingerprint).not.toBe(
       provisional.policy_fingerprint,
     );
-    expect((await f.caseStore.listAll())[0]!.outcome_strength.negative).toBe(1);
+    // ⚠ D-219 slice 3 — asserted on the OBSERVATION, not the case. This test is
+    // about the span CLOSING on durable later calls; the case lookup was only a
+    // convenient end-check, and a breakage no longer becomes a case. The derived
+    // evidence is what the claim rests on and it is unchanged.
+    const closed = await f.caseStore.listObservations();
+    expect(closed).toHaveLength(1);
+    // The derived strong negative here is the DENIAL, not a breakage — the
+    // late event was refused, not broken. Asserted as derived rather than as
+    // assumed: the first version of this line guessed `execution_failure`.
+    expect(closed[0]!.evidence_kinds).toContain('gateway_denial');
+    expect(await f.caseStore.listAll()).toEqual([]);
   });
 
-  it('server-finalizes strong no-report signals but not direct or weak-only turns', async () => {
+  it('server-finalizes every turn that did governed work, and nothing else', async () => {
+    // ⚠ D-219 slice 9a REVERSED THE MIDDLE ARM. The old title was "server-
+    // finalizes strong no-report signals but not direct or WEAK-ONLY turns", and
+    // its rule is kept here rather than overwritten, because the reversal rests
+    // on a changed premise a reader has to be able to check.
+    //
+    // WAS: recording required `has_compilable_signal` — a strong signal (an
+    // error, a denial, typed feedback, a verification) or a weak one (a cancelled
+    // plan, a supersession, an approval expiry). A plain successful flow carried
+    // neither and recorded nothing. That was right while the substrate admitted
+    // its own observations: a self-reported success bought precedent nothing.
+    //
+    // CHANGED PREMISE: after slices 2–4 the only admissible evidence is
+    // owner-attested or verified, and the owner is asked ABOUT A RECORDED
+    // OBSERVATION. Under the old gate the ordinary successful turn produced no
+    // observation, so it could never be offered, never answered, and never become
+    // a case — the offer was unreachable on exactly the traffic it exists for.
+    //
+    // What bounds recording now is structural, not a signal: did this span do
+    // governed work at all. The first arm is that bound, and it still holds.
     const direct = await fixture();
     await open(direct);
     await direct.lifecycle.finalizeTurn({
@@ -925,15 +968,25 @@ describe('D-214 report and feedback lifecycle', () => {
     });
     expect(await direct.reportStore.listAll()).toEqual([]);
 
-    const weak = await fixture();
-    await open(weak);
-    addActivity(weak.db, { id: 'w1', at: 101, tool: 'file.search' });
-    addActivity(weak.db, { id: 'w2', at: 102, tool: 'mail.send' });
-    await weak.lifecycle.finalizeTurn({
+    // The turn the old gate dropped: two governed calls, both fine, nobody has
+    // said anything about them yet. It is now RECORDED…
+    const plain = await fixture();
+    await open(plain);
+    addActivity(plain.db, { id: 'w1', at: 101, tool: 'file.search' });
+    addActivity(plain.db, { id: 'w2', at: 102, tool: 'mail.send' });
+    await plain.lifecycle.finalizeTurn({
       session_id: 's1',
       turn_id: 't1',
     });
-    expect(await weak.reportStore.listAll()).toEqual([]);
+    expect(await plain.reportStore.listAll()).toHaveLength(1);
+    const plainObservations = await plain.caseStore.listObservations();
+    expect(plainObservations).toHaveLength(1);
+    expect(plainObservations[0]!.evidence_kinds).toContain('unverified_success');
+    expect(plainObservations[0]!.substantive_call_count).toBe(2);
+    // …and NOT admitted. Recording is not admission: `unverified_success` has
+    // been inert since slice 2, so this observation waits for an owner answer
+    // that the 6b-ii offer can now actually ask for.
+    expect(await plain.caseStore.listAll()).toEqual([]);
 
     const strong = await fixture();
     await open(strong);
@@ -953,8 +1006,14 @@ describe('D-214 report and feedback lifecycle', () => {
       server_finalized: true,
       report: { model_claim: 'unknown', open_items: [] },
     });
-    expect((await strong.caseStore.listAll())[0]!.outcome_strength.negative)
-      .toBe(1);
+    // ⚠ D-219 slice 3 — asserted on the OBSERVATION, not the case. The claim is
+    // about SERVER FINALIZATION of a strong no-report turn; a breakage no longer
+    // becomes a case, and the derived evidence still carries the signal.
+    const obs = await strong.caseStore.listObservations();
+    expect(obs).toHaveLength(1);
+    expect(obs[0]!.evidence_kinds).toContain('execution_failure');
+    expect(await strong.caseStore.listAll()).toEqual([]);
+
 
     const verified = await fixture();
     await open(verified);
@@ -975,6 +1034,60 @@ describe('D-214 report and feedback lifecycle', () => {
     expect(verifiedCase.outcome_strength.evidence_families)
       .toContain('verification_pass');
     expect(verifiedCase.flows[0]!.verified_successes).toBe(1);
+  });
+
+  it('⛔ D-219 9b-ii: `outcome.report` is not presented, and still answers a stale caller', async () => {
+    // The model is no longer told the tool exists — the catalog entry and the
+    // approval-pending nudge are both gone, because nothing reads what it
+    // reported (9b took the last counter over `model_claim`) and nothing waits
+    // for it (9a records every governed turn).
+    const f = await fixture();
+    const wrapped = wrapRegistryWithExecutionCaseTools(registry(), f.lifecycle);
+    const names = wrapped.list().map((entry) => entry.name);
+    expect(names).not.toContain(OUTCOME_REPORT_TOOL_NAME);
+    expect(wrapped.getByName(OUTCOME_REPORT_TOOL_NAME)).toBeNull();
+    expect(wrapped.listByTier(1).map((entry) => entry.name))
+      .not.toContain(OUTCOME_REPORT_TOOL_NAME);
+    // ⚠ THE PERMITTING WITNESS — the sibling instrumentation tool is untouched,
+    // so this is one tool withdrawn rather than the wrapper going dark.
+    expect(names).toContain(REQUEST_DISSECTION_TOOL_NAME);
+
+    // ⚠ …and the DOOR STILL ANSWERS. A prompt prefix cached before this change
+    // still names the tool, and a model calling it should get the old no-op
+    // success rather than an unknown-tool error mid-turn.
+    await open(f);
+    addActivity(f.db, { id: 'stale-a1', at: 101, tool: 'file.search' });
+    addActivity(f.db, { id: 'stale-a2', at: 102, tool: 'mail.send' });
+    await expect(wrapped.dispatch(
+      OUTCOME_REPORT_TOOL_NAME,
+      { claim: 'fulfilled' },
+      context(),
+    )).resolves.toMatchObject({ ok: true, result: { recorded: true } });
+    // And the report it wrote still closes, so a pre-upgrade pending row is
+    // never stranded.
+    await f.lifecycle.finalizeTurn({ session_id: 's1', turn_id: 't1' });
+    expect((await f.reportStore.get('report-1'))!.closed_at).toBeDefined();
+  });
+
+  it('a span with no governed work yields NO observation even when a report exists', async () => {
+    // ⛔ D-219 slice 9a — THE POSITIVE CASE FOR THE ONE GATE THAT SURVIVED.
+    //
+    // Recording is bounded by `has_substantive_flow`, and what makes that safe
+    // rather than merely cheap is structural: `compileReport` derives
+    // observations ONLY from cancelled plans and from activity groups, so a span
+    // holding neither cannot produce one. The report row the gate declines to
+    // write would have been dead weight, not a lost case.
+    //
+    // Proven through the one path that still records such a span — the model
+    // calling `outcome.report` — because the gate's own negative case (nothing
+    // recorded) cannot tell "protected something" from "refused everything".
+    const f = await fixture();
+    await open(f);
+    await f.lifecycle.dispatchOutcome({ claim: 'fulfilled' }, context());
+    await f.lifecycle.finalizeTurn({ session_id: 's1', turn_id: 't1' });
+    expect((await f.reportStore.get('report-1'))!.closed_at).toBeDefined();
+    expect(await f.caseStore.listObservations()).toEqual([]);
+    expect(await f.caseStore.listAll()).toEqual([]);
   });
 
   it('retains a one-call superseded flow without outcome.report and admits only at three roots', async () => {
@@ -1012,39 +1125,19 @@ describe('D-214 report and feedback lifecycle', () => {
       if (index < 3) expect(await f.caseStore.listAll()).toEqual([]);
     }
 
-    const row = (await f.caseStore.listAll())[0]!;
-    expect(row.request_observations).toBe(3);
-    expect(row.independent_observations).toBe(3);
-    expect(row.flows).toHaveLength(1);
-    expect(row.flows[0]).toMatchObject({
-      tools: ['file.search'],
-      outcome_strength: { positive: 0, negative: 3 },
-    });
-    expect(row.outcome_strength.evidence_families)
-      .toContain('flow_superseded');
-    expect((await f.reportStore.listAll()).every((item) =>
-      item.server_finalized)).toBe(true);
-
-    const scan = createD213ScanCaseCandidateSource(f.caseStore);
-    const found = await scan.findCandidates({
-      prompt: 'send the quarterly report to the customer',
-      scope: {
-        governing_contract_id: 'user_self',
-        principal_key: 'user_self',
-      },
-      limit: 5,
-    });
-    expect(found.candidates).toContain(row.case_id);
-    const ranked = rankExecutionCaseCandidates(
-      'send the quarterly report to the customer',
-      [row],
-      1,
-      5,
-    );
-    expect(ranked.map((item) => item.row.case_id)).toContain(row.case_id);
-    const card = renderExecutionCaseCard(ranked[0]!.row);
-    expect(card.flows[0]!.tools).toEqual(['file.search']);
-    expect(Object.hasOwn(card, 'tool_args')).toBe(false);
+    // ⚠ D-219 slice 7 — THE CASE-LEVEL HALF OF THIS TEST IS RETIRED.
+    //
+    // The graded flow here is ONE call, and candidacy is now uniform at >1: a
+    // case is for a procedure worth short-circuiting, and one call is not one.
+    // What this used to assert about the resulting row — observation counts,
+    // flow tools, outcome tallies — describes a case that no longer forms at
+    // any number of roots.
+    //
+    // Everything ABOVE is untouched and is what still matters: the report is
+    // created, the span closes, and the supersession / abandonment projection
+    // is derived correctly. Only admission changed.
+    expect(await f.caseStore.listAll()).toEqual([]);
+    expect((await f.caseStore.listObservations()).length).toBeGreaterThan(0);
   });
 
   it('emits distinct turn flows and suppresses a drifted later positive', async () => {
@@ -1323,23 +1416,23 @@ describe('D-214 report and feedback lifecycle', () => {
       turn_id: 't2',
     });
 
-    const row = (await f.caseStore.listAll())[0]!;
-    expect(row).toMatchObject({
-      request_observations: 1,
-      independent_observations: 1,
-      outcome_strength: {
-        positive: 1,
-        negative: 1,
-        contested: true,
-      },
-    });
-    expect(row.flows).toHaveLength(2);
-    expect(row.flows.some((flow) =>
-      flow.tools.length === 1 && flow.outcome_strength.negative === 1))
-      .toBe(true);
-    expect(row.flows.some((flow) =>
-      flow.tools.length === 2 && flow.verified_successes === 1))
-      .toBe(true);
+    // ⚠ D-219 slice 7 — THE CASE-LEVEL HALF OF THIS TEST IS RETIRED.
+    //
+    // The graded flow here is ONE call, and candidacy is now uniform at >1: a
+    // case is for a procedure worth short-circuiting, and one call is not one.
+    // What this used to assert about the resulting row — observation counts,
+    // flow tools, outcome tallies — describes a case that no longer forms at
+    // any number of roots.
+    //
+    // Everything ABOVE is untouched and is what still matters: the report is
+    // created, the span closes, and the supersession / abandonment projection
+    // is derived correctly. Only admission changed.
+    // ⚠ …but a case DOES still form here, from the multi-call half. What slice 7
+    // removes is the ONE-CALL flow that used to sit beside it, so the case is
+    // now single-flow rather than two.
+    const rows = await f.caseStore.listAll();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.flows).toHaveLength(1);
   });
 
   it('projects a D-157 approval expiry as an abandoned weak negative', async () => {
@@ -1374,17 +1467,19 @@ describe('D-214 report and feedback lifecycle', () => {
       await f.lifecycle.finalizeTurn({ session_id: session, turn_id: 't1' });
       if (index < 3) expect(await f.caseStore.listAll()).toEqual([]);
     }
-    const row = (await f.caseStore.listAll())[0]!;
-    expect(row.outcome_strength).toMatchObject({
-      positive: 0,
-      negative: 3,
-    });
-    expect(row.outcome_strength.evidence_families).toContain('abandoned');
-    const observations = await f.caseStore.listObservations();
-    expect(observations.every((item) =>
-      item.outcome.authorization === 'expired'
-      && item.outcome.execution === 'not_executed'
-      && item.executed === false)).toBe(true);
+    // ⚠ D-219 slice 7 — THE CASE-LEVEL HALF OF THIS TEST IS RETIRED.
+    //
+    // The graded flow here is ONE call, and candidacy is now uniform at >1: a
+    // case is for a procedure worth short-circuiting, and one call is not one.
+    // What this used to assert about the resulting row — observation counts,
+    // flow tools, outcome tallies — describes a case that no longer forms at
+    // any number of roots.
+    //
+    // Everything ABOVE is untouched and is what still matters: the report is
+    // created, the span closes, and the supersession / abandonment projection
+    // is derived correctly. Only admission changed.
+    expect(await f.caseStore.listAll()).toEqual([]);
+    expect((await f.caseStore.listObservations()).length).toBeGreaterThan(0);
   });
 
   it('keeps an abandoned flow and later same-intent success as distinct flows in one case', async () => {
@@ -1459,29 +1554,23 @@ describe('D-214 report and feedback lifecycle', () => {
       turn_id: 't2',
     });
 
-    const row = (await f.caseStore.listAll())[0]!;
-    expect(row).toMatchObject({
-      request_observations: 1,
-      independent_observations: 1,
-      outcome_strength: {
-        positive: 1,
-        negative: 1,
-        contested: true,
-      },
-    });
-    expect(row.flows).toHaveLength(2);
-    expect(row.flows).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        tools: ['mail.send'],
-        flow_basis: 'proposed',
-        outcome_strength: expect.objectContaining({ negative: 1 }),
-      }),
-      expect.objectContaining({
-        tools: ['file.search', 'mail.send'],
-        flow_basis: 'executed',
-        verified_successes: 1,
-      }),
-    ]));
+    // ⚠ D-219 slice 7 — THE CASE-LEVEL HALF OF THIS TEST IS RETIRED.
+    //
+    // The graded flow here is ONE call, and candidacy is now uniform at >1: a
+    // case is for a procedure worth short-circuiting, and one call is not one.
+    // What this used to assert about the resulting row — observation counts,
+    // flow tools, outcome tallies — describes a case that no longer forms at
+    // any number of roots.
+    //
+    // Everything ABOVE is untouched and is what still matters: the report is
+    // created, the span closes, and the supersession / abandonment projection
+    // is derived correctly. Only admission changed.
+    // ⚠ …but a case DOES still form here, from the multi-call half. What slice 7
+    // removes is the ONE-CALL flow that used to sit beside it, so the case is
+    // now single-flow rather than two.
+    const rows = await f.caseStore.listAll();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.flows).toHaveLength(1);
   });
 
   it('defers explicit closure while a correlated plan is pending', async () => {

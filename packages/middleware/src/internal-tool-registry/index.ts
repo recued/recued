@@ -167,6 +167,26 @@ export interface CreateInternalToolRegistryOptions {
   /** Per-Tier-1 handler overrides. Missing entries fall back to the
    *  not-implemented stub. */
   tier1Handlers?: Partial<Record<Tier1ToolName, Tier1Handler>>;
+  /** ⛔⛔ D-228 slice 5 — THE CONTRACT GATE for Tier-1 primitives, injected
+   *  because `packages/` may never import `backend/` (the public boundary) and
+   *  the op-admission gate is server-side. The host passes a closure over
+   *  `isOpGranted(ctx.execution_source, primitive.<name>)`.
+   *
+   *  ⚠ ABSENT ⇒ NO GATE, deliberately, and this is NOT the fail-open mistake it
+   *  looks like: these are the always-on chat tools, and a registry built
+   *  without a host gate (every test harness, and any embedder that has no
+   *  contract substrate at all) must keep working. The enforcement point is the
+   *  HOST, which always supplies one; the callback's absence means "no contract
+   *  substrate here", not "allow".
+   *
+   *  🔑 On the internal chat channel the resolved principal is the OWNER —
+   *  `buildChatExecutionSource` mints `(chat, user_self)` and
+   *  `resolveGrantGoverningContractId` maps that to `OWNER_CONTRACT_ID`. The
+   *  owner's author-default is permissive AND the boot reconcile seeds an
+   *  explicit `granted:true` row per primitive, so wiring this changes nothing
+   *  until the owner REVOKES one in Settings → Contracts — which is exactly the
+   *  "permissive, tightenable" half that had no enforcement before. */
+  admitTier1?: (name: Tier1ToolName, ctx: ChatDispatchContext) => boolean;
   /** Launch-prep audit guard for Tier 1 entries classified
    *  irrelevant/never-ship. Such entries are hidden from catalog
    *  enumeration only while they still resolve to the default
@@ -399,6 +419,17 @@ export const createInternalToolRegistry = (
 
     const t1 = tier1Index.get(name);
     if (t1) {
+      // D-228 slice 5 — the contract decides before the handler runs. Absent
+      // callback ⇒ no contract substrate on this host (see the option's doc).
+      if (options.admitTier1 && !options.admitTier1(name as Tier1ToolName, ctx)) {
+        return {
+          ok: false,
+          reason: 'classification_blocked',
+          detail:
+            `'${name}' is turned off for this contract. `
+            + 'Re-enable it in Settings → Contracts → Ops, or tell the user it is unavailable.',
+        };
+      }
       const handler = tier1Handlers[name as Tier1ToolName];
       return handler(args, ctx);
     }

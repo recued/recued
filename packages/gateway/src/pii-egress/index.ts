@@ -32,6 +32,7 @@ export {
   // D-167 (recall path) — contact-index recall re-aliasing for memory.* results.
   buildRecallIndex,
   aliasRecallArgsForEgress,
+  decorateOverlapForEgress,
   aliasCandidateValuesForEgress,
   type FieldPrivacyResolver,
   type EgressGateInput,

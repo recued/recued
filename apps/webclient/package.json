@@ -8,7 +8,7 @@
     "build": "tsc --build",
     "build:bundle": "node scripts/build.mjs",
     "build:bundle:prod": "node scripts/build.mjs --minify",
-    "test": "vitest run"
+    "test": "vitest run --root ../.. apps/webclient"
   },
   "devDependencies": {
     "@noble/hashes": "^2.2.0",

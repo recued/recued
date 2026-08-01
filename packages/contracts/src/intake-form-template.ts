@@ -81,7 +81,8 @@ export const INTAKE_FORM_TEMPLATE_VERSION_RE = /^\d+\.\d+\.\d+$/;
 /** Anti-spam *defaults* a template ships. A subset of
  *  `IntakeFormAntiSpamConfig` — templates never ship a
  *  `known_domain_allowlist` (the user adds one per-deployment), so the
- *  defaults carry the four substrate-baseline knobs only. */
+ *  defaults carry the two enforced substrate knobs plus the two reserved
+ *  PoW / CAPTCHA compatibility flags. */
 export interface IntakeFormTemplateAntiSpamDefaults {
   readonly honeypot_fields: ReadonlyArray<string>;
   readonly rate_limit_per_ip: number;

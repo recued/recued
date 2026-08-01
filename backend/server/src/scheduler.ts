@@ -20,10 +20,11 @@ import {
   buildBackfillMetadata,
   type BackfillMetadata,
 } from '@recued/scheduler';
-import { OWNER_CONTRACT_ID } from '@recued/contracts';
 import { handleExecute, type ExecuteHandlerDeps } from './execute-handler.js';
 import type { ScheduleStore } from './schedule-store.js';
+import { retireSchedule } from './schedule-retire.js';
 import { emitSchedule } from './events/emit-sites.js';
+import { presentAutomationFailure } from './automation-failure.js';
 
 export interface SchedulerConfig {
   store: ScheduleStore;
@@ -112,6 +113,21 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
   ): Promise<boolean> => {
     const oneShot = isOneShot(schedule);
     const nextRun = oneShot ? null : computeNext(schedule.cron_expression, fireAt);
+    const visibleFailure = (failure: unknown): string => {
+      const presented = presentAutomationFailure(failure);
+      if (presented.redacted) {
+        console.error(
+          `[scheduler] schedule ${schedule.schedule_id} internal failure: ${presented.internalMessage}`,
+        );
+      }
+      return presented.userMessage;
+    };
+    // D-215 § 5.2 — `terminalPatch` now covers only the outcomes a one-shot
+    // SURVIVES: `error` (the owner needs the evidence and the re-fire
+    // handle) and `skipped` (it never ran, so retiring would erase an
+    // unfulfilled intent silently). Both are retained disabled and cleared
+    // BY HAND — user content, same posture the eviction cascade already
+    // takes for schedules. A successful one-shot retires instead (below).
     const terminalPatch = oneShot ? { enabled: false } : {};
     // D-121 Phase 6 — broadcast the fire signal once per schedule
     // tick. The execution lifecycle events (start / complete / error)
@@ -152,36 +168,82 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
           actor: 'system',
           cron: schedule.cron_expression,
           source_recipe: schedule.recipe_id,
-          // D-209 §1.4 — the owner's scheduled automation runs under the owner
-          // contract: has-contract → `read` ceiling → writes HOLD for review (silence
-          // earned via the D-177 learner, or by the owner raising this contract).
-          contract_id: OWNER_CONTRACT_ID,
+          // ⛔ D-215 slice 1a — NO `contract_id` here, deliberately.
+          //
+          // D-209 §1.4 stamped `contract_id: OWNER_CONTRACT_ID` to reach the
+          // `read` ceiling ("writes HOLD for review"). That stamp bought
+          // nothing on either authority axis and broke dispatch outright:
+          //
+          //  - CEILING: identical either way. `resolveTrustCeiling` returns
+          //    `CONTRACTED_DEFAULT_TRUST_CEILING` for a contracted source AND
+          //    for a contract-free non-housekeeping `system` source — the
+          //    `read` HOLD posture is reached by CHANNEL, not by contract.
+          //  - GRANTS: identical. `gateGrantGoverningContractId` rejects the
+          //    owner sentinel outright (`isReservedOwnerContractId` → the
+          //    owner is DERIVED from provenance, never BOUND as a door id),
+          //    so the stamp resolved to `undefined` — the same contract-free
+          //    result as no stamp.
+          //  - SNAPSHOT: the only real difference, and it is pure breakage.
+          //    `executionSourceHasContract` is true for ANY `contract_id`, so
+          //    `gateRecipeAgainstPolicy` THREW "requires a ContractSnapshot"
+          //    on every fire; the catch below recorded `last_status: 'error'`
+          //    and no scheduled recipe ran.
+          //
+          // A synthesized owner snapshot is NOT the fix: `allowed_tools` is a
+          // closed allowlist (`admitContractToolAccess` denies anything off
+          // it) with no wildcard, and there is no `contract_definition` to
+          // resolve one from — the owner contract is derived, never minted.
+          // `grant-governing-contract.ts` already documents the intended
+          // posture: "(`(user, user_self)` HID, the system channels) →
+          // `undefined` (contract-free)".
         },
         ...(backfill ? { backfill } : {}),
         // D-179 P2 — standing-dish dispatch: the dish overlay resolves
         // inside handleExecute (dish → install → defaults).
         ...(schedule.dish_id !== undefined ? { dish_id: schedule.dish_id } : {}),
       });
+      // D-215 § 5.2 — a ONE-SHOT that SUCCEEDED has fulfilled its intent:
+      // retire the row and dissolve the managed dish behind it. The run
+      // record lives in audit, so the pending-intent row is noise, and
+      // nothing else would ever clean it up (there is no reaper). This is
+      // safe here specifically because `handleExecute` is AWAITED above —
+      // the dish survives the whole run and only dissolves after it
+      // resolves. Errors and skips deliberately do NOT retire (below).
+      if (oneShot && result.success) {
+        retireSchedule(
+          {
+            store: config.store,
+            dishStore: config.executeDeps.dishStore,
+            dishContextStore: config.executeDeps.dishContextStore,
+          },
+          schedule.schedule_id,
+        );
+        emitSchedule(config.executeDeps.eventBus, 'updated');
+        return true;
+      }
       // Runtime execution errors are carried in result.success/result.errors;
       // shape failures (bad_request / recipe_not_found) throw RpcError and
       // land in the catch block below.
+      const lastError = result.success
+        ? null
+        : visibleFailure(
+          (result.errors[0] as { message?: string } | undefined)?.message
+            ?? 'execution failed',
+        );
       config.store.updateRun(schedule.schedule_id, {
         last_run_at: fireAt,
         next_run_at: nextRun,
         last_status: result.success ? 'success' : 'error',
-        last_error: result.success
-          ? null
-          : ((result.errors[0] as { message?: string } | undefined)?.message ?? 'execution failed'),
+        last_error: lastError,
         ...terminalPatch,
       });
       return true;
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
       config.store.updateRun(schedule.schedule_id, {
         last_run_at: fireAt,
         next_run_at: nextRun,
         last_status: 'error',
-        last_error: msg,
+        last_error: visibleFailure(e),
         ...terminalPatch,
       });
       return true;

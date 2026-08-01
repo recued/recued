@@ -142,3 +142,68 @@ describe('D-125 P4.2 — bytes telemetry through audit shell', () => {
     });
   });
 });
+
+describe('D-217 § 6.3 — chunked-walk telemetry through the same shell', () => {
+  it('ctx.setChunkedUpload lands on the emission', async () => {
+    const { emissions, sink } = mkSink();
+    const handler: ConnectionKindHandler = async (_record, _params, _call, ctx) => {
+      ctx?.setBytes(10, 64);
+      ctx?.setChunkedUpload?.({
+        outcome: 'committed', chunks_sent: 4, chunk_count: 4, requests: 6,
+      });
+      return { ok: true };
+    };
+    const adapter = createConnectionAdapter({
+      store: mkStore([mkRow()]),
+      handlers: { api: handler },
+      emitAudit: sink,
+    });
+    await adapter(mkCall());
+    expect(emissions[0]).toMatchObject({
+      chunked_upload: { outcome: 'committed', chunks_sent: 4, chunk_count: 4, requests: 6 },
+    });
+  });
+
+  it('⛔ a PARTIAL egress reaches the ERROR emission — the only row it can reach', async () => {
+    // A failed upload is not a no-op (§ 6.3). The walk that stopped at chunk 2
+    // already sent two chunks of the owner's file to a third party, and the
+    // success row that would have carried that never happens. So the telemetry
+    // has to survive the throw, in the same closure the catch path emits from.
+    const { emissions, sink } = mkSink();
+    const handler: ConnectionKindHandler = async (_record, _params, _call, ctx) => {
+      ctx?.setBytes(0, 32);
+      ctx?.setChunkedUpload?.({
+        outcome: 'failed', chunks_sent: 2, chunk_count: 4, requests: 4,
+      });
+      throw new IngredientError('API_SERVER_ERROR', 'chunk 3 failed');
+    };
+    const adapter = createConnectionAdapter({
+      store: mkStore([mkRow()]),
+      handlers: { api: handler },
+      emitAudit: sink,
+    });
+    await expect(adapter(mkCall())).rejects.toMatchObject({ code: 'API_SERVER_ERROR' });
+    expect(emissions[0]).toMatchObject({
+      status: 'error',
+      bytes_out: 32,
+      chunked_upload: { outcome: 'failed', chunks_sent: 2, chunk_count: 4 },
+    });
+  });
+
+  it('omits the field entirely for an ordinary single-request handler', async () => {
+    // An all-zero `chunked_upload` on every REST call would read as "an upload
+    // happened and moved nothing" — a different and false claim.
+    const { emissions, sink } = mkSink();
+    const handler: ConnectionKindHandler = async (_record, _params, _call, ctx) => {
+      ctx?.setBytes(1, 2);
+      return { ok: true };
+    };
+    const adapter = createConnectionAdapter({
+      store: mkStore([mkRow()]),
+      handlers: { api: handler },
+      emitAudit: sink,
+    });
+    await adapter(mkCall());
+    expect(emissions[0]).not.toHaveProperty('chunked_upload');
+  });
+});

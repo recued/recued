@@ -34,16 +34,27 @@ export interface CliReachabilityState {
   set_at?: number;
 }
 
-/** The execution-source facets the principal mapping reads. Increment 2 supplies
- *  these from the gateway's resolved ExecutionSource (channel × actor ×
- *  contract_id); only the two fields the mapping needs are named here. */
+/** The execution-source facets the principal mapping reads. The catalog gateway
+ *  passes the full resolved ExecutionSource when one exists; the optional fields
+ *  retain compatibility with legacy/source-less dispatches that can supply only
+ *  actor + contract identity. */
 export interface CliReachabilityExecutionSource {
+  /** The execution channel. A server-derived `schedule` is the one unattended
+   *  source that inherits the owner's already-authored cli reachability row. */
+  channel?: string;
+  /** Schedule cadence. Required with the other schedule-variant fields so a
+   *  partial `{ channel, actor }` object cannot inherit owner reachability. */
+  cron?: string;
   /** The D-153/D-177 actor (`user_self` / `contracted_user` / `anonymous` /
    *  `system`). */
   actor: string;
   /** The contract the call runs under, when there is one (a door/agent). Absent
    *  for the owner's own (`user_self`) path. */
   contract_id?: string;
+  /** The server-derived origin recipe carried by schedule/reactive sources.
+   *  Required alongside `schedule × system` before owner reachability applies;
+   *  a partial source cannot promote a bare system actor. */
+  source_recipe?: string;
 }
 
 /** Map an execution source to its reachability PRINCIPAL (the §7.2 grid row key).
@@ -58,8 +69,12 @@ export interface CliReachabilityExecutionSource {
  *    1. a `contract_id` present → that contract's principal (honor the contract);
  *    2. else the actor is the UNRESTRICTED owner (`user_self`, no contract) →
  *       the owner principal;
- *    3. else (any other actor with no contract — `contracted_user` / `anonymous`
- *       / `system` lacking a contract) → `null`, and the resolver DENIES
+ *    3. else a complete, server-derived `schedule × system` source → the owner
+ *       principal. D-215 deliberately keeps owner automation contract-free; the
+ *       schedule inherits only the owner's pre-authored cli ACCESS row, while the
+ *       independent risk/approval gate still decides whether the op holds;
+ *    4. else (any other actor with no contract — `contracted_user` / `anonymous`
+ *       / reactive or housekeeping `system`) → `null`, and the resolver DENIES
  *       (fail-closed; the unwired increment never widens reachability).
  *
  *  A `contracted_user` can never reach branch 2 — the engine sets `actor` from the
@@ -70,5 +85,15 @@ export const cliPrincipalFromExecutionSource = (
 ): string | null => {
   if (typeof src.contract_id === 'string' && src.contract_id.length > 0) return src.contract_id;
   if (src.actor === CLI_REACHABILITY_OWNER_PRINCIPAL) return CLI_REACHABILITY_OWNER_PRINCIPAL;
+  if (
+    src.channel === 'schedule'
+    && src.actor === 'system'
+    && typeof src.cron === 'string'
+    && src.cron.length > 0
+    && typeof src.source_recipe === 'string'
+    && src.source_recipe.length > 0
+  ) {
+    return CLI_REACHABILITY_OWNER_PRINCIPAL;
+  }
   return null;
 };

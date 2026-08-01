@@ -63,6 +63,7 @@ import {
   type Ledger,
   type PiiRestoreAuthority,
   type RedactionCounters,
+  decorateOverlapReveal,
 } from '@recued/transforms';
 
 /* ──────────────── Privacy-tag resolver seam ──────────────── */
@@ -409,6 +410,56 @@ export const aliasRecallArgsForEgress = <T>(
     counters,
   );
   return { aliased, summary: buildRedactionSummary(mode, counters) };
+};
+
+/**
+ * D-224 — overlap-reveal ALONE, over an already-aliased value.
+ *
+ * `aliasRecallArgsForEgress` bundles seeding + aliasing + decoration, which is
+ * right for a `memory.*` result. The PREFETCH path has already aliased its
+ * records (`aliasPacketForEgress`) and must not re-alias them — it only needs
+ * the disclosed-overlap tails. Splitting the decoration out is what lets the
+ * two paths share one implementation instead of one growing a second copy.
+ *
+ * ⛔ WHY THE PREFETCH NEEDS IT AT ALL: overlap-reveal existed for name/org since
+ * D-167 but was reachable ONLY from the recall path, so a contact surfaced by
+ * the SPECULATIVE prefetch egressed as a bare `pii.Person1`. Observed live — a
+ * model holding the owner's own "Northwind Traders" beside an opaque alias could
+ * not join them and gave up, reporting that "the name and email were redacted".
+ * The feature that exists to prevent exactly that was not on the path where it
+ * happened.
+ *
+ * Pure; the ledger is read-only. `disclosedTexts` are tokenised HERE, as in the
+ * recall path, so the backend never imports the transforms tokenizer.
+ */
+export const decorateOverlapForEgress = <T>(
+  ledger: Ledger,
+  value: T,
+  disclosedTexts: readonly string[],
+): T => {
+  const disclosed = new Set<string>();
+  for (const text of disclosedTexts) {
+    for (const tok of tokenizeForOverlap(text)) disclosed.add(tok);
+  }
+  if (disclosed.size === 0) return value;
+  const decorate = (node: unknown): unknown => {
+    if (typeof node === 'string') {
+      return decorateOverlapReveal(ledger, node, disclosed);
+    }
+    if (Array.isArray(node)) return node.map(decorate);
+    if (node !== null && typeof node === 'object') {
+      const out: Record<string, unknown> = {};
+      // ⚠ VALUES ONLY, never keys — mirrors `aliasRecallArgs`, whose comment is
+      // the reason: keys carry no user-facing coreference, so decorating one
+      // would add a hint nobody reads while changing a wire field name.
+      for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+        out[k] = decorate(v);
+      }
+      return out;
+    }
+    return node;
+  };
+  return decorate(value) as T;
 };
 
 /** A schema-attested historical value admitted to the turn-local candidate

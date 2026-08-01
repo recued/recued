@@ -324,3 +324,74 @@ describe('D-137 P1 — subscribeRefresh substrate hook', () => {
     expect(fired).toBe(0); // no emit path in P1 substrate
   });
 });
+
+// ════════════════════════════════════════════════════════════════════
+// D-228 slice 5 — the contract gates Tier-1 primitives on the chat channel
+// ════════════════════════════════════════════════════════════════════
+
+/** ⛔⛔ THE LAST UNGATED SEAM, and the one I twice recorded as impossible to
+ *  gate. I had read `ChatDispatchContext.execution_source`'s doc — *"undefined
+ *  on dispatch paths whose producer hasn't been wired yet
+ *  (internal_function_call today)"* — and concluded there was no contract to
+ *  resolve here. The comment is STALE: `buildInternalDispatchCtx` always sets
+ *  `execution_source: … ?? buildChatExecutionSource(session_id, turn_id)`, and
+ *  `(chat, user_self)` resolves to `OWNER_CONTRACT_ID`. The principal on this
+ *  channel is the OWNER, exactly as one would guess.
+ *
+ *  ⚠ The gate is INJECTED, not imported: `packages/` may never reach into
+ *  `backend/`, where the op-admission gate lives. */
+describe('D-228 slice 5 — admitTier1', () => {
+  const okHandler = async () => ({ ok: true as const, tier: 1 as const, result: {} } as never);
+
+  it('⛔ a primitive the contract refuses never reaches its handler', async () => {
+    let ran = false;
+    const registry = createInternalToolRegistry({
+      tier1Handlers: { 'mail.search': async () => { ran = true; return okHandler(); } },
+      admitTier1: () => false,
+    });
+    const res = await registry.dispatch('mail.search', {}, ctxInternal());
+    expect(res.ok).toBe(false);
+    expect((res as { reason: string }).reason).toBe('classification_blocked');
+    // ⛔ THE ASSERTION THAT MATTERS — refused BEFORE the handler, so a denied
+    // primitive performs no read at all rather than reading and discarding.
+    expect(ran).toBe(false);
+  });
+
+  /** ⚠ THE PERMITTING WITNESS. Without it, "refused" is indistinguishable from
+   *  a registry that refuses every Tier-1 dispatch. */
+  it('…while an admitted primitive runs normally', async () => {
+    let ran = false;
+    const registry = createInternalToolRegistry({
+      tier1Handlers: { 'mail.search': async () => { ran = true; return okHandler(); } },
+      admitTier1: () => true,
+    });
+    const res = await registry.dispatch('mail.search', {}, ctxInternal());
+    expect(ran).toBe(true);
+    expect(res.ok).toBe(true);
+  });
+
+  /** ⚠ ABSENT ⇒ NO GATE. Every existing harness and any embedder without a
+   *  contract substrate builds the registry with no callback; a default-deny
+   *  there would dark-boot the assistant, which is the failure this whole slice
+   *  has been arranged to avoid. */
+  it('no callback ⇒ ungated (a host without a contract substrate still works)', async () => {
+    let ran = false;
+    const registry = createInternalToolRegistry({
+      tier1Handlers: { 'mail.search': async () => { ran = true; return okHandler(); } },
+    });
+    await registry.dispatch('mail.search', {}, ctxInternal());
+    expect(ran).toBe(true);
+  });
+
+  /** ⛔ The gate is asked about the tool BEING dispatched — a callback keyed on
+   *  the wrong name would deny the wrong tool and look identical in aggregate. */
+  it('asks about the dispatched tool name', async () => {
+    const seen: string[] = [];
+    const registry = createInternalToolRegistry({
+      tier1Handlers: { 'contact.search': okHandler },
+      admitTier1: (name) => { seen.push(name); return true; },
+    });
+    await registry.dispatch('contact.search', {}, ctxInternal());
+    expect(seen).toEqual(['contact.search']);
+  });
+});

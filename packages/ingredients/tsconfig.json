@@ -8,6 +8,7 @@
   "include": ["src"],
   "references": [
     { "path": "../contracts" },
+    { "path": "../crypto" },
     { "path": "../cache" },
     { "path": "../storage" }
   ]

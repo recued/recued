@@ -41,6 +41,10 @@
  */
 
 import {
+  ungroundedArgumentsInCall,
+  ungroundedArgumentsDetail,
+} from './tool-argument-grounding.js';
+import {
   CHAT_MAIN_TURN_INGREDIENT_SLUG,
   CHAT_MAIN_TURN_TOOL_LOOP_CAP,
   KERNEL_AUTHOR,
@@ -89,6 +93,9 @@ import type {
   ExecutionCaseAugmentationContext,
 } from './execution-case-retrieval.js';
 import type {
+  ExecutionCasePrecedentContext,
+} from '@recued/contracts';
+import type {
   ExecutionCaseProposalCritique,
 } from './execution-case-critic.js';
 
@@ -97,10 +104,19 @@ import type {
  *  model hint overrides land when the tier-strategy substrate wires
  *  through the chat orchestrator (deferred follow-on). */
 const CHAT_CHANNEL_DEFAULT_TIER: ModelTier = 'fast';
-export const EXECUTION_CASE_COMPLETION_NUDGE =
-  'After the approved work reaches a terminal outcome, call outcome.report '
-  + 'once with the fulfillment claim. Do not call it while approval or work '
-  + 'is still pending.';
+/* ⛔ D-219 slice 9b-ii — `EXECUTION_CASE_COMPLETION_NUDGE` DELETED, not emptied.
+ *
+ * It read: "After the approved work reaches a terminal outcome, call
+ * outcome.report once with the fulfillment claim. Do not call it while approval
+ * or work is still pending." — appended to an `awaiting_approval` tool result,
+ * the one moment the model was told to come back and self-report.
+ *
+ * Nothing reads what that report said any more (slice 9b removed the last
+ * counter over `model_claim`) and nothing depends on its being called (slice 9a
+ * records every turn that did governed work). An empty-string tombstone would
+ * have left a trailing newline on every approval-pending detail and an export
+ * with no backing; the instruction is simply gone, and
+ * `d-214-chat-critique-executor` asserts the detail no longer carries it. */
 /** Bounded locator-only references persisted with one assistant message.
  * Subjects, snippets, bodies, and hot fields stay out of the plaintext
  * provenance column; the Data detail resolves display content after the
@@ -611,6 +627,15 @@ interface ChatMainTurnPromptPacket {
   /** D-214 typed historical-evidence cards. This is a dynamic tail field,
    * never part of the cacheable prefix. */
   readonly execution_case_context?: ExecutionCaseAugmentationContext;
+  /** D-219 shape-only precedent — the ORDINARY-path projection, composed only
+   *  when no pre-registered experiment is. Its own field rather than a widening
+   *  of the one above, because an experiment measures a specific prompt and
+   *  quietly changing the field it reads would change the thing under
+   *  measurement. Same rule as its neighbour: a dynamic tail field, NEVER part
+   *  of the cacheable prefix — a card above the D-164 catalog would invalidate
+   *  the prompt cache on every single turn (measured: −49.9% input, 98%
+   *  cached), which is a far larger regression than any card is worth. */
+  readonly execution_precedent?: ExecutionCasePrecedentContext;
   /** Prompt-cache prefetch — the speculative entity candidates the
    *  before-turn hook resolved from the warehouse (labeled "verify"
    *  context). Omitted from the wire shape when empty.
@@ -772,6 +797,10 @@ export const composeChatMainTurnPromptParts = (
       && packet.execution_case_context.cards.length > 0
       ? { execution_case_context: packet.execution_case_context }
       : {}),
+    ...(packet.execution_precedent
+      && packet.execution_precedent.cards.length > 0
+      ? { execution_precedent: packet.execution_precedent }
+      : {}),
     ...(recall.length > 0 ? { recall_context: recall } : {}),
     ...(prior.length > 0 ? { prior_tool_calls: prior } : {}),
     ...(packet.output_feedback ? { output_feedback: packet.output_feedback } : {}),
@@ -891,14 +920,7 @@ const priorToolCallEntry = (
     args: tc.args,
     status: 'error',
     reason: result.reason,
-    ...(result.detail !== undefined
-      ? {
-          detail:
-            result.reason === 'awaiting_approval'
-              ? `${result.detail}\n${EXECUTION_CASE_COMPLETION_NUDGE}`
-              : result.detail,
-        }
-      : {}),
+    ...(result.detail !== undefined ? { detail: result.detail } : {}),
     started_at,
     completed_at,
   };
@@ -957,6 +979,8 @@ export interface RunChatTurnInputs {
   readonly correction_context: readonly string[];
   /** D-214 request-time cards selected by the controlled retrieval seam. */
   readonly execution_case_context?: ExecutionCaseAugmentationContext;
+  /** D-219 request-time shape-only precedent (the ordinary path). */
+  readonly execution_precedent?: ExecutionCasePrecedentContext;
   /** The prompt-cache prefetch middleware's before-turn contribution
    *  (labeled speculative entity candidates; omitted/`undefined` when the
    *  prefetch search is unwired or resolved nothing — behavior-preserving).
@@ -1078,6 +1102,10 @@ export const runChatTurn = async (
   // `channelDefault = 'fast'` is hardcoded per D-164 P6.3, mapped to the
   // LLM slot-picker hint. Session-pref / cost-ceiling overrides remain
   // deferred follow-ons.
+  /** The packet body of the most recent model call — the grounding corpus for
+   *  the tool calls that call produced. Set inside `tryMainTurn`, read by the
+   *  pre-dispatch check in the tool loop. */
+  let lastPacketBody = '';
   const tryMainTurn = async (
     prior_tool_calls?: ReadonlyArray<ChatPriorToolCall>,
     output_feedback?: string,
@@ -1129,6 +1157,9 @@ export const runChatTurn = async (
           : {}),
         ...(inputs.execution_case_context
           ? { execution_case_context: inputs.execution_case_context }
+          : {}),
+        ...(inputs.execution_precedent
+          ? { execution_precedent: inputs.execution_precedent }
           : {}),
         ...(inputs.prefetch_context && inputs.prefetch_context.length > 0
           ? { prefetch_context: inputs.prefetch_context }
@@ -1285,6 +1316,14 @@ export const runChatTurn = async (
         || inputs.model_source_id === 'slot_2')
         ? inputs.model_source_id
         : undefined;
+    // ⛔ THE GROUNDING CORPUS, captured at the ONE place that knows it. This is
+    // what the model can read for the calls it is about to emit: the
+    // conversation, the prefetch block, and every completed step's result — the
+    // exact body, AFTER any budget-driven eviction, because an evicted result
+    // is one the model can no longer see and must not be credited with.
+    // ⚠ The system prompt is joined in: it carries the tool catalog, so an
+    // argument echoing a catalog default or an enum stays grounded.
+    lastPacketBody = `${systemPrompt}\n${promptParts.body}`;
     const aiInput: Record<string, unknown> = {
       // Lever-2 slice 3 — index mode appends the `tools.search` two-stage
       // guidance; full mode / absent is byte-identical to the baseline prompt.
@@ -1648,6 +1687,34 @@ export const runChatTurn = async (
           })),
           executeOne: async (tc) => {
             const started_at = now();
+            // ⛔⛔ REFUSE AN ARGUMENT THE MODEL COULD NOT HAVE READ, before it
+            // reaches the dispatcher. Measured across 246 live turns: when a
+            // model is given a multi-step job it emits the whole job in ONE
+            // round — including the step that needed a previous step's output —
+            // and invents the value it has not fetched. Every one of the 73
+            // invented arguments seen in the D-219 A/B rounds was issued in
+            // such a batch, beside the read that would have supplied it.
+            //
+            // The dispatcher is the right boundary: it is where a fabricated
+            // value stops being a token and starts being an action against the
+            // owner's records. The refusal is returned to the model as a failed
+            // call with a corrective detail, so the loop's existing feedback
+            // path makes it retry PROPERLY — fetch, wait, then use the real
+            // value. That is also how a genuinely sequenced chain gets
+            // produced, which nothing else in the loop currently requires.
+            const ungrounded = ungroundedArgumentsInCall(tc.args, lastPacketBody);
+            if (ungrounded.length > 0) {
+              const completed_at = now();
+              return {
+                result: {
+                  ok: false as const,
+                  reason: 'invalid_args' as const,
+                  detail: ungroundedArgumentsDetail(ungrounded),
+                },
+                started_at,
+                completed_at,
+              };
+            }
             const result = await deps.dispatchTool({
               session_id,
               turn_id,
@@ -1656,6 +1723,12 @@ export const runChatTurn = async (
                 : {}),
               tool_name: tc.tool,
               arg_values: tc.args,
+              // D-219 — the loop round that emitted this call. Every call in
+              // one iteration of `toolLoop` shares it, which is exactly the
+              // "these went together" fact the compiler cannot recover from
+              // timestamps afterwards. Recorded at the only place that knows
+              // it; see the field's doc on `OrchestratorDispatch`.
+              round_index: roundIndex,
               picker_target,
               // The turn's real channel-minted source — the dispatch is
               // policy-gated under the TRUE `(channel × actor)` cell —

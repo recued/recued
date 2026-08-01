@@ -20,7 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   createConnectionStore,
@@ -70,6 +70,11 @@ describe('ensureConnectionSchema', () => {
     const names = indexes.map((r) => r.name);
     expect(names).toContain('idx_connections_updated_at');
     expect(names).toContain('idx_connections_kind');
+    const recoveryTable = db.prepare(
+      `SELECT name FROM sqlite_master
+        WHERE type='table' AND name='connection_credential_rotation_attempts'`,
+    ).get();
+    expect(recoveryTable).toBeDefined();
   });
 
   it('enforces composite PRIMARY KEY (kind, name)', () => {
@@ -135,6 +140,417 @@ describe('ensureConnectionSchema', () => {
       legacyDb.close();
       rmSync(legacyDir, { recursive: true, force: true });
     }
+  });
+
+  it('adds bounded rejection triage to a legacy rotation-receipt table', () => {
+    const legacyDir = mkdtempSync(join(tmpdir(), 'connection-rotation-triage-'));
+    const legacyDb = new Database(join(legacyDir, 'legacy.db'));
+    try {
+      legacyDb.exec(`
+        CREATE TABLE connection_credential_rotation_attempts (
+          attempt_id TEXT PRIMARY KEY,
+          kind TEXT NOT NULL,
+          name TEXT NOT NULL,
+          status TEXT NOT NULL,
+          started_at INTEGER NOT NULL,
+          finished_at INTEGER,
+          verified_at INTEGER,
+          auth_type TEXT,
+          access_expires_at INTEGER,
+          failure_reason TEXT
+        )
+      `);
+
+      ensureConnectionSchema(legacyDb);
+
+      const columns = legacyDb
+        .prepare(`PRAGMA table_info(connection_credential_rotation_attempts)`)
+        .all() as Array<{ name: string }>;
+      expect(columns.map(({ name }) => name)).toContain(
+        'auth_rejection_triage_stage',
+      );
+      expect(columns.map(({ name }) => name)).toContain(
+        'auth_rejection_resolution',
+      );
+      expect(columns.map(({ name }) => name)).toContain(
+        'safe_stop_acknowledged_at',
+      );
+      expect(() => legacyDb.prepare(`
+        INSERT INTO connection_credential_rotation_attempts
+          (attempt_id, kind, name, status, started_at,
+           auth_rejection_triage_stage)
+        VALUES ('rotation-invalid-triage-0001', 'api', 'hubspot', 'pending', 1,
+                'raw_provider_error')
+      `).run()).toThrow();
+      expect(() => legacyDb.prepare(`
+        INSERT INTO connection_credential_rotation_attempts
+          (attempt_id, kind, name, status, started_at,
+           auth_rejection_resolution)
+        VALUES ('rotation-invalid-resolution-01', 'api', 'hubspot', 'pending', 2,
+                'retry_the_same_secret')
+      `).run()).toThrow();
+    } finally {
+      legacyDb.close();
+      rmSync(legacyDir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('credential rotation recovery receipts', () => {
+  const attemptId = 'rotation-storage-test-0001';
+
+  it('claims once and atomically commits the replacement with a secret-free receipt', () => {
+    store.upsert(mkUpsert());
+    const observed = vi.fn();
+    store.addOnUpsert(observed);
+    observed.mockClear();
+
+    const first = store.claimCredentialRotationAttempt!({
+      attempt_id: attemptId,
+      kind: 'api',
+      name: 'hubspot',
+      started_at: 1_700_000_001_000,
+    });
+    const duplicate = store.claimCredentialRotationAttempt!({
+      attempt_id: attemptId,
+      kind: 'api',
+      name: 'hubspot',
+      started_at: 1_700_000_009_000,
+    });
+    expect(first).toMatchObject({ claimed: true, attempt: { status: 'pending' } });
+    expect(duplicate).toMatchObject({
+      claimed: false,
+      attempt: { status: 'pending', started_at: 1_700_000_001_000 },
+    });
+
+    const row = store.completeCredentialRotationAttempt!({
+      attempt_id: attemptId,
+      connection: mkUpsert({
+        display_name: 'Rotated HubSpot',
+        auth_ciphertext: 'NEW-AEAD-CIPHERTEXT',
+        updated_at: 1_700_000_002_000,
+      }),
+      verification: {
+        status: 'verified',
+        verified_at: 1_700_000_002_000,
+        auth_type: 'bearer',
+      },
+    });
+
+    expect(row.display_name).toBe('Rotated HubSpot');
+    expect(row.auth_ciphertext).toBe('NEW-AEAD-CIPHERTEXT');
+    expect(observed).toHaveBeenCalledTimes(1);
+    const receipt = store.getCredentialRotationAttempt!(attemptId);
+    expect(receipt).toEqual({
+      attempt_id: attemptId,
+      kind: 'api',
+      name: 'hubspot',
+      status: 'succeeded',
+      started_at: 1_700_000_001_000,
+      verification: {
+        status: 'verified',
+        verified_at: 1_700_000_002_000,
+        auth_type: 'bearer',
+      },
+    });
+    expect(JSON.stringify(receipt)).not.toContain('NEW-AEAD-CIPHERTEXT');
+  });
+
+  it('elects one pending attempt per connection while allowing other connections', () => {
+    const first = store.claimCredentialRotationAttempt!({
+      attempt_id: attemptId,
+      kind: 'api',
+      name: 'hubspot',
+      started_at: 1_700_000_001_000,
+    });
+    const contender = store.claimCredentialRotationAttempt!({
+      attempt_id: 'rotation-storage-test-0002',
+      kind: 'api',
+      name: 'hubspot',
+      started_at: 1_700_000_002_000,
+    });
+    const independent = store.claimCredentialRotationAttempt!({
+      attempt_id: 'rotation-storage-test-0003',
+      kind: 'api',
+      name: 'salesforce',
+      started_at: 1_700_000_003_000,
+    });
+
+    expect(first.claimed).toBe(true);
+    expect(contender).toEqual({ claimed: false, attempt: first.attempt });
+    expect(independent).toMatchObject({
+      claimed: true,
+      attempt: { name: 'salesforce', status: 'pending' },
+    });
+    expect(store.getPendingCredentialRotationAttempt!('api', 'hubspot'))
+      .toEqual(first.attempt);
+
+    store.failCredentialRotationAttempt!({
+      attempt_id: attemptId,
+      finished_at: 1_700_000_004_000,
+      reason: 'auth_failed',
+    });
+    expect(store.getPendingCredentialRotationAttempt!('api', 'hubspot'))
+      .toBeNull();
+    expect(store.claimCredentialRotationAttempt!({
+      attempt_id: 'rotation-storage-test-0002',
+      kind: 'api',
+      name: 'hubspot',
+      started_at: 1_700_000_005_000,
+    })).toMatchObject({ claimed: true, attempt: { status: 'pending' } });
+  });
+
+  it('rolls back the connection write when the pending receipt identity does not match', () => {
+    const before = store.upsert(mkUpsert());
+    store.claimCredentialRotationAttempt!({
+      attempt_id: attemptId,
+      kind: 'api',
+      name: 'hubspot',
+      started_at: 1_700_000_001_000,
+    });
+
+    expect(() => store.completeCredentialRotationAttempt!({
+      attempt_id: attemptId,
+      connection: mkUpsert({ name: 'other', auth_ciphertext: 'MUST-NOT-LAND' }),
+      verification: {
+        status: 'verified',
+        verified_at: 1_700_000_002_000,
+        auth_type: 'bearer',
+      },
+    })).toThrow(/no longer pending/);
+
+    expect(store.get('api', 'hubspot')).toEqual(before);
+    expect(store.get('api', 'other')).toBeNull();
+    expect(store.getCredentialRotationAttempt!(attemptId)).toMatchObject({
+      status: 'pending',
+    });
+  });
+
+  it('closes a failed attempt with only a bounded reason and safe auth discriminator', () => {
+    store.claimCredentialRotationAttempt!({
+      attempt_id: attemptId,
+      kind: 'api',
+      name: 'hubspot',
+      started_at: 1_700_000_001_000,
+    });
+    expect(store.failCredentialRotationAttempt!({
+      attempt_id: attemptId,
+      finished_at: 1_700_000_002_000,
+      reason: 'auth_failed',
+      auth_type: 'oauth2_refresh',
+    })).toEqual({
+      attempt_id: attemptId,
+      kind: 'api',
+      name: 'hubspot',
+      status: 'failed',
+      started_at: 1_700_000_001_000,
+      finished_at: 1_700_000_002_000,
+      failure_reason: 'auth_failed',
+      auth_type: 'oauth2_refresh',
+    });
+  });
+
+  it('escalates a third consecutive auth rejection to a bounded safe stop', () => {
+    const fail = (
+      attempt_id: string,
+      reason: 'auth_failed' | 'unreachable',
+      started_at: number,
+    ) => {
+      store.claimCredentialRotationAttempt!({
+        attempt_id,
+        kind: 'api',
+        name: 'hubspot',
+        started_at,
+      });
+      return store.failCredentialRotationAttempt!({
+        attempt_id,
+        finished_at: started_at + 1,
+        reason,
+        ...(reason === 'auth_failed'
+          ? {
+              auth_type: 'bearer' as const,
+              auth_rejection_stage: 'provider_probe' as const,
+            }
+          : {}),
+      });
+    };
+
+    // Deliberately move the injected wall clock backwards. Receipt insertion
+    // order is the causal attempt order; timestamps must not resurrect an old
+    // rejection after a newer terminal result resets the streak.
+    const first = fail('rotation-rejection-streak-0001', 'auth_failed', 40);
+    expect(first).not.toHaveProperty('auth_rejection_triage_stage');
+    expect(first).not.toHaveProperty('auth_rejection_resolution');
+
+    const second = fail('rotation-rejection-streak-0002', 'auth_failed', 30);
+    expect(second).toMatchObject({
+      failure_reason: 'auth_failed',
+      auth_type: 'bearer',
+      auth_rejection_triage_stage: 'provider_probe',
+    });
+    expect(second).not.toHaveProperty('auth_rejection_resolution');
+
+    const third = fail(
+      'rotation-rejection-streak-0003',
+      'auth_failed',
+      20,
+    );
+    expect(third).toMatchObject({
+      failure_reason: 'auth_failed',
+      auth_type: 'bearer',
+      auth_rejection_triage_stage: 'provider_probe',
+      auth_rejection_resolution: 'regenerate_credential_or_contact_admin',
+    });
+    expect(store.getLatestCredentialRotationAttempt?.('api', 'hubspot'))
+      .toEqual(third);
+
+    fail('rotation-rejection-streak-0004', 'unreachable', 15);
+    const afterReset = fail(
+      'rotation-rejection-streak-0005',
+      'auth_failed',
+      10,
+    );
+    expect(afterReset).not.toHaveProperty('auth_rejection_triage_stage');
+    expect(afterReset).not.toHaveProperty('auth_rejection_resolution');
+    expect(store.getLatestCredentialRotationAttempt?.('api', 'hubspot'))
+      .toEqual(afterReset);
+  });
+
+  it('lists and idempotently acknowledges only the exact latest safe stop', () => {
+    store.upsert(mkUpsert());
+    const reject = (attempt_id: string, started_at: number) => {
+      store.claimCredentialRotationAttempt!({
+        attempt_id,
+        kind: 'api',
+        name: 'hubspot',
+        started_at,
+      });
+      return store.failCredentialRotationAttempt!({
+        attempt_id,
+        finished_at: started_at + 1,
+        reason: 'auth_failed',
+        auth_type: 'bearer',
+        auth_rejection_stage: 'provider_probe',
+      });
+    };
+    reject('rotation-safe-stop-list-0001', 10);
+    reject('rotation-safe-stop-list-0002', 20);
+    const safeStop = reject('rotation-safe-stop-list-0003', 30);
+
+    expect(store.listCredentialRotationSafeStops!()).toEqual([safeStop]);
+    expect(store.listCredentialRotationSafeStops!({ kind: 'mcp' })).toEqual([]);
+
+    const acknowledged = store.acknowledgeCredentialRotationSafeStop!({
+      attempt_id: safeStop.attempt_id,
+      kind: 'api',
+      name: 'hubspot',
+      acknowledged_at: 40,
+    });
+    expect(acknowledged).toMatchObject({
+      status: 'acknowledged',
+      attempt: { safe_stop_acknowledged_at: 40 },
+    });
+    expect(store.listCredentialRotationSafeStops!()).toEqual([]);
+    expect(store.listAcknowledgedCredentialRotationSafeStops!()).toEqual([
+      acknowledged!.attempt,
+    ]);
+    expect(store.acknowledgeCredentialRotationSafeStop!({
+      attempt_id: safeStop.attempt_id,
+      kind: 'api',
+      name: 'hubspot',
+      acknowledged_at: 99,
+    })).toMatchObject({
+      status: 'already_acknowledged',
+      attempt: { safe_stop_acknowledged_at: 40 },
+    });
+
+    // A newer causal row makes the old capability stale even if the old row
+    // was not acknowledged by this caller.
+    store.claimCredentialRotationAttempt!({
+      attempt_id: 'rotation-safe-stop-list-0004',
+      kind: 'api',
+      name: 'hubspot',
+      started_at: 50,
+    });
+    expect(store.listAcknowledgedCredentialRotationSafeStops!()).toEqual([]);
+    expect(store.acknowledgeCredentialRotationSafeStop!({
+      attempt_id: safeStop.attempt_id,
+      kind: 'api',
+      name: 'hubspot',
+      acknowledged_at: 60,
+    })).toBeNull();
+  });
+
+  it('closes a prior-process pending claim when the store boots again', () => {
+    store.claimCredentialRotationAttempt!({
+      attempt_id: attemptId,
+      kind: 'api',
+      name: 'hubspot',
+      started_at: 1_700_000_001_000,
+    });
+
+    const rebooted = createConnectionStore(db);
+    expect(rebooted.getCredentialRotationAttempt!(attemptId)).toMatchObject({
+      status: 'failed',
+      failure_reason: 'server_error',
+      started_at: 1_700_000_001_000,
+    });
+  });
+
+  it('closes legacy duplicate pending rows before installing the owner index', () => {
+    const legacyDir = mkdtempSync(join(tmpdir(), 'rotation-owner-migration-'));
+    const legacyDb = new Database(join(legacyDir, 'legacy.db'));
+    try {
+      ensureConnectionSchema(legacyDb);
+      const insert = legacyDb.prepare(`
+        INSERT INTO connection_credential_rotation_attempts
+          (attempt_id, kind, name, status, started_at)
+        VALUES (?, 'api', 'hubspot', 'pending', ?)
+      `);
+      insert.run('rotation-legacy-owner-0001', 1_700_000_001_000);
+      insert.run('rotation-legacy-owner-0002', 1_700_000_002_000);
+
+      const migrated = createConnectionStore(legacyDb);
+      expect(migrated.getCredentialRotationAttempt!(
+        'rotation-legacy-owner-0001',
+      )).toMatchObject({ status: 'failed', failure_reason: 'server_error' });
+      expect(migrated.getCredentialRotationAttempt!(
+        'rotation-legacy-owner-0002',
+      )).toMatchObject({ status: 'failed', failure_reason: 'server_error' });
+      expect(legacyDb.prepare(`
+        SELECT name FROM sqlite_master
+         WHERE type = 'index'
+           AND name = 'idx_connection_credential_rotation_pending_owner'
+      `).get()).toEqual({
+        name: 'idx_connection_credential_rotation_pending_owner',
+      });
+    } finally {
+      legacyDb.close();
+      rmSync(legacyDir, { recursive: true, force: true });
+    }
+  });
+
+  it('deletes old receipts with the connection so a same-name re-enrollment is distinct', () => {
+    store.upsert(mkUpsert());
+    store.claimCredentialRotationAttempt!({
+      attempt_id: attemptId,
+      kind: 'api',
+      name: 'hubspot',
+      started_at: 1_700_000_001_000,
+    });
+
+    expect(store.delete('api', 'hubspot')).toBe(true);
+    expect(store.getCredentialRotationAttempt!(attemptId)).toBeNull();
+    expect(() => store.completeCredentialRotationAttempt!({
+      attempt_id: attemptId,
+      connection: mkUpsert({ auth_ciphertext: 'MUST-NOT-RESURRECT' }),
+      verification: {
+        status: 'verified',
+        verified_at: 1_700_000_002_000,
+        auth_type: 'bearer',
+      },
+    })).toThrow(/no longer pending/);
+    expect(store.get('api', 'hubspot')).toBeNull();
   });
 });
 

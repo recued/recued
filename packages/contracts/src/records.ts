@@ -1,0 +1,680 @@
+/**
+ * D-221 fixed Records substrate contract.
+ *
+ * This module is deliberately an installed/runtime contract. Pack authors keep
+ * using the existing composition/entity/operation rows and the opaque `bind`
+ * cell; no Records-specific pack-content discriminator or entity vocabulary is
+ * exported from here.
+ */
+
+import type { EntityFieldPrivacy } from './pii-alias.js';
+
+export const RECORDS_DECIMAL_SCALE = 4;
+export const RECORDS_DEFAULT_PAGE_SIZE = 50;
+export const RECORDS_MAX_PAGE_SIZE = 200;
+export const RECORDS_MAX_GET_MANY_IDS = 100;
+export const RECORDS_MAX_PREDICATES = 16;
+export const RECORDS_MAX_IN_ITEMS = 100;
+/** Writes in one batch. ⚠ A batch that needs more than this must chunk — and a
+ *  chunked batch is no longer atomic, which is the whole point of it, so the cap
+ *  is a design constraint on the caller rather than a knob to raise. */
+export const RECORDS_MAX_BATCH_OPS = 100;
+export const RECORDS_MAX_QUERY_ROWS = 100_000;
+export const RECORDS_MAX_ID_BYTES = 512;
+export const RECORDS_MAX_INDEXED_STRING_BYTES = 4 * 1024;
+export const RECORDS_MAX_TEXT_BYTES = 1024 * 1024;
+export const RECORDS_MAX_ROW_BYTES = 2 * 1024 * 1024;
+export const RECORDS_DEFAULT_ROW_QUOTA = 100_000;
+export const RECORDS_DEFAULT_BYTE_QUOTA = 100 * 1024 * 1024;
+export const RECORDS_DEFAULT_OUTBOX_QUOTA = 100_000;
+export const RECORDS_MAX_CAUSAL_DEPTH = 16;
+export const RECORDS_MAX_CAUSAL_FANOUT = 1_000;
+
+/** The unregistered token every installable Records pack ships as its lone
+ *  compatibility-canary step. It exists to FAIL recipe lowering on a pre-D-221
+ *  runtime, before `installBulkPack` mutates anything, so an older server
+ *  refuses the pack instead of installing half of it. The install coordinator
+ *  intercepts the canary; it is never executed and never persisted.
+ *
+ *  It lives here because four sites need to agree on it — the coordinator that
+ *  intercepts it, the install handler that locates it, the pack-update review,
+ *  and the corpus gate that must EXEMPT it (the coordinator's exact-shape
+ *  classifier forbids the `tags` / `budget_ms` metadata that gate otherwise
+ *  requires, so no valid canary could ever satisfy both). */
+export const RECORDS_RUNTIME_CANARY_OP = 'core.records.require-runtime';
+
+export const RECORDS_ACTIONS = [
+  'create',
+  'get',
+  'get_many',
+  'search',
+  'count',
+  // D-226 — a declared, closed-vocabulary rollup over the rows a filter admits.
+  // Read-effect, like `count`: it returns an answer, never a row.
+  'aggregate',
+  'update',
+  'upsert',
+  'delete',
+  // D-226 — N declared writes, ONE transaction, all or none. The only action
+  // whose unit of work is more than one row.
+  'batch',
+] as const;
+
+export type RecordsAction = (typeof RECORDS_ACTIONS)[number];
+
+export const RECORDS_PREDICATES = [
+  'eq',
+  'ne',
+  'lt',
+  'lte',
+  'gt',
+  'gte',
+  'in',
+  'prefix',
+  'is_null',
+] as const;
+
+export type RecordsPredicate = (typeof RECORDS_PREDICATES)[number];
+
+/** ⛔ WRITES ONLY, and `batch` is not among them.
+ *
+ *  No reads: a read inside a write transaction is the first half of a
+ *  read-modify-write loop, and CAS exists precisely so that loop cannot be
+ *  written. Read before the batch, pass the revisions in, let the batch refuse
+ *  on a stale one — which is the same discipline every single-row write already
+ *  follows, and the reason a batch needs no new conflict story.
+ *
+ *  No nesting: a batch inside a batch has no meaning the outer transaction does
+ *  not already provide, and it would make the declared allow-list unbounded. */
+export const RECORDS_BATCH_ACTIONS = ['create', 'update', 'upsert', 'delete'] as const;
+
+export type RecordsBatchAction = (typeof RECORDS_BATCH_ACTIONS)[number];
+
+/** One entity/action pair a batch op is DECLARED to be allowed to contain.
+ *  The caller supplies the rows; it can never supply the pairs. */
+export interface RecordsBatchAllow {
+  entity: string;
+  action: RecordsBatchAction;
+}
+
+export const isRecordsBatchAction = (value: unknown): value is RecordsBatchAction =>
+  typeof value === 'string' && (RECORDS_BATCH_ACTIONS as readonly string[]).includes(value);
+
+/** Static validation of a batch's allow-list against the entities that exist.
+ *  Returns every problem rather than the first. Empty array = admissible. */
+export const validateRecordsBatchAllow = (
+  allow: unknown,
+  entityNames: readonly string[],
+): string[] => {
+  if (!Array.isArray(allow) || allow.length === 0) {
+    return ['allow must be a non-empty array of { entity, action }'];
+  }
+  const problems: string[] = [];
+  const seen = new Set<string>();
+  allow.forEach((raw, index) => {
+    const at = `allow[${index}]`;
+    if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+      problems.push(`${at}: must be an object { entity, action }`);
+      return;
+    }
+    const entry = raw as Record<string, unknown>;
+    for (const key of Object.keys(entry)) {
+      if (!['entity', 'action'].includes(key)) problems.push(`${at}: unknown key '${key}'`);
+    }
+    if (typeof entry.entity !== 'string' || !entityNames.includes(entry.entity)) {
+      problems.push(`${at}: unknown entity '${String(entry.entity)}'`);
+    }
+    if (!isRecordsBatchAction(entry.action)) {
+      problems.push(
+        `${at}: '${String(entry.action)}' is not a batchable action` +
+        ` — a batch admits ${RECORDS_BATCH_ACTIONS.join(', ')} and no reads`,
+      );
+    }
+    const key = `${String(entry.entity)}:${String(entry.action)}`;
+    if (seen.has(key)) problems.push(`${at}: duplicate pair '${key}'`);
+    seen.add(key);
+  });
+  return problems;
+};
+
+export const RECORDS_SLOT_FAMILIES = {
+  number: Array.from({ length: 10 }, (_, idx) => `n${idx + 1}`),
+  decimal: Array.from({ length: 5 }, (_, idx) => `dec${idx + 1}`),
+  string: Array.from({ length: 10 }, (_, idx) => `s${idx + 1}`),
+  text: Array.from({ length: 2 }, (_, idx) => `t${idx + 1}`),
+  date: Array.from({ length: 3 }, (_, idx) => `d${idx + 1}`),
+  datetime: Array.from({ length: 3 }, (_, idx) => `dt${idx + 1}`),
+  boolean: Array.from({ length: 5 }, (_, idx) => `b${idx + 1}`),
+  ref: Array.from({ length: 5 }, (_, idx) => `r${idx + 1}`),
+} as const;
+
+export type RecordsFieldKind = keyof typeof RECORDS_SLOT_FAMILIES;
+export type RecordsSlot =
+  | `n${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10}`
+  | `dec${1 | 2 | 3 | 4 | 5}`
+  | `s${1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10}`
+  | `t${1 | 2}`
+  | `d${1 | 2 | 3}`
+  | `dt${1 | 2 | 3}`
+  | `b${1 | 2 | 3 | 4 | 5}`
+  | `r${1 | 2 | 3 | 4 | 5}`;
+
+export interface RecordsPackRef {
+  publisher: string;
+  pack_slug: string;
+}
+
+/** D-221 §3.3.2 principal derivation for Records. Contract authority wins;
+ * otherwise only the local owner and the three host-owned automation channels
+ * inherit owner authority. In particular, an anonymous reception/webhook run
+ * with no contract remains unauthorised rather than becoming `user_self`. */
+export const recordsPrincipalFromExecutionSource = (source: {
+  channel?: string;
+  actor?: string;
+  contract_id?: string;
+}): string | null => {
+  if (typeof source.contract_id === 'string' && source.contract_id.length > 0) {
+    return source.contract_id;
+  }
+  if (source.actor === 'user_self') return 'user_self';
+  if (source.actor === 'system'
+    && ['schedule', 'reactive', 'housekeeping'].includes(source.channel ?? '')) {
+    return 'user_self';
+  }
+  return null;
+};
+
+import type { RecordsRootProjection } from './records-root-projection.js';
+
+export interface RecordsFieldSnapshot {
+  /** Friendly dotted leaf exposed to recipes and #data. */
+  key: string;
+  slot: 'pk' | RecordsSlot;
+  kind: 'id' | RecordsFieldKind;
+  required: boolean;
+  /** Authored display name. Absent → a surface title-cases `key`. ⚠ Outside
+   *  `canonicalStorageProjection` by design, exactly like `roots`: a display
+   *  declaration moves `declaration_hash` and leaves `storage_schema_hash`
+   *  alone, so adding one is a re-declaration and never a migration. */
+  label?: string;
+  /** For a `ref` slot: the entity kind this reference targets. Absent on a
+   *  non-ref field, and on a ref that predates the declaration. */
+  references?: string;
+  description?: string;
+  privacy?: EntityFieldPrivacy;
+  source_operation?: string;
+}
+
+export interface RecordsEntitySnapshot {
+  kind: string;
+  fields: RecordsFieldSnapshot[];
+  /** D-226 — declared reverse reads. ⚠ Deliberately OUTSIDE
+   *  `canonicalStorageProjection`, which picks only `{key, slot, kind,
+   *  required}` per field: a projection is a READ declaration, so adding one
+   *  moves `declaration_hash` and leaves `storage_schema_hash` alone — no
+   *  migration, which is the whole reason it can live on the snapshot. */
+  roots?: RecordsRootProjection[];
+}
+
+export interface RecordsSchemaSnapshot {
+  decimal_scale: number;
+  entities: Record<string, RecordsEntitySnapshot>;
+}
+
+/** Closed Records bind expressed through the existing opaque authoring cell. */
+export interface RecordsAuthorBinding {
+  kind: 'core.records';
+  action: RecordsAction;
+  entity: string;
+  natural_key?: string[];
+  filter_fields?: string[];
+  sort_fields?: string[];
+  /** D-226 — `aggregate` only. The rollup is DECLARED here, not passed by the
+   *  caller: that is what makes it validated at install against the entity's
+   *  field kinds, documented in the op catalog, and usable as an index hint.
+   *  The caller chooses the OCCASION and the filters, never the shape. */
+  select?: Readonly<Record<string, { fn: string; field?: string; by?: string }>>;
+  /** D-226 — `aggregate` only, OPTIONAL. Present, the op returns one row PER
+   *  DISTINCT VALUE of this field instead of one row overall: a declared list.
+   *  It lives on the bind for the same reason `select` does — it changes what
+   *  the op returns, so it is validated at install, hashed into the digest, and
+   *  never supplied by the caller. Admissible key kinds are narrower than
+   *  aggregatable ones (`RECORDS_GROUP_BY_KINDS`). */
+  group_by?: string;
+  /** D-226 — `batch` only. The entity/action pairs this op may contain. It is
+   *  on the bind for the same reason `select` is: it decides what the op can
+   *  DO, so it is validated at install, hashed into the digest, and never
+   *  supplied by the caller. */
+  allow?: readonly RecordsBatchAllow[];
+}
+
+/** Closed author bind after install-time validation and owner stamping. */
+export interface RecordsExecutionBinding extends RecordsAuthorBinding {
+  /** Verified installer-owned fields. Never read from the authored bind. */
+  owner: RecordsPackRef;
+  pack_version: number;
+  storage_schema_hash: string;
+  declaration_hash: string;
+  operation_digest: string;
+}
+
+/** Local execution surface carried only by an installed catalog manifest. */
+export interface ProviderRecordsSurface {
+  /** Preview/decomposition artifacts may still be unstamped. Runtime rejects
+   * anything that does not satisfy `isRecordsExecutionBinding`. */
+  executes: Record<string, RecordsAuthorBinding | RecordsExecutionBinding>;
+  schema: RecordsSchemaSnapshot;
+}
+
+export type RecordsNamespaceState =
+  | {
+      state: 'ready';
+      version: number;
+      storage_schema_hash: string;
+      declaration_hash: string;
+    }
+  | {
+      state: 'migrating';
+      from_version: number;
+      target_version: number;
+      target_storage_schema_hash: string;
+      migration_id: string;
+    }
+  | {
+      state: 'orphaned';
+      last_version: number;
+      storage_schema_hash: string;
+      declaration_hash: string;
+    }
+  | {
+      state: 'incoherent';
+      last_known_state: string;
+      detected_at: number;
+      reason: string;
+      evidence_ref?: string;
+    };
+
+export interface RecordsRecordMetadata {
+  entity: string;
+  version: number;
+  revision: number;
+  created_at: number;
+  updated_at: number;
+}
+
+export type RecordsFriendlyRecord = Record<string, unknown> & {
+  id: string;
+  _record: RecordsRecordMetadata;
+};
+
+export interface RecordsFilter {
+  field: string;
+  op: RecordsPredicate;
+  value?: unknown;
+}
+
+export interface RecordsSearchResult {
+  records: RecordsFriendlyRecord[];
+  next_cursor?: string;
+  prev_cursor?: string;
+}
+
+export type RecordsMutationCause =
+  | 'recipe'
+  | 'owner_delete'
+  | 'migration'
+  | 'retention'
+  | 'uninstall_purge'
+  | 'owner_bulk_delete';
+
+export interface RecordsEventPointer {
+  event_id: string;
+  type: 'record.created' | 'record.updated' | 'record.deleted';
+  owner: RecordsPackRef;
+  entity: string;
+  id: string;
+  revision: number;
+  changed_fields: string[];
+  activation_generation: number;
+  subscriber_digest: string;
+  cause: RecordsMutationCause;
+  created_at: number;
+}
+
+export interface RecordsExecutionCall {
+  binding: RecordsExecutionBinding;
+  args: Record<string, unknown>;
+  principal: string;
+  recipe_digest?: string;
+  /** Host-minted run lease. The Records store validates this against its
+   * process-local namespace admission registry when an update/uninstall fence
+   * is active; recipe/config/context data can never mint a useful value. */
+  execution_lease_id?: string;
+  cause?: RecordsMutationCause;
+  root_event_id?: string;
+  causal_depth?: number;
+  watcher_digest?: string;
+}
+
+export interface RecordsQuotaSnapshot {
+  row_count: number;
+  payload_bytes: number;
+  row_limit: number;
+  byte_limit: number;
+  outbox_count: number;
+  outbox_limit: number;
+  data_generation: number;
+}
+
+/** Exact core-wide usage/caps, derived from the same row/outbox tables. */
+export interface RecordsGlobalQuotaSnapshot {
+  row_count: number;
+  payload_bytes: number;
+  outbox_count: number;
+  reserved_payload_bytes: number;
+  row_limit: number;
+  byte_limit: number;
+  outbox_limit: number;
+}
+
+/** Owner-control-plane projection for one full-ref Records namespace. */
+export interface RecordsNamespaceView {
+  owner: RecordsPackRef;
+  state: RecordsNamespaceState;
+  activation_generation: number;
+  state_generation: number;
+  quota: RecordsQuotaSnapshot;
+  schema: RecordsSchemaSnapshot;
+  artifact_digest: string;
+  /** Exact installed watcher binding-set stamp; pointer delivery refuses drift. */
+  subscriber_digest: string;
+  updated_at: number;
+}
+
+export interface RecordsKindSummary {
+  kind: string;
+  rows: number;
+  payload_bytes: number;
+}
+
+export interface RecordsRetentionPolicy {
+  mode: 'keep' | 'expire_after_days';
+  days?: number;
+  legal_hold?: boolean;
+}
+
+/** One friendly schema delta rendered before a Records pack update. */
+export interface RecordsSchemaReviewChange {
+  entity: string;
+  field?: string;
+  change:
+    | 'entity_added'
+    | 'entity_removed'
+    | 'field_added'
+    | 'field_removed'
+    | 'slot_changed'
+    | 'type_changed'
+    | 'nullability_changed'
+    | 'privacy_changed';
+  current?: string;
+  target?: string;
+  destructive: boolean;
+}
+
+/** A literal migration mapping that can discard or relocate owner data. */
+export interface RecordsDestructiveReviewItem {
+  edge: string;
+  kind: string;
+  step_id: string;
+  operation: 'clear' | 'change_kind' | 'safe_cast' | 'move';
+  from: string;
+  to?: string;
+}
+
+/** D-221 owner-facing Records section on the existing pack-update review. */
+export interface RecordsPackUpdateReview {
+  owner: RecordsPackRef;
+  current_state: RecordsNamespaceState['state'];
+  current_version: number;
+  target_version: number;
+  current_storage_schema_hash: string;
+  target_storage_schema_hash: string;
+  row_counts: RecordsKindSummary[];
+  estimated_rows: number;
+  schema_changes: RecordsSchemaReviewChange[];
+  destructive_changes: RecordsDestructiveReviewItem[];
+  quota: RecordsQuotaSnapshot;
+  global_quota: RecordsGlobalQuotaSnapshot;
+  retention: Record<string, RecordsRetentionPolicy>;
+  export_checkpoint_available: boolean;
+  export_recommended: boolean;
+  active_executions: number;
+  unacknowledged_events: number;
+  pending_event_disposition: 'drain_or_explicit_retire';
+  temporary_unavailability: boolean;
+  resumable: boolean;
+  reverse_route_exists: boolean;
+}
+
+/** Server-private approval binding echoed through the install coordinator.
+ * The client receives only its enclosing SHA-256 review token. */
+export interface RecordsUpdateReviewFence {
+  owner: RecordsPackRef;
+  current_snapshot_digest: string;
+  owner_policy_digest: string;
+  target_version: number;
+  target_artifact_digest: string;
+  route_plan_digest: string;
+  pending_event_disposition: 'drain_or_explicit_retire';
+}
+
+/** Generation-pinned owner export. The digest covers every preceding field. */
+export interface RecordsExportEnvelope {
+  format: 'recued.records.v1';
+  owner: RecordsPackRef;
+  version: number;
+  activation_generation: number;
+  data_generation: number;
+  storage_schema_hash: string;
+  declaration_hash: string;
+  schema: RecordsSchemaSnapshot;
+  records: Record<string, RecordsFriendlyRecord[]>;
+  exported_at: number;
+  digest: string;
+}
+
+/** CSV is generated by the owner control plane from the same point-in-time
+ * snapshot as JSON. The CSV repeats the pack/schema metadata on every row so
+ * the artifact remains self-describing when opened outside Recued. */
+export interface RecordsCsvExportEnvelope {
+  format: 'recued.records.csv.v1';
+  owner: RecordsPackRef;
+  version: number;
+  activation_generation: number;
+  data_generation: number;
+  storage_schema_hash: string;
+  declaration_hash: string;
+  schema: RecordsSchemaSnapshot;
+  csv: string;
+  exported_at: number;
+  digest: string;
+}
+
+export type RecordsExportResponse = RecordsExportEnvelope | RecordsCsvExportEnvelope;
+
+/** One same-namespace relationship edge used for reference navigation and
+ * delete-impact review. Values remain friendly kind/id paths; physical refs
+ * never escape the advanced diagnostic disclosure. */
+export interface RecordsRelationshipImpact {
+  source_entity: string;
+  source_id: string;
+  source_field: string;
+  source_slot: RecordsSlot;
+  target_entity: string;
+  target_id: string;
+}
+
+export interface RecordsOwnerRecordDiagnostics {
+  raw_slots: Record<RecordsSlot, string | number | null>;
+  outgoing: RecordsRelationshipImpact[];
+  incoming: RecordsRelationshipImpact[];
+}
+
+export interface RecordsOwnerGetResponse {
+  record: RecordsFriendlyRecord | null;
+  diagnostics: RecordsOwnerRecordDiagnostics | null;
+}
+
+export type RecordsOutboxStatus = 'pending' | 'delivered' | 'dead_letter';
+
+export interface RecordsOutboxDeliveryDiagnostic {
+  binding_digest: string;
+  recipe_id: string;
+  status: RecordsOutboxStatus;
+  retry_count: number;
+  error?: string;
+}
+
+export interface RecordsOutboxEventDiagnostic {
+  event: RecordsEventPointer;
+  status: RecordsOutboxStatus;
+  retry_count: number;
+  error?: string;
+  deliveries: RecordsOutboxDeliveryDiagnostic[];
+}
+
+export interface RecordsOutboxOverview {
+  pending: number;
+  delivered: number;
+  dead_letter: number;
+  total_retries: number;
+  oldest_pending_at?: number;
+  oldest_pending_age_ms?: number;
+  events: RecordsOutboxEventDiagnostic[];
+}
+
+export interface RecordsOutboxListRequest {
+  owner: RecordsPackRef;
+  status?: RecordsOutboxStatus;
+  limit?: number;
+}
+
+export interface RecordsOutboxRetireRequest {
+  owner: RecordsPackRef;
+  event_id: string;
+  /** Exact event id; prevents a stale or accidental bulk-looking click. */
+  confirmation: string;
+}
+
+export interface RecordsPurgeRequest {
+  owner: RecordsPackRef;
+  /** Exact `publisher/pack_slug`; purge is admitted only after orphaning. */
+  confirmation: string;
+}
+
+export interface RecordsOwnerSearchRequest {
+  owner: RecordsPackRef;
+  entity: string;
+  filters?: Record<string, unknown>;
+  sort?: string;
+  cursor?: string;
+  limit?: number;
+  include_orphaned?: boolean;
+}
+
+export interface RecordsOwnerGetRequest {
+  owner: RecordsPackRef;
+  entity: string;
+  id: string;
+}
+
+export interface RecordsOwnerDeleteRequest extends RecordsOwnerGetRequest {
+  expected_version: number;
+  expected_revision: number;
+}
+
+export interface RecordsQuotaSetRequest {
+  owner: RecordsPackRef;
+  row_limit?: number;
+  byte_limit?: number;
+  outbox_limit?: number;
+}
+
+/** Owner-only policy update for the core-wide Records capacity envelope. */
+export interface RecordsGlobalQuotaSetRequest {
+  row_limit?: number;
+  byte_limit?: number;
+  outbox_limit?: number;
+}
+
+export interface RecordsRetentionSetRequest {
+  owner: RecordsPackRef;
+  entity: string;
+  policy: RecordsRetentionPolicy;
+}
+
+export interface RecordsRetentionRunRequest {
+  owner: RecordsPackRef;
+  batch_size?: number;
+}
+
+export interface RecordsExportRequest {
+  owner: RecordsPackRef;
+  entity?: string;
+  format?: 'json' | 'csv';
+}
+
+export type RecordsErrorCode =
+  | 'records_invalid'
+  | 'records_not_found'
+  | 'records_conflict'
+  | 'records_noop'
+  | 'records_not_ready'
+  | 'records_stale_operation'
+  | 'records_incoherent'
+  | 'records_quota_exceeded'
+  | 'records_backpressure'
+  | 'records_relationship_restrict'
+  | 'records_query_budget'
+  | 'records_cursor_invalid'
+  | 'records_unauthorized';
+
+export class RecordsContractError extends Error {
+  readonly code: RecordsErrorCode;
+  readonly retryable: boolean;
+  readonly details?: Record<string, unknown>;
+
+  constructor(
+    code: RecordsErrorCode,
+    message: string,
+    options: { retryable?: boolean; details?: Record<string, unknown> } = {},
+  ) {
+    super(message);
+    this.name = 'RecordsContractError';
+    this.code = code;
+    this.retryable = options.retryable ?? false;
+    this.details = options.details;
+  }
+}
+
+export const isRecordsAction = (value: unknown): value is RecordsAction =>
+  typeof value === 'string' && (RECORDS_ACTIONS as readonly string[]).includes(value);
+
+export const isRecordsExecutionBinding = (
+  value: RecordsAuthorBinding | RecordsExecutionBinding | undefined,
+): value is RecordsExecutionBinding =>
+  value !== undefined
+  && typeof (value as RecordsExecutionBinding).owner?.publisher === 'string'
+  && typeof (value as RecordsExecutionBinding).owner?.pack_slug === 'string'
+  && Number.isSafeInteger((value as RecordsExecutionBinding).pack_version)
+  && (value as RecordsExecutionBinding).pack_version > 0
+  && typeof (value as RecordsExecutionBinding).storage_schema_hash === 'string'
+  && typeof (value as RecordsExecutionBinding).declaration_hash === 'string'
+  && typeof (value as RecordsExecutionBinding).operation_digest === 'string';
+
+export const recordsSlotKind = (slot: string): RecordsFieldKind | undefined => {
+  for (const [kind, slots] of Object.entries(RECORDS_SLOT_FAMILIES)) {
+    if ((slots as readonly string[]).includes(slot)) return kind as RecordsFieldKind;
+  }
+  return undefined;
+};

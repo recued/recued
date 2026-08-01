@@ -114,9 +114,9 @@ export interface IntakeFormTemplateCollectedFields {
   field_labels: ReadonlyArray<IntakeFormTemplateFieldLabel>;
 }
 
-/** One-lined anti-spam defaults the template ships. Templates carry the
- *  four substrate-baseline knobs only (P11 — never a domain allowlist;
- *  that is a per-deployment decision). */
+/** One-lined summary of the anti-spam protections the substrate actually
+ *  enforces. Reserved PoW / CAPTCHA contract flags remain available for
+ *  template compatibility but are deliberately not advertised here. */
 export interface IntakeFormTemplateAntiSpamSummary {
   honeypot_field_count: number;
   /** Per-IP submission ceiling (per hour — the `intake_form` rate-limit
@@ -197,8 +197,6 @@ const buildAntiSpamSummary = (
       `${honeypot_field_count} honeypot field${honeypot_field_count === 1 ? '' : 's'}`,
     );
   }
-  if (spam.require_proof_of_work) parts.push('proof-of-work challenge');
-  if (spam.require_captcha) parts.push('CAPTCHA');
   return {
     honeypot_field_count,
     rate_limit_per_ip: spam.rate_limit_per_ip,

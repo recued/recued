@@ -62,6 +62,8 @@ export interface TextInputProps {
   readonly?: boolean;
   spellcheck?: boolean;
   ariaLabel?: string;
+  ariaInvalid?: boolean;
+  ariaErrormessage?: string;
   /** Numeric-input minimum. */
   min?: number;
   /** Numeric-input maximum. */
@@ -83,6 +85,10 @@ export const textInput = (props: TextInputProps): string => {
   if (props.readonly) attrs.push('readonly');
   if (props.spellcheck === false) attrs.push('spellcheck="false"');
   if (props.ariaLabel) attrs.push(`aria-label="${e(props.ariaLabel)}"`);
+  if (props.ariaInvalid) attrs.push('aria-invalid="true"');
+  if (props.ariaErrormessage) {
+    attrs.push(`aria-errormessage="${e(props.ariaErrormessage)}"`);
+  }
   if (props.min !== undefined) attrs.push(`min="${props.min}"`);
   if (props.max !== undefined) attrs.push(`max="${props.max}"`);
   if (props.data) {

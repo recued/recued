@@ -172,6 +172,14 @@ export interface CalendarStack {
  *  through to this builder; tests with no network inject
  *  in-memory doubles or skip the optional entries entirely. */
 export interface CalendarAdapterBundle {
+  /** LAZY accessor for the shared `CollectionRegistry`.
+   *
+   *  ⚠ Lazy because the registry is constructed AFTER this stack in the boot
+   *  composer. Same defect as mail had: a calendar enrolled AFTER boot went live
+   *  in this stack's own map but was never added to the SHARED registry (done
+   *  once, in `startCollectionAdapters`), so `collection.*` reads answered
+   *  `COLLECTION_NOT_FOUND` until restart. */
+  getCollectionRegistry?: () => CollectionRegistry | undefined;
   /** Factory list. Registered in order; the caller can reuse this
    *  point to inject stubbed factories from tests. */
   factories: CalendarAdapterFactory[];
@@ -280,6 +288,17 @@ export const composeCalendarStack = (
     }
 
     live.set(row.slug, collection);
+    // Register with the SHARED registry as soon as it goes live — see the bundle
+    // field's note. Guarded: `register` throws on duplicates and both `startAll`
+    // and the boot sweep can reach the same slug.
+    try {
+      const shared = bundle.getCollectionRegistry?.();
+      if (shared && !shared.get('calendar', row.slug)) shared.register(collection);
+    } catch (err) {
+      log('warn', `calendar-stack: registry register failed for '${row.slug}'`, {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    }
 
     if (syncDeferredWhileLocked(bundle.isVaultUnlocked)) {
       // Vault LOCKED → defer the poll loop. The collection stays live (its
@@ -305,6 +324,11 @@ export const composeCalendarStack = (
     const collection = live.get(slug);
     if (!collection) return;
     live.delete(slug);
+    // Drop it from the shared registry too — `register` throws on duplicates and
+    // there is no other way out, so a stale entry makes delete → re-enroll serve
+    // the CLOSED collection.
+    try { bundle.getCollectionRegistry?.()?.unregister('calendar', slug); }
+    catch { /* registry teardown races drain; never block a stop */ }
     try {
       await collection.close();
     } catch (err) {

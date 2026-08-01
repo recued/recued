@@ -49,6 +49,17 @@ export {
 export { renderFileArtifactBlock } from './file-artifact.js';
 export { renderLinkButtonBlock } from './link-button.js';
 export { renderJsonBlock } from './json.js';
+export {
+  renderFilterBlock,
+  FILTER_BLOCK_ATTR,
+  FILTER_SUBMIT_ATTR,
+  FILTER_PAGE_ATTR,
+} from './filter.js';
+export {
+  renderRecordFieldsBlock,
+  RECORD_FIELDS_BLOCK_ATTR,
+  RECORD_FIELDS_ROW_ATTR,
+} from './record-fields.js';
 export type {
   SectionKind,
   RenderAudience,
@@ -62,6 +73,7 @@ export type {
 import { renderSummaryBlock } from './summary.js';
 import { renderChecklistBlock } from './checklist.js';
 import { renderTableBlock } from './table.js';
+import { isResolvedRecordColumnsDescriptor } from '@recued/contracts';
 import { renderAiAnalysisBlock } from './ai-analysis.js';
 import { renderTextBlock } from './text.js';
 import { renderCopyableBlock } from './copyable.js';
@@ -69,6 +81,8 @@ import { renderButtonBlock } from './action.js';
 import { renderFileArtifactBlock } from './file-artifact.js';
 import { renderLinkButtonBlock } from './link-button.js';
 import { renderJsonBlock } from './json.js';
+import { renderFilterBlock } from './filter.js';
+import { renderRecordFieldsBlock } from './record-fields.js';
 import { renderBlockError } from './block-error.js';
 import type { SectionKind } from './types.js';
 
@@ -78,6 +92,13 @@ export interface SectionBlock {
   kind: SectionKind | string;
   data: unknown;
   label?: string;
+  /** D-222 host-derived metadata for a resolved filter section. */
+  filter?: unknown;
+  /** Host-derived metadata for a resolved schema-bound field list. */
+  record_fields?: unknown;
+  /** Host-derived columns for a `table` that named an entity. Absent on a
+   *  hand-written table, which still carries its columns in `data`. */
+  record_columns?: unknown;
 }
 
 export const renderSection = (
@@ -90,7 +111,8 @@ export const renderSection = (
     // excluded on purpose: their labels live per-action inside the data, not on the section.
     case 'summary':     return renderSummaryBlock(block.data, block.label);
     case 'checklist':   return renderChecklistBlock(block.data, block.label);
-    case 'table':       return renderTableBlock(block.data, block.label);
+    case 'table':       return renderTableBlock(block.data, block.label,
+      isResolvedRecordColumnsDescriptor(block.record_columns) ? block.record_columns : undefined);
     case 'ai_analysis': return renderAiAnalysisBlock(block.data, block.label);
     case 'text':        return renderTextBlock(block.data, block.label);
     case 'copyable':    return renderCopyableBlock(block.data, block.label, context);
@@ -98,6 +120,9 @@ export const renderSection = (
     case 'file_artifact': return renderFileArtifactBlock(block.data, context, block.label);
     case 'link_button': return renderLinkButtonBlock(block.data);
     case 'json':        return renderJsonBlock(block.data, block.label);
+    case 'filter':      return renderFilterBlock(block.filter, context, block.label);
+    case 'record_fields':
+      return renderRecordFieldsBlock(block.record_fields, context, block.label);
     default:            return renderBlockError(String(block.kind), 'unsupported section type');
   }
 };

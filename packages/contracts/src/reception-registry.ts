@@ -23,6 +23,7 @@ import type {
 // result shape (erased at compile time, so no runtime import cycle —
 // `intake-form-template.ts` value-imports `intake-form-config.ts` only).
 import type { IntakeFormTemplate } from './intake-form-template.js';
+import type { FormResponseTriggerFormScope } from './recipe-form-fields.js';
 // D-151 — type-only import for the non-intake config templates carried
 // alongside on the same `reception.template.list` result (likewise
 // erased at compile time).
@@ -228,6 +229,28 @@ export interface ReceptionEndpointPreviewResult {
    *  a real visitor access); optional on the type only so pre-P12 test
    *  fixtures that construct the result literal still compile. */
   readonly view_as_visitor?: ViewAsVisitorPanel;
+  /** D-220 Slice A2c — what publishing THIS form shape would do to recipes
+   *  already armed on its `form_definition_id`, surfaced while the owner is
+   *  still editing rather than at the create refusal.
+   *
+   *  ⚠ ADVISORY, and the field name says so. `reception.endpoint.create` is the
+   *  gate: it refuses a `this_form`-scoped required-field breakage and a live
+   *  duplicate id. This carries the SAME findings one step earlier so the owner
+   *  can fix the form before submitting, and it additionally reports the cases
+   *  create deliberately does NOT refuse — an `all_forms` trigger (one recipe
+   *  must not veto every future form) and a `this_form_filtered` one (it may
+   *  never fire here, so a refusal would be guessing).
+   *
+   *  Optional on the type: absent for every non-`intake_form` kind, and for
+   *  pre-A2c fixtures that construct the result literal. */
+  readonly form_contract_advisories?: ReadonlyArray<{
+    readonly recipe_id: string;
+    readonly scope: FormResponseTriggerFormScope;
+    /** True when `reception.endpoint.create` WILL refuse this — the owner is
+     *  looking at a blocker, not a note. */
+    readonly blocks_create: boolean;
+    readonly mismatches: ReadonlyArray<{ readonly code: string; readonly field_name: string }>;
+  }>;
 }
 
 export interface ReceptionEndpointCreateInput {

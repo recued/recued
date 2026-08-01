@@ -20,6 +20,9 @@ import type { RefPickerRenderConfig, RefPickerState } from './types.js';
 export const refPickerShellAttr = (pickerId: string): string =>
   `data-ref-picker="${e(pickerId)}"`;
 
+/** Deliberately says what was SEARCHED, not just that more exist — the user
+ *  needs to know their query was answered against a subset. */
+const DEFAULT_TRUNCATED = 'Only the first page was searched — narrow the query if you expected more.';
 const DEFAULT_EMPTY = 'No matches.';
 const DEFAULT_LOADING = 'Searching…';
 
@@ -51,22 +54,23 @@ export const renderRefPicker = (
   // Always present; `wire.ts` toggles its `hidden` so a commit/clear is a
   // pure attribute flip (no structural repaint of the field row).
   const clearHidden = state.selectedId === null ? ' hidden' : '';
-  const clearButton = `<button type="button" class="ref-picker-clear" ${REF_PICKER_CLEAR_ATTR} aria-label="Clear selection" tabindex="-1"${clearHidden}>×</button>`;
+  const clearButton = `<button type="button" class="ref-picker-clear" ${REF_PICKER_CLEAR_ATTR} aria-label="Clear selection"${clearHidden}>×</button>`;
   const activeDescendant =
     state.open && state.activeIndex >= 0
       ? ` aria-activedescendant="${e(refPickerOptionDomId(pickerId, state.activeIndex))}"`
       : '';
-  const ariaLabel =
-    config.ariaLabel !== undefined ? ` aria-label="${e(config.ariaLabel)}"` : '';
+  const ariaLabel = config.ariaLabel ?? config.placeholder ?? 'Choose a reference';
+  const busy = state.loading ? 'true' : 'false';
   return [
-    `<div class="ref-picker" ${refPickerShellAttr(pickerId)} role="combobox"`,
-    ` aria-haspopup="listbox" aria-expanded="${expanded}">`,
+    `<div class="ref-picker" ${refPickerShellAttr(pickerId)}>`,
     hidden,
     `<div class="ref-picker-field">`,
     `<input class="ref-picker-input" ${REF_PICKER_INPUT_ATTR} type="text"`,
     ` value="${e(state.query)}" placeholder="${e(placeholder)}"`,
-    ` autocomplete="off" spellcheck="false" aria-autocomplete="list"`,
-    ` aria-controls="${e(listId(pickerId))}"${ariaLabel}${activeDescendant} />`,
+    ` autocomplete="off" spellcheck="false" role="combobox"`,
+    ` aria-haspopup="listbox" aria-expanded="${expanded}" aria-busy="${busy}"`,
+    ` aria-autocomplete="list" aria-controls="${e(listId(pickerId))}"`,
+    ` aria-label="${e(ariaLabel)}"${activeDescendant} />`,
     clearButton,
     `</div>`,
     renderRefPickerResults(state, config),
@@ -84,7 +88,7 @@ export const renderRefPickerResults = (
   const body = state.open ? renderRefPickerResultRows(state, config) : '';
   return [
     `<ul class="ref-picker-results" ${REF_PICKER_RESULTS_ATTR}`,
-    ` id="${e(listId(pickerId))}" role="listbox"${hiddenAttr}>`,
+    ` id="${e(listId(pickerId))}" role="listbox" aria-busy="${state.loading ? 'true' : 'false'}"${hiddenAttr}>`,
     body,
     `</ul>`,
   ].join('');
@@ -98,34 +102,53 @@ export const renderRefPickerResultRows = (
   config: RefPickerRenderConfig,
 ): string => {
   if (state.loading) {
-    return `<li class="ref-picker-status" aria-disabled="true">${e(config.loadingText ?? DEFAULT_LOADING)}</li>`;
+    return statusRow(config.loadingText ?? DEFAULT_LOADING);
   }
   if (state.error !== null) {
-    return `<li class="ref-picker-status ref-picker-status--error" aria-disabled="true">${e(state.error)}</li>`;
+    return statusRow(state.error, ' ref-picker-status--error', 'alert');
   }
+  // ⛔ The truncation note rides the EMPTY branch too — that is the case it
+  // exists for. "No matches" over a capped read is the reading that misleads.
+  const truncatedRow = state.truncated
+    ? statusRow(config.truncatedText ?? DEFAULT_TRUNCATED, ' ref-picker-status--truncated')
+    : '';
   if (state.options.length === 0) {
-    return `<li class="ref-picker-status" aria-disabled="true">${e(config.emptyText ?? DEFAULT_EMPTY)}</li>`;
+    return statusRow(config.emptyText ?? DEFAULT_EMPTY)
+      + truncatedRow;
   }
   return state.options
     .map((option, index) => {
       const active = index === state.activeIndex;
       const activeClass = active ? ' ref-picker-option--active' : '';
+      const selected = option.id === state.selectedId;
+      const selectedClass = selected ? ' ref-picker-option--selected' : '';
       const sublabel =
         option.sublabel !== undefined && option.sublabel !== ''
           ? `<span class="ref-picker-option-sub">${e(option.sublabel)}</span>`
           : '';
       return [
-        `<li class="ref-picker-option${activeClass}" role="option"`,
+        `<li class="ref-picker-option${activeClass}${selectedClass}" role="option"`,
         ` id="${e(refPickerOptionDomId(config.pickerId, index))}"`,
-        ` aria-selected="${active ? 'true' : 'false'}"`,
+        ` aria-selected="${selected ? 'true' : 'false'}"`,
         ` ${REF_PICKER_OPTION_INDEX_ATTR}="${index}">`,
         `<span class="ref-picker-option-label">${e(option.label)}</span>`,
         sublabel,
         `</li>`,
       ].join('');
     })
-    .join('');
+    .join('') + truncatedRow;
 };
+
+/** A listbox may contain options (or presentational wrappers), not arbitrary
+ * disabled list items. Keep status copy announced without pretending it is a
+ * selectable result. */
+const statusRow = (
+  text: string,
+  className = '',
+  role: 'status' | 'alert' = 'status',
+): string =>
+  `<li class="ref-picker-status${className}" role="presentation">`
+  + `<span role="${role}">${e(text)}</span></li>`;
 
 /** The hidden mirror — present only when the picker backs a form-renderer
  *  `ref` field, so `readFormValues` reads the committed id back unchanged

@@ -18,11 +18,14 @@ import type { ChatInboundTokenStore } from '../../storage/chat-inbound-token-sto
 import type { McpBodyVisibilityStore } from '../../storage/mcp-body-visibility-store.js';
 import type { WebhookConsumerStore } from '../../storage/webhook-consumer-store.js';
 import type { SellerInstallAudienceStore } from '../../ingredient-authoring/install-composition.js';
+import type { RecordsStore } from '../../records/store.js';
 
 export interface ComposePackUninstallRpcDepsInput {
   /** Per-pair recipe store. Absent → composer returns the
    *  undefined-bundle + caller drops the `packUninstallDeps` spread. */
   recipeStore: RecipeStore | undefined;
+  /** D-221 full-ref Records lifecycle store. */
+  recordsStore?: RecordsStore;
   /** D-201 Slice 4 — binding/trigger teardown store. */
   webhookConsumerStore?: WebhookConsumerStore;
   /** D-139 P6.B — MCP body-content visibility grant store. Optional —
@@ -74,6 +77,7 @@ export const composePackUninstallRpcDeps = (
 ): PackUninstallRpcBundle => {
   const {
     recipeStore,
+    recordsStore,
     webhookConsumerStore,
     mcpBodyVisibilityStore,
     contractStore,
@@ -90,6 +94,7 @@ export const composePackUninstallRpcDeps = (
 
   const packUninstallDeps: PackUninstallRpcDeps = {
     recipeStore,
+    ...(recordsStore ? { recordsStore } : {}),
     ...(webhookConsumerStore ? { webhookConsumerStore } : {}),
     ...(mcpBodyVisibilityStore ? { mcpBodyVisibilityStore } : {}),
     ...(contractStore ? { contractStore } : {}),

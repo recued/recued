@@ -605,6 +605,59 @@ afterEach(() => {
 });
 
 describe('prepare', () => {
+  it('threads connection-config scope into a targeted write and fails before dispatch when unset', () => {
+    const declaration = taskDeclaration({
+      op_arg_bindings: {
+        update: {
+          project_ref: { source: 'connection_config', config_key: 'project_ref' },
+        },
+      },
+    });
+    const prepared = prepareUpdate(
+      makeExecutor({ declaration, connection_config: { project_ref: 'project-42' } }).executor,
+      { title: 'Scoped update' },
+    );
+    expect(prepared.writeOp.configArgs).toEqual({ project_ref: 'project-42' });
+
+    expect(makeExecutor({ declaration, connection_config: {} }).executor.prepare({
+      source_id: SOURCE_ID,
+      kind: 'task',
+      operation: 'update',
+      patch: { title: 'Must not dispatch' },
+    })).toMatchObject({
+      ok: false,
+      kind: 'config',
+      reason: expect.stringContaining("connection config 'project_ref', which is unset"),
+    });
+  });
+
+  it('config-fails when a targeted-write scope arg collides with the narrow patch', () => {
+    const declaration = taskDeclaration({
+      op_arg_bindings: {
+        update: {
+          'body.properties.hs_task_subject': {
+            source: 'connection_config',
+            config_key: 'project_ref',
+          },
+        },
+      },
+    });
+
+    expect(makeExecutor({
+      declaration,
+      connection_config: { project_ref: 'project-42' },
+    }).executor.prepare({
+      source_id: SOURCE_ID,
+      kind: 'task',
+      operation: 'update',
+      patch: { title: 'Must not become a local-only edit' },
+    })).toMatchObject({
+      ok: false,
+      kind: 'config',
+      reason: expect.stringContaining("collides with patch argument 'body.properties.hs_task_subject'"),
+    });
+  });
+
   it('config-fails structural non-writeable cases and treats non-pushable updates as local-only', () => {
     const { executor } = makeExecutor();
 

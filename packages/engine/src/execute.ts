@@ -1,6 +1,21 @@
-import { isPreflightRequiredSignal, recipeOutputSections, resolveValue } from '@recued/contracts';
+import {
+  isPreflightRequiredSignal,
+  recipeOutputSections,
+  resolveRecordFields,
+  resolveRecordColumns,
+  resolveValue,
+} from '@recued/contracts';
 import { hashRecipe, parseRecipe, type ValidationIssue } from '@recued/recipes';
-import type { OutputSection, RecipeStep } from '@recued/contracts';
+import type {
+  FilterOutputSection,
+  OutputSection,
+  RecipeStep,
+  ResolvedFilterDescriptor,
+  ResolvedRecordColumnsDescriptor,
+  TableEditSpec,
+  ResolvedOutputSection,
+  VariableDefault,
+} from '@recued/contracts';
 import { estimateSize, type CacheEntry } from '@recued/cache';
 import { createPiiLedgerStore } from '@recued/transforms';
 import type { ExecutionContext, ExecutionResult, StepLog, ProgressEvent } from './types.js';
@@ -24,7 +39,7 @@ const NEXT_RUN_AT_STEP_ID = 'next_run_at';
 const emptyOutput = (): ExecutionResult['output'] => ({ render: [], sidebar: [] });
 
 const renderOutput = (
-  sections: ({ type: string; data: unknown } & Record<string, unknown>)[],
+  sections: ResolvedOutputSection[],
 ): ExecutionResult['output'] => ({
   render: sections,
   sidebar: sections,
@@ -477,6 +492,12 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
             ...(e.open_projection_preview !== undefined
               ? { open_projection_preview: e.open_projection_preview }
               : {}),
+            // D-217 § 6.1 — forward the amplification bound so the ask body can
+            // state what ONE approval actually buys. Absent on every
+            // single-request hold.
+            ...(e.egress_bound !== undefined
+              ? { egress_bound: e.egress_bound }
+              : {}),
             // D-202 Slice 1b — forward the quality-relevance marker so the host
             // persists it onto `Checkpoint.quality_relevant` and the answer-path
             // resumer records the owner's reject-driven quality signal. Absent on
@@ -524,7 +545,14 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
         );
       }
       if (allSourcesReady) {
-        fireProgress(ctx, { type: 'render_ready', render: resolveOutputRender(renderSections, ctx.stores, ctx.piiLedgerStore) });
+        fireProgress(ctx, {
+          type: 'render_ready',
+          render: resolveOutputRender(
+            renderSections,
+            ctx,
+            ctx.outputRecipeHash ?? recipe_hash,
+          ),
+        });
       }
     }
 
@@ -535,7 +563,11 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
   }
 
   // Resolve output (final, authoritative render data)
-  const render = resolveOutputRender(renderSections, ctx.stores, ctx.piiLedgerStore);
+  const render = resolveOutputRender(
+    renderSections,
+    ctx,
+    ctx.outputRecipeHash ?? recipe_hash,
+  );
 
   // Final focus signal: recipe is done (success or error — either way,
   // nothing is "in focus" anymore).
@@ -561,11 +593,12 @@ const executeRecipeInner = async (ctx: ExecutionContext): Promise<ExecutionResul
 
   // D-120 Phase 4.5 — emit the snapshot the next run should see.
   // Only on success: a partial run shouldn't poison `context.recipe.*`
-  // with mid-execution outputs. Reactive (`auto_run`) hosts buffer
-  // this in memory and only commit at `ProcessRetireReason`; cron +
-  // manual hosts persist immediately. The engine doesn't know the
-  // host's policy — it just emits the snapshot every time and lets
-  // the host choose.
+  // with mid-execution outputs. The engine doesn't know the trigger
+  // source, so it emits every time and lets the host choose; the server
+  // host persists on cron + manual and DROPS it for `auto_run`.
+  // Reactive continuity is a paired recipe with a convergent write, not
+  // an engine snapshot (closed 2026-07-27) —
+  // internal design notes.
   if (result.success && ctx.onContextRecipeSnapshot) {
     try {
       const snapshotResult = snapshotContextRecipe(recipe, ctx.stores);
@@ -763,23 +796,273 @@ export const extractDefault = (val: unknown): unknown => {
  *  on aliased data (a notify / durable-write step) is deliberately NOT covered
  *  here — that is the `missing_pii_restore` validator warning's remaining job. */
 const resolveOutputRender = (
-  sections: { type: string; source: string; label?: string }[],
-  stores: ExecutionContext['stores'],
-  piiStore?: ExecutionContext['piiLedgerStore'],
-) =>
-  sections.map(section => {
-    const data = resolveValue(`{{step.${section.source.replace('step.', '')}}}`, stores);
+  sections: OutputSection[],
+  ctx: ExecutionContext,
+  outputRecipeHash: string,
+): ResolvedOutputSection[] =>
+  sections.map((section, sectionIndex) => {
+    const data = resolveValue(
+      `{{step.${section.source.replace('step.', '')}}}`,
+      ctx.stores,
+    );
+    const restored = ctx.piiLedgerStore
+      ? ctx.piiLedgerStore.restoreAll(data)
+      : data;
+    const filter = section.type === 'filter'
+      ? resolveFilterDescriptor(
+          section,
+          sectionIndex,
+          requireRecipe(ctx).variables,
+          ctx.stores.config as Record<string, unknown>,
+          restored,
+          outputRecipeHash,
+        )
+      : undefined;
+    const record_fields = section.type === 'record_fields'
+      ? resolveRecordFields(
+          section.entity,
+          ctx.entityFields?.(section.entity) ?? null,
+          restored,
+          section.fields,
+        )
+      : undefined;
+    // A `table` resolves COLUMNS only when it names an entity. Without one it
+    // is the hand-written table it always was and this stays absent, so every
+    // shipped table renders through the path it already used.
+    const record_columns = section.type === 'table' && typeof section.entity === 'string'
+      ? resolveRecordColumns(
+          section.entity,
+          ctx.entityFields?.(section.entity) ?? null,
+          section.fields,
+        )
+      : undefined;
+    // The editable grid. Its editable set is the DERIVED columns minus the
+    // identity one — an `id` is what the row IS, and letting it be typed would
+    // make a correction indistinguishable from a re-parent.
+    // ⛔ An entity is a CONVENIENCE here, not a requirement. The grid collects
+    // values; the recipe that receives them decides what they mean, and its
+    // rows need not be one entity's shape — a collection sheet's row is a JOIN
+    // plus a blank column for a human, which is exactly what someone wants to
+    // type into. Requiring an entity forced that case to be reshaped into
+    // "seed blank child records" to fit.
+    //
+    // With an entity the schema names the typeable set (minus the identity);
+    // without one the author names it outright. Either way ONLY named columns
+    // are typeable, which is the property that matters.
+    const table_edit = section.type === 'table' && section.edit !== undefined
+      ? {
+          section_index: sectionIndex,
+          recipe_hash: outputRecipeHash,
+          into: section.edit.into,
+          submit: section.edit.submit,
+          rows: section.edit.rows ?? 'add_remove',
+          // Presentation only — narrowing what a ref picker OFFERS, never what
+          // the write admits.
+          //
+          // ⛔ RESOLVED AGAINST CONFIG, because the useful scope is per-RUN.
+          // "Which tree is this grid for" is a choice the owner makes at the
+          // form, so `{ root_ref: '{{config.tree}}' }` has to become the tree
+          // they picked. Authored-static only would serve a pack with a fixed
+          // set of dimensions and no other — and tags are DATA.
+          ...(section.edit.scopes === undefined ? {} : {
+            scopes: resolveTableEditScopes(
+              section.edit.scopes, ctx.stores.config as Record<string, unknown>),
+          }),
+          ...resolveTableEditColumns(section.edit, record_columns),
+          hidden: resolveTableEditHidden(
+            section.edit,
+            requireRecipe(ctx).variables,
+            ctx.stores.config as Record<string, unknown>,
+          ),
+        }
+      : undefined;
     return {
       type: section.type,
-      data: piiStore ? piiStore.restoreAll(data) : data,
+      data: restored,
       ...(section.label ? { label: section.label } : {}),
+      ...(filter !== undefined ? { filter } : {}),
+      ...(record_fields !== undefined ? { record_fields } : {}),
+      ...(record_columns !== undefined ? { record_columns } : {}),
+      ...(table_edit !== undefined ? { table_edit } : {}),
     };
   });
+
+
+/** Split an editable grid's shown columns into the two sets a submission needs:
+ *  what the owner may TYPE, and what rides along unchanged.
+ *
+ *  ⛔ Carry is every shown column that is not editable — computed from the
+ *  editable set itself, not from `edit.columns`. When an author omits
+ *  `edit.columns` the whole non-identity set is typeable and the IDENTITY is
+ *  exactly what is left; deriving carry from the authored list instead would
+ *  make that case submit rows that cannot say what they are. */
+const resolveTableEditColumns = (
+  edit: TableEditSpec,
+  columns: ResolvedRecordColumnsDescriptor | undefined,
+): { editable: string[]; carry: string[] } => {
+  if (columns === undefined) {
+    // No entity: the host does not know the shown columns, so nothing can be
+    // carried. The author named the typeable set outright.
+    return { editable: [...(edit.columns ?? [])], carry: [] };
+  }
+  const editable: string[] = [];
+  const carry: string[] = [];
+  for (const column of columns.columns) {
+    // An `id` is never typeable: it is what the row IS, and editing it would
+    // make a correction indistinguishable from a re-parent.
+    const typeable = column.kind !== 'id'
+      && (edit.columns === undefined || edit.columns.includes(column.field));
+    (typeable ? editable : carry).push(column.field);
+  }
+  return { editable, carry };
+};
+
+/** Effective values for an editable grid's `hidden` variables.
+ *
+ *  Mirrors `resolveFilterDescriptor`'s discipline deliberately: only DECLARED
+ *  variables, values cloned from host state rather than echoed from a client,
+ *  and a key with no effective value omitted rather than sent as undefined.
+ *  Two copies of that rule could disagree, and the disagreement would be a
+ *  submission carrying a value the recipe never declared. */
+/** Substitute `{{config.X}}` in a picker scope with the run's effective value.
+ *
+ *  ⚠ CONFIG ONLY. Literal prefixes/suffixes are supported because record ids
+ *  and stored refs intentionally differ (`department` vs `tag/department`),
+ *  and a scope filters the STORED field. This is still deliberately tiny: only
+ *  config placeholders inside a string, no step/context access or expressions.
+ *  A value with no placeholder stays authored-static. */
+const resolveTableEditScopes = (
+  scopes: Readonly<Record<string, Readonly<Record<string, string>>>>,
+  config: Record<string, unknown>,
+): Record<string, Record<string, string>> => {
+  const out: Record<string, Record<string, string>> = {};
+  for (const [column, filter] of Object.entries(scopes)) {
+    const resolved: Record<string, string> = {};
+    for (const [field, value] of Object.entries(filter)) {
+      let matched = false;
+      let unresolved = false;
+      const next = value.replace(
+        /\{\{\s*config\.([A-Za-z_][\w]*)\s*\}\}/g,
+        (_whole, key: string) => {
+          matched = true;
+          const from = hasOwnSafe(config, key) ? config[key] : undefined;
+          if (
+            (typeof from !== 'string' && typeof from !== 'number' && typeof from !== 'boolean')
+            || String(from).length === 0
+          ) {
+            unresolved = true;
+            return '';
+          }
+          return String(from);
+        },
+      );
+      // ⛔ An unresolved ref is DROPPED, never passed through as `{{config.x}}`.
+      // A literal template compared against a stored field matches nothing, and
+      // a picker that offers nothing reads as "there are none" rather than as a
+      // wiring mistake.
+      if (!unresolved && next.length > 0) resolved[field] = matched ? next : value;
+    }
+    if (Object.keys(resolved).length > 0) out[column] = resolved;
+  }
+  return out;
+};
+
+const resolveTableEditHidden = (
+  edit: TableEditSpec,
+  variables: Record<string, VariableDefault>,
+  config: Record<string, unknown>,
+): Record<string, unknown> => {
+  const values: Record<string, unknown> = {};
+  for (const key of edit.hidden ?? []) {
+    // ⛔ Undeclared keys are dropped here AND refused at install by the
+    // validator. The server admits only declared ones, so passing one through
+    // would build a submission the server then rejects wholesale — the grid
+    // would look broken rather than the recipe.
+    if (!hasOwnSafe(variables, key)) continue;
+    if (!hasOwnSafe(config, key) || config[key] === undefined) continue;
+    values[key] = cloneDescriptorValue(config[key]);
+  }
+  return values;
+};
+
+const cloneDescriptorValue = <T>(value: T): T => structuredClone(value);
+
+/** D-222 — derive the transport descriptor exclusively from the executed
+ *  recipe snapshot and effective config. The client supplies none of these
+ *  members. Hidden values never transit a DOM string: their JSON type is
+ *  cloned directly from host state, with undefined omitted and null retained. */
+const resolveFilterDescriptor = (
+  section: FilterOutputSection,
+  sectionIndex: number,
+  variables: Record<string, VariableDefault>,
+  config: Record<string, unknown>,
+  source: unknown,
+  recipeHash: string,
+): ResolvedFilterDescriptor | undefined => {
+  const listed = [...section.fields, ...section.hidden];
+  const definitions: Record<string, VariableDefault> = {};
+  const values: Record<string, unknown> = {};
+  for (const key of listed) {
+    if (!hasOwnSafe(variables, key)) continue;
+    definitions[key] = cloneDescriptorValue(variables[key]!);
+    if (!hasOwnSafe(config, key) || config[key] === undefined) continue;
+    values[key] = cloneDescriptorValue(config[key]);
+  }
+
+  let paging: ResolvedFilterDescriptor['paging'];
+  const cursorDef = variables.cursor;
+  if (
+    section.hidden.includes('cursor')
+    && cursorDef !== undefined
+    && extractDefault(cursorDef) === ''
+    && source !== null
+    && typeof source === 'object'
+    && !Array.isArray(source)
+  ) {
+    const sourceRecord = source as Record<string, unknown>;
+    const next = sourceRecord.next_cursor;
+    const prev = sourceRecord.prev_cursor;
+    // A present malformed cursor invalidates the resolved filter descriptor.
+    // The host then renders its existing invalid-descriptor error instead of
+    // silently hiding pagination or coercing an authority-bearing token.
+    //
+    // `null` is NOT malformed — it is JSON's way of saying "no value", and it
+    // is what a real API returns on the LAST page: Cal.com's `/v2/bookings`
+    // sends `pagination.nextCursor: null` there (verified live). Treating it as
+    // malformed deleted the entire filter block — every control, not just the
+    // Next button — on the last page of any vendor-backed list, which is the
+    // page you only reach once paging already works. It also forced every such
+    // recipe to carry a ternary between two object shapes purely to turn a null
+    // into an absent key.
+    //
+    // A number, boolean, or object still invalidates: those are a token being
+    // coerced, which is what the guard was written for.
+    const nextAbsent = next === undefined || next === null;
+    const prevAbsent = prev === undefined || prev === null;
+    if ((!nextAbsent && typeof next !== 'string')
+        || (!prevAbsent && typeof prev !== 'string')) return undefined;
+    const candidate: NonNullable<ResolvedFilterDescriptor['paging']> = {};
+    if (typeof next === 'string') candidate.next_cursor = next;
+    if (typeof prev === 'string') candidate.prev_cursor = prev;
+    if (Object.keys(candidate).length > 0) paging = candidate;
+  }
+
+  return {
+    section_index: sectionIndex,
+    recipe_hash: recipeHash,
+    fields: [...section.fields],
+    hidden: [...section.hidden],
+    submit: section.submit,
+    definitions,
+    values,
+    ...(paging !== undefined ? { paging } : {}),
+  };
+};
 
 const buildResult = (
   ctx: ExecutionContext, recipe_hash: string, success: boolean, steps: StepLog[],
   errors: ExecutionResult['errors'], start: number,
-  render?: { type: string; data: unknown }[],
+  render?: ResolvedOutputSection[],
 ): ExecutionResult => ({
   recipe_id: requireRecipe(ctx).recipe_id,
   recipe_hash,

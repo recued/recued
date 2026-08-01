@@ -173,9 +173,34 @@ export interface TimelineEntry {
  *  present iff the merge identified at least one entry strictly
  *  beyond the page boundary — callers should keep paginating until
  *  it goes undefined. */
+/** D-226 — one installed pack's standing answer about this identity.
+ *
+ *  ⛔ NOT a timeline ENTRY, deliberately. The feed is ordered by
+ *  `COALESCE(event_at, ts)` and every entry is something that HAPPENED. A
+ *  rollup is a standing aggregate computed at read time; it has no event
+ *  time, and stamping it `now` would make it permanently the newest thing in
+ *  the feed while claiming a moment it did not occur at. So it rides ALONGSIDE
+ *  the chronology: "what happened, in order" and "what your packs say, as of
+ *  now" are two different questions about one identity. */
+export interface TimelineRollup {
+  publisher: string;
+  pack_slug: string;
+  label?: string;
+  value: Record<string, unknown>;
+  /** False when the pack's walk hit a bound. A rollup that under-reports
+   *  without saying so is the failure this whole path is built to avoid. */
+  complete: boolean;
+  incomplete_reason?: string;
+}
+
 export interface TimelineResponse {
   entries: TimelineEntry[];
   next_cursor?: string;
+  /** D-226 — present only when something declares onto this identity's root.
+   *  Absent (rather than `[]`) when the collection has no declared roots at
+   *  all, so a consumer can tell "no pack has anything to say about Bob" from
+   *  "a file has no rollup surface". */
+  rollups?: TimelineRollup[];
 }
 
 /** D-174 #22 — the Data warehouse-explorer mirror kinds a keyword search

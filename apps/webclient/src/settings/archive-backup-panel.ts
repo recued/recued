@@ -59,6 +59,7 @@
  *  with test affordances. */
 
 import { isValidRecoveryKey } from '@recued/crypto';
+import { formatClientDateTime } from '@recued/ui-shared';
 import type {
   ArchiveImportRebind,
   ArchiveJobStatus,
@@ -87,6 +88,8 @@ export const ARCHIVE_BACKUP_BLOBS_ATTR = 'data-recued-archive-backup-blobs';
 export const ARCHIVE_BACKUP_PASSPORT_ATTR =
   'data-recued-archive-backup-passport';
 export const ARCHIVE_BACKUP_RUN_BTN_ATTR = 'data-recued-archive-backup-run';
+export const ARCHIVE_BACKUP_RECHECK_BTN_ATTR =
+  'data-recued-archive-backup-recheck';
 export const ARCHIVE_BACKUP_PROGRESS_ATTR =
   'data-recued-archive-backup-progress';
 export const ARCHIVE_BACKUP_PATH_OUT_ATTR = 'data-recued-archive-backup-path';
@@ -305,6 +308,13 @@ export interface MountArchiveBackupPanelOptions {
   poll?: ArchivePollScheduler;
   /** Status poll interval (ms). Defaults to 1500. */
   pollIntervalMs?: number;
+  /** Boot-owned export start to reattach after an ordinary route change. The
+   * promise contains only the server job id; recovery-key material is never
+   * copied into continuity state. */
+  resumeExportStart?: () => Promise<{ job_id: string }> | null;
+  /** Release the boot-scoped work lease once the server reports a terminal
+   * outcome (including an expired/unknown job). */
+  onExportSettled?: (jobId?: string) => void;
 }
 
 export interface ArchiveBackupPanelMount {
@@ -437,6 +447,10 @@ const COPY = {
   key_mismatch:
     "That recovery key doesn't match this archive. Check your written copy and try again.",
   export_failed: 'The backup failed.',
+  export_recheck_cta: 'Check backup again',
+  export_resume_body:
+    'A backup still needs this server. Check that job before starting another backup or restore.',
+  export_resume_cta: 'Continue active backup',
   preview_failed: 'Could not read the backup.',
   restore_failed: 'The restore failed.',
   // M5 S3.0 — the backup's db schema is newer than this server understands.
@@ -695,9 +709,19 @@ export const mountArchiveBackupPanel = (
   const pollIntervalMs = opts.pollIntervalMs ?? 1500;
   const passportDownload =
     opts.passportDownload ?? defaultPassportDownload(doc);
+  const currentResumeExportStart = (): Promise<{ job_id: string }> | null => {
+    try {
+      return opts.resumeExportStart?.() ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const initialResumeExportStart = currentResumeExportStart();
 
   // ── State ──────────────────────────────────────────────────────
-  let view: ArchiveBackupView = 'menu';
+  let view: ArchiveBackupView = initialResumeExportStart === null
+    ? 'menu'
+    : 'export-running';
   let disposed = false;
   let resultLine: string | null = null;
   let resultTone: 'ok' | 'bad' | 'neutral' = 'neutral';
@@ -742,6 +766,14 @@ export const mountArchiveBackupPanel = (
     if (pollCancel) {
       pollCancel();
       pollCancel = null;
+    }
+  };
+
+  const notifyExportSettled = (): void => {
+    try {
+      opts.onExportSettled?.(exportJobId ?? undefined);
+    } catch {
+      /* continuity cleanup is best-effort and must not mask the job outcome */
     }
   };
 
@@ -893,6 +925,7 @@ export const mountArchiveBackupPanel = (
       if (isJobUnknownError(err)) {
         resultLine = COPY.export_expired;
         resultTone = 'neutral';
+        notifyExportSettled();
       } else {
         resultLine = `${COPY.export_failed} ${messageOf(err)}`;
         resultTone = 'bad';
@@ -909,6 +942,7 @@ export const mountArchiveBackupPanel = (
       exportPath = status.path ?? '';
       exportExpiresAt =
         typeof status.expires_at === 'number' ? status.expires_at : null;
+      notifyExportSettled();
       setView('export-done');
       return;
     }
@@ -917,6 +951,7 @@ export const mountArchiveBackupPanel = (
         ? `${COPY.export_failed} ${status.error}`
         : COPY.export_failed;
       resultTone = 'bad';
+      notifyExportSettled();
       setView('export-error');
       return;
     }
@@ -950,6 +985,7 @@ export const mountArchiveBackupPanel = (
       // The key has done its job — don't keep it in memory.
       exportMnemonic = '';
       if (disposed) return;
+      notifyExportSettled();
       resultLine = isWrongKeyError(err)
         ? COPY.key_mismatch
         : `${COPY.export_failed} ${messageOf(err)}`;
@@ -1218,6 +1254,23 @@ export const mountArchiveBackupPanel = (
     block.appendChild(makeBody(COPY.menu_body));
     const actions = doc.createElement('div');
     actions.className = 'archive-backup-actions';
+    if (exportJobId !== null && currentResumeExportStart() !== null) {
+      block.appendChild(makeBody(COPY.export_resume_body));
+      actions.appendChild(
+        makeButton(
+          COPY.export_resume_cta,
+          ARCHIVE_BACKUP_RECHECK_BTN_ATTR,
+          'primary',
+          () => {
+            clearResult();
+            setView('export-running');
+            void runPollCycle();
+          },
+        ),
+      );
+      block.appendChild(actions);
+      return;
+    }
     actions.appendChild(
       makeButton(
         COPY.backup_cta,
@@ -1519,9 +1572,12 @@ export const mountArchiveBackupPanel = (
       // it, so the wording stays as it was rather than claiming completeness
       // it cannot know.
       const uncounted = manifest.uncounted_tables ?? [];
+      const exportedAt = formatClientDateTime(manifest.exported_at, {
+        invalidText: manifest.exported_at,
+      });
       records.textContent = uncounted.length > 0
-        ? `at least ${manifest.record_count.toLocaleString()} records from ${manifest.exported_at}`
-        : `${manifest.record_count.toLocaleString()} records from ${manifest.exported_at}`;
+        ? `at least ${manifest.record_count.toLocaleString()} records from ${exportedAt}`
+        : `${manifest.record_count.toLocaleString()} records from ${exportedAt}`;
       summary.appendChild(records);
       if (uncounted.length > 0) {
         const note = doc.createElement('div');
@@ -1667,9 +1723,31 @@ export const mountArchiveBackupPanel = (
     if (result) block.appendChild(result);
     const actions = doc.createElement('div');
     actions.className = 'archive-backup-actions';
+    if (
+      view === 'export-error'
+      && exportJobId !== null
+      && currentResumeExportStart() !== null
+    ) {
+      actions.appendChild(
+        makeButton(
+          COPY.export_recheck_cta,
+          ARCHIVE_BACKUP_RECHECK_BTN_ATTR,
+          'primary',
+          () => {
+            clearResult();
+            setView('export-running');
+            void runPollCycle();
+          },
+        ),
+      );
+    }
     actions.appendChild(
       makeButton(COPY.back_cta, ARCHIVE_BACKUP_CANCEL_BTN_ATTR, 'secondary', () => {
-        resetFlowState();
+        const exportStillActive = view === 'export-error'
+          && exportJobId !== null
+          && currentResumeExportStart() !== null;
+        if (exportStillActive) clearResult();
+        else resetFlowState();
         setView('menu');
       }),
     );
@@ -1768,6 +1846,23 @@ export const mountArchiveBackupPanel = (
   };
 
   render();
+
+  if (initialResumeExportStart !== null) {
+    void initialResumeExportStart.then(
+      ({ job_id }) => {
+        if (disposed || view !== 'export-running') return;
+        exportJobId = job_id;
+        void runPollCycle();
+      },
+      (err: unknown) => {
+        if (disposed || view !== 'export-running') return;
+        notifyExportSettled();
+        resultLine = `${COPY.export_failed} ${messageOf(err)}`;
+        resultTone = 'bad';
+        setView('export-error');
+      },
+    );
+  }
 
   return {
     getView: () => view,

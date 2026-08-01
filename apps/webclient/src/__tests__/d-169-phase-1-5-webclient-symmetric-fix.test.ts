@@ -40,7 +40,10 @@ import {
   type PairPassportInvoker,
 } from '../auth/pair-passport-invoker.js';
 import { createInMemoryWebclientLocalStore } from '../storage/local-store.js';
-import type { WebclientLocalStore } from '../storage/local-store.js';
+import type {
+  WebclientLocalStore,
+  WebclientProfileStore,
+} from '../storage/local-store.js';
 import type {
   WebclientTokenAad,
   WebclientTokenStore,
@@ -157,6 +160,7 @@ const rejectGetFor = (
 const runFinalize = async (
   options: {
     localStore?: WebclientLocalStore;
+    profileStore?: Pick<WebclientProfileStore, 'ensureProfile'>;
     lockProvider?: PairFinalizeLockProvider | null;
     invokePassportFetch?: PairPassportInvoker;
   } = {},
@@ -170,6 +174,9 @@ const runFinalize = async (
     serverUrl: 'http://localhost:3001',
     bearer: 'realm-bearer-d169',
     localStore,
+    ...(options.profileStore !== undefined
+      ? { profileStore: options.profileStore }
+      : {}),
     tokenStore,
     invokePassportFetch,
     now: () => FIXED_NOW,
@@ -232,18 +239,32 @@ afterEach(() => {
 // ════════════════════════════════════════════════════════════════
 
 describe('D-169 pair-code-success — write order and entrance guard', () => {
-  it('writes pair_metadata → cert_pin_state → server_url → server_public_key → webclient_token', async () => {
+  it('writes ensureProfile → clear stale token → pair_metadata → cert_pin_state → server_public_key → webclient_token', async () => {
+    const store = createInMemoryWebclientLocalStore();
+    const originalEnsureProfile = store.ensureProfile.bind(store);
+    const originalRemove = store.remove.bind(store);
     const { localStore, setOrder } = recordSetOrder(
-      createInMemoryWebclientLocalStore(),
+      store,
     );
+    localStore.remove = async (key): Promise<void> => {
+      setOrder.push(`remove:${key}`);
+      await originalRemove(key);
+    };
+    const profileStore = {
+      ensureProfile: async (serverUrl: string): Promise<string> => {
+        setOrder.push('ensureProfile');
+        return originalEnsureProfile(serverUrl);
+      },
+    };
 
-    const { result } = await runFinalize({ localStore });
+    const { result } = await runFinalize({ localStore, profileStore });
 
     expect(result.ok).toBe(true);
     expect(setOrder).toEqual([
+      'ensureProfile',
+      'remove:webclient_token',
       'pair_metadata',
       'cert_pin_state',
-      'server_url',
       'server_public_key',
       'webclient_token',
     ]);
@@ -794,14 +815,15 @@ describe('D-169 pair-code-input-host — lock and preflight integration', () => 
 });
 
 describe('D-169 pair-code-input-host — post-submit lifecycle', () => {
-  it('onPaired throw renders startup failure and skips onAfterPair', async () => {
+  it('onPaired throw retains a local-only retry and skips onAfterPair', async () => {
     const fake = makeFakeSplash();
     const onAfterPair = vi.fn();
+    const fetchFake = buildPairFetch();
     const handle = mountPairCodeInputHost({
       splashElement: fake.splash,
       lockProvider: makeLockRecorder().provider,
       preflightCheck: async () => ({ alreadyPaired: false }),
-      fetch: buildPairFetch(),
+      fetch: fetchFake,
       onPaired: async () => {
         throw new Error('bootstrap failed');
       },
@@ -812,11 +834,16 @@ describe('D-169 pair-code-input-host — post-submit lifecycle', () => {
     await handle.submit();
 
     expect(fake.getStatus()?.dataset.error).toBe(
-      'pair_code_input_server_unknown_error',
+      'pair_code_input_finalize_interrupted',
     );
-    expect(fake.getStatus()?.textContent).toBe(
-      'Paired, but startup failed: bootstrap failed',
+    expect(fake.getStatus()?.textContent).toContain(
+      'Saving access here was interrupted: bootstrap failed.',
     );
+    expect(fake.getStatus()?.textContent).toContain(
+      'without sending another pairing request',
+    );
+    expect(fake.getSubmitBtn()?.textContent).toBe('Finish saving access');
+    expect(fetchFake.calls).toHaveLength(1);
     expect(onAfterPair).not.toHaveBeenCalled();
   });
 

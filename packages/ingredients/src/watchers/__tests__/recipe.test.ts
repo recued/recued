@@ -40,6 +40,8 @@ const mkAuditLog = (entriesByRecipe: Record<string, AuditEntry[]>): AuditLogStor
     listByChannelSession: notUsed,
     listByCognitionSession: notUsed,
     listByCorrelation: notUsed,
+    listByDish: () => { throw new Error("unused"); },
+    latestByDishes: () => { throw new Error("unused"); },
     get: notUsed,
     clearOlderThan: notUsed,
     clearByRecipe: notUsed,

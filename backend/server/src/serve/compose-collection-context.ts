@@ -6,15 +6,15 @@ import type { AuditLogStore } from '@recued/storage';
 import type { WarehouseEventBus } from '@recued/warehouse-events';
 
 import type { ServerAccountStore } from '../account-store.js';
-import { GCAL_OAUTH_CONFIG } from '../collections/calendar/gcal-provider.js';
-import { GRAPH_CAL_OAUTH_CONFIG } from '../collections/calendar/graph-provider.js';
+import { GCAL_TOKEN_URL } from '../collections/calendar/gcal-provider.js';
+import { GRAPH_CAL_TOKEN_URL } from '../collections/calendar/graph-provider.js';
 import {
   registerCalendarCollections,
   type CalendarStack,
 } from '../collections/calendar/compose.js';
 import type { MailStack } from '../collections/mail/compose.js';
-import { GMAIL_OAUTH_CONFIG } from '../collections/mail/gmail-provider.js';
-import { GRAPH_OAUTH_CONFIG } from '../collections/mail/graph-provider.js';
+import { GMAIL_TOKEN_URL } from '../collections/mail/gmail-provider.js';
+import { GRAPH_TOKEN_URL } from '../collections/mail/graph-provider.js';
 import { registerMailCollections } from '../collections/mail/compose.js';
 import { createCollectionRegistry, type CollectionRegistry } from '../collections/registry.js';
 import type { AnnotationRpcDeps } from '../annotation-handler.js';
@@ -24,6 +24,10 @@ import {
   createInboundFileCollection,
   type InboundFileCollection,
 } from '../collections/file/inbound-file-collection.js';
+import {
+  createUploadStagingRegistry,
+  type UploadStagingRegistry,
+} from '../collections/file/upload-staging.js';
 import type { ServiceStack } from '../collections/service/compose.js';
 import { composeCalendarBoot } from '../composition/bin/wire-calendar-stack.js';
 import {
@@ -125,6 +129,13 @@ export interface CollectionContext extends ConnectionNotificationBundle {
   // `server.archive.import`. Needs db (shared upload_session store) + the data
   // dir; present on any db boot (independent of the CAS / file collection).
   archiveUploadService: ArchiveUploadService | undefined;
+  /** D-217 slice 2b-ii — staged plaintext for chunked EGRESS, addressed by
+   *  token. Read by two seams that must never hold the handle themselves: the
+   *  engine (`ExecutionContext.uploadStaging`, which stages + disposes) and the
+   *  `connection.api` adapter (`readUploadChunk`, one range per APPEND).
+   *  Present iff the CAS file collection is; absent ⇒ a chunked upload fails
+   *  closed. */
+  uploadStagingRegistry: UploadStagingRegistry | undefined;
   calendarStack: CalendarStack | undefined;
   mailStack: MailStack | undefined;
   serviceStack: ServiceStack | undefined;
@@ -226,6 +237,21 @@ export const composeCollectionContext = (
     });
   })();
 
+  // D-217 slice 2b-ii — the chunked-upload staging registry. Built HERE
+  // because this is the one place the three things it needs are already
+  // co-located: the CAS blob store (to decrypt from), the data dir (where the
+  // scratch file lands, and the same dir the boot sweep walks), and the file
+  // collection (to resolve a `file_ref` to its carrier). Present iff the file
+  // collection is — a boot with no CAS has no plaintext to stage, and a
+  // chunked upload there fails closed rather than sending an empty body.
+  const uploadStagingRegistry = (db && cacheBlobs && inboundFileCollection)
+    ? createUploadStagingRegistry({
+        blobs: cacheBlobs,
+        dataPath: dirname(dbPath),
+        files: inboundFileCollection,
+      })
+    : undefined;
+
   // M4 archive download — only needs the data dir (exports live in
   // `<dataPath>/exports/`, the same dir the archive runtime resolves from),
   // independent of the CAS / file collection the upload service requires. Gated
@@ -271,16 +297,21 @@ export const composeCollectionContext = (
       : undefined;
 
   /** THE per-use credential fetch (no boot binding, no cache). Returns the
-   *  effective `{ clientId, clientSecret, tokenUrl }` for a provider: stored
-   *  issuer credentials (all-or-nothing per issuer) win; otherwise the env app
-   *  (only when it has a client_id); else `null`. The env const's fixed
-   *  `tokenUrl` is always reused. Touches the secret (decrypts — may throw on a
-   *  locked server), so it's called only at the moment of use (enroll/refresh),
-   *  when the vault is unlocked. The client_id-only authorize read below does
-   *  NOT use this (no secret, never throws). */
+   *  effective `{ clientId, clientSecret, tokenUrl }` for a provider from the
+   *  encrypted store (all-or-nothing per issuer), else `null`. The provider's
+   *  fixed `tokenUrl` — a protocol constant, the only OAuth thing still shipped
+   *  in the binary — is supplied by the caller. Touches the secret (decrypts —
+   *  may throw on a locked server), so it's called only at the moment of use
+   *  (enroll/refresh), when the vault is unlocked. The client_id-only authorize
+   *  read below does NOT use this (no secret, never throws).
+   *
+   *  There is NO fallback tier behind the store: the six `RECUED_*` OAuth env
+   *  vars were deleted 2026-07-28 (plaintext process-env secret + it bypassed
+   *  the vault lock). Unconfigured ⇒ `null` ⇒ enroll surfaces
+   *  `not_configured`, which the Accounts UI renders as its setup step. */
   const resolveOAuthProviderConfig = (
     provider: 'gmail' | 'gcal' | 'graph',
-    envConst: OAuthProviderConfig,
+    tokenUrl: string,
   ): OAuthProviderConfig | null => {
     const issuer = oauthAppIssuerForProvider(provider);
     const storedId = oauthAppConfigStore?.getClientId(issuer) ?? null;
@@ -288,27 +319,29 @@ export const composeCollectionContext = (
     // A stored issuer is used ONLY when BOTH id + secret are present (Codex F2):
     // a half-written row (id-without-secret — only reachable if a write failed)
     // must not post a secretless code-exchange against the real provider. The
-    // store writes both atomically, so this is belt-and-braces; an incomplete
-    // row falls through to the env app instead.
+    // store writes both atomically, so this is belt-and-braces.
     if (storedId && storedSecret !== null) {
-      return { tokenUrl: envConst.tokenUrl, clientId: storedId, clientSecret: storedSecret };
+      return { tokenUrl, clientId: storedId, clientSecret: storedSecret };
     }
-    return envConst.clientId ? envConst : null;
+    return null;
   };
 
   const calendarStack = composeCalendarBoot({
     db,
     cacheBlobs,
     warehouseBus,
+    // Same lazy rationale as mail's below — makes a post-boot calendar enroll
+    // readable without a restart.
+    getCollectionRegistry: () => collectionRegistry,
     ...(auditLog ? { auditLog } : {}),
     ...(contactStore ? { contactStore } : {}),
     gateRegistry,
     ...(accountStore ? { accountStore } : {}),
     isVaultUnlocked,
-    // Per-use credential resolver (store-then-env). The calendar factories
-    // always register; this decides availability at enroll + on each refresh.
+    // Per-use credential resolver (store-only). The calendar factories always
+    // register; this decides availability at enroll + on each refresh.
     resolveOAuthConfig: (adapter) =>
-      resolveOAuthProviderConfig(adapter, adapter === 'gcal' ? GCAL_OAUTH_CONFIG : GRAPH_CAL_OAUTH_CONFIG),
+      resolveOAuthProviderConfig(adapter, adapter === 'gcal' ? GCAL_TOKEN_URL : GRAPH_CAL_TOKEN_URL),
   });
 
   const mailStack = composeMailBoot({
@@ -320,10 +353,16 @@ export const composeCollectionContext = (
     gateRegistry,
     ...(accountStore ? { accountStore } : {}),
     isVaultUnlocked,
-    // Per-use credential resolver (store-then-env), for the initial exchange
+    // Same lazy rationale as `fileReadDeps` below — `collectionRegistry` is
+    // declared above this const but the closure only runs when a collection goes
+    // live. Supplying it is what makes a post-boot enroll readable without a
+    // restart; `startCollectionAdapters` alone registered only what existed AT
+    // boot.
+    getCollectionRegistry: () => collectionRegistry,
+    // Per-use credential resolver (store-only), for the initial exchange
     // (enroll) + token refresh (via buildProvider's per-use resolver).
     resolveOAuthConfig: (provider) =>
-      resolveOAuthProviderConfig(provider, provider === 'gmail' ? GMAIL_OAUTH_CONFIG : GRAPH_OAUTH_CONFIG),
+      resolveOAuthProviderConfig(provider, provider === 'gmail' ? GMAIL_TOKEN_URL : GRAPH_TOKEN_URL),
     // D-172 P2 — lazy file-read deps so MailCollection.send can resolve
     // outbound `attachments` refs into bytes via the Gateway-gated
     // file.read (handleFileRead). Lazy because `collectionRegistry` is
@@ -429,42 +468,23 @@ export const composeCollectionContext = (
       })
     : undefined;
 
+  // The authorize-URL read: client_id ONLY, never the secret, so it stays safe
+  // on a locked server (`getClientId` does not decrypt). Store-only since the
+  // `RECUED_*` OAuth env vars were deleted — which also closes the divergence
+  // this path used to have with `resolveOAuthProviderConfig` above, where a
+  // stored-id-without-secret row put the authorize URL on the stored app while
+  // the token exchange fell back to the env app (`unauthorized_client`).
+  // Both seams now read exactly one source.
   const oauthClientConfigDeps: OAuthClientConfigDeps = {
-    getClientId: (provider) => {
-      const stored = oauthAppConfigStore?.getClientId(oauthAppIssuerForProvider(provider)) ?? null;
-      if (stored) return stored;
-      // env fallback (per-provider const; client_id only — never the secret,
-      // so this stays safe to read on a locked server).
-      if (provider === 'gmail') return GMAIL_OAUTH_CONFIG.clientId || null;
-      if (provider === 'gcal') return GCAL_OAUTH_CONFIG.clientId || null;
-      return GRAPH_OAUTH_CONFIG.clientId || GRAPH_CAL_OAUTH_CONFIG.clientId || null;
-    },
+    getClientId: (provider) =>
+      oauthAppConfigStore?.getClientId(oauthAppIssuerForProvider(provider)) ?? null,
   };
 
   // BYO OAuth app config rpc deps (server.{get,set,clear}OAuthAppConfig). Absent
-  // on a db-less boot (no store) → that rpc slice stays unwired. `envConfigFor`
-  // reports the env fallback's per-issuer status for the setup UI's `source`.
-  // `has_secret` must come from the SAME env block as the shown `client_id`
-  // (Codex F3): aggregating `gmail.secret || gcal.secret` could report a
-  // "complete" Google env while the actual gmail exchange posts without a
-  // secret. Pick the first env app that has a client_id; its own secret decides
-  // has_secret.
-  const envStatusFor = (
-    a: OAuthProviderConfig,
-    b: OAuthProviderConfig,
-  ): { client_id: string | null; has_secret: boolean } => {
-    if (a.clientId) return { client_id: a.clientId, has_secret: Boolean(a.clientSecret) };
-    if (b.clientId) return { client_id: b.clientId, has_secret: Boolean(b.clientSecret) };
-    return { client_id: null, has_secret: false };
-  };
+  // on a db-less boot (no store) → that rpc slice stays unwired. The store is
+  // the only credential source, so the handler derives `source` from it alone.
   const oauthAppConfigDeps: OAuthAppConfigHandlerDeps | undefined = oauthAppConfigStore
-    ? {
-        store: oauthAppConfigStore,
-        envConfigFor: (issuer) =>
-          issuer === 'google'
-            ? envStatusFor(GMAIL_OAUTH_CONFIG, GCAL_OAUTH_CONFIG)
-            : envStatusFor(GRAPH_OAUTH_CONFIG, GRAPH_CAL_OAUTH_CONFIG),
-      }
+    ? { store: oauthAppConfigStore }
     : undefined;
 
   const startCollectionAdapters = async (): Promise<void> => {
@@ -518,6 +538,7 @@ export const composeCollectionContext = (
     uploadService,
     downloadService,
     archiveUploadService,
+    uploadStagingRegistry,
     calendarStack,
     mailStack,
     serviceStack,

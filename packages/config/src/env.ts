@@ -1,21 +1,37 @@
-/** Env-var overrides.
+/** Env-var overrides — BOOTSTRAP ONLY.
  *
- *  Single-field overrides use the shape `RECUED_<SECTION>_<KEY>=value`
- *  where SECTION is `BOOTSTRAP` or `RUNTIME` and KEY is the field name
- *  with dots replaced by underscores (`RECUED_RUNTIME_LLM_BUDGET`).
+ *  Single-field overrides use the shape `RECUED_BOOTSTRAP_<KEY>=value`, where
+ *  KEY is a bootstrap field name (`RECUED_BOOTSTRAP_BIND_PORT`). Path overrides
+ *  honor `RECUED_CONFIG` for the config file location.
  *
- *  Path overrides honor `RECUED_CONFIG` for the config file location.
+ *  ⛔ **`RECUED_RUNTIME_*` was REMOVED 2026-07-28. This is the gate that keeps
+ *  the env surface small, and it is structural rather than a list.**
  *
- *  Env values arrive as strings and need shape-aware coercion so a value
- *  like `"42"` lands as the number `42` and `"true"` lands as boolean
- *  `true`. Coercion failures throw so misconfigured env vars crash loud
- *  instead of silently defaulting. */
+ *  The scan used to accept `RECUED_RUNTIME_<KEY>` against every key of
+ *  `RUNTIME_SCHEMA_MAP` — so ~64 env vars existed that appear NOWHERE in the
+ *  source as `process.env.X`, invisible to any grep-built inventory, and
+ *  **adding a runtime schema key silently minted another one**. Worse, the
+ *  loader applies env AFTER the config file, so each one overrode a value the
+ *  owner had saved through Settings, at every boot.
+ *
+ *  The split is the owner's rule made mechanical:
+ *    · BOOTSTRAP — data_path / bind_host / bind_port / mcp_port / webhook_port
+ *      / log_path. Genuinely boot-critical: needed BEFORE any store can be
+ *      read, so env is the only channel that can carry them. Env wins. KEPT.
+ *    · RUNTIME — every key has a store and a Settings control. That is user
+ *      state, and env has no business overriding it. REMOVED.
+ *
+ *  ⇒ A new runtime schema key can no longer create an env var. Nothing shipped
+ *  used the runtime half (the VPS image configures via `/etc/recued/config.toml`;
+ *  the docker entrypoint sets only `RECUED_SUPERVISOR_MODE`).
+ *
+ *  Env values arrive as strings and need shape-aware coercion so a value like
+ *  `"42"` lands as the number `42`. Coercion failures throw so a misconfigured
+ *  env var crashes loud instead of silently defaulting. */
 
-import { RUNTIME_SCHEMA_MAP, getRuntimeSchemaEntry } from './schema.js';
 import { ConfigValidationError } from './parse.js';
-import type { BootstrapConfig, RuntimeConfig } from './types.js';
+import type { BootstrapConfig } from './types.js';
 
-const RUNTIME_PREFIX = 'RECUED_RUNTIME_';
 const BOOTSTRAP_PREFIX = 'RECUED_BOOTSTRAP_';
 
 /** Config path override (independent from field overrides). */
@@ -24,17 +40,6 @@ export const envConfigPath = (
 ): string | undefined => {
   const v = env.RECUED_CONFIG;
   return v && v.length > 0 ? v : undefined;
-};
-
-/** Map the env var tail back to the schema key. Runtime fields use dots;
- *  env names use underscores — we unambiguously match against the
- *  schema's known key set. */
-const matchRuntimeKey = (tail: string): string | null => {
-  const wanted = tail.toLowerCase();
-  for (const key of Object.keys(RUNTIME_SCHEMA_MAP)) {
-    if (key.replace(/\./g, '_') === wanted) return key;
-  }
-  return null;
 };
 
 const BOOTSTRAP_KEYS = new Set<keyof BootstrapConfig>([
@@ -54,20 +59,11 @@ const matchBootstrapKey = (tail: string): keyof BootstrapConfig | null => {
  *  code may also use the namespace). */
 export const envOverrides = (
   env: Record<string, string | undefined> = process.env,
-): { bootstrap: Partial<BootstrapConfig>; runtime: Partial<RuntimeConfig> } => {
+): { bootstrap: Partial<BootstrapConfig> } => {
   const bootstrap: Partial<BootstrapConfig> = {};
-  const runtime: Partial<RuntimeConfig> = {};
 
   for (const [name, value] of Object.entries(env)) {
     if (value === undefined) continue;
-
-    if (name.startsWith(RUNTIME_PREFIX)) {
-      const tail = name.slice(RUNTIME_PREFIX.length);
-      const key = matchRuntimeKey(tail);
-      if (!key) continue;
-      runtime[key] = coerceRuntime(key, value);
-      continue;
-    }
 
     if (name.startsWith(BOOTSTRAP_PREFIX)) {
       const tail = name.slice(BOOTSTRAP_PREFIX.length);
@@ -78,64 +74,9 @@ export const envOverrides = (
     }
   }
 
-  return { bootstrap, runtime };
+  return { bootstrap };
 };
 
-const coerceRuntime = (key: string, raw: string): string | number | boolean => {
-  const entry = getRuntimeSchemaEntry(key);
-  if (!entry) {
-    throw new ConfigValidationError(`Unknown runtime key '${key}' in env override`, key);
-  }
-  switch (entry.type) {
-    case 'boolean': {
-      if (raw === 'true' || raw === '1') return true;
-      if (raw === 'false' || raw === '0') return false;
-      throw new ConfigValidationError(
-        `RECUED_RUNTIME_${key.replace(/\./g, '_').toUpperCase()} must be true/false or 1/0 (got ${JSON.stringify(raw)})`,
-        key,
-      );
-    }
-    case 'number': {
-      const n = Number(raw);
-      if (!Number.isFinite(n)) {
-        throw new ConfigValidationError(
-          `RECUED_RUNTIME_${key.replace(/\./g, '_').toUpperCase()} must be numeric (got ${JSON.stringify(raw)})`,
-          key,
-        );
-      }
-      if (entry.integer === true && !Number.isInteger(n)) {
-        throw new ConfigValidationError(
-          `${key} must be an integer (got ${n})`,
-          key,
-        );
-      }
-      if (entry.min !== undefined && n < entry.min) {
-        throw new ConfigValidationError(
-          `${key} must be >= ${entry.min} (got ${n})`,
-          key,
-        );
-      }
-      if (entry.max !== undefined && n > entry.max) {
-        throw new ConfigValidationError(
-          `${key} must be <= ${entry.max} (got ${n})`,
-          key,
-        );
-      }
-      return n;
-    }
-    case 'string':
-      return raw;
-    case 'enum': {
-      if (!(entry.enum ?? []).includes(raw)) {
-        throw new ConfigValidationError(
-          `${key} must be one of ${(entry.enum ?? []).join(', ')} (got ${JSON.stringify(raw)})`,
-          key,
-        );
-      }
-      return raw;
-    }
-  }
-};
 
 const assignBootstrapEnv = (
   bootstrap: Partial<BootstrapConfig>,

@@ -4,6 +4,7 @@ import type {
   DependencyResolution,
   RecipeDefinition,
   RecipeRunnabilityEntry,
+  ResolvedFilterDescriptor,
   RunnabilityStatus,
   ServerExecuteResponse,
   ServerRecipeListEntry,
@@ -20,6 +21,8 @@ import {
   RECIPES_ROUTE_DETAIL_ATTR,
   RECIPES_ROUTE_EDIT_LINK_ATTR,
   RECIPES_ROUTE_FROM_PACK_ATTR,
+  RECIPES_ROUTE_RECORDS_ATTR,
+  RECIPES_ROUTE_RECORDS_PACK_ATTR,
   RECIPES_ROUTE_HEADING_ATTR,
   RECIPES_ROUTE_HOST_ATTR,
   RECIPES_ROUTE_KITCHEN_LINK_ATTR,
@@ -356,11 +359,13 @@ const mountRoute = (overrides: {
   recipeConfigSetCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['recipeConfigSetCaller'];
   recipeCatalogCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['recipeCatalogCaller'];
   packCatalogCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['packCatalogCaller'];
+  packsListCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['packsListCaller'];
   subscribe?: Parameters<typeof bootstrapRecipesRoute>[0]['subscribe'];
   initialRecipeId?: string;
   confirm?: (message?: string) => boolean;
   clipboardWrite?: (value: string) => Promise<void>;
   fileBrowser?: boolean;
+  recordRefSearchCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['recordRefSearchCaller'];
 } = {}) => {
   const doc = makeFakeDocument(
     {
@@ -441,10 +446,16 @@ const mountRoute = (overrides: {
     ...(overrides.packCatalogCaller !== undefined
       ? { packCatalogCaller: overrides.packCatalogCaller }
       : {}),
+    ...(overrides.packsListCaller !== undefined
+      ? { packsListCaller: overrides.packsListCaller }
+      : {}),
     ...(overrides.initialRecipeId !== undefined
       ? { initialRecipeId: overrides.initialRecipeId }
       : {}),
     ...(overrides.subscribe !== undefined ? { subscribe: overrides.subscribe } : {}),
+    ...(overrides.recordRefSearchCaller !== undefined
+      ? { recordRefSearchCaller: overrides.recordRefSearchCaller }
+      : {}),
   });
   return {
     doc,
@@ -551,6 +562,282 @@ describe('R24 — Recipes route: list view', () => {
     expect(html).toContain('href="#packs"');
 
     rig.route.dispose();
+  });
+
+  it('labels a pack-owned recipe that declares no depends_on', async () => {
+    // The D-221 Records-pack shape: every member calls only its OWN pack's
+    // Tier-P ops, so `depends_on` is legitimately absent and
+    // `metadata.recipe_bundle` is the only provenance. Reading `depends_on`
+    // alone rendered no label at all here.
+    const rig = mountRoute({
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [
+          recipeEntry('list-job-board', {
+            recipe: recipeDefinition('list-job-board', {
+              metadata: {
+                name: 'List the job board',
+                description: 'Search Records by status.',
+                author: 'recued-core',
+                supported_platforms: [],
+                recipe_bundle: 'recued-core/job-status-board',
+              },
+            }),
+          }),
+        ],
+      })),
+    });
+    await rig.route.whenLoaded();
+
+    const html = shellHtml(rig.root);
+    expect(html).toContain(
+      `${RECIPES_ROUTE_FROM_PACK_ATTR}="recued-core.job-status-board"`,
+    );
+    expect(html).toContain('from Job status board');
+
+    // …and the detail header carries the same label.
+    clickRecipeAction(rig.root, 'open-recipe', 'list-job-board');
+    expect(shellHtml(rig.root)).toContain('from Job status board');
+
+    rig.route.dispose();
+  });
+
+  it('separates the owning pack from a co-installed dependency', async () => {
+    const rig = mountRoute({
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [
+          recipeEntry('close-job', {
+            recipe: recipeDefinition('close-job', {
+              depends_on: ['recued-core.email-outbox-pack'],
+              metadata: {
+                name: 'Close a job',
+                description: 'Close it and mail the customer.',
+                author: 'recued-core',
+                supported_platforms: [],
+                recipe_bundle: 'recued-core/job-status-board',
+              },
+            }),
+          }),
+        ],
+      })),
+    });
+    await rig.route.whenLoaded();
+
+    const html = shellHtml(rig.root);
+    // "from" is the owning pack; a dep the recipe merely calls is "needs".
+    expect(html).toContain('from Job status board · needs Email outbox');
+    expect(html).toContain(
+      `${RECIPES_ROUTE_FROM_PACK_ATTR}="recued-core.job-status-board recued-core.email-outbox-pack"`,
+    );
+
+    rig.route.dispose();
+  });
+
+  it('filters a pack-owned recipe by its pack, and never as Standalone', async () => {
+    const bundleMeta = {
+      name: 'List the job board',
+      description: 'Search Records by status.',
+      author: 'recued-core',
+      supported_platforms: [] as string[],
+      recipe_bundle: 'recued-core/job-status-board',
+    };
+    const rig = mountRoute({
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [
+          recipeEntry('list-job-board', {
+            recipe: recipeDefinition('list-job-board', { metadata: bundleMeta }),
+          }),
+          recipeEntry('loose-brief'),
+        ],
+      })),
+    });
+    await rig.route.whenLoaded();
+
+    // The pack chip exists and is keyed on the bundle's pack_ref.
+    expect(shellHtml(rig.root)).toContain('data-filter-value="recued-core.job-status-board"');
+
+    clickRecipeAction(rig.root, 'filter-set', '', {
+      'data-filter-kind': 'pack',
+      'data-filter-value': 'recued-core.job-status-board',
+    });
+    let html = shellHtml(rig.root);
+    expect(html).toContain('list-job-board');
+    expect(html).not.toContain('loose-brief');
+
+    // Standalone must NOT claim a pack member — the one affirmatively false
+    // reading of a missing `depends_on`.
+    clickRecipeAction(rig.root, 'filter-set', '', {
+      'data-filter-kind': 'pack',
+      'data-filter-value': '__standalone__',
+    });
+    html = shellHtml(rig.root);
+    expect(html).toContain('loose-brief');
+    expect(html).not.toContain('list-job-board');
+
+    rig.route.dispose();
+  });
+
+  describe('D-221 — the stored-Records disclosure on the detail', () => {
+    const recordsPack = (ops: ReadonlyArray<{ op: string; risk: string; action: string; entity: string }>) => ({
+      slug: 'job-status-board',
+      publisher: 'recued-core',
+      name: 'Job Status Board',
+      description: '',
+      version: 1,
+      pre_install: false,
+      installed: true,
+      requires: [],
+      recipe_count: 8,
+      body_visibility_grant_count: 0,
+      manifest: {
+        contents: [
+          {
+            type: 'composition',
+            composition: {
+              schema_version: 1,
+              slug: 'job-status-board-records',
+              ingredients: [],
+              operations: ops.map((o) => ({
+                op: o.op,
+                ingredient: 'job-status-board-records',
+                risk: o.risk,
+                approval: 'never',
+                args: [],
+                bind: { kind: 'core.records', action: o.action, entity: o.entity },
+              })),
+            },
+          },
+        ],
+      },
+    });
+
+    const mountWithRecords = (
+      ops: ReadonlyArray<string>,
+      packsListCaller?: NonNullable<Parameters<typeof mountRoute>[0]>['packsListCaller'],
+    ) =>
+      mountRoute({
+        recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+          recipes: [
+            recipeEntry('reclaim-closed-job', {
+              recipe: recipeDefinition('reclaim-closed-job', {
+                requires: [],
+                metadata: {
+                  name: 'Reclaim a closed job',
+                  description: 'Reclaim quota from a closed job.',
+                  author: 'recued-core',
+                  supported_platforms: [],
+                  recipe_bundle: 'recued-core/job-status-board',
+                },
+                steps: ops.map((op, i) => ({ id: `s${i}`, op, args: {} })),
+              } as never),
+            }),
+          ],
+        })),
+        ...(packsListCaller !== undefined ? { packsListCaller } : {}),
+      });
+
+    it('names the entities a recipe touches and marks a deletion destructive', async () => {
+      const rig = mountWithRecords(
+        [
+          'recued-core.job-status-board.job.search',
+          'recued-core.job-status-board.job.delete',
+          'recued-core.job-status-board.job_event.delete',
+        ],
+        vi.fn(async () => ({
+          packs: [
+            recordsPack([
+              { op: 'job.search', risk: 'read', action: 'search', entity: 'job' },
+              { op: 'job.delete', risk: 'destructive', action: 'delete', entity: 'job' },
+              { op: 'job_event.delete', risk: 'destructive', action: 'delete', entity: 'job_event' },
+            ]),
+          ],
+        })) as never,
+      );
+      await rig.route.whenLoaded();
+      clickRecipeAction(rig.root, 'open-recipe', 'reclaim-closed-job');
+
+      const html = shellHtml(rig.root);
+      expect(html).toContain(`${RECIPES_ROUTE_RECORDS_ATTR}="destructive"`);
+      expect(html).toContain(
+        `${RECIPES_ROUTE_RECORDS_PACK_ATTR}="recued-core.job-status-board"`,
+      );
+      expect(html).toContain('job — reads + deletes (search, delete)');
+      expect(html).toContain('job_event — deletes (delete)');
+      expect(html).toContain('changes and DELETES data stored on this server');
+      // The pack's own classification replaces "Risk: unknown" — this recipe
+      // is not chat-exposed, so the tool catalog has nothing to say about it.
+      expect(html).toContain('<strong>Risk:</strong> destructive.');
+      expect(html).toContain('Declared by the pack.');
+      expect(html).not.toContain('<strong>Risk:</strong> unknown.');
+
+      rig.route.dispose();
+    });
+
+    it('marks a read-only recipe present, not destructive', async () => {
+      const rig = mountWithRecords(
+        ['recued-core.job-status-board.job.search'],
+        vi.fn(async () => ({
+          packs: [
+            recordsPack([
+              { op: 'job.search', risk: 'read', action: 'search', entity: 'job' },
+            ]),
+          ],
+        })) as never,
+      );
+      await rig.route.whenLoaded();
+      clickRecipeAction(rig.root, 'open-recipe', 'reclaim-closed-job');
+
+      const html = shellHtml(rig.root);
+      expect(html).toContain(`${RECIPES_ROUTE_RECORDS_ATTR}="present"`);
+      expect(html).toContain('job — reads (search)');
+      expect(html).toContain('<strong>Risk:</strong> read.');
+      // A read-only recipe must not claim it changes anything.
+      expect(html).toContain('only reads data stored on this server');
+      expect(html).not.toContain('changes data stored on this server');
+
+      rig.route.dispose();
+    });
+
+    it('says the roster is unavailable rather than rendering silence as "no Records"', async () => {
+      // No caller at all — the disclosure must NOT quietly disappear, which
+      // would read as "this recipe stores nothing".
+      const rig = mountWithRecords(['recued-core.job-status-board.job.delete']);
+      await rig.route.whenLoaded();
+      clickRecipeAction(rig.root, 'open-recipe', 'reclaim-closed-job');
+
+      const html = shellHtml(rig.root);
+      expect(html).toContain(`${RECIPES_ROUTE_RECORDS_ATTR}="unknown"`);
+      expect(html).toContain("stored-data use can't be shown");
+
+      rig.route.dispose();
+    });
+
+    it('reports an op whose pack is not installed', async () => {
+      const rig = mountWithRecords(
+        ['recued-core.not-installed.job.delete'],
+        vi.fn(async () => ({ packs: [] })) as never,
+      );
+      await rig.route.whenLoaded();
+      clickRecipeAction(rig.root, 'open-recipe', 'reclaim-closed-job');
+
+      const html = shellHtml(rig.root);
+      expect(html).toContain(`${RECIPES_ROUTE_RECORDS_ATTR}="unresolved"`);
+      expect(html).toContain('recued-core.not-installed.job.delete');
+
+      rig.route.dispose();
+    });
+
+    it('shows nothing for a recipe that touches no Records', async () => {
+      const rig = mountWithRecords(
+        ['core.ai.extract'],
+        vi.fn(async () => ({ packs: [] })) as never,
+      );
+      await rig.route.whenLoaded();
+      clickRecipeAction(rig.root, 'open-recipe', 'reclaim-closed-job');
+
+      expect(shellHtml(rig.root)).not.toContain(RECIPES_ROUTE_RECORDS_ATTR);
+
+      rig.route.dispose();
+    });
   });
 
   it('classifies trigger kind structurally — delta 6 (classifyRecipeAction)', async () => {
@@ -727,6 +1014,33 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     expect(html).toContain(RECIPES_ROUTE_AUTOMATION_LINK_ATTR);
     expect(html).toContain('href="#automation/daily-brief"');
 
+    rig.route.dispose();
+  });
+
+  it('summarizes a one-shot by its run time instead of exposing raw cron', async () => {
+    const rig = mountRoute({
+      initialRecipeId: 'daily-brief',
+      schedulesListCaller: vi.fn(async () => ({
+        schedules: [{
+          schedule_id: 'once-1',
+          recipe_id: 'daily-brief',
+          publisher_id: 'recued-core',
+          mode: 'one_shot' as const,
+          cron_expression: '17 4 9 12 *',
+          run_at: 1_800_000_000_000,
+          enabled: true,
+          created_at: 1_700_000_000_000,
+          last_run_at: null,
+          next_run_at: 1_800_000_000_000,
+          last_status: null,
+          last_error: null,
+        }],
+      })),
+    });
+    await rig.route.whenLoaded();
+    const html = shellHtml(rig.root);
+    expect(html).toContain('Once —');
+    expect(html).not.toContain('17 4 9 12 *');
     rig.route.dispose();
   });
 
@@ -1097,6 +1411,42 @@ describe('R24 — Recipes route: exposure is per-contract, no toggle', () => {
 });
 
 describe('R24 — Recipes route: run + schedule modal', () => {
+  it('forwards the recipe-owned Records search so record_ref renders as a picker', async () => {
+    const entry = recipeEntry('open-rental-contract', {
+      recipe: recipeDefinition('open-rental-contract', {
+        metadata: {
+          name: 'Open a rental contract',
+          description: 'Choose a customer.',
+          author: 'recued-core',
+          supported_platforms: [],
+          tags: [],
+          recipe_bundle: 'recued-core/rental-book',
+        },
+        variables: {
+          customer_id: {
+            label: 'Customer',
+            type: 'record_ref',
+            entity: 'customer',
+          },
+        },
+      }),
+    });
+    const rig = mountRoute({
+      recipesListCaller: vi.fn(async () => ({ recipes: [entry] })),
+      recordRefSearchCaller: vi.fn(() => async () => []),
+    });
+    await rig.route.whenLoaded();
+
+    rig.route.openRunModal('open-rental-contract');
+    expect(runModalHtml(rig.root)).toContain(
+      'data-ref-picker="run-modal-var-record-ref-customer_id"',
+    );
+    expect(runModalHtml(rig.root)).not.toMatch(
+      /data-var-type="record_ref"[^>]*type="text"/,
+    );
+    rig.route.dispose();
+  });
+
   it('runs a recipe through the modal caller with parsed config', async () => {
     const execute = vi.fn<RecipeExecuteCaller>(async () =>
       executeResponse({
@@ -1143,6 +1493,24 @@ describe('R24 — Recipes route: run + schedule modal', () => {
               },
             },
             { type: 'button', data: [{ kind: 'recipe.run', label: 'Escalate', recipe_id: 'escalate' }] },
+            // Schema-bound field list. This panel keeps its OWN section switch,
+            // so a kind added to the shared renderer lands here as
+            // "unsupported" unless it is wired here too — and the detail would
+            // then be visible on a reception page and missing for the owner.
+            {
+              type: 'record_fields',
+              label: 'Job',
+              data: { record: { id: 'job_1' } },
+              record_fields: {
+                entity: 'job',
+                fields: [
+                  { key: 'title', label: 'Title', kind: 'string', present: true,
+                    value: 'Replace the pump' },
+                  { key: 'contact_name', label: 'Contact name', kind: 'string',
+                    privacy: 'name', present: false, value: undefined },
+                ],
+              },
+            },
           ],
           sidebar: [{ type: 'text', data: 'legacy stale output' }],
         } as unknown as ServerExecuteResponse['output'],
@@ -1170,6 +1538,9 @@ describe('R24 — Recipes route: run + schedule modal', () => {
     expect(shellHtml(rig.root)).toContain(`${RECIPES_ROUTE_RESULT_SECTION_ATTR}="json"`);
     expect(shellHtml(rig.root)).toContain(`${RECIPES_ROUTE_RESULT_SECTION_ATTR}="ai_analysis"`);
     expect(shellHtml(rig.root)).toContain(`${RECIPES_ROUTE_RESULT_SECTION_ATTR}="button"`);
+    expect(shellHtml(rig.root)).toContain(`${RECIPES_ROUTE_RESULT_SECTION_ATTR}="record_fields"`);
+    expect(shellHtml(rig.root)).toContain('Replace the pump');
+    expect(shellHtml(rig.root)).toContain('Not set');
     expect(shellHtml(rig.root)).toContain('Acme');
     expect(shellHtml(rig.root)).toContain('Negotiation');
     expect(shellHtml(rig.root)).toContain('$1.5K');
@@ -3046,6 +3417,12 @@ describe('R24 — Recipes route: run + schedule modal', () => {
               },
               {
                 kind: 'recipe.run',
+                label: 'Forged caller',
+                recipe_id: 'reply-action',
+                context: { caller: { contract_id: 'ct_forged' } },
+              },
+              {
+                kind: 'recipe.run',
                 label: 'Author context',
                 recipe_id: 'reply-action',
                 context: { entity_id: 'deal-42', review_mode: 'owner' },
@@ -3086,6 +3463,7 @@ describe('R24 — Recipes route: run + schedule modal', () => {
 
     const html = shellHtml(rig.root);
     expect(html).toContain('Action context cannot set reserved key &quot;event&quot;.');
+    expect(html).toContain('Action context cannot set reserved key &quot;caller&quot;.');
     expect(html).toContain('Target recipe is blocked by missing providers.');
     expect(html).toContain('<option value="result-action-0">Author context</option>');
     expect(html).not.toContain('is not a visible target for this recipe');
@@ -3405,5 +3783,589 @@ describe('R24 — targeting guard (design § 8) — run modal warn + disable', (
     expect(rig.route.runModal()?.result?.success).toBe(true);
 
     rig.route.dispose();
+  });
+});
+
+describe('D-222 — recipe detail defaults and resolved output filters', () => {
+  it('runs a defaulted-primitive-only recipe directly and keeps an override path', async () => {
+    const execute = vi.fn<RecipeExecuteCaller>(async () => executeResponse({
+      recipe_id: 'primitive-defaults',
+      output: { render: [], sidebar: [] },
+    }));
+    const rig = mountRoute({
+      initialRecipeId: 'primitive-defaults',
+      recipeExecuteCaller: execute,
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('primitive-defaults', {
+          recipe: recipeDefinition('primitive-defaults', {
+            variables: { limit: 25, include_closed: false },
+          }),
+        })],
+      })),
+    });
+    await rig.route.whenLoaded();
+
+    const detail = shellHtml(rig.root);
+    expect(detail).toContain('data-recued-recipes-action="run-defaults"');
+    expect(detail).toContain('Run with overrides');
+
+    clickRecipeAction(rig.root, 'run-defaults', 'primitive-defaults');
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+    expect(execute).toHaveBeenCalledWith({ recipe_id: 'primitive-defaults', config: {} });
+
+    clickRecipeAction(rig.root, 'open-run', 'primitive-defaults');
+    expect(runModalHtml(rig.root)).toContain('<summary>Run with overrides</summary>');
+    expect(runModalHtml(rig.root)).toContain('data-recued-run-modal-config');
+
+    rig.route.dispose();
+  });
+
+  it('submits typed filter state with stored provenance and deterministic paging', async () => {
+    const definitions: ResolvedFilterDescriptor['definitions'] = {
+      status: { label: 'Status', type: 'text', default: 'open' },
+      cursor: '',
+      count: { label: 'Hidden count', type: 'number', default: 25 },
+      enabled: { label: 'Hidden enabled', type: 'boolean', default: false },
+      tags: { label: 'Hidden tags', type: 'array', default: ['a'] } as never,
+      nil: { label: 'Hidden null', type: 'future_null', default: null } as never,
+      opaque: { label: 'Hidden future', type: 'future_widget', default: { exact: true } } as never,
+    };
+    const resultFor = (
+      status: string,
+      cursor: string,
+      paging: ResolvedFilterDescriptor['paging'],
+      page: string,
+    ): ServerExecuteResponse => executeResponse({
+      recipe_id: 'job-board',
+      recipe_hash: `execution-${page}`,
+      output: {
+        render: [
+          {
+            type: 'table',
+            data: {
+              columns: [{ field: 'id', label: 'ID' }],
+              rows: [{ id: `${page}-row` }, { id: `${page}-row` }],
+            },
+          },
+          {
+            type: 'filter',
+            data: {},
+            filter: {
+              section_index: 1,
+              recipe_hash: 'stored-job-board-hash',
+              fields: ['status'],
+              hidden: ['cursor', 'count', 'enabled', 'tags', 'nil', 'opaque'],
+              submit: 'Search jobs',
+              definitions,
+              values: {
+                status,
+                cursor,
+                count: 25,
+                enabled: false,
+                tags: ['a', 'b'],
+                nil: null,
+                opaque: { exact: true },
+              },
+              ...(paging === undefined ? {} : { paging }),
+            },
+          },
+        ],
+        sidebar: [],
+      },
+    });
+    const execute = vi.fn<RecipeExecuteCaller>(async (args) => {
+      const config = args.config ?? {};
+      if (args.invocation === undefined) {
+        return resultFor('open', '', { next_cursor: 'next-token' }, 'one');
+      }
+      if (config.cursor === 'next-token') {
+        return resultFor(String(config.status), 'next-token', { prev_cursor: 'previous-token' }, 'two');
+      }
+      if (config.cursor === 'previous-token') {
+        return resultFor(String(config.status), 'previous-token', { next_cursor: 'next-token' }, 'one');
+      }
+      return resultFor(String(config.status), '', { next_cursor: 'next-token' }, 'one');
+    });
+    const rig = mountRoute({
+      initialRecipeId: 'job-board',
+      recipeExecuteCaller: execute,
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('job-board', {
+          recipe: recipeDefinition('job-board', {
+            variables: definitions,
+          }),
+        })],
+      })),
+    });
+    await rig.route.whenLoaded();
+
+    rig.route.openRunModal('job-board');
+    await rig.route.confirmRun();
+    const key = rig.route.resultFilterKeys()[0];
+    if (key === undefined) throw new Error('filter state was not installed from result output');
+    expect(key).toBe('job-board:stored-job-board-hash:1');
+    expect(shellHtml(rig.root).match(/<td>one-row<\/td>/g)).toHaveLength(1);
+
+    rig.route.setResultFilterValue(key, 'status', 'closed');
+    expect(shellHtml(rig.root)).toMatch(/data-recued-recipes-result-filter-page="next" disabled/);
+    await rig.route.submitResultFilter(key, 'next');
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(shellHtml(rig.root)).toContain('Run Search before paging');
+
+    await rig.route.submitResultFilter(key, 'search');
+    expect(execute).toHaveBeenNthCalledWith(2, {
+      recipe_id: 'job-board',
+      config: {
+        status: 'closed',
+        cursor: '',
+        count: 25,
+        enabled: false,
+        tags: ['a', 'b'],
+        nil: null,
+        opaque: { exact: true },
+      },
+      invocation: {
+        kind: 'output.filter',
+        recipe_hash: 'stored-job-board-hash',
+        section_index: 1,
+      },
+    });
+    expect(shellHtml(rig.root)).toContain('value="closed"');
+
+    const searchKey = rig.route.resultFilterKeys()[0]!;
+    await rig.route.submitResultFilter(searchKey, 'next');
+    expect(execute).toHaveBeenNthCalledWith(3, {
+      recipe_id: 'job-board',
+      config: {
+        status: 'closed',
+        cursor: 'next-token',
+        count: 25,
+        enabled: false,
+        tags: ['a', 'b'],
+        nil: null,
+        opaque: { exact: true },
+      },
+      invocation: {
+        kind: 'output.filter',
+        recipe_hash: 'stored-job-board-hash',
+        section_index: 1,
+      },
+    });
+    expect(shellHtml(rig.root).match(/<td>two-row<\/td>/g)).toHaveLength(1);
+    expect(rig.route.resultPanel()?.origin).toBe('result-filter');
+
+    const pageTwoKey = rig.route.resultFilterKeys()[0]!;
+    await rig.route.submitResultFilter(pageTwoKey, 'previous');
+    expect(execute).toHaveBeenNthCalledWith(4, expect.objectContaining({
+      config: expect.objectContaining({ status: 'closed', cursor: 'previous-token' }),
+    }));
+    expect(shellHtml(rig.root).match(/<td>one-row<\/td>/g)).toHaveLength(1);
+
+    rig.route.dispose();
+  });
+});
+
+describe('a run that refused items says so', () => {
+  // ⛔⛔ A `foreach` is continue-on-error, so refused items never reach
+  // `errors[]` and never make `success` false. Before this, a month that wrote
+  // NO receipts rendered exactly like one that wrote them all — which is how
+  // three defects shipped in one pack at `success: true`.
+  const RESULT = (foreach: { items: number; failed: number } | undefined) => ({
+    recipe_id: 'collect', recipe_hash: 'h', success: true, errors: [],
+    steps: [{ id: 'recorded', type: 'ingredient', skipped: false, duration_ms: 1,
+              error: null, ...(foreach === undefined ? {} : { foreach }) }],
+    output: { render: [] },
+  });
+  const mount = (result: unknown) => mountRoute({
+    initialRecipeId: 'collect',
+    recipeExecuteCaller: vi.fn<RecipeExecuteCaller>(async () => result as never),
+    recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+      recipes: [recipeEntry('collect', { recipe: recipeDefinition('collect') })],
+    })),
+  });
+  const drive = async (result: unknown) => {
+    const rig = mount(result);
+    await rig.route.whenLoaded();
+    rig.route.openRunModal('collect');
+    await rig.route.confirmRun();
+    return shellHtml(rig.root);
+  };
+
+  it('reports how many items were refused, and in which step', async () => {
+    const html = await drive(RESULT({ items: 12, failed: 3 }));
+    expect(html).toContain('data-recued-recipes-result-refused="3"');
+    expect(html).toContain('3 of 12 items');
+    expect(html).toContain('recorded');
+  });
+
+  it('says plainly when EVERY item was refused', async () => {
+    // The remedy differs from a partial failure — a broken recipe refuses
+    // everything, bad data refuses one — so the owner needs the distinction.
+    const html = await drive(RESULT({ items: 2, failed: 2 }));
+    expect(html).toContain('were all refused');
+  });
+
+  it('stays SILENT on a clean run and on a run with no foreach at all', async () => {
+    // ⛔ An alert on every successful loop would be trained away in a week, and
+    // then the one that mattered would be invisible too.
+    for (const result of [RESULT({ items: 5, failed: 0 }), RESULT(undefined)]) {
+      const html = await drive(result);
+      expect(html, JSON.stringify(result).slice(0, 60))
+        .not.toContain('data-recued-recipes-result-refused');
+    }
+  });
+});
+
+describe('a filter cannot silently discard typed grid rows', () => {
+  // ⛔⛔ The hazard is CROSS-SECTION: the filter is what re-runs, the table is
+  // what loses. Searching or paging produces a new result, and a new result
+  // RESETS every grid — so a sheet of typed amounts vanished with no warning and
+  // no undo. The filter already protected its own three fields from exactly
+  // this; the grid's loss is far larger and had no guard at all.
+  const BOTH = () => executeResponse({
+    recipe_id: 'collect',
+    recipe_hash: 'h',
+    output: {
+      render: [
+        {
+          type: 'filter',
+          data: {},
+          filter: {
+            section_index: 0, recipe_hash: 'h', submit: 'Search',
+            fields: ['status'], hidden: ['cursor'],
+            definitions: { status: { label: 'Status', type: 'text', default: '' }, cursor: '' },
+            values: { status: '', cursor: '' },
+            paging: { next_cursor: 'PAGE2' },
+          },
+        },
+        {
+          type: 'table',
+          data: { rows: [{ contract_ref: 'rental_contract/rec_1', amount: '' }] },
+          record_columns: {
+            entity: 'receipt',
+            columns: [
+              { field: 'contract_ref', label: 'Tenancy', kind: 'string' },
+              { field: 'amount', label: 'Amount', kind: 'decimal' },
+            ],
+          },
+          table_edit: {
+            section_index: 1, recipe_hash: 'h', into: 'payments',
+            submit: 'Save what arrived', rows: 'fixed',
+            editable: ['amount'], carry: ['contract_ref'], hidden: {},
+          },
+        },
+      ],
+    },
+  } as never);
+
+  const drive = async () => {
+    const execute = vi.fn<RecipeExecuteCaller>(async () => BOTH() as never);
+    const rig = mountRoute({
+      initialRecipeId: 'collect',
+      recipeExecuteCaller: execute,
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [
+          recipeEntry('collect', {
+            recipe: recipeDefinition('collect', {
+              variables: {
+                payments: { label: 'Payments', type: 'array', default: [] } as never,
+                status: { label: 'Status', type: 'text', default: '' } as never,
+                cursor: { label: 'Cursor', type: 'text', default: '' } as never,
+              },
+            }),
+          }),
+          recipeEntry('elsewhere', { recipe: recipeDefinition('elsewhere') }),
+        ],
+      })),
+    });
+    await rig.route.whenLoaded();
+    rig.route.openRunModal('collect');
+    await rig.route.confirmRun();
+    return { rig, execute };
+  };
+
+  it('leaves Search and paging usable while the grid is untouched', async () => {
+    // ⛔ The isolating half. Without it, a guard that disabled the buttons
+    // ALWAYS would pass every assertion below.
+    const { rig } = await drive();
+    const html = shellHtml(rig.root);
+    expect(html).not.toContain('data-recued-recipes-result-filter-blocked');
+    expect(html).toContain('result-filter-page:next');
+    expect(html).not.toMatch(/result-filter-search[^>]*disabled/);
+  });
+
+  it('disables Search and paging, and says why, once a row is typed', async () => {
+    const { rig } = await drive();
+    const key = rig.route.resultGridKeys()[0]!;
+    rig.route.setResultGridCell(key, 0, 'amount', '800.00');
+    const html = shellHtml(rig.root);
+    expect(html).toContain('data-recued-recipes-result-filter-blocked');
+    expect(html).toContain('would discard what you have typed');
+    expect(html).toMatch(/result-filter-search[^>]*disabled/);
+    expect(html).toMatch(/result-filter-page:next[^>]*disabled/);
+  });
+
+  it('REFUSES the dispatch, not just the button', async () => {
+    // ⛔ A disabled button is presentation. A host that draws its own Search
+    // control must hit the same wall — the refusal has to be where the change
+    // happens, which is the only place that can actually stop it.
+    const { rig, execute } = await drive();
+    const key = rig.route.resultGridKeys()[0]!;
+    rig.route.setResultGridCell(key, 0, 'amount', '800.00');
+    const before = execute.mock.calls.length;
+    await rig.route.submitResultFilter(rig.route.resultFilterKeys()[0]!, 'next');
+    expect(execute.mock.calls.length, 'the re-run never dispatched').toBe(before);
+    expect(shellHtml(rig.root)).toContain('would discard what you have typed');
+  });
+
+  it('lets the owner page again once the rows are SAVED', async () => {
+    // ⛔ The recovery path. A guard with no way out is a trap: the owner would
+    // be unable to page for the rest of the session without re-running the
+    // recipe from scratch and losing the rows anyway.
+    const { rig, execute } = await drive();
+    const key = rig.route.resultGridKeys()[0]!;
+    rig.route.setResultGridCell(key, 0, 'amount', '800.00');
+    await rig.route.submitResultGrid(key);
+
+    const html = shellHtml(rig.root);
+    expect(html).not.toContain('data-recued-recipes-result-filter-blocked');
+    const before = execute.mock.calls.length;
+    await rig.route.submitResultFilter(rig.route.resultFilterKeys()[0]!, 'next');
+    expect(execute.mock.calls.length, 'paging dispatched again').toBe(before + 1);
+  });
+});
+
+describe('the editable grid in the result panel', () => {
+  const GRID_RESULT = (rows: Array<Record<string, string>>) => ({
+    recipe_id: 'collect', recipe_hash: 'stored-collect-hash', success: true,
+    steps: [], errors: [],
+    output: {
+      render: [{
+        type: 'table',
+        data: { rows },
+        record_columns: {
+          entity: 'receipt',
+          columns: [
+            { field: 'contract_ref', label: 'Tenancy', kind: 'string' },
+            { field: 'amount', label: 'Amount', kind: 'decimal' },
+          ],
+        },
+        table_edit: {
+          section_index: 0, recipe_hash: 'stored-collect-hash',
+          into: 'payments', submit: 'Save what arrived',
+          rows: 'fixed', editable: ['amount'], carry: ['contract_ref'], hidden: {},
+        },
+      }],
+    },
+  });
+
+  const mountGrid = (execute: RecipeExecuteCaller) => mountRoute({
+    initialRecipeId: 'collect',
+    recipeExecuteCaller: execute,
+    recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+      recipes: [recipeEntry('collect', {
+        recipe: recipeDefinition('collect', {
+          variables: { payments: { label: 'Payments', type: 'array', default: [] } as never },
+        }),
+      })],
+    })),
+  });
+
+  it('types only the columns the section says are editable', async () => {
+    const execute = vi.fn<RecipeExecuteCaller>(async () =>
+      GRID_RESULT([{ contract_ref: 'rental_contract/rec_1', amount: '' }]) as never);
+    const rig = mountGrid(execute);
+    await rig.route.whenLoaded();
+    rig.route.openRunModal('collect');
+    await rig.route.confirmRun();
+
+    const html = shellHtml(rig.root);
+    // ⛔ The amount is an input; the tenancy is TEXT. A typeable tenancy would
+    // let a payment be re-pointed at another tenant by editing its row.
+    expect(html).toContain('data-recued-recipes-result-grid-cell="0:amount"');
+    expect(html).not.toContain('grid-cell="0:contract_ref"');
+    expect(html).toContain('rental_contract/rec_1');
+    // …and the save button carries the authored label.
+    expect(html).toContain('Save what arrived');
+    // A review is not a write. Saving wakes up only after a real edit, so an
+    // accidental click cannot dispatch a redundant correction run.
+    expect(html).toContain('1 row · No changes yet');
+    expect(html).toMatch(/result-grid-submit[^>]*disabled/);
+    // A fixed grid offers no add-row control.
+    expect(html).not.toContain('result-grid-add');
+  });
+
+  it('enables Save and marks the sheet unsaved after the first edit', async () => {
+    const execute = vi.fn<RecipeExecuteCaller>(async () =>
+      GRID_RESULT([{ contract_ref: 'rental_contract/rec_1', amount: '' }]) as never);
+    const rig = mountGrid(execute);
+    await rig.route.whenLoaded();
+    rig.route.openRunModal('collect');
+    await rig.route.confirmRun();
+
+    const key = rig.route.resultGridKeys()[0]!;
+    rig.route.setResultGridCell(key, 0, 'amount', '800.00');
+    const html = shellHtml(rig.root);
+    expect(html).toContain('1 row · Unsaved changes');
+    expect(html).toContain('data-dirty="true"');
+    expect(html).not.toMatch(/result-grid-submit[^>]*disabled/);
+  });
+
+  it('refuses an untouched submit at the dispatch seam too', async () => {
+    const execute = vi.fn<RecipeExecuteCaller>(async () =>
+      GRID_RESULT([{ contract_ref: 'rental_contract/rec_1', amount: '' }]) as never);
+    const rig = mountGrid(execute);
+    await rig.route.whenLoaded();
+    rig.route.openRunModal('collect');
+    await rig.route.confirmRun();
+
+    await rig.route.submitResultGrid(rig.route.resultGridKeys()[0]!);
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('submits ONE key — the declared variable — with the section proof', async () => {
+    // ⛔⛔ This assertion USED to read `payments: [{ amount: '800.00' }]`, and
+    // passed: the grid submitted the editable set alone, so the row could not
+    // say WHICH tenancy the money was for. Live, every receipt was then written
+    // against nothing, the store refused each one inside a `foreach` — where a
+    // per-item failure never fails the run — and the month reported success
+    // having collected no rent. The carried identity is the fix, and this is
+    // where it is pinned.
+    const execute = vi.fn<RecipeExecuteCaller>(async () =>
+      GRID_RESULT([{ contract_ref: 'rental_contract/rec_1', amount: '' }]) as never);
+    const rig = mountGrid(execute);
+    await rig.route.whenLoaded();
+    rig.route.openRunModal('collect');
+    await rig.route.confirmRun();
+
+    const key = rig.route.resultGridKeys()[0];
+    if (key === undefined) throw new Error('no editable grid was installed from result output');
+    rig.route.setResultGridCell(key, 0, 'amount', '800.00');
+    await rig.route.submitResultGrid(key);
+
+    expect(execute).toHaveBeenNthCalledWith(2, {
+      recipe_id: 'collect',
+      config: { payments: [{ contract_ref: 'rental_contract/rec_1', amount: '800.00' }] },
+      invocation: {
+        kind: 'output.table_edit',
+        recipe_hash: 'stored-collect-hash',
+        section_index: 0,
+      },
+    });
+  });
+
+  it('right-aligns the quantity columns — header, cell and input', async () => {
+    // ⛔ From the declared KIND. Money in a Records pack is a `decimal` slot
+    // returned as the STRING "1200.0000", so aligning on the runtime value
+    // would left-align every amount in the ledger.
+    const execute = vi.fn<RecipeExecuteCaller>(async () =>
+      GRID_RESULT([{ contract_ref: 'rental_contract/rec_1', amount: '' }]) as never);
+    const rig = mountGrid(execute);
+    await rig.route.whenLoaded();
+    rig.route.openRunModal('collect');
+    await rig.route.confirmRun();
+
+    const html = shellHtml(rig.root);
+    expect(html).toMatch(/<th class="is-numeric">Amount<\/th>/);
+    expect(html).toMatch(/<th>Tenancy<\/th>/);
+    // …and the editable cell too, so a figure does not jump left as it is typed.
+    expect(html).toMatch(/class="input recipes-result-grid-cell is-numeric"/);
+  });
+
+  it('keeps a typed cell across a re-render before the save', async () => {
+    // ⛔ The value comes from the GRID state, not the row — otherwise a repaint
+    // between typing and saving silently discards what was entered.
+    const execute = vi.fn<RecipeExecuteCaller>(async () =>
+      GRID_RESULT([{ contract_ref: 'rental_contract/rec_1', amount: '' }]) as never);
+    const rig = mountGrid(execute);
+    await rig.route.whenLoaded();
+    rig.route.openRunModal('collect');
+    await rig.route.confirmRun();
+
+    const key = rig.route.resultGridKeys()[0]!;
+    rig.route.setResultGridCell(key, 0, 'amount', '450.00');
+    expect(shellHtml(rig.root)).toContain('value="450.00"');
+  });
+
+  it('composes an initially empty bare table, renders added rows, and removes back to clean', async () => {
+    // No entity and no `to_table` headings: the descriptor's declared columns
+    // are enough to render a reusable empty collection form.
+    const composeResult = {
+      recipe_id: 'collect', recipe_hash: 'stored-collect-hash', success: true,
+      steps: [], errors: [],
+      output: {
+        render: [{
+          type: 'table',
+          data: [],
+          table_edit: {
+            section_index: 0, recipe_hash: 'stored-collect-hash',
+            into: 'payments', submit: 'Save lines', rows: 'add_remove',
+            editable: ['description', 'quantity'], carry: [], hidden: {},
+          },
+        }],
+      },
+    } as never;
+    const execute = vi.fn<RecipeExecuteCaller>(async () => composeResult);
+    const rig = mountGrid(execute);
+    await rig.route.whenLoaded();
+    rig.route.openRunModal('collect');
+    await rig.route.confirmRun();
+
+    const key = rig.route.resultGridKeys()[0]!;
+    let html = shellHtml(rig.root);
+    expect(html).toContain('<th>Description</th>');
+    expect(html).toContain('<th>Quantity</th>');
+    expect(html).toContain('No rows yet. Add a row to get started.');
+    expect(html).toContain('result-grid-add');
+
+    rig.route.addResultGridRow(key);
+    html = shellHtml(rig.root);
+    expect(html).toContain('data-recued-recipes-result-grid-cell="0:description"');
+    expect(html).toContain('data-recued-recipes-action="result-grid-remove"');
+    expect(html).toContain('1 row · Unsaved changes');
+
+    rig.route.removeResultGridRow(key, 0);
+    html = shellHtml(rig.root);
+    expect(html).toContain('0 rows · No changes yet');
+    expect(html).toMatch(/result-grid-submit[^>]*disabled/);
+  });
+
+  it('submits rows composed through add/remove mode with the shared invocation proof', async () => {
+    const initial = {
+      recipe_id: 'collect', recipe_hash: 'stored-collect-hash', success: true,
+      steps: [], errors: [],
+      output: { render: [{
+        type: 'table', data: [],
+        table_edit: {
+          section_index: 0, recipe_hash: 'stored-collect-hash',
+          into: 'payments', submit: 'Save lines', rows: 'add_remove',
+          editable: ['description', 'quantity'], carry: [], hidden: { period: '2026-07' },
+        },
+      }] },
+    } as never;
+    const execute = vi.fn<RecipeExecuteCaller>(async () => initial);
+    const rig = mountGrid(execute);
+    await rig.route.whenLoaded();
+    rig.route.openRunModal('collect');
+    await rig.route.confirmRun();
+
+    const key = rig.route.resultGridKeys()[0]!;
+    rig.route.addResultGridRow(key);
+    rig.route.setResultGridCell(key, 0, 'description', 'Labour');
+    rig.route.setResultGridCell(key, 0, 'quantity', '2');
+    await rig.route.submitResultGrid(key);
+
+    expect(execute).toHaveBeenNthCalledWith(2, {
+      recipe_id: 'collect',
+      config: {
+        period: '2026-07',
+        payments: [{ description: 'Labour', quantity: '2' }],
+      },
+      invocation: {
+        kind: 'output.table_edit',
+        recipe_hash: 'stored-collect-hash',
+        section_index: 0,
+      },
+    });
   });
 });

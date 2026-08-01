@@ -120,6 +120,25 @@ describe('mountThemeToggle', () => {
     m.dispose();
   });
 
+  it("defaults persistence to the mounted document's own window storage", () => {
+    const doc = makeDoc();
+    const host = makeEl('div');
+    const storage = makeStorage({ [THEME_STORAGE_KEY]: 'dark' });
+    const documentWithStorage = {
+      ...doc,
+      defaultView: { localStorage: storage },
+    };
+    const m = mountThemeToggle({
+      host: host as unknown as HTMLElement,
+      document: documentWithStorage as unknown as Document,
+    });
+
+    expect(m.get()).toBe('dark');
+    host.children[0]!.click();
+    expect(storage.map.get(THEME_STORAGE_KEY)).toBe('system');
+    m.dispose();
+  });
+
   it('cycles System → Light → Dark → System on click, persisting + applying each', () => {
     const doc = makeDoc();
     const host = makeEl('div');

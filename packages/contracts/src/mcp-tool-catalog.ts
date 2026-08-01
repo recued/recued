@@ -69,6 +69,11 @@ export const isMcpToolName = (name: string): boolean => {
  *  Prefixes are matched against the full rpc method name (e.g.
  *  `'contact.merge.list'.startsWith('contact.merge.')` is true). */
 export const MCP_RESERVED_RPC_PREFIXES = [
+  // D-221 — pack-owned Records carry arbitrary pack-defined business data.
+  // Listing, exporting, deleting, quota/retention changes, and accounting
+  // repair are owner control-plane actions; external agents reach Records only
+  // through installed, grant-gated Tier-P operations.
+  'records.',
   // D-205 #5 — selective CRM promotion. Pulling a stranger out of a 10k-row CRM
   // and into the personal contact graph is a judgement about WHO YOU KNOW — the
   // same class of decision as a merge, and the exact judgement `hydrate_on_match`

@@ -496,23 +496,28 @@ export const createLifecycle = (
   };
 
   // Phase G (D-109) — crash-loop auto-reset tick. Wires
-  // `autoResetIfStable()` into a periodic tick so stale counters
-  // clear without operator intervention once the server has been
-  // stable for `crash_loop_auto_reset_after_s`. Disabled entirely
-  // when the interval config is 0.
-  const autoResetIntervalS = (() => {
-    try {
-      const v = opts.runtimeStore.get('crash_loop.auto_reset_interval_s');
-      if (typeof v === 'number' && v >= 0) return v;
-    } catch { /* fall through */ }
-    return 60; // default cadence
-  })();
-  const crashLoopAutoResetTimer = autoResetIntervalS > 0
-    ? (() => {
-        // Clamp floor to 10s even when config allows lower; too-fast
-        // ticks add noise without value (auto-reset_after_s is
-        // measured in hours typically).
-        const intervalMs = Math.max(10_000, autoResetIntervalS * 1000);
+  // `autoResetIfStable()` into a periodic tick so stale counters clear without
+  // operator intervention once the server has been stable for
+  // `lifecycle.crash_loop_auto_reset_after_s`.
+  //
+  // ⚠ This cadence used to be read from the runtime store as
+  // `crash_loop.auto_reset_interval_s` — a key that was NEVER in
+  // `RUNTIME_SCHEMA`. Verified back to the commit that introduced the read
+  // (`a29ca9b66`, D-109): it never touched `schema.ts`, so the key was born
+  // dead. `RuntimeConfigStore.get` throws on unknown keys, the surrounding
+  // `catch` swallowed it, and the cadence was ALWAYS this fallback. The
+  // "disabled entirely when the interval config is 0" branch was likewise
+  // unreachable.
+  //
+  // Made an explicit constant rather than given a real schema key: the tick is
+  // an implementation detail (it was clamped to >=10s regardless), and the
+  // operator knob that matters already exists — `crash_loop_auto_reset_after_s`
+  // sets how long the server must be STABLE, which is the meaningful axis. How
+  // often we check that is not worth a Settings control.
+  const CRASH_LOOP_AUTO_RESET_TICK_MS = 60_000;
+  const crashLoopAutoResetTimer = (
+      () => {
+        const intervalMs = CRASH_LOOP_AUTO_RESET_TICK_MS;
         let timer: ReturnType<typeof setInterval> | null = null;
         return {
           start() {
@@ -541,8 +546,7 @@ export const createLifecycle = (
             timer = null;
           },
         };
-      })()
-    : null;
+      })();
 
   return lifecycle;
 };

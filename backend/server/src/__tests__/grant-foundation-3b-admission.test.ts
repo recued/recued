@@ -24,6 +24,8 @@ import {
   KERNEL_OP_REGISTRY,
   opGrantEntry,
   OWNER_CONTRACT_ID,
+  primitiveGrantEntry,
+  TIER1_TOOL_NAMES,
   topicGrantEntry,
   type ContractDefinition,
   type EnrichmentTopic,
@@ -36,7 +38,7 @@ import {
   gateStandingContractId,
 } from '../grant-governing-contract.js';
 import { createOpAdmissionGate } from '../op-admission-gate.js';
-import { reconcileOwnerGrants } from '../owner-grant-reconcile.js';
+import { grandfatherPrimitiveGrants, reconcileOwnerGrants } from '../owner-grant-reconcile.js';
 import {
   AUTHOR_DEFAULT_ONLY_RESOLVER,
   createGatedReadGrantResolver,
@@ -47,6 +49,11 @@ import { createContractDefinitionStore } from '../storage/contract-definition-st
 import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
 
 const NOW = 1_750_000_000_000;
+/** D-228 slice 5 — a definition store for the reconcile block (which has none of
+ *  its own). Unique ids per call so two mints in one test don't collide. */
+let defSeq = 0;
+const mkDefStore = (s: ReturnType<typeof createContractStore>) =>
+  createContractDefinitionStore(s, { now: () => NOW, newId: () => `ct_gf_${++defSeq}` });
 const PUBLIC_TOPIC: EnrichmentTopic = 'company';
 // A kernel op every owner is reconciled to hold (and a sensible op to revoke in tests).
 const MAIL_SEND_OP = 'core.mail.send';
@@ -703,6 +710,100 @@ describe('reconcileOwnerGrants — boot materialization (idempotent, revoke-pres
     for (const e of KERNEL_OP_REGISTRY) {
       expect(grantEntryStore.get(OWNER_CONTRACT_ID, opGrantEntry(e.op))).toBe(true);
     }
+  });
+
+  /** ⛔⛔ D-228 slice 5 — the Tier-1 chat primitives are seeded too. Until this,
+   *  the owner held NO row for `mail.search` / `contact.search` / `recipe.run`,
+   *  so they could not be revoked from the contracts UI (which mirrors these
+   *  rows 1:1) and no gate could read a decision that was never recorded. */
+  it('seeds every Tier-1 primitive as granted:true under the owner', () => {
+    reconcileOwnerGrants(store, () => NOW);
+    // ⚠ Derived from the compiled-in registry, never hand-listed — a primitive
+    // added later must be seeded automatically or this test is worthless.
+    expect(TIER1_TOOL_NAMES.length).toBeGreaterThan(0);
+    for (const name of TIER1_TOOL_NAMES) {
+      expect(
+        grantEntryStore.get(OWNER_CONTRACT_ID, primitiveGrantEntry(name)),
+        `${name} must be seeded`,
+      ).toBe(true);
+    }
+  });
+
+  /** ⛔⛔ THE PROPERTY THAT MAKES A PRIMITIVE GOVERNABLE AT ALL, and the reason
+   *  seeding had to come before any gate: a revoke is a stored `granted:false`
+   *  row, and the reconcile must never re-grant it. Without this, "turn off
+   *  mail.search" would silently undo itself on the next boot — the exact bug a
+   *  bare presence-means-granted model has. */
+  it('PRESERVES an owner revoke of a primitive across a re-boot', () => {
+    reconcileOwnerGrants(store, () => NOW);
+    const entry = primitiveGrantEntry('mail.search');
+    grantEntryStore.set(OWNER_CONTRACT_ID, entry, false, NOW);
+    expect(grantEntryStore.get(OWNER_CONTRACT_ID, entry)).toBe(false);
+
+    const second = reconcileOwnerGrants(store, () => NOW);
+    expect(second.seeded).toBe(0);
+    // ⚠ THE ASSERTION THAT MATTERS — still revoked, not re-granted.
+    expect(grantEntryStore.get(OWNER_CONTRACT_ID, entry)).toBe(false);
+  });
+
+  /** ⚠ THE DISCRIMINATOR. Primitives are namespaced, so the bare tool name must
+   *  NOT have acquired a row of its own — otherwise a gate keyed on either form
+   *  would appear to work while reading a different id than the UI writes. */
+  it('seeds the NAMESPACED id only, never the bare tool name', () => {
+    reconcileOwnerGrants(store, () => NOW);
+    expect(grantEntryStore.get(OWNER_CONTRACT_ID, primitiveGrantEntry('mail.search'))).toBe(true);
+    expect(grantEntryStore.get(OWNER_CONTRACT_ID, 'mail.search')).toBeUndefined();
+  });
+
+  /** ⛔⛔ D-228 slice 5 — THE GRANDFATHER, and the reason the mcp_wire gate does
+   *  not break anyone. A scoped door and a D-196 customer instance are FAIL-CLOSED
+   *  by author default, and no `primitive.*` row could have existed before that
+   *  slice — so gating without this would strip the always-on tools from every
+   *  such contract on upgrade. */
+  it('grandfathers EXISTING non-owner contracts onto the primitives', () => {
+    const def = mkDefStore(store).mint({
+      minted_by: 'user:1',
+      display_name: 'door',
+      scope: { channels: ['mcp'], actors: ['contracted_user'], operation_ids: [] },
+    });
+    const before = grantEntryStore.get(def.contract_id, primitiveGrantEntry('mail.search'));
+    expect(before).toBeUndefined();
+
+    const result = grandfatherPrimitiveGrants(store, () => NOW);
+    expect(result.contracts).toBeGreaterThan(0);
+    for (const name of TIER1_TOOL_NAMES) {
+      expect(
+        grantEntryStore.get(def.contract_id, primitiveGrantEntry(name)),
+        `${name} must be grandfathered`,
+      ).toBe(true);
+    }
+  });
+
+  /** ⚠ THE OWNER IS SKIPPED — `reconcileOwnerGrants` owns that contract, and two
+   *  writers on one row is how a revoke gets silently re-granted. */
+  it('does not touch the OWNER contract', () => {
+    const entry = primitiveGrantEntry('mail.search');
+    grantEntryStore.set(OWNER_CONTRACT_ID, entry, false, NOW);
+    grandfatherPrimitiveGrants(store, () => NOW);
+    expect(grantEntryStore.get(OWNER_CONTRACT_ID, entry)).toBe(false);
+  });
+
+  /** ⛔⛔ REVOKE-PRESERVING, same three-state read as the owner reconcile. A
+   *  grandfather that re-granted a door's revoked primitive every boot would be
+   *  worse than none — the owner's tightening would silently undo itself. */
+  it('PRESERVES an explicit revoke on a door', () => {
+    const def = mkDefStore(store).mint({
+      minted_by: 'user:1',
+      display_name: 'door2',
+      scope: { channels: ['mcp'], actors: ['contracted_user'], operation_ids: [] },
+    });
+    grandfatherPrimitiveGrants(store, () => NOW);
+    const entry = primitiveGrantEntry('mail.search');
+    grantEntryStore.set(def.contract_id, entry, false, NOW);
+
+    const second = grandfatherPrimitiveGrants(store, () => NOW);
+    expect(second.seeded).toBe(0);
+    expect(grantEntryStore.get(def.contract_id, entry)).toBe(false);
   });
 
   it('is IDEMPOTENT — a re-run seeds nothing and preserves every row', () => {

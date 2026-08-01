@@ -119,6 +119,40 @@ export type ApprovalLinkOnApproveAction =
 export const APPROVAL_LINK_ON_APPROVE_ACTION_SET: ReadonlySet<ApprovalLinkOnApproveAction> =
   new Set(APPROVAL_LINK_ON_APPROVE_ACTIONS);
 
+/** The actions the substrate can actually HONOUR, and therefore the only ones a
+ *  new config may select or an authoring surface may offer.
+ *
+ *  `mark_resolved` / `fire_recipe` stay in the vocabulary above because rows
+ *  written before this gate must still parse — but both route through the
+ *  approval-link processor's `applyEffect` seam, which nothing supplies, so a
+ *  consumption sits `pending` forever. An approval_link reaches the owner only
+ *  via a held checkpoint and only `create_commitment` creates one, so the
+ *  visitor's answer would be sealed into `reception_approval_intent` and surface
+ *  nowhere — while the visitor is shown a success page.
+ *
+ *  D-210 Phase C also retired the fields that named their targets, so neither is
+ *  specifiable any more: `fire_recipe` has no recipe id, and `mark_resolved`'s
+ *  target lives in a substrate `target_id` alone does not name.
+ *
+ *  ⚠ ONE list, consumed by both the validator and the authoring UI. Two copies
+ *  would let the picker offer a value the write path refuses. */
+export const APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS = [
+  'create_commitment',
+] as const satisfies readonly ApprovalLinkOnApproveAction[];
+
+export type ApprovalLinkSupportedOnApproveAction =
+  (typeof APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS)[number];
+
+export const APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTION_SET:
+  ReadonlySet<ApprovalLinkOnApproveAction> =
+  new Set(APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS);
+
+/** The default a fresh approval_link authoring form starts on. Derived, so it
+ *  can never name an action the write path would refuse. */
+export const APPROVAL_LINK_DEFAULT_ON_APPROVE_ACTION:
+  ApprovalLinkSupportedOnApproveAction =
+  APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS[0];
+
 /** Closed list of `reception_approval_intent.processing_outcome` values
  *  the substrate writes. The handler writes `'pending'` on a fresh
  *  consumption; the engine reactive path flips to terminal states. */
@@ -271,6 +305,7 @@ export type ApprovalLinkConfigValidationCode =
   | 'on_action_invalid'
   | 'on_action_target_id_invalid'
   | 'on_approve_action_unknown'
+  | 'on_approve_action_unsupported'
   | 'notification_target_unknown'
   | 'triggered_recipe_id_invalid'
   | 'success_message_too_long'
@@ -282,6 +317,34 @@ export interface ApprovalLinkConfigValidationFailure {
   readonly code: ApprovalLinkConfigValidationCode;
   readonly detail: string;
 }
+
+/** ⛔ Refusal codes that gate a WRITE and must NOT fail a READ.
+ *
+ *  `validateApprovalLinkConfig` is shared by the write surfaces (the reception
+ *  rpc, the config-template gate, the authoring form) AND by
+ *  `parseApprovalLinkConfig` on the read path, which returns `null` for ANY
+ *  failure. So a refusal added for new writes silently becomes a refusal to
+ *  READ rows that were written before it existed.
+ *
+ *  That is exactly what happened to `on_approve_action_unsupported`: it was
+ *  introduced to stop minting `mark_resolved` links whose answers reach nobody,
+ *  and the change was described as "existing rows still parse; only new writes
+ *  are refused" — which was WRONG, because parse runs the same validator.
+ *  Shipped rows (it was the authoring DEFAULT, and two Foundation templates used
+ *  it) stopped parsing, so the drain processor moved them from *pending* to
+ *  *failed* and spent budget doing it.
+ *
+ *  ⇒ A row already in the store is not made well-formed or malformed by a later
+ *  policy decision. The write surfaces refuse it; the read path reads what is
+ *  there. Anything added here must be a POLICY refusal, never a SHAPE one — a
+ *  malformed row must still fail to parse. */
+export const APPROVAL_LINK_WRITE_ONLY_REFUSAL_CODES = [
+  'on_approve_action_unsupported',
+] as const satisfies readonly ApprovalLinkConfigValidationCode[];
+
+export const APPROVAL_LINK_WRITE_ONLY_REFUSAL_CODE_SET:
+  ReadonlySet<ApprovalLinkConfigValidationCode> =
+  new Set(APPROVAL_LINK_WRITE_ONLY_REFUSAL_CODES);
 
 const isNonEmptyString = (v: unknown): v is string =>
   typeof v === 'string' && v.length > 0;
@@ -556,6 +619,45 @@ export const validateApprovalLinkConfig = (
       failures.push({
         code: 'on_approve_action_unknown',
         detail: `on_action.on_approve_action must be one of ${[...APPROVAL_LINK_ON_APPROVE_ACTION_SET].join(' | ')}`,
+      });
+    }
+    // ⛔ `mark_resolved` / `fire_recipe` are UNHONOURABLE, so refuse them at the
+    // one write point rather than minting an endpoint that cannot work.
+    //
+    // Both route through the approval-link processor's `applyEffect` seam, and
+    // NOTHING supplies it — `wire-reception-substrate.ts` says so in as many
+    // words ("Absent ⇒ review rows stay pending"). The processor is careful
+    // about it: such a row is skipped without spending drain budget and stays
+    // `pending` forever. But an approval_link reaches the owner ONLY through a
+    // held checkpoint, and only `create_commitment` creates one — so the
+    // visitor's answer is sealed into `reception_approval_intent` and surfaces
+    // NOWHERE, while the visitor is shown a success page. Silent loss with a
+    // success receipt is the worst available outcome.
+    //
+    // Nor is this merely unwired-for-now: D-210 Phase C retired the two fields
+    // that made them specifiable at all. `fire_recipe` has no recipe id to fire
+    // (`triggered_recipe_id`, retired with the `auto_accept` path that was its
+    // only scope), and `mark_resolved`'s target lives in a substrate the bare
+    // `target_id` does not name. Wiring the seam would need a design decision,
+    // not a dependency — so the honest move is to stop accepting the config.
+    //
+    // Existing rows still PARSE (the enum keeps both members); only new writes
+    // are refused. Same shape as the two retired-key refusals below.
+    if (
+      typeof oa.on_approve_action === 'string'
+      && APPROVAL_LINK_ON_APPROVE_ACTION_SET.has(oa.on_approve_action as ApprovalLinkOnApproveAction)
+      && !APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTION_SET.has(
+        oa.on_approve_action as ApprovalLinkOnApproveAction,
+      )
+    ) {
+      failures.push({
+        code: 'on_approve_action_unsupported',
+        detail:
+          `on_action.on_approve_action '${String(oa.on_approve_action)}' cannot be honoured — `
+          + 'its effect seam is unwired and D-210 Phase C retired the fields that named its '
+          + 'target, so a consumption would sit pending forever and the visitor\'s answer would '
+          + 'never reach you. Use create_commitment: the response is held at the approval gate '
+          + 'and lands in your Reception Inbox for review.',
       });
     }
     // D-210 Phase C — retired; refuse a stale key (see the removal note).

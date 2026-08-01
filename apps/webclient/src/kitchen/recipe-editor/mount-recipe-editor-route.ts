@@ -233,6 +233,7 @@ export interface MountRecipeEditorRoute {
   /** Leave-guard seam — false while loading / not-found (nothing to lose),
    *  else the mounted editor's dirty state. */
   hasUnsavedChanges(): boolean;
+  hasInFlightWork(): boolean;
 }
 
 export interface MountFormResponseRecipeSeedRouteOptions {
@@ -357,6 +358,9 @@ export const mountRecipeEditorRoute = (
     },
     hasUnsavedChanges(): boolean {
       return editor?.hasUnsavedChanges() ?? false;
+    },
+    hasInFlightWork(): boolean {
+      return editor?.hasInFlightWork() ?? false;
     },
   };
 };
@@ -583,6 +587,9 @@ export const mountFormResponseRecipeSeedRoute = (
     },
     hasUnsavedChanges(): boolean {
       return !disposed && (editor?.hasUnsavedChanges() ?? false);
+    },
+    hasInFlightWork(): boolean {
+      return !disposed && (editor?.hasInFlightWork() ?? false);
     },
   };
 };

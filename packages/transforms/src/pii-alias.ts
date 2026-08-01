@@ -788,7 +788,13 @@ export const parseAddressComponents = (
  * now moots that, but they remain excluded as the no-op they always were.)
  */
 const FULL_ALIAS_SHAPES: readonly RegExp[] = [
-  /^(?:cap\d*_)?m\d+@d\d+\.invalid$/,                                  // email composite
+  // ⚠ D-167 overlap-reveal: the local part may carry a disclosed-overlap tail
+  // (`m1.northwind@d1.invalid`). FIVE regexes encode this shape and MUST move
+  // together — `FULL_ALIAS_SHAPES`, `ALIAS_SURFACE_CI`, `ALIAS_TOKEN_PATTERN`,
+  // the exposure-scan variant, and `POTENTIAL_PII_ALIAS_LITERAL`. A missed one
+  // fails SILENTLY: the decorated alias stops being recognised and survives
+  // restore unchanged, which is the hard round-trip invariant.
+  /^(?:cap\d*_)?(?:m\d+|pii\.Person\d+)(?:\.[a-z0-9-]+){0,3}@d\d+\.invalid$/, // email composite
   /^(?:cap\d*_)?d\d+\.invalid$/,                                       // bare / sibling domain
   /^cap\d*_pii\.(?:Person|Org|Phone|Address)\d+(?:\.[a-z0-9-]+){0,3}$/, // casing sibling
   /^pii\.(?:Person|Org|Phone|Address)\d+(?:\.[a-z0-9-]+){0,3}$/,        // base alias (+ geo/iso suffix)
@@ -859,6 +865,44 @@ const aliasSimple = (
  * Reuse: same email → same composed alias. Second email at the same host
  * gets a fresh `m<N+1>` but reuses the host's `d<M>.invalid`.
  */
+/** D-227 — the four renderings of a person's name that an email local part
+ *  actually uses: `sarah.chen`, `sarah_chen`, `sarah-chen`, `sarahchen`. Strip
+ *  the separators and compare.
+ *
+ *  ⛔ DELIBERATELY NOT `chen.sarah`, `s.chen`, or `sarah.chen2`. Those are
+ *  PROBABLY her too, and "probably" is how an invented fact ends up asserted
+ *  inside an alias — the failure mode being a model confidently addressing the
+ *  wrong person. An unmatched address stays opaque and costs nothing; a wrong
+ *  match is a real error. */
+const nameFold = (s: string): string => s.toLowerCase().replace(/[._\-\s]/g, '');
+
+/** The `pii.Person<N>` alias of a ledger contact whose NAME the local part
+ *  renders — or undefined when the local part earns no link.
+ *
+ *  ⚠ The link is EARNED by the local part, never granted by ownership: `sc@` and
+ *  `sarah.s@` stay `m<N>` even when they are demonstrably Sarah's, because they
+ *  disclose nothing about whose they are and pretending otherwise would invent
+ *  the very relationship the alias is supposed to report. */
+const personAliasForEmailLocal = (
+  ledger: Ledger,
+  local: string,
+): string | undefined => {
+  const folded = nameFold(local);
+  if (folded.length === 0) return undefined;
+  for (const [key, entry] of ledger.byKindRealValue) {
+    if (!key.startsWith('name::')) continue;
+    // ⛔ MULTI-TOKEN NAMES ONLY. `alice` matching a contact called "Alice" is a
+    // common first name that could be anyone, and the existing Slice-2 prefix
+    // test caught exactly that shape. `sarah.chen` matching "Sarah Chen" is a
+    // near-unambiguous rendering of a full name. The asymmetry decides it: an
+    // unlinked address costs nothing, a wrong link asserts a relationship that
+    // is not there and ends with a model addressing the wrong person.
+    if (entry.real_value.trim().split(/\s+/).length < 2) continue;
+    if (nameFold(entry.real_value) === folded) return entry.alias_value;
+  }
+  return undefined;
+};
+
 const aliasEmail = (
   ledger: Ledger,
   value: string,
@@ -879,9 +923,39 @@ const aliasEmail = (
   const domainEntry = getOrAllocate(ledger, 'domain', parts.domain, {
     via_side_effect_of: 'email',
   });
-  const emailEntry = getOrAllocate(ledger, 'email_local', `${parts.local}@${parts.domain}`, {
+  // D-227 — when the local part RENDERS a known contact's name, the composite
+  // carries that person's alias instead of an opaque `m<N>`, so the model can
+  // see WHOSE address this is: `pii.Person1@d1.invalid`. The domain half is
+  // untouched, so two people at one company still share `d1` and "they work
+  // together" survives.
+  //
+  // ⛔ FIRST MATCH EARNS IT; a later name-matching address at the SAME domain
+  // falls back to `m<N>`. Sarah with both `sarah.chen@acme.com` and
+  // `sarahchen@acme.com` would otherwise mint ONE token for TWO real addresses
+  // and restore could not tell them apart — the hard round-trip invariant. The
+  // link is a HINT, not a guarantee: her primary reads `pii.Person1@d1.invalid`
+  // and her aliases read `m<N>@d1.invalid`, which is honest.
+  const personAlias = personAliasForEmailLocal(ledger, parts.local);
+  const composite = `${parts.local}@${parts.domain}`;
+  // ⛔⛔ GLOBAL, NOT PER-DOMAIN. `byKindBaseAlias` keys on the BASE alone
+  // (`email_local::pii.Person1`), so `pii.Person1@d1.invalid` and
+  // `pii.Person1@d2.invalid` collapse to ONE ledger row and restore returns
+  // whichever was written last. Caught by a round-trip probe: Sarah's
+  // `sarah.chen@acme.com` restored to `sarah-chen@other.com`. The existing
+  // `m<N>` counter is global for exactly this reason — every composite's base is
+  // unique. So the person link is minted ONCE, for the first address that earns
+  // it; every later one, at any domain, falls back to `m<N>`.
+  const taken = personAlias !== undefined && [...ledger.byKindRealValue].some(
+    ([key, e]) => key.startsWith('email_local::')
+      && e.alias_value === personAlias
+      && e.real_value !== composite,
+  );
+  const emailEntry = getOrAllocate(ledger, 'email_local', composite, {
     via_side_effect_of: 'email',
     ...(source_ref ? { source_ref } : {}),
+    ...(personAlias !== undefined && !taken
+      ? { aliasBuilder: () => ({ alias_value: personAlias, base_alias: personAlias }) }
+      : {}),
   });
   return `${emailEntry.alias_value}@${domainEntry.alias_value}`;
 };
@@ -1683,7 +1757,10 @@ const kindFromBase = (base: string): LedgerKind | undefined => {
  *  when the token isn't a known alias surface. */
 const lookupAliasReal = (ledger: Ledger, token: string): string | undefined => {
   const base = stripAliasSuffix(token.split('@')[0]);
-  const kind = kindFromBase(base);
+  // ⛔ Same `@` rule as `ledgerKindForAlias` — see `isEmailCompositeToken`. The
+  // BASE is still the local half (that is the ledger key); only the KIND must
+  // not be inferred from its shape.
+  const kind = isEmailCompositeToken(token) ? 'email_local' : kindFromBase(base);
   if (!kind) return undefined;
   return ledger.byKindBaseAlias.get(kindKey(kind, base))?.real_value;
 };
@@ -1717,9 +1794,20 @@ const lookupAliasReal = (ledger: Ledger, token: string): string | undefined => {
  * are not re-routed either).
  */
 const ALIAS_SURFACE_CI =
-  /^(?:cap\d*_)?(?:pii\.(?:person|org|phone|address|url|id|account|email)\d+(?:\.[a-z0-9-]+){0,3}|m\d+@d\d+\.invalid|d\d+\.invalid)$/i;
+  /^(?:cap\d*_)?(?:pii\.(?:person|org|phone|address|url|id|account|email)\d+(?:\.[a-z0-9-]+){0,3}|(?:m\d+|pii\.person\d+)(?:\.[a-z0-9-]+){0,3}@d\d+\.invalid|d\d+\.invalid)$/i;
+/** ⛔⛔ AN `@` DECIDES THE KIND, BEFORE THE LOCAL PART IS READ. The composite's
+ *  local half may now be a PERSON alias (`pii.Person1@d1.invalid`, D-227), and
+ *  `kindFromBase('pii.Person1')` answers `'name'` — so typing by the local part
+ *  alone would resolve an EMAIL token to the NAME ledger row and restore
+ *  "Sarah Chen" into a `mail.send(to:)`. The `@` is unambiguous: nothing in the
+ *  readable family contains one, and today's `m<N>@d<M>.invalid` types the same
+ *  way it always did. */
+const isEmailCompositeToken = (token: string): boolean =>
+  token.includes('@') && /\.invalid$/i.test(token);
+
 export const ledgerKindForAlias = (token: string): LedgerKind | undefined => {
   if (typeof token !== 'string' || !ALIAS_SURFACE_CI.test(token)) return undefined;
+  if (isEmailCompositeToken(token)) return 'email_local';
   // Direct (canonical-case echo, the common path), then the re-cased form for a
   // case-mutated echo (`pii.org1`, `PII.PERSON1`, `pii.phone1.GB`) — mirrors restore.
   return (
@@ -1736,20 +1824,20 @@ export const ledgerKindForAlias = (token: string): LedgerKind | undefined => {
  *  "M1"/"m2" (model codes, "M1 MacBook"); every emitted email alias is the
  *  composite or `pii.Email<N>`, never a standalone `m<N>`. */
 const ALIAS_TOKEN_PATTERN =
-  /\b(?:cap\d*_)?m\d+@d\d+\.invalid\b|\b(?:cap\d*_)?pii\.(?:Person|Org|Phone|Address|Url|Id|Account|Email)\d+(?:\.[a-z0-9-]+){0,3}\b|\b(?:cap\d*_)?d\d+\.invalid\b/gi;
+  /\b(?:cap\d*_)?(?:m\d+|pii\.Person\d+)(?:\.[a-z0-9-]+){0,3}@d\d+\.invalid\b|\b(?:cap\d*_)?pii\.(?:Person|Org|Phone|Address|Url|Id|Account|Email)\d+(?:\.[a-z0-9-]+){0,3}\b|\b(?:cap\d*_)?d\d+\.invalid\b/gi;
 
 /** The exposure scan also admits an alias after JSON-key separators such as
  * `_`, `.`, or `-`. The key-aware egress pass deliberately emits
  * `owner_pii.Person1`; `\b` would miss it because `_` is a regex word
  * character, leaving a shown alias outside the request restore authority. */
 const EXPOSED_ALIAS_TOKEN_PATTERN =
-  /(?<![A-Za-z0-9])(?:cap\d*_)?m\d+@d\d+\.invalid(?![A-Za-z0-9])|(?<![A-Za-z0-9])(?:cap\d*_)?pii\.(?:Person|Org|Phone|Address|Url|Id|Account|Email)\d+(?:\.[a-z0-9-]+){0,3}(?![A-Za-z0-9])|(?<![A-Za-z0-9])(?:cap\d*_)?d\d+\.invalid(?![A-Za-z0-9])/gi;
+  /(?<![A-Za-z0-9])(?:cap\d*_)?(?:m\d+|pii\.Person\d+)(?:\.[a-z0-9-]+){0,3}@d\d+\.invalid(?![A-Za-z0-9])|(?<![A-Za-z0-9])(?:cap\d*_)?pii\.(?:Person|Org|Phone|Address|Url|Id|Account|Email)\d+(?:\.[a-z0-9-]+){0,3}(?![A-Za-z0-9])|(?<![A-Za-z0-9])(?:cap\d*_)?d\d+\.invalid(?![A-Za-z0-9])/gi;
 
 /** Cheap conservative gate before a caller pays for a whole-value walk. False
  * positives are harmless; false negatives would skip literal collision
  * protection. */
 const POTENTIAL_PII_ALIAS_LITERAL =
-  /pii\.|(?:cap\d*_)?(?:m\d+@d\d+\.invalid|d\d+\.invalid)/i;
+  /pii\.|(?:cap\d*_)?(?:(?:m\d+|pii\.person\d+)(?:\.[a-z0-9-]+){0,3}@d\d+\.invalid|d\d+\.invalid)/i;
 export const containsPotentialPiiAliasLiteral = (text: string): boolean =>
   typeof text === 'string' && POTENTIAL_PII_ALIAS_LITERAL.test(text);
 
@@ -1757,16 +1845,27 @@ const reverseKeyForAliasToken = (
   ledger: Ledger,
   token: string,
 ): string | undefined => {
-  const keyForSurface = (surface: string): string | undefined => {
+  // ⛔⛔ THE THIRD SITE THAT TYPES BY THE LOCAL PART, and the one that decides
+  // whether an alias may be RESTORED AT ALL. `kindFromBase('pii.Person2')`
+  // answers `'name'`, so a person-linked composite resolved to the NAME key,
+  // authority was granted for the name instead of the email, and the email
+  // token reached the OWNER un-restored: "loop in Sarah Chen
+  // (pii.Person2@d1.invalid)". `restoreInString` round-tripped it perfectly in
+  // isolation — the failure lived entirely in the authority derivation, and only
+  // a bench task reading the user-visible output caught it.
+  //
+  // ⚠ `isEmailComposite` takes the WHOLE token, so it must be tested before the
+  // `@`-split throws the domain away.
+  const keyForSurface = (surface: string, whole: string): string | undefined => {
     const base = stripAliasSuffix(surface);
-    const kind = kindFromBase(base);
+    const kind = isEmailCompositeToken(whole) ? 'email_local' : kindFromBase(base);
     return kind === undefined ? undefined : kindKey(kind, base);
   };
-  const direct = keyForSurface(token.split('@')[0] ?? token);
+  const direct = keyForSurface(token.split('@')[0] ?? token, token);
   if (direct !== undefined && ledger.byKindBaseAlias.has(direct)) return direct;
   const canonical = toCanonicalCasing(token);
   if (canonical !== token) {
-    const recased = keyForSurface(canonical.split('@')[0] ?? canonical);
+    const recased = keyForSurface(canonical.split('@')[0] ?? canonical, canonical);
     if (recased !== undefined && ledger.byKindBaseAlias.has(recased)) {
       return recased;
     }
@@ -1981,12 +2080,14 @@ const overlapSuffix = (realValue: string, disclosed: ReadonlySet<string>): strin
  * unreferenced stays opaque `pii.Person1`, partially-named becomes
  * `pii.Person1.sarah`, the unrevealed rest ("Smith") stays hidden.
  *
- * Scope — bare `pii.Person<N>` / `pii.Org<N>` ONLY (the readable kinds with NO
- * existing suffix): a partial first-name / org token is the coreference pattern.
- * Phone/address aliases already spend the suffix slot on geo/iso and a partial
- * phone/email is not a coreference key; email composites, and any alias ALREADY
- * carrying a suffix (a geo/iso suffix, or a prior overlap pass) are left untouched
- * — so this is IDEMPOTENT. The `.suffix` rides the alias grammar's existing geo/iso
+ * Scope — bare `pii.Person<N>` / `pii.Org<N>`, plus the `m<N>@d<M>.invalid` EMAIL
+ * COMPOSITE (2026-07-30), whose tail rides the LOCAL part. Phone/address aliases
+ * already spend the suffix slot on geo/iso; any alias ALREADY carrying a suffix
+ * (geo/iso, or a prior overlap pass) is left untouched — so this is IDEMPOTENT.
+ * ⚠ Email was previously excluded outright. It is included now because the
+ * coreference it severs is the one that actually broke a live turn: the model
+ * held the owner's own "Northwind Traders" and a bare `m1@d1.invalid`, could not
+ * join them, and gave up — reporting that "the name and email were redacted". The `.suffix` rides the alias grammar's existing geo/iso
  * slot, so `restoreInString` strips it (`stripAliasSuffix`) and round-trips the
  * base: ZERO new restore machinery, the hard zero-failure-restore invariant
  * preserved.
@@ -2004,6 +2105,38 @@ export const decorateOverlapReveal = (
   if (typeof text !== 'string' || text.length === 0 || disclosed.size === 0) return text;
   return text.replace(ALIAS_TOKEN_PATTERN, (match) => {
     const kind = ledgerKindForAlias(match);
+    // ⛔ EMAIL COMPOSITE — the tail rides the LOCAL part (`m1.northwind@d1.invalid`),
+    // never the domain. Three reasons, in order of how badly the alternatives fail:
+    //
+    //  1. `.invalid` MUST stay terminal. It is a reserved non-resolving TLD (RFC
+    //     2606) and it is the ONLY reason this family skips the `pii.` prefix.
+    //     A trailing tail (`d1.invalid.northwind`) makes the effective TLD the
+    //     tail — and brand gTLDs are real (`.bmw`, `.ford`), so an escaped alias
+    //     could RESOLVE and a send could actually deliver.
+    //  2. A tail BEFORE `.invalid` (`d1.northwind.invalid`) keeps that property
+    //     but breaks restore: `d<N>.invalid` is the whole `byKindBaseAlias` KEY,
+    //     not a base+suffix, so `stripAliasSuffix`'s exact-match exception misses
+    //     and the generic path strips to `d<N>` — a key that does not exist.
+    //  3. The local part needs NO new machinery: `lookupAliasReal` and
+    //     `ledgerKindForAlias` already do `token.split('@')[0]`, and the generic
+    //     strip turns `m1.northwind` into `m1`, which IS the email_local base.
+    //
+    // ⚠ And it is the placement that WORKS: a domain-derived hint is useless for
+    // the small businesses most likely to be in a contact graph — they run on
+    // gmail, so their identity is in the NAME, not the domain. A local-part tail
+    // carries the disclosed coreference token wherever that identity lives.
+    if (kind === 'email_local') {
+      const at = match.indexOf('@');
+      if (at <= 0) return match;
+      const local = match.slice(0, at);
+      if (stripAliasSuffix(local) !== local) return match;   // already tailed → idempotent
+      const realEmail = lookupAliasReal(ledger, match);
+      if (realEmail === undefined) return match;
+      const emailSuffix = overlapSuffix(realEmail, disclosed);
+      return emailSuffix.length > 0
+        ? `${local}.${emailSuffix}${match.slice(at)}`
+        : match;
+    }
     if (kind !== 'name' && kind !== 'org') return match;     // Person/Org readable family only
     if (stripAliasSuffix(match) !== match) return match;     // already suffixed → leave (idempotent)
     const real = lookupAliasReal(ledger, match);
@@ -2659,7 +2792,24 @@ const aliasIdentifierPass = (
   fields: readonly PiiFieldTag[],
   counters?: RedactionCounters,
 ): void => {
-  for (const field of fields) {
+  // ⛔⛔ NAME FIELDS ALIAS FIRST, and D-227 does not work without it. An email
+  // whose local part renders a known contact's name carries that person
+  // (`pii.Person1@d1.invalid`), which requires the NAME to be in the ledger when
+  // the EMAIL is aliased. Record field order is the producer's, and the prefetch
+  // entity payload happens to put `email` before `name` — so the link never
+  // fired on the real path while every unit test passed, because each seeded the
+  // name by hand first. Caught by a deterministic BENCH task asserting the
+  // packet, which is the only surface that walks a real record.
+  //
+  // ⚠ STABLE partition, never a sort: within-kind order is preserved, so each
+  // kind's counter sequence is byte-identical to before and no alias is
+  // renumbered. That matters — D-213 P9 pins alias NUMBERING as a pure function
+  // of durable rows, and a reordering that renumbered would break a restart.
+  const ordered = [
+    ...fields.filter((f) => f.kind === 'name'),
+    ...fields.filter((f) => f.kind !== 'name'),
+  ];
+  for (const field of ordered) {
     // Hoisted so the non-`content` narrowing survives into `aliasIdentifierValue`'s
     // callbacks (TypeScript discards property narrowing across a closure boundary).
     const kind = field.kind;

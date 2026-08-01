@@ -45,6 +45,10 @@ import type { MetaFieldType } from './entity-schema.js';
 import { WIRE_AUTHORITY_ARG_PATHS } from './open-projection.js';
 import type { EntityFieldPrivacy } from './pii-alias.js';
 import type { WebhookProfileId } from './webhook-profiles.js';
+// ⚠ Type-only, and deliberately so: `op-model.ts` imports FROM this module
+// (also type-only), so a value import either way would be a runtime cycle.
+// Both are erased, so this is a type-level reference only.
+import type { HttpUploadSpec } from './op-model.js';
 
 /** Catalog operations reuse the existing four-tier `RiskTier` ladder —
  *  `read` < `write` < `admin` < `destructive`. Aliased (not redefined) so
@@ -933,9 +937,53 @@ export interface ProviderDefaultPolicy {
 //  not), the connector `describe()` / `tools/list` introspection match, and
 //  the `ProviderSideStateDecl` vendor-sync declaration.
 
-/** API transport (spec § API surface). */
-export type ApiTransport = 'rest' | 'graphql';
-export const API_TRANSPORTS: readonly ApiTransport[] = ['rest', 'graphql'];
+/** D-225 Slice 2 — one row of the pack-detail review an owner completes before
+ *  a generated MCP pack is installed.
+ *
+ *  ⛔ `stored` and `suggested` are SEPARATE fields on purpose, and the
+ *  separation is the security property. `stored` is what lands if the owner
+ *  changes nothing — always the conservative floor. `suggested` is a one-click
+ *  offer derived from what the SERVER claims about its own tool.
+ *
+ *  Collapsing them would mean a server's `readOnlyHint: true` became the stored
+ *  default, so an owner clicking Save without reading would hand a third party
+ *  auto-run permission — chosen by the server, with one boolean, bypassing both
+ *  `confirm_risk_downgrade` and the approval floor because the owner nominally
+ *  consented. Built by `mcpPackReviewRows`. */
+export interface McpPackReviewRow {
+  /** The pack-local op id (`<label>_<descriptor-hash-8>`). */
+  op: string;
+  /** The real tool name — what actually goes on the wire. */
+  tool: string;
+  /** The server's description, for display. */
+  description?: string;
+  /** ⛔ What is STORED if the owner changes nothing. Always the floor. */
+  stored: { risk: 'write'; approval: 'ask' };
+  /** ⚠ A one-click offer, present only when the server published a usable
+   *  hint. NOT applied — the owner clicks it or it does not happen. */
+  suggested?: { risk: OperationRiskTier; approval: OperationApproval };
+  /** The server's own claims, for an ATTRIBUTED badge. Never authority. */
+  server_says?: { read_only?: boolean; destructive?: boolean };
+}
+
+/** API transport (spec § API surface).
+ *
+ *  D-225 Slice 1 — `'mcp'` joins `'rest'` / `'graphql'`. MCP is a TRANSPORT
+ *  here, nothing more: it decides no authority, mints no vocabulary, and the
+ *  op it backs is granted, tiered, and audited exactly like a REST-backed one.
+ *  The other half of the word — MCP as a DOOR that issues a tool catalog — is
+ *  the inbound `mcp-server.ts` surface and is untouched by this member.
+ *
+ *  ⚠ Unlike its two peers, an mcp binding carries NO independent write-ness
+ *  signal. A REST binding's `method` and a GraphQL document's leading keyword
+ *  both cross-check the author's declared `risk_tier`
+ *  (`validateApiBindingRiskConsistency`); an MCP tool NAME proves nothing, and
+ *  neither does `tools/list` (its `annotations.readOnlyHint` is a server's
+ *  self-report, not proof). So on this transport the author's declaration is
+ *  the ONLY risk signal — which is why a D-225 Slice-2 GENERATED pack must
+ *  tier conservatively rather than infer. */
+export type ApiTransport = 'rest' | 'graphql' | 'mcp';
+export const API_TRANSPORTS: readonly ApiTransport[] = ['rest', 'graphql', 'mcp'];
 export const isApiTransport = (v: unknown): v is ApiTransport =>
   typeof v === 'string' && (API_TRANSPORTS as readonly string[]).includes(v);
 
@@ -1158,9 +1206,9 @@ export const QUEUE_POLL_TIMEOUT_CAP_MS: Record<QueueKind, number> = {
 
 /** Discriminator over the API execution-binding union. */
 export type ApiExecutionBindingKind =
-  | 'rest' | 'graphql' | 'webhook_subscription' | 'queue_subscription' | 'push_channel';
+  | 'rest' | 'graphql' | 'mcp' | 'webhook_subscription' | 'queue_subscription' | 'push_channel';
 export const API_EXECUTION_BINDING_KINDS: readonly ApiExecutionBindingKind[] = [
-  'rest', 'graphql', 'webhook_subscription', 'queue_subscription', 'push_channel',
+  'rest', 'graphql', 'mcp', 'webhook_subscription', 'queue_subscription', 'push_channel',
 ];
 export const isApiExecutionBindingKind = (v: unknown): v is ApiExecutionBindingKind =>
   typeof v === 'string' && (API_EXECUTION_BINDING_KINDS as readonly string[]).includes(v);
@@ -1227,6 +1275,23 @@ export interface RestExecutionBinding {
    *  no `output` mapping (the validator enforces both — raw bytes can never be
    *  projected into a recipe field). */
   response_capture?: RestResponseCaptureSpec;
+  /** D-216 / D-217 — the op's upload declaration, carried onto the RUNTIME
+   *  binding.
+   *
+   *  ⛔ **This field states a behaviour that was already happening by
+   *  accident.** `HttpOperationBind.upload` (`op-model.ts`, where D-216
+   *  declared it) has no runtime consumer at all — only the authoring
+   *  validator reads it. Yet the decomposer carries the whole authored `bind`
+   *  object through with a cast (`decomposer.ts` — `op.bind as unknown as
+   *  ApiExecutionBinding`), so `upload` HAS been arriving here untyped since
+   *  D-216. Verified against the shipped `social-publishing` pack.
+   *
+   *  🔑 D-217's chunked walk must READ this at dispatch (§ 9.2 — for a chunked
+   *  op the declaration IS the program), so it cannot rest on an untyped rider
+   *  that a future sanitizing install path would drop silently, taking the
+   *  whole feature with it. Typed here, and the pass-through is pinned by a
+   *  decomposer test rather than assumed. */
+  upload?: HttpUploadSpec;
   /** D-192 CORE #8a — the EXACT OpenAPI document path this op proves against,
    *  used ONLY by the publish-time prover when `path_template` differs from the
    *  doc in a way the surface `path_alias` can't express (an interior optional
@@ -1330,6 +1395,42 @@ export interface GraphQLExecutionBinding {
   result_data_path?: string;
 }
 
+/** D-225 Slice 1 — an MCP tool call, declared. The transport peer of
+ *  `RestExecutionBinding` / `GraphQLExecutionBinding`: the gateway translates
+ *  it into a `connection_kind: 'mcp'` dispatch (`tool` + `args`), the
+ *  `connection.mcp` handler speaks JSON-RPC `tools/call`, and the op above it
+ *  is an ordinary contract-granted operation.
+ *
+ *  🔑 **`tool` lives on the BINDING, so it is never caller data.** This is the
+ *  whole security difference from the raw `connection-mcp-read` / `-write`
+ *  path, where the tool name arrives as recipe input and needs a runtime
+ *  anti-spoof gate to stop a read-tier wrapper from naming a write tool. Here
+ *  the caller's args are quarantined into the nested `args` object and cannot
+ *  reach the top-level dispatch keys at all — the property is STRUCTURAL, not
+ *  a check that can be forgotten. A recipe cannot redirect a read op to a
+ *  write tool for the same reason it cannot redirect a REST GET to a POST:
+ *  the binding owns the call target.
+ *
+ *  ⚠ No `static_arguments` sibling to `RestExecutionBinding.static_query` /
+ *  `static_body`. Nothing needs one yet — a generated pack derives its ops
+ *  from `tools/list`, which declares no fixed argument values — and an unused
+ *  field is one a corpus learns to copy. Widen deliberately if a real vendor
+ *  needs it. */
+export interface McpExecutionBinding {
+  kind: 'mcp';
+  /** the MCP tool name invoked via JSON-RPC `tools/call`. Binding-owned. */
+  tool: string;
+  /** JSON Schema for the tool's arguments — the MCP `inputSchema`, carried
+   *  verbatim. Informational at this slice (the same posture as
+   *  `GraphQLExecutionBinding.variables_schema`); D-225 Slice 2 hashes it as
+   *  part of the tool DESCRIPTOR so a mutated tool re-asks instead of
+   *  inheriting its grant. */
+  arguments_schema?: unknown;
+  /** JSON Schema for the tool's result, when the server publishes one
+   *  (`outputSchema`). Informational. */
+  result_schema?: unknown;
+}
+
 interface WebhookExecutionBindingBase {
   kind: 'webhook_subscription';
   handshake?: 'slack_url_verification' | 'graph_validation_token' | 'none';
@@ -1376,6 +1477,7 @@ export interface PushChannelBinding {
 export type ApiExecutionBinding =
   | RestExecutionBinding
   | GraphQLExecutionBinding
+  | McpExecutionBinding
   | WebhookExecutionBinding
   | QueueSubscriptionBinding
   | PushChannelBinding;
@@ -1875,14 +1977,16 @@ export interface ProviderSurfaces {
   api?: ProviderApiSurface;
   connector?: ProviderConnectorSurface;
   notification?: ProviderNotificationSurface;
+  /** D-221 — core-local fixed Records substrate. This surface is emitted only
+   * by the verified pack installer; it is not a public authoring cell. */
+  records?: import('./records.js').ProviderRecordsSurface;
 }
 
-/** D-182 §8 — the hard door-exposability invariant. `cli` and `service`
- *  ingredients are local code-exec / external subprocess and are NEVER
- *  externally exposable: an external actor (a door / MCP-channel agent) may
- *  *trigger a recipe* that uses one internally (itself Gateway-gated — the §7.2
- *  recipe-internal reachability grant), but can NEVER call it directly as a raw
- *  tool. Returns `false` for those two kinds, `true` otherwise.
+/** D-182 §8 + D-221 §3.3 — the hard door-exposability invariant. `cli`,
+ *  `service`, and Records-surface ingredients are NEVER externally exposable:
+ *  an external actor (a door / MCP-channel agent) may *trigger a recipe* that
+ *  uses one internally (itself Gateway-gated), but can NEVER call it directly
+ *  as a raw tool. Returns `false` for those cases, `true` otherwise.
  *
  *  The property is DERIVED (the manifest carries no literal `external_exposable`
  *  flag) so it can't drift from the kind:
@@ -1892,10 +1996,11 @@ export interface ProviderSurfaces {
  *      resolves a tool). cli is not a core `IngredientKind` enum member — it
  *      rides the connector surface — so this is the canonical cli detector.
  *
- *  This is the SINGLE source of truth §8 references; every MCP per-ingredient
+ *  This is the SINGLE source of truth §8 and D-221 §3.3 reference; every MCP per-ingredient
  *  surface (tools/list, the grant catalog, token authorization, tools/call
  *  routing) gates on it so an installed cli/service catalog can never surface as
- *  a `recued_ingredient_<slug>` tool. Null/undefined fails closed (not
+ *  a `recued_ingredient_<slug>` tool. Records primitives likewise cannot bypass
+ *  their receiving recipe's role check. Null/undefined fails closed (not
  *  exposable). */
 export const isExternallyExposableIngredient = (
   manifest:
@@ -1904,6 +2009,12 @@ export const isExternallyExposableIngredient = (
     | undefined,
 ): boolean => {
   if (!manifest) return false;
+  // D-221 §3.3 — Records operations are reached only behind a receiving
+  // recipe, where pack code applies its business-role check. Exposing the
+  // storage catalog or `recued_op_*` primitive would let a door skip that
+  // middle link (and raw reads default on for new tokens), so both direct MCP
+  // surfaces must fail the shared hard fence.
+  if (manifest.surfaces?.records !== undefined) return false;
   if (manifest.kind === 'service') return false;
   return !isCliIngredient(manifest);
 };

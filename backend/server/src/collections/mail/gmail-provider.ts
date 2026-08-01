@@ -46,6 +46,7 @@ import { simpleParser } from 'mailparser';
 import type { AddressObject, ParsedMail } from 'mailparser';
 import { IngredientError } from '@recued/ingredients';
 import {
+  GOOGLE_TOKEN_URL,
   isMailReconciliationId,
   MAIL_RECONCILIATION_ID_HEADER,
 } from '@recued/contracts';
@@ -56,12 +57,17 @@ import {
   MAIL_SENT_RECONCILIATION_MAX_SCAN,
   MAIL_SENT_RECONCILIATION_MAX_SOURCE_BYTES,
   mailSentReconciliationAttachmentPartFromBytes,
+  classifyMailApiStatus,
+  classifyOAuthFailure,
+  createMailSyncOutcomeReporter,
   normalizeMailAttachmentMimeType,
   sanitizeMailAttachmentFilename,
   type CanonicalMessage,
   type InitialScanOptions,
   type InboundMailAttachmentPart,
   type MailProvider,
+  type MailSyncFailureKind,
+  type MailSyncOutcomeListener,
   type MailSentReconciliationCandidate,
   type MailSentReconciliationQuery,
   type MailSentReconciliationResult,
@@ -73,12 +79,12 @@ import {
 } from './provider.js';
 import {
   getAccessToken,
+  grantedScopesInclude,
   keyPrefix,
   OAuthError,
   requireProviderConfig,
   type HttpFetcher,
   type OAuthAccountStore,
-  type OAuthProviderConfig,
   type OAuthProviderConfigSource,
 } from './oauth.js';
 
@@ -508,6 +514,30 @@ export const createGmailProvider = (
     opts.log?.('warn', msg, { err: err instanceof Error ? err.message : String(err) });
   };
 
+  // Per-attempt outcome reporting. A thrown error out of a scan / tick is almost
+  // always an `OAuthError` from the token refresh, so classify on its status —
+  // where 400 means `invalid_grant`, i.e. auth (see `classifyOAuthStatus`).
+  const outcomes = createMailSyncOutcomeReporter({
+    now: nowOf,
+    classifyError: (err): MailSyncFailureKind =>
+      err instanceof OAuthError
+        ? classifyOAuthFailure(err.status, err.oauth_error)
+        : 'transient',
+  });
+
+  /** Record a swallowed read failure so the enclosing attempt reports it. The
+   *  `getWithRetry` shape returns `null` and the callers early-return, so
+   *  without this a 403 on the history endpoint looks exactly like a clean
+   *  no-op tick. */
+  const noteReadFailure = (status: number, msg: string, body: unknown): void => {
+    // The BODY is threaded in, not just the status: a 403 is quota far more often
+    // than it is a scope problem, and only the body's `reason` tells them apart.
+    outcomes.noteFailure(
+      classifyMailApiStatus(status, typeof body === 'string' ? body : undefined),
+    );
+    markError(msg, body);
+  };
+
   const ensureToken = async (force: boolean): Promise<string> => {
     if (accessToken && !force) return accessToken;
     accessToken = await getAccessToken({
@@ -522,7 +552,29 @@ export const createGmailProvider = (
     return accessToken;
   };
 
-  const getWithRetry = async <T>(url: string): Promise<T | null> => {
+  /** Shared read helper.
+   *
+   *  ⚠ `treat404AsAbsent` exists because 404 means two OPPOSITE things on this
+   *  API. On a message-detail read it is a deleted message — routine, not a
+   *  failure. On `users.history.list` it means the `startHistoryId` has aged out
+   *  of Gmail's history window and a FULL SYNC is required
+   *  (developers.google.com/workspace/gmail/api/guides/sync). Treating the
+   *  latter as absent made the tick return normally and report SUCCESS forever
+   *  while no mail was ever ingested again — the stale watermark is never
+   *  advanced, so every subsequent tick 404s identically. Callers that cannot
+   *  survive a silent 404 pass `false`. */
+  const getWithRetry = async <T>(
+    url: string,
+    {
+      treat404AsAbsent = true,
+      onFailureStatus,
+    }: {
+      treat404AsAbsent?: boolean;
+      /** Observe the failing status. A per-call CLOSURE rather than shared
+       *  provider state, so overlapping ticks cannot read each other's status. */
+      onFailureStatus?: (status: number) => void;
+    } = {},
+  ): Promise<T | null> => {
     const first = await gmailGet<T>(url, { accessToken: await ensureToken(false), fetcher });
     if (first.ok) return first.data;
     if (first.status === 401) {
@@ -531,11 +583,13 @@ export const createGmailProvider = (
         fetcher,
       });
       if (second.ok) return second.data;
-      markError(`gmail ${url} → ${second.status}`, second.text);
+      onFailureStatus?.(second.status);
+      noteReadFailure(second.status, `gmail ${url} → ${second.status}`, second.text);
       return null;
     }
-    if (first.status === 404) return null;
-    markError(`gmail ${url} → ${first.status}`, first.text);
+    if (first.status === 404 && treat404AsAbsent) return null;
+    onFailureStatus?.(first.status);
+    noteReadFailure(first.status, `gmail ${url} → ${first.status}`, first.text);
     return null;
   };
 
@@ -679,6 +733,13 @@ export const createGmailProvider = (
     return opts.accountStore.get(historyIdKey());
   };
 
+  /** Drop the cursor so the next tick re-seeds from the live profile. Called only
+   *  when Gmail has rejected it as aged out — a cursor it will never accept
+   *  again, so keeping it means 404-ing forever. */
+  const clearHistoryWatermark = async (): Promise<void> => {
+    await opts.accountStore.delete(historyIdKey());
+  };
+
   // ── initial scan ────────────────────────────────────────────
   const runInitialScan = async (scanOpts: InitialScanOptions): Promise<void> => {
     // Capture historyId before listing — ensures we don't miss
@@ -729,6 +790,9 @@ export const createGmailProvider = (
     }
     let pageToken: string | undefined;
     let latestId = watermark;
+    // Set when the history endpoint rejects our cursor as aged-out. Per-attempt
+    // local, so a concurrent tick cannot clear or observe it.
+    let cursorAgedOut = false;
     do {
       const url = new URL(`${GMAIL_API_BASE}/history`);
       url.searchParams.set('startHistoryId', watermark);
@@ -737,8 +801,31 @@ export const createGmailProvider = (
       url.searchParams.append('historyTypes', 'labelAdded');
       url.searchParams.append('historyTypes', 'labelRemoved');
       if (pageToken) url.searchParams.set('pageToken', pageToken);
-      const page = await getWithRetry<GmailHistoryResponse>(url.toString());
-      if (!page) return;
+      // `treat404AsAbsent: false` — a 404 here is an aged-out `startHistoryId`,
+      // not an absent record, and it is PERMANENT until the watermark is
+      // rebuilt. It must report a failed attempt (see the recovery below).
+      const page = await getWithRetry<GmailHistoryResponse>(url.toString(), {
+        treat404AsAbsent: false,
+        onFailureStatus: (status) => { if (status === 404) cursorAgedOut = true; },
+      });
+      if (!page) {
+        if (cursorAgedOut) {
+          // RECOVER, don't just report. Clearing the watermark makes the next
+          // tick take the re-seed branch above and rebuild the cursor from the
+          // live profile; leaving it in place would 404 identically forever.
+          //
+          // ⚠ Honest limit: re-seeding resumes from NOW, so changes made while
+          // the cursor was aged out are not recovered by the history path. Gmail
+          // requires a full sync for that (a `collection.resync`), which this
+          // does not perform on its own — the reported failure is what surfaces
+          // the gap instead of hiding it.
+          await clearHistoryWatermark();
+          markError('gmail history cursor aged out — re-seeding on next tick', {
+            startHistoryId: watermark,
+          });
+        }
+        return;
+      }
       for (const entry of page.history ?? []) {
         for (const add of entry.messagesAdded ?? []) {
           await fetchAndEmit(add.message.id, 'created', cb);
@@ -1004,7 +1091,13 @@ export const createGmailProvider = (
   // from the user's granted-scope list. Re-enrollment with new
   // scopes recreates the provider — config() is read once here so
   // a later mutation can't desync the field from the method.
-  const sendCapable = (opts.config().granted_scopes ?? []).includes(GMAIL_SEND_SCOPE);
+  // Tolerant match — a provider need not echo a scope in the form it was
+  // requested, and an exact miss makes send silently unavailable (see
+  // `grantedScopesInclude`).
+  const sendCapable = grantedScopesInclude(
+    opts.config().granted_scopes ?? [],
+    GMAIL_SEND_SCOPE,
+  );
   const accountEmail = opts.config().account_email ?? '';
 
   return {
@@ -1023,16 +1116,19 @@ export const createGmailProvider = (
     },
 
     async initialScan(scanOpts) {
-      await runInitialScan(scanOpts);
+      await outcomes.run('initial_scan', () => runInitialScan(scanOpts));
     },
 
     async startSync(cb) {
       const scheduler = opts.scheduler ?? defaultScheduler;
       const intervalMs = Math.max(1, opts.config().poll_seconds) * 1000;
+      // Every tick is wrapped, not just the first — the scheduled ones are
+      // precisely the attempts whose failures used to vanish into `markError`.
+      const tick = (): Promise<void> => outcomes.run('poll', () => runHistoryTick(cb));
       // Run an immediate tick so testers don't need to wait for the
       // first interval.
-      await runHistoryTick(cb);
-      pollStop = scheduler(() => runHistoryTick(cb), intervalMs);
+      await tick();
+      pollStop = scheduler(tick, intervalMs);
       return async () => {
         if (pollStop) { pollStop(); pollStop = null; }
       };
@@ -1051,6 +1147,10 @@ export const createGmailProvider = (
       };
     },
 
+    onSyncOutcome(listener: MailSyncOutcomeListener) {
+      return outcomes.subscribe(listener);
+    },
+
     lookupSentByReconciliationId,
 
     ...(sendCapable ? { send: sendImpl } : {}),
@@ -1061,13 +1161,14 @@ export const createGmailProvider = (
 // Shipped OAuth client config
 // ────────────────────────────────────────────────────────────────
 
-/** OAuth constants shipped in the server binary. Users only provide
- *  the authorization `code` (via the ext popup) — never the client
- *  credentials. The client id is meant to be replaced at build time
- *  per-distribution via env or a patching step; the default here is
- *  a placeholder so the code compiles standalone. */
-export const GMAIL_OAUTH_CONFIG: OAuthProviderConfig = {
-  tokenUrl: 'https://oauth2.googleapis.com/token',
-  clientId: process.env.RECUED_GMAIL_CLIENT_ID ?? '',
-  clientSecret: process.env.RECUED_GMAIL_CLIENT_SECRET ?? undefined,
-};
+/** Gmail's token endpoint — a PROTOCOL constant, not a credential.
+ *
+ *  This used to be `GMAIL_OAUTH_CONFIG`, an `OAuthProviderConfig` whose
+ *  `clientId` / `clientSecret` were read from `RECUED_GMAIL_CLIENT_ID` /
+ *  `_SECRET`. Those two env vars were DELETED (2026-07-28) — a plaintext
+ *  process-env copy of the secret that also bypassed the vault lock. The
+ *  client id + secret now come ONLY from the encrypted `OAuthAppConfigStore`
+ *  (issuer `google`, entered in Settings → Accounts); the token URL is all the
+ *  binary still ships, because the stored-credential exchange needs somewhere
+ *  to POST. */
+export const GMAIL_TOKEN_URL = GOOGLE_TOKEN_URL;

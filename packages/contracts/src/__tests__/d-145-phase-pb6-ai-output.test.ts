@@ -17,13 +17,14 @@ import {
 } from '../ai-output.js';
 
 describe('D-145 PB6 — AI_OUTPUT_VALIDATION_KINDS closed list', () => {
-  it('contains exactly 3 entries', () => {
-    expect(AI_OUTPUT_VALIDATION_KINDS.length).toBe(3);
+  it('contains exactly 4 entries', () => {
+    expect(AI_OUTPUT_VALIDATION_KINDS.length).toBe(4);
     expect(new Set(AI_OUTPUT_VALIDATION_KINDS)).toEqual(
       new Set([
         'response_not_string',
         'events_not_array',
         'tool_calls_not_array',
+        'tool_call_not_shaped',
       ]),
     );
   });
@@ -50,6 +51,90 @@ describe('D-145 PB6 — validateAIOutput', () => {
 
   it('accepts a fully-valid AIOutput', () => {
     expect(validateAIOutput(baseValid)).toEqual([]);
+  });
+
+  // ── tool_call ENTRY shape ──────────────────────────────────────────
+  // Array shape alone was not enough. Measured live (qwen3.7-plus,
+  // substrate-bench task 155): a tool_calls entry with no `tool` key passed
+  // this gate, reached `resolveConcurrencySafe` → `getByName(undefined)`, and
+  // threw inside `topicOfEnrichmentToolName`'s `name.startsWith(...)` — taking
+  // the whole turn down. This gate exists so malformed model output halts
+  // cleanly with a closed-list reason instead of tripping an invariant
+  // downstream, so a nameless call has to be caught HERE.
+
+  it('accepts a well-formed tool call', () => {
+    expect(validateAIOutput({
+      response: '',
+      events: [],
+      tool_calls: [{ tool: 'contact.search', args: { query: 'Wren' } }],
+    })).toEqual([]);
+  });
+
+  it('rejects a tool call with NO tool name — the live crash shape', () => {
+    // The exact payload the model emitted: args, no name.
+    expect(validateAIOutput({
+      response: '',
+      events: [],
+      tool_calls: [{ args: { query: 'Wren', limit: 5 } }],
+    })).toEqual([
+      { kind: 'tool_call_not_shaped', detail: 'tool_calls[0].tool: missing' },
+    ]);
+  });
+
+  it('rejects a non-string or empty tool name, and names the index', () => {
+    const issues = validateAIOutput({
+      response: '',
+      events: [],
+      tool_calls: [
+        { tool: 'contact.search', args: {} },
+        { tool: 42, args: {} },
+        { tool: '   ', args: {} },
+      ],
+    });
+    expect(issues).toEqual([
+      { kind: 'tool_call_not_shaped', detail: 'tool_calls[1].tool: number' },
+      { kind: 'tool_call_not_shaped', detail: 'tool_calls[2].tool: string' },
+    ]);
+  });
+
+  it('rejects the WHOLE output rather than dispatching the valid entries', () => {
+    // Dropping the bad entry and running the rest would silently execute half
+    // of a plan the model meant as a whole — a worse failure than halting.
+    const issues = validateAIOutput({
+      response: '',
+      events: [],
+      tool_calls: [{ tool: 'mail.send', args: {} }, { args: {} }],
+    });
+    expect(issues).toHaveLength(1);
+    expect(issues[0]!.kind).toBe('tool_call_not_shaped');
+  });
+
+  it('never throws on a null or primitive tool_calls entry', () => {
+    // The gate's own contract: "this gate must NEVER throw."
+    expect(() => validateAIOutput({
+      response: '',
+      events: [],
+      tool_calls: [null, 'contact.search', 7, undefined],
+    })).not.toThrow();
+    expect(validateAIOutput({
+      response: '',
+      events: [],
+      tool_calls: [null],
+    })).toEqual([
+      { kind: 'tool_call_not_shaped', detail: 'tool_calls[0].tool: missing' },
+    ]);
+  });
+
+  it('carries no tool ARGS into the issue detail', () => {
+    // Everything the model sees is alias-space at the PII boundary; echoing
+    // args into a validation detail would route them past the egress scan.
+    const issues = validateAIOutput({
+      response: '',
+      events: [],
+      tool_calls: [{ args: { email: 'wren.tulloch@example.test' } }],
+    });
+    expect(JSON.stringify(issues)).not.toContain('wren.tulloch');
+    expect(JSON.stringify(issues)).not.toContain('example.test');
   });
 
   it('accepts AIOutput with empty events + tool_calls', () => {

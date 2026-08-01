@@ -6,8 +6,10 @@ import { createUpdateLedger, type UpdateLedger } from '../update/update-ledger.j
 import { createBootFailureCounter } from '../update/boot-failure-counter.js';
 import { BOOT_FAILURE_THRESHOLD } from '../update/apply-state-machine.js';
 import {
+  closeUnresolvedUpdateOperation,
   deriveInFlightRelease,
   evaluatePendingApplyOnBoot,
+  resolveUpdateOperationOutcome,
   runApply,
   runRollback,
   type ApplyContext,
@@ -64,7 +66,10 @@ describe('runApply', () => {
   it('happy path: download→verify→swap→restart, ledger started+staged', async () => {
     const ports = makePorts();
     const r = await runApply(ports, ctx());
-    expect(r.status).toBe('restarting');
+    expect(r).toMatchObject({
+      status: 'restarting',
+      operationId: expect.any(String),
+    });
     expect(ports.preserveAndSwap).toHaveBeenCalledOnce();
     expect(ports.requestRestart).toHaveBeenCalledOnce();
     const kinds = ports.ledger.readAll().map((e) => e.kind);
@@ -104,6 +109,93 @@ describe('runApply', () => {
     const r = await runApply(ports, ctx({ webclientArtifact: { url: 'u', sha256: 'w', sig: 's' } }));
     expect(r.status).toBe('restarting');
     expect(ports.requestRestart).toHaveBeenCalledOnce();
+  });
+
+  // ── D-178 S1 rev 2 item 4 — the native addon is staged through the SAME gate
+  //    as the exe and swapped WITH it. The addon is dlopen'd into the server's
+  //    own address space at the first database open, so an unverified one is
+  //    arbitrary code execution with the binary's privileges — it is not a
+  //    lesser artifact than the exe and is deliberately NOT best-effort.
+  const LIB = { url: 'https://x/lib.node', sha256: 'bb', sig: 'libsig' };
+
+  const withLib = (over: Partial<ApplyOrchestratorPorts> = {}): ApplyOrchestratorPorts => {
+    const ports = makePorts(over);
+    return { ...ports, stagedLibPath: `${ports.stagedPath}.lib` };
+  };
+
+  it('stages the addon: downloads it to stagedLibPath and verifies it against the pinned key', async () => {
+    const ports = withLib();
+    const r = await runApply(ports, ctx({ libArtifact: LIB }));
+    expect(r.status).toBe('restarting');
+    expect(ports.download).toHaveBeenCalledWith(LIB.url, ports.stagedLibPath);
+    // Same pinned key, same verify port as the exe — one I-2 boundary, not two.
+    expect(ports.verifyArtifact).toHaveBeenCalledWith({
+      filePath: ports.stagedLibPath,
+      sha256: LIB.sha256,
+      sig: LIB.sig,
+      trustedPubkey: 'PUB',
+    });
+    // …and the swap is told this apply staged one, so exe+addon move as a set.
+    expect(ports.preserveAndSwap).toHaveBeenCalledWith(true);
+  });
+
+  it('⛔ an addon that FAILS verification is refused — nothing is swapped', async () => {
+    // The exe verifies fine; only the addon is bad. Without the check the server
+    // would swap in a signed exe next to an UNSIGNED .node and dlopen it.
+    const ports = withLib({
+      verifyArtifact: vi.fn((input): VerifyArtifactResult =>
+        input.sig === LIB.sig ? { ok: false, reason: 'signature verification failed' } : { ok: true }),
+    });
+    const r = await runApply(ports, ctx({ libArtifact: LIB }));
+    expect(r.status).toBe('verify-failed');
+    if (r.status === 'verify-failed') expect(r.detail).toMatch(/native addon/);
+    expect(ports.preserveAndSwap).not.toHaveBeenCalled();
+    expect(ports.requestRestart).not.toHaveBeenCalled();
+    // The lock is RELEASED (terminal appended) — a failed addon must not wedge
+    // every future apply behind an unterminated `apply_started`.
+    expect(ports.ledger.readAll().map((e) => e.kind)).toEqual(['apply_started', 'apply_reverted']);
+    expect(deriveInFlightRelease(ports.ledger)).toBeNull();
+    expect(ports.discardStaged).toHaveBeenCalled();
+  });
+
+  it('⛔ an addon that fails to DOWNLOAD is refused — nothing is swapped', async () => {
+    const ports = withLib({
+      download: vi.fn(async (url: string) => {
+        if (url === LIB.url) throw new Error('404');
+      }),
+    });
+    const r = await runApply(ports, ctx({ libArtifact: LIB }));
+    expect(r.status).toBe('download-failed');
+    if (r.status === 'download-failed') expect(r.detail).toMatch(/native addon/);
+    expect(ports.preserveAndSwap).not.toHaveBeenCalled();
+    expect(deriveInFlightRelease(ports.ledger)).toBeNull();
+  });
+
+  it('verifies the addon BEFORE the pre-migration snapshot — a bad addon costs no snapshot', async () => {
+    const ports = withLib({
+      verifyArtifact: vi.fn((input): VerifyArtifactResult =>
+        input.sig === LIB.sig ? { ok: false, reason: 'bad' } : { ok: true }),
+    });
+    await runApply(ports, ctx({ libArtifact: LIB, migration: true }));
+    expect(ports.takeSnapshot).not.toHaveBeenCalled();
+  });
+
+  it('swaps the exe ALONE when the release carries no addon (pre-sidecar / docker-thin)', async () => {
+    const ports = withLib();
+    const r = await runApply(ports, ctx({ libArtifact: null }));
+    expect(r.status).toBe('restarting');
+    expect(ports.download).toHaveBeenCalledOnce();
+    expect(ports.preserveAndSwap).toHaveBeenCalledWith(false);
+  });
+
+  it('ignores ctx.libArtifact on an install with no managed sidecar path', async () => {
+    // No `stagedLibPath` → nowhere to stage it. Must swap the exe alone rather
+    // than download to `undefined` or silently claim a sidecar was applied.
+    const ports = makePorts();
+    const r = await runApply(ports, ctx({ libArtifact: LIB }));
+    expect(r.status).toBe('restarting');
+    expect(ports.download).toHaveBeenCalledOnce();
+    expect(ports.preserveAndSwap).toHaveBeenCalledWith(false);
   });
 
   it('takes a pre-migration snapshot before the swap when migrating', async () => {
@@ -253,6 +345,104 @@ describe('deriveInFlightRelease', () => {
   });
 });
 
+describe('closeUnresolvedUpdateOperation', () => {
+  it('durably records an unknown receipt without asserting its outcome', () => {
+    const ports = makePorts();
+
+    expect(closeUnresolvedUpdateOperation(
+      ports,
+      'lost-receipt',
+      'update',
+      '1.4.2',
+      'stable',
+    )).toEqual({
+      status: 'closed_unresolved',
+      operation: 'update',
+    });
+    expect(resolveUpdateOperationOutcome(
+      ports.ledger,
+      'lost-receipt',
+      '1.4.2',
+    )).toEqual({
+      status: 'closed_unresolved',
+      operation: 'update',
+    });
+    expect(ports.ledger.readAll()).toEqual([
+      expect.objectContaining({
+        kind: 'operation_closed',
+        closed_operation_id: 'lost-receipt',
+        closed_operation: 'update',
+        from_version: '1.4.2',
+        to_version: '1.4.2',
+        trigger: 'manual',
+      }),
+    ]);
+
+    // Repeating the owner request resolves the durable closure instead of
+    // appending another row.
+    closeUnresolvedUpdateOperation(
+      ports,
+      'lost-receipt',
+      'update',
+      '1.4.2',
+      'stable',
+    );
+    expect(ports.ledger.readAll()).toHaveLength(1);
+  });
+
+  it('refuses closure while any release transition remains in flight', () => {
+    const ports = makePorts();
+    ports.ledger.append({
+      id: 'active-receipt',
+      kind: 'apply_started',
+      at: 1,
+      from_version: '1.3.0',
+      to_version: '1.4.2',
+      channel: 'stable',
+      trigger: 'manual',
+      release_identity: 'stable:1.4.2',
+    });
+
+    expect(closeUnresolvedUpdateOperation(
+      ports,
+      'lost-receipt',
+      'rollback',
+      '1.3.0',
+      'stable',
+    )).toEqual({
+      status: 'refused',
+      reason: 'operation_in_flight',
+    });
+    expect(ports.ledger.readAll()).toHaveLength(1);
+  });
+
+  it('returns a receipt that became known instead of closing it', () => {
+    const ports = makePorts();
+    ports.ledger.append({
+      id: 'known-receipt',
+      kind: 'rolled_back',
+      at: 1,
+      from_version: '1.3.0',
+      to_version: '1.4.2',
+      channel: 'stable',
+      trigger: 'manual',
+      release_identity: 'stable:1.4.2',
+    });
+
+    expect(closeUnresolvedUpdateOperation(
+      ports,
+      'known-receipt',
+      'update',
+      '1.3.0',
+      'stable',
+    )).toEqual({
+      status: 'completed',
+      operation: 'rollback',
+    });
+    expect(ports.ledger.readAll()).toHaveLength(1);
+  });
+});
+
 describe('runRollback', () => {
   it('refuses past a migration with no snapshot', () => {
     const ports = makePorts({ hasSnapshot: () => false });
@@ -268,7 +458,11 @@ describe('runRollback', () => {
       rollbackSwap: vi.fn(() => { order.push('swap'); }),
     });
     const r = runRollback(ports, { releaseIdentity: 'stable:1.4.2', fromVersion: '1.4.2', toVersion: '1.3.0', channel: 'stable', appliedMigration: true });
-    expect(r).toMatchObject({ status: 'rolled-back', restored_snapshot: true });
+    expect(r).toMatchObject({
+      status: 'rolled-back',
+      restored_snapshot: true,
+      operationId: expect.any(String),
+    });
     expect(order).toEqual(['restore', 'swap']);
   });
 
@@ -291,6 +485,113 @@ describe('runRollback', () => {
     const ports = makePorts();
     ports.ledger.append({ id: 'x', kind: 'apply_started', at: 1, from_version: '1', to_version: '2', channel: 'stable', trigger: 'auto', release_identity: 'r9' });
     expect(runRollback(ports, { releaseIdentity: 'r9', fromVersion: '2', toVersion: '1', channel: 'stable', appliedMigration: false }).status).toBe('busy');
+  });
+});
+
+describe('resolveUpdateOperationOutcome', () => {
+  it('resolves an exact apply receipt without exposing release details', () => {
+    const ports = makePorts();
+    ports.ledger.append({
+      id: 'apply-receipt',
+      kind: 'apply_started',
+      at: 1,
+      from_version: '1.3.0',
+      to_version: '1.4.2',
+      channel: 'stable',
+      trigger: 'manual',
+      release_identity: 'stable:1.4.2',
+    });
+    ports.ledger.append({
+      id: 'staged',
+      kind: 'apply_staged',
+      at: 2,
+      from_version: '1.3.0',
+      to_version: '1.4.2',
+      channel: 'stable',
+      trigger: 'manual',
+      release_identity: 'stable:1.4.2',
+    });
+
+    expect(resolveUpdateOperationOutcome(
+      ports.ledger,
+      'apply-receipt',
+      '1.3.0',
+    )).toEqual({
+      status: 'waiting_for_restart',
+      operation: 'update',
+    });
+    expect(resolveUpdateOperationOutcome(
+      ports.ledger,
+      'apply-receipt',
+      '1.4.2',
+    )).toEqual({ status: 'completed', operation: 'update' });
+
+    ports.ledger.append({
+      id: 'committed',
+      kind: 'apply_committed',
+      at: 3,
+      from_version: '1.3.0',
+      to_version: '1.4.2',
+      channel: 'stable',
+      trigger: 'auto',
+      release_identity: 'stable:1.4.2',
+    });
+    expect(resolveUpdateOperationOutcome(
+      ports.ledger,
+      'apply-receipt',
+      'later-version',
+    )).toEqual({ status: 'completed', operation: 'update' });
+  });
+
+  it('reports a reverted apply and verifies rollback only after its old binary boots', () => {
+    const ports = makePorts();
+    const base = {
+      at: 1,
+      from_version: '1.3.0',
+      to_version: '1.4.2',
+      channel: 'stable' as const,
+      trigger: 'manual' as const,
+      release_identity: 'stable:1.4.2',
+    };
+    ports.ledger.append({
+      id: 'failed-apply',
+      kind: 'apply_started',
+      ...base,
+    });
+    ports.ledger.append({
+      id: 'reverted',
+      kind: 'apply_reverted',
+      ...base,
+    });
+    ports.ledger.append({
+      id: 'rollback-receipt',
+      kind: 'rolled_back',
+      ...base,
+    });
+
+    expect(resolveUpdateOperationOutcome(
+      ports.ledger,
+      'failed-apply',
+      '1.3.0',
+    )).toEqual({ status: 'reverted', operation: 'update' });
+    expect(resolveUpdateOperationOutcome(
+      ports.ledger,
+      'rollback-receipt',
+      '1.4.2',
+    )).toEqual({
+      status: 'waiting_for_restart',
+      operation: 'rollback',
+    });
+    expect(resolveUpdateOperationOutcome(
+      ports.ledger,
+      'rollback-receipt',
+      '1.3.0',
+    )).toEqual({ status: 'completed', operation: 'rollback' });
+    expect(resolveUpdateOperationOutcome(
+      ports.ledger,
+      'missing',
+      '1.3.0',
+    )).toEqual({ status: 'unknown' });
   });
 });
 

@@ -8,7 +8,7 @@
 
 import { chmodSync, existsSync, readdirSync, renameSync, unlinkSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import CipherDatabase from 'better-sqlite3-multiple-ciphers';
 import type Database from 'better-sqlite3';
 import {
@@ -155,11 +155,81 @@ const restrictToOwner = (path: string): void => {
   } catch { /* best-effort: no POSIX modes, or not ours to narrow */ }
 };
 
+/** D-178 S1 rev 2 item 2 — locate the native addon when we ARE the binary.
+ *
+ *  Running from source, the driver finds `better_sqlite3.node` itself via the
+ *  `bindings` package, which searches `build/Release/` relative to the package
+ *  in node_modules. Inside a single-file binary there is no node_modules and no
+ *  package directory, so that search finds nothing — and `bindings` throws a
+ *  path list rather than anything an operator can act on.
+ *
+ *  The driver's `nativeBinding` option bypasses the search and `require`s an
+ *  absolute path directly. That is what lets the D-178 sidecar be ONE FILE
+ *  (`lib/better_sqlite3.node` beside the executable) instead of a node_modules
+ *  tree: the 60 KB JS wrapper is bundled, only the addon ships.
+ *
+ *  ⚠ Returns undefined when not running as a SEA, so the from-source and test
+ *  paths keep the `bindings` search they have always used — this must not
+ *  become a second way to find the addon in development.
+ *
+ *  ⛔ ABI COUPLING: the addon must match the Node ABI embedded in the binary.
+ *  Both come out of the same build container by construction
+ *  (`build-binary-docker.mjs`); building them separately at different Node
+ *  majors yields a binary that starts and then fails at the first database
+ *  open. */
+const resolveNativeBinding = (): unknown | undefined => {
+  try {
+    // ⚠ `typeof require` is the portability guard, not decoration. This module
+    // is ESM at source and in `dist/bin.js`, and CJS only inside the SEA
+    // bundle. Bare `require` is undefined under vitest and under plain ESM, so
+    // the guard is what keeps this from throwing on the from-source path; in
+    // the ESM bundle the createRequire banner supplies a real one, which then
+    // correctly answers `isSea() === false`.
+    if (typeof require === 'undefined') return undefined;
+    const sea = require('node:sea') as { isSea(): boolean };
+    if (!sea.isSea()) return undefined;
+
+    // ⛔ RETURNS THE ADDON OBJECT, NOT A PATH — and that is forced, not chosen.
+    // A SEA's own `require` resolves BUILT-IN MODULES ONLY: handed a path it
+    // answers `No such built-in module`, which is exactly how this failed the
+    // first time. `createRequire` anchored at the executable produces a real
+    // filesystem require, and the driver accepts a pre-loaded addon object
+    // (`nativeBinding` is documented as string OR object) so nothing downstream
+    // has to resolve anything.
+    const bindingPath =
+      process.env.RECUED_NATIVE_BINDING
+      ?? join(dirname(process.execPath), 'lib', 'better_sqlite3.node');
+    const { createRequire } = require('node:module') as {
+      createRequire(p: string): (id: string) => unknown;
+    };
+    return createRequire(process.execPath)(bindingPath);
+  } catch (err) {
+    // Fail LOUDLY. Returning undefined here would fall through to the
+    // `bindings` search, which inside a SEA cannot succeed either — the
+    // operator would get a path list from a package that is not on disk
+    // instead of the one fact that helps: the sidecar is missing.
+    throw new Error(
+      `D178_SIDECAR_MISSING: could not load the native SQLite addon beside the binary `
+        + `(${err instanceof Error ? err.message : String(err)}). Expected `
+        + `lib/better_sqlite3.node next to ${process.execPath}, or RECUED_NATIVE_BINDING set.`,
+    );
+  }
+};
+
 const constructDatabase = (
   filename: string | Buffer,
   options?: Database.Options,
 ): Database.Database => {
-  const database = new CipherDatabase(filename, options) as unknown as Database.Database;
+  const nativeBinding = resolveNativeBinding();
+  // ⚠ Cast: `@types/better-sqlite3` types `nativeBinding` as `string`, but the
+  // multiple-ciphers driver also accepts a PRE-LOADED ADDON OBJECT
+  // (`lib/database.js` — `else { addon = nativeBinding }`), which is the only
+  // form usable inside a SEA. The types lag the implementation; the runtime
+  // contract is the one that matters here.
+  const database = new CipherDatabase(filename, {
+    ...options,
+    ...(nativeBinding ? { nativeBinding: nativeBinding as unknown as string } : {}),
+  }) as unknown as Database.Database;
   applyRealmPragmas(database);
   if (typeof filename === 'string' && filename !== ':memory:') {
     // Narrowing the main file here is enough for all three: call sites enable

@@ -122,7 +122,13 @@ const goodApprovalLinkConfig = (): ApprovalLinkConfig => ({
   expiry_days: 7,
   on_action: {
     target_id: 'proposal-42',
-    on_approve_action: 'mark_resolved',
+    // The VALID baseline every test here builds on. It moved to
+    // `create_commitment` when `mark_resolved` stopped being an acceptable
+    // WRITE (its effect seam is unwired, so the visitor's answer would reach
+    // nobody). These tests are about validity acceptance and receipt wiring,
+    // not about which action is supported — so the FIXTURE moves and the
+    // expectations stay.
+    on_approve_action: 'create_commitment',
   },
 });
 

@@ -35,14 +35,119 @@ const mkInterfaces = (
 };
 
 describe('D-148 W3.5 — resolveLanAddress', () => {
-  it('explicit override always wins', () => {
+  // ── The override, and why it is verified rather than obeyed ──────────
+  //
+  // An unbindable LAN address is not a degraded boot: `assertLanListenerBound
+  // OrExit` calls `process.exit(4)`, deliberately without a restart loop. The
+  // override is hand-typed and names a HOST fact that goes stale by itself (a
+  // new network, a new DHCP lease, an image moved to another machine), so
+  // obeying it verbatim turns any of those into "the server will not start" —
+  // with the setting that caused it reachable only through the server that
+  // will not start. It is checked against the host's own addresses instead.
+
+  it('explicit override wins when this host actually has that address', () => {
     const r = resolveLanAddress({
       override: '192.168.1.42',
-      readInterfaces: () => mkInterfaces([{ name: 'en0', address: '10.0.0.1' }]),
+      readInterfaces: () => mkInterfaces([
+        { name: 'en0', address: '192.168.1.42' },
+        { name: 'docker0', address: '172.17.0.1' },
+      ]),
     });
     expect(r.source).toBe('override');
     expect(r.address).toBe('192.168.1.42');
-    expect(r.candidates).toEqual([]);
+    expect(r.override_ignored).toBeUndefined();
+    // Reports what else was on offer — the Doctor renders the alternatives
+    // beside the chosen address.
+    expect(r.candidates).toEqual([
+      { address: '172.17.0.1', iface: 'docker0' },
+      { address: '192.168.1.42', iface: 'en0' },
+    ]);
+  });
+
+  it('an override this host does NOT have is ignored, and detection proceeds', () => {
+    const r = resolveLanAddress({
+      override: '192.168.1.42', // stale: this machine moved networks
+      readInterfaces: () => mkInterfaces([{ name: 'en0', address: '10.0.0.1' }]),
+    });
+    expect(r.address).toBe('10.0.0.1'); // booted, not bricked
+    expect(r.source).toBe('detected');
+    expect(r.override_ignored).toEqual({
+      value: '192.168.1.42',
+      reason: 'not_bindable_on_this_host',
+    });
+  });
+
+  it('carries the ignored override through EVERY detection outcome', () => {
+    // The annotation is orthogonal to which branch detection lands in — if it
+    // were attached to only one, the loud boot warning would go missing on
+    // exactly the hosts most likely to have a stale override.
+    const ambiguous = resolveLanAddress({
+      override: '10.99.99.99',
+      readInterfaces: () => mkInterfaces([
+        { name: 'en0', address: '192.168.1.42' },
+        { name: 'docker0', address: '172.17.0.1' },
+      ]),
+    });
+    expect(ambiguous.source).toBe('ambiguous_lan_candidates');
+    expect(ambiguous.override_ignored?.value).toBe('10.99.99.99');
+
+    const viaRoute = resolveLanAddress({
+      override: '10.99.99.99',
+      defaultRouteGateway: '192.168.1.1',
+      readInterfaces: () => mkInterfaces([
+        { name: 'en0', address: '192.168.1.42' },
+        { name: 'docker0', address: '172.17.0.1' },
+      ]),
+    });
+    expect(viaRoute.source).toBe('detected_via_default_route');
+    expect(viaRoute.override_ignored?.value).toBe('10.99.99.99');
+
+    const none = resolveLanAddress({
+      override: '10.99.99.99',
+      readInterfaces: () => mkInterfaces([]),
+    });
+    expect(none.source).toBe('loopback_fallback');
+    expect(none.override_ignored?.value).toBe('10.99.99.99');
+  });
+
+  it('accepts overrides detection would never propose on its own', () => {
+    const ifaces = () => mkInterfaces([{ name: 'en0', address: '192.168.1.42' }]);
+    // Wildcard — never on an interface list, always bindable, a deliberate
+    // "serve on everything" choice.
+    expect(resolveLanAddress({ override: '0.0.0.0', readInterfaces: ifaces }).source).toBe('override');
+    expect(resolveLanAddress({ override: '::', readInterfaces: ifaces }).source).toBe('override');
+    // Forcing loopback-only: internal, so never a detection candidate, but
+    // the host does have it.
+    const loop = resolveLanAddress({
+      override: '127.0.0.1',
+      readInterfaces: () => mkInterfaces([
+        { name: 'lo0', address: '127.0.0.1', internal: true },
+        { name: 'en0', address: '192.168.1.42' },
+      ]),
+    });
+    expect(loop.source).toBe('override');
+    expect(loop.address).toBe('127.0.0.1');
+    // A public (non-RFC1918) address on a VPS — also never a candidate.
+    const vps = resolveLanAddress({
+      override: '203.0.113.7',
+      readInterfaces: () => mkInterfaces([{ name: 'eth0', address: '203.0.113.7' }]),
+    });
+    expect(vps.source).toBe('override');
+    expect(vps.address).toBe('203.0.113.7');
+  });
+
+  it('matches an IPv6 override case-insensitively and ignoring the zone suffix', () => {
+    const r = resolveLanAddress({
+      override: 'FE80::1',
+      // Distinct names — `mkInterfaces` keys by name, so same-name rows
+      // would overwrite rather than stack.
+      readInterfaces: () => mkInterfaces([
+        { name: 'en0', address: 'fe80::1%en0', family: 'IPv6' },
+        { name: 'en1', address: '192.168.1.42' },
+      ]),
+    });
+    expect(r.source).toBe('override');
+    expect(r.address).toBe('FE80::1');
   });
 
   it('blank override falls through to detection', () => {

@@ -76,7 +76,7 @@ const canonicalWithConn = (): RecipeDefinition =>
     version: 1,
     ttl: 300,
     metadata: { name: 'r2-guard-flip-canonical', description: 'R2 guard-flip', author: 'probe', supported_platforms: [] },
-    variables: { conn: { type: 'connection' } },
+    variables: { conn: { label: 'CRM connection', type: 'connection' } },
     prefetch_steps: [],
     steps: [{ id: 'deals', op: 'deal.search', args: { limit: 50 } } as unknown as RecipeStep],
     output: { sidebar: [] },

@@ -6,6 +6,7 @@
  */
 
 import type { AuthorableDoorType, DoorType } from './contract-definition.js';
+import type { ConvergentWriteResult } from './convergent-write.js';
 
 /** Core-owned Seller offer vocabulary. Authors may compose recipes against
  * these rows, but cannot add offer kinds, database columns, operations, or UI
@@ -555,8 +556,11 @@ export type SellerCustomerClaimEmailDelivery =
       readonly error_code: string;
     };
 
+/** The convergent-write outcome — see {@link ConvergentWriteResult}. */
+export type SellerCustomerIssueOutcome = ConvergentWriteResult;
+
 export interface SellerManualCustomerIssueResponse {
-  readonly result: 'created' | 'extended';
+  readonly result: SellerCustomerIssueOutcome;
   readonly customer: SellerCustomer;
   /** Present only when `result === 'created'`. */
   readonly claim: SellerCustomerClaim | null;

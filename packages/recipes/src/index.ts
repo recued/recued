@@ -52,7 +52,7 @@ export type {
   PlanBundleInstallOutcome,
 } from './install-plan.js';
 
-export { validateIngredientRefs } from './validate-ingredients.js';
+export { validateIngredientRefs, isBreakingIngredientPin } from './validate-ingredients.js';
 export type { IngredientIssue, IssueSeverity as IngredientIssueSeverity } from './validate-ingredients.js';
 
 // Auto-PII flow validation (design § 7) — classifier-aware validator over

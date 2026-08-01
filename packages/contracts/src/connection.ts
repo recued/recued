@@ -127,6 +127,50 @@ export type ConnectionAuth =
       current_access_token?: string;
       expires_at?: number;
     }
+  /** D-218 — AT Protocol session exchange (Bluesky and any PDS).
+   *
+   *  🔑 **The shape no other member can express.** Every other type either IS
+   *  the credential it sends (`bearer` / `basic` / `header` / `query`) or
+   *  exchanges one through OAuth's form-encoded grant. AT Protocol does
+   *  neither: it POSTs `{ identifier, password }` as a JSON **body** to
+   *  `com.atproto.server.createSession` and renews by sending the refresh token
+   *  as a **Bearer header** to `com.atproto.server.refreshSession`. `basic`
+   *  carries the same two secrets to the wrong PLACE on the wire;
+   *  `oauth2_refresh` has no client to have credentials.
+   *
+   *  ⛔ **No endpoint field, deliberately (§ 7.5b).** The session endpoints are
+   *  DERIVED from the connection's own `base_url`. A configurable
+   *  credential-only destination would be the highest-value exfiltration
+   *  primitive in the system; deriving it means the app password goes to the
+   *  host this connection already talks to, under the trust model that already
+   *  governs every connection. A self-hosted PDS still works — the owner points
+   *  the whole connection at it.
+   *
+   *  ⛔ **No `expires_at`, deliberately (§ 7.5a).** The protocol supplies no
+   *  `expires_in` and tells clients the JWT's own fields are "not a stable part
+   *  of the specification", so there is no honest number to store. Freshness is
+   *  decided REACTIVELY, on a 401 — which is safe here precisely because a 401
+   *  is a clean rejection: the request was refused at auth, before the handler,
+   *  so re-sending it cannot double-apply a write. */
+  | { type: 'atproto_session';
+      /** Account handle (`alice.bsky.social`) or DID. Not a secret. */
+      identifier: string;
+      /** ⚠ An APP password, not the account password — narrower, but still not
+       *  scope-limited the way an OAuth grant is. Kept after the first exchange
+       *  (§ 7.5c) so an aged-out or lost session self-heals by logging in
+       *  again; that recovery is what makes a failed token write survivable
+       *  rather than terminal. */
+      app_password: string;
+      /** The short-lived `accessJwt`, cached between calls. Absent until the
+       *  first exchange runs. */
+      current_access_token?: string;
+      /** The longer-lived `refreshJwt`.
+       *
+       *  ⛔ **SINGLE-USE.** Renewing returns a new one and INVALIDATES this one,
+       *  so a copy that fails to persist is not stale-but-usable — it is dead.
+       *  Treated as opaque: nothing may parse it. */
+      refresh_token?: string;
+    }
   /** OAuth 2.0 client-credentials grant. The client secret stays encrypted in
    *  the connection row; adapters exchange it for a short-lived bearer token
    *  inside the trusted connection boundary before each call as needed. */
@@ -141,6 +185,31 @@ export type ConnectionAuth =
       current_access_token?: string;
       expires_at?: number;
     };
+
+/** Validate an owner-supplied OAuth authorization/token endpoint before any
+ * credential can be sent to it. This is the shared authority for webclient
+ * preflight and server-side enroll/update/start validation.
+ *
+ * Requiring the explicit `https://` spelling is deliberate: WHATWG URL parsing
+ * canonicalizes inputs such as `https:provider.example/token` into an HTTPS
+ * URL even though the owner did not enter a complete absolute endpoint. OAuth
+ * endpoints may include paths and query strings, but never embedded userinfo or
+ * a fragment (which is not transmitted as part of the HTTP request target). */
+export const isValidOAuthEndpointUrl = (value: unknown): value is string => {
+  if (typeof value !== 'string') return false;
+  const raw = value.trim();
+  if (!/^https:\/\//iu.test(raw)) return false;
+  try {
+    const parsed = new URL(raw);
+    return parsed.protocol === 'https:'
+      && parsed.hostname.length > 0
+      && parsed.username.length === 0
+      && parsed.password.length === 0
+      && parsed.hash.length === 0;
+  } catch {
+    return false;
+  }
+};
 
 /** Resolve the `Authorization: Bearer <token>` value from a
  *  `ConnectionAuth`, across the auth types that authenticate via a bearer
@@ -161,11 +230,60 @@ export const resolveBearerAccessToken = (auth: ConnectionAuth): string | undefin
   const token =
     auth.type === 'bearer'
       ? auth.token
-      : auth.type === 'oauth2_refresh' || auth.type === 'oauth2_client_credentials'
+      : auth.type === 'oauth2_refresh'
+        || auth.type === 'oauth2_client_credentials'
+        // D-218 — the cached `accessJwt`. Same field name as the OAuth2 pair
+        // because it is the same role: the short-lived token an exchange
+        // produced. ⚠ Absent until the first exchange runs, and expected to be
+        // absent again after one expires — this returns `undefined` and the
+        // dispatch path decides, exactly as it does for an unexchanged OAuth2
+        // row.
+        || auth.type === 'atproto_session'
         ? auth.current_access_token
         : undefined;
   return typeof token === 'string' && token.length > 0 ? token : undefined;
 };
+
+/** D-218 — the CLOSED list of `ConnectionAuth` discriminants, checked against
+ *  the union in BOTH directions at compile time.
+ *
+ *  ⛔ **Slice 0 was specced as "add a case in 6 places" and the COMPILER found
+ *  ZERO of them.** Widening `ConnectionAuth` produced no type error anywhere,
+ *  because every consumer either hand-maintains a string list or falls through
+ *  a permissive default. Three separate copies of this vocabulary existed
+ *  (`CONNECTION_AUTH_DESCRIPTOR_TYPES`, the enrollment form's `AUTH_TYPES`, the
+ *  connection handler's enrollable set) and **all three typechecked while
+ *  incomplete** — a subset is always assignable.
+ *
+ *  ⚠ Two RUNTIME ratchets did fire, and they covered two of the three copies.
+ *  The third — and the secret-redaction switch, where the real leak was — had
+ *  nothing watching it. A pin per copy is not the same as one source.
+ *
+ *  🔑 So the derivation the spec asked for had to be BUILT before it could be
+ *  used. `satisfies` catches a name that is not in the union; `AuthTypesAreExhaustive`
+ *  catches a union member missing from the list. Adding a ninth type without
+ *  touching this array is now a compile error, which is the only form of
+ *  "remember to update the other places" that actually works. */
+export const CONNECTION_AUTH_TYPES = [
+  'none',
+  'bearer',
+  'basic',
+  'header',
+  'query',
+  'oauth2_refresh',
+  'oauth2_client_credentials',
+  'atproto_session',
+] as const satisfies readonly ConnectionAuth['type'][];
+
+export type ConnectionAuthType = (typeof CONNECTION_AUTH_TYPES)[number];
+
+/** Compile-time proof that no `ConnectionAuth` member is missing above. A new
+ *  union member makes `Exclude<…>` non-`never` and this alias resolves to
+ *  `never`, so the assignment below stops compiling. */
+type AuthTypesAreExhaustive =
+  Exclude<ConnectionAuth['type'], ConnectionAuthType> extends never ? true : never;
+const _authTypesAreExhaustive: AuthTypesAreExhaustive = true;
+void _authTypesAreExhaustive;
 
 /** Every `ConnectionAuth` shape ANY declared chat transport can send with — the
  *  union of the per-kind lists. DERIVED, so widening one kind's entry is the only
@@ -357,7 +475,281 @@ export interface ConnectionHealth {
    *  with its own JSON-RPC error envelope. Probe (`collection.
    *  connection.probe` for kind=mcp) refreshes this on each call. */
   tools?: string[];
+  /** D-225 Slice 2 — SHA-256 descriptor hashes (`{name, input_schema}`) for the
+   *  same probe, sorted. The sibling of `tools`, and the reason it exists:
+   *  `tools` carries NAMES, so comparing it across probes sees tools appear and
+   *  disappear but is BLIND to a tool MUTATED IN PLACE — same name, new
+   *  argument schema. That is exactly the change a generated MCP pack's grants
+   *  must react to (D-225 § 7), so drift detection compares these instead.
+   *
+   *  ⚠ Refreshed on every probe, like `tools`. The snapshot a pack was MINTED
+   *  from is not stored here — it is derived from the installed pack's own
+   *  bindings (`mcpMintedHashesFromCatalog`), so there is exactly one record of
+   *  what was minted and it cannot drift from the pack itself. */
+  tool_hashes?: string[];
 }
+
+/** Non-secret receipt returned only after a replacement credential has been
+ * verified against its provider and durably swapped into the connection row.
+ * Secret material is deliberately absent; callers may retain this receipt for
+ * user-visible confirmation without creating a second credential store. */
+export interface ConnectionCredentialVerification {
+  status: 'verified';
+  verified_at: number;
+  auth_type: ConnectionAuthType;
+  /** Provider-issued access-token expiry when the verification exchange
+   * returned one. This is lifecycle metadata, not the token itself. */
+  access_expires_at?: number;
+}
+
+/** Closed-list form targets the server may return after the provider rejects a
+ * replacement credential. These are schema keys, never values: carrying them
+ * through an RPC error or durable attempt receipt cannot disclose credential
+ * material. Multi-field auth shapes intentionally return every field the owner
+ * should review rather than pretending the provider identified one bad value. */
+export type ConnectionCredentialCorrectionFieldKey =
+  | 'auth.token'
+  | 'auth.username'
+  | 'auth.password'
+  | 'auth.headers'
+  | 'auth.param_name'
+  | 'auth.value'
+  | 'auth.refresh_token'
+  | 'auth.client_id'
+  | 'auth.client_secret'
+  | 'auth.token_endpoint'
+  | 'auth.scope'
+  | 'auth.identifier'
+  | 'auth.app_password';
+
+/** Secret-free correction handoff attached only to an authoritative provider
+ * rejection. `field_keys[0]` is the first review target; the remaining keys
+ * preserve the honest multi-field scope of compound credentials. */
+export interface ConnectionCredentialRejectionCorrection {
+  auth_type: ConnectionAuthType;
+  field_keys: ReadonlyArray<ConnectionCredentialCorrectionFieldKey>;
+  /** Added only after consecutive server-observed provider rejections. The
+   * stage and field keys are a bounded diagnostic route, never provider prose. */
+  triage?: ConnectionCredentialRejectionTriage;
+}
+
+/** The server-owned phase that rejected the latest candidate. This remains
+ * intentionally coarser than provider error codes: clients may explain where
+ * to look, but must not infer which credential or endpoint is wrong. */
+export type ConnectionCredentialRejectionTriageStage =
+  | 'credential_exchange'
+  | 'provider_probe';
+
+/** Non-secret endpoint controls a repeated-rejection handoff may review. */
+export type ConnectionCredentialRejectionTriageFieldKey =
+  | 'auth.token_endpoint'
+  | 'config.base_url'
+  | 'config.endpoint';
+
+/** Bounded safe stop emitted only when another authoritative rejection follows
+ * a receipt that already carried provider/endpoint triage. It recommends a
+ * recovery route; it does not claim which credential or setting is wrong. */
+export type ConnectionCredentialRejectionResolution =
+  'regenerate_credential_or_contact_admin';
+
+export interface ConnectionCredentialRejectionTriage {
+  reason: 'repeated_auth_rejection';
+  stage: ConnectionCredentialRejectionTriageStage;
+  endpoint_field_keys: ReadonlyArray<ConnectionCredentialRejectionTriageFieldKey>;
+  resolution?: ConnectionCredentialRejectionResolution;
+}
+
+/** Stable correction order shared by immediate RPC rejections and recovered
+ * attempt receipts. `none` has no credential control and therefore no handoff. */
+export const connectionCredentialRejectionCorrection = (
+  authType: ConnectionAuthType,
+): ConnectionCredentialRejectionCorrection | null => {
+  let fieldKeys: ReadonlyArray<ConnectionCredentialCorrectionFieldKey>;
+  switch (authType) {
+    case 'bearer':
+      fieldKeys = ['auth.token'];
+      break;
+    case 'basic':
+      fieldKeys = ['auth.username', 'auth.password'];
+      break;
+    case 'header':
+      fieldKeys = ['auth.headers'];
+      break;
+    case 'query':
+      fieldKeys = ['auth.param_name', 'auth.value'];
+      break;
+    case 'oauth2_refresh':
+      fieldKeys = [
+        'auth.refresh_token',
+        'auth.client_id',
+        'auth.client_secret',
+        'auth.token_endpoint',
+      ];
+      break;
+    case 'oauth2_client_credentials':
+      fieldKeys = [
+        'auth.client_id',
+        'auth.client_secret',
+        'auth.token_endpoint',
+        'auth.scope',
+      ];
+      break;
+    case 'atproto_session':
+      fieldKeys = ['auth.identifier', 'auth.app_password'];
+      break;
+    case 'none':
+      fieldKeys = [];
+      break;
+  }
+  return fieldKeys.length === 0
+    ? null
+    : { auth_type: authType, field_keys: fieldKeys };
+};
+
+/** Canonical server-authoritative route for a repeated rejection. Exchange
+ * failures point at the token endpoint only when one participated; provider
+ * probes point at the service endpoint for that connection kind. The client
+ * filters keys absent or fixed in its live schema. */
+export const connectionCredentialRejectionTriage = (
+  kind: ConnectionKind,
+  authType: ConnectionAuthType,
+  stage: ConnectionCredentialRejectionTriageStage,
+  resolution?: ConnectionCredentialRejectionResolution,
+): ConnectionCredentialRejectionTriage | null => {
+  if (stage === 'credential_exchange') {
+    const oauthExchange = (
+      authType === 'oauth2_refresh'
+      || authType === 'oauth2_client_credentials'
+    ) && (kind === 'api' || kind === 'mcp');
+    const atprotoExchange = authType === 'atproto_session' && kind === 'api';
+    if (!oauthExchange && !atprotoExchange) return null;
+  }
+  let endpointFieldKeys: ReadonlyArray<ConnectionCredentialRejectionTriageFieldKey>;
+  if (
+    stage === 'credential_exchange'
+    && (
+      authType === 'oauth2_refresh'
+      || authType === 'oauth2_client_credentials'
+    )
+  ) {
+    endpointFieldKeys = ['auth.token_endpoint'];
+  } else if (kind === 'api') {
+    endpointFieldKeys = ['config.base_url', 'config.endpoint'];
+  } else if (kind === 'mcp') {
+    endpointFieldKeys = ['config.endpoint'];
+  } else {
+    endpointFieldKeys = [];
+  }
+  return {
+    reason: 'repeated_auth_rejection',
+    stage,
+    endpoint_field_keys: endpointFieldKeys,
+    ...(resolution !== undefined ? { resolution } : {}),
+  };
+};
+
+/** Browser-minted idempotency key for a credential replacement. The key is
+ * deliberately opaque: it correlates one owner action with its secret-free
+ * server receipt without encoding a connection name, provider, or secret. */
+export const CONNECTION_CREDENTIAL_ROTATION_ATTEMPT_ID_REGEX =
+  /^[A-Za-z0-9][A-Za-z0-9_-]{15,127}$/;
+
+/** Server-derived compare-and-set token for one current credential safe stop.
+ * It is opaque, carries no connection/provider/credential material, and is
+ * kept only in live client memory. The server requires it before recording an
+ * administrator/provider-fix acknowledgement so a stale tab cannot close a
+ * newer rejection. */
+export const CONNECTION_CREDENTIAL_SAFE_STOP_TOKEN_REGEX = /^[a-f0-9]{64}$/;
+
+/** Closed, privacy-safe failure classes retained for interrupted rotation
+ * recovery. Raw provider messages and credential material are never stored in
+ * the receipt table. */
+export type ConnectionCredentialRotationFailureReason =
+  | 'auth_failed'
+  | 'unreachable'
+  | 'inconclusive'
+  | 'conflict'
+  | 'server_error';
+
+/** Durable, secret-free outcome for one credential-rotation attempt. A
+ * `pending` row is written before provider I/O; success is committed in the
+ * same SQLite transaction as the replacement connection row. */
+export type ConnectionCredentialRotationOutcome =
+  | { status: 'not_found' }
+  | { status: 'pending'; started_at: number }
+  | {
+      status: 'succeeded';
+      started_at: number;
+      verification: ConnectionCredentialVerification;
+    }
+  | {
+      status: 'failed';
+      started_at: number;
+      finished_at: number;
+      reason: ConnectionCredentialRotationFailureReason;
+      /** Present only when the paired server authoritatively classified the
+       * failure as a credential rejection. Safe to retain across reloads. */
+      correction?: ConnectionCredentialRejectionCorrection;
+      /** Present only when this exact terminal safe stop was explicitly closed
+       * by the paired server. It lets an interrupted owner retire the old
+       * recovery pointer without replaying the safe-stop handoff. */
+      safe_stop_acknowledged_at?: number;
+    };
+
+/** Bounded server projection of one still-current credential safe stop. The
+ * token is an opaque compare-and-set capability, not the underlying attempt
+ * id, and must never be persisted or rendered by clients. */
+export interface ConnectionCredentialRotationSafeStop {
+  finished_at: number;
+  correction: ConnectionCredentialRejectionCorrection;
+  acknowledgement_token: string;
+}
+
+/** Cold-start discovery entry. Identities are already present in the same
+ * authenticated connection-list response; no endpoint value, provider prose,
+ * credential, server address, draft, or attempt id is included. */
+export interface ConnectionCredentialRotationSafeStopSummary
+  extends ConnectionCredentialRotationSafeStop {
+  kind: ConnectionKind;
+  name: string;
+}
+
+/** Durable, privacy-safe follow-up for an acknowledged credential safe stop.
+ * Current servers include only unresolved work: a still-required check or a
+ * fresh non-ok result from checking the saved credential. A successful check
+ * is deliberately omitted so its confirmation remains one-shot across reloads.
+ * No attempt id, endpoint, provider prose, or credential value is exposed. */
+export interface ConnectionCredentialPostSafeStopVerificationSummary {
+  kind: ConnectionKind;
+  name: string;
+  status: 'pending' | 'auth_failed' | 'unreachable' | 'unknown';
+  acknowledged_at: number;
+  checked_at?: number;
+  connection_updated_at?: number;
+  credential_correction?: ConnectionCredentialRejectionCorrection;
+}
+
+export type ConnectionCredentialRotationSafeStopAcknowledgement =
+  | {
+      status: 'acknowledged' | 'already_acknowledged';
+      acknowledged_at: number;
+    }
+  | { status: 'superseded' };
+
+/** Connection-scoped, secret-free view of active credential verification.
+ * This deliberately omits the attempt id. An idle response also reports the
+ * latest terminal safe stop when one is still current, so a sibling tab can
+ * converge on the same regeneration/admin handoff without receiving a
+ * credential, endpoint value, provider error, or attempt identifier. Its
+ * opaque acknowledgement token exists solely for stale-safe closure and must
+ * stay in live client memory. `null` is explicit capability evidence; older
+ * servers omit the field entirely. */
+export type ConnectionCredentialRotationActivity =
+  | {
+      status: 'idle';
+      safe_stop?: ConnectionCredentialRotationSafeStop | null;
+    }
+  | { status: 'pending'; started_at: number };
 
 /** Read-only view of a connection projected for the resolver. The
  *  runtime constructs this from a `ConnectionRecord` row by spreading
@@ -369,6 +761,14 @@ export interface ConnectionHealth {
 export interface ConnectionView {
   name: string;
   kind: ConnectionKind;
+  /** Non-secret optimistic-concurrency revision. Settings list responses stamp
+   * this from the durable row so an editor can prove it is still based on the
+   * latest server state before saving. Resolver-only views may omit it. */
+  updated_at?: number;
+  /** Non-secret credential discriminant used to decide whether a pack may
+   * reuse this row. Secret fields remain excluded. List responses stamp this
+   * after trusted decryption; resolver-only views may omit it. */
+  auth_type?: ConnectionAuthType;
   subtype?: string;
   display_name: string;
   /** D-165 P3.path-picker — the connection's sub-resource scope
@@ -549,6 +949,7 @@ export const CONNECTION_VIEW_RESERVED_FIELDS: ReadonlyArray<string> = [
   'publisher_id',
   'config_json',
   'auth',
+  'auth_type',
   'auth_ciphertext',
   'enrolled_at',
   'updated_at',

@@ -31,6 +31,12 @@ export const REF_PICKER_STYLES = `
   box-sizing: border-box;
 }
 
+.ref-picker-input:focus {
+  outline: none;
+  border-color: var(--color-accent, var(--accent));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-accent, var(--accent)) 18%, transparent);
+}
+
 .ref-picker-clear {
   position: absolute;
   right: 4px;
@@ -52,6 +58,11 @@ export const REF_PICKER_STYLES = `
 .ref-picker-clear:hover {
   background: var(--color-chip-bg, var(--surface-sunk));
   color: inherit;
+}
+
+.ref-picker-clear:focus-visible {
+  outline: 2px solid var(--color-accent, var(--accent));
+  outline-offset: 1px;
 }
 
 .ref-picker-clear[hidden] {
@@ -93,6 +104,10 @@ export const REF_PICKER_STYLES = `
   background: var(--color-chip-bg, var(--surface-sunk));
 }
 
+.ref-picker-option--selected .ref-picker-option-label {
+  font-weight: 600;
+}
+
 .ref-picker-option-label {
   font-size: 0.85rem;
 }
@@ -110,5 +125,17 @@ export const REF_PICKER_STYLES = `
 
 .ref-picker-status--error {
   color: var(--color-warning, var(--danger));
+}
+
+/* ⛔ The truncation note is a FOOTNOTE ABOUT THE LIST, not another row in it —
+   and it frequently sits directly under "No matches", the line it exists to
+   correct. Styled identically it would read as more of the same muted chrome
+   and be skipped, which is the failure it was added to prevent. A rule above it
+   separates it from the results; italic marks it as commentary. NOT the error
+   colour: a capped read is not a fault, and spending alarm here would blunt the
+   colour where it means something. */
+.ref-picker-status--truncated {
+  border-top: 1px solid var(--color-border, var(--border));
+  font-style: italic;
 }
 `;

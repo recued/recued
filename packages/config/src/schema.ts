@@ -8,6 +8,16 @@ import type { ScalarSchemaEntry } from './types.js';
  *  (TOML-quoted in the file); values are scalars only (string, number,
  *  boolean, or a fixed enum). */
 export const RUNTIME_SCHEMA = [
+  // ─── Privacy ─────────────────────────────────────────────────
+  {
+    key: 'privacy.auto_pii_protection',
+    section: 'Privacy',
+    label: 'Alias personal data before sending it to models',
+    type: 'boolean',
+    default: true,
+    description:
+      'On by default. Recued rewrites recipes at dispatch so personal data — names, emails, phone numbers — is replaced with aliases before any model sees it, then restored in the result. Turn this off only to compare model behaviour with and without aliasing: while it is off, recipes send personal data to models UNALIASED, and recipe disclosures stop claiming auto-protection. The server prints a warning on every boot while it is off.',
+  },
   // ─── LLM ─────────────────────────────────────────────────────
   {
     key: 'llm.allow_upgrade_default',
@@ -273,6 +283,23 @@ export const RUNTIME_SCHEMA = [
     integer: true,
     description:
       'Port used by the public TLS listener. Defaults to 443.',
+  },
+  {
+    // The LAN listener's bind address. Auto-detection refuses to guess on a
+    // multi-homed host (a Docker bridge or VM bridge alongside the real LAN
+    // is `ambiguous_lan_candidates`) and binds loopback, which is safe but
+    // makes the server unreachable from other devices — this is the way out.
+    // Verified against the host's own interfaces at boot: an address this
+    // machine cannot bind is ignored with a warning rather than obeyed,
+    // because a failed LAN bind exits the process and this setting is only
+    // reachable through the server it would stop.
+    key: 'network.lan_bind_address',
+    section: 'Network',
+    label: 'LAN bind address',
+    type: 'string',
+    default: '',
+    description:
+      'IP address the LAN listener binds to. Leave empty to auto-detect (the default): the server follows your default route to pick an interface and binds 0.0.0.0, so it answers on both 127.0.0.1 and your network address, and falls back to 127.0.0.1 alone when it cannot tell which interface is the real one. Set an address to bind exactly that — e.g. 192.168.1.121 for one network, or 127.0.0.1 to serve only this machine. Takes effect on restart. An address this machine does not have is ignored, with the reason logged at boot.',
   },
   {
     // R26.2 Delta 2 — what the public listener serves at the bare root

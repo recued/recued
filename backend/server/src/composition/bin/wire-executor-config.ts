@@ -124,6 +124,34 @@ export interface ComposeExecutorConfigDeps {
    *  serve composition); the dispatcher then stays unwired and the
    *  ingredient surfaces `SERVER_NOT_REACHABLE`. */
   cacheBlobs: BlobStore | undefined;
+  /** D-216 — read CAS bytes for a `file_ref` so a `connection.api` op that
+   *  declares `bind.upload` can send the FILE rather than a reference. The
+   *  SAME reader the cli `input_materialize` path uses (`wire-execute-deps`
+   *  builds it from the inbound file collection); threaded here because the
+   *  api handler is composed on this side.
+   *
+   *  Undefined ⇒ an upload op fails CLOSED with `SERVER_NOT_REACHABLE` — the
+   *  standalone MCP boot composes no file-source stores, and silently
+   *  sending an empty body would be worse than refusing. */
+  readFileBytes?: ((record_id: string) => Promise<{
+    bytes: Uint8Array;
+    mime_type: string;
+    filename: string;
+  }>) | undefined;
+  /** D-217 slice 2b-ii — read ONE chunk of a staged plaintext for a chunked
+   *  upload's APPEND. Deliberately NOT `readFileBytes`: that returns the whole
+   *  file, and calling it per chunk would decrypt a 512 MB blob once per
+   *  request. The engine stages once (`ExecutionContext.uploadStaging`) and the
+   *  wire carries the resulting token, which this resolves against the SAME
+   *  registry.
+   *
+   *  Undefined ⇒ a chunked upload fails CLOSED with `SERVER_NOT_REACHABLE`,
+   *  matching the `readFileBytes` posture — a boot with no file-source stores
+   *  must refuse rather than send an empty body. */
+  readUploadChunk?: ((token: string, offset: number, length: number) => Promise<{
+    bytes: Uint8Array;
+    mime_type: string;
+  }>) | undefined;
   /** D-192 remote byte-fetch — the shared `remote` bundle so a `file:remote:*`
    *  id passed to the recipe `data-file-read` ingredient (and, through it, an
    *  `ai-*` multimodal `llm.data` file-ref, which reads via the SAME dispatcher)
@@ -290,6 +318,36 @@ export interface ComposeExecutorConfigDeps {
  *  sub-resource scope to NULL (a silent permission-boundary widening; D-165
  *  P3.path-picker). Single source so that invariant can't drift between kinds. */
 type EncodeAuthForStorage = (typeof import('../../connection-handler.js'))['encodeAuthForStorage'];
+/** D-218 § 7.5d — make a swallowed credential write AUDIBLE.
+ *
+ *  ⛔ The persist stays non-fatal: by the time it runs, the exchange has already
+ *  invalidated the stored token, so failing the call would destroy a successful
+ *  one and recover nothing. But for a SINGLE-USE rotating credential the swallow
+ *  is not free — the durable row now holds a dead token, and the next call pays
+ *  an extra round trip to find that out and log in again. Recoverable, and worth
+ *  a row.
+ *
+ *  ⚠ Fire-and-forget, and it never carries the credential: the auth TYPE and the
+ *  error text only. An audit sink that could break dispatch would be worse than
+ *  the problem it reports. */
+const makeCredentialPersistFailureSink = (
+  auditLog: AuditLogStore,
+  now: () => number = Date.now,
+): NonNullable<ConnectionApiHandlerDeps['onPersistFailure']> =>
+  (row, error) => {
+    const ts = now();
+    void auditLog.logActivity({
+      activity_id: `cp-${ts}-${Math.random().toString(36).slice(2, 8)}`,
+      timestamp: ts,
+      action: 'connection_credential_persist_failed',
+      target: row.name,
+      detail: JSON.stringify({
+        kind: row.kind,
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    }).catch(() => { /* an audit failure must never break dispatch */ });
+  };
+
 const makeRefreshPersistAuth = (
   connectionStore: ConnectionStoreSqlite,
   encodeAuthForStorage: EncodeAuthForStorage,
@@ -448,6 +506,16 @@ export const composeExecutorConfig = async (
                 encodeAuthForStorage,
                 keyProvider,
               ),
+              // D-218 — the swallowed-write signal. Absent in a dbless harness,
+              // which keeps the old silent behaviour there rather than
+              // inventing a sink.
+              ...(deps.auditLog
+                ? { onPersistFailure: makeCredentialPersistFailureSink(deps.auditLog) }
+                : {}),
+              // D-216 — the byte reader for `bind.upload` ops.
+              ...(deps.readFileBytes ? { readFileBytes: deps.readFileBytes } : {}),
+              // D-217 — the ranged reader for a chunked upload's APPEND.
+              ...(deps.readUploadChunk ? { readUploadChunk: deps.readUploadChunk } : {}),
             };
           })(),
           // D-125 P4.2 — `connection.mcp` per-kind handler deps. Reuses the

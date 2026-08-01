@@ -38,8 +38,11 @@
 import {
   KERNEL_OP_REGISTRY,
   READABLE_COLLECTIONS,
+  TIER1_TOOL_DESCRIPTORS,
+  TIER1_TOOL_NAMES,
   collectionGrantEntry,
   opGrantEntry,
+  primitiveGrantEntry,
   topicGrantEntry,
   type CatalogIngredientView,
   type CliReachabilityListResponse,
@@ -149,10 +152,18 @@ export type GrantCliReachabilitySetCaller = (
 // ════════════════════════════════════════════════════════════════
 
 /** Build the entry universe for the two tabs. Ops span the compiled-in kernel
- *  registry (`core.*`) + the installed pack catalog; entities span the static
- *  readable collections + the topic registry. Each dynamic source is optional —
- *  a missing/failed one drops its slice; kernel ops + collections are always
- *  present. (Salvaged from the former global grant-matrix panel's `buildUniverse`.) */
+ *  registry (`core.*`), the Tier-1 chat primitives (`primitive.*` — D-228 slice
+ *  5), and the installed pack catalog; entities span the static readable
+ *  collections + the topic registry. Each dynamic source is optional — a
+ *  missing/failed one drops its slice; kernel ops, primitives and collections are
+ *  compiled in and always present. (Salvaged from the former global grant-matrix
+ *  panel's `buildUniverse`.)
+ *
+ *  ⚠ THE UNIVERSE IS THE UI HALF OF "DB = UI". `owner-grant-reconcile.ts` seeds
+ *  one `granted:true` row per compiled-in id, and this function decides what a
+ *  human can see and toggle. A registry seeded there but missing here is a
+ *  permission that exists in the store with no way to reach it — which is what
+ *  the primitives were until this slice. Add to both, or to neither. */
 const buildUniverse = (
   catalog: { ingredients: ReadonlyArray<CatalogIngredientView> } | undefined,
   registry: RegistryDescribeRpcOutput | undefined,
@@ -173,6 +184,40 @@ const buildUniverse = (
       group: ['Kernel', k.domain].join(' · '),
       risk_tier: k.risk,
       authorDefault: k.risk === 'read',
+    });
+  }
+
+  // ⛔⛔ D-228 slice 5 — the Tier-1 chat primitives (`primitive.<tool>`).
+  //
+  // These were MISSING from every universe: the catalog slice below is derived
+  // from installed ingredient catalogs, and a primitive is an engine handler,
+  // not an ingredient op — so `mail.search` / `contact.search` / `recipe.run`
+  // could never appear here at all. Two consequences, both now fixed:
+  //
+  //   1. DB = UI was BROKEN in one direction. `reconcileOwnerGrants` seeds a
+  //      `granted:true` row per primitive, and this panel is what the reconcile
+  //      means by "the owner's grant rows mirror the UI 1:1". Rows the UI cannot
+  //      render are rows the owner cannot revoke — a permission that exists in
+  //      the store and nowhere a human can reach it.
+  //   2. A contract could not be MINTED with them. `collection.contract.mint`
+  //      folds `scope.operation_ids` into explicit grant rows via `opGrantEntry`,
+  //      which accepts a `primitive.` id fine — the mint was never the blocker.
+  //      Nothing simply told the minter these ids existed.
+  //
+  // ⚠ `authorDefault` comes from `TIER1_TOOL_DESCRIPTORS`, never from the name.
+  // `memory.write` and `recipe.run` are classified `unknown` (not `write`)
+  // deliberately — see the descriptor doc — so the read-vs-not test is the
+  // honest one here, and reading a classification is not the same as guessing
+  // from a `.write` suffix.
+  for (const name of TIER1_TOOL_NAMES) {
+    const descriptor = TIER1_TOOL_DESCRIPTORS[name];
+    entries.push({
+      entry_key: primitiveGrantEntry(name),
+      kind: 'op',
+      label: name,
+      group: 'Assistant · always-on tools',
+      risk_tier: descriptor.classification === 'read' ? 'read' : 'write',
+      authorDefault: descriptor.classification === 'read',
     });
   }
 

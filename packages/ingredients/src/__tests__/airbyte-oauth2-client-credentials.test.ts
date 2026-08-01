@@ -135,6 +135,22 @@ describe('OAuth2 client credentials — trusted connection adapter', () => {
     expect(contacted).toEqual(['https://api.airbyte.com/v1/applications/token']);
   });
 
+  it('refuses an unsafe stored token endpoint before sending client credentials', async () => {
+    let fetchCalls = 0;
+    await expect(exchangeOAuth2ClientCredentials(
+      auth({ token_endpoint: 'http://api.airbyte.com/v1/applications/token' }),
+      (async () => {
+        fetchCalls += 1;
+        return new Response('{}', { status: 200 });
+      }) as typeof fetch,
+      () => NOW,
+    )).rejects.toMatchObject({
+      code: 'TOKEN_REFRESH_FAILED',
+      details: { cause: 'unsafe_token_endpoint' },
+    });
+    expect(fetchCalls).toBe(0);
+  });
+
   it('fails closed on a non-bearer token response', async () => {
     await expect(exchangeOAuth2ClientCredentials(
       auth(),

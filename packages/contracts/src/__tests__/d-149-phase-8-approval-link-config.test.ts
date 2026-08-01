@@ -11,6 +11,8 @@ import {
   APPROVAL_LINK_VISITOR_EMAIL_MAX,
   APPROVAL_LINK_VISITOR_COMMENT_MAX,
   formatApprovalLinkConsumedOutcome,
+  APPROVAL_LINK_DEFAULT_ON_APPROVE_ACTION,
+  APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS,
   validateApprovalLinkConfig,
   validateApprovalLinkConsume,
   type ApprovalLinkConfig,
@@ -29,7 +31,7 @@ const baseConfig = (overrides: Partial<ApprovalLinkConfig> = {}): ApprovalLinkCo
   expiry_days: 7,
   on_action: {
     target_id: 'proposal-123',
-    on_approve_action: 'mark_resolved',
+    on_approve_action: 'create_commitment',
   },
   ...overrides,
 });
@@ -37,6 +39,61 @@ const baseConfig = (overrides: Partial<ApprovalLinkConfig> = {}): ApprovalLinkCo
 describe('D-149 P8 § A.5.5 — validateApprovalLinkConfig', () => {
   it('accepts a well-formed pick_time config', () => {
     expect(validateApprovalLinkConfig(baseConfig())).toEqual([]);
+  });
+
+  // ⛔ An approval_link reaches the owner ONLY through a held checkpoint, and
+  // only `create_commitment` creates one. `mark_resolved` / `fire_recipe` route
+  // through the processor's `applyEffect` seam, which nothing supplies — so a
+  // consumption sat `pending` forever while the visitor was shown a success
+  // page, and the answer surfaced nowhere. D-210 Phase C also retired the fields
+  // that named their targets, so neither is specifiable any more.
+  describe('refuses an on_approve_action the substrate cannot honour', () => {
+    for (const action of ['mark_resolved', 'fire_recipe'] as const) {
+      it(`refuses ${action}, naming the remedy`, () => {
+        const failures = validateApprovalLinkConfig(
+          baseConfig({ on_action: { target_id: 'proposal-123', on_approve_action: action } }),
+        );
+        expect(failures.map((f) => f.code)).toEqual(['on_approve_action_unsupported']);
+        // The message has to say what to do instead, or an owner is stuck.
+        expect(failures[0]!.detail).toContain('create_commitment');
+      });
+    }
+
+    // ⛔ THE PERMITTING CASE. Without it the assertions above cannot tell a
+    // targeted refusal from a validator that rejects every on_approve_action.
+    it('still accepts create_commitment', () => {
+      expect(validateApprovalLinkConfig(
+        baseConfig({ on_action: { target_id: 'proposal-123', on_approve_action: 'create_commitment' } }),
+      )).toEqual([]);
+    });
+
+    // An unknown value keeps its OWN code — the two refusals are different
+    // facts ("not in the vocabulary" vs "in it but unhonourable") and a caller
+    // switching on the code must be able to tell them apart.
+    it('keeps on_approve_action_unknown distinct from unsupported', () => {
+      const failures = validateApprovalLinkConfig(
+        baseConfig({
+          on_action: {
+            target_id: 'proposal-123',
+            // @ts-expect-error -- negative fixture exercises the runtime vocabulary guard.
+            on_approve_action: 'not_a_real_action',
+          },
+        }),
+      );
+      expect(failures.map((f) => f.code)).toEqual(['on_approve_action_unknown']);
+    });
+
+    // The picker and the write path derive from ONE list, so an offered option
+    // the validator refuses is not expressible.
+    it('offers exactly what it accepts', () => {
+      for (const action of APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS) {
+        expect(validateApprovalLinkConfig(
+          baseConfig({ on_action: { target_id: 'proposal-123', on_approve_action: action } }),
+        ), action).toEqual([]);
+      }
+      expect(APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS)
+        .toContain(APPROVAL_LINK_DEFAULT_ON_APPROVE_ACTION);
+    });
   });
 
   it('accepts a well-formed approve_wording config (no options)', () => {
@@ -212,7 +269,7 @@ describe('D-149 P8 § A.5.5 — validateApprovalLinkConfig', () => {
       ...baseConfig(),
       on_action: {
         target_id: '',
-        on_approve_action: 'mark_resolved',
+        on_approve_action: 'create_commitment',
       },
     });
     expect(failures.some((f) => f.code === 'on_action_target_id_invalid')).toBe(true);
@@ -223,7 +280,7 @@ describe('D-149 P8 § A.5.5 — validateApprovalLinkConfig', () => {
       ...baseConfig(),
       on_action: {
         target_id: 'x',
-        on_approve_action: 'banana' as 'mark_resolved',
+        on_approve_action: 'banana' as 'create_commitment',
       },
     });
     expect(failures.some((f) => f.code === 'on_approve_action_unknown')).toBe(true);
@@ -234,7 +291,7 @@ describe('D-149 P8 § A.5.5 — validateApprovalLinkConfig', () => {
       ...baseConfig(),
       on_action: {
         target_id: 'x',
-        on_approve_action: 'mark_resolved',
+        on_approve_action: 'create_commitment',
         notification_target: 'pigeon' as 'webclient',
       },
     });

@@ -192,6 +192,15 @@ export interface PreflightAskContext {
    *  the ask body. Absent → the body falls back to the structured
    *  fields above. */
   reason?: string;
+  /** D-217 § 6.1 — the AMPLIFICATION BOUND of a multi-request act: how many
+   *  requests this ONE approval authorizes, and how many bytes leave.
+   *
+   *  ⛔ Every other gated call is one approval buying one request. A chunked
+   *  upload is one approval buying up to 103 — so an ask that says "an upload"
+   *  is asking the owner to consent to something it did not describe. Fixed
+   *  before the first dispatch (§ 8a), so it is knowable here and is not an
+   *  estimate. Absent on every single-request hold. */
+  egress_bound?: { readonly requests: number; readonly total_bytes: number };
   /** D-211 — optional standing owner-ruling action for this held op. */
   owner_override_offer?: PreflightOverrideOffer;
   /** D-211 — stored approval was below the effective risk floor. */
@@ -395,6 +404,23 @@ const renderTtl = (ttl_ms: number): string => {
   return `${m} minute${m === 1 ? '' : 's'}`;
 };
 
+/** Empty inputs remain part of the enforced open projection, but do
+ *  not help a person decide whether to approve it. Preview values arrive as
+ *  rendered JSON when possible (`null`, `""`, `false`, `0`, ...), with a
+ *  best-effort string fallback for truncated or non-JSON values. Hide only
+ *  absence; meaningful falsy values and containers stay visible. */
+const hasDisplayablePinnedValue = (value: string): boolean => {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) return false;
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    return parsed !== null
+      && !(typeof parsed === 'string' && parsed.trim().length === 0);
+  } catch {
+    return true;
+  }
+};
+
 /** D-177 P5b (N.11 rule 7) — the open-grant confirm block: the one plain
  *  sentence the grant must be renderable as, plus the pinned/varies lines
  *  off the raise-time preview. "If a grant cannot be rendered as one plain
@@ -405,19 +431,46 @@ const renderOpenGrantBlock = (
   preview: PreflightAskContext['open_projection_preview'],
   toolPhrase: string,
 ): string => {
+  const pinned = (preview?.pinned ?? []).filter((p) => hasDisplayablePinnedValue(p.value));
+  const varying = preview?.varying ?? [];
+  const hasDetailLines = pinned.length > 0 || varying.length > 0;
   const lines: string[] = [
     `'Allow this session' auto-approves ${toolPhrase} up to `
       + `${offer.max_uses} time${offer.max_uses === 1 ? '' : 's'} for `
-      + `${renderTtl(offer.ttl_ms)}, only while every pinned input below `
-      + 'stays exactly as approved (anything else re-asks):',
+      + `${renderTtl(offer.ttl_ms)}, only while its fixed inputs `
+      + `stay exactly as approved (anything else re-asks)${hasDetailLines ? ':' : '.'}`,
   ];
-  for (const p of preview?.pinned ?? []) {
+  for (const p of pinned) {
     lines.push(`  pinned  ${p.label} = ${p.value}`);
   }
-  for (const v of preview?.varying ?? []) {
+  for (const v of varying) {
     lines.push(`  varies  ${v.label} (${v.origin})`);
   }
   return lines.join('\n');
+};
+
+/** Render a byte count as a size a reader can act on.
+ *
+ *  ⚠ `104857600` is a number the reader has to do arithmetic on before it means
+ *  anything, and an approval surface that makes the owner compute the blast
+ *  radius has not stated it. Binary units (the ceiling is 512 MiB, and calling
+ *  that "537 MB" to match marketing decimals would misreport the actual bound).
+ *  Rounded to one decimal below GB — the decision is "is that a lot of my data
+ *  leaving", not an invoice. */
+const formatEgressBytes = (bytes: number): string => {
+  if (!Number.isFinite(bytes) || bytes < 0) return `${String(bytes)} bytes`;
+  if (bytes < 1024) return `${bytes} bytes`;
+  const units = ['KB', 'MB', 'GB', 'TB'] as const;
+  let value = bytes / 1024;
+  let unit = 0;
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024;
+    unit += 1;
+  }
+  // Whole numbers stay whole (`5 MB`, not `5.0 MB`); everything else gets one
+  // decimal, which is the resolution the decision actually turns on.
+  const rendered = Number.isInteger(value) ? String(value) : value.toFixed(1);
+  return `${rendered} ${units[unit]}`;
 };
 
 /** Build the preflight `notification.ask` for one gated run (A.2).
@@ -487,6 +540,26 @@ export const buildPreflightAsk = (args: {
       ? `\n\nReason: ${context.reason}`
       : '';
 
+  // D-217 § 6.1 — the amplification bound, on its own line.
+  //
+  // ⛔ **One approval buying N requests is the thing a reviewer must see before
+  // approving, and it is the ONE fact this ask would otherwise omit.** Every
+  // other gated call here is one approval, one request; "wants to run
+  // x-media.upload on x-media" reads identically whether that means one request
+  // or a hundred and three, and the owner's yes means something different in
+  // each case. So the bound is stated in the body, not left to be dug out of the
+  // args preview.
+  //
+  // ⚠ Bytes are rendered as a size, not a raw integer — `104857600` is a number
+  // a reader has to do arithmetic on before it means anything, and an approval
+  // surface that makes the reader compute the blast radius has not stated it.
+  const egressBoundLine =
+    context.egress_bound !== undefined
+      ? `\n\nThis one approval covers up to ${context.egress_bound.requests} `
+        + `request${context.egress_bound.requests === 1 ? '' : 's'}, sending `
+        + `${formatEgressBytes(context.egress_bound.total_bytes)} off this machine.`
+      : '';
+
   const clampWarning = context.approval_clamped_from !== undefined
     ? `\n\nWarning: stored approval '${context.approval_clamped_from}' is below `
       + `the ${context.risk_tier ?? 'operation'} risk floor and was clamped. `
@@ -499,8 +572,9 @@ export const buildPreflightAsk = (args: {
   // D-177 P5b (N.11 rule 7) — an OPEN offer renders its confirm sentence:
   // every clause maps 1:1 onto an enforced bound (use budget → `max_uses`,
   // lifetime → `expiry_at`, the tool phrase → recipe+ingredient binding, the
-  // pinned lines → the projection's pinned roots, the varies lines → its
-  // clean roots).
+  // populated pinned lines → the projection's pinned roots, the varies lines
+  // → its clean roots). Null/blank pinned values remain enforced by the
+  // projection and hash; only their redundant human-preview lines are omitted.
   const openBlock =
     context.session_grant !== undefined
     && context.session_grant.grant_mode === 'open'
@@ -537,7 +611,8 @@ export const buildPreflightAsk = (args: {
   const message: NotificationMessage = {
     title,
     text:
-      `${opening}\n${held}${reasonLine}${clampWarning}${itemsBlock}${openBlock}\n\n${question}`,
+      `${opening}\n${held}${egressBoundLine}${reasonLine}${clampWarning}`
+      + `${itemsBlock}${openBlock}\n\n${question}`,
   };
   const handler: AskHandlerRef = {
     kind: PREFLIGHT_HANDLER_KIND,

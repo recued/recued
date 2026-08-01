@@ -44,6 +44,11 @@
 
 import {
   BATCH_ARGS_PREVIEW_MAX_BYTES,
+  CHUNKED_UPLOAD_WIRE_PREFIX,
+  CHUNKED_UPLOAD_WIRE_WALK_KEY,
+  HTTP_UPLOAD_WIRE_FIELD_KEY,
+  HTTP_UPLOAD_WIRE_KIND_KEY,
+  HTTP_UPLOAD_WIRE_MAX_BYTES_KEY,
   D165_CONTRACT_SCHEMA,
   PAGINATION_MAX_PAGES,
   PAGINATION_MAX_RECORDS,
@@ -70,16 +75,25 @@ import {
   resolveCliReachabilityPolicy,
   resolveTrustCeiling,
   CONTRACTED_DEFAULT_TRUST_CEILING,
+  isRecordsExecutionBinding,
+  recordsPrincipalFromExecutionSource,
 } from '@recued/contracts';
+// D-217 § 9.8 — the walk's plan lives in `@recued/ingredients` (the sequencer
+// that drives it is the connection adapter). engine → ingredients is the
+// allowed direction of the project graph; the engine reaches in only for
+// `planChunkedUpload`, to size the act before it dispatches.
+import { planChunkedUpload } from '@recued/ingredients';
 import type {
   ApiExecutionBinding,
   ApiExecutionBindingKind,
   ArgHashes,
+  ChunkedUploadWalkInput,
   CatalogOperationResolution,
   CliMethodBinding,
   DispatchRole,
   GatewayCallAudit,
   GraphQLExecutionBinding,
+  McpExecutionBinding,
   IngredientManifest,
   OpenProjectionComputation,
   OperationPaginationSpec,
@@ -93,6 +107,7 @@ import type {
   ResolutionContext,
   RestExecutionBinding,
   RiskTier,
+  RecordsExecutionBinding,
   RoleComposition,
   StepMeta,
   StepOptions,
@@ -149,6 +164,7 @@ const surfaceKindForOperation = (
 ): string | undefined => {
   if (manifest.surfaces?.api?.executes?.[operationKey] !== undefined) return 'api';
   if (manifest.surfaces?.connector?.executes?.[operationKey] !== undefined) return 'connector';
+  if (manifest.surfaces?.records?.executes?.[operationKey] !== undefined) return 'records';
   return undefined;
 };
 
@@ -399,6 +415,12 @@ const buildApiDispatchInput = (
     // engine-owned (set below from the binding); a recipe arg can never set
     // them, so the adapter's binary-capture branch can't be forced by a recipe.
     if (k.trim().toLowerCase().startsWith('__rc_')) continue;
+    // D-217 slice 2b-ii — same rule, higher stakes. The `__cu_*` keys carry a
+    // STAGING TOKEN addressing a decrypted file on disk; a recipe that could
+    // set one would be reading staged plaintext of the walk's choosing and
+    // sending it to a connection. Stripped here, and refused again at the
+    // phase builder (`buildChunkedPhaseInput`) for the manifest side.
+    if (k.trim().toLowerCase().startsWith(CHUNKED_UPLOAD_WIRE_PREFIX)) continue;
     input[k] = v;
   }
   // D-182 (CRM Tier-P, decision-b) — a `merge_query` key UNIONS the binding's
@@ -444,6 +466,29 @@ const buildApiDispatchInput = (
     && !Object.keys(input).some((key) => key.startsWith('body.'))) {
     input.body_raw = '{}';
   }
+  // D-216 — the declaration is executable authority, not documentation. A
+  // recipe supplies only the declared file_ref arg; the engine translates it
+  // into the adapter's body slot and stamps an unforgeable marker. Without a
+  // one-shot declaration no marker is emitted, and the adapter refuses raw
+  // body_file/body_binary keys before resolving any bytes.
+  const upload = binding.upload;
+  if (upload !== undefined && upload.kind !== 'chunked') {
+    const fileRef = args[upload.arg];
+    if (fileRef !== undefined) {
+      const target = upload.kind === 'binary'
+        ? 'body_binary'
+        : `body_file.${upload.field ?? ''}`;
+      input[target] = fileRef;
+      if (upload.arg !== target) delete input[upload.arg];
+    }
+    input[HTTP_UPLOAD_WIRE_KIND_KEY] = upload.kind;
+    if (upload.kind === 'multipart' && upload.field !== undefined) {
+      input[HTTP_UPLOAD_WIRE_FIELD_KEY] = upload.field;
+    }
+    if (upload.max_bytes !== undefined) {
+      input[HTTP_UPLOAD_WIRE_MAX_BYTES_KEY] = upload.max_bytes;
+    }
+  }
   input.method = binding.method;
   input.path = binding.path_template;
   input.connection_kind = 'api';
@@ -484,6 +529,162 @@ const buildApiDispatchInput = (
     );
   }
   return input;
+};
+
+/** D-217 slice 2b-ii-β2 — turn a `bind.upload` CHUNKED declaration into the ONE
+ *  dispatch input that buys the whole walk.
+ *
+ *  🔑 **For a chunked op the DECLARATION IS THE PROGRAM** (§ 9.2). D-216's
+ *  `bind.upload` is a manifest disclosure — the one-shot runtime egress is
+ *  driven by the op's `body_file.*` wire args and nothing reads the declaration
+ *  at dispatch. A multi-request protocol has no single set of wire params, so
+ *  the declaration has to cross, and this is where it does.
+ *
+ *  ⚠ **Everything put here is STABLE across attempts, deliberately.** The
+ *  commit Gateway hashes this input for the action identity, so a per-attempt
+ *  value would give every honest repeat a different `canonical_payload_hash`
+ *  and no D-177 grant could ever match. That is why the staging token is NOT
+ *  here — the adapter mints one below the commit boundary — and why the content
+ *  hash IS: it pins which bytes the count was computed for, and it is the same
+ *  every run.
+ *
+ *  ⚠ **`count` is the reviewable multiplier.** It is fixed here, before the
+ *  first dispatch, from two locally-known numbers; the adapter re-derives it
+ *  and refuses to walk any other size. One approval buys exactly N requests
+ *  (§ 6.1 / § 8a).
+ *
+ *  🔑 The file arg is left where it was. `spec.arg` names an ordinary op arg
+ *  (the predicate refuses the one-shot `body_file.*` wire slots for a chunked
+ *  op), so it stays a normal authority-bearing key exactly where
+ *  `affects_target` and the open-projection walk expect to find it — the walk
+ *  descriptor carries its own copy rather than moving it. */
+const applyChunkedUploadWalk = async (
+  input: Record<string, unknown>,
+  binding: ApiExecutionBinding,
+  args: Record<string, unknown>,
+  ctx: ExecutionContext,
+  operationId: string,
+): Promise<void> => {
+  if (binding.kind !== 'rest') return;
+  const spec = binding.upload;
+  if (spec === undefined || spec.kind !== 'chunked') return;
+
+  const fileRef = args[spec.arg];
+  if (typeof fileRef !== 'string' || fileRef.length === 0) {
+    throw new Error(
+      `D-165 gateway: operation '${operationId}' declares a chunked upload but arg `
+      + `'${spec.arg}' carries no file_ref.`,
+    );
+  }
+  if (ctx.describeUploadSource === undefined) {
+    // Fail closed, like `no_file_ingestor` on the inbound side: a host that
+    // cannot size the file cannot fix the APPEND or total request counts, and
+    // an unfixed count is the one thing the § 8a carve-out does not permit.
+    throw new Error(
+      `D-165 gateway: operation '${operationId}' declares a chunked upload but no `
+      + `upload-source reader is wired on this host.`,
+    );
+  }
+  const source = await ctx.describeUploadSource(fileRef);
+  if (source === undefined) {
+    throw new Error(
+      `D-165 gateway: operation '${operationId}' cannot read file '${fileRef}' for a chunked upload.`,
+    );
+  }
+  // Sizes the walk AND re-runs the § 8a predicate over the declaration — an
+  // installed pack may predate the rule. Throws rather than returning a partial
+  // plan; the adapter runs the identical call and refuses any disagreement.
+  const plan = planChunkedUpload({ spec, total_bytes: source.size_bytes });
+
+  const walk: ChunkedUploadWalkInput = {
+    spec,
+    file_ref: fileRef,
+    ...(source.content_hash.length > 0 ? { expect_sha256: source.content_hash } : {}),
+    total_bytes: source.size_bytes,
+    count: plan.count,
+    request_bound: plan.request_bound,
+    args,
+  };
+  input[CHUNKED_UPLOAD_WIRE_WALK_KEY] = walk;
+};
+
+/** D-217 slice 2b-ii-β2 — turn a `bind.upload` CHUNKED declaration into the ONE
+ *  walk descriptor that buys the whole act.
+ *
+ *  🔑 **For a chunked op the DECLARATION IS THE PROGRAM** (§ 9.2). D-216's
+ *  `bind.upload` is a manifest disclosure — the one-shot runtime egress is
+ *  driven by the op's `body_file.*` wire args and nothing reads the declaration
+ *  at dispatch. A multi-request protocol has no single set of wire params, so
+ *  the declaration has to cross, and this is what builds it.
+ *
+ *  ⚠ **Everything it returns is STABLE across attempts, deliberately.** The
+ *  commit Gateway hashes the dispatch input for the action identity, so a
+ *  per-attempt value would give every honest repeat a different
+ *  `canonical_payload_hash` and no D-177 grant could ever match. That is why the
+ *  staging token is NOT here — the adapter mints one below the commit boundary —
+ *  and why the content hash IS: it pins which bytes the count was computed for,
+ *  and it is the same every run.
+ *
+ *  ⚠ **`count` is the reviewable multiplier.** Fixed here, before the gate, from
+ *  two locally-known numbers; the ask states it and the adapter re-derives it
+ *  and refuses to walk any other size. One approval buys exactly N requests
+ *  (§ 6.1 / § 8a).
+ *
+ *  🔑 The file arg is left where it was. `spec.arg` names an ordinary op arg
+ *  (the predicate refuses the one-shot `body_file.*` wire slots for a chunked
+ *  op), so it stays a normal authority-bearing key exactly where
+ *  `affects_target` and the open-projection walk expect to find it — the walk
+ *  descriptor carries its own copy rather than moving it.
+ *
+ *  Returns `undefined` for every non-chunked binding, which is every op but
+ *  these. Throws — before the gate — when the declaration or the file makes the
+ *  walk impossible; refusing early beats asking someone to approve it first. */
+const buildChunkedUploadWalk = async (
+  binding: ApiExecutionBinding,
+  args: Record<string, unknown>,
+  ctx: ExecutionContext,
+  operationId: string,
+): Promise<ChunkedUploadWalkInput | undefined> => {
+  if (binding.kind !== 'rest') return undefined;
+  const spec = binding.upload;
+  if (spec === undefined || spec.kind !== 'chunked') return undefined;
+
+  const fileRef = args[spec.arg];
+  if (typeof fileRef !== 'string' || fileRef.length === 0) {
+    throw new Error(
+      `D-165 gateway: operation '${operationId}' declares a chunked upload but arg `
+      + `'${spec.arg}' carries no file_ref.`,
+    );
+  }
+  if (ctx.describeUploadSource === undefined) {
+    // Fail closed, like `no_file_ingestor` on the inbound side: a host that
+    // cannot size the file cannot fix the APPEND or total request counts, and
+    // an unfixed count is the one thing the § 8a carve-out does not permit.
+    throw new Error(
+      `D-165 gateway: operation '${operationId}' declares a chunked upload but no `
+      + `upload-source reader is wired on this host.`,
+    );
+  }
+  const source = await ctx.describeUploadSource(fileRef);
+  if (source === undefined) {
+    throw new Error(
+      `D-165 gateway: operation '${operationId}' cannot read file '${fileRef}' for a chunked upload.`,
+    );
+  }
+  // Sizes the walk AND re-runs the § 8a predicate — an installed pack may
+  // predate the rule. Throws rather than returning a partial plan; the adapter
+  // runs the identical call and refuses any disagreement.
+  const plan = planChunkedUpload({ spec, total_bytes: source.size_bytes });
+
+  return {
+    spec,
+    file_ref: fileRef,
+    ...(source.content_hash.length > 0 ? { expect_sha256: source.content_hash } : {}),
+    total_bytes: source.size_bytes,
+    count: plan.count,
+    request_bound: plan.request_bound,
+    args,
+  };
 };
 
 /** SMB-finance slice 3 — pick the stable per-item id for a `response_capture`
@@ -537,6 +738,41 @@ const buildGraphqlDispatchInput = (
   input['body.query'] = binding.query;
   input['body.variables'] = args;
   input.connection_kind = 'api';
+  if (connectionName) input.connection = connectionName;
+  return input;
+};
+
+/** D-225 Slice 1 — translate an `mcp` binding + caller args into the
+ *  `connection.mcp` handler's wire params (`tool` / `args`, after the
+ *  connection shell strips `connection_kind` + `connection`).
+ *
+ *  🔑 The caller's args are QUARANTINED into the nested `args` object. Unlike
+ *  the rest builder — which copies caller keys onto the top-level input and so
+ *  must strip the D-112 locked keys (`method` / `url` / `header.authorization`)
+ *  to stop a recipe redirecting the call — an mcp caller key cannot reach a
+ *  dispatch key at all. `tool` comes from the binding and sits a level above
+ *  anything a recipe can write. That is why this path needs no equivalent of
+ *  the raw `connection-mcp-*` anti-spoof gate: the property is structural, not
+ *  a check.
+ *
+ *  Prototype-sensitive keys are still dropped from the args object. They can't
+ *  redirect anything here, but they serialize into the JSON-RPC params and are
+ *  a hazard to whatever parses them on the far side — same posture the header
+ *  and body builders take. */
+const buildMcpDispatchInput = (
+  binding: McpExecutionBinding,
+  args: Record<string, unknown>,
+  connectionName: string,
+): Record<string, unknown> => {
+  const toolArgs: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  for (const [k, v] of Object.entries(args)) {
+    if (PROTO_KEYS.has(k.trim())) continue;
+    toolArgs[k] = v;
+  }
+  const input: Record<string, unknown> = Object.create(null) as Record<string, unknown>;
+  input.connection_kind = 'mcp';
+  input.tool = binding.tool;
+  input.args = toolArgs;
   if (connectionName) input.connection = connectionName;
   return input;
 };
@@ -1649,12 +1885,74 @@ const GRAPHQL_PROTOCOL_EXECUTOR: ProtocolExecutor<GraphQLExecutionBinding> = {
   },
 };
 
+const MCP_PROTOCOL_EXECUTOR: ProtocolExecutor<McpExecutionBinding> = {
+  // Every `tools/call` is a synchronous request/response. (MCP's other
+  // primitives — resources, prompts, sampling — are NOT reachable from a
+  // declared op: the binding's only selector is `tool`. A resource read stays
+  // on the raw `connection.mcp` path, where `resource` / `resources_list` live.)
+  producesDispatch: () => true,
+  buildDispatchInput: (binding, args, connectionName) =>
+    buildMcpDispatchInput(binding, args, connectionName),
+  adaptResponse: async (a) => {
+    // ⛔ A tool that RAN and RAISED must not read as success. The
+    // `connection.mcp` handler maps a JSON-RPC error envelope to
+    // `status: 'tool_error'` and returns HTTP-200-equivalent — so, exactly like
+    // a GraphQL 200 carrying `errors`, the transport's status-only classifier
+    // cannot see the failure and the step would otherwise succeed with an error
+    // object in `result`. Classify it here.
+    //
+    // KNOWN LIMITATION (inherited from the graphql arm, same cause): this runs
+    // AFTER `ctx.ingredientExecutor` returns, i.e. OUTSIDE the commit-gateway
+    // wrap — so the inner dispatch's commit still records `succeeded`. The step
+    // fails, the commit does not. Not a regression (before this arm existed
+    // there was no mcp dispatch at all), and the clean fix is the same one that
+    // arm names: classify inside the protocol executor at the dispatch/commit
+    // boundary.
+    const status = getOwnByPath(a.firstResult, ['status']);
+    if (status === 'tool_error') {
+      const detail = mcpToolErrorDetail(getOwnByPath(a.firstResult, ['result']));
+      return {
+        kind: 'fail',
+        failure_mode: 'mcp_tool_error',
+        message:
+          `D-165 gateway: mcp operation '${a.resolution.operation_id}' on connection `
+          + `'${a.call.connection_name}' invoked tool '${a.binding.tool}' and the server `
+          + `returned an error` + (detail ? ` — ${detail}` : '') + '.',
+      };
+    }
+    // No pagination: MCP has no transport-level cursor contract, so a tool that
+    // pages does it in its own arguments and the recipe walks it. Passing the
+    // envelope through UNCHANGED matches the graphql success path.
+    return { kind: 'ok', result: a.firstResult };
+  },
+};
+
+/** Best-effort one-line summary of an MCP JSON-RPC error envelope, for the
+ *  step-failure message. Shape-tolerant — a server that returns something else
+ *  yields no detail rather than a misleading one. */
+const mcpToolErrorDetail = (err: unknown): string => {
+  if (typeof err === 'string') return err;
+  if (err === null || typeof err !== 'object') return '';
+  const message = getOwnByPath(err, ['message']);
+  const code = getOwnByPath(err, ['code']);
+  const parts: string[] = [];
+  if (typeof message === 'string' && message.length > 0) parts.push(message);
+  if (typeof code === 'number') parts.push(`code ${code}`);
+  return parts.join(' ');
+};
+
 /** The dispatchable transport registry — keyed by `ApiExecutionBinding['kind']`.
  *  ONLY the kinds with a synchronous runtime appear; a lookup for a realtime
  *  subscription kind returns undefined (→ no dispatch, fail closed). */
 const PROTOCOL_EXECUTORS: Partial<Record<ApiExecutionBindingKind, ProtocolExecutor>> = {
   rest: REST_PROTOCOL_EXECUTOR,
   graphql: GRAPHQL_PROTOCOL_EXECUTOR,
+  // D-225 Slice 1 — MCP is a transport like its two peers. Registering it HERE
+  // is what makes the declaration live: `protocolExecutorFor` is the single
+  // seam both the dispatch site and the authorization discriminator
+  // (`apiBindingProducesDispatch`) resolve through, so an mcp op is authorized
+  // and executed off the same source as a REST one, with no second code path.
+  mcp: MCP_PROTOCOL_EXECUTOR,
 };
 
 /** Look up the transport executor for a binding, or undefined when the binding is
@@ -1722,23 +2020,58 @@ export const runCatalogOperation = async (
   // op-level amendment; Increment 3 lands the AUTHORIZATION-stage seam, the one
   // stage with a kind divergence today, which is where the cli gap lives.)
   const isCliOp = isCliInvocationOp(manifest, call.operation_id);
+  const rawRecordsBinding = manifest.surfaces?.records?.executes?.[call.operation_id];
+  const recordsBinding: RecordsExecutionBinding | undefined =
+    isRecordsExecutionBinding(rawRecordsBinding) ? rawRecordsBinding : undefined;
+  const isRecordsOp = rawRecordsBinding !== undefined;
 
   // The cli kind never binds a connection — its profile / base-url resolution
   // is skipped (the per-contract reachability allowlist is its authorization
   // source instead).
-  const profile = !isCliOp && connectionName
+  const profile = !isCliOp && !isRecordsOp && connectionName
     ? await ctx.connectionProfileResolver?.(connectionName)
     : null;
-  const connectionBaseUrl = !isCliOp && connectionName
+  const connectionBaseUrl = !isCliOp && !isRecordsOp && connectionName
     ? await ctx.connectionBaseUrlResolver?.(connectionName)
     : undefined;
+
+  const recordsPrincipal = isRecordsOp
+    ? recordsPrincipalFromExecutionSource(
+        ctx.execution_source ?? {
+          actor: ctx.actor ?? '',
+          ...(ctx.contract_id !== undefined ? { contract_id: ctx.contract_id } : {}),
+        },
+      )
+    : null;
+  let recordsReachable = false;
+  if (recordsBinding !== undefined) {
+    try {
+      recordsReachable = ctx.recordsReachabilityResolver?.(
+        recordsPrincipal,
+        slug,
+        call.operation_id,
+        recordsBinding,
+      ) ?? false;
+    } catch {
+      recordsReachable = false;
+    }
+  }
+  const effectiveProfile = isRecordsOp
+    ? {
+        allowed_operations: recordsReachable ? [call.operation_id] : [],
+        catalog_slug: slug,
+      }
+    : profile;
 
   // D-182 §7.2 (increment 3, ENFORCED) — the per-contract cli reachability
   // verdict: may a recipe run under THIS principal reach this cli ingredient's
   // OPERATION? cli is connection-less + pack-only, so admission is a
   // (contract × pack-op) grant keyed on the op id — NOT the risk tier. Principal =
-  // the run's execution source mapped via `cliPrincipalFromExecutionSource` (a
-  // contract-in-force wins first; else the unrestricted owner; else `null` ⇒ deny).
+  // the run's FULL execution source mapped via `cliPrincipalFromExecutionSource`
+  // (a contract-in-force wins first; else the unrestricted owner or a complete
+  // owner-schedule source; else `null` ⇒ deny). Passing the full source is
+  // load-bearing: D-215 owner schedules are deliberately contract-free and are
+  // distinguishable from other `system` work only by channel provenance.
   // Risk tier stays computed below ONLY for the approval/notification stage
   // (write/destructive → ask the owner) — it never gates here. An UNDECLARED op
   // (no manifest entry → no risk) is skipped (the resolver returns
@@ -1751,10 +2084,12 @@ export const runCatalogOperation = async (
     // reachable; an undeclared op short-circuits to `operation_not_declared`.
     const cliRisk = manifest.operations?.[call.operation_id]?.risk_tier;
     if (cliRisk !== undefined) {
-      const cliPrincipal = cliPrincipalFromExecutionSource({
-        actor: ctx.actor ?? '',
-        ...(ctx.contract_id !== undefined ? { contract_id: ctx.contract_id } : {}),
-      });
+      const cliPrincipal = cliPrincipalFromExecutionSource(
+        ctx.execution_source ?? {
+          actor: ctx.actor ?? '',
+          ...(ctx.contract_id !== undefined ? { contract_id: ctx.contract_id } : {}),
+        },
+      );
       try {
         cliReachable = ctx.cliReachabilityResolver?.(cliPrincipal, slug, call.operation_id) ?? false;
       } catch {
@@ -1823,7 +2158,7 @@ export const runCatalogOperation = async (
       : resolveCatalogOperationPolicy({
           operations: manifest.operations ?? {},
           operation_id: call.operation_id,
-          profile,
+          profile: effectiveProfile,
           // The dispatched catalog ingredient's slug — denies a cross-vendor
           // mismatch (a profile seeded for another catalog with a colliding
           // short key) before the grant check.
@@ -2097,6 +2432,30 @@ export const runCatalogOperation = async (
     return scopedDestinationsMemo;
   };
 
+  // D-217 slice 2b-ii-β2 — the walk descriptor, built ONCE and BEFORE the gate.
+  //
+  // ⛔ **The order is the requirement, not a convenience.** § 6.1 says the
+  // amplification bound must be visible to the reviewer BEFORE approving, and
+  // the gate below runs well ahead of the dispatch-input build — so a walk
+  // computed at dispatch time could not have reached the ask at all. Computed
+  // here, ONE object serves both: the ask states this `count`, and the dispatch
+  // input carries this same object. Two derivations would agree right up until
+  // one of them changed.
+  //
+  // ⚠ A second consequence worth keeping: the § 8a predicate re-check and the
+  // over-ceiling refusal now happen BEFORE the owner is asked. Refusing a walk
+  // that cannot run is better than asking someone to approve it first.
+  //
+  // ⚠ Costs one metadata read (no decrypt) on a chunked op that the gate may
+  // then deny. That is the right trade — the size is part of what the denial
+  // decision is about.
+  const chunkedBinding = manifest.surfaces?.api?.executes?.[call.operation_id];
+  const chunkedWalk = chunkedBinding !== undefined
+    ? await buildChunkedUploadWalk(
+        chunkedBinding, asRecord(input.args), ctx, resolution.operation_id,
+      )
+    : undefined;
+
   /** Raise the catalog operation's preflight-approval hold — the original
    *  `ask` pause, factored so the failed-consume / failed-claim fallbacks
    *  re-raise the identical signal (fail closed). Attaches the action-
@@ -2145,6 +2504,18 @@ export const runCatalogOperation = async (
           : {}),
         ...(openPreview !== undefined
           ? { open_projection_preview: openPreview }
+          : {}),
+        // D-217 § 6.1 — a chunked upload is the one gated call where ONE
+        // approval buys MANY requests. Read off the SAME descriptor the
+        // dispatch input will carry, so the number the owner is shown is the
+        // number the adapter is pinned to.
+        ...(chunkedWalk !== undefined
+          ? {
+              egress_bound: {
+                requests: chunkedWalk.request_bound,
+                total_bytes: chunkedWalk.total_bytes,
+              },
+            }
           : {}),
         ...(ownerOverrideOffer !== undefined
           ? { owner_override_offer: ownerOverrideOffer }
@@ -2267,14 +2638,21 @@ export const runCatalogOperation = async (
     protocolEx !== undefined && binding !== undefined && protocolEx.producesDispatch(binding)
       ? protocolEx.buildDispatchInput(binding, dispatchArgs, connectionName)
       : undefined;
+  // D-217 slice 2b-ii-β2 — attach the walk built above (before the gate, so the
+  // ask could state its bound). The SAME object the owner's approval was
+  // rendered from, applied BEFORE `authorityExecInput` is captured so it is part
+  // of what gets hashed and persisted rather than a rider added afterwards.
+  if (execInput !== undefined && chunkedWalk !== undefined) {
+    execInput[CHUNKED_UPLOAD_WIRE_WALK_KEY] = chunkedWalk;
+  }
   const authorityExecInput = execInput;
   const cliBinding: CliMethodBinding | undefined =
     execInput === undefined && connectorBinding?.kind === 'cli_invocation'
       ? connectorBinding
       : undefined;
-  if (!execInput && !cliBinding) {
+  if (!execInput && !cliBinding && !recordsBinding) {
     const failure_mode =
-      binding || connectorBinding ? 'unsupported_binding_kind' : 'no_api_binding';
+      binding || connectorBinding || rawRecordsBinding ? 'unsupported_binding_kind' : 'no_api_binding';
     emitGatewayAudit(ctx, {
       ...auditBase(slug, call, resolution, ctx, stepMeta, auditArgHash),
       outcome: 'failed',
@@ -2296,6 +2674,16 @@ export const runCatalogOperation = async (
       `D-165 gateway: operation '${resolution.operation_id}' on connection `
         + `'${call.connection_name}' has a cli_invocation binding but no CLI executor is wired `
         + `(no_cli_executor).`,
+    );
+  }
+  if (recordsBinding && !ctx.recordsOperationExecutor) {
+    emitGatewayAudit(ctx, {
+      ...auditBase(slug, call, resolution, ctx, stepMeta, auditArgHash),
+      outcome: 'failed',
+      failure_mode: 'no_records_executor',
+    });
+    throw new Error(
+      `D-221 Records operation '${resolution.operation_id}' has no local executor (no_records_executor).`,
     );
   }
 
@@ -2478,6 +2866,24 @@ export const runCatalogOperation = async (
   let operationBoundFailurePhase: 'dispatch_preparation' | 'provider' =
     'dispatch_preparation';
   try {
+    if (recordsBinding) {
+      if (recordsPrincipal === null) {
+        throw new Error(`D-221 Records operation '${resolution.operation_id}' has no derived execution principal.`);
+      }
+      const result = await ctx.recordsOperationExecutor!({
+        binding: recordsBinding,
+        args: asRecord(input.args),
+        principal: recordsPrincipal,
+        ...(ctx.outputRecipeHash ? { recipe_digest: ctx.outputRecipeHash } : {}),
+        ...(ctx.recordsMutationContext ?? {}),
+      });
+      emitGatewayAudit(ctx, {
+        ...auditBase(slug, call, resolution, ctx, stepMeta, auditArgHash),
+        outcome: 'success',
+        duration_ms: Date.now() - started,
+      });
+      return result;
+    }
     const operationBound = op?.operation_bound_webhook;
     if (operationBound !== undefined) {
       if (op?.risk_tier === 'read') {

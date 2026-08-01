@@ -743,9 +743,20 @@ describe('D-169 P0 - DOM adapter domain allowlist resolution', () => {
 });
 
 describe('D-169 P0 - publishBridgeDispatcher boot-race fix', () => {
-  it.todo('calls publishBridgeDispatcher synchronously after createServerHandlerSet in composeListeners');
-  it.todo('does not error when composeListeners receives no publishBridgeDispatcher option');
-  it.todo('lets DOM adapter dispatch use the live dispatcher after publishBridgeDispatcher runs');
+  it('reads the late-bound dispatcher again after it is published', async () => {
+    let liveDispatcher: BridgeDispatcher | undefined;
+    const { adapter, dispatch, dispatcher } = setupAdapter({
+      getDispatcher: () => liveDispatcher,
+      dispatch: async () => completed(okResult({ text: 'live' })),
+    });
+
+    await expectIngredientCode(() => adapter(resolved()), 'ROLE_RESTRICTION');
+    expect(dispatch).not.toHaveBeenCalled();
+
+    liveDispatcher = dispatcher;
+    await expect(adapter(resolved())).resolves.toEqual({ title: 'live' });
+    expect(dispatch).toHaveBeenCalledTimes(1);
+  });
 });
 
 // ── D-182 "core.dom" — arg-driven dispatch. `core.dom.{read,write}` lower to the

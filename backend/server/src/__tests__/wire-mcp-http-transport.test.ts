@@ -281,7 +281,7 @@ describe('composeMcpHttpTransport base MCP deps', () => {
 });
 
 describe('composeMcpHttpTransport dispatch routing', () => {
-  it('threads the canonical client token id into MCP deps', async () => {
+  it('threads the canonical client token id and positive owner claim into MCP deps', async () => {
     const bundle = composeDefined({
       clientTokens: makeClientTokens(vi.fn(async () => ({
         ok: true,
@@ -293,6 +293,7 @@ describe('composeMcpHttpTransport dispatch routing', () => {
     await bundle.mcpHttpDeps.dispatch(envelope, STRUCTURED);
 
     expect(lastCapturedDeps().mcpTokenId).toBe(TOKEN_ID);
+    expect(lastCapturedDeps().ownerAdmitAll).toBe(true);
     expect(lastCapturedDeps()).not.toHaveProperty('inboundTokenAuthorize');
     expect(lastDispatcher()).toHaveBeenCalledWith(envelope, undefined);
   });
@@ -310,6 +311,7 @@ describe('composeMcpHttpTransport dispatch routing', () => {
     expect(result).toMatchObject({ ok: true });
     expect(verify).not.toHaveBeenCalled();
     expect('mcpTokenId' in lastCapturedDeps()).toBe(false);
+    expect(lastCapturedDeps()).not.toHaveProperty('ownerAdmitAll');
     expect(lastDispatcher()).toHaveBeenCalledWith(envelope, undefined);
   });
 });

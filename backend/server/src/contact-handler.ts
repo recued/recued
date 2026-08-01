@@ -29,6 +29,7 @@ import type {
   NetworkDomain,
   ContactAliasPlatform,
   OriginSurface,
+  TimelineRollup,
 } from '@recued/contracts';
 import type { WsClient } from './ws-server.js';
 import type { ContactStore } from './storage/contact-store.js';
@@ -57,6 +58,12 @@ export interface ContactRpcDeps {
    *  human's own paired client), `'engine'` from the recipe kernel path
    *  in `wire-executor-config.ts`. Absent → `'system'`. */
   origin_surface?: OriginSurface;
+  /** D-226 — a BATCHED root read for a page of contacts. Optional: unwired,
+   *  `contact.list` simply never carries rollups and the list renders without
+   *  the columns. ⚠ It must stay batched — the obvious "just loop
+   *  `readRootProjections`" is the N+1 this exists to avoid, and it would look
+   *  identical from here. */
+  rollupsForKeys?: (emails: readonly string[]) => Record<string, TimelineRollup[]>;
 }
 
 const isValidSource = (s: unknown): s is ContactSource =>
@@ -181,8 +188,12 @@ export const handleContactList = async (
     phone_exact?: string;
     limit?: number;
     offset?: number;
+    with_rollups?: boolean;
   },
-): Promise<{ contacts: ContactRecord[]; total: number }> => {
+): Promise<{
+  contacts: ContactRecord[]; total: number;
+  rollups?: Record<string, TimelineRollup[]>;
+}> => {
   if (args.source !== undefined && !isValidSource(args.source)) {
     throw new RpcError('bad_request', `contact.list: invalid source '${String(args.source)}'`);
   }
@@ -200,7 +211,17 @@ export const handleContactList = async (
     ...(args.limit !== undefined ? { limit: args.limit } : {}),
     ...(args.offset !== undefined ? { offset: args.offset } : {}),
   });
-  return { contacts, total: deps.store.count(filter) };
+  // D-226 — one batched read for the whole page, never one per row. The
+  // per-contact path costs `1 + 2 × packs` queries EACH; at 50 rows and 20
+  // packs that is 2,050 against 41. ⚠ Scoped to the page deliberately: the
+  // rollups are for the rows being rendered, so paging pays for what it shows.
+  const rollups = args.with_rollups === true && deps.rollupsForKeys !== undefined
+    ? deps.rollupsForKeys(contacts.map((contact) => contact.email))
+    : undefined;
+  return {
+    contacts, total: deps.store.count(filter),
+    ...(rollups === undefined ? {} : { rollups }),
+  };
 };
 
 export const handleContactGet = async (

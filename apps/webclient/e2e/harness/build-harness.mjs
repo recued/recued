@@ -13,7 +13,7 @@
  * shared design tokens, so the pages load over HTTP with no runtime imports.
  */
 import { build } from 'esbuild';
-import { cpSync } from 'node:fs';
+import { cpSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -22,6 +22,15 @@ const PKG_ROOT = resolve(here, '../..'); // apps/webclient
 
 const ENTRIES = ['kitchen-harness.ts', 'full-app-harness.ts'];
 for (const entry of ENTRIES) {
+  // An entry may legitimately be absent from a source projection: the public
+  // export withholds `kitchen-harness.ts`, because it stress-tests marketplace
+  // packs that the public catalog does not carry. Skipping keeps the remaining
+  // harnesses buildable there instead of failing the whole e2e script on a file
+  // that was removed on purpose.
+  if (!existsSync(join(here, entry))) {
+    console.log(`[build-harness] skipping ${entry} — not present in this tree`);
+    continue;
+  }
   console.log(`[build-harness] bundling ${entry}`);
   await build({
     entryPoints: [join(here, entry)],

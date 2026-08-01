@@ -15,9 +15,8 @@
 import { e } from '../template.js';
 
 export interface AttentionSlotState {
-  /** Approvals + circuit-trip count. Driven by the sidebar from
-   *  `pendingApprovals.size + autoDisabledSummaries.length` — the
-   *  same two surfaces the spec mandates as "blocking work". */
+  /** Unified work that needs the owner: approval gates, connected-action
+   * asks, pending Chat plans, and connection-recovery checks. */
   blockingCount: number;
   /** Whether the popover anchored to this button is currently open.
    *  Toggles the trigger's aria-expanded + a `--open` modifier the
@@ -39,8 +38,8 @@ export const renderAttentionSlot = (state: AttentionSlotState): string => {
     ? `<span class="top-bar-attention-badge" aria-hidden="true">${e(formatCount(n))}</span>`
     : '';
   const aria = active
-    ? `${n} item${n === 1 ? '' : 's'} need attention`
-    : 'No items need attention';
+    ? `${n} item${n === 1 ? ' needs' : 's need'} your attention`
+    : 'No items need your attention';
   return `
     <button type="button"
       class="top-bar-attention ${active ? 'top-bar-attention--active' : 'top-bar-attention--idle'}${open ? ' top-bar-attention--open' : ''}"
@@ -49,7 +48,12 @@ export const renderAttentionSlot = (state: AttentionSlotState): string => {
       aria-expanded="${open ? 'true' : 'false'}"
       aria-label="${e(aria)}"
       title="${e(aria)}">
-      <span class="top-bar-attention-glyph" aria-hidden="true">⚠</span>
+      <span class="top-bar-attention-glyph top-bar-attention-bell" aria-hidden="true">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" focusable="false">
+          <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"></path>
+          <path d="M13.75 21a2 2 0 0 1-3.5 0"></path>
+        </svg>
+      </span>
       ${badge}
     </button>
   `;

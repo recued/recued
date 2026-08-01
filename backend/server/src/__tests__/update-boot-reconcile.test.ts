@@ -117,6 +117,29 @@ describe('runUpdateBootReconcile', () => {
     expect(rows).toHaveLength(0); // apply_reverted is not a user-facing replay row
   });
 
+  it('keeps an unresolved receipt closure out of applied/rolled-back audit history', async () => {
+    const led = memLedger([
+      entry({
+        kind: 'operation_closed',
+        id: 'closure',
+        closed_operation_id: 'lost-receipt',
+        closed_operation: 'update',
+        detail: 'owner closed an unresolved operation receipt without asserting its outcome',
+      }),
+    ]);
+    const { rows, sink } = memAudit();
+    const p = ports({ ledger: led });
+
+    expect(await runUpdateBootReconcile({
+      ports: p,
+      channel: 'stable',
+      currentVersion: '1.4.0',
+      auditLog: sink,
+    })).toEqual({ action: 'continue' });
+    expect(rows).toHaveLength(0);
+    expect(led.rows).toHaveLength(1);
+  });
+
   it('replays idempotently — a committed entry already in audit is not re-emitted', async () => {
     const committed = entry({ kind: 'apply_committed', id: 'done' });
     const led = memLedger([

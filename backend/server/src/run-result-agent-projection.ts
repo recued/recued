@@ -28,6 +28,24 @@ import type { ExecuteResponse } from './types.js';
  *  card's own bounded options (the N.5 `allow_session` answer), never
  *  through the agent. Keeps the three pinned invariants of the 2026-06-08
  *  log entry: expected-outcome framing, do-NOT-resend, tell-the-user. */
+/** What the agent is told when a recipe's trigger condition was not met.
+ *
+ *  ⛔ THE LOAD-BEARING SENTENCE IS "NOTHING WAS CHECKED". Without it the model
+ *  reports the empty output as an answer — measured: it told an owner their
+ *  commitments were "clear" when the recipe never looked. Same posture as
+ *  {@link HELD_FOR_APPROVAL_MESSAGE}: expected outcome, NOT a failure, do not
+ *  retry, tell the user — plus the one thing that shape needs and the others do
+ *  not, which is an explicit ban on reading the empty result as data.
+ *
+ *  ⚠ Model-facing string — see `chat-prompt-optimization-log.md`. */
+export const TRIGGER_SKIPPED_MESSAGE =
+  "This recipe's trigger condition was not met, so it did NOT run and produced "
+  + 'no result. This is an expected outcome, not a failure. ⛔ The empty output '
+  + 'does NOT mean there is nothing to report — NOTHING WAS CHECKED. Do not '
+  + 'present it as an answer, do not say the user has none of whatever this '
+  + 'recipe looks for, and do not retry: the trigger will skip again. Tell the '
+  + 'user the recipe did not run because its trigger condition was not met.';
+
 export const HELD_FOR_APPROVAL_MESSAGE =
   "This action is paused and is now queued for the user's approval before it can run. "
   + 'This is the expected, successful outcome for an action that sends a message or '
@@ -307,6 +325,38 @@ export const projectRunResultForAgent = (result: unknown): unknown => {
       containers: detail.plans.map((p) => `${p.ref} '${p.name}'`),
       message,
     } satisfies AgentCreatePlanRequiredResult;
+  }
+  // ⛔⛔ A SKIPPED TRIGGER IS NOT AN EMPTY ANSWER, and this one reached the owner.
+  //
+  // `ExecuteResponse.success` is TRUE when `trigger_skipped` is true — the
+  // engine returns early at `execute.ts` before any step runs, so a silent skip
+  // is deliberately not an error. `packages/engine/src/types.ts` states the
+  // consequence outright: "callers that distinguish outcomes must read
+  // `trigger_skipped` FIRST, then fall back to `success`". The agent is such a
+  // caller and this projection did not.
+  //
+  // Observed live: `open-commitments` returned
+  // `{ success: true, output: { sidebar: [] }, errors: [], trigger_skipped: true }`
+  // and the model told the owner *"Your open commitments view is clear. There
+  // are no outstanding commitments or open loops at the moment."* Nothing was
+  // checked. The empty output means NOTHING WAS PRODUCED, not that nothing
+  // exists — and a flag beside an empty collection is not a sentence, so the
+  // model supplied one. Same class as the 2026-06-08 `success: false` +
+  // `steps: []` + `errors: []` loop, in the opposite direction: there a false
+  // flag read as failure, here a true flag plus emptiness reads as a confident
+  // "nothing to report".
+  //
+  // ⚠ Checked BEFORE `awaiting_approval` for the same reason the container-pick
+  // branch is: they are mutually exclusive on the wire, and a skip is the
+  // specific outcome to name.
+  if ((result as { trigger_skipped?: unknown }).trigger_skipped === true) {
+    const skipped = result as ExecuteResponse;
+    return {
+      status: 'trigger_skipped',
+      trigger_skipped: true,
+      recipe_id: skipped.recipe_id,
+      message: TRIGGER_SKIPPED_MESSAGE,
+    };
   }
   if ((result as { awaiting_approval?: unknown }).awaiting_approval !== true) {
     return result;

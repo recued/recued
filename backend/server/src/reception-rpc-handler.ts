@@ -59,6 +59,8 @@ import {
   parseIntakeFormTemplate,
   parseReceptionConfigTemplate,
   parseSourceQueryRef,
+  evaluateFormFieldContract,
+  recipeFormResponseScope,
   resolvePaidDocumentDirectCheckoutClaimConfiguration,
   isSourceQueryPermittedFor,
   validateApprovalLinkConfig,
@@ -104,6 +106,10 @@ import {
   type ReceptionIntakeRecipePairGetInput,
   type ReceptionIntakeRecipePairGetResult,
   type ReceptionIntakeRecipePairView,
+  type FormFieldContractMismatch,
+  type FormFieldContractFormView,
+  type FormResponseTriggerFormScope,
+  type RecipeFormFieldRequirement,
   type ReceptionEndpointCreateInput,
   type ReceptionEndpointCreateResult,
   type ReceptionEndpointExtendInput,
@@ -320,6 +326,13 @@ export interface ReceptionRpcDeps {
    * only pair storage, and get reports a configured row stale without recipes. */
   readonly getIntakeRecipePairStore?: () => ReceptionIntakeRecipePairStore;
   readonly getRecipeStore?: () => import('./recipe-store.js').RecipeStore;
+  /** D-221 §3.3.3 — production exposure preflight. Reception bind is the
+   * owner gesture that makes a recipe non-owner reachable, so the check runs
+   * before either the pair row or its door contract is written. */
+  readonly preflightNonOwnerRecipeExposure?: (
+    recipe: import('@recued/contracts').RecipeDefinition,
+    surface: 'reception',
+  ) => void;
   /** D-207 slice 1c — the DOOR-BIND seam. A pair says WHICH recipe a public form runs;
    *  the door says UNDER WHAT AUTHORITY. Minting it is the only thing that lets an
    *  anonymous submission dispatch a single op — without it every op hard-denies against
@@ -1251,6 +1264,28 @@ export const handleReceptionEndpointPreviewDraft = async (
     expires_at: expires_at ?? null,
     now,
   });
+  // ── D-220 Slice A2c — the advisory half ─────────────────────────────────────
+  //
+  // The same computation `create` gates on, reported one step earlier so the
+  // owner fixes the form while still editing. It also surfaces the two cases
+  // create deliberately does NOT refuse (`all_forms` / `this_form_filtered`),
+  // which is the whole reason an advisory channel exists: those are real risks
+  // the substrate should NOT decide on the owner's behalf.
+  //
+  // ⚠ `blocks_create` is computed from the SAME predicate `create` uses, not
+  // re-derived from the scope alone — a renderer that shows "this will be
+  // refused" must agree with the thing that does the refusing.
+  const previewIntakeView = intakeFormViewFromMetadata(kind, metadata);
+  const previewConflicts = previewIntakeView === null
+    ? null
+    : formContractConflicts(deps, previewIntakeView.form_definition_id, previewIntakeView.form);
+  const form_contract_advisories = previewConflicts === null
+    ? undefined
+    : [
+        ...previewConflicts.blocking.map((c) => ({ ...c, blocks_create: true })),
+        ...previewConflicts.advisory.map((c) => ({ ...c, blocks_create: false })),
+      ];
+
   return {
     html: renderDraftPreviewHtml({
       kind,
@@ -1263,6 +1298,131 @@ export const handleReceptionEndpointPreviewDraft = async (
     preview_hash: hash,
     expires_at: stamp.expires_at,
     view_as_visitor,
+    ...(form_contract_advisories === undefined || form_contract_advisories.length === 0
+      ? {}
+      : { form_contract_advisories }),
+  };
+};
+
+// ────────────────────────────────────────────────────────────────
+// D-220 Slice A2c — create-time gates over an intake form's field set
+// ────────────────────────────────────────────────────────────────
+
+/** The live intake_form endpoint already claiming `form_definition_id`, or null.
+ *
+ *  ⚠ REVOKED endpoints are deliberately ignored. `form_definition_id` is an
+ *  owner-typed free-text field and there is no update rpc — revoke-and-recreate
+ *  IS the only way to edit a form, and an owner doing that reuses the id on
+ *  purpose so the recipes armed on it stay pointed at it. Refusing every reuse
+ *  would break the only editing path there is. What must never happen is TWO
+ *  LIVE forms claiming one id: a `form_response.accepted` trigger filters on the
+ *  id alone, so it would fire for both, and the second form's differently-named
+ *  answers would read as nothing. */
+const liveIntakeFormClaimingDefinitionId = (
+  deps: ReceptionRpcDeps,
+  form_definition_id: string,
+): string | null => {
+  const store = deps.getStore?.();
+  if (!store) return null;
+  // ⚠ `include_revoked: true` is DELIBERATE, and the skip below is the real
+  // filter. `list()` already excludes revoked rows by default, so relying on
+  // that default would leave this function's central property — "reuse after
+  // revoke is allowed, because that is the edit path" — resting on a filter
+  // default that never mentions it, and a mutation removing the skip would
+  // survive. Asking for everything and excluding revoked HERE makes the
+  // intent explicit and the guard load-bearing. `kind` still filters in SQL.
+  for (const endpoint of store.list({ kind: 'intake_form', include_revoked: true })) {
+    if (endpoint.revoked_at !== null) continue;
+    const config = parseIntakeFormConfig(endpoint.metadata);
+    if (config?.form_definition.form_definition_id === form_definition_id) {
+      return endpoint.endpoint_id;
+    }
+  }
+  return null;
+};
+
+export interface FormContractConflict {
+  readonly recipe_id: string;
+  readonly scope: FormResponseTriggerFormScope;
+  readonly mismatches: ReadonlyArray<{ readonly code: string; readonly field_name: string }>;
+}
+
+/** Which already-armed recipes this form's field set would break.
+ *
+ *  The reverse of the bind-time check: there the form exists and the recipe is
+ *  being wired, here the recipes exist and the FORM is being created. Both are
+ *  needed because either act can be the later one.
+ *
+ *  ⛔ `this_form` and `this_form_filtered` BLOCK; only `all_forms` is advisory:
+ *   - `all_forms` — an unscoped trigger with a required field contract would
+ *     otherwise let ONE recipe veto every future form on the server. That is a
+ *     contradiction for its author to resolve, not a reason to refuse an
+ *     unrelated form.
+ *   - `this_form_filtered` — ⚠ was exempted on "it may never fire here", which
+ *     adversarial review (Codex, 2026-07-29) disproved: an accepted-response
+ *     event carries BOTH `endpoint_id` and `form_definition_id`, compiled into
+ *     exact equality filters, so a trigger naming this form plus its live
+ *     endpoint fires with certainty. A filter narrows WHICH responses match; the
+ *     contract still has to hold for those.
+ *
+ *  Scans `listStored()` only — one query over the SQLite rows. Bundled pack
+ *  recipes are inert by contract (`isInstalledFormResponseWorkflowTemplate`
+ *  requires empty `event_triggers`), so an ARMED trigger only ever exists on a
+ *  stored clone. A corrupt stored row is SKIPPED rather than failing the create:
+ *  one bad row must not make the owner unable to publish a form. */
+const formContractConflicts = (
+  deps: ReceptionRpcDeps,
+  form_definition_id: string,
+  form: FormFieldContractFormView,
+): { readonly blocking: FormContractConflict[]; readonly advisory: FormContractConflict[] } => {
+  const blocking: FormContractConflict[] = [];
+  const advisory: FormContractConflict[] = [];
+  const recipes = deps.getRecipeStore?.();
+  // No recipe store ⇒ no recipes to conflict with (dbless / one-shot CLI). There
+  // is nothing to fail closed ABOUT: the check compares against a set that is
+  // empty by construction, not one it failed to read.
+  if (!recipes) return { blocking, advisory };
+  for (const row of recipes.listStored()) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(row.recipe_json);
+    } catch {
+      continue;
+    }
+    const scope = recipeFormResponseScope(parsed, form_definition_id);
+    if (scope === null) continue;
+    const declared = (parsed as { metadata?: { requires_form_fields?: unknown } })
+      .metadata?.requires_form_fields;
+    if (!Array.isArray(declared)) continue;
+    const verdict = evaluateFormFieldContract(
+      declared as ReadonlyArray<RecipeFormFieldRequirement>,
+      form,
+    );
+    const mismatches = [...verdict.blocking, ...verdict.advisory]
+      .map((m) => ({ code: m.code, field_name: m.field_name }));
+    if (mismatches.length === 0) continue;
+    const conflict: FormContractConflict = { recipe_id: row.recipe_id, scope, mismatches };
+    // A required-field mismatch on a trigger that NAMES this form is certain
+    // breakage whether or not it carries an extra filter; only an unscoped
+    // trigger is reported rather than refused.
+    if (scope !== 'all_forms' && verdict.blocking.length > 0) blocking.push(conflict);
+    else advisory.push(conflict);
+  }
+  return { blocking, advisory };
+};
+
+/** The form-definition id + field view for an intake_form create/preview, or
+ *  null for any other endpoint kind. */
+const intakeFormViewFromMetadata = (
+  kind: ReceptionEndpointKind,
+  metadata: Readonly<Record<string, unknown>>,
+): { readonly form_definition_id: string; readonly form: FormFieldContractFormView } | null => {
+  if (kind !== 'intake_form') return null;
+  const config = parseIntakeFormConfig(metadata);
+  if (config === null) return null;
+  return {
+    form_definition_id: config.form_definition.form_definition_id,
+    form: config.form_definition as unknown as FormFieldContractFormView,
   };
 };
 
@@ -1282,6 +1442,45 @@ export const handleReceptionEndpointCreate = async (
   crossCheckStatusLinkSources(kind, decl.source_query_ref, metadata, method);
   if (typeof args.preview_hash !== 'string' || args.preview_hash.length === 0) {
     throw badRequest('preview_hash_missing', `${method}: preview_hash is required (Pass-3)`);
+  }
+
+  // ── D-220 Slice A2c — two gates over the form this create would publish ─────
+  //
+  // Placed here, before the preview-hash round-trip, because both are properties
+  // of the SHAPE the owner submitted rather than of the preview ceremony, and a
+  // refusal should not depend on whether their hash is still fresh.
+  const intakeView = intakeFormViewFromMetadata(kind, metadata);
+  if (intakeView !== null) {
+    // (3) One id, one live form. See `liveIntakeFormClaimingDefinitionId` for why
+    // revoked endpoints are excluded — reuse after revoke is the edit path.
+    const clash = liveIntakeFormClaimingDefinitionId(deps, intakeView.form_definition_id);
+    if (clash !== null) {
+      throw new RpcError(
+        'form_definition_id_already_live',
+        `${method}: endpoint '${clash}' is already live with form definition id `
+          + `'${intakeView.form_definition_id}'. A recipe armed on that id filters on the id alone, `
+          + 'so two live forms would both fire it and the second form\'s answers would read as '
+          + 'nothing. Revoke the other endpoint first, or choose a different id.',
+        409,
+        method,
+        { conflicting_endpoint_id: clash, form_definition_id: intakeView.form_definition_id },
+      );
+    }
+    // (1) Does this form still feed the recipes already armed on its id?
+    const conflicts = formContractConflicts(deps, intakeView.form_definition_id, intakeView.form);
+    if (conflicts.blocking.length > 0) {
+      throw new RpcError(
+        'form_contract_breaks_armed_recipe',
+        `${method}: this form omits answers a recipe already armed on `
+          + `'${intakeView.form_definition_id}' reads, so every submission would store nothing. `
+          + `Nothing was created. Affected: ${conflicts.blocking
+            .map((c) => `${c.recipe_id} (${c.mismatches.map((m) => m.field_name).join(', ')})`)
+            .join('; ')}`,
+        409,
+        method,
+        { blocking: conflicts.blocking, advisory: conflicts.advisory },
+      );
+    }
   }
 
   // Recompute the hash from the supplied shape; mismatch → reject.
@@ -2538,6 +2737,7 @@ export const handleReceptionIntakeRecipePairBind = async (
       422,
     );
   }
+  deps.preflightNonOwnerRecipeExposure?.(recipe, 'reception');
   // Evaluate the distinct submit-time role against the same current saved
   // recipe before any await. This is owner visibility only: an ineligible
   // profile remains bindable and persists as an exact pair.
@@ -2561,6 +2761,48 @@ export const handleReceptionIntakeRecipePairBind = async (
       `${method}: this server cannot mint a reception door contract, so recipe '${recipe_id}' could not run on a public form. Nothing was bound.`,
       503,
     );
+  }
+
+  // ── D-220 Slice A2 — does THIS form carry the answers the recipe reads? ──────────────
+  //
+  // Asked here for exactly the reason the door check above is: the answer decides whether
+  // a written pair could ever do its job. A recipe reads named answers by STATIC path
+  // (`record.values.<name>`), so a form that spells a required field differently — or omits
+  // it, or hides it behind `user_only_field_names` — makes that read resolve `undefined`,
+  // a `default` transform substitute its fallback, and every submission "succeed" having
+  // stored nothing. The visitor's work is lost and there is no error anywhere to chase.
+  //
+  // Refuse at BIND, where the owner is present and can fix the form, never at fire, where
+  // an anonymous visitor is. Nothing is written.
+  //
+  // Scope: FORM pairs only. A scheduling pair has no authored fields to contract over
+  // (D-210 R-2 — it hashes only `required_visitor_fields`), so there is nothing to compare.
+  // An UNDECLARED recipe (`requires_form_fields` absent) passes untouched: A2 enforces what
+  // a recipe declared, and must not retroactively refuse the pairs that already work.
+  if (endpoint.kind === 'intake_form') {
+    const formConfig = intakePairConfigFor(endpoint);
+    // `derived.kind === 'ready'` above already proves this parses; the guard is for the
+    // typechecker, and returning early rather than throwing keeps a parse regression from
+    // turning into a spurious contract refusal.
+    if (formConfig !== null) {
+      const contract = evaluateFormFieldContract(
+        recipe.metadata?.requires_form_fields,
+        formConfig.form_definition,
+      );
+      if (!contract.satisfied) {
+        throw new RpcError(
+          'intake_recipe_pair_form_contract_unsatisfied',
+          `${method}: recipe '${recipe_id}' reads answers this form does not collect, so every submission `
+            + `would store nothing. Nothing was bound. ${contract.blocking.map((m: FormFieldContractMismatch) => m.detail).join('; ')}`,
+          422,
+          method,
+          {
+            blocking: contract.blocking.map((m: FormFieldContractMismatch) => ({ code: m.code, field_name: m.field_name })),
+            advisory: contract.advisory.map((m: FormFieldContractMismatch) => ({ code: m.code, field_name: m.field_name })),
+          },
+        );
+      }
+    }
   }
 
   let written: ReturnType<ReceptionIntakeRecipePairStore['compareAndSet']>;

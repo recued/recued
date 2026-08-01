@@ -143,6 +143,7 @@ export type BridgeErrorCode =
   | 'tab_navigation_blocked'
   | 'idempotency_violation'
   | 'mv3_lifecycle_killed'
+  | 'queue_full'
   | 'unknown';
 
 export const BRIDGE_ERROR_CODES: ReadonlyArray<BridgeErrorCode> = [
@@ -157,6 +158,7 @@ export const BRIDGE_ERROR_CODES: ReadonlyArray<BridgeErrorCode> = [
   'tab_navigation_blocked',
   'idempotency_violation',
   'mv3_lifecycle_killed',
+  'queue_full',
   'unknown',
 ] as const;
 

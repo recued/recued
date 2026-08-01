@@ -24,6 +24,7 @@ import {
   type EntityPrivacyTag,
   type IngredientManifest,
   type PiiAliasableData,
+  PII_ALIAS_NOTICE,
 } from '@recued/contracts';
 import { piiEgress } from '@recued/gateway';
 import type { EntityPromptPart, PromptPart, TurnContext } from '@recued/middleware';
@@ -241,7 +242,14 @@ describe('D-167 P2 — prefetch entity part renders aliased, never raw PII', () 
     const block = part.render(aliasEntityPayloadForEgress(part.payload, part.entity, plan));
 
     expect(block).toContain('pii.Person1');
+    // ⚠ The email ALIAS renders and that is correct: `m1@d1.invalid` is an
+    // OPAQUE handle. Briefly dropped (2026-07-31) on the theory that it leaked
+    // the address — it did not; the D-224 overlap TAIL did, and removing the
+    // tail is what closed it. Without the ref the block costs ~89 header tokens
+    // to say an alias prefixed `pii.Person` is a contact.
     expect(block).toContain('m1@d1.invalid');
+    // ⛔ The intent this test exists for is UNCHANGED: whatever renders is an
+    // alias, never raw PII.
     expect(block).not.toContain('alice@acme.com');
     expect(block).not.toContain('Alice Chen');
     // The marker key never survives into the rendered text.
@@ -269,7 +277,10 @@ describe('D-167 P2 — prefetch entity part renders aliased, never raw PII', () 
     const block = part.render(aliasedPayload);
     const blocks = block.split('\n\n');
     expect(blocks).toHaveLength(2);
-    expect(blocks[0]).toContain('speculative');
+    // ⚠ "speculative" is gone — it claimed the entity might not be on file,
+    // which an alias can never mean. The confident block's framing is what this
+    // asserts, not the retired word.
+    expect(blocks[0]).toContain('already on file');
     expect(blocks[0]).toContain('pii.Person1');
     expect(blocks[0]).not.toContain('pii.Person2');
     expect(blocks[1]).toContain('Do NOT assume');
@@ -282,7 +293,7 @@ describe('D-167 P2 — prefetch entity part renders aliased, never raw PII', () 
     expect(block).not.toContain('Sarah Adams');
 
     const gathered = renderEntityPartsForEgress([part], makePlan(entityResolver())).join('\n');
-    expect(gathered).toContain('speculative');
+    expect(gathered).toContain('already on file');
     expect(gathered).toContain('Do NOT assume');
     expect(gathered).not.toContain('alice@acme.com');
     expect(gathered).not.toContain('Sarah Adams');
@@ -713,5 +724,104 @@ describe('D-167 — prefetch aliased at the single seam (entityParts via the wra
     expect(packet.prefetch_context).toBeUndefined();
     expect(sent).not.toContain('alice@acme.com');
     expect(sent).not.toContain('Alice Chen');
+  });
+});
+
+describe('D-224 — the PREFETCH block is NOT overlap-decorated (retracted)', () => {
+  /** ⛔⛔ THIS SUITE ASSERTED THE OPPOSITE AND THE ASSERTION WAS WRONG. D-224
+   *  wired overlap-reveal into the prefetch path so a model could join the
+   *  owner's "Northwind Traders" to an opaque `pii.Person1`. The justification —
+   *  D-167's own "reveals nothing new, the user typed it" — holds ONLY while the
+   *  user's text is still RAW in the packet. On this path it is not: the content
+   *  pass aliases `user_message` too, so the name is already `pii.Person1` before
+   *  this renders. Verified in a live packet: raw "Sarah Chen" ABSENT, tail
+   *  `pii.Person1.sarah.chen` PRESENT, and the model read the name off the tail
+   *  and printed it in its answer. The tail was the only place the name existed.
+   *
+   *  ⚠ The join never needed it here: `user_message` and the prefetch block
+   *  carry the SAME `pii.Person1` token, so the coreference is already intact.
+   *  The RECALL path keeps decoration — there the recalled value is aliased
+   *  against text the user genuinely did send raw, which is D-167's actual case. */
+  const CONTACT = {
+    email: 'pat.lee@northwind-traders.com',
+    name: 'Pat Lee',
+    company: 'Northwind Traders',
+    kind: 'contact',
+  };
+
+  it('leaves the aliases BARE even when the owner typed the name', () => {
+    const plan = makePlan(entityResolver());
+    const rec = aliasEntityPayloadForEgress(
+      [CONTACT], 'contact', plan,
+      ['Someone at Northwind Traders emailed me about Pat and the renewal.'],
+    )[0] as Record<string, unknown>;
+    expect(rec['name']).toBe('pii.Person1');
+    // ⚠ D-227 — `pat.lee@` FOLDS to "Pat Lee", so the composite legitimately
+    // carries her person alias now. This test's intent is the absence of an
+    // overlap TAIL, not the opaque form: assert no disclosed fragment survives,
+    // which is the thing the retraction was about.
+    expect(rec['email']).toBe('pii.Person1@d1.invalid');
+    expect(String(rec['email'])).not.toMatch(/pat|lee|northwind/i);
+  });
+
+  it('renders a prefetch BLOCK carrying no fragment of the real identity', () => {
+    const plan = makePlan(entityResolver());
+    const blocks = renderEntityPartsForEgress(
+      [{
+        entity: 'contact',
+        payload: [CONTACT],
+        render: (records: unknown) => JSON.stringify(records),
+      }] as never,
+      plan,
+      ['Someone at Northwind Traders emailed me about the renewal.'],
+    );
+    expect(blocks).toHaveLength(1);
+    // ⛔ The whole point: no `pat`, no `northwind`, nothing the alias was meant
+    // to withhold. A failure here means a tail has crept back onto this path.
+    expect(blocks[0]).not.toMatch(/pat|lee|northwind/i);
+    expect(blocks[0]).toContain('pii.Person1');
+  });
+});
+
+describe('D-224 — the model is told what an alias IS', () => {
+  /** ⛔ It never was. Both observed failure modes are what a capable model does
+   *  with an unexplained token: it read `m1@d1.invalid` as a redaction and gave
+   *  up, then — once the overlap tail landed — read the fragments as ingredients
+   *  and CONSTRUCTED `sarah.chen@northwindtraders.com`. Neither is a model
+   *  defect; both are the absence of one sentence. */
+  it('rides the packet only when an alias is actually present', async () => {
+    const plan = makePlan(entityResolver());
+    // A turn with nothing to alias must not pay for the notice — it is
+    // turn-varying, so an unconditional emit would cost the D-164 cacheable head.
+    const { packet: quiet } = await egress(plan, JSON.stringify({
+      user_message: 'what time is it in Tokyo?',
+    }));
+    expect(quiet['pii_notice']).toBeUndefined();
+
+    // Seed a real alias the way the prefetch does, then a turn that carries it.
+    aliasEntityPayloadForEgress(
+      [{ email: 'pat.lee@northwind-traders.com', name: 'Pat Lee', kind: 'contact' }],
+      'contact',
+      plan,
+    );
+    const { packet: carrying } = await egress(plan, JSON.stringify({
+      user_message: 'mail Pat Lee about the renewal',
+    }));
+    expect(typeof carrying['pii_notice']).toBe('string');
+    expect(String(carrying['pii_notice'])).toContain('Never rebuild a real value');
+  });
+
+  it('⛔ says the two things the observed failures needed', () => {
+    // Not a style assertion. Each clause maps to a run that failed without it:
+    // "not a redaction" → the give-up; "never rebuild" → the reconstruction.
+    expect(PII_ALIAS_NOTICE).toContain('not a redaction');
+    expect(PII_ALIAS_NOTICE).toContain('EXACTLY as written');
+    expect(PII_ALIAS_NOTICE).toContain('Never rebuild');
+    expect(PII_ALIAS_NOTICE).toContain('label, not the value');
+    // ⛔⛔ AND IT MUST CONTAIN NO CONCRETE ALIAS. A literal `m1@d1.invalid` here
+    // grants restore authority over that slot — a model that merely GUESSED it
+    // would get a real address restored into owner-visible output.
+    expect(PII_ALIAS_NOTICE).not.toMatch(/\bm\d+@d\d+\.invalid\b/);
+    expect(PII_ALIAS_NOTICE).not.toMatch(/\bpii\.(?:Person|Org|Phone|Address)\d+/);
   });
 });

@@ -35,6 +35,27 @@ export const SIG_SIDECAR_SUFFIX = '.minisig';
 
 const sigPathOf = (path: string): string => `${path}${SIG_SIDECAR_SUFFIX}`;
 
+/** Move `from`'s detached signature to sit beside `to`, dropping a stale
+ *  destination sig when the source has none — so a file and its `.minisig` are
+ *  never a mismatched pair. Best-effort, matching the binary's own sig handling:
+ *  the FILES are what must move correctly; a lost sig degrades the thin
+ *  launcher's re-verify to a refusal-to-boot, which is loud and recoverable by
+ *  re-pulling the digest-anchored image, not silent. */
+const moveSigBeside = (from: string, to: string): void => {
+  const fromSig = sigPathOf(from);
+  const toSig = sigPathOf(to);
+  try {
+    if (existsSync(fromSig)) {
+      if (existsSync(toSig)) rmSync(toSig);
+      renameSync(fromSig, toSig);
+    } else if (existsSync(toSig)) {
+      rmSync(toSig);
+    }
+  } catch {
+    /* best-effort */
+  }
+};
+
 /** Persist the verified artifact's detached signature beside the STAGED binary
  *  so `preserveAndSwap` moves it into place atomically with the swap. Only the
  *  thin launcher consumes it; the binary channel writes it harmlessly. */
@@ -107,7 +128,28 @@ export const verifyArtifactFile = (input: VerifyArtifactInput): VerifyArtifactRe
  *  never leave `binaryPath` empty — the preserved `recued.old` is renamed back.
  *  A cross-device staged file fails the move while the current binary is still
  *  intact (we only renamed it aside, then restore it). */
-export const preserveAndSwap = (stagedPath: string, binaryPath: string, oldPath: string): void => {
+/** D-178 S1 rev 2 item 4 — the native sidecar's paths for one apply.
+ *
+ *  ⛔ The exe and its addon MUST move together. A new binary against the old
+ *  `.node` is an N-API ABI mismatch that fails at the first database open —
+ *  i.e. at boot, past the swap, where the only remaining safety net is the
+ *  boot-failure counter. That net only works if the revert restores BOTH, which
+ *  is why the old pair is preserved as a SET before either moves. */
+export interface SidecarPaths {
+  /** Verified staged addon, on the same filesystem as `livePath`. */
+  stagedPath: string;
+  /** Where the running binary looks: `<binDir>/lib/better_sqlite3.node`. */
+  livePath: string;
+  /** Preserved previous addon, the rollback target. */
+  oldPath: string;
+}
+
+export const preserveAndSwap = (
+  stagedPath: string,
+  binaryPath: string,
+  oldPath: string,
+  sidecar?: SidecarPaths,
+): void => {
   // Make the staged file executable BEFORE it goes live (a post-swap chmod
   // failure would otherwise install a non-executable binary).
   try {
@@ -137,11 +179,23 @@ export const preserveAndSwap = (stagedPath: string, binaryPath: string, oldPath:
       }
     }
   }
-  try {
-    renameSync(stagedPath, binaryPath);
-  } catch (err) {
-    // Recover: never leave the install without a working binary (restore the
-    // preserved pair).
+  // Preserve the outgoing ADDON into the same `.old` set, in the same window.
+  // ⚠ NOT best-effort, unlike the signature: a rollback that restores the old
+  // exe next to the NEW addon is the same ABI mismatch in reverse, so losing
+  // this file turns the safety net into a second way to brick.
+  const preservedSidecar = Boolean(sidecar) && existsSync(sidecar!.livePath);
+  if (sidecar && preservedSidecar) {
+    if (existsSync(sidecar.oldPath)) rmSync(sidecar.oldPath);
+    renameSync(sidecar.livePath, sidecar.oldPath);
+    // The addon carries its OWN detached signature on the volume: the thin
+    // launcher re-verifies it before exec (I-2), because a tampered `.node` is
+    // dlopen'd straight into the server's address space — the easier attack of
+    // the two, and useless to check the exe if this one goes unchecked.
+    moveSigBeside(sidecar.livePath, sidecar.oldPath);
+  }
+  /** Put the preserved set back exactly as it was. Used by BOTH failure
+   *  branches below — a partial swap must never be left on disk. */
+  const restorePreserved = (): void => {
     if (preserved && !existsSync(binaryPath) && existsSync(oldPath)) {
       renameSync(oldPath, binaryPath);
       if (existsSync(oldSig)) {
@@ -152,7 +206,41 @@ export const preserveAndSwap = (stagedPath: string, binaryPath: string, oldPath:
         }
       }
     }
+    if (sidecar && preservedSidecar && !existsSync(sidecar.livePath) && existsSync(sidecar.oldPath)) {
+      renameSync(sidecar.oldPath, sidecar.livePath);
+      moveSigBeside(sidecar.oldPath, sidecar.livePath);
+    }
+  };
+
+  try {
+    renameSync(stagedPath, binaryPath);
+  } catch (err) {
+    // Recover: never leave the install without a working binary.
+    restorePreserved();
     throw err;
+  }
+
+  // The addon goes live AFTER the binary. Ordering matters and this is the safe
+  // one: a crash between the two leaves a NEW exe with NO addon, which fails
+  // loudly at the first database open and trips the boot-failure counter into
+  // an auto-revert. The reverse order would leave the OLD exe running against a
+  // NEW addon — a working-looking process on a mismatched ABI.
+  if (sidecar) {
+    try {
+      renameSync(sidecar.stagedPath, sidecar.livePath);
+      moveSigBeside(sidecar.stagedPath, sidecar.livePath);
+    } catch (err) {
+      // Undo the binary swap too. Half an apply is the one state with no owner:
+      // the boot-health gate cannot see it until the next boot, and by then the
+      // staged file is gone.
+      if (existsSync(binaryPath) && preserved) {
+        try {
+          rmSync(binaryPath);
+        } catch { /* fall through to the restore attempt */ }
+      }
+      restorePreserved();
+      throw err;
+    }
   }
   // Move the verified staged signature into place beside the now-live binary.
   if (existsSync(stagedSig)) {
@@ -168,7 +256,11 @@ export const preserveAndSwap = (stagedPath: string, binaryPath: string, oldPath:
  *  atomic same-fs rename (replaces the destination; never leaves it empty).
  *  Throws if there is no preserved previous binary — the caller's
  *  `decideRollback` MUST have returned a non-`refuse` action first. */
-export const rollbackSwap = (oldPath: string, binaryPath: string): void => {
+export const rollbackSwap = (
+  oldPath: string,
+  binaryPath: string,
+  sidecar?: SidecarPaths,
+): void => {
   if (!existsSync(oldPath)) throw new Error('rollbackSwap: no recued.old to restore');
   // POSIX rename replaces the destination atomically; on Windows the target
   // name must be free, so drop the (to-be-replaced) current binary first there.
@@ -181,17 +273,18 @@ export const rollbackSwap = (oldPath: string, binaryPath: string): void => {
   }
   // Restore the previous binary's signature sidecar too (best-effort), so a
   // post-rollback launcher re-verify pairs the restored binary with its own sig.
-  const binSig = sigPathOf(binaryPath);
-  const oldSig = sigPathOf(oldPath);
-  try {
-    if (existsSync(oldSig)) {
-      if (process.platform === 'win32' && existsSync(binSig)) rmSync(binSig);
-      renameSync(oldSig, binSig);
-    } else if (existsSync(binSig)) {
-      rmSync(binSig); // no sig for the restored binary — drop the stale one
-    }
-  } catch {
-    /* best-effort */
+  moveSigBeside(oldPath, binaryPath);
+
+  // ⛔ Restore the ADDON the old binary was built against. NOT best-effort: the
+  // whole point of a rollback is a working install, and the restored exe paired
+  // with the NEW addon is the same ABI mismatch that triggered the rollback —
+  // the revert would "succeed" and the server would still not open its database.
+  if (sidecar && existsSync(sidecar.oldPath)) {
+    if (process.platform === 'win32' && existsSync(sidecar.livePath)) rmSync(sidecar.livePath);
+    renameSync(sidecar.oldPath, sidecar.livePath);
+    // Its signature follows it, or the launcher re-verify pairs the restored
+    // addon with the sig of the one that was just rolled back.
+    moveSigBeside(sidecar.oldPath, sidecar.livePath);
   }
 };
 

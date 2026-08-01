@@ -2,7 +2,7 @@
  *  fallback, and TOML round-trip when persisted. */
 
 import { describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -111,6 +111,59 @@ describe('createRuntimeConfigStore — persistence', () => {
 // ────────────────────────────────────────────────────────────────
 // Phase B — onChange propagation
 // ────────────────────────────────────────────────────────────────
+
+describe('createRuntimeConfigStore — a failed persist changes NOTHING', () => {
+  /** Force the write to fail deterministically, WITHOUT depending on uid or
+   *  chmod (a suite running as root would sail through a read-only dir): point
+   *  the config at a path whose PARENT is a regular file, so `writeAtomic`'s
+   *  `mkdirSync` throws ENOTDIR.
+   *
+   *  The real-world trigger is the shipped `docker-compose.yml`, which
+   *  bind-mounts `config.toml` `:ro` on purpose — config-as-code, edited on the
+   *  host. Every Settings write under docker takes this path. */
+  const unwritablePath = (): string => {
+    const dir = mkdtempSync(join(tmpdir(), 'recued-config-ro-'));
+    const blocker = join(dir, 'not-a-directory');
+    writeFileSync(blocker, 'x');
+    return join(blocker, 'config.toml');
+  };
+
+  it('leaves the in-memory value UNCHANGED when the write throws', () => {
+    const store = createRuntimeConfigStore({ 'log.level': 'warn' }, { path: unwritablePath() });
+    expect(() => store.set('log.level', 'error')).toThrow();
+    // The bug: `set` mutated memory before persisting, so this read returned
+    // 'error' — the caller was told the write failed while the running server
+    // had already adopted the new value, and a restart reverted it.
+    expect(store.get('log.level')).toBe('warn');
+  });
+
+  it('does not fire onChange listeners when the write throws', () => {
+    const store = createRuntimeConfigStore({ 'log.level': 'warn' }, { path: unwritablePath() });
+    const events: string[] = [];
+    store.onChange((key) => events.push(key));
+    expect(() => store.set('log.level', 'error')).toThrow();
+    expect(events).toEqual([]);
+  });
+
+  it('STILL applies and notifies when the path IS writable', () => {
+    // The positive case. Every assertion above is equally satisfied by a `set`
+    // that never applies anything, which would be a broken store that looks
+    // impressively safe.
+    const store = createRuntimeConfigStore({ 'log.level': 'warn' }, { path: mkTmpFile() });
+    const events: string[] = [];
+    store.onChange((key) => events.push(key));
+    store.set('log.level', 'error');
+    expect(store.get('log.level')).toBe('error');
+    expect(events).toEqual(['log.level']);
+  });
+
+  it('applies in memory when there is no path at all (memory-only store)', () => {
+    // Persist-first must not turn the pathless store into a no-op.
+    const store = createRuntimeConfigStore({ 'log.level': 'warn' });
+    store.set('log.level', 'error');
+    expect(store.get('log.level')).toBe('error');
+  });
+});
 
 describe('createRuntimeConfigStore — onChange', () => {
   it('fires listeners after every set', () => {

@@ -32,6 +32,7 @@ import { notionSchema } from './notion.js';
 import { airbyteSchema } from './airbyte.js';
 import { tavilySchema } from './tavily.js';
 import { tradingviewUdfSchema } from './tradingview-udf.js';
+import { blueskySchema } from './bluesky.js';
 import type { ConnectionFormValues } from '../types.js';
 
 export {
@@ -95,6 +96,11 @@ export {
   TRADINGVIEW_UDF_DEMO_BASE,
   TRADINGVIEW_UDF_SCHEMA_INITIAL_VALUES,
 } from './tradingview-udf.js';
+export {
+  blueskySchema,
+  BLUESKY_API_BASE,
+  BLUESKY_SCHEMA_INITIAL_VALUES,
+} from './bluesky.js';
 
 /** Closed list keyed on canonical vendor segment. Insertion order
  *  drives the picker rendering. */
@@ -113,6 +119,7 @@ export const VENDOR_CONNECTION_SCHEMAS = {
   airbyte: airbyteSchema,
   tavily: tavilySchema,
   tradingview_udf: tradingviewUdfSchema,
+  bluesky: blueskySchema,
 } as const;
 
 export type KnownVendor = keyof typeof VENDOR_CONNECTION_SCHEMAS;

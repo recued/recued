@@ -881,15 +881,17 @@ export interface WorkEntitySourceDeclaration {
    *  a per-connection SCOPING value the canonical model has no column for and the
    *  sync runner cannot guess — Asana `GET /tasks` needs a `workspace`, Google
    *  Tasks `/lists/{tasklist}/tasks` needs a `tasklist`. Keyed by op slot
-   *  (`list` | `read`), then by the op's OWN arg key (a path token like
+   *  (`list` | `read` | `update` | `delete` | `complete`), then by the op's OWN arg key (a path token like
    *  `tasklist_id`, or a `query.*` key). Resolved against the connection config at
    *  dispatch; a bound-but-unset key degrades the sync cycle / config-fails the
-   *  targeted read BEFORE the call — never a silent bad request. The `read` record
-   *  id still rides `op_bindings.read.id_arg`; these are the OTHER args. (Write-
-   *  slot scoping — update/delete/complete — is a deliberate future extension: no
-   *  read_write vendor needs it yet, and declaring it would be dead config the
-   *  write dispatch does not yet thread.) */
-  op_arg_bindings?: Partial<Record<'list' | 'read', Record<string, WorkEntityConfigArgBinding>>>;
+   *  targeted operation BEFORE the call — never a silent bad request. The record
+   *  id still rides `op_bindings.<slot>.id_arg`; these are the OTHER args. Create
+   *  remains separate because it has no targeted id and already uses
+   *  `create_arg_bindings`. */
+  op_arg_bindings?: Partial<Record<
+    'list' | 'read' | 'update' | 'delete' | 'complete',
+    Record<string, WorkEntityConfigArgBinding>
+  >>;
   /** D-192 — INPUT dependencies on unmodeled vendor container entities (Asana
    *  `workspace`, Linear `team`, a `project`) that gate the list scope / create.
    *  Each is resolved to one selected entity by `create_if_not_picked` and its id

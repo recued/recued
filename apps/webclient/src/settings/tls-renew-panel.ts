@@ -96,6 +96,7 @@
  *  pathway) + § A.11 (rotation result shape). */
 
 import type { RotationErrorCode, RotationResult } from '@recued/contracts';
+import { formatClientDateTime } from '@recued/ui-shared';
 
 import { ROTATION_ERROR_COPY } from './rotation-center.js';
 import { humanizeRpcError } from '../shell/rpc-error-copy.js';
@@ -215,19 +216,18 @@ const remediationFor = (code: string | null, fallback: string): string => {
 
 const formatRotatedAt = (rotated_at: number, now: number): string => {
   if (!Number.isFinite(rotated_at)) return 'unknown';
-  const date = new Date(rotated_at);
-  const iso = date.toISOString();
+  const display = formatClientDateTime(rotated_at, { invalidText: 'unknown' });
   const diff_ms = rotated_at - now;
   const day_ms = 24 * 60 * 60 * 1000;
   if (diff_ms >= day_ms) {
     const days = Math.round(diff_ms / day_ms);
-    return `${iso} (in ~${days}d)`;
+    return `${display} (in ~${days}d)`;
   }
   if (diff_ms > 0) {
     const hours = Math.round(diff_ms / (60 * 60 * 1000));
-    return `${iso} (in ~${hours}h)`;
+    return `${display} (in ~${hours}h)`;
   }
-  return `${iso} (now)`;
+  return `${display} (now)`;
 };
 
 // ════════════════════════════════════════════════════════════════

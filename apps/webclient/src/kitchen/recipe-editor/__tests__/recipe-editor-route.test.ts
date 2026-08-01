@@ -52,6 +52,13 @@ import {
   type RecipeWebhookControl,
   type RecipeValidateResult,
 } from '../recipe-editor-route.js';
+import {
+  mountExecutionCaseDraftRoute,
+  EXECUTION_CASE_DRAFT_REFINE_ATTR,
+  EXECUTION_CASE_DRAFT_REFINE_ERROR_ATTR,
+  EXECUTION_CASE_DRAFT_REFINE_PROMPT_ATTR,
+  type MountExecutionCaseDraftRouteOptions,
+} from '../mount-execution-case-draft-route.js';
 
 // ────────────────────────────────────────────────────────────────
 // Fake DOM harness (adapted from the pack-editor test)
@@ -286,7 +293,19 @@ describe('recipe-editor step inspector route', () => {
     expect(findByAttr(root, RECIPE_EDITOR_ROUTE_ATTR)).toBeDefined();
     expect(findAllByAttr(root, RECIPE_EDITOR_ROW_ATTR)).toHaveLength(0);
     expect(findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.textContent).toBe('Save');
+    expect(findByAttrValue(root, 'aria-label', 'Recipe editor controls')).toBeDefined();
+    expect(textOf(root)).toContain('Recipe workspace Recipe editor');
+    expect(textOf(root)).toContain('Build, validate, and save this automation.');
+    expect(textOf(root)).toContain('Add a step Steps run in order, from top to bottom.');
     expect(textOf(root)).toContain('No steps yet');
+    expect(findByAttr(root, RECIPE_EDITOR_RECIPE_ID_ATTR)?.getAttribute('aria-label'))
+      .toBe('Recipe id');
+    expect(findByAttr(root, RECIPE_EDITOR_ADD_ATTR)?.parent?.className)
+      .toContain('recipe-editor-add--step');
+    expect(findByAttr(root, RECIPE_EDITOR_TRIGGER_ADD_ATTR)?.parent?.className)
+      .toContain('recipe-editor-add--compact');
+    expect(findByAttr(root, RECIPE_EDITOR_CONN_VAR_ADD_ATTR)?.parent?.className)
+      .toContain('recipe-editor-add--compact');
     expect(route.getRecipe().steps).toHaveLength(0);
     expect(route.getRecipe().output.render).toEqual([]);
     expect(route.getRecipe().output.sidebar).toBeUndefined();
@@ -305,6 +324,8 @@ describe('recipe-editor step inspector route', () => {
     findByAttr(root, RECIPE_EDITOR_ADD_ATTR)?.click();
 
     expect(findAllByAttr(root, RECIPE_EDITOR_ROW_ATTR)).toHaveLength(1);
+    expect(findByAttr(root, RECIPE_EDITOR_ROW_ATTR)?.getAttribute('data-step-kind'))
+      .toBe('transform');
     const recipe = route.getRecipe();
     expect(recipe.steps).toHaveLength(1);
     expect((recipe.steps[0] as { transform?: string }).transform).toBeTypeOf('string');
@@ -925,6 +946,12 @@ describe('recipe-editor step inspector route', () => {
     // Boundary buttons are disabled: first can't move up, last can't move down.
     expect(findByAttrValue(root, RECIPE_EDITOR_MOVE_UP_ATTR, 'a')?.disabled).toBe(true);
     expect(findByAttrValue(root, RECIPE_EDITOR_MOVE_DOWN_ATTR, 'b')?.disabled).toBe(true);
+    expect(findByAttrValue(root, RECIPE_EDITOR_MOVE_UP_ATTR, 'a')?.parent?.className)
+      .toBe('recipe-editor-step-actions');
+    expect(findByAttrValue(root, RECIPE_EDITOR_MOVE_UP_ATTR, 'a')?.parent?.getAttribute('role'))
+      .toBe('group');
+    expect(findByAttrValue(root, RECIPE_EDITOR_REMOVE_ATTR, 'a')?.parent?.className)
+      .toBe('recipe-editor-step-actions');
 
     findByAttrValue(root, RECIPE_EDITOR_MOVE_DOWN_ATTR, 'a')?.click();
     expect(route.getRecipe().steps.map((s) => s.id)).toEqual(['b', 'a']);
@@ -1014,13 +1041,16 @@ describe('recipe-editor step inspector route', () => {
   it('hasUnsavedChanges tracks dirty across edit → save (leave-guard seam)', async () => {
     const { root, route } = mount();
     expect(route.hasUnsavedChanges()).toBe(false);
+    expect(route.hasInFlightWork()).toBe(false);
 
     setValue(findByAttr(root, RECIPE_EDITOR_RECIPE_NAME_ATTR), 'Renamed');
     expect(route.hasUnsavedChanges()).toBe(true);
 
     findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
+    expect(route.hasInFlightWork()).toBe(true);
     await tick();
     expect(route.hasUnsavedChanges()).toBe(false);
+    expect(route.hasInFlightWork()).toBe(false);
   });
 
   it('validating does not clear the unsaved cue; saving does', async () => {
@@ -1381,5 +1411,180 @@ describe('recipe-editor step inspector route', () => {
 
     findByAttrValue(root, RECIPE_EDITOR_TRIGGER_REMOVE_ATTR, '0')?.click();
     expect('event_triggers' in route.getRecipe()).toBe(false);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// Optional fields the editor must not assume
+// ────────────────────────────────────────────────────────────────
+
+/** ⛔ `prefetch_steps` IS OPTIONAL. `blankRecipe()` seeds it, so every test
+ *  that builds its fixture here had it and the assumption went unnoticed for
+ *  the life of the editor — but an `initialRecipe` is used exactly as given and
+ *  `parseRecipe` accepts a recipe with no such key. Mounting one threw "Cannot
+ *  read properties of undefined (reading 'length')" and the route rendered a
+ *  dead end.
+ *
+ *  Found on 2026-07-29 by the first D-219 AI-written draft reaching the Kitchen,
+ *  but nothing here is AI-specific: a hand-written or imported recipe omitting
+ *  the key crashed identically. The fixture is deliberately the WHOLE recipe
+ *  minus that one key, so it is a valid recipe and nothing else is in play. */
+describe('recipe-editor: a valid recipe with no prefetch_steps', () => {
+  const noPrefetch = (): RecipeDefinition => {
+    const recipe = {
+      recipe_id: 'weekly-check',
+      version: 1,
+      ttl: 300,
+      metadata: {
+        name: 'Weekly check', description: '', author: 'local',
+        tags: ['sales'], supported_platforms: [],
+      },
+      variables: { offer_id: { type: 'string', label: 'Offer', required: true } },
+      steps: [{ id: 'search_mail', op: 'core.mail.email.search', args: { slug: 'default' } }],
+      output: { render: [] },
+    } as unknown as RecipeDefinition;
+    return recipe;
+  };
+
+  it('mounts instead of throwing, and shows no Prefetch section', () => {
+    const recipe = noPrefetch();
+    expect('prefetch_steps' in (recipe as object)).toBe(false);
+    const { root, route } = mount({ initialRecipe: recipe });
+    expect(findByAttr(root, RECIPE_EDITOR_ROUTE_ATTR)).toBeDefined();
+    // The step it DOES declare still renders — a guard that rendered nothing
+    // would pass a "did not throw" test while hiding the recipe.
+    expect(route.getRecipe().steps).toHaveLength(1);
+    expect(textOf(root)).not.toContain('Prefetch');
+  });
+});
+
+
+// ────────────────────────────────────────────────────────────────
+// D-219 — refining an AI draft in place
+// ────────────────────────────────────────────────────────────────
+
+describe('execution-case draft route: iterative refinement', () => {
+  /** ⛔ NO `prefetch_steps`, on purpose. The editor NORMALISES it in, so its
+   *  presence in what gets sent is proof the refinement carried the EDITOR's
+   *  live value and not the stashed draft object. */
+  const stashedRecipe = {
+    recipe_id: 'v1',
+    version: 1,
+    ttl: 300,
+    metadata: { name: 'V1', description: '', author: '', supported_platforms: [] },
+    variables: {},
+    steps: [{ id: 'a', op: 'core.data.calendar.list', args: {} }],
+    output: { render: [] },
+  };
+
+  const mountDraft = (over: {
+    result?: Awaited<ReturnType<NonNullable<MountExecutionCaseDraftRouteOptions['runDraftRecipe']>>>;
+    handed?: boolean;
+  } = {}) => {
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const calls: Array<{ case_id: string; prompt: string; previous_recipe: unknown }> = [];
+    const refined: unknown[] = [];
+    const route = mountExecutionCaseDraftRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      draft: {
+        draft_key: 'k', case_id: 'case_one',
+        recipe: stashedRecipe, request_aliased: true,
+      },
+      validateCaller: okValidate,
+      saveCaller: okSave,
+      runDraftRecipe: async (args) => {
+        calls.push(args);
+        return over.result ?? {
+          ok: true, recipe: { ...stashedRecipe, recipe_id: 'v2' }, issues: [],
+        };
+      },
+      onRefined: (d) => { refined.push(d); return over.handed ?? true; },
+      refineConfirmation: 'This spends your model quota.',
+    });
+    return { root, route, calls, refined };
+  };
+
+  const btn = (root: ReturnType<typeof makeFakeElement>) =>
+    findByAttrValue(root, EXECUTION_CASE_DRAFT_REFINE_ATTR, 'case_one')!;
+  const box = (root: ReturnType<typeof makeFakeElement>) =>
+    findByAttr(root, EXECUTION_CASE_DRAFT_REFINE_PROMPT_ATTR)!;
+  const note = (root: ReturnType<typeof makeFakeElement>) =>
+    findByAttr(root, EXECUTION_CASE_DRAFT_REFINE_ERROR_ATTR)!;
+
+  it('⛔ refuses to spend anything until the owner says what should change', async () => {
+    // "Revise it" with nothing said is a second slow call that produces the same
+    // recipe, billed to the owner.
+    const h = mountDraft();
+    btn(h.root).click();
+    expect(h.calls).toEqual([]);
+    expect(note(h.root).textContent).toContain('Say what should change');
+    h.route.dispose();
+  });
+
+  it('⛔ TWO presses, and the first one shows the cost', async () => {
+    const h = mountDraft();
+    box(h.root).value = 'only my own meetings';
+    btn(h.root).click();
+    expect(h.calls).toEqual([]);
+    expect(note(h.root).textContent).toContain('spends your model quota');
+    btn(h.root).click();
+    await h.route.whenRefineSettled();
+    expect(h.calls).toHaveLength(1);
+    h.route.dispose();
+  });
+
+  it('⛔ sends the EDITOR\'s current recipe, not the stashed one', async () => {
+    // ⛔⛔ The owner may have renamed steps or filled in variables before
+    // pressing refine. Sending the draft that arrived would silently discard
+    // that work and hand back a "revision" of something they had moved past.
+    const h = mountDraft();
+    box(h.root).value = 'only my own meetings';
+    btn(h.root).click();
+    btn(h.root).click();
+    await h.route.whenRefineSettled();
+
+    const sent = h.calls[0]!.previous_recipe as Record<string, unknown>;
+    expect(h.calls[0]!.prompt).toBe('only my own meetings');
+    // The discriminator: the editor normalises this in, the stash never had it.
+    expect('prefetch_steps' in stashedRecipe).toBe(false);
+    expect(Array.isArray(sent.prefetch_steps)).toBe(true);
+    // And the revision is handed back for the shell to reopen.
+    expect(h.refined).toHaveLength(1);
+    h.route.dispose();
+  });
+
+  it('says so when the revision is not a valid recipe, and spends nothing further', async () => {
+    const h = mountDraft({
+      result: { ok: false, issues: ['steps[0].op: unknown op'], reason: 'invalid_recipe' },
+    });
+    box(h.root).value = 'change it';
+    btn(h.root).click();
+    btn(h.root).click();
+    await h.route.whenRefineSettled();
+    expect(note(h.root).textContent).toContain('not a valid recipe');
+    expect(h.refined).toEqual([]);
+    h.route.dispose();
+  });
+
+  it('renders NO refine control when the caller pair is absent', async () => {
+    // The D-160 removability rule: an unwired dep degrades to the route that
+    // shipped before, never to a dead button.
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const route = mountExecutionCaseDraftRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      draft: {
+        draft_key: 'k', case_id: 'case_one',
+        recipe: stashedRecipe, request_aliased: true,
+      },
+      validateCaller: okValidate,
+      saveCaller: okSave,
+    });
+    // ⚠ This file's finder returns undefined (not null) when absent.
+    expect(findByAttr(root, EXECUTION_CASE_DRAFT_REFINE_ATTR)).toBeUndefined();
+    route.dispose();
   });
 });

@@ -49,7 +49,12 @@ COPY backend/server/package.json ./backend/server/
 COPY packages/ ./packages/
 COPY apps/ ./apps/
 RUN npm ci --ignore-scripts
-RUN npm rebuild better-sqlite3
+# ⛔ NO native rebuild here, deliberately — unlike the baked `Dockerfile`. This
+# image ships only `managed-launcher.js` (node builtins only) and a static seed
+# binary that carries its own runtime; nothing in it resolves a `.node` from
+# node_modules, and `build.mjs` needs esbuild, not SQLite. The line that used to
+# sit here rebuilt plain `better-sqlite3` — which D-212 demoted to dev-only
+# anyway — and bought nothing but build time.
 
 # ── Stage 2: build ───────────────────────────────────────────────
 FROM deps AS build
@@ -73,28 +78,46 @@ WORKDIR /opt/recued
 COPY --from=build --chown=recued:recued \
      /opt/recued/backend/server/dist/managed-launcher.js ./managed-launcher.js
 
-# The INITIAL server binary seed. The server runs as a node bundle, so the seed
-# is the bundle + its native node_modules closure; the launcher copies the
-# wrapper script `recued` onto the volume on first boot. (Once the static-binary
-# artifact is the seed, this is a single executable + its `.minisig`.)
-COPY --from=build --chown=recued:recued \
-     /opt/recued/backend/server/dist ./seed-dist
-COPY --from=build --chown=recued:recued \
-     /opt/recued/node_modules ./node_modules
-# `recued` seed wrapper: a tiny exec shim the launcher copies to /data/bin and
-# runs as the "binary". Self-update later replaces it with the downloaded one.
+# ⛔ The server bundle + node_modules are NO LONGER COPIED. They existed only to
+# back the node-exec shim that used to be the seed; the seed is now the static
+# binary, which carries its own runtime. Verified before removal rather than
+# assumed: the emitted `managed-launcher.js` is 14 KB and imports node builtins
+# ONLY — no `better-sqlite3`, no `ws`, nothing resolvable from node_modules —
+# even though it inherits the build's `external` list, which would have made it
+# need them. Keeping them would have shipped hundreds of MB of a server the
+# launcher never runs.
+# ── The first-boot seed: a SIGNED release payload, exe + native addon ────
 #
-# GA TODO (gated on the signing identity — pre-GA the launcher's verify is
-# bypassed on the empty pinned key): once `TRUSTED_RELEASE_PUBKEY` is non-empty,
-# also bake `/opt/recued-seed/recued.minisig` (the seed binary's detached
-# signature from the signed release) — otherwise `seedIfAbsent` copies an
-# unsigned seed and the launcher's first-boot re-verify refuses to launch. The
-# seed should become the SIGNED static-binary artifact + its `.minisig`, not
-# this node-exec shim.
-RUN printf '#!/usr/bin/env sh\nexec node /opt/recued/seed-dist/bin.js "$@"\n' \
-      > /opt/recued-seed/recued \
-    && chmod +x /opt/recued-seed/recued \
-    && chown recued:recued /opt/recued-seed/recued
+# D-178 S1 rev 2 item 7. `TRUSTED_RELEASE_PUBKEY` was pinned on 2026-07-31, so
+# the launcher's first-boot verify is LIVE — the seed must be the signed static
+# binary from a published release, not the node-exec shim this used to write.
+# And it is TWO files: the SEA cannot embed a `.node`, so the addon is baked at
+# the same relative path the launcher reads (`ADDON_RELATIVE_PATH`).
+#
+# ⚠ THIS IMAGE IS BUILT FROM A RELEASE, NOT FROM SOURCE. `RELEASE_DIR` must
+# point at the output of `release-build.mjs` (default `dist/release`), inside
+# the build context. A plain source checkout has no such directory and the build
+# will stop at the COPY below — that is intended; see verify-managed-seed.sh.
+# ⛔ The triple is DERIVED from `TARGETARCH`, never passed as a build arg. One
+# `--platform linux/amd64,linux/arm64` invocation builds both images from ONE
+# set of args, so a `TRIPLE` arg bakes the same binary into both — and the arm64
+# image would seed an x86-64 executable that dies with `exec format error` on a
+# user's first boot. See stage-managed-seed.sh.
+# Relative to the BUILD CONTEXT (the repo root), not to this file — and
+# `npm run release:build` runs with cwd = backend/server, so its `dist/release`
+# lands here rather than at the repo root.
+ARG RELEASE_DIR=backend/server/dist/release
+COPY ${RELEASE_DIR}/ /tmp/release/
+COPY distribution/docker/stage-managed-seed.sh  /tmp/stage-managed-seed.sh
+COPY distribution/docker/verify-managed-seed.sh /tmp/verify-managed-seed.sh
+COPY --from=build /opt/recued/backend/server/src/update/trusted-release-pubkey.ts /tmp/pin.ts
+
+ARG TARGETARCH
+RUN sh /tmp/stage-managed-seed.sh /tmp/release "$TARGETARCH" /opt/recued-seed \
+ && pin="$(sed -n "s/.*TRUSTED_RELEASE_PUBKEY = '\([^']*\)'.*/\1/p" /tmp/pin.ts)" \
+ && sh /tmp/verify-managed-seed.sh /opt/recued-seed "$pin" /tmp/release \
+ && chown -R recued:recued /opt/recued-seed \
+ && rm -rf /tmp/release /tmp/stage-managed-seed.sh /tmp/verify-managed-seed.sh /tmp/pin.ts
 
 USER recued
 
@@ -106,8 +129,13 @@ ENV RECUED_SUPERVISOR_MODE=docker-thin \
 EXPOSE 7717 7718 7719
 VOLUME ["/data"]
 
+# ⛔ NOT `wget` — it is NOT preinstalled on node:22-slim, so this check always
+# failed and the container reported `unhealthy` while serving 200s. See the
+# longer note in the baked `Dockerfile`; both images had the same bug and the
+# same wrong comment. `node` is guaranteed present: the launcher runs under it,
+# and it stays in the image after the seed self-updates to the SEA binary.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://localhost:7717/health || exit 1
+  CMD node -e "fetch('http://localhost:7717/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 ENTRYPOINT ["node", "/opt/recued/managed-launcher.js"]
 CMD ["--db", "/data/recued.db", "--config", "/etc/recued/config.toml"]

@@ -14,6 +14,7 @@ import type {
   SessionGrantView,
 } from '@recued/contracts';
 import { RUN_ANCHOR_STATUSES } from '@recued/contracts';
+import { formatClientDateTime } from '@recued/ui-shared';
 
 import {
   LOGS_ROUTE_ACTIVE_ATTR,
@@ -384,6 +385,8 @@ describe('D-174 P5 - Runs route', () => {
     expect(shell.innerHTML).not.toContain('placeholder="recipe id"');
     expect(shell.innerHTML).toContain('Connected agent');
     expect(shell.innerHTML).toContain('approval requested');
+    expect(shell.innerHTML).toContain(formatClientDateTime(NOW - 1_000));
+    expect(shell.innerHTML).not.toContain(new Date(NOW - 1_000).toISOString());
     // R17 — per-row provenance / recipe / approval links moved OUT of the
     // (scannable) table into the detail pane; the feed carries none.
     expect(shell.innerHTML).not.toContain('Audit detail');
@@ -1263,14 +1266,19 @@ describe('D-181 slice 5b — Runs Active section', () => {
   });
 
   it('killRun calls execution.kill and re-lists the active snapshot', async () => {
-    const killCaller = vi.fn<RunsKillCaller>(async () => ({ status: 'killed' as const }));
+    const kill = deferred<{ status: 'killed' }>();
+    const killCaller = vi.fn<RunsKillCaller>(() => kill.promise);
     const rig = mountActive({ killCaller });
     await rig.route.whenLoaded();
     expect(rig.activeCaller).toHaveBeenCalledTimes(1);
 
-    await rig.route.killRun('run-active-1');
+    const pending = rig.route.killRun('run-active-1');
+    expect(rig.route.hasInFlightWork()).toBe(true);
+    kill.resolve({ status: 'killed' });
+    await pending;
 
     expect(killCaller).toHaveBeenCalledWith({ run_id: 'run-active-1' });
+    expect(rig.route.hasInFlightWork()).toBe(false);
     // Re-listed after the mutation.
     expect(rig.activeCaller).toHaveBeenCalledTimes(2);
     rig.route.dispose();

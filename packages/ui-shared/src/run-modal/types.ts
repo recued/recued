@@ -19,11 +19,13 @@
 
 import type {
   EventTrigger,
+  RecipeInvocation,
   ServerExecuteResponse,
   ServerRecipeListEntry,
   ServerSchedule,
 } from '@recued/contracts';
 import type { RefPickerSearchCaller } from '../ref-picker/types.js';
+import type { RecordRefVariableSearch } from '../record-ref-variable.js';
 
 /** Which tab the modal opens on. A manual recipe's `[Run]` opens `run`;
  *  its `[Schedule]` opens `schedule`; R21's Automation "Add" opens
@@ -36,6 +38,10 @@ export type RunModalExecuteCaller = (args: {
   recipe_id: string;
   config?: Record<string, unknown>;
   context?: Record<string, unknown>;
+  /** D-222 — used by result-surface filters; the ordinary run modal never
+   *  authors this member, but keeping the execute seam exact lets hosts share
+   *  one caller without a narrowing adapter. */
+  invocation?: RecipeInvocation;
 }) => Promise<ServerExecuteResponse>;
 
 /** Lists ALL schedules; the modal filters to this recipe's. */
@@ -46,7 +52,12 @@ export type RunModalSchedulesListCaller = () => Promise<{
 export type RunModalSchedulesCreateCaller = (args: {
   recipe_id: string;
   publisher_id?: string;
-  cron_expression: string;
+  /** D-215 slice 5 — absent ⇒ `'recurring'` (every pre-slice-5 caller). */
+  mode?: 'recurring' | 'one_shot';
+  /** Required for `recurring`; the server synthesizes it for `one_shot`. */
+  cron_expression?: string;
+  /** D-215 slice 5 — the one-shot fire time, epoch ms. */
+  run_at?: number;
   /** Config overlay for this schedule's headless fires. The server
    *  mints a managed dish to hold it (empty ⇒ omitted; fires on
    *  recipe defaults). */
@@ -121,6 +132,18 @@ export interface RunModalState {
   schedules: readonly ServerSchedule[] | null;
   /** The selected "Add schedule" preset CRON expression. */
   preset_expression: string;
+  /** D-215 slice 5 — the Repeat toggle. `true` (default) keeps the CRON
+   *  preset picker; `false` swaps in the datetime control and creates a
+   *  ONE-SHOT.
+   *
+   *  🔑 One-shot is not a second concept in the IA — it is this toggle off.
+   *  The substrate already agrees: `createSchedule` SYNTHESIZES the cron
+   *  expression from `run_at`, and `updateSchedule` refuses a cron change
+   *  on a one-shot, so cadence is already meaningless there. */
+  repeat: boolean;
+  /** D-215 slice 5 — the one-shot fire time, as the datetime-local control
+   *  reports it. Empty until the owner picks one. */
+  run_at_local: string;
   /** A schedule mutation is in flight (disables the schedule controls). */
   mutating: boolean;
   /** Last schedule-tab error. */
@@ -151,6 +174,10 @@ export interface WireRunModalOptions {
   /** D-200 — owner-file inventory search for `type:'file_ref'` variables.
    * Absent keeps a pasteable durable-ref input. */
   fileRefSearch?: RefPickerSearchCaller;
+  /** Pack-owned Records inventory for `type:'record_ref'` variables. The
+   *  caller is already bound to the recipe's owner and receives the variable's
+   *  entity plus its optional equality scope. Absent keeps a raw-id input. */
+  recordRefSearch?: RecordRefVariableSearch;
   /** `schedules.list` rpc. Absent → the Schedule tab shows a
    *  "not available" note (and the modal hides the Schedule tab unless
    *  it opened on it). */
@@ -199,6 +226,10 @@ export interface RunModalHandle {
   setContextValues(context: Record<string, unknown>): void;
   /** Set the selected "Add schedule" preset CRON expression. */
   setPreset(expression: string): void;
+  /** D-215 slice 5 — flip Repeat. Off ⇒ the next Add creates a one-shot. */
+  setRepeat(repeat: boolean): void;
+  /** D-215 slice 5 — the one-shot fire time (datetime-local wall clock). */
+  setRunAtLocal(value: string): void;
   /** Run the recipe (the `execute` rpc + gate/parse guards). */
   confirmRun(): Promise<void>;
   /** Create a schedule from the selected preset. */

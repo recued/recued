@@ -29,6 +29,21 @@ export const PLATFORMS: readonly Platform[] = [
   'linux-x64', 'linux-arm64', 'macos-x64', 'macos-arm64', 'windows-x64', 'windows-arm64',
 ];
 
+/** D-178 S1 rev 2 — the artifact key for a triple's native `lib/` sidecar.
+ *  Derived from `Platform` rather than declared as its own union, so a new
+ *  triple cannot be added with a binary and silently no sidecar slot. */
+export type LibKey = `lib-${Platform}`;
+
+/** The sidecar key for a triple. The ONE place the naming lives — the builder,
+ *  the resolver, and both installers must agree, and a hand-written
+ *  `'lib-' + triple` in any of them is how they would drift apart. */
+export const libKeyFor = (platform: Platform): LibKey => `lib-${platform}`;
+
+/** Is this artifact key a native sidecar? Kept beside `libKeyFor` so the
+ *  recogniser and the generator cannot disagree. */
+export const isLibKey = (key: string): key is LibKey =>
+  key.startsWith('lib-') && (PLATFORMS as readonly string[]).includes(key.slice(4));
+
 /** A downloadable binary artifact: URL + checksum + detached minisign sig. The
  *  sig is the integrity boundary; the sha256 is a fast-fail convenience that
  *  travels with the (signed) manifest. */
@@ -60,9 +75,20 @@ export interface ChannelRelease {
   /** Staged rollout, evaluated LOCALLY: eligible iff sha256(salt) % 100 < this. */
   rollout_pct: number;
   notes_url: string;
-  artifacts: Partial<Record<Platform, BinaryArtifact>> & {
+  artifacts: Partial<Record<Platform, BinaryArtifact>> & Partial<Record<LibKey, BinaryArtifact>> & {
     'docker-baked'?: DockerArtifact;
     'docker-thin'?: DockerArtifact;
+    /** D-178 S1 rev 2 — the per-triple NATIVE SIDECAR archive: the externals
+     *  the SEA binary cannot embed (`better_sqlite3.node` + `nodemailer` +
+     *  `ws` + `imapflow`), packed and signed exactly like the webclient bundle
+     *  and unpacked to `lib/` beside the binary.
+     *
+     *  ⛔ PLATFORM-SPECIFIC, unlike `webclient` — it carries a compiled
+     *  `.node`, so there is one per triple and they are NOT interchangeable.
+     *
+     *  ⚠ An installer that fetches `<triple>` and skips `lib-<triple>` produces
+     *  an executable that cannot open its own database. The pairing is a
+     *  REQUIREMENT, not an enhancement — see `libKeyFor`. */
     /** D-152 § A.16 / R26.2 Delta 3 — the arch-neutral, version-matched webclient
      *  bundle archive. Shaped like a binary artifact (url + sha256 + detached
      *  minisig); the file it points to is a `webclient-<version>.bundle.json`
@@ -123,9 +149,14 @@ const validateArtifacts = (raw: Record<string, unknown>, channel: string): Chann
     // The webclient archive is arch-neutral but shaped exactly like a binary
     // artifact (url + sha256 + detached minisig over a signed .bundle.json).
     const isWebclient = key === 'webclient';
-    if (!isBinary && !isDocker && !isWebclient) continue; // forward-compat: ignore unknown artifact kinds
+    // D-178 S1 rev 2 — the per-triple native sidecar. Same shape as the
+    // webclient archive; validated rather than skipped, because a `lib-*` entry
+    // missing its `sig` would otherwise fall through the forward-compat
+    // `continue` below and reach a consumer as an unverifiable download.
+    const isLib = isLibKey(key);
+    if (!isBinary && !isDocker && !isWebclient && !isLib) continue; // forward-compat: ignore unknown artifact kinds
     if (!isObj(entry)) throw new ManifestError(`manifest: channel "${channel}" artifact "${key}" must be an object`);
-    if (isBinary || isWebclient) {
+    if (isBinary || isWebclient || isLib) {
       reqEntryStr(entry, key, 'url');
       reqEntryStr(entry, key, 'sha256');
       reqEntryStr(entry, key, 'sig');

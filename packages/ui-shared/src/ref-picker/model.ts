@@ -21,6 +21,7 @@ export const initialRefPickerState = (
   open: false,
   activeIndex: -1,
   options: [],
+  truncated: false,
   loading: false,
   error: null,
   selectedId: initial?.id ?? null,
@@ -39,6 +40,10 @@ export const setQuery = (
   query,
   open: true,
   activeIndex: -1,
+  // The next query owns the next result set. Keeping the previous options
+  // around would let Enter select an invisible stale row while loading.
+  options: [],
+  truncated: false,
   // Typing past a committed label makes the list relevant again; a search
   // is about to run, so reflect that immediately (no flicker between the
   // keystroke and the async resolve).
@@ -52,9 +57,11 @@ export const setQuery = (
 export const setResults = (
   state: RefPickerState,
   options: readonly RefPickerOption[],
+  truncated = false,
 ): RefPickerState => ({
   ...state,
   options,
+  truncated,
   loading: false,
   error: null,
   activeIndex: state.activeIndex < options.length ? state.activeIndex : -1,
@@ -76,6 +83,7 @@ export const setError = (
 ): RefPickerState => ({
   ...state,
   options: [],
+  truncated: false,
   loading: false,
   error: message,
   activeIndex: -1,
@@ -138,6 +146,7 @@ export const clearSelection = (state: RefPickerState): RefPickerState => ({
   open: false,
   activeIndex: -1,
   options: [],
+  truncated: false,
   loading: false,
   error: null,
   selectedId: null,

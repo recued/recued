@@ -32,6 +32,9 @@ import {
   CLI_OUTPUT_STORAGES,
   SERVICE_RESTART_POLICIES,
   isClosedRequestSchema,
+  HTTP_UPLOAD_MAX_BYTES_CEILING,
+  chunkedUploadBoundViolations,
+  API_EXECUTION_BINDING_KINDS,
 } from '@recued/contracts';
 import type {
   BulkPackIssue,
@@ -64,6 +67,7 @@ import {
 } from './schema.js';
 import { decomposeComposition, decomposePack, normalizeEntityId } from './decomposer.js';
 import type { DecomposedArtifacts, PackDecomposition } from './decomposer.js';
+import { isRecordsComposition, validateRecordsComposition } from './records.js';
 
 export type CompositionValidationIssue = ValidationIssue;
 
@@ -607,6 +611,133 @@ const validateRestRequestJson = (
  *  `output_capture.dir_arg` (engine-owned), the materialized `arg` IS the
  *  caller-supplied input — it must be a declared editable_arg AND an argv token,
  *  and must not collide with an engine-owned `output_capture.dir_arg`. */
+/** D-216 slice 0 — an http/connection op's `bind.upload` declaration.
+ *
+ *  Declaring it is what lets a pack op send BYTES. Four rules, and the first
+ *  is the load-bearing one:
+ *
+ *   1. ⛔ risk must not be `read`. An op that ships a file off the box is a
+ *      write by definition, and the D-209 floor clamp only ever RAISES
+ *      approval — so a `read` label here does not merely mis-describe, it
+ *      silently UNDER-gates the one op class that moves owner data outward.
+ *   2. `kind` is a closed pair; `multipart` requires `field`, `binary`
+ *      forbids it (a form field name is meaningless when the file IS the body).
+ *   3. `arg` must be a declared arg of type `file_ref` — the handler resolves
+ *      a ref, never a path (§ 5.2).
+ *   4. `max_bytes`, when present, may only LOWER the handler default. */
+const validateHttpUpload = (
+  row: Record<string, unknown>,
+  path: string,
+  add: AddIssue,
+): void => {
+  if (!isPlainObject(row.bind)) return;
+  const upload = row.bind.upload;
+  if (upload === undefined) {
+    // `body_file.*` and `body_binary` are byte-egress wire slots, not ordinary
+    // value args. Requiring the manifest declaration here keeps an undeclared
+    // op from reaching the adapter's resolver even if a stale/custom install
+    // path bypasses higher-level authoring conveniences.
+    const declaredArgs = Array.isArray(row.args) ? row.args : [];
+    for (const arg of declaredArgs) {
+      const key = typeof arg === 'string'
+        ? arg
+        : isPlainObject(arg) && typeof arg.key === 'string'
+          ? arg.key
+          : undefined;
+      if (key === 'body_binary' || key?.startsWith('body_file.')) {
+        add(
+          'error',
+          'composition_http_upload_declaration_required',
+          `${path}.bind.upload`,
+          `arg '${key}' is an upload wire slot and requires bind.upload to declare the byte egress`,
+        );
+      }
+    }
+    return;
+  }
+  const uPath = `${path}.bind.upload`;
+  if (!isPlainObject(upload)) {
+    add('error', 'composition_http_upload_shape', uPath, 'upload must be an object');
+    return;
+  }
+  if (upload.kind !== 'multipart' && upload.kind !== 'binary' && upload.kind !== 'chunked') {
+    add('error', 'composition_http_upload_kind', `${uPath}.kind`, "upload.kind must be 'multipart', 'binary' or 'chunked'");
+  }
+  // D-217 slice 1 — the chunked form has its own shape and its own bound
+  // rules. The risk-tier floor + `arg` rules below are shared and still apply,
+  // so this returns only after they have run.
+  if (upload.kind === 'chunked') {
+    validateChunkedUpload(upload, uPath, add);
+  }
+  if (row.risk === 'read') {
+    add(
+      'error',
+      'composition_http_upload_risk',
+      `${path}.risk`,
+      "an op declaring bind.upload must not be risk 'read' — it sends a stored file off the machine, "
+        + 'and the D-209 approval floor only ever raises, so a read label silently under-gates it',
+    );
+  }
+  if (upload.kind === 'multipart' && !isNonEmptyString(upload.field)) {
+    add('error', 'composition_http_upload_field', `${uPath}.field`, "upload.kind 'multipart' requires a non-empty field name");
+  }
+  if (upload.kind === 'binary' && upload.field !== undefined) {
+    add('error', 'composition_http_upload_field', `${uPath}.field`, "upload.kind 'binary' must not declare a field — the file IS the body");
+  }
+  if (!isNonEmptyString(upload.arg)) {
+    add('error', 'composition_http_upload_arg', `${uPath}.arg`, 'upload.arg must name the op arg carrying the file_ref');
+  } else {
+    const args = Array.isArray(row.args) ? row.args : [];
+    const declared = args.find((a) =>
+      (typeof a === 'string' && a === upload.arg)
+      || (isPlainObject(a) && a.key === upload.arg));
+    if (declared === undefined) {
+      add('error', 'composition_http_upload_arg', `${uPath}.arg`, `upload.arg '${String(upload.arg)}' is not a declared arg of this op`);
+    } else if (typeof declared === 'string') {
+      add('error', 'composition_http_upload_arg_type', `${uPath}.arg`, `upload.arg '${String(upload.arg)}' is a bare-string arg (implicitly 'string') — it must be declared type 'file_ref'`);
+    } else if (isPlainObject(declared) && declared.type !== 'file_ref') {
+      add('error', 'composition_http_upload_arg_type', `${uPath}.arg`, `upload.arg '${String(upload.arg)}' must be declared type 'file_ref' (got '${String(declared.type)}') — the handler resolves a ref, never a path`);
+    }
+  }
+  // ⚠ The one-shot ceiling ONLY. A chunked op is bounded by
+  // `HTTP_CHUNKED_UPLOAD_MAX_BYTES_CEILING` instead (D-217 § 8b — the two have
+  // different memory models), and `chunkedUploadBoundViolations` checks it;
+  // running the 25 MB rule over a chunked declaration would reject every
+  // upload the new path exists for.
+  if (upload.kind !== 'chunked' && upload.max_bytes !== undefined) {
+    if (typeof upload.max_bytes !== 'number' || !Number.isFinite(upload.max_bytes) || upload.max_bytes <= 0) {
+      add('error', 'composition_http_upload_max_bytes', `${uPath}.max_bytes`, 'upload.max_bytes must be a positive number of bytes when present');
+    } else if (upload.max_bytes > HTTP_UPLOAD_MAX_BYTES_CEILING) {
+      add('error', 'composition_http_upload_max_bytes', `${uPath}.max_bytes`, `upload.max_bytes may only LOWER the ${HTTP_UPLOAD_MAX_BYTES_CEILING}-byte handler default, never raise it`);
+    }
+  }
+};
+
+/** D-217 slice 1 — the chunked declaration's own rules.
+ *
+ *  🔑 **The bound check is the security boundary of this whole D**, not a shape
+ *  check. `chunkedUploadBoundViolations` decides whether the walk's request
+ *  count is fixed before dispatch and independent of every value the target
+ *  returns — the § 8a carve-out that lets a WRITE op be re-dispatched at all,
+ *  where `followPagination` refuses. It lives in contracts as a pure function
+ *  over untrusted JSON so it is testable, and adversarially testable, without a
+ *  walker, a connection, or a socket: a predicate that only exists inside the
+ *  loop it guards cannot be attacked in a test. */
+const validateChunkedUpload = (
+  upload: Record<string, unknown>,
+  uPath: string,
+  add: AddIssue,
+): void => {
+  for (const v of chunkedUploadBoundViolations(upload)) {
+    add(
+      'error',
+      'composition_http_upload_chunked_bound',
+      v.field.length > 0 ? `${uPath}.${v.field}` : uPath,
+      v.reason,
+    );
+  }
+};
+
 const validateCliInputMaterialize = (
   row: Record<string, unknown>,
   path: string,
@@ -1071,7 +1202,7 @@ const validateClosedRequestSchemaArgAlignment = (
 /** The ingredient kinds the composition decomposer lowers today (cli → connector
  *  surface; http / connection → api surface). Other `OpKind`s gain handlers in
  *  slice 5. */
-const DECOMPOSABLE_INGREDIENT_KINDS: ReadonlySet<string> = new Set(['cli', 'http', 'connection']);
+const DECOMPOSABLE_INGREDIENT_KINDS: ReadonlySet<string> = new Set(['cli', 'http', 'connection', 'storage']);
 
 /** The per-kind config-cell keys. Exactly the cell matching the ingredient's
  *  kind may be present — a stale mismatched cell (e.g. an `http.connection` on a
@@ -1165,6 +1296,12 @@ const validateIngredientConfigCell = (
     if (!isNonEmptyString(ing.connection.connection)) {
       add('error', 'composition_ingredient_connection_name_required', `${path}.connection.connection`, 'connection.connection is required');
     }
+    return;
+  }
+  if (kind === 'storage') {
+    // D-221 Records uses the existing storage kind with no parallel config
+    // cell. The closed core.records bind supplies the handler declaration.
+    return;
   }
 };
 
@@ -1522,10 +1659,21 @@ const validateOperations = (
       }
     } else if (kind === 'http' || kind === 'connection') {
       const bindKind = row.bind.kind;
-      const apiKinds = new Set(['rest', 'graphql', 'webhook_subscription', 'queue_subscription', 'push_channel']);
+      // D-225 Slice 1 — derived from the contracts closed list rather than
+      // re-typed, so widening the vocabulary in ONE place can't leave this arm
+      // silently refusing a kind the catalog validator now accepts.
+      const apiKinds = new Set<string>(API_EXECUTION_BINDING_KINDS);
       if (typeof bindKind !== 'string' || !apiKinds.has(bindKind)) {
         add('error', 'composition_operation_bind_kind', `${path}.bind.kind`, 'an http/connection ingredient operation has an invalid bind kind');
       }
+      if (bindKind === 'mcp' && !isNonEmptyString(row.bind.tool)) {
+        // The catalog validator gates the tool NAME's shape; this gate exists
+        // because the authoring surface is where a human sees the error, and an
+        // mcp bind with no tool names no call at all.
+        add('error', 'composition_operation_mcp_tool_required', `${path}.bind.tool`,
+          'an mcp bind must declare a non-empty tool name');
+      }
+      validateHttpUpload(row, path, add);
       if (bindKind === 'rest') {
         validateRestResponseCapture(row, path, add);
         validateRestResponseJson(row, path, add);
@@ -1749,6 +1897,11 @@ export const validateCompositionStructure = (body: unknown): CompositionValidati
     }
   }
   validateRecipeTemplateRows(raw, operationKeys, add);
+  if (isRecordsComposition(body)) {
+    for (const recordsIssue of validateRecordsComposition(body as unknown as CompositionIngredient)) {
+      add(recordsIssue.severity, recordsIssue.code, recordsIssue.path, recordsIssue.message);
+    }
+  }
   // Optional install-time grant override — must be a string[] of group ids when
   // present (existence against the derived groups is cross-checked in
   // `validateComposition`, which has the decomposed groups).
@@ -1915,6 +2068,43 @@ export const validatePackStructure = (pack: unknown): CompositionValidationIssue
       }
     });
   }
+  // D-223 — a hint must name a connection this pack's own composition actually
+  // uses. The pack contract validates a hint's SHAPE but deliberately does not
+  // look inside a composition (D-170 owns that), so the cross-reference lands
+  // here, where ingredients are in scope. A hint for a connection the pack never
+  // touches is refused rather than dropped: silently ignoring it would read to
+  // its author as an accepted declaration.
+  if (isPlainObject(pack) && Array.isArray((pack as Record<string, unknown>).connection_hints)) {
+    const declared = new Set<string>();
+    for (const content of Array.isArray(pack.contents) ? pack.contents : []) {
+      if (
+        !isPlainObject(content)
+        || content.type !== 'composition'
+        || !isPlainObject(content.composition)
+        || !Array.isArray(content.composition.ingredients)
+      ) continue;
+      for (const ingredient of content.composition.ingredients) {
+        if (!isPlainObject(ingredient)) continue;
+        const http = ingredient.http;
+        if (isPlainObject(http) && typeof http.connection === 'string' && http.connection.length > 0) {
+          declared.add(http.connection);
+        }
+      }
+    }
+    (pack as { connection_hints: unknown[] }).connection_hints.forEach((entry, idx) => {
+      if (!isPlainObject(entry) || typeof entry.connection !== 'string') return;
+      if (!declared.has(entry.connection)) {
+        issues.push({
+          severity: 'error',
+          code: 'pack_connection_hint_connection_unused',
+          path: `connection_hints[${idx}].connection`,
+          message: `connection hint targets '${entry.connection}', which no ingredient in this pack uses`
+            + (declared.size > 0 ? `; declared: ${[...declared].sort().join(', ')}` : ''),
+        });
+      }
+    });
+  }
+
   // D-211 Slice 4 — the read-hold lever returns only as a discriminating
   // author judgment. A pack with at least three reads may hold every read only
   // when every held row carries an explicit reason; otherwise GET→ask/always

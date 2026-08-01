@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   KITCHEN_ROUTE_CONTENT_ATTR,
   KITCHEN_ROUTE_HOST_ATTR,
+  KITCHEN_ROUTE_LABEL_ATTR,
   KITCHEN_ROUTE_TAB_ATTR,
   KITCHEN_ROUTE_TABS_ATTR,
   kitchenTabHref,
@@ -162,6 +163,7 @@ describe('mountKitchenChrome', () => {
     const { root, handle } = mount('pack');
     const host = findByAttr(root, KITCHEN_ROUTE_HOST_ATTR)[0]!;
     expect(host).toBeDefined();
+    expect(findByAttr(root, KITCHEN_ROUTE_LABEL_ATTR)[0]?.textContent).toBe('Kitchen');
     const tabs = findByAttr(root, KITCHEN_ROUTE_TAB_ATTR);
     expect(tabs.map((t) => t.getAttribute(KITCHEN_ROUTE_TAB_ATTR))).toEqual([
       'recipe',

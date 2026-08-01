@@ -80,7 +80,11 @@ const makeOptions = (
   ({
     dbPath: '/tmp/server.db',
     runtimeConfig: { get: vi.fn() },
-    backgroundServices: { stopAll: vi.fn(), register: vi.fn() },
+    backgroundServices: {
+      stopAll: vi.fn(),
+      register: vi.fn(),
+      registerInterval: vi.fn(() => () => {}),
+    },
     storage: {
       db: { tag: 'db' },
       recipeStore: { tag: 'recipe-store', size: vi.fn(() => 3) },
@@ -158,7 +162,7 @@ const makeOptions = (
       getBindingEntitlementSource: () => undefined,
     },
     tlsDomainStore: { tag: 'tls-domain-store' },
-    lanBindAddress: '127.0.0.1',
+    lanAdvertisedAddress: '127.0.0.1',
     actualPort: 4747,
     upstreamMergeRegistry: new Map(),
     publishSchedulersBundle: vi.fn(),
@@ -250,7 +254,7 @@ describe('startPostListenerRuntime', () => {
     expect(runtimeMocks.composeCertStackLate).toHaveBeenCalledWith({
       certStack: options.certStack,
       tlsDomainStore: options.tlsDomainStore,
-      lanBindAddress: options.lanBindAddress,
+      lanAdvertisedAddress: options.lanAdvertisedAddress,
       actualPort: options.actualPort,
     });
     expect(runtimeMocks.startPostHousekeepingTail).toHaveBeenCalledWith({
@@ -268,7 +272,6 @@ describe('startPostListenerRuntime', () => {
       // The tail also receives the LAN bind + the three optional handles it
       // forwards (start-post-listener-runtime.ts:522-525). Pinned by NAME so a
       // future value change surfaces here instead of drifting silently.
-      lanBindAddress: options.lanBindAddress,
       webclientServed: options.webclientServed,
       notificationBlock: options.notificationBlock,
       runUpdateBootReconcile: options.runUpdateBootReconcile,

@@ -6,6 +6,8 @@
  *         (non-cli) ops, with access tiers tracking their risk tiers.
  *       - installGrantModelFromReviewFamilies: api families = connection-backed,
  *         connector (cli) families excluded.
+ *       - installGrantModelFromMcpReviewRows: reviewed generated operations use
+ *         their conservative stored risk and exact TOCTOU-bound ids.
  *       - renderInstallGrantPicker: access radios plus independent broad and
  *         expanded audience checkboxes; disabled drops the listeners.
  *    2. packs-panel integration (`mountPacksPanel`): every pack with grantable
@@ -23,6 +25,7 @@ import {
   INSTALL_GRANT_SCOPE_ATTR,
   INSTALL_GRANT_SCOPE_OPTION_ATTR,
   installGrantModelFromManifest,
+  installGrantModelFromMcpReviewRows,
   installGrantModelFromReviewFamilies,
   renderInstallGrantPicker,
 } from '../settings/install-grant-picker.js';
@@ -357,6 +360,34 @@ describe('D-182 §7.1 (5b.2) — installGrantModelFromReviewFamilies', () => {
 
   it('returns null for an empty family list', () => {
     expect(installGrantModelFromReviewFamilies([])).toBeNull();
+  });
+});
+
+describe('D-228 — generated MCP review install grants', () => {
+  it('offers an explicit write step-up for the exact reviewed operation ids', () => {
+    const model = installGrantModelFromMcpReviewRows([
+      {
+        op: 'search_docs_b2',
+        tool: 'search_docs',
+        stored: { risk: 'write', approval: 'ask' },
+      },
+      {
+        op: 'delete_docs_a1',
+        tool: 'delete_docs',
+        stored: { risk: 'write', approval: 'ask' },
+      },
+    ]);
+    expect(model?.accessOptions).toEqual(['read', 'write']);
+    expect(model?.defaultAccess).toBe('read');
+    expect(model?.grantsByAccess.read).toEqual([]);
+    expect(model?.grantsByAccess.write).toEqual([
+      'delete_docs_a1',
+      'search_docs_b2',
+    ]);
+  });
+
+  it('returns no consent model when the healthy server publishes no tools', () => {
+    expect(installGrantModelFromMcpReviewRows([])).toBeNull();
   });
 });
 

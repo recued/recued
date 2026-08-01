@@ -9,6 +9,18 @@ const ingressMocks = vi.hoisted(() => ({
   composeReceptionSubstrate: vi.fn(),
   composeMcpHttpTransport: vi.fn(),
   logMcpHttpBootBanner: vi.fn(),
+  // The webclient servability probe reads the REAL filesystem: the deployment
+  // dir, and — since the dev-serve tier landed — `apps/webclient/build` in this
+  // checkout. Unmocked, `webclientBundlePresent` below would assert whatever
+  // the developer last built, passing or failing by accident of the working
+  // tree. Pinned here so the forwarded value is a decision, not an artifact.
+  resolveServedWebclientBundleDir: vi.fn(),
+  isVerifiedWebclientBundlePresent: vi.fn(),
+}));
+
+vi.mock('../webclient-bundle-loader.js', () => ({
+  resolveServedWebclientBundleDir: ingressMocks.resolveServedWebclientBundleDir,
+  isVerifiedWebclientBundlePresent: ingressMocks.isVerifiedWebclientBundlePresent,
 }));
 
 vi.mock('../composition/bin/wire-exposure-tls-rpc-deps.js', () => ({
@@ -127,6 +139,12 @@ beforeEach(() => {
     receptionRpcDeps: { tag: 'reception-rpc-deps' },
     receptionPortDeps: { tag: 'reception-port-deps' },
   });
+
+  // Default: a server with no bundle anywhere → dormant mount, probe false.
+  ingressMocks.resolveServedWebclientBundleDir.mockReset();
+  ingressMocks.resolveServedWebclientBundleDir.mockReturnValue(undefined);
+  ingressMocks.isVerifiedWebclientBundlePresent.mockReset();
+  ingressMocks.isVerifiedWebclientBundlePresent.mockResolvedValue(false);
 
   ingressMocks.logMcpHttpBootBanner.mockReset();
   ingressMocks.composeMcpHttpTransport.mockReset();
@@ -272,8 +290,42 @@ describe('composeIngressRpcContext', () => {
       // storage-context into the MCP transport so the engagement read can
       // resolve `body_content_granted`.
       mcpBodyVisibilityStore: storage.mcpBodyVisibilityStore,
+      // ⛔ D-220 — the live intake-form reader MUST reach the MCP transport, or
+      // `recued_saveRecipe` writes straight to the store and the form-field
+      // contract is bypassed entirely (Codex 3.2). Asserted as a function
+      // because the identity is a factory product, not a shared ref — what
+      // matters is that SOMETHING readable arrived.
+      formDefinitionReader: expect.any(Function),
     });
     expect(ingressMocks.logMcpHttpBootBanner).toHaveBeenCalledTimes(1);
+  });
+
+  it('forwards webclientBundlePresent: TRUE when a verified bundle resolves', async () => {
+    // The false case above cannot tell a wired probe from a hardcoded `false`
+    // — only the input that would flip it can. This is also the dev-serve case:
+    // `resolveServedWebclientBundleDir` answering with the source-tree build.
+    ingressMocks.resolveServedWebclientBundleDir.mockReturnValue('/repo/apps/webclient/build');
+    ingressMocks.isVerifiedWebclientBundlePresent.mockResolvedValue(true);
+
+    await composeIngressRpcContext(makeOptions({ storage: makeStorage(), app: makeApp() }));
+
+    expect(ingressMocks.isVerifiedWebclientBundlePresent).toHaveBeenCalledWith(
+      '/repo/apps/webclient/build',
+    );
+    expect(ingressMocks.composeExposureAndTlsRpcDeps).toHaveBeenCalledWith(
+      expect.objectContaining({ webclientBundlePresent: true }),
+    );
+  });
+
+  it('skips the probe entirely when no bundle dir resolves', async () => {
+    // Guards the `webclientBundleDir ? … : false` branch: an unresolvable dir
+    // must not reach the filesystem probe at all.
+    await composeIngressRpcContext(makeOptions({ storage: makeStorage(), app: makeApp() }));
+
+    expect(ingressMocks.isVerifiedWebclientBundlePresent).not.toHaveBeenCalled();
+    expect(ingressMocks.composeExposureAndTlsRpcDeps).toHaveBeenCalledWith(
+      expect.objectContaining({ webclientBundlePresent: false }),
+    );
   });
 
   it('preserves disabled reception and MCP transport gates', async () => {

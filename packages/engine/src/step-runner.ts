@@ -76,6 +76,36 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
 
   const foreachRef = (step as unknown as { foreach?: unknown }).foreach;
   if (foreachRef !== undefined && foreachRef !== null) {
+    // ⛔⛔ A `skip_when` ON A FOREACH STEP MEANS ONE OF TWO THINGS, and which one
+    // is decided by whether it mentions `{{item.*}}`.
+    //
+    //   per-ITEM  (`{{item.should_notify}} not_equal true`) — a filter inside
+    //     the loop. 220 shipped recipes rely on it; it must stay per-iteration,
+    //     and evaluating it here would read `item` unset and answer wrongly.
+    //   per-STEP  (`{{step.has_companies}} equal false`) — "do not run this at
+    //     all". This dispatched straight to the loop, the inner step KEPT the
+    //     condition, and every iteration skipped — so the step yielded an ARRAY
+    //     OF NULLS instead of being skipped. 53 shipped recipes are written
+    //     this way.
+    //
+    // The array-of-nulls is the dangerous half: it is truthy, so a `coalesce`
+    // between two mutually-exclusive foreach steps picks the one that was meant
+    // to be skipped, and the page shows blanks with no error anywhere. Found by
+    // driving `combined-balance` end to end.
+    //
+    // ⚠ Discriminating on the REF, not on a new field, because both shapes are
+    // already in the corpus and neither author was wrong to write what they
+    // wrote — the reading of each is unambiguous, only the behaviour was.
+    const skip = step.skip_when;
+    if (typeof skip === 'string' && skip.length > 0 && !ITEM_REF_IN_CONDITION.test(skip)
+      && evaluateCondition(skip, ctx.stores)) {
+      setNamespaceValue(ctx.stores.step as Record<string, unknown>, id, null);
+      return {
+        id, type, skipped: true,
+        skip_reason: `skip_when: ${skip}`,
+        result: null, error: null, duration_ms: Date.now() - start,
+      };
+    }
     return runForeach(step, ctx, foreachRef, type, start);
   }
 
@@ -218,6 +248,47 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
       && (e as { retryable?: unknown }).retryable === false
       && modelRefusalDetails?.finish_reason === 'content_filter'
       && modelRefusalDetails?.slug === modelRefusalSlug;
+    // An adapter's OWN typed code, when it names a real `RecipeErrorCode`.
+    // Before this, the four carriers above were the only codes that survived the
+    // step seam and EVERY other throw became the catch-all `NETWORK_ERROR` —
+    // including `ACTION_DELIVERY_UNCERTAIN`, whose whole point is "the write may
+    // have landed, verify before retrying". Erasing it rewrote the owner-facing
+    // remedy from "check your CRM before retrying so you do not duplicate the
+    // write" into `NETWORK_ERROR`'s "check your connection and try again" — the
+    // exact double-write the code exists to prevent. 33 of the 39 codes adapters
+    // throw are already `RecipeErrorCode` members; they were simply never read.
+    //
+    // ⚠ MEMBERSHIP IS REQUIRED, not cosmetic. `IngredientError.code` is typed
+    // `string`, so a raw passthrough would let an arbitrary token escape into a
+    // field typed as a closed union (6 thrown codes are outside it today —
+    // `BAD_INPUT`, `UPSTREAM_ERROR`, `URL_REF_INVALID`, …). `ERR` is
+    // `Record<RecipeErrorCode, ErrorSeverity>`, so its OWN keys are exactly the
+    // union and the typechecker keeps them that way — deriving the test from it
+    // cannot drift the way a hand-copied list would. `Object.hasOwn`, not `in`:
+    // `in` would admit inherited keys and accept a code of `'toString'`.
+    //
+    // ⛔ NOT applied to transforms (they keep `TRANSFORM_ERROR`) and NOT to
+    // `AI_MODEL_REFUSED`, which keeps its own branch above: D-200 honours that
+    // code only with its bounded diagnostic attached, and a generic passthrough
+    // would silently promote a bare `code` that failed that validation.
+    //
+    // ⛔ THE CODE ONLY — `details` stays dropped, deliberately. Adapter details
+    // carry values: `MAIL_SEND_SELF_LOOP_TO` attaches `{ account_email,
+    // offending }`, both real addresses. The four carriers above are bounded,
+    // reviewed shapes; `IngredientError.details` is `Record<string, unknown>`
+    // from 41 throw sites, so admitting it wholesale would push unreviewed PII
+    // into audit rows and onto model-bound cards. A code is a closed vocabulary
+    // and safe to render; its details are not.
+    const adapterCodeRaw = type !== 'transform'
+      && e !== null && typeof e === 'object'
+      ? (e as { code?: unknown }).code
+      : undefined;
+    const adapterCode: RecipeErrorCode | undefined =
+      typeof adapterCodeRaw === 'string'
+      && adapterCodeRaw !== 'AI_MODEL_REFUSED'
+      && Object.hasOwn(ERR, adapterCodeRaw)
+        ? adapterCodeRaw as RecipeErrorCode
+        : undefined;
     const code: RecipeErrorCode = cliFailure
       ? cliFailureErrorCode(cliFailure.reason)
       : containerPick
@@ -226,7 +297,9 @@ export const runStep = async (step: RecipeStep, ctx: ExecutionContext): Promise<
           ? 'CREATE_PLAN_REQUIRED'
           : modelRefused
             ? 'AI_MODEL_REFUSED'
-            : type === 'transform' ? 'TRANSFORM_ERROR' : 'NETWORK_ERROR';
+            : type === 'transform'
+              ? 'TRANSFORM_ERROR'
+              : adapterCode ?? 'NETWORK_ERROR';
     const details: Record<string, unknown> = {
       ...(heavyOp !== undefined ? { heavy_op: heavyOp } : {}),
       ...(slotCancelled ? { slot_cancelled: true } : {}),
@@ -332,7 +405,20 @@ const runForeach = async (
   // step state like any other result — count it toward the context-size
   // budget the non-foreach path already tracks.
   trackContextSize(ctx, results);
-  return { id, type, skipped: false, result: results, error: null, duration_ms: Date.now() - start };
+  // ⛔ The tally rides on the step log, NOT in `errors[]`. Pushing a warn there
+  // would give every partially-failing run an `error_category` in history
+  // (`history-handler.ts` reads `errors[0].code` unconditionally) and print it
+  // in console output — turning a silence bug into a noise bug. `success` and
+  // `errors[]` keep meaning exactly what they meant.
+  return {
+    id,
+    type,
+    skipped: false,
+    result: results,
+    error: null,
+    duration_ms: Date.now() - start,
+    foreach: { items: results.length, failed: results.filter((r) => !r.ok).length },
+  };
 };
 
 const runTransform = (step: RecipeStep, ctx: ExecutionContext): unknown => {
@@ -382,6 +468,10 @@ const resolveTransformParams = (params: Record<string, unknown>, name: string, c
   }
   return resolveDeep(params, ctx.stores) as Record<string, unknown>;
 };
+
+/** Does a condition read the per-iteration binding? Decides whether a
+ *  `foreach` step's `skip_when` gates the STEP or each ITEM. */
+const ITEM_REF_IN_CONDITION = /\{\{\s*item(?:\.|\s*\}\})/;
 
 /** Resolve step.ingredient to a concrete slug. Handles the kernel
  *  `run-ingredient` pattern where the slug is itself a ref like

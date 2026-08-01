@@ -22,6 +22,7 @@ import {
   INGREDIENT_BUILDER_HTTP_RESULT_PATH_ATTR,
   INGREDIENT_BUILDER_HTTP_SEARCH_STYLE_ATTR,
   INGREDIENT_BUILDER_HTTP_WRITE_STYLE_ATTR,
+  INGREDIENT_BUILDER_INGREDIENT_KIND_ATTR,
   INGREDIENT_BUILDER_DRAFT_PICKER_ATTR,
   INGREDIENT_BUILDER_ENTITY_ADD_ROW_ATTR,
   INGREDIENT_BUILDER_ENTITY_ALIAS_ATTR,
@@ -51,6 +52,7 @@ import {
   INGREDIENT_BUILDER_ROUTE_ATTR,
   INGREDIENT_BUILDER_ROW_ATTR,
   INGREDIENT_BUILDER_SAVE_ATTR,
+  INGREDIENT_BUILDER_SECTION_NAV_ATTR,
   INGREDIENT_BUILDER_SECTION_VIEW_ATTR,
   INGREDIENT_BUILDER_SERVICE_KIND_ATTR,
   INGREDIENT_BUILDER_SLUG_ATTR,
@@ -395,6 +397,40 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
     expect(findAllByAttr(root, INGREDIENT_BUILDER_REMOVE_ROW_ATTR)[0]!.disabled).toBe(true);
     expect(findByAttr(root, INGREDIENT_BUILDER_REVIEW_STATUS_ATTR)?.textContent)
       .toBe('Review pending');
+    const sectionTabs = findAllByAttr(root, INGREDIENT_BUILDER_SECTION_NAV_ATTR);
+    expect(sectionTabs).toHaveLength(5);
+    expect(sectionTabs.every((tab) => tab.getAttribute('role') === 'tab')).toBe(true);
+    expect(sectionTabs.filter((tab) => tab.getAttribute('aria-selected') === 'true'))
+      .toHaveLength(1);
+    const sectionViews = findAllByAttr(root, INGREDIENT_BUILDER_SECTION_VIEW_ATTR);
+    expect(sectionViews).toHaveLength(5);
+    expect(sectionViews.every((view) => view.getAttribute('role') === 'tabpanel')).toBe(true);
+    expect(sectionViews.filter((view) => !view.hasAttribute('hidden'))).toHaveLength(1);
+    expect(textOf(root)).toContain('Draft overview');
+    expect(textOf(root)).toContain('Connection setup');
+    expect(textOf(root)).toContain(
+      'Operations Define the calls this pack can make and the approval policy each family carries.',
+    );
+    expect(textOf(root)).toContain(
+      'Data fields Describe the records these operations read or write',
+    );
+    expect(textOf(root)).toContain('Publish details');
+    expect(textOf(root)).toContain('Operation families 0 operations');
+    expect(textOf(root)).not.toContain('Ungrouped 1 operation');
+    expect(findByAttr(root, INGREDIENT_BUILDER_DRAFT_PICKER_ATTR)?.getAttribute('aria-label'))
+      .toBe('Draft');
+    expect(findByAttr(root, INGREDIENT_BUILDER_TITLE_ATTR)?.getAttribute('aria-label'))
+      .toBe('Draft title');
+    const operationsView = findByAttrValue(
+      root,
+      INGREDIENT_BUILDER_SECTION_VIEW_ATTR,
+      'operations',
+    );
+    const dataView = findByAttrValue(root, INGREDIENT_BUILDER_SECTION_VIEW_ATTR, 'data');
+    expect(operationsView?.children.some((child) =>
+      child.className.split(' ').includes('ingredient-builder-card'))).toBe(true);
+    expect(dataView?.children.some((child) =>
+      child.className.split(' ').includes('ingredient-builder-card'))).toBe(true);
     expect(route.buildDraftBody().operations).toHaveLength(1);
     expect(route.buildDraftBody().ingredients[0]!.entities).toBeUndefined();
 
@@ -415,10 +451,11 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
       conn,
     });
 
-    expect(textOf(root)).toContain('Operations 0/1 reviewed');
+    expect(textOf(root)).toContain('Operations 0/0 reviewed');
     expect(textOf(root)).toContain('Fields 0/0 reviewed');
     expect(textOf(root)).toContain('No entity fields');
 
+    setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'operation'), 'contact.read');
     setChecked(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'reviewed'), true);
     expect(textOf(root)).toContain('Operations 1/1 reviewed');
 
@@ -645,6 +682,91 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
         ],
       },
     });
+  });
+
+  it('round-trips a storage workflow with core.records binds and ref field metadata', () => {
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const { conn } = makeConn();
+    const binding = {
+      kind: 'core.records',
+      action: 'search',
+      entity: 'unit',
+      filter_fields: ['building_ref'],
+      sort_fields: ['label'],
+    };
+    const initialBody = {
+      manifest_version: 2,
+      artifact_type: 'pack',
+      slug: 'rental-book',
+      publisher: 'recued-core',
+      name: 'Rental book',
+      pack_kind: 'app_pack',
+      service_kind: 'workflow',
+      contents: [{
+        type: 'composition',
+        composition: {
+          schema_version: 1,
+          slug: 'rental-book',
+          catalog_kind: 'official',
+          ingredients: [{
+            slug: 'rental-book-records',
+            kind: 'storage',
+            entities: {
+              unit: {
+                fields: [{
+                  field_path: 'r1',
+                  type: 'string',
+                  maps_to: 'building_ref',
+                  pii: 'external_id',
+                  label: 'Building',
+                  references: 'building',
+                }],
+              },
+            },
+          }],
+          operations: [{
+            op: 'unit.search',
+            ingredient: 'rental-book-records',
+            risk: 'read',
+            approval: 'never',
+            bind: binding,
+          }],
+        },
+      }],
+    };
+
+    const route = bootstrapIngredientBuilderRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialBody,
+    });
+
+    expect(route.getState().ingredientKind).toBe('storage');
+    expect(route.getState().packServiceKind).toBe('workflow');
+    expect(route.getState().rows[0]?.bindingKind).toBe('core.records');
+    expect(findByAttr(root, INGREDIENT_BUILDER_INGREDIENT_KIND_ATTR)?.value).toBe('storage');
+    expect(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'bindingKind')?.value)
+      .toBe('core.records');
+    expect(findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'label')?.value)
+      .toBe('Building');
+    expect(findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'references')?.value)
+      .toBe('building');
+
+    const body = route.buildDraftBody();
+    expect(body.ingredients[0]).toMatchObject({
+      kind: 'storage',
+      entities: {
+        unit: {
+          fields: [expect.objectContaining({
+            label: 'Building',
+            references: 'building',
+          })],
+        },
+      },
+    });
+    expect(body.operations[0]?.bind).toEqual(binding);
   });
 
   it('authors entity-field extras from the per-field Advanced controls (Tier-2)', () => {
@@ -2175,6 +2297,48 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
     expect('default_grants' in route.buildDraftBody()).toBe(false);
   });
 
+  it('preserves Source contracts and forced catalog lowering on round-trip', () => {
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const { conn } = makeConn();
+    const workEntitySources = [{
+      kind: 'project',
+      source_id_template: 'peer.${connection_id}.project',
+      source_label_template: 'Peer project — ${connection_name}',
+      source_kind: 'connection',
+      marker: { nested: ['preserve', 'verbatim'] },
+    }] as unknown as NonNullable<CompositionIngredient['work_entity_sources']>;
+    const initialBody: CompositionIngredient = {
+      schema_version: 1,
+      slug: 'peer-catalog',
+      catalog_kind: 'private_byo',
+      force_catalog_lowering: true,
+      ingredients: [{
+        slug: 'peer-catalog',
+        kind: 'http',
+        http: { base: 'https://peer.example.com' },
+      }],
+      operations: [{
+        op: 'project.list',
+        ingredient: 'peer-catalog',
+        risk: 'read',
+        approval: 'never',
+        bind: { kind: 'rest', method: 'GET', path_template: '/projects' },
+      }],
+      work_entity_sources: workEntitySources,
+    };
+
+    const route = bootstrapIngredientBuilderRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialBody,
+    });
+
+    expect(route.buildDraftBody().force_catalog_lowering).toBe(true);
+    expect(route.buildDraftBody().work_entity_sources).toEqual(workEntitySources);
+  });
+
   it('carries default_grants through the draft picker (applyDraftState)', async () => {
     const doc = makeFakeDocument();
     const root = makeFakeElement('main');
@@ -2731,6 +2895,7 @@ describe('pack editor polish — feedback correctness', () => {
   it('hasUnsavedChanges: true during the save flight, clean after, edits-only otherwise', async () => {
     const { root, route } = mount();
     expect(route.hasUnsavedChanges()).toBe(false);
+    expect(route.hasInFlightWork()).toBe(false);
 
     setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'operation'), 'contact.read');
     expect(route.hasUnsavedChanges()).toBe(true);
@@ -2738,8 +2903,10 @@ describe('pack editor polish — feedback correctness', () => {
     findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.click();
     // In flight (save rpc not yet acked) — leaving now could lose the edits.
     expect(route.hasUnsavedChanges()).toBe(true);
+    expect(route.hasInFlightWork()).toBe(true);
     await tick();
     expect(route.hasUnsavedChanges()).toBe(false);
+    expect(route.hasInFlightWork()).toBe(false);
   });
 
   it('a draft whose LOAD validation fails is not "unsaved" (nothing to lose)', async () => {

@@ -92,6 +92,10 @@ const makeDeps = (spec: FenceSpec | undefined): HandleToolCallDeps =>
   ({
     enrichmentStore: store,
     db,
+    // D-228 slice 6 — this suite's subject is the READ GATE / dispatch body,
+    // which only runs once the tool gate admits. An absent checklist now
+    // denies, so the owner principal is declared rather than implied.
+    ownerAdmitAll: true,
     contractOverlay: {
       shouldMeterUse: () => false,
       recordUse: () => {},

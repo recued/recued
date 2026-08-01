@@ -1,5 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
+import type {
+  ConnectionSetupGuideRequest,
+  ConnectionSetupGuideResult,
+} from '@recued/ui-shared';
 import {
+  OPENER_RELAY_MESSAGE_KIND,
+  OAUTH_OPENER_RELAY_STATE_PREFIX,
   WEBHOOK_PROFILE_REGISTRY,
   type WebhookProfileRuntimeCapabilityView,
   type ConnectionHealth,
@@ -19,7 +25,18 @@ import {
   CONNECTIONS_ROUTE_STYLES_MARKER,
   CONNECTIONS_ROUTE_TABS_ATTR,
   bootstrapConnectionsRoute,
+  parseConnectionsCredentialRotationRetry,
+  parseConnectionsPostSafeStopRecovery,
+  resolveProfileBoundPostSafeStopRecovery,
+  serializeConnectionsCredentialRotationRetry,
+  serializeConnectionsPostSafeStopRecovery,
 } from '../connections/bootstrap-connections-route.js';
+import { createFoundationalOAuthContinuity } from '../connections/foundational-oauth-continuity.js';
+import {
+  PROVIDER_SETUP_CONTINUITY_SESSION_KEY,
+  createProviderSetupContinuityStore,
+} from '../connections/provider-setup-continuity.js';
+import type { FoundationalOAuthEnv } from '../connections/foundational-oauth-popup.js';
 import {
   WEBHOOKS_PANEL_ACTION_ATTR,
   WEBHOOKS_PANEL_CARD_ATTR,
@@ -50,6 +67,9 @@ import {
   bootstrapSettingsRoute,
 } from '../settings/bootstrap-settings-route.js';
 import { createInMemoryWebclientLocalStore } from '../storage/local-store.js';
+import type {
+  ConnectionsEnrollListCaller,
+} from '../settings/connections-enroll-panel.js';
 
 interface FakeEl {
   tagName: string;
@@ -91,6 +111,7 @@ interface FakeDoc {
 // cleanly under the string-only DOM.
 const SUBMIT_SELECTORS = new Set([
   '[data-action="connections-submit-form"]',
+  '[data-action="connections-guide-review"]',
   '[data-action="accounts-submit-form"]',
 ]);
 
@@ -303,7 +324,19 @@ const field = (
   tagName = 'INPUT',
 ): void => {
   const el = { dataset: { [datasetKey]: key }, value, tagName, closest: () => el };
-  fire(host, tagName === 'SELECT' ? 'change' : 'input', { target: el, type: 'input' });
+  const type = tagName === 'SELECT' ? 'change' : 'input';
+  fire(host, type, { target: el, type });
+};
+
+const guideUrl = (host: FakeEl, value: string): void => {
+  const el = {
+    dataset: { connectionGuideUrl: '' },
+    value,
+    tagName: 'INPUT',
+    closest: (selector: string) =>
+      selector === '[data-connection-guide-url]' ? el : null,
+  };
+  fire(host, 'input', { target: el, type: 'input' });
 };
 
 const connection = (
@@ -318,8 +351,11 @@ const connection = (
 
 const enrollCallers = () => {
   const enrolled = [connection('hub')];
+  const connectionsEnrollListCaller = vi.fn<ConnectionsEnrollListCaller>(
+    async () => ({ connections: enrolled }),
+  );
   return {
-    connectionsEnrollListCaller: vi.fn(async () => ({ connections: enrolled })),
+    connectionsEnrollListCaller,
     connectionsEnrollCaller: vi.fn(async (args: { name: string; kind: ConnectionView['kind']; display_name?: string }) => ({
       connection: connection(args.name, {
         kind: args.kind,
@@ -333,6 +369,20 @@ const enrollCallers = () => {
     connectionsDeleteCaller: vi.fn(async () => ({ deleted: true })),
     connectionsProbeCaller: vi.fn(async () => ({
       health: { status: 'ok' } as ConnectionHealth,
+    })),
+    connectionsSuggestSetupCaller: vi.fn(async (args: ConnectionSetupGuideRequest) => ({
+      shared_context: args,
+      guide: {
+        provider_name: 'Example Cloud',
+        overview: 'Create a provider credential, then finish the form.',
+        field_suggestions: [],
+        steps: [{
+          title: 'Create a credential',
+          instruction: 'Open the provider page and create a least-privilege token.',
+          field_keys: ['auth.token'],
+        }],
+        cautions: ['Verify the current provider documentation.'],
+      },
     })),
   };
 };
@@ -413,6 +463,119 @@ const webhookList = (
 ) => ({ ingresses, profiles });
 
 describe('Connections route (R13–R16 restructure)', () => {
+  it('round-trips only a valid non-secret connection identity for the server-update return', () => {
+    expect(serializeConnectionsCredentialRotationRetry({
+      kind: 'api',
+      name: 'github-main',
+    })).toBe(
+      '#connections/others/retry-credential-rotation/api/github-main',
+    );
+    expect(parseConnectionsCredentialRotationRetry([
+      'others',
+      'retry-credential-rotation',
+      'api',
+      'github-main',
+    ])).toEqual({ kind: 'api', name: 'github-main' });
+    expect(parseConnectionsCredentialRotationRetry([
+      'others',
+      'retry-credential-rotation',
+      'unknown',
+      'github-main',
+    ])).toBeNull();
+    expect(parseConnectionsCredentialRotationRetry([
+      'others',
+      'retry-credential-rotation',
+      'api',
+      'secret/name',
+    ])).toBeNull();
+  });
+
+  it('round-trips only a valid identity for an exact post-ack recovery handoff', () => {
+    expect(serializeConnectionsPostSafeStopRecovery({
+      serverProfileId: 'profile-home',
+      kind: 'mcp',
+      name: 'research-main',
+    })).toBe(
+      '#connections/others/finish-recovery/profile/profile-home/mcp/research-main',
+    );
+    expect(parseConnectionsPostSafeStopRecovery([
+      'others',
+      'finish-recovery',
+      'profile',
+      'profile-home',
+      'mcp',
+      'research-main',
+    ])).toEqual({
+      serverProfileId: 'profile-home',
+      kind: 'mcp',
+      name: 'research-main',
+    });
+    expect(parseConnectionsPostSafeStopRecovery([
+      'others',
+      'finish-recovery',
+      'profile',
+      'profile-home',
+      'unknown',
+      'research-main',
+    ])).toBeNull();
+    expect(parseConnectionsPostSafeStopRecovery([
+      'others',
+      'finish-recovery',
+      'profile',
+      'profile-home',
+      'mcp',
+      'secret/name',
+    ])).toBeNull();
+    expect(parseConnectionsPostSafeStopRecovery([
+      'others',
+      'finish-recovery',
+      'mcp',
+      'research-main',
+    ])).toBeNull();
+  });
+
+  it('requires the booted profile before resolving a post-ack target', () => {
+    const bound = [
+      'others',
+      'finish-recovery',
+      'profile',
+      'profile-home',
+      'api',
+      'billing-crm',
+    ];
+    expect(resolveProfileBoundPostSafeStopRecovery(bound, 'profile-home'))
+      .toEqual({
+        status: 'matched',
+        target: {
+          serverProfileId: 'profile-home',
+          kind: 'api',
+          name: 'billing-crm',
+        },
+      });
+    expect(resolveProfileBoundPostSafeStopRecovery(bound, 'profile-office'))
+      .toEqual({
+        status: 'profile_mismatch',
+        target: {
+          serverProfileId: 'profile-home',
+          kind: 'api',
+          name: 'billing-crm',
+        },
+      });
+    expect(resolveProfileBoundPostSafeStopRecovery(bound, null))
+      .toEqual({ status: 'unbound' });
+    expect(resolveProfileBoundPostSafeStopRecovery([
+      'others',
+      'finish-recovery',
+      'api',
+      'billing-crm',
+    ], 'profile-home')).toEqual({ status: 'unbound' });
+    expect(resolveProfileBoundPostSafeStopRecovery([
+      'others',
+      'enroll',
+      'stripe',
+    ], 'profile-home')).toEqual({ status: 'none' });
+  });
+
   it('renders the five connection tabs with the active one marked', () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
@@ -459,14 +622,401 @@ describe('Connections route (R13–R16 restructure)', () => {
     expect(root.children).toHaveLength(0);
   });
 
+  it('forwards an exact privacy-safe leave guard for a dirty connection editor', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const callers = enrollCallers();
+    callers.connectionsEnrollListCaller.mockResolvedValue({
+      connections: [
+        connection('github-main', {
+          display_name: 'GitHub',
+          auth_type: 'bearer',
+        }),
+      ],
+    });
+    const route = bootstrapConnectionsRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialTab: 'others',
+      ...callers,
+    });
+    await route.connectionsEnrollPanel()!.whenLoaded();
+    const content = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
+
+    expect(route.hasUnsavedChanges()).toBe(false);
+    expect(route.unsavedChangesPrompt()).toBeNull();
+    clickAction(content, {
+      action: 'connections-edit',
+      kind: 'api',
+      name: 'github-main',
+    });
+    field(
+      content,
+      'connField',
+      'auth.token',
+      'private-route-only-secret',
+    );
+
+    expect(route.hasUnsavedChanges()).toBe(true);
+    expect(route.unsavedChangesPrompt()).toMatch(
+      /discard changes to api\/github-main.*cancel to stay/i,
+    );
+    expect(route.unsavedChangesPrompt()).not.toContain(
+      'private-route-only-secret',
+    );
+
+    field(content, 'connField', 'auth.token', '');
+    expect(route.hasUnsavedChanges()).toBe(false);
+    expect(route.unsavedChangesPrompt()).toBeNull();
+
+    route.dispose();
+  });
+
+  it('returns through Apps & APIs and retries only the addressed connection', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const callers = enrollCallers();
+    callers.connectionsEnrollListCaller.mockResolvedValue({
+      connections: [
+        connection('other-api', { updated_at: 90 }),
+        connection('guided-api', { auth_type: 'bearer', updated_at: 91 }),
+      ],
+    });
+    const activity = vi.fn(async () => ({
+      activity: { status: 'idle' as const },
+    }));
+    const onCredentialRotationServerUpdateRetrySettled = vi.fn();
+    const onCredentialRotationCleanEditorReady = vi.fn();
+    const route = bootstrapConnectionsRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialTab: 'others',
+      initialCredentialRotationServerUpdateRetry: {
+        kind: 'api',
+        name: 'guided-api',
+      },
+      connectionsCredentialRotationActivityCaller: activity,
+      onCredentialRotationServerUpdateRetrySettled,
+      onCredentialRotationCleanEditorReady,
+      ...callers,
+    });
+
+    await route.connectionsEnrollPanel()!.whenLoaded();
+    await tick(30);
+
+    expect(activity).toHaveBeenCalledOnce();
+    expect(activity).toHaveBeenCalledWith({
+      kind: 'api',
+      name: 'guided-api',
+    });
+    expect(callers.connectionsEnrollListCaller).toHaveBeenCalledTimes(2);
+    expect(route.connectionsEnrollPanel()!.getState().credentialRotationRecovery)
+      .toMatchObject({
+        kind: 'api',
+        name: 'guided-api',
+        phase: 'editor_ready',
+        returnedFromServerUpdate: true,
+      });
+    expect(route.connectionsEnrollPanel()!.getState().dialog.editingId)
+      .toBe('api/guided-api');
+    expect(route.connectionsEnrollPanel()!.getState().dialog.values['auth.token'])
+      .toBeUndefined();
+    expect(onCredentialRotationServerUpdateRetrySettled).not.toHaveBeenCalled();
+    expect(onCredentialRotationCleanEditorReady).toHaveBeenCalledWith({
+      kind: 'api',
+      name: 'guided-api',
+    });
+    route.dispose();
+  });
+
+  it('lands an Attention recovery link on the exact unresolved connection', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const callers = enrollCallers();
+    callers.connectionsEnrollListCaller.mockResolvedValue({
+      connections: [
+        connection('queue-first', {
+          auth_type: 'bearer',
+          updated_at: 40,
+        }),
+        connection('attention-target', {
+          auth_type: 'bearer',
+          updated_at: 50,
+        }),
+      ],
+      credential_post_safe_stop_verifications: [
+        {
+          kind: 'api',
+          name: 'queue-first',
+          status: 'pending',
+          acknowledged_at: 30,
+        },
+        {
+          kind: 'api',
+          name: 'attention-target',
+          status: 'unreachable',
+          acknowledged_at: 31,
+          checked_at: 32,
+          connection_updated_at: 50,
+        },
+      ],
+    });
+    const route = bootstrapConnectionsRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialTab: 'others',
+      initialPostSafeStopRecovery: {
+        kind: 'api',
+        name: 'attention-target',
+      },
+      ...callers,
+    });
+
+    await route.connectionsEnrollPanel()!.whenLoaded();
+    expect(route.connectionsEnrollPanel()!.getState().dialog.recentProbe)
+      .toMatchObject({
+        kind: 'api',
+        name: 'attention-target',
+        status: 'unreachable',
+        resolution: 'retry',
+      });
+    route.dispose();
+  });
+
+  it('passes authoritative cold safe-stop closure through the route mount', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const callers = enrollCallers();
+    const token = 'a'.repeat(64);
+    callers.connectionsEnrollListCaller.mockResolvedValue({
+      connections: [connection('cold-safe-stop', {
+        base_url: 'https://api.example.test',
+        auth_type: 'bearer',
+        updated_at: 91,
+      })],
+      credential_rotation_safe_stops: [{
+        kind: 'api',
+        name: 'cold-safe-stop',
+        finished_at: 100,
+        acknowledgement_token: token,
+        correction: {
+          auth_type: 'bearer',
+          field_keys: ['auth.token'],
+          triage: {
+            reason: 'repeated_auth_rejection',
+            stage: 'provider_probe',
+            endpoint_field_keys: ['config.base_url', 'config.endpoint'],
+            resolution: 'regenerate_credential_or_contact_admin',
+          },
+        },
+      }],
+    });
+    const acknowledge = vi.fn(async () => ({
+      acknowledgement: {
+        status: 'acknowledged' as const,
+        acknowledged_at: 101,
+      },
+    }));
+    const route = bootstrapConnectionsRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialTab: 'others',
+      connectionsCredentialRotationActivityCaller: vi.fn(async () => ({
+        activity: { status: 'idle' as const, safe_stop: null },
+      })),
+      connectionsAcknowledgeCredentialRotationSafeStopCaller: acknowledge,
+      ...callers,
+    });
+    await route.connectionsEnrollPanel()!.whenLoaded();
+    const content = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
+
+    clickAction(content, {
+      action: 'connections-review-credential-rotation',
+      kind: 'api',
+      name: 'cold-safe-stop',
+    });
+    clickAction(content, {
+      action: 'connections-confirm-credential-handoff',
+    });
+    await tick();
+
+    expect(acknowledge).toHaveBeenCalledWith({
+      kind: 'api',
+      name: 'cold-safe-stop',
+      acknowledgement_token: token,
+    });
+    expect(route.connectionsEnrollPanel()!.getState().dialog
+      .credentialSafeStopClosureNotice).toMatchObject({
+        nextStep: 'check_saved_connection',
+      });
+    expect(content.innerHTML).not.toContain(token);
+    route.dispose();
+  });
+
+  it('reports an interrupted exact return when the route leaves before its preflight settles', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const callers = enrollCallers();
+    callers.connectionsEnrollListCaller.mockResolvedValue({
+      connections: [
+        connection('guided-api', { auth_type: 'bearer', updated_at: 91 }),
+      ],
+    });
+    const activity = vi.fn(async () =>
+      await new Promise<never>(() => undefined));
+    const onCredentialRotationServerUpdateRetrySettled = vi.fn();
+    const onCredentialRotationServerUpdateRetryInterrupted = vi.fn();
+    const target = {
+      kind: 'api' as const,
+      name: 'guided-api',
+    };
+    const route = bootstrapConnectionsRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialTab: 'others',
+      initialCredentialRotationServerUpdateRetry: target,
+      connectionsCredentialRotationActivityCaller: activity,
+      onCredentialRotationServerUpdateRetrySettled,
+      onCredentialRotationServerUpdateRetryInterrupted,
+      ...callers,
+    });
+
+    await route.connectionsEnrollPanel()!.whenLoaded();
+    await tick();
+    expect(activity).toHaveBeenCalledWith(target);
+
+    route.dispose();
+
+    expect(onCredentialRotationServerUpdateRetrySettled).not.toHaveBeenCalled();
+    expect(onCredentialRotationServerUpdateRetryInterrupted)
+      .toHaveBeenCalledOnce();
+    expect(onCredentialRotationServerUpdateRetryInterrupted)
+      .toHaveBeenCalledWith(target);
+  });
+
+  it('keeps the exact return interruptible when the clean-editor handoff cannot settle', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const callers = enrollCallers();
+    callers.connectionsEnrollListCaller.mockResolvedValue({
+      connections: [
+        connection('guided-api', { auth_type: 'bearer', updated_at: 91 }),
+      ],
+    });
+    const target = {
+      kind: 'api' as const,
+      name: 'guided-api',
+    };
+    const onCredentialRotationCleanEditorReady = vi.fn(() => {
+      throw new Error('continuity unavailable');
+    });
+    const onCredentialRotationServerUpdateRetryInterrupted = vi.fn();
+    const route = bootstrapConnectionsRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialTab: 'others',
+      initialCredentialRotationServerUpdateRetry: target,
+      connectionsCredentialRotationActivityCaller: vi.fn(async () => ({
+        activity: { status: 'idle' as const },
+      })),
+      onCredentialRotationCleanEditorReady,
+      onCredentialRotationServerUpdateRetryInterrupted,
+      ...callers,
+    });
+
+    await route.connectionsEnrollPanel()!.whenLoaded();
+    await tick(30);
+
+    expect(route.connectionsEnrollPanel()!.getState().dialog.editingId)
+      .toBe('api/guided-api');
+    expect(onCredentialRotationCleanEditorReady).toHaveBeenCalledWith(target);
+
+    route.dispose();
+
+    expect(onCredentialRotationServerUpdateRetryInterrupted)
+      .toHaveBeenCalledOnce();
+    expect(onCredentialRotationServerUpdateRetryInterrupted)
+      .toHaveBeenCalledWith(target);
+  });
+
+  it('forwards a still-unsupported return to the persistent server-update guide', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const callers = enrollCallers();
+    callers.connectionsEnrollListCaller.mockResolvedValue({
+      connections: [connection('guided-api', {
+        auth_type: 'bearer',
+        updated_at: 92,
+      })],
+    });
+    const onOpenCredentialRotationServerUpdateGuide = vi.fn();
+    const onCredentialRotationServerUpdateRetrySettled = vi.fn();
+    const triage = vi.fn(async () => ({
+      reason: 'running_version_unchanged' as const,
+      checkStatus: 'up-to-date' as const,
+      baselineVersion: '26.7.3',
+      currentVersion: '26.7.3',
+      channel: 'stable' as const,
+    }));
+    const route = bootstrapConnectionsRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialTab: 'others',
+      initialCredentialRotationServerUpdateRetry: {
+        kind: 'api',
+        name: 'guided-api',
+      },
+      connectionsCredentialRotationServerUpdateTriageCaller: triage,
+      onOpenCredentialRotationServerUpdateGuide,
+      onCredentialRotationServerUpdateRetrySettled,
+      ...callers,
+    });
+
+    await route.connectionsEnrollPanel()!.whenLoaded();
+    await tick();
+    expect(route.connectionsEnrollPanel()!.getState().credentialRotationRecovery)
+      .toMatchObject({
+        kind: 'api',
+        name: 'guided-api',
+        phase: 'restart_unsupported',
+        returnedFromServerUpdate: true,
+        serverUpdateTriage: {
+          reason: 'running_version_unchanged',
+          currentVersion: '26.7.3',
+        },
+      });
+    expect(triage).toHaveBeenCalledWith({ kind: 'api', name: 'guided-api' });
+    const content = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
+    expect(content.innerHTML).toContain('same running version seen before');
+    expect(content.innerHTML).toContain('Review server profile');
+
+    clickAction(content, {
+      action: 'connections-review-server-update',
+      kind: 'api',
+      name: 'guided-api',
+    });
+    expect(onOpenCredentialRotationServerUpdateGuide).toHaveBeenCalledOnce();
+    expect(onOpenCredentialRotationServerUpdateGuide).toHaveBeenCalledWith({
+      kind: 'api',
+      name: 'guided-api',
+    });
+    expect(onCredentialRotationServerUpdateRetrySettled).not.toHaveBeenCalled();
+    route.dispose();
+  });
+
   it('mounts the foundational Mail lane by default and enrolls an IMAP account', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
     const list = vi.fn(async () => ({ instances: [] as never[] }));
-    const enrollImap = vi.fn(async (_args: Record<string, unknown>) => ({
-      slug: 'fastmail',
-      send_capable: true,
-    }));
+    let finishEnroll!: (value: {
+      slug: string;
+      send_capable: boolean;
+    }) => void;
+    const enrollPending = new Promise<{
+      slug: string;
+      send_capable: boolean;
+    }>((resolve) => { finishEnroll = resolve; });
+    const enrollImap = vi.fn((_args: Record<string, unknown>) => enrollPending);
     const route = bootstrapConnectionsRoute({
       root: root as unknown as HTMLElement,
       document: doc as unknown as Document,
@@ -492,6 +1042,8 @@ describe('Connections route (R13–R16 restructure)', () => {
     field(content, 'acctField', 'username', 'me@fastmail.com');
     field(content, 'acctField', 'password', 'app-password');
     clickAction(content, { action: 'accounts-submit-form' });
+    expect(route.hasInFlightWork()).toBe(true);
+    finishEnroll({ slug: 'fastmail', send_capable: true });
     await tick();
 
     expect(enrollImap).toHaveBeenCalledTimes(1);
@@ -506,9 +1058,101 @@ describe('Connections route (R13–R16 restructure)', () => {
     });
     // Re-list after a successful enroll.
     expect(list).toHaveBeenCalledTimes(2);
+    expect(route.hasInFlightWork()).toBe(false);
 
     route.dispose();
     expect(root.children).toHaveLength(0);
+  });
+
+  it('reattaches one foundational OAuth transaction across route mounts', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const continuity = createFoundationalOAuthContinuity();
+    const relay = {
+      current: null as ((event: { origin: string; data: unknown }) => void) | null,
+    };
+    const popup = {
+      closed: false,
+      location: { href: '' },
+      close: vi.fn(() => { popup.closed = true; }),
+    };
+    const popupOpen = vi.fn(() => popup);
+    const env: FoundationalOAuthEnv = {
+      origin: 'https://app.recued.com',
+      randomState: () => 'ROUTE-CONTINUITY',
+      onMessage: (listener) => {
+        relay.current = listener;
+        return () => { relay.current = null; };
+      },
+      setTimeout: () => () => undefined,
+      setInterval: () => () => undefined,
+    };
+    const list = vi.fn(async () => ({ instances: [] as never[] }));
+    const enrollOAuth = vi.fn(async () => ({
+      ok: true as const,
+      account_key_prefix: 'gmail.work',
+    }));
+    const getOAuthClientConfig = vi.fn(async () => ({
+      gmail: { client_id: 'GMAIL-CID' },
+      gcal: null,
+      graph: null,
+    }));
+    const routeOptions = {
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      mail: {
+        list,
+        enrollImap: vi.fn(async () => ({ slug: 'imap', send_capable: false })),
+        enrollOAuth,
+        delete: vi.fn(async () => ({ ok: true as const })),
+      },
+      getOAuthClientConfig,
+      foundationalOAuthContinuity: continuity,
+      accountsOAuthEnv: { openPopup: popupOpen, env },
+    };
+
+    const first = bootstrapConnectionsRoute(routeOptions);
+    await first.accountsPanel()!.whenLoaded();
+    const firstContent = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
+    clickAction(firstContent, { action: 'accounts-open-add' });
+    clickAction(firstContent, { action: 'accounts-pick-provider', provider: 'gmail' });
+    field(firstContent, 'acctField', 'name', 'work');
+    clickAction(firstContent, { action: 'accounts-oauth-connect' });
+    await tick();
+    expect(continuity.snapshot()).toMatchObject({
+      status: 'pending',
+      returnHref: '#connections/mail',
+    });
+
+    first.dispose();
+    expect(popup.closed).toBe(false);
+    const second = bootstrapConnectionsRoute(routeOptions);
+    await second.accountsPanel()!.whenLoaded();
+    expect(second.accountsPanel()!.getState()).toMatchObject({
+      providerId: 'gmail',
+      oauthFinishing: true,
+      oauthProgressStage: 'waiting_for_consent',
+    });
+    expect(popupOpen).toHaveBeenCalledTimes(1);
+    expect(getOAuthClientConfig).toHaveBeenCalledTimes(1);
+
+    relay.current?.({
+      origin: 'https://app.recued.com',
+      data: {
+        kind: OPENER_RELAY_MESSAGE_KIND,
+        state: `${OAUTH_OPENER_RELAY_STATE_PREFIX}ROUTE-CONTINUITY`,
+        code: 'ROUTE-CODE',
+      },
+    });
+    await tick();
+    expect(enrollOAuth).toHaveBeenCalledTimes(1);
+    expect(second.accountsPanel()!.getState().connectionSuccess).toEqual({
+      slug: 'work',
+      providerId: 'gmail',
+    });
+
+    second.dispose();
+    continuity.dispose();
   });
 
   it('mounts the generic connection.* enroll panel on the Others tab', async () => {
@@ -532,10 +1176,22 @@ describe('Connections route (R13–R16 restructure)', () => {
     const content = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
     clickAction(content, { action: 'connections-open-add' });
     clickAction(content, { action: 'connections-pick-kind', kind: 'api' });
+    field(content, 'connField', 'auth.token', 'secret-123');
+    clickAction(content, { action: 'connections-guide-open' });
+    guideUrl(content, 'https://developer.example.com/apps?token=url-secret');
+    clickAction(content, { action: 'connections-guide-review' });
+    clickAction(content, { action: 'connections-guide-generate' });
+    await tick();
+    expect(callers.connectionsSuggestSetupCaller).toHaveBeenCalledWith({
+      target_url: 'https://developer.example.com/apps',
+      auth_type: 'bearer',
+      field_keys: expect.arrayContaining(['auth.type', 'auth.token']),
+    });
+    expect(JSON.stringify(callers.connectionsSuggestSetupCaller.mock.calls[0]?.[0]))
+      .not.toContain('secret-123');
     field(content, 'connField', 'name', 'my-api');
     field(content, 'connField', 'display_name', 'My API');
     field(content, 'connField', 'config.base_url', 'https://api.example.com');
-    field(content, 'connField', 'auth.token', 'secret-123');
     clickAction(content, { action: 'connections-submit-form' });
     await tick();
 
@@ -550,6 +1206,88 @@ describe('Connections route (R13–R16 restructure)', () => {
 
     route.dispose();
     expect(root.children).toHaveLength(0);
+  });
+
+  it('reattaches a privacy-safe provider-app guide across Connections route mounts', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const callers = enrollCallers();
+    const connectionsSuggestSetupCaller = vi.fn<
+      (args: ConnectionSetupGuideRequest) => Promise<ConnectionSetupGuideResult>
+    >(async (args) => ({
+      shared_context: args,
+      guide: {
+        provider_name: 'Example OAuth',
+        overview: 'Create a web app, then return to the exact unfinished field.',
+        field_suggestions: [{
+          field_key: 'auth.client_id',
+          suggested_value: 'MODEL-ID-MUST-NOT-PERSIST',
+          guidance: 'Copy the provider-issued identifier into the live form.',
+          confidence: 'low',
+        }],
+        steps: [{
+          title: 'Create the app',
+          instruction: 'Create a confidential web OAuth app.',
+          field_keys: ['auth.client_id', 'auth.client_secret'],
+        }],
+        cautions: ['Keep credentials in the live form.'],
+      },
+    }));
+    const data = new Map<string, string>();
+    const storage = {
+      getItem: (key: string) => data.get(key) ?? null,
+      setItem: (key: string, value: string) => { data.set(key, value); },
+      removeItem: (key: string) => { data.delete(key); },
+    };
+    const providerSetupContinuity = createProviderSetupContinuityStore({
+      storage,
+      scopeId: 'profile-office',
+      now: () => 1_800_000_000_000,
+    });
+    const routeOptions = {
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialTab: 'others',
+      providerSetupContinuity,
+      ...callers,
+      connectionsSuggestSetupCaller,
+    };
+
+    const first = bootstrapConnectionsRoute(routeOptions);
+    await first.connectionsEnrollPanel()!.whenLoaded();
+    const firstContent = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
+    clickAction(firstContent, { action: 'connections-open-add' });
+    clickAction(firstContent, { action: 'connections-pick-kind', kind: 'api' });
+    field(firstContent, 'connField', 'auth.type', 'oauth2_refresh', 'SELECT');
+    field(firstContent, 'connField', 'auth.client_id', 'REAL-ID-MUST-NOT-PERSIST');
+    field(firstContent, 'connField', 'auth.client_secret', 'REAL-SECRET-MUST-NOT-PERSIST');
+    clickAction(firstContent, { action: 'connections-guide-open' });
+    guideUrl(firstContent, 'https://developer.example.com/apps?private=value');
+    clickAction(firstContent, { action: 'connections-guide-review' });
+    clickAction(firstContent, { action: 'connections-guide-generate' });
+    await tick();
+
+    const raw = data.get(PROVIDER_SETUP_CONTINUITY_SESSION_KEY) ?? '';
+    expect(raw).toContain('https://developer.example.com/apps');
+    expect(raw).not.toContain('REAL-ID-MUST-NOT-PERSIST');
+    expect(raw).not.toContain('REAL-SECRET-MUST-NOT-PERSIST');
+    expect(raw).not.toContain('MODEL-ID-MUST-NOT-PERSIST');
+    first.dispose();
+
+    const second = bootstrapConnectionsRoute(routeOptions);
+    await second.connectionsEnrollPanel()!.whenLoaded();
+    await tick();
+    const restored = second.connectionsEnrollPanel()!.getState().dialog;
+    expect(restored.setupGuide.resumeAvailable).toBe(true);
+    expect(restored.values['auth.client_id']).toBeUndefined();
+    expect(restored.values['auth.client_secret']).toBeUndefined();
+    const secondContent = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
+    expect(secondContent.innerHTML).toContain('Resume provider setup');
+    clickAction(secondContent, { action: 'connections-guide-resume' });
+    expect(second.connectionsEnrollPanel()!.getState().dialog.setupGuide.resumeAvailable)
+      .toBe(false);
+    expect(data.has(PROVIDER_SETUP_CONTINUITY_SESSION_KEY)).toBe(false);
+    second.dispose();
   });
 
   it('mounts the inbound Webhooks panel and enables only a ready ingress', async () => {

@@ -20,6 +20,7 @@ import {
   type ServerLlmPrompt,
   type ServerLlmPromptSurface,
 } from '@recued/contracts';
+import { formatClientDateTime } from '@recued/ui-shared';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import {
@@ -1206,7 +1207,9 @@ export const mountAiModelsPage = (
     appendText(
       doc,
       section,
-      pause === null ? ' Pause-AI: not active.' : ` Pause-AI until ${new Date(pause).toISOString()}.`,
+      pause === null
+        ? ' Pause-AI: not active.'
+        : ` Pause-AI until ${formatClientDateTime(pause, { invalidText: 'unknown time' })}.`,
     );
     appendButton(
       doc,

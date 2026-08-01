@@ -3,8 +3,8 @@
  *  Drives `mountWebclientServerPill` over a fake host (innerHTML + click-
  *  listener stub — no jsdom) and a controllable status seam. Pins the B1
  *  policy: the pill surfaces server health ONLY while `connected`, hides
- *  otherwise (the connection chip owns the down-signal), and drops its
- *  cached snapshot on disconnect so a reconnect can't flash a stale pill. */
+ *  otherwise (the banner + Account recovery own the down-signal), and drops
+ *  its cached snapshot on disconnect so a reconnect can't flash stale state. */
 
 import { describe, expect, it, vi } from 'vitest';
 import type { ServerHeartbeatSnapshot } from '@recued/contracts';
@@ -31,6 +31,7 @@ const runningSnapshot = (
 const makeFakeHost = () => {
   let html = '';
   let listener: ((evt: Event) => void) | null = null;
+  const attrs = new Set<string>();
   const host = {
     get innerHTML() {
       return html;
@@ -44,8 +45,16 @@ const makeFakeHost = () => {
     removeEventListener: (evt: string, fn: (event: Event) => void) => {
       if (evt === 'click' && listener === fn) listener = null;
     },
+    setAttribute: (name: string) => attrs.add(name),
+    removeAttribute: (name: string) => attrs.delete(name),
+    hasAttribute: (name: string) => attrs.has(name),
   } as unknown as HTMLElement;
-  return { host, getHtml: () => html, hasListener: () => listener !== null };
+  return {
+    host,
+    getHtml: () => html,
+    hasListener: () => listener !== null,
+    isHidden: () => attrs.has('hidden'),
+  };
 };
 
 const buildFakeStatus = (initial: WebclientConnectionStatus) => {
@@ -68,14 +77,16 @@ const buildFakeStatus = (initial: WebclientConnectionStatus) => {
 describe('webclient server-status pill host', () => {
   it('shows the green Server pill while connected with a fresh snapshot', () => {
     const status = buildFakeStatus('connected');
-    const { host, getHtml } = makeFakeHost();
+    const { host, getHtml, isHidden } = makeFakeHost();
     const mount = mountWebclientServerPill({
       host,
       status: status.status,
       onStatus: status.onStatus,
       now: () => NOW,
     });
+    expect(isHidden()).toBe(true);
     mount.noteSnapshot(runningSnapshot());
+    expect(isHidden()).toBe(false);
     expect(getHtml()).toContain('server-pill--green');
     expect(getHtml()).toContain('Server');
     mount.dispose();
@@ -105,7 +116,7 @@ describe('webclient server-status pill host', () => {
     // `stalled` + `reconnecting` transitions, not just the offline drop.
     for (const st of ['connecting', 'reconnecting', 'stalled', 'offline'] as const) {
       const status = buildFakeStatus('connected');
-      const { host, getHtml } = makeFakeHost();
+      const { host, getHtml, isHidden } = makeFakeHost();
       const mount = mountWebclientServerPill({
         host,
         status: status.status,
@@ -116,13 +127,14 @@ describe('webclient server-status pill host', () => {
       expect(getHtml(), `pre ${st}`).toContain('server-pill--green'); // shown while connected
       status.set(st);
       expect(getHtml(), `state=${st}`).toBe(''); // hidden after the transition
+      expect(isHidden(), `state=${st}`).toBe(true); // no empty padded host row
       mount.dispose();
     }
   });
 
   it('hides + clears the snapshot on disconnect — no stale flash on reconnect', () => {
     const status = buildFakeStatus('connected');
-    const { host, getHtml } = makeFakeHost();
+    const { host, getHtml, isHidden } = makeFakeHost();
     const mount = mountWebclientServerPill({
       host,
       status: status.status,
@@ -134,15 +146,18 @@ describe('webclient server-status pill host', () => {
 
     status.set('offline'); // socket dropped → pill hides
     expect(getHtml()).toBe('');
+    expect(isHidden()).toBe(true);
 
     // Reconnect WITHOUT a fresh beat → must stay hidden (the cached snapshot
     // was cleared), NOT re-render the stale pre-disconnect pill.
     status.set('connected');
     expect(getHtml()).toBe('');
+    expect(isHidden()).toBe(true);
 
     // A fresh beat re-shows it.
     mount.noteSnapshot(runningSnapshot({ uptime_s: 30 }));
     expect(getHtml()).toContain('server-pill--green');
+    expect(isHidden()).toBe(false);
     mount.dispose();
   });
 
@@ -175,6 +190,9 @@ interface FakeEl {
   className: string;
   children: FakeEl[];
   innerHTML: string;
+  setAttribute(name: string, value: string): void;
+  removeAttribute(name: string): void;
+  hasAttribute(name: string): boolean;
   appendChild(c: FakeEl): FakeEl;
   removeChild(c: FakeEl): FakeEl;
   addEventListener(t: string, fn: (e: unknown) => void): void;
@@ -184,11 +202,15 @@ interface FakeEl {
 }
 const makeFakeEl = (doc: unknown): FakeEl => {
   const listeners = new Map<string, Set<(e: unknown) => void>>();
+  const attrs = new Map<string, string>();
   const el: FakeEl = {
     ownerDocument: doc,
     className: '',
     children: [],
     innerHTML: '',
+    setAttribute(name, value) { attrs.set(name, value); },
+    removeAttribute(name) { attrs.delete(name); },
+    hasAttribute(name) { return attrs.has(name); },
     appendChild(c) { el.children.push(c); return c; },
     removeChild(c) { el.children = el.children.filter((x) => x !== c); return c; },
     addEventListener(t, fn) {

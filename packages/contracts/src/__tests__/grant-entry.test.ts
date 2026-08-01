@@ -23,6 +23,7 @@ import {
   isGrantedReadAdmissible,
   isOwnerDefaultOnlyEntry,
   ownerOnlyAdjustedAuthorDefault,
+  isGeneratedPackOpEntry,
   OWNER_DEFAULT_ONLY_GRANT_ENTRIES,
   resolveGrantEntry,
 } from '../grant-resolve.js';
@@ -152,5 +153,56 @@ describe('OWNER-default-only sensitive surfaces (D-187 slice 3b)', () => {
     // non-sensitive: passes `normalDefault` through untouched (no override).
     expect(ownerOnlyAdjustedAuthorDefault(NORMAL, 'ct-door', true)).toBe(true);
     expect(ownerOnlyAdjustedAuthorDefault(NORMAL, 'ct-door', false)).toBe(false);
+  });
+});
+
+describe('D-225 § 9.6 — generated-pack ops are owner-default-only', () => {
+  const GEN_OP = 'recued-local.mcp-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.delete_all_a1b2c3d4';
+  const DOOR = 'door_abc';
+
+  it('⛔ a WILDCARD door does NOT get a generated-pack op by default', () => {
+    // The hole: `opAuthorDefault` is permissive for a wildcard door, so an op
+    // with no grant row was ADMITTED. A third party adding a tool to a server
+    // we enrolled would become reachable with no owner action at all.
+    expect(ownerOnlyAdjustedAuthorDefault(GEN_OP, DOOR, /* normalDefault */ true)).toBe(false);
+  });
+
+  it('✅ the OWNER still gets it by default — owner chat is unaffected', () => {
+    // The permitting half, and the one that matters: this is a TIGHTEN for
+    // doors only. If it flipped the owner too, the chat wire built in § 9.5.1
+    // would have been switched off by the fix for a different problem.
+    expect(ownerOnlyAdjustedAuthorDefault(GEN_OP, OWNER_CONTRACT_ID, true)).toBe(true);
+    expect(ownerOnlyAdjustedAuthorDefault(GEN_OP, '', true)).toBe(true);
+  });
+
+  it('recognises the CLASS, not an enumeration', () => {
+    // A generated op id is per-user derived and can never be in a hardcoded
+    // list, which is why the check is on the publisher.
+    expect(isGeneratedPackOpEntry(GEN_OP)).toBe(true);
+    expect(isGeneratedPackOpEntry('recued-local.mcp-0000.anything_00000000')).toBe(true);
+    expect(isOwnerDefaultOnlyEntry(GEN_OP)).toBe(true);
+  });
+
+  it('⛔ does NOT catch an ordinary pack, a kernel op, or a collection entry', () => {
+    // The blast radius. Widening this set silently would turn every door's
+    // existing grants off, which is a worse failure than the hole it closes.
+    for (const key of [
+      'recued-core.hubspot.deal.read',
+      'core.mail.send',
+      'data.mail',
+      'some-publisher.pack.op',
+      // A publisher that merely STARTS with the reserved handle's letters must
+      // not match — the dot boundary is what makes the prefix exact.
+      'recued-localish.pack.op',
+    ]) {
+      expect(isGeneratedPackOpEntry(key), key).toBe(false);
+    }
+  });
+
+  it('an explicit grant row still wins — a door the owner granted is unchanged', () => {
+    // This gate only supplies the DEFAULT. The owner can still grant a
+    // generated op to a door deliberately; that is the whole point of making it
+    // require naming rather than making it unreachable.
+    expect(resolveGrantEntry(true, ownerOnlyAdjustedAuthorDefault(GEN_OP, DOOR, true))).toBe(true);
   });
 });

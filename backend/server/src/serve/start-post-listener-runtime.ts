@@ -32,6 +32,9 @@ import { buildCanonicalPollDeps } from '../watch/canonical-poll-deps.js';
 import { handleExecute } from '../execute-handler.js';
 import { liveVendorRegistry } from '../connection-convention-families.js';
 import { buildSellerAccessReconcileDepsIfReady } from '../seller/access-reconcile-deps.js';
+import { handleConnectionProbe } from '../connection-handler.js';
+import { mcpGeneratedPackSlug } from '@recued/ingredient-authoring';
+import type { McpToolsDriftProbeDeps } from '../housekeeping/tasks/mcp-tools-drift-probe.js';
 import {
   startHousekeepingStartup,
   type StartHousekeepingStartupOptions,
@@ -47,10 +50,12 @@ import {
 } from './start-schedulers.js';
 import { wrapServePeerCache } from './wrap-peer-cache.js';
 import { wireVaultGatedExecutors } from '../vault-gated-executors.js';
+import { composeRecordsOutbox } from '../composition/bin/wire-records-outbox.js';
 
 export type PostListenerRuntimeStorageContext =
   StartHousekeepingStartupOptions['storage']
-  & StartPostHousekeepingTailOptions['storage'];
+  & StartPostHousekeepingTailOptions['storage']
+  & Pick<StorageContext, 'recordsStore' | 'recipeStore'>;
 
 export type PostListenerRuntimeAppContext =
   StartHousekeepingStartupOptions['app']
@@ -119,7 +124,7 @@ export interface StartPostListenerRuntimeOptions {
   readonly autoRunSettingsStore: StartSchedulersOptions['autoRunSettingsStore'];
   readonly certStack: ComposeCertStackLateOptions['certStack'];
   readonly tlsDomainStore: ComposeCertStackLateOptions['tlsDomainStore'];
-  readonly lanBindAddress: ComposeCertStackLateOptions['lanBindAddress'];
+  readonly lanAdvertisedAddress: ComposeCertStackLateOptions['lanAdvertisedAddress'];
   /** Whether a verified webclient bundle is served (for the boot banner's
    *  local-webclient URL). Threaded from `composeListeners`. */
   readonly webclientServed: boolean;
@@ -205,6 +210,16 @@ export const startPostListenerRuntime = async (
     cacheStore: options.app.cacheStore,
     wsServer: options.server.wsServer,
     executorConfig: options.executorConfig,
+  });
+
+  composeRecordsOutbox({
+    recordsStore: options.storage.recordsStore,
+    recipeStore: options.storage.recipeStore,
+    ...(options.app.contractStoreRef
+      ? { contractStore: options.app.contractStoreRef }
+      : {}),
+    executeDeps: options.executeDeps,
+    backgroundServices: options.backgroundServices,
   });
 
   // D-192 P4b — populate the work-entity write executor BEFORE any
@@ -361,7 +376,7 @@ export const startPostListenerRuntime = async (
   } = await composeCertStackLate({
     certStack: options.certStack,
     tlsDomainStore: options.tlsDomainStore,
-    lanBindAddress: options.lanBindAddress,
+    lanAdvertisedAddress: options.lanAdvertisedAddress,
     actualPort: options.actualPort,
   });
 
@@ -406,6 +421,51 @@ export const startPostListenerRuntime = async (
         })
       : undefined;
 
+  // D-225 § 12 — the idle drift probe's deps, built HERE for the same reason as
+  // the seller reconciler above: the connection store, the manifest store and
+  // the MCP transport seams first coexist at this point.
+  //
+  // 🔑 The probe primitives are read from the SAME sources `compose-listeners`
+  // uses for the manual Probe rpc (`keys.keyProvider('connection')`, and
+  // `executorConfig.connectionMcp`'s ws/stdio seams). That is deliberate and is
+  // the property the whole design rests on: the idle probe is the authority and
+  // the manual probe the accelerator, so they must be the same probe. If these
+  // ever drift apart, a connection would report one thing on the badge and
+  // another when the owner clicks Probe.
+  //
+  // ⛔ Undefined ⇒ the task does not register ⇒ drift detection is inert and the
+  // badge reports what was true at the last manual probe.
+  const mcpToolsDriftProbeDeps: McpToolsDriftProbeDeps | undefined = (() => {
+    const store = options.app.connectionStoreRef;
+    const exec = options.executeDeps;
+    if (store === undefined || exec === undefined) return undefined;
+    const manifests = exec.localManifestStore;
+    if (manifests === undefined) return undefined;
+    const mcpSeams = exec.executorConfig.connectionMcp;
+    const probeDeps = {
+      store,
+      ...(options.app.keys && options.app.keys.state() !== 'uninitialized'
+        ? { getEncryptionKey: options.app.keys.keyProvider('connection') }
+        : {}),
+      ...(mcpSeams?.wsConnect ? { wsConnect: mcpSeams.wsConnect } : {}),
+      ...(mcpSeams?.spawnStdioMcp ? { spawnStdioMcp: mcpSeams.spawnStdioMcp } : {}),
+    } as Parameters<typeof handleConnectionProbe>[0];
+    return {
+      listConnections: (query) => store.list(query),
+      installedPackSlugFor: async (connection) => {
+        // Derived, never stored — the same derivation `mcpPackStatus` and
+        // teardown use, so all three agree by construction.
+        const slug = await mcpGeneratedPackSlug(connection);
+        // ⚠ `listManifests()` rather than `getManifest(slug)`: `executeDeps`
+        // exposes a deliberately narrow `Pick` of the store, and widening a
+        // Pick to suit one consumer is how a narrow surface stops being one.
+        // The scan is over the installed set and runs on the idle cadence.
+        return manifests.listManifests().some((m) => m.slug === slug) ? slug : null;
+      },
+      probe: (args) => handleConnectionProbe(probeDeps, args),
+    };
+  })();
+
   let vendorRefs: VendorSubstratePublishedRefs | undefined;
   await startHousekeepingStartup({
     storage: options.storage,
@@ -424,6 +484,7 @@ export const startPostListenerRuntime = async (
     getContactMergeCycleObserver: options.getContactMergeCycleObserver,
     enrichmentProducers: options.enrichmentProducers,
     ...(sellerAccessReconcileDeps ? { sellerAccessReconcileDeps } : {}),
+    ...(mcpToolsDriftProbeDeps ? { mcpToolsDriftProbeDeps } : {}),
   });
 
   // D-190 MS4 — register the generic CRM reconcilers for bound pack-CRM
@@ -519,7 +580,6 @@ export const startPostListenerRuntime = async (
     lifecycle: options.lifecycle,
     cascade: options.cascade,
     server: options.server,
-    lanBindAddress: options.lanBindAddress,
     webclientServed: options.webclientServed,
     notificationBlock: options.notificationBlock,
     runUpdateBootReconcile: options.runUpdateBootReconcile,

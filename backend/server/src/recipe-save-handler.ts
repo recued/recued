@@ -25,9 +25,15 @@ import type {
   ServerRpcRegistry,
   WebhookIngressBindingSelection,
 } from '@recued/contracts';
-import { RpcError } from '@recued/contracts';
+import {
+  RpcError,
+  evaluateFormFieldContract,
+  formResponseTriggerFormScope,
+  type FormFieldContractFormView,
+} from '@recued/contracts';
 import { parseRecipe } from '@recued/recipes';
 import { assessRecipePiiPosture } from './auto-pii-apply.js';
+import { checkFormContract } from './form-contract-gate.js';
 import { checkInlineOpSteps } from './op-step-save-check.js';
 import { deriveRecipeCapability } from './derive-recipe-capability.js';
 import {
@@ -56,6 +62,22 @@ export interface RecipeSaveHandlerDeps {
    *  the cross-store save succeeds. Absent (partial harnesses) ⇒ no door is
    *  minted and no door state is surfaced — dispatch stays fail-closed. */
   webhookDoor?: WebhookDoorEnrollDeps;
+  /** D-220 Slice A2b — resolve a `form_definition_id` to the LIVE intake form's
+   *  field set, or null when no live form claims it.
+   *
+   *  `recipe.save` is where a reactive `form_response.accepted` trigger is
+   *  ARMED, and arming is the act this gate belongs on: the owner is present,
+   *  and refusing costs them an uncompleted save rather than disarming a trigger
+   *  that already works. (That was the open question when this check was
+   *  imagined at the reconciler instead — a reconciler runs at boot with no owner
+   *  and existing state, where disarming is destructive and ignoring is silent.
+   *  Gating the act sidesteps it entirely.)
+   *
+   *  Absent ⇒ the check is SKIPPED. There is no form set to compare against, so
+   *  there is nothing to fail closed about; and the companion gate on
+   *  `reception.endpoint.create` (A2c) still refuses a form that breaks an armed
+   *  recipe, so the ring stays closed from the other side. */
+  formDefinitionReader?: (form_definition_id: string) => FormFieldContractFormView | null;
 }
 
 const webhookStoreError = (method: string, error: unknown): RpcError => {
@@ -251,6 +273,23 @@ export const validateRecipeInline = (
 
 /** Validate + persist an inline-authored recipe. Throws `RpcError`
  *  (`bad_request` / 400) on a validation failure or an inline op-step. */
+/** D-220 Slice A2b — the first armed-trigger/form contradiction, as an
+ *  owner-facing sentence, or null when there is none.
+ *
+ *  `this_form` AND `this_form_filtered` are both checked.
+ *
+ *  ⚠ The filtered case was originally exempted on the reasoning that an extra
+ *  filter "may never fire on that form". That was WRONG, and adversarial review
+ *  (Codex, 2026-07-29) showed why: a runtime accepted-response event carries BOTH
+ *  `endpoint_id` and `form_definition_id` (`form-response-events.ts:46`), and the
+ *  trigger compiler turns a `where` into exact equality filters — so a trigger
+ *  naming this form plus its live endpoint fires with CERTAINTY, not
+ *  contingently. An extra filter narrows which responses match; it does not
+ *  exempt the contract from holding for the ones that do.
+ *
+ *  `all_forms` remains unchecked here: resolving it would mean comparing the
+ *  contract against every live form, which needs a list-all reader this dep does
+ *  not have. It is reported by the `preview_draft` advisory instead. */
 export const saveRecipeInline = (
   deps: RecipeSaveHandlerDeps,
   recipe: RecipeDefinition,
@@ -294,6 +333,29 @@ export const saveRecipeInline = (
       `Recipe op-step validation failed:\n${opCheck.errors.join('\n')}`,
       400,
     );
+  }
+
+  // ── D-220 Slice A2b — does the form this recipe ARMS onto carry its answers? ──
+  //
+  // A recipe reads named answers by STATIC path (`record.values.<name>`), so
+  // arming it onto a form that spells a required field differently makes that
+  // read resolve `undefined`, a `default` transform cover for it, and every
+  // accepted submission "succeed" having stored nothing.
+  //
+  // Refuse HERE, at the arming act, where the owner is standing — not at fire,
+  // where only a visitor is.
+  //
+  // ⚠ A trigger naming a form that does NOT exist yet is fine: authoring the
+  // recipe before creating the form is a legitimate order, and A2c gates the
+  // form when it arrives. Only a LIVE form can contradict the declaration.
+  // D-220 — ONE implementation, shared with the MCP save path. See
+  // `form-contract-gate.ts` for why it is not a private helper here.
+  const formContract = checkFormContract(deps.formDefinitionReader, recipe, 'recipe.save');
+  if (formContract.kind === 'unverified') {
+    throw new RpcError('form_contract_unverified', formContract.message, 503);
+  }
+  if (formContract.kind === 'unsatisfied') {
+    throw new RpcError('form_contract_unsatisfied', formContract.message, 409);
   }
 
   const publisher = publisher_id ?? 'kitchen';

@@ -14,10 +14,41 @@
       :root { color-scheme: light; }
       html, body { margin: 0; height: 100%; font-family: system-ui, sans-serif; background: var(--rc-color-bg, #fff); }
       #root { min-height: 100vh; }
+      .webclient-boot-splash {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        gap: 12px;
+        color: var(--fg-muted);
+        font-size: 13px;
+      }
+      .webclient-boot-splash[data-recued-boot-pending] {
+        visibility: hidden;
+        animation: recued-boot-splash-reveal 0s linear 160ms forwards;
+      }
+      .webclient-boot-splash-brand {
+        color: var(--brand);
+        font-size: 18px;
+        font-weight: 700;
+      }
+      @keyframes recued-boot-splash-reveal { to { visibility: visible; } }
     </style>
   </head>
   <body>
-    <main id="root"></main>
+    <main id="root">
+      <div class="webclient-boot-splash" id="webclient-boot-splash" data-recued-boot-pending>
+        <div class="webclient-boot-splash-brand">Recued</div>
+        <div id="webclient-boot-splash-message">Loading…</div>
+      </div>
+    </main>
+    <script>
+      setTimeout(function () {
+        var splash = document.getElementById('webclient-boot-splash');
+        if (splash) splash.removeAttribute('data-recued-boot-pending');
+      }, 160);
+    </script>
     <script type="module" src="./full-app-harness.js"></script>
   </body>
 </html>

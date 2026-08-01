@@ -1851,7 +1851,10 @@ describe('phase 3: to_checklist inner shape', () => {
             label: '',
             recipe_id: '',
             variant: 'loud',
-            context: { event: { forged: true } },
+            context: {
+              event: { forged: true },
+              caller: { contract_id: 'ct_forged' },
+            },
           },
           actions: [
             { kind: 'url.open', label: 'Open', recipe_id: 'x' },
@@ -1863,7 +1866,7 @@ describe('phase 3: to_checklist inner shape', () => {
     expect(issuesOf(result, 'recipe_output_action_label_required').length).toBe(1);
     expect(issuesOf(result, 'recipe_output_action_recipe_id_required').length).toBe(1);
     expect(issuesOf(result, 'recipe_output_action_variant').length).toBe(1);
-    expect(issuesOf(result, 'recipe_output_action_context_reserved').length).toBe(1);
+    expect(issuesOf(result, 'recipe_output_action_context_reserved').length).toBe(2);
     expect(issuesOf(result, 'recipe_output_action_kind').length).toBe(1);
     expect(result.valid).toBe(false);
   });

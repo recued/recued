@@ -171,7 +171,7 @@ export const riskLabel = (risk: string): string =>
  *  the chip on read. Both jobs are wrong: read needs the loudest chip of all (the grant IS
  *  its whole authorization), and the write/admin claim it gated ("still asks every run") is
  *  not something a tier alone can promise. Replaced by {@link riskApprovalCopy}, which
- *  answers per tier instead of yes/no. (`settings/local-tools-panel.ts` keeps a PRIVATE copy
+ *  answers per tier instead of yes/no. (The retired `settings/local-tools-panel.ts` kept a PRIVATE copy
  *  of the old predicate: a different authority axis — `cli_reachability`, D-182 §7.2 — and
  *  deliberately its own wording. Left alone; do not "unify" it without re-verifying what a
  *  granted CLI read actually does.) */

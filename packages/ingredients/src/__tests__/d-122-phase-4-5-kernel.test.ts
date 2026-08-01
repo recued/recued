@@ -7,14 +7,18 @@ import { describe, expect, it } from 'vitest';
 import { NOTIFICATION_DELIVERY_CHANNELS } from '@recued/contracts';
 
 import { createKernelAdapter } from '../kernel.js';
-import { IngredientError } from '../types.js';
+import { IngredientError, type ResolvedCall } from '../types.js';
 
-const mkCall = (slug: string, input: Record<string, unknown>) => ({
+const mkCall = (
+  slug: string,
+  input: Record<string, unknown>,
+  stepMeta?: ResolvedCall['stepMeta'],
+): ResolvedCall => ({
   slug,
   risk_tier: 'read' as const,
   input,
   output: {},
-  manifest_version: 1,
+  ...(stepMeta ? { stepMeta } : {}),
 });
 
 describe('kernel adapter — enrichment-upsert', () => {
@@ -185,7 +189,7 @@ describe('kernel adapter — notification-send', () => {
 });
 
 describe('kernel adapter — time-relative-watcher routing', () => {
-  it('falls through the unified watcher slot', async () => {
+  it('routes through the unified watcher slot with the engine-owned recipe id', async () => {
     let captured: unknown;
     const adapter = createKernelAdapter({
       watcher: async (input) => {
@@ -197,9 +201,27 @@ describe('kernel adapter — time-relative-watcher routing', () => {
       collection: 'data.calendar',
       anchor_field: 'start_at',
       offsets: ['-1h'],
-      recipe_id: 'r1',
-    }));
+    }, { step_id: 'watch', recipe_id: 'r1' }));
     expect((captured as { slug: string }).slug).toBe('time-relative-watcher');
-    expect((captured as { args: { offsets: string[] } }).args.offsets).toEqual(['-1h']);
+    expect((captured as { args: { offsets: string[]; recipe_id: string } }).args)
+      .toMatchObject({ offsets: ['-1h'], recipe_id: 'r1' });
+  });
+
+  it('does not let authored input override the engine-owned recipe id', async () => {
+    let captured: unknown;
+    const adapter = createKernelAdapter({
+      watcher: async (input) => {
+        captured = input;
+        return { should_run: false };
+      },
+    });
+    await adapter(mkCall('time-relative-watcher', {
+      collection: 'data.task',
+      anchor_field: 'due_at',
+      offsets: ['0s'],
+      recipe_id: 'spoofed-recipe',
+    }, { step_id: 'due', recipe_id: 'reminder-due-notifier' }));
+    expect((captured as { args: { recipe_id: string } }).args.recipe_id)
+      .toBe('reminder-due-notifier');
   });
 });

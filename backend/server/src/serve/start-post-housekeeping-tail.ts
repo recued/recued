@@ -1,6 +1,7 @@
 import type { RuntimeConfigStore } from '@recued/config';
 import type { NotificationBlock } from '@recued/notification';
 
+import { isAutoPiiDisabled } from '../auto-pii-apply.js';
 import type { BackgroundServiceRegistry } from '../composition/bin/wire-background-services.js';
 import type { EvictionCascade } from '../eviction-cascade.js';
 import type { BootedServerIdentity } from '../identity/boot.js';
@@ -37,7 +38,8 @@ export type PostHousekeepingTailStorageContext = Pick<
 
 export type PostHousekeepingTailAppContext = Pick<
   AppContext,
-  'llmConfig' | 'executionCaseLifecycle'
+  'llmConfig' | 'executionCaseLifecycle' | 'executionCaseArgumentStore'
+  | 'executionCaseSourcePruner'
 >;
 
 export type PostHousekeepingTailCollectionContext = Pick<
@@ -59,9 +61,6 @@ export interface StartPostHousekeepingTailOptions {
   readonly lifecycle: Pick<Lifecycle, 'install' | 'markBooted'> | undefined;
   readonly cascade: Pick<EvictionCascade, 'close'> | undefined;
   readonly server: Pick<ListenerServerFacade, 'port' | 'close'>;
-  /** LAN bind address the listener resolved to (banner: the local webclient +
-   *  Server URL). May be loopback when the LAN interface is ambiguous. */
-  readonly lanBindAddress: string;
   /** Whether the bundled webclient is served (banner: advertise the local
    *  `/webclient/` URL only when it actually serves). */
   readonly webclientServed: boolean;
@@ -92,6 +91,15 @@ export const startPostHousekeepingTail = (
     checkpointStore: storage.checkpointStore,
     auditLog: storage.auditLog,
     executionCaseLifecycle: options.app.executionCaseLifecycle,
+    // D-219 — bound the capture-only argument buffer. Absent (db-less /
+    // chat-less boot) ⇒ no sweep, because nothing captured either.
+    ...(options.app.executionCaseArgumentStore
+      ? { executionCaseArgumentStore: options.app.executionCaseArgumentStore }
+      : {}),
+    // D-219 — bound the source corpus 9a made grow on ~87% of turns.
+    ...(options.app.executionCaseSourcePruner
+      ? { executionCaseSourcePruner: options.app.executionCaseSourcePruner }
+      : {}),
     notificationBlock: options.notificationBlock,
   });
 
@@ -110,16 +118,17 @@ export const startPostHousekeepingTail = (
   logBootBanner({
     version: SERVER_VERSION,
     port: options.server.port,
-    lanBindAddress: options.lanBindAddress,
     webclientServed: options.webclientServed,
     dbPath: options.dbPath,
     recipeCount: storage.recipeStore.size(),
-    ingredientCount: storage.manifests.size(),
     llmConfig: options.app.llmConfig,
     pairingCode: storage.pairing?.getCode(),
     notEnrolled: storage.recoveryKeyCheck
       ? !storage.recoveryKeyCheck.exists()
       : false,
+    // Read through the seam's own predicate so the banner can never disagree
+    // with what the dispatch path actually does.
+    autoPiiDisabled: isAutoPiiDisabled(),
   });
 
   const shutdown = installShutdown({

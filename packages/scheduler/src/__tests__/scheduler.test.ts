@@ -131,6 +131,39 @@ describe('describeCron', () => {
     expect(describeCron('0 14 15 * *')).toContain('15th of month');
   });
 
+  it('ordinals every day of the month, teens included', () => {
+    // Was `${dom}th` for everything but the 1st, so a schedule on the 2nd read
+    // "2th of month". The teens are the case a bare `n % 10` still gets wrong.
+    const ord = (dom: number) => describeCron(`0 9 ${dom} * *`).split(' of month')[0];
+    expect(ord(2)).toBe('2nd');
+    expect(ord(3)).toBe('3rd');
+    expect(ord(4)).toBe('4th');
+    expect(ord(11)).toBe('11th');
+    expect(ord(12)).toBe('12th');
+    expect(ord(13)).toBe('13th');
+    expect(ord(21)).toBe('21st');
+    expect(ord(22)).toBe('22nd');
+    expect(ord(23)).toBe('23rd');
+    expect(ord(31)).toBe('31st');
+    // Every day of a month renders as a distinct, well-formed ordinal.
+    const all = Array.from({ length: 31 }, (_, i) => ord(i + 1));
+    expect(new Set(all).size).toBe(31);
+    for (const label of all) expect(label).toMatch(/^\d{1,2}(st|nd|rd|th)$/);
+  });
+
+  it('drops the redundant "Daily" when a day-of-month already sets the cadence', () => {
+    expect(describeCron('0 14 15 * *')).toBe('15th of month at 2:00 PM');
+    // …but a real day-of-week alongside one still carries meaning.
+    expect(describeCron('0 9 15 * 3')).toBe('15th of month Wednesday at 9:00 AM');
+  });
+
+  it('names a non-numeric day-of-month set instead of suffixing it', () => {
+    // `buildCronFromInterval('biweekly', …)` emits `1-7,15-21`, which used to
+    // render as "1-7,15-21th of month".
+    expect(describeCron(buildCronFromInterval('biweekly', '1', '9', '0')))
+      .toBe('days 1-7,15-21 of month Monday at 9:00 AM');
+  });
+
   it('returns raw expression for month-specific patterns', () => {
     // Non-standard month field falls through to raw
     expect(describeCron('0 8 * 3,6 *')).toBe('0 8 * 3,6 *');
@@ -201,6 +234,47 @@ describe('CRON_PRESETS', () => {
       expect(p.label).toBeTruthy();
     }
   });
+
+  it('gives every preset its own expression', () => {
+    // `Last weekday 5:00 PM` shipped `0 17 * * 5`, byte-identical to
+    // `Weekly Friday 5:00 PM`. Two labels for one expression is always a bug:
+    // `describeCron` resolves a preset by expression and returns the FIRST
+    // match, so the second label can never be displayed back to whoever chose
+    // it — and here it also promised a cadence cron cannot express.
+    const byExpression = new Map<string, string[]>();
+    for (const p of CRON_PRESETS) {
+      byExpression.set(p.expression, [...(byExpression.get(p.expression) ?? []), p.label]);
+    }
+    const collisions = [...byExpression].filter(([, labels]) => labels.length > 1);
+    expect(collisions).toEqual([]);
+  });
+
+  it('makes every Monthly preset actually fire monthly, per the real matcher', () => {
+    // The check the label alone cannot make. `0 17 * * 5` under a "Monthly"
+    // label fires 52 times a year; counted here with the same `nextCronMatch`
+    // the scheduler runs, not with a re-reading of the expression.
+    const firesIn2026 = (expression: string): number => {
+      const parts = expression.split(/\s+/);
+      const end = new Date(2027, 0, 1).getTime();
+      let cursor = new Date(2026, 0, 1).getTime();
+      let fires = 0;
+      for (;;) {
+        const hit = nextCronMatch(parts, cursor);
+        if (hit === null || hit >= end) return fires;
+        fires++;
+        cursor = hit + 60_000;
+      }
+    };
+    for (const p of CRON_PRESETS.filter((c) => c.group === 'Monthly')) {
+      expect(firesIn2026(p.expression), `${p.label} (${p.expression})`).toBe(12);
+    }
+    // The probe finds a known positive: the expression that used to sit in the
+    // Monthly group is caught by this assertion.
+    expect(firesIn2026('0 17 * * 5')).toBeGreaterThan(50);
+    // 28 is chosen over 29/30/31 because only it exists in February.
+    expect(firesIn2026('0 17 29 * *')).toBe(11);
+    expect(firesIn2026('0 17 31 * *')).toBe(7);
+  });
 });
 
 describe('formatNextFire', () => {
@@ -250,10 +324,20 @@ describe('formatNextFire', () => {
   });
 
   it('defaults `now` to Date.now() when omitted', () => {
-    // 5-minute cron is guaranteed to fire in the current calendar day.
+    // ⚠ **The comment here used to read "5-minute cron is guaranteed to fire in
+    // the current calendar day", and that is FALSE.** Between 23:55 and
+    // midnight the next `*/5` fire is 00:00 TOMORROW, so this test red for
+    // roughly five minutes a day and passed the other 1435 — caught at exactly
+    // 00:00 local during a session wrap-up, which is the only way a window that
+    // narrow gets found.
+    //
+    // 🔑 The subject of this test is that the DEFAULT clock is consulted at
+    // all — not which calendar day the fire lands on. Injecting a fixed `now`
+    // would defeat it (that is the parameter it exists to leave out), so the
+    // assertion accepts either day and keeps pinning the shape.
     const r = formatNextFire('*/5 * * * *');
     expect(r).not.toBeNull();
-    expect(r).toMatch(/^Today at \d{1,2}:\d{2} (AM|PM)$/);
+    expect(r).toMatch(/^(Today|Tomorrow) at \d{1,2}:\d{2} (AM|PM)$/);
   });
 });
 

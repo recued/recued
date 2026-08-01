@@ -9,6 +9,7 @@
 
 import {
   CONTRACT_DEFINITION_SCOPE,
+  type ConvergentWriteResult,
   isContractActive,
   type ContractDefinition,
   type IssuedMcpInboundToken,
@@ -78,7 +79,11 @@ export interface SellerCustomerAccessIssueInput {
 }
 
 export interface SellerCustomerAccessIssueResult {
-  readonly result: 'created' | 'extended';
+  /** The convergent-write branch — derived from the contracts type, NOT a
+   *  second hand-kept copy of the union (a copied vocabulary rots: a subset
+   *  typechecks). See `contracts/src/convergent-write.ts` for the pattern +
+   *  the refuse-on-identity-change rule this op enforces below. */
+  readonly result: ConvergentWriteResult;
   readonly customer: SellerCustomer;
   /** Present only when `result === 'created'`. */
   readonly issued_token: IssuedMcpInboundToken | null;

@@ -736,6 +736,31 @@ describe('connection.api handler — OAuth2 refresh', () => {
     expect(calls).toHaveLength(0);
   });
 
+  it('refuses an unsafe stored token endpoint before sending refresh credentials', async () => {
+    const auth = refreshableAuth({
+      token_endpoint: 'https://owner:REFRESH-ENDPOINT-PASSWORD@oauth.example/token',
+      current_access_token: 'expired-token',
+      expires_at: 0,
+    });
+    const { deps, calls } = mkDeps(auth, () => okJson({ access_token: 'new-token' }));
+    const handler = createConnectionApiHandler(deps);
+
+    let rejected: unknown;
+    try {
+      await handler(mkRow(), { method: 'GET', path: '/x' }, mkCall());
+    } catch (error) {
+      rejected = error;
+    }
+
+    expect(rejected).toMatchObject({
+      code: 'TOKEN_REFRESH_FAILED',
+      details: { cause: 'unsafe_token_endpoint' },
+    });
+    expect(`${String(rejected)} ${JSON.stringify(rejected)}`)
+      .not.toContain('REFRESH-ENDPOINT-PASSWORD');
+    expect(calls).toHaveLength(0);
+  });
+
   it('refreshes when expires_at is in the past', async () => {
     const fixedNow = 1_700_000_000_000;
     const auth = refreshableAuth({

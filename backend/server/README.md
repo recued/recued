@@ -11,7 +11,7 @@ Pick the install path that matches your setup. All four deliver the same `recued
 | Distribution | Best for | Command |
 |---|---|---|
 | **npm** | Developers + VPS operators already running Node | `npm install -g @recued/server` |
-| **Docker** | Container-first hosts, Docker Compose stacks, Fly.io | `docker run -v recued-data:/var/lib/recued recued/server:26.7.26` |
+| **Docker** | Container-first hosts, Docker Compose stacks, Fly.io | `docker run -v recued-data:/var/lib/recued recued/server:26.8.1` |
 | **Homebrew** | macOS desktop + headless Mac | `brew install recued/tap/recued-server` |
 | **One-click VPS** | Non-technical users on DigitalOcean / Hetzner / Linode | paste [`distribution/vps/cloud-init.yml`](../../distribution/vps/cloud-init.yml) into user-data |
 
@@ -190,7 +190,6 @@ Audit:
 Flags:
   --port <n>                          HTTP port (default: 7717)
   --db <path>                         SQLite path (default: ./recued-server.db)
-  --vault-file <path>                 Vault entries JSON file
   --context '{"entity_id":"123"}'     Context for run
   --config '{"key":"value"}'          Config overrides for run
   --publisher <id>                    Publisher id for import/install
@@ -266,24 +265,37 @@ Runs four checks without saving: schema validation, ingredient availability, var
 
 ### Vault sources
 
-Vault entries are resolved from three sources in priority order (highest wins):
+Vault entries are resolved from two sources, merged over the encrypted store
+(later wins on an exact key collision):
 
 1. **Per-request overrides** -- `vault` field in `POST /execute` body
-2. **Environment variables** -- `RECUED_VAULT_{KEY}=value` (lowercase key, double underscore for literal `_`)
-3. **Vault file** -- `--vault-file path/to/vault.json` (top-level object, supports nested publisher scoping)
-4. **Encrypted VaultStore** -- credentials stored via `vault set` (persisted in SQLite, encrypted with a device-local DEK)
+2. **Environment variables** -- `RECUED_VAULT_{key}=value`; the key is lower-cased
+   and otherwise passed through verbatim (underscores are not separators and have
+   no escape)
+3. **Encrypted VaultStore** -- credentials stored via `vault set`, persisted in
+   SQLite under AES-256-GCM. On an enrolled server the key is `sub_dek.vault`,
+   HKDF-derived from the Master DEK; pre-D-148 installs stay on the legacy
+   per-server DEK row
 
 ```bash
-# Via environment
+# Via environment (unscoped -- see below)
 export RECUED_VAULT_hubspot_token=pat-na1-xxxxx
 
-# Via vault file
-echo '{"recued-core": {"hubspot_token": "pat-na1-xxxxx"}}' > vault.json
-npx tsx src/bin.ts --vault-file vault.json
-
-# Via CLI (encrypted, persisted)
+# Via CLI (encrypted, persisted, publisher-scoped)
 npx tsx src/bin.ts vault set recued-core.hubspot_token pat-na1-xxxxx
 ```
+
+⚠ **Env entries are unscoped and are not a substitute for stored credentials.** An
+environment variable name is a single flat token, so it cannot express the
+`<publisher>.<key>` scoping the encrypted store uses. The two therefore land at
+different reference paths -- `{{vault.hubspot_token}}` for the example above versus
+`{{vault.recued-core.hubspot_token}}` for the stored one -- and do not shadow each
+other unless a variable is named exactly like a publisher scope. Env is a bootstrap
+channel for headless servers that must run before anyone pairs a client (until then
+the encrypted store is empty or locked, so it contributes nothing); it is plaintext
+in the process environment, is inherited by child processes, and is unaffected by
+the vault lock and by at-rest database encryption. Prefer `vault set` for anything
+long-lived.
 
 ### LLM slots
 

@@ -25,6 +25,11 @@ import type {
   RecipeTemplateRow,
 } from './schema.js';
 import { CANONICAL_WORKFLOW_TEMPLATE_REGISTRY } from './schema.js';
+import {
+  isRecordsComposition,
+  recordsEntitySchemas,
+  recordsSchemaSnapshot,
+} from './records.js';
 
 const DEFAULT_AUTHOR = 'recued-core';
 
@@ -208,13 +213,26 @@ const apiSurface = (composition: CompositionIngredient): ProviderSurfaces => {
   const ingredient = primaryIngredient(composition);
   const http = ingredient?.http;
   const ops = composition.operations;
-  const transport = ops.some((op) => (op.bind as unknown as ApiExecutionBinding).kind === 'graphql')
+  // D-225 Slice 1 — `mcp` joins the derivation. Order matters only because the
+  // surface carries ONE transport while `executes` can hold a mix; the value
+  // names the surface's dominant protocol and the per-op `bind.kind` is what
+  // actually dispatches (`protocolExecutorFor`), so a mixed surface still runs
+  // every op correctly. mcp is tested FIRST because an mcp op cannot be
+  // described by either peer, whereas the rest fallback would silently absorb
+  // it and leave the surface claiming a transport nothing on it speaks.
+  const bindKinds = new Set(ops.map((op) => (op.bind as unknown as ApiExecutionBinding).kind));
+  const transport = bindKinds.has('mcp')
+    ? 'mcp'
+    : bindKinds.has('graphql')
     ? 'graphql'
     : 'rest';
   return {
     api: {
       transport,
-      default_base_url: http?.base ?? 'https://api.example.com',
+      // An mcp surface joins no paths, so it carries no base URL — the server
+      // address is the connection record's. Emitting `''` says that; emitting a
+      // placeholder would say something false.
+      default_base_url: transport === 'mcp' ? '' : (http?.base ?? 'https://api.example.com'),
       auth: { kind: 'none' },
       executes: Object.fromEntries(ops.map((op) => [op.op, op.bind as unknown as ApiExecutionBinding])),
       // Connection-agnostic op dispatch — carry the authored surface-level
@@ -271,7 +289,17 @@ const connectorSurface = (composition: CompositionIngredient): ProviderSurfaces 
  *  connector surface (cli_invocation runtime); `http` / `connection` lower to
  *  an api surface. */
 const providerSurfaces = (composition: CompositionIngredient): ProviderSurfaces =>
-  primaryIngredient(composition)?.kind === 'cli'
+  primaryIngredient(composition)?.kind === 'storage'
+    ? {
+        records: {
+          executes: Object.fromEntries(composition.operations.map((op) => [
+            op.op,
+            op.bind as unknown as import('@recued/contracts').RecordsAuthorBinding,
+          ])),
+          schema: recordsSchemaSnapshot(composition),
+        },
+      }
+    : primaryIngredient(composition)?.kind === 'cli'
     ? connectorSurface(composition)
     : apiSurface(composition);
 
@@ -292,11 +320,24 @@ const simpleApiIngredient = (
   op: PackOperationRow,
 ): IngredientManifest => {
   const bind = op.bind as unknown as ApiExecutionBinding;
-  if (bind.kind !== 'rest') {
-    throw new Error(`1x1 api composition '${composition.slug}' requires a rest binding`);
+  // D-225 Slice 1 — `mcp` joins `rest` on the 1x1 lowering. Each emits the wire
+  // keys its `connection_kind` handler reads, and they are NOT the same shape:
+  // `connection.api` takes `method` + `path`, `connection.mcp` takes `tool`
+  // (`PER_CONNECTION_KIND_REQUIRED`). The other kinds still throw — a graphql
+  // or subscription op needs the catalog lowering, not this one.
+  if (bind.kind !== 'rest' && bind.kind !== 'mcp') {
+    throw new Error(`1x1 api composition '${composition.slug}' requires a rest or mcp binding`);
   }
   const ingredient = primaryIngredient(composition);
   const risk = op.risk;
+  const wire: Record<string, unknown> = bind.kind === 'mcp'
+    // ⚠ `tool` is a MANIFEST value here, not a recipe input — which is the
+    // whole point. On the raw `connection-mcp-read` / `-write` path the tool
+    // name arrives as caller data and needs a runtime anti-spoof gate; on a
+    // declared op it is baked into the wrapper the recipe calls.
+    ? { connection_kind: 'mcp', connection: connectionRef(composition), tool: bind.tool }
+    : { connection_kind: 'api', connection: connectionRef(composition),
+        method: bind.method, path: bind.path_template };
   return {
     slug: composition.slug,
     name: titleFromSlug(composition.slug),
@@ -306,12 +347,7 @@ const simpleApiIngredient = (
     version: 1,
     category: categoryForRisk(risk),
     risk_tier: risk,
-    input: {
-      connection_kind: 'api',
-      connection: connectionRef(composition),
-      method: bind.method,
-      path: bind.path_template,
-    },
+    input: wire,
     output: fieldOutput(ingredient !== undefined ? allEntityFields(ingredient) : []),
     tags: ['composition', composition.slug],
   };
@@ -322,7 +358,7 @@ const catalogIngredient = (composition: CompositionIngredient): IngredientManife
   name: `${titleFromSlug(composition.slug)} Catalog`,
   description: `Generated catalog for ${composition.slug}.`,
   author: DEFAULT_AUTHOR,
-  kind: 'connection',
+  kind: primaryIngredient(composition)?.kind === 'storage' ? 'storage' : 'connection',
   version: 1,
   category: 'data',
   risk_tier: 'read',
@@ -405,6 +441,7 @@ const entitySchemas = (composition: CompositionIngredient): EntitySchemaIngredie
           key: field.maps_to,
           type: field.type,
           description: field.description,
+          ...(field.label === undefined ? {} : { label: field.label }),
           required: field.optional === undefined ? true : !field.optional,
           source_path: field.field_path,
           privacy: field.pii,
@@ -726,6 +763,10 @@ const isOneToOne = (composition: CompositionIngredient): boolean => {
   const ingredient = primaryIngredient(composition);
   if (ingredient === undefined) return false;
   if (ingredient.kind !== 'http' && ingredient.kind !== 'connection') return false;
+  // D-225 Slice 2 — a composition may REFUSE the collapse. The 1x1 wrapper has
+  // no operations map and so no op id, which is fatal for a generated pack
+  // whose every tool must be contract-grantable. See `force_catalog_lowering`.
+  if (composition.force_catalog_lowering === true) return false;
   if (composition.catalog_kind !== undefined && composition.catalog_kind !== 'private_byo') return false;
   if (composition.operations.length !== 1) return false;
   // Operation-bound callback injection exists only in the catalog Gateway.
@@ -829,6 +870,18 @@ const decomposeCompositionV1 = (composition: CompositionIngredient): DecomposedA
     throw new Error('composition must declare at least one operation');
   }
   const { recipes, warnings: templateWarnings } = compiledTemplateRecipes(composition);
+  if (isRecordsComposition(composition)) {
+    const catalog = catalogIngredient(composition);
+    return {
+      catalog,
+      // Preview validation needs a concrete local carrier. The pack installer
+      // replaces the inert `unverified` scope with the verified publisher and
+      // pack ref before persistence; standalone Records install is refused.
+      entity_schemas: recordsEntitySchemas(composition, 'unverified', composition.slug),
+      operation_groups: Object.values(catalog.operation_groups ?? {}),
+      default_grants: defaultGrants(composition),
+    };
+  }
   if (isOneToOne(composition)) {
     const warnings = [
       ...droppedPrivacyWarning(composition),

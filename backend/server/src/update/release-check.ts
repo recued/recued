@@ -146,6 +146,11 @@ export type ResolveForApplyResult =
       /** In the local staged-rollout cohort AND not a major (I-4/I-7). */
       autoApplyEligible: boolean;
       artifact: BinaryArtifact;
+      /** D-178 S1 rev 2 item 4 — the native `lib/` sidecar for the SAME triple.
+       *  NON-NULL by construction: an `applyable` release without one is refused
+       *  as `no-artifact` below, because a self-apply channel is always a SEA and
+       *  a SEA without its addon cannot open its database. */
+      libArtifact: BinaryArtifact;
       /** D-152 § A.16 — the release's webclient bundle archive, or null when the
        *  manifest carries none (binaries-only release). Best-effort synced to
        *  RECUED_WEBCLIENT_DIR by the apply after the binary swap. */
@@ -164,8 +169,9 @@ export type ResolveForApplyResult =
  *  release identity the apply orchestrator needs. Deliberately a SEPARATE call
  *  from `runReleaseCheck` (the wire projection drops the artifact + signature
  *  for the UI card); both walk the SAME I-2 verify boundary, so an apply never
- *  trusts a manifest the check wouldn't. Like the check it advances the
- *  anti-replay floor on a non-replay outcome. A resolved-but-no-binary release
+ *  trusts a manifest the check wouldn't. UNLIKE the check it does NOT advance
+ *  the anti-replay floor — see the NOTE at the resolve below for why, and do
+ *  not "restore" it. A resolved-but-no-binary release
  *  (unsupported platform, docker-only artifacts) returns `no-artifact` — the
  *  binary apply path has nothing to install. */
 export const resolveForApply = async (deps: ReleaseCheckDeps): Promise<ResolveForApplyResult> => {
@@ -227,6 +233,19 @@ export const resolveForApply = async (deps: ReleaseCheckDeps): Promise<ResolveFo
       return { status: 'up-to-date' };
     case 'update-available':
       if (!resolution.artifact) return { status: 'no-artifact' };
+      // D-178 S1 rev 2 item 4 — the exe and its native addon are ONE artifact
+      // for apply purposes. Both self-apply channels (`binary`, `docker-thin`)
+      // run the SEA, which loads `<binDir>/lib/better_sqlite3.node` at the first
+      // database open; installing the exe alone yields a server that boots far
+      // enough to look healthy and then cannot open its database.
+      //
+      // ⛔ FAIL CLOSED, and refuse HERE rather than mid-apply: no ledger entry,
+      // no download, no swap — a clean `not-available` the owner can act on. The
+      // release pipeline already refuses to PUBLISH an unpaired binary
+      // (`release-build.mjs`), so this should only ever fire on a hand-rolled or
+      // tampered manifest. Note `runReleaseCheck` is a separate call, so the
+      // update card still SHOWS the release — only applying it is refused.
+      if (!resolution.libArtifact) return { status: 'no-artifact' };
       return {
         status: 'applyable',
         releaseIdentity: releaseIdentityOf(resolution.channel, resolution.targetVersion),
@@ -237,6 +256,7 @@ export const resolveForApply = async (deps: ReleaseCheckDeps): Promise<ResolveFo
         isMajor: resolution.isMajor,
         autoApplyEligible: resolution.autoApplyEligible,
         artifact: resolution.artifact,
+        libArtifact: resolution.libArtifact,
         webclientArtifact: resolution.release.artifacts.webclient ?? null,
       };
   }

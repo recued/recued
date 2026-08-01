@@ -19,6 +19,12 @@ import {
   buildRecipeOpCoverage,
 } from '../mcp-server.js';
 import { buildPackOpResolution } from '../pack-inventory.js';
+import { buildRawOpToolDescriptors, visibleRawOps } from '../raw-op-tool-catalog.js';
+import {
+  createChatRawOpDispatch,
+  createChatRawOpSource,
+  projectRawOpOutcome,
+} from '../chat-tool-handlers.js';
 import {
   buildDefaultMcpInboundTokenGrants,
   type ExecutionSource,
@@ -105,7 +111,12 @@ const depsFor = (gate?: (name: string) => boolean) =>
     executorConfig: { manifests: registry() },
     contractScan: scan,
     baseVault: {},
-    ...(gate ? { inboundTokenAuthorize: gate } : {}),
+    // D-228 slice 6 — "no gate" in this suite means THE OWNER, which is now
+    // stated positively: an absent checklist denies. When a `gate` IS supplied
+    // the caller is a door, so the owner claim is dropped and the checklist
+    // governs — otherwise every `gate`-passing test here would admit regardless
+    // of what the gate said, and the filter assertions would prove nothing.
+    ...(gate ? { inboundTokenAuthorize: gate } : { ownerAdmitAll: true }),
   }) as unknown as Parameters<typeof _testing.handleToolsList>[0];
 
 // ════════════════════════════════════════════════════════════════════
@@ -400,5 +411,231 @@ describe('grant catalog raw-op also_reads (D-192 Slice 7)', () => {
     for (const name of [SEARCH, TEAM]) {
       expect(catalog.find((e) => e.name === name)?.also_reads).toBeUndefined();
     }
+  });
+});
+
+describe('D-225 § 9.5.1 — the CHAT catalog gets the same raw-op source', () => {
+  /** ⛔ The gap this closes: the raw-op projection scans installed packs and
+   *  derives each tool's classification from the pack's AUTHORED `risk_tier` —
+   *  no annotation store anywhere. It was bound to the inbound door alone, and
+   *  that was the entire reason declared pack ops had no chat presence. Nothing
+   *  about it was door-specific; chat has its own catalog and never received
+   *  the source. */
+  const chatDeps = (scan?: typeof scanInstalledPacks) => ({
+    getExecutorConfig: () => ({ manifests: registry() }),
+    ...(scan ? { scanInstalledPacks: scan } : {}),
+  }) as unknown as Parameters<typeof createChatRawOpSource>[0];
+
+  it('🔑 emits BYTE-IDENTICAL rows to the door', () => {
+    // One op must not describe itself differently to chat than to the door —
+    // the owner's single grant covers both, so two descriptions would be one op
+    // wearing two faces.
+    const chat = createChatRawOpSource(chatDeps(scanInstalledPacks))();
+    const door = buildMcpGrantCatalogLegacyEntries(registry(), scanInstalledPacks)
+      .filter((e) => e.name.startsWith('recued_op_'));
+
+    expect(chat.length).toBeGreaterThan(0);
+    expect(JSON.stringify(chat)).toBe(JSON.stringify(door));
+  });
+
+  it('carries the classification from the pack’s AUTHORED risk_tier', () => {
+    const chat = createChatRawOpSource(chatDeps(scanInstalledPacks))();
+    for (const entry of chat) {
+      expect(['read', 'write', 'unknown']).toContain(entry.classification);
+      expect(entry.tier).toBe(2);
+      expect(entry.name.startsWith('recued_op_')).toBe(true);
+    }
+  });
+
+  it('honours the §8 KIND fence — a cli catalog contributes nothing', () => {
+    // `whisper-catalog` is cli and must never reach either catalog. Inherited
+    // from the shared builder rather than re-implemented, which is the point of
+    // sharing it.
+    const names = createChatRawOpSource(chatDeps(scanInstalledPacks))().map((e) => e.name);
+    expect(names.some((n) => n.includes('whisper'))).toBe(false);
+  });
+
+  it('⚠ emits NOTHING when no pack scan is wired — today’s behaviour, unchanged', () => {
+    // The dep is optional so every dbless / partial harness keeps working. That
+    // absence is also exactly what the gap WAS, so it must stay explicit rather
+    // than become an accident again.
+    expect(createChatRawOpSource(chatDeps())()).toEqual([]);
+  });
+});
+
+describe('D-225 § 9.5.1 step 2b — the chat raw-op DISPATCH', () => {
+  const ctx = { execution_source: { channel: 'chat', actor: 'user_self' } } as never;
+  const dispatchDeps = {} as never;
+
+  it('refuses a non-raw-op tool name', async () => {
+    const d = createChatRawOpDispatch({ getRawOpDispatchDeps: () => dispatchDeps } as never);
+    const r = await d('work.search', {}, ctx);
+    expect(r).toMatchObject({ ok: false });
+    if (r.ok) throw new Error('unreachable');
+    expect(r.error).toMatch(/not a raw catalog op/);
+  });
+
+  it('⚠ reports unavailable rather than throwing when no dispatch deps are wired', async () => {
+    // A host that offered the tools without the dispatch would advertise calls
+    // it cannot make. Degrading honestly beats a stack trace at call time.
+    const d = createChatRawOpDispatch({} as never);
+    const r = await d('recued_op_pub.pack.op', {}, ctx);
+    expect(r).toMatchObject({ ok: false });
+    if (r.ok) throw new Error('unreachable');
+    expect(r.error).toMatch(/unavailable/);
+  });
+
+  // ── the projection — the one-ask property ──────────────────────────────
+  //
+  // 🔑 Reached by extracting `projectRawOpOutcome` as a PURE function rather
+  // than injecting a fake dispatcher. The behaviour worth pinning is what the
+  // agent is TOLD about a held run, not that a stub was called — a test-only
+  // dependency seam would have put a hole in production shape to observe
+  // something that was never about the dependency.
+
+  it('🔑 HELD projects to awaiting_approval — the ONE ASK, not a second one', () => {
+    const r = projectRawOpOutcome({ kind: 'held', op_id: 'pub.pack.op', run_id: 'r1' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.result).toMatchObject({
+      status: 'awaiting_approval',
+      awaiting_approval: true,
+      op: 'pub.pack.op',
+    });
+  });
+
+  it('⛔ a HELD run is a SUCCESS, never an error envelope', () => {
+    // An error tells a weak model to retry, which is the loop the door's own
+    // handler avoids. The message must also say do-not-resend and tell-the-user,
+    // or the model has no instruction other than to try again.
+    const r = projectRawOpOutcome({ kind: 'held', op_id: 'pub.pack.op', run_id: 'r1' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    const message = String((r.result as { message: string }).message);
+    expect(message).toMatch(/do not resend/i);
+    expect(message).toMatch(/tell the user/i);
+  });
+
+  it('an ASK (hold substrate unwired) is also a success, and self-describing', () => {
+    const r = projectRawOpOutcome({ kind: 'ask', op_id: 'pub.pack.op', message: 'needs approval' });
+    expect(r.ok).toBe(true);
+    if (!r.ok) throw new Error('unreachable');
+    expect(r.result).toMatchObject({ status: 'requires_approval', op: 'pub.pack.op' });
+  });
+
+  it('⛔ REFUSED is the one that IS an error — the paired direction', () => {
+    // Without this the "held is not an error" tests would pass on a projection
+    // that never errors at all.
+    const r = projectRawOpOutcome({ kind: 'refused', message: 'not granted' });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('unreachable');
+    expect(r.error).toBe('not granted');
+  });
+
+  it('a plain result passes through untouched', () => {
+    const payload = { rows: [1, 2, 3] };
+    expect(projectRawOpOutcome({ kind: 'result', result: payload }))
+      .toEqual({ ok: true, result: payload });
+  });
+});
+
+describe('D-225 § 9.8 — visibleRawOps: the caller-facing catalog comes from the contract', () => {
+  const universe = () => buildRawOpToolDescriptors(scanInstalledPacks, (s) => registry().get(s));
+
+  it('a caller sees only what its contract grants', () => {
+    const all = universe();
+    expect(all.length).toBeGreaterThan(1);
+    const only = all[0]!.opId;
+    const visible = visibleRawOps(all, (opId) => opId === only);
+    expect(visible.map((d) => d.opId)).toEqual([only]);
+  });
+
+  it('a PERMISSIVE caller (owner / wildcard door) sees the whole universe', () => {
+    // ⚠ The reason the signature takes a UNIVERSE. For these callers the granted
+    // set is not enumerable from grant rows — it is everything minus exclusions
+    // — so a `visibleOps(contract)` with no universe input could not answer.
+    const all = universe();
+    expect(visibleRawOps(all, () => true)).toEqual(all);
+  });
+
+  it('an explicit-only contract with no rows sees NOTHING', () => {
+    // Customer / reception / PUBLIC fail closed. The paired direction of the
+    // permissive case — without it, "sees everything" would pass on a filter
+    // that never filters.
+    expect(visibleRawOps(universe(), () => false)).toEqual([]);
+  });
+
+  it('⛔ does NOT filter the owner’s GRANT CHOOSER — that would be chicken-and-egg', () => {
+    // `buildMcpGrantCatalogLegacyEntries` feeds the per-tool grant checklist. If
+    // it showed only granted ops the owner could never grant a new one, because
+    // an ungranted op would not be listed. Derived-from-contract is for
+    // CALLER-facing catalogs; what the owner may grant is a different question.
+    const chooser = buildMcpGrantCatalogLegacyEntries(registry(), scanInstalledPacks)
+      .filter((e) => e.name.startsWith('recued_op_'));
+    expect(chooser.length).toBe(universe().length);
+    expect(chooser.length).toBeGreaterThan(0);
+  });
+
+  it('is a pure filter — it re-decides nothing about admission', () => {
+    // The resolution stays `isOpGranted` / `opAuthorDefault` /
+    // `ownerOnlyAdjustedAuthorDefault`, already correct and already tested. This
+    // composes them with the universe; a second copy of the policy here is
+    // exactly the drift the shared function exists to prevent.
+    const all = universe();
+    const seen: string[] = [];
+    visibleRawOps(all, (opId) => { seen.push(opId); return true; });
+    expect(seen).toEqual(all.map((d) => d.opId));
+  });
+});
+
+describe('D-225 § 9.8.1 — chat’s catalog FILTERS by the turn’s contract', () => {
+  /** ⛔ THE DENY CASE, WRITTEN FIRST.
+   *
+   *  A grant filter that receives an undefined source and treats it as
+   *  permissive admits EVERYTHING, and is indistinguishable from a working one
+   *  in any test that only checks the admit path. So the first assertion is the
+   *  one where a caller is granted nothing and must therefore see nothing. */
+  const sourceful = { channel: 'chat', actor: 'user_self' } as ExecutionSource;
+
+  const chatSource = (opts: {
+    gate?: { isOpGranted: (s: ExecutionSource, o: string | undefined) => boolean };
+    source?: ExecutionSource;
+  }) =>
+    createChatRawOpSource({
+      getExecutorConfig: () => ({ manifests: registry() }),
+      scanInstalledPacks,
+      ...(opts.gate ? { getOpAdmissionGate: () => opts.gate } : {}),
+    } as never)(opts.source);
+
+  it('⛔ a caller granted NOTHING sees NO raw ops', () => {
+    const entries = chatSource({ gate: { isOpGranted: () => false }, source: sourceful });
+    expect(entries).toEqual([]);
+  });
+
+  it('⛔ an ABSENT source denies — it must never read as permissive', () => {
+    // `TurnContext.source` is optional ("only for bare test harnesses"), so an
+    // absent one is reachable. Treating it as permissive is precisely the
+    // silent fail-open this whole ordering exists to prevent.
+    const entries = chatSource({ gate: { isOpGranted: () => true } });
+    expect(entries).toEqual([]);
+  });
+
+  it('a granted caller sees exactly what it was granted', () => {
+    // The permitting half — without it, the two denials above would pass on a
+    // source that returns nothing at all.
+    const all = buildRawOpToolDescriptors(scanInstalledPacks, (s) => registry().get(s));
+    const only = all[0]!.opId;
+    const entries = chatSource({
+      gate: { isOpGranted: (_s, opId) => opId === only },
+      source: sourceful,
+    });
+    expect(entries.map((e) => e.name)).toEqual([`recued_op_${only}`]);
+  });
+
+  it('⚠ with NO gate wired the catalog is unfiltered — today’s behaviour, explicit', () => {
+    // A host with no admission gate keeps working. That is deliberate and is
+    // why it is pinned: it must be a decision someone reads, not a hole.
+    const entries = chatSource({ source: sourceful });
+    expect(entries.length).toBeGreaterThan(0);
   });
 });

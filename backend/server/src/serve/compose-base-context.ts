@@ -6,6 +6,8 @@ import {
   type RuntimeConfigStore,
 } from '@recued/config';
 
+import { configureAutoPiiProtection } from '../auto-pii-apply.js';
+
 import {
   classifyBootProfile,
   createBootTrace,
@@ -85,6 +87,15 @@ export const composeBaseContext = (
     loadedConfig.source ? { path: loadedConfig.source } : {},
   );
   bootTrace.mark('config-loaded', loadedConfig.source ? 'file' : 'defaults');
+
+  // Wire the auto-PII seam to the owner's setting, at the EARLIEST point the
+  // store exists — housekeeping and reactive fires can dispatch recipes well
+  // before the listener starts, and each one consults this. A live closure, not
+  // a snapshot: toggling the setting must take effect on the next dispatch, and
+  // the disclosure surfaces must never claim a protection the seam will skip.
+  configureAutoPiiProtection(
+    () => runtimeConfig.get('privacy.auto_pii_protection') !== false,
+  );
 
   const vaultQuotas: BaseVaultQuotas = {
     perPublisherBytes: runtimeConfig.get('vault.quota.per_publisher_bytes') as number,

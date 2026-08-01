@@ -113,7 +113,8 @@ import {
   APPROVAL_LINK_EXPIRY_DAYS_DEFAULT,
   APPROVAL_LINK_EXPIRY_DAYS_MAX,
   APPROVAL_LINK_EXPIRY_DAYS_MIN,
-  APPROVAL_LINK_ON_APPROVE_ACTIONS,
+  APPROVAL_LINK_DEFAULT_ON_APPROVE_ACTION,
+  APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS,
   APPROVAL_LINK_OPTIONS_MAX,
   APPROVAL_LINK_OPTIONS_MIN,
   APPROVAL_LINK_PROMPT_MAX,
@@ -1258,6 +1259,9 @@ export interface IntakeFormFormModel {
   readonly contact_name_field?: AuthoringSelectField<string>;
   readonly honeypot_fields: AuthoringMultiSelectField<string>;
   readonly rate_limit_per_ip: AuthoringNumberField;
+  /** Reserved contract fields kept in the model so existing configs still
+   *  round-trip and fresh configs satisfy the contract. Deliberately not
+   *  rendered: neither protection has an implementation. */
   readonly require_proof_of_work: AuthoringToggleField;
   readonly require_captcha: AuthoringToggleField;
   readonly known_domain_allowlist: AuthoringRepeaterField<string>;
@@ -1546,14 +1550,14 @@ export const buildIntakeFormFormModel = (
       control: 'toggle',
       key: 'anti_spam.require_proof_of_work',
       label: 'Require proof-of-work',
-      help: 'A client-side hash puzzle. The substrate ships the contract; a marketplace recipe wires the solver.',
+      help: 'Reserved compatibility setting. Proof-of-work is not currently implemented or enforced.',
       value: spam?.require_proof_of_work ?? false,
     },
     require_captcha: {
       control: 'toggle',
       key: 'anti_spam.require_captcha',
       label: 'Require CAPTCHA',
-      help: 'A CAPTCHA challenge. The substrate ships the contract; a marketplace recipe wires the challenge.',
+      help: 'Reserved compatibility setting. CAPTCHA is not currently implemented or enforced.',
       value: spam?.require_captcha ?? false,
     },
     known_domain_allowlist: {
@@ -1873,6 +1877,10 @@ export const APPROVAL_LINK_CONFIG_ERROR_COPY: Readonly<
   on_action_invalid: 'The on-action configuration is malformed. Refresh the page + try again.',
   on_action_target_id_invalid: 'Enter a target id — it binds this link to one thing to act on.',
   on_approve_action_unknown: 'Pick an on-approve action from the closed list.',
+  on_approve_action_unsupported:
+    'That on-approve action can no longer be honoured — a response would sit unprocessed '
+    + 'and never reach you. Choose "Create a commitment": the reply is held at the approval '
+    + 'gate and lands in your Reception Inbox.',
   notification_target_unknown: 'Pick a notification target from the closed list.',
   triggered_recipe_id_invalid:
     'Triggered recipes have been retired here — watch the destination entity instead. '
@@ -2107,8 +2115,14 @@ export const buildApprovalLinkFormModel = (
       key: 'on_action.on_approve_action',
       label: 'On approve',
       help: 'What your engine does when the visitor approves.',
-      value: oa?.on_approve_action ?? 'mark_resolved',
-      options: APPROVAL_LINK_ON_APPROVE_ACTIONS.map((a) => ({
+      // ⛔ Offer only what the write path will accept, and default to it. The
+      // picker used to list all three and DEFAULT to `mark_resolved` — whose
+      // effect seam nothing supplies, so every consumption sat pending forever
+      // while the visitor was shown a success page. Both lists derive from the
+      // one contracts const, so a picker option that the validator refuses is
+      // not expressible.
+      value: oa?.on_approve_action ?? APPROVAL_LINK_DEFAULT_ON_APPROVE_ACTION,
+      options: APPROVAL_LINK_SUPPORTED_ON_APPROVE_ACTIONS.map((a) => ({
         value: a,
         label: APPROVAL_LINK_ON_APPROVE_ACTION_COPY[a].label,
         help: APPROVAL_LINK_ON_APPROVE_ACTION_COPY[a].help,

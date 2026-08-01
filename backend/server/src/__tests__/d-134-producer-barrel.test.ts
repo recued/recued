@@ -280,6 +280,10 @@ describe('D-134 P2 — barrel completeness', () => {
       // `buildSellerAccessReconcileTask`; gated on `sellerAccessReconcileDeps`
       // (wire-housekeeping-substrate.ts:676).
       'seller-access-reconcile',
+      // D-225 — needs the generated MCP catalog resolver + audit sink.
+      // Builder ships as `buildMcpToolsDriftProbeTask`; gated on
+      // `mcpToolsDriftProbeDeps` (wire-housekeeping-substrate.ts:699).
+      'mcp-tools-drift-probe',
     ]);
 
     const missing: string[] = [];

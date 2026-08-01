@@ -79,10 +79,15 @@ export const loadConfig = (opts: LoadOptions): LoadResult => {
     source = resolvedPath;
   }
 
-  // 4. Env vars.
+  // 4. Env vars — BOOTSTRAP ONLY (2026-07-28).
+  //
+  // `runtime` is deliberately NOT patched from env any more. Env is applied
+  // after the config file, so a `RECUED_RUNTIME_<KEY>` var overrode whatever
+  // the owner had saved through Settings, on every boot — for ~64 keys that all
+  // have a store and a UI control. Bootstrap stays because those fields are
+  // needed before any store can be read, which is the one case env must win.
   const envPatch = envOverrides(env);
   Object.assign(bootstrap, envPatch.bootstrap);
-  Object.assign(runtime, envPatch.runtime);
   const envApplied = collectEnvNames(env);
 
   // 5. CLI flag overrides.
@@ -103,12 +108,16 @@ export const loadConfig = (opts: LoadOptions): LoadResult => {
   };
 };
 
+/** Names of the env vars this load actually consulted — surfaced in
+ *  `LoadedConfig.envApplied` for diagnostics.
+ *
+ *  `RECUED_RUNTIME_*` is deliberately NOT collected: it is no longer applied,
+ *  so listing it would report an override that did not happen. A diagnostic
+ *  that names an inert variable is worse than one that omits it. */
 const collectEnvNames = (env: Record<string, string | undefined>): string[] => {
   const out: string[] = [];
   for (const name of Object.keys(env)) {
-    if (name.startsWith('RECUED_BOOTSTRAP_') || name.startsWith('RECUED_RUNTIME_')) {
-      out.push(name);
-    }
+    if (name.startsWith('RECUED_BOOTSTRAP_')) out.push(name);
   }
   return out;
 };

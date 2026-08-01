@@ -62,6 +62,13 @@ import {
   CHAT_ROUTE_FOLLOWUP_CONTEXT_CLEAR_ATTR,
   CHAT_ROUTE_GREETING_ATTR,
   CHAT_ROUTE_HEADING_ATTR,
+  CHAT_ROUTE_HISTORY_ANNOUNCER_ATTR,
+  CHAT_ROUTE_HISTORY_CONTINUE_ATTR,
+  CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR,
+  CHAT_ROUTE_HISTORY_EMPTY_ATTR,
+  CHAT_ROUTE_HISTORY_GROUP_ATTR,
+  CHAT_ROUTE_HISTORY_LANDING_ATTR,
+  CHAT_ROUTE_HISTORY_SEARCH_ATTR,
   CHAT_ROUTE_INPUT_ATTR,
   CHAT_ROUTE_MESSAGE_ATTR,
   CHAT_ROUTE_MODEL_CONFIGURE_ATTR,
@@ -84,6 +91,11 @@ import {
   CHAT_ROUTE_PLAN_TARGET_ATTR,
   CHAT_ROUTE_PLAN_TARGET_MISSING_ATTR,
   CHAT_ROUTE_SEND_ATTR,
+  CHAT_ROUTE_SESSION_ACTIONS_ATTR,
+  CHAT_ROUTE_SESSION_DELETE_ATTR,
+  CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR,
+  CHAT_ROUTE_SESSION_EXPORT_ATTR,
+  CHAT_ROUTE_SESSION_ROW_ATTR,
   CHAT_ROUTE_SOURCE_ACTION_ATTR,
   CHAT_ROUTE_SOURCE_ANSWER_ACTION_ATTR,
   CHAT_ROUTE_SOURCE_ANSWER_ATTR,
@@ -978,7 +990,9 @@ describe('D-174 contracts route — list → detail shell', () => {
   });
 });
 
-const sessionSummary = (): ChatSessionSummary => ({
+const sessionSummary = (
+  overrides: Partial<ChatSessionSummary> = {},
+): ChatSessionSummary => ({
   id: 'chat_1',
   title: 'Ops chat',
   created_at: 1_000,
@@ -987,6 +1001,7 @@ const sessionSummary = (): ChatSessionSummary => ({
   archived: false,
   picker_state: { current: 'self' },
   model_routing: { current: 'byok', provider: 'local', overridden: false },
+  ...overrides,
 });
 
 const chatSession = (): ChatSession => ({
@@ -4428,6 +4443,260 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     route.dispose();
   });
 
+  it('turns bare Chat into a grouped, searchable returning-user history landing', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const now = new Date(2026, 6, 27, 12, 0, 0).getTime();
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        sessions: [
+          sessionSummary({
+            id: 'today',
+            title: 'Plan today',
+            last_active_at: now - 5 * 60_000,
+            message_count: 3,
+          }),
+          sessionSummary({
+            id: 'week',
+            title: 'Weekly review',
+            last_active_at: now - 3 * 86_400_000,
+          }),
+          sessionSummary({
+            id: 'older',
+            title: 'Legacy migration',
+            last_active_at: now - 30 * 86_400_000,
+          }),
+          sessionSummary({
+            id: 'archived',
+            title: 'Archived notes',
+            archived: true,
+            last_active_at: now - 60_000,
+          }),
+        ],
+      }),
+      initialLanding: 'history',
+      now: () => now,
+    });
+    await tick();
+
+    const landing = collectByAttr(root, CHAT_ROUTE_HISTORY_LANDING_ATTR)[0]!;
+    expect(allText(landing)).toContain('Continue “Plan today”?');
+    expect(allText(landing)).toContain('3 messages · 5 min ago');
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)).toHaveLength(0);
+    expect(collectByAttr(root, CHAT_ROUTE_HISTORY_GROUP_ATTR).map(
+      (group) => group.getAttribute(CHAT_ROUTE_HISTORY_GROUP_ATTR),
+    )).toEqual(['today', 'week', 'older', 'archived']);
+
+    const search = collectByAttr(root, CHAT_ROUTE_HISTORY_SEARCH_ATTR)[0]!;
+    fireEvent(search, 'input', 'legacy');
+    expect(collectByAttr(root, CHAT_ROUTE_SESSION_ROW_ATTR).map(
+      (row) => row.getAttribute(CHAT_ROUTE_SESSION_ROW_ATTR),
+    )).toEqual(['older']);
+    fireEvent(search, 'input', 'missing');
+    expect(collectByAttr(root, CHAT_ROUTE_SESSION_ROW_ATTR)).toHaveLength(0);
+    expect(allText(collectByAttr(root, CHAT_ROUTE_HISTORY_EMPTY_ATTR)[0]!))
+      .toContain('No matching chats');
+    route.dispose();
+  });
+
+  it('does not promote archived or zero-message sessions as the next chat', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        sessions: [
+          sessionSummary({
+            id: 'archived',
+            title: 'Archived chat',
+            archived: true,
+          }),
+          sessionSummary({
+            id: 'empty',
+            title: 'Empty chat',
+            message_count: 0,
+          }),
+        ],
+      }),
+      initialLanding: 'history',
+    });
+    await tick();
+
+    expect(collectByAttr(root, CHAT_ROUTE_HISTORY_LANDING_ATTR)).toHaveLength(0);
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)).toHaveLength(1);
+    route.dispose();
+  });
+
+  it('continues the latest chat in place and publishes a durable session address', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const addresses: Array<{ hash: string; mode: string }> = [];
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        sessions: [sessionSummary()],
+        messages: [chatMessage()],
+      }),
+      initialLanding: 'history',
+      onAddressChange: (hash, mode) => addresses.push({ hash, mode }),
+    });
+    await tick();
+    collectByAttr(root, CHAT_ROUTE_HISTORY_CONTINUE_ATTR)[0]!.click();
+    await tick(8);
+
+    expect(route.getThread().session?.id).toBe('chat_1');
+    expect(addresses).toEqual([
+      { hash: '#chat/session/chat_1', mode: 'push' },
+    ]);
+    expect(collectByAttr(root, CHAT_ROUTE_HISTORY_LANDING_ATTR)).toHaveLength(0);
+    expect(doc.activeElement?.getAttribute('data-recued-chat-route-thread-title'))
+      .toBe('');
+    route.dispose();
+  });
+
+  it('protects an unsent draft before switching conversations', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const sessions = [
+      sessionSummary({ id: 'chat_1', title: 'First chat' }),
+      sessionSummary({ id: 'chat_2', title: 'Second chat' }),
+    ];
+    const addresses: string[] = [];
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({ sessions }),
+      initialSessionId: 'chat_1',
+      onAddressChange: (hash) => addresses.push(hash),
+    });
+    await tick(8);
+    fireEvent(
+      collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!,
+      'input',
+      'keep this draft',
+    );
+    collectByAttr(root, CHAT_ROUTE_SESSION_ROW_ATTR).find(
+      (row) => row.getAttribute(CHAT_ROUTE_SESSION_ROW_ATTR) === 'chat_2',
+    )!.click();
+    expect(route.getThread().session?.id).toBe('chat_1');
+    expect(collectByAttr(root, CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR)).toHaveLength(1);
+
+    const discard = collectByTag(
+      collectByAttr(root, CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR)[0]!,
+      'button',
+    ).find((button) => button.textContent === 'Discard and open')!;
+    discard.click();
+    await tick(8);
+    expect(route.getThread().session?.id).toBe('chat_2');
+    expect(addresses).toEqual(['#chat/session/chat_2']);
+    route.dispose();
+  });
+
+  it('exports and safely confirms deletion from history using existing Chat RPCs', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const downloads: Array<{ bundle: unknown; filename: string }> = [];
+    const addresses: Array<{ hash: string; mode: string }> = [];
+    let finishExport!: (value: unknown) => void;
+    const exportPending = new Promise<unknown>((resolve) => {
+      finishExport = resolve;
+    });
+    let finishDelete!: (value: { ok: true }) => void;
+    const deletePending = new Promise<{ ok: true }>((resolve) => {
+      finishDelete = resolve;
+    });
+    const conn = (async (method: string, payload?: unknown) => {
+      calls.push({ method, payload });
+      if (method === 'chat.sessions.list') {
+        return { sessions: [sessionSummary()] };
+      }
+      if (method === 'chat.session.export') {
+        return exportPending;
+      }
+      if (method === 'chat.session.get') {
+        return { ...chatSession(), messages: [chatMessage()], plans: [] };
+      }
+      if (method === 'chat.session.delete') return deletePending;
+      if (method === 'server.getLLMConfig') return { config: {} };
+      if (method === 'chat.default_model_pref.get') {
+        return { source_id: null, updated_at: 1 };
+      }
+      if (method === 'prefs.get') return { prefs: {} };
+      throw new Error(`unexpected method ${method}`);
+    }) as ChatRouteConn;
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialLanding: 'history',
+      initialSessionId: 'chat_1',
+      onAddressChange: (hash, mode) => addresses.push({ hash, mode }),
+      downloadExport: (bundle, filename) => {
+        downloads.push({ bundle, filename });
+      },
+    });
+    await tick(8);
+
+    expect(collectByAttr(root, CHAT_ROUTE_SESSION_ACTIONS_ATTR)).toHaveLength(1);
+    collectByAttr(root, CHAT_ROUTE_SESSION_EXPORT_ATTR)[0]!.click();
+    expect(route.hasInFlightWork()).toBe(true);
+    finishExport({ session: chatSession(), messages: [chatMessage()] });
+    await tick(8);
+    expect(route.hasInFlightWork()).toBe(false);
+    expect(calls).toContainEqual({
+      method: 'chat.session.export',
+      payload: { session_id: 'chat_1' },
+    });
+    expect(downloads[0]?.filename).toBe('ops-chat.json');
+    expect(allText(collectByAttr(root, CHAT_ROUTE_HISTORY_ANNOUNCER_ATTR)[0]!))
+      .toContain('Exported Ops chat');
+
+    collectByAttr(root, CHAT_ROUTE_SESSION_DELETE_ATTR)[0]!.click();
+    expect(collectByAttr(root, CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR)).toHaveLength(1);
+    collectByAttr(root, CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR)[0]!.click();
+    expect(route.hasInFlightWork()).toBe(true);
+    finishDelete({ ok: true });
+    await tick(8);
+    expect(route.hasInFlightWork()).toBe(false);
+    expect(calls).toContainEqual({
+      method: 'chat.session.delete',
+      payload: { session_id: 'chat_1' },
+    });
+    expect(collectByAttr(root, CHAT_ROUTE_SESSION_ROW_ATTR)).toHaveLength(0);
+    expect(allText(collectByAttr(root, CHAT_ROUTE_HISTORY_EMPTY_ATTR)[0]!))
+      .toContain('No saved chats yet');
+    expect(addresses).toEqual([{ hash: '#chat', mode: 'replace' }]);
+    expect(doc.activeElement?.getAttribute(CHAT_ROUTE_NEW_SESSION_ATTR)).toBe('');
+    route.dispose();
+  });
+
+  it('replaces a draft URL with the durable session minted by the first send', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const addresses: Array<{ hash: string; mode: string }> = [];
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn(),
+      onAddressChange: (hash, mode) => addresses.push({ hash, mode }),
+    });
+    await tick();
+    await route.sendMessage('durable first message');
+    await tick();
+    expect(addresses).toContainEqual({
+      hash: '#chat/session/chat_new',
+      mode: 'replace',
+    });
+    route.startNewChat();
+    expect(addresses.at(-1)).toEqual({ hash: '#chat/new', mode: 'push' });
+    route.dispose();
+  });
+
   it('retires the activation surface after a completed chat event', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
@@ -4676,6 +4945,45 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     route.dispose();
   });
 
+  it('restores a captured reauth draft into the exact durable session without sending it', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const recoveryDraft = {
+      text: 'Draft the customer follow-up before sending.',
+      protected: true,
+      modelSourceId: null,
+    } as const;
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        calls,
+        sessions: [sessionSummary()],
+        messages: [chatMessage()],
+      }),
+      initialSessionId: 'chat_1',
+      initialRecoveryDraft: recoveryDraft,
+    });
+
+    // The draft is protected even before the initial async reads finish. A
+    // second immediate disconnect must be able to recapture it rather than
+    // losing the in-memory handoff between pair and composer hydration.
+    expect(route.hasUnsavedChanges()).toBe(true);
+    expect(route.getRecoveryDraft()).toEqual(recoveryDraft);
+
+    await tick(8);
+
+    const input = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+    expect(route.getThread().session?.id).toBe('chat_1');
+    expect(input.value).toBe(recoveryDraft.text);
+    expect(doc.activeElement).toBe(input);
+    expect(route.hasUnsavedChanges()).toBe(true);
+    expect(route.getRecoveryDraft()).toEqual(recoveryDraft);
+    expect(calls.some((call) => call.method === 'chat.send')).toBe(false);
+    route.dispose();
+  });
+
   it('serializes a double first-send into ONE session (lazy-create lock)', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
@@ -4765,7 +5073,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     route.dispose();
   });
 
-  it('"New chat" clears a draft that has typed-but-unsent text', async () => {
+  it('"New chat" protects a typed draft before clearing it', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
     const calls: Array<{ method: string; payload?: unknown }> = [];
@@ -4777,6 +5085,14 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     await tick();
     fireEvent(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!, 'input', 'unsent text');
     collectByAttr(root, CHAT_ROUTE_NEW_SESSION_ATTR)[0]!.click();
+    await tick();
+    expect(collectByAttr(root, CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR)).toHaveLength(1);
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe('unsent text');
+    const discard = collectByTag(
+      collectByAttr(root, CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR)[0]!,
+      'button',
+    ).find((button) => button.textContent === 'Discard and start new')!;
+    discard.click();
     await tick();
     expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe('');
     expect(calls.some((c) => c.method === 'chat.session.create')).toBe(false);

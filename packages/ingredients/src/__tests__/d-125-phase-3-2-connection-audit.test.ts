@@ -137,6 +137,25 @@ describe('connection adapter audit (P3.2) — success path', () => {
     expect(emissions[0]?.subtype).toBeUndefined();
   });
 
+  it('D-216 forwards the resolved upload content hash to the audit emission', async () => {
+    const { emissions, sink } = mkSink();
+    const hash = 'b'.repeat(64);
+    const handler: ConnectionKindHandler = async (_row, _params, _call, ctx) => {
+      ctx?.setUploadContentSha256?.(hash);
+      return { ok: true };
+    };
+    const adapter = createConnectionAdapter({
+      store: mkStore([mkRow({ kind: 'api', name: 'upload' })]),
+      handlers: { api: handler },
+      emitAudit: sink,
+    });
+
+    await adapter(mkCall({ connection_kind: 'api', connection: 'upload' }));
+
+    expect(emissions).toHaveLength(1);
+    expect(emissions[0]?.content_sha256).toBe(hash);
+  });
+
   it('routes api / mcp / notification each into its own emission', async () => {
     const { emissions, sink } = mkSink();
     const adapter = createConnectionAdapter({

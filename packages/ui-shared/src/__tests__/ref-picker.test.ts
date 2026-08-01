@@ -34,6 +34,7 @@ import {
   revertQuery,
   setError,
   setQuery,
+  asRefPickerSearchPage,
   setResults,
   wireRefPicker,
   type RefPickerOption,
@@ -70,6 +71,8 @@ describe('ref-picker model', () => {
     expect(s.open).toBe(true);
     expect(s.loading).toBe(true);
     expect(s.activeIndex).toBe(-1);
+    expect(s.options).toEqual([]);
+    expect(s.truncated).toBe(false);
     // The committed value survives a stray keystroke.
     expect(s.selectedId).toBe('r-alpha');
   });
@@ -198,7 +201,9 @@ describe('ref-picker render', () => {
       CONFIG,
     );
     expect(html).toContain('data-ref-picker="demo"');
-    expect(html).toContain('role="combobox"');
+    expect(html).toMatch(/<input[^>]*role="combobox"/);
+    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('aria-busy="true"');
     expect(html).toContain(`${REF_PICKER_INPUT_ATTR}`);
     expect(html).toContain('value="be"');
     expect(html).toContain('placeholder="Recipe"');
@@ -261,6 +266,21 @@ describe('ref-picker render', () => {
     expect(rows).toContain('ref-picker-option--active'); // index 0 highlighted
     expect(rows).toContain('Alpha report');
     expect(rows).toContain('recued-core'); // sublabel
+  });
+
+  it('keeps highlight and committed selection as separate ARIA states', () => {
+    const selected = commitOption(
+      setResults(initialRefPickerState(), OPTIONS),
+      OPTIONS[1]!,
+    );
+    const open = moveActive(setResults(openList(selected), OPTIONS), 1);
+    const rows = renderRefPickerResultRows(open, CONFIG);
+    expect(rows).toMatch(
+      /ref-picker-option ref-picker-option--active[^>]*aria-selected="false"/,
+    );
+    expect(rows).toMatch(
+      /ref-picker-option ref-picker-option--selected[^>]*aria-selected="true"/,
+    );
   });
 
   it('surfaces loading / empty / error statuses', () => {
@@ -329,6 +349,20 @@ describe('ref-picker wire', () => {
     expect(input.value).toBe('beta');
   });
 
+  it('surfaces a synchronous search throw through the inline error state', async () => {
+    const { root, input, results } = buildShell();
+    wireRefPicker(asParent(root), {
+      search: () => { throw new Error('inventory unavailable'); },
+      config: CONFIG,
+      schedule: syncSchedule,
+    });
+    input.value = 'a';
+    dispatch(input, 'input', {});
+    await flush();
+    expect(results.innerHTML).toContain('inventory unavailable');
+    expect(results.innerHTML).toContain('role="alert"');
+  });
+
   it('selecting an option (mousedown) commits id, shows the label, fires onChange', async () => {
     const { root, input, results, clear } = buildShell();
     const onChange = vi.fn();
@@ -388,7 +422,7 @@ describe('ref-picker wire', () => {
     expect(onChange).toHaveBeenCalledWith({ id: 'r-alpha', label: 'Alpha report' });
   });
 
-  it('clear button empties the field and fires onChange(null)', () => {
+  it('clear button keeps its native click, empties the field, and returns focus', () => {
     const { root, input, clear } = buildShell();
     const onChange = vi.fn();
     const handle = wireRefPicker(asParent(root), {
@@ -399,10 +433,45 @@ describe('ref-picker wire', () => {
       schedule: syncSchedule,
     });
     expect(input.value).toBe('Alpha report');
-    dispatch(clear, 'mousedown', {});
+    const press = dispatch(clear, 'mousedown', {});
+    expect(press.defaultPrevented).toBe(false);
+    dispatch(clear, 'click', {});
     expect(onChange).toHaveBeenCalledWith(null);
     expect(input.value).toBe('');
+    expect(input.focusCount).toBe(1);
     expect(handle.getValue()).toBeNull();
+  });
+
+  it('reopening a committed minChars=0 picker searches the inventory, not its label', () => {
+    const { root, input } = buildShell();
+    const search = vi.fn(syncSearch);
+    wireRefPicker(asParent(root), {
+      search,
+      config: CONFIG,
+      minChars: 0,
+      initialValue: { id: 'r-alpha', label: 'Alpha report' },
+      schedule: syncSchedule,
+    });
+    dispatch(input, 'focusin', {});
+    expect(search).toHaveBeenCalledWith('');
+  });
+
+  it('hydrating the label of the same id keeps an open inventory open', () => {
+    const { root, input, results } = buildShell();
+    const handle = wireRefPicker(asParent(root), {
+      search: syncSearch,
+      config: CONFIG,
+      minChars: 0,
+      initialValue: { id: 'r-alpha', label: 'r-alpha' },
+      schedule: syncSchedule,
+    });
+    dispatch(input, 'focusin', {});
+    expect(results.getAttribute('hidden')).toBeNull();
+
+    handle.setValue({ id: 'r-alpha', label: 'Alpha report' });
+    expect(results.getAttribute('hidden')).toBeNull();
+    expect(input.value).toBe('Alpha report');
+    expect(handle.getValue()).toEqual({ id: 'r-alpha', label: 'Alpha report' });
   });
 
   it('blur reverts the input text to the committed label', () => {
@@ -417,6 +486,27 @@ describe('ref-picker wire', () => {
     dispatch(input, 'input', {});
     dispatch(input, 'focusout', {});
     expect(input.value).toBe('Alpha report');
+  });
+
+  it('Escape dismisses the popup without bubbling into its parent modal', async () => {
+    const outer = makeNode('div');
+    const { root, input, results } = buildShell();
+    outer.appendChild(root);
+    const parentEscape = vi.fn();
+    outer.addEventListener('keydown', parentEscape);
+    wireRefPicker(asParent(root), {
+      search: syncSearch,
+      config: CONFIG,
+      schedule: syncSchedule,
+    });
+    input.value = 'alpha';
+    dispatch(input, 'input', {});
+    await flush();
+    expect(results.getAttribute('hidden')).toBeNull();
+
+    dispatch(input, 'keydown', { key: 'Escape' });
+    expect(results.getAttribute('hidden')).not.toBeNull();
+    expect(parentEscape).not.toHaveBeenCalled();
   });
 
   it('rewire re-attaches to a fresh shell and repaints from JS state', async () => {
@@ -521,6 +611,36 @@ describe('ref-picker wire', () => {
     await Promise.resolve();
     expect(results.innerHTML).toContain('Beta digest');
     expect(results.innerHTML).not.toContain('Alpha report');
+  });
+
+  it('cannot commit a stale invisible option while the next search is loading', async () => {
+    let resolveNext!: (value: readonly RefPickerOption[]) => void;
+    const search = vi.fn((query: string) => query === 'a'
+      ? Promise.resolve([OPTIONS[0]!])
+      : new Promise<readonly RefPickerOption[]>((resolve) => { resolveNext = resolve; }));
+    const onChange = vi.fn();
+    const { root, input, results } = buildShell();
+    wireRefPicker(asParent(root), {
+      search,
+      config: CONFIG,
+      onChange,
+      schedule: syncSchedule,
+    });
+    input.value = 'a';
+    dispatch(input, 'input', {});
+    await flush();
+    expect(results.innerHTML).toContain('Alpha report');
+
+    input.value = 'beta';
+    dispatch(input, 'input', {});
+    expect(results.innerHTML).toContain('Searching');
+    dispatch(input, 'keydown', { key: 'Enter' });
+    expect(onChange).not.toHaveBeenCalled();
+
+    resolveNext([OPTIONS[1]!]);
+    await flush();
+    dispatch(input, 'keydown', { key: 'Enter' });
+    expect(onChange).toHaveBeenCalledWith({ id: 'r-beta', label: 'Beta digest' });
   });
 
   it('invalidates an already-fired search the moment a newer query is accepted', async () => {
@@ -662,20 +782,29 @@ const dispatch = (
   target: FakeNode,
   type: string,
   props: { key?: string },
-): void => {
+): {
+  defaultPrevented: boolean;
+  propagationStopped: boolean;
+} => {
   const event = {
     target,
     key: props.key,
     defaultPrevented: false,
+    propagationStopped: false,
     preventDefault() {
       this.defaultPrevented = true;
+    },
+    stopPropagation() {
+      this.propagationStopped = true;
     },
   };
   let node: FakeNode | null = target;
   while (node !== null) {
     for (const fn of node.listeners.get(type) ?? []) fn(event);
+    if (event.propagationStopped) break;
     node = node.parent;
   }
+  return event;
 };
 
 /** Build a resting shell subtree matching `renderRefPicker`'s structure
@@ -723,3 +852,49 @@ const materializeOption = (results: FakeNode, index: number): FakeNode => {
   results.appendChild(li);
   return li;
 };
+
+/** ⛔⛔ A CAPPED READ THAT SAYS NOTHING IS THE BUG.
+ *
+ *  The record_ref host fetched the 50 lowest ids once per keystroke and
+ *  filtered them in the browser, so a record at row 51 was unreachable AND
+ *  indistinguishable from one that does not exist — "No matches" over a subset
+ *  reads as a fact about the data. These pin the disclosure. */
+describe('ref-picker — a truncated read admits it', () => {
+  it('⛔⛔ says so when the filter matched NOTHING — the case it exists for', () => {
+    const empty = setResults(openList(initialRefPickerState()), [], true);
+    const rows = renderRefPickerResultRows(empty, CONFIG);
+    // The bare "no matches" line must not stand alone over a capped read.
+    expect(rows).toContain('ref-picker-status--truncated');
+    expect(rows).toContain('Only the first page was searched');
+  });
+
+  it('⛔ says so alongside results too — a partial list is still partial', () => {
+    const some = setResults(openList(initialRefPickerState()), OPTIONS, true);
+    const rows = renderRefPickerResultRows(some, CONFIG);
+    expect(rows).toContain('ref-picker-status--truncated');
+    expect(rows).toContain('Alpha report');
+  });
+
+  it('⛔ stays SILENT when the read was complete — or the note means nothing', () => {
+    const whole = setResults(openList(initialRefPickerState()), OPTIONS, false);
+    expect(renderRefPickerResultRows(whole, CONFIG))
+      .not.toContain('ref-picker-status--truncated');
+    const none = setResults(openList(initialRefPickerState()), [], false);
+    expect(renderRefPickerResultRows(none, CONFIG))
+      .not.toContain('ref-picker-status--truncated');
+  });
+
+  it('⛔ a host that returns a BARE ARRAY still works, and reads as complete', () => {
+    // The contract was widened, not replaced — every existing caller returns an
+    // array and must keep meaning "this is the whole answer".
+    expect(asRefPickerSearchPage(OPTIONS)).toEqual({ options: OPTIONS });
+    expect(asRefPickerSearchPage(OPTIONS).truncated).toBeUndefined();
+    expect(asRefPickerSearchPage({ options: OPTIONS, truncated: true }).truncated).toBe(true);
+  });
+
+  it('⚠ the sentence is overridable, so a host can name what it capped', () => {
+    const s = setResults(openList(initialRefPickerState()), [], true);
+    expect(renderRefPickerResultRows(s, { ...CONFIG, truncatedText: 'Only 200 accounts read.' }))
+      .toContain('Only 200 accounts read.');
+  });
+});

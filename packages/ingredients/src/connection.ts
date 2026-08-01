@@ -35,6 +35,7 @@
  *  undefined-adapter crash. */
 
 import type {
+  ChunkedUploadAuditInfo,
   ConnectionKind,
   ConnectionRow,
 } from '@recued/contracts';
@@ -89,6 +90,21 @@ export interface ConnectionHandlerCtx {
    *  response read time) and can call this once per call site, or
    *  once at the end with both values. */
   setBytes(bytes_in: number, bytes_out: number): void;
+  /** SHA-256 of the resolved one-shot file bytes. The bytes themselves never
+   * enter the audit row; this pin answers which stored content was sent. */
+  setUploadContentSha256?(content_sha256: string): void;
+  /** D-217 § 6.3 — record what a MULTI-REQUEST act actually did.
+   *
+   *  ⛔ `bytes_out` alone cannot tell a complete upload from an abandoned one
+   *  that moved the same volume, and both `committed` and
+   *  `committed_unconfirmed` are `status: 'ok'` rows — so without this the
+   *  § 8.1 distinction the whole poll ruling turns on dies at the audit
+   *  boundary. Called BEFORE the handler throws on a failed walk, so a partial
+   *  egress lands on the error row rather than being lost with it.
+   *
+   *  Optional so the P3.x-era stub handlers (and test ctxs that only need
+   *  `setBytes`) stay valid; the real adapter always supplies it. */
+  setChunkedUpload?(info: ChunkedUploadAuditInfo): void;
 }
 
 /** Per-kind handler signature. Receives the resolved record (raw row
@@ -164,6 +180,11 @@ export interface ConnectionAuditEmission {
    *  never sets these — they remain `undefined` until P4.x lands. */
   bytes_in?: number;
   bytes_out?: number;
+  /** SHA-256 of the resolved one-shot upload content, when this dispatch sent
+   * a stored file. */
+  content_sha256?: string;
+  /** D-217 § 6.3 — present only on a chunked-upload dispatch. */
+  chunked_upload?: ChunkedUploadAuditInfo;
   /** When `status === 'error'`, the captured error code + message. The
    *  code is the `RecipeErrorCode` string (`CONNECTION_NOT_BOUND` /
    *  `CONNECTION_NOT_FOUND` / `INGREDIENT_ADAPTER_ALL_FAILED` for the
@@ -334,10 +355,22 @@ export const createConnectionAdapter = (
     // pattern omits undefined fields from the emission shape.
     let bytesIn: number | undefined;
     let bytesOut: number | undefined;
+    let uploadContentSha256: string | undefined;
+    // D-217 § 6.3 — captured in the SAME closure as the bytes so the error path
+    // below emits it too. A walk that failed at chunk k sent k chunks to a third
+    // party; the row that records that is the error row, not a success row that
+    // never happens.
+    let chunkedUpload: ChunkedUploadAuditInfo | undefined;
     const handlerCtx: ConnectionHandlerCtx = {
       setBytes(in_: number, out: number) {
         bytesIn = in_;
         bytesOut = out;
+      },
+      setUploadContentSha256(contentSha256: string) {
+        uploadContentSha256 = contentSha256;
+      },
+      setChunkedUpload(info: ChunkedUploadAuditInfo) {
+        chunkedUpload = info;
       },
     };
     const emit = async (
@@ -359,6 +392,10 @@ export const createConnectionAdapter = (
           duration_ms: now() - startedAt,
           ...(bytesIn !== undefined ? { bytes_in: bytesIn } : {}),
           ...(bytesOut !== undefined ? { bytes_out: bytesOut } : {}),
+          ...(uploadContentSha256 !== undefined
+            ? { content_sha256: uploadContentSha256 }
+            : {}),
+          ...(chunkedUpload !== undefined ? { chunked_upload: chunkedUpload } : {}),
           ...(error !== undefined ? { error } : {}),
           ts: startedAt,
           ...(stepRecipeId !== undefined ? { recipe_id: stepRecipeId } : {}),

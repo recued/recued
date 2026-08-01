@@ -19,7 +19,7 @@
  */
 
 import { build } from 'esbuild';
-import { chmodSync, mkdirSync, rmSync, cpSync, existsSync, readFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, readdirSync, rmSync, cpSync, existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -37,21 +37,134 @@ const OUT = join(PKG_ROOT, 'dist');
 const pkg = JSON.parse(readFileSync(join(PKG_ROOT, 'package.json'), 'utf8'));
 const VERSION = pkg.version;
 
-// Real npm deps we keep external. better-sqlite3-multiple-ciphers is native (breaks
-// when bundled). The others are heavy enough that bundling inflates
-// the tarball without speeding install.
+// Real npm deps the ESM bundle keeps external — i.e. what `dist/bin.js` needs
+// present in node_modules at runtime (the npm package, the `:managed` seed
+// shim, and running from source).
+//
+// ⚠ THIS LIST NO LONGER DEFINES THE D-178 `lib/` SIDECAR. It did until the CJS
+// twin landed (item 0a); the sidecar is now `SEA_EXTERNAL` below, which is
+// shorter. Kept as a note because the old sentence — "every entry here must be
+// shipped beside the binary" — was true when written and became false without
+// changing, which is exactly how a stale rule survives a review.
+//
+// 🔑 THE RULE, learned twice, and it is ESM-SPECIFIC: a package must be external if OUR code reaches it
+// through a deferred `require('<name>')`. That call survives bundling and
+// resolves against real node_modules at runtime (the banner below gives the ESM
+// output a real `require`), so a BUNDLED package would still be looked up by
+// name and fail MODULE_NOT_FOUND. A package reached only by static `import` is
+// inlined and safe to bundle.
+//
+// ⚠ `mailparser` and `@iarna/toml` were moved INTO the bundle on 2026-07-31
+// after confirming both are static-import-only. That also removes mailparser's
+// whole closure (iconv-lite, libmime, libqp, html-to-text, encoding-japanese,
+// linkify-it) from the sidecar, which is the larger win. Do NOT do the same to
+// `ws` or `imapflow` HERE without first deleting their deferred-require call
+// sites (`ws-server.ts`, `imap-provider.ts`) — bundling those into an ESM
+// output breaks the WebSocket server and IMAP sync respectively, and only at
+// runtime. (The SEA bundle DOES bundle them, safely — see SEA_EXTERNAL: under
+// CJS the same call sites inline instead of resolving at runtime.)
+//
+// ⛔ HIDDEN COUPLING, found by running the bundle in a directory with NO
+// node_modules: bundled `mailparser` deep-requires `nodemailer/lib/addressparser`
+// at runtime. It therefore works ONLY because `nodemailer` stays external and
+// ships in the sidecar. Bundling nodemailer, or dropping it from the sidecar,
+// breaks mail PARSING — a failure nowhere near either package's own call sites.
+// Guarded by `build-externals-declared.test.ts`.
+//
+// 🔑 That coupling is invisible on a dev machine: with node_modules present the
+// deep require resolves and everything looks fine. The only probe that finds it
+// is running the emitted bundle from a clean directory. A static grep for
+// dynamic requires does NOT find it — verified inert against nodemailer, the
+// known positive.
 const EXTERNAL = [
   'better-sqlite3-multiple-ciphers',
+  // deferred require in ws-server.ts
   'ws',
+  // deferred require in imap-provider.ts
   'imapflow',
-  'mailparser',
-  '@iarna/toml',
+  // ⛔ REQUIRED, not an optimization. `defaultSmtpTransportFactory` reaches
+  // nodemailer through a deferred `require()`. Bundled into an ESM output,
+  // esbuild rewrites nodemailer's own internal requires into its `__require`
+  // shim, which THROWS at the first one — outbound SMTP died with
+  // `Dynamic require of "events" is not supported` the moment the transport
+  // was actually invoked.
+  //
+  // That went unnoticed because the substrate-bench replaced the transport
+  // with a mock that returned before `require('nodemailer')` ever ran, so the
+  // one thing exercising this path never reached it. The bench now speaks real
+  // SMTP to a local sink and would fail loudly on a regression here.
+  //
+  // Every entry in this list is also a declared dependency of
+  // backend/server/package.json — keep both sides in step, or the release
+  // artifact resolves an external it does not ship.
+  'nodemailer',
   // Node built-ins — always external.
   'node:*',
 ];
 
-console.log('[build] cleaning dist/');
-if (existsSync(OUT)) rmSync(OUT, { recursive: true, force: true });
+// ── D-178 S1 rev 2 item 1 (re-done under CJS) ────────────────────────────
+// The SEA bundle's externals. SHORTER than the ESM list above, and the reason
+// is the module format, not a different risk appetite:
+//
+//   ESM  — a deferred `require('ws')` survives bundling as a runtime lookup, so
+//          the package must exist on disk. Hence it must be external.
+//   CJS  — `require` is native, so esbuild INLINES the same call. The package
+//          does not need to exist on disk, so it must NOT be external.
+//
+// ⇒ Everything that is external above purely because our code deferred-requires
+// it is bundled here. Only the NATIVE addon is irreducible: `dlopen` needs a
+// real file path, which no bundler can provide (proven for both Node SEA and
+// `bun build --compile` — see the S1 rev-1 finding).
+//
+// 🔑 THIS IS WHY THE D-178 `lib/` SIDECAR IS ONE FILE. Before the CJS twin the
+// sidecar had to carry ws + imapflow + nodemailer + the native driver and their
+// closures; it now carries `better_sqlite3.node` alone.
+//
+// ⚠ VERIFIED BY RUNNING, NOT BY READING — a static "no bare require" check is
+// exactly what missed the mailparser → nodemailer/lib/addressparser coupling.
+// Each package was exercised from a bundle in a directory with NO node_modules:
+// mailparser parsed an RFC2047 encoded-word subject (libmime + iconv), ws
+// completed a real client↔server round-trip, imapflow constructed, and
+// nodemailer's sendMail reached the socket layer (`ECONNREFUSED`, not a module
+// error — the discriminator that proves its transport graph loaded).
+//
+// ⛔ Adding a package here is not free: anything NOT in this list is inlined
+// into a 16 MB blob, so a new native addon must be added, and a new pure-JS dep
+// must be left out. Re-run the clean-directory probe when this changes.
+const SEA_EXTERNAL = [
+  // ⛔ NO npm packages at all — not even the native driver, whose 60 KB JS
+  // wrapper is bundled like everything else. A SEA's `require` resolves
+  // BUILT-INS ONLY: an external here is not merely unbundled, it is
+  // UNLOADABLE at runtime (`No such built-in module`, observed). The addon
+  // itself cannot be bundled and is loaded by `open-database.ts` through
+  // `createRequire(process.execPath)`, then handed to the driver as an object.
+  'node:*',
+];
+
+/** ⛔ Subdirectories of `dist/` this build MUST NOT DELETE.
+ *
+ *  The clean used to be `rmSync(dist, {recursive: true})` — it owned the whole
+ *  directory, not just its own outputs. That silently destroyed:
+ *    - `binary-docker/` — ~10 minutes of cross-compilation, and
+ *    - `release/`       — a CUSTODY-SIGNED release, only regenerable by
+ *                         someone holding the offline signing key.
+ *  Both were lost to `phase-e-package.test.ts`, which runs `build.mjs` to
+ *  exercise `npm pack`. So RUNNING THE TEST SUITE deleted a signed release,
+ *  silently, with the test still green.
+ *
+ *  A build should own the artifacts it emits, not the directory they sit in.
+ *  Stale-output protection is unaffected: the esbuild entry points are still
+ *  wiped every run, and `assertNoStaleSrcJsShadow` still guards the shadowing
+ *  hazard the blanket clean was really there for. */
+const PRESERVED_DIST_DIRS = new Set(['binary', 'binary-docker', 'release']);
+
+console.log('[build] cleaning dist/ (preserving release artifacts)');
+if (existsSync(OUT)) {
+  for (const entry of readdirSync(OUT)) {
+    if (PRESERVED_DIST_DIRS.has(entry)) continue;
+    rmSync(join(OUT, entry), { recursive: true, force: true });
+  }
+}
 mkdirSync(OUT, { recursive: true });
 
 console.log('[build] bundling entry points via esbuild');
@@ -71,6 +184,29 @@ const common = {
   // declared globals; esbuild replaces them verbatim in the bundle.
   define: {
     '__RECUED_SERVER_VERSION__': JSON.stringify(VERSION),
+  },
+  // ⛔ Give the ESM output a REAL `require`. Without this, every deferred
+  // `require()` in our source — `nodemailer`, `imapflow`, `ws` — compiles to
+  // esbuild's `__require` shim, whose body is:
+  //
+  //     if (typeof require !== "undefined") return require.apply(this, arguments);
+  //     throw Error('Dynamic require of "' + x + '" is not supported');
+  //
+  // In an ES module `require` is undefined, so it took the throw. Outbound
+  // SMTP died at `require('nodemailer')` — reported as NETWORK_ERROR, because
+  // the step runner normalizes unknown codes — and IMAP `connect()` would die
+  // the same way at `require('imapflow')`.
+  //
+  // The shim delegates to a real `require` when one is in scope, so defining
+  // one fixes all of them at once and keeps the deferred-require pattern
+  // (which exists to keep heavy deps off the boot path) working as intended.
+  //
+  // ⚠ Banner text lands ABOVE the bundle body but BELOW `bin.ts`'s shebang —
+  // verified in the emitted artifact, not assumed. A banner that displaced the
+  // shebang would make `dist/bin.js` unexecutable.
+  banner: {
+    js: "import { createRequire as __recuedCreateRequire } from 'node:module';\n"
+      + 'const require = __recuedCreateRequire(import.meta.url);',
   },
 };
 
@@ -120,6 +256,39 @@ const indexResult = await build({
   metafile: true,
 });
 assertNoStaleSrcJsShadow(indexResult.metafile, 'index.js');
+
+// ── D-178 S1 rev 2 item 0a — the SEA entry, in CommonJS ──────────────────
+// Node's Single Executable Application embedder runs the blob through
+// `embedderRunCjs`. Handed the ESM `bin.js`, the produced binary died on its
+// FIRST LINE with `Cannot use import statement outside a module` — a 132 MB
+// artifact that could not start at all, while `build-binary.mjs` printed a
+// sha256 and exited 0 over it.
+//
+// ⛔ This is a SECOND OUTPUT, not a format change to `bin.js`, and the
+// distinction is load-bearing: `backend/server/package.json` declares
+// `"type": "module"`, so a CJS `dist/bin.js` would be parsed as ESM by every
+// NORMAL run — `node dist/bin.js`, the npm `bin` link, and the `:managed`
+// image's seed shim (`exec node .../seed-dist/bin.js`) — and fail at the first
+// `require`. Verified: a CJS file under this package errors immediately. The
+// SEA path and the run-from-source path have genuinely different requirements,
+// so they get genuinely different artifacts.
+//
+// The `.cjs` extension is what makes it CommonJS despite `type: module`.
+//
+// ⚠ No banner here. The banner exists to hand the ESM output a real `require`;
+// in CJS `require` is native, and the banner's own `import` statement would be
+// a syntax error.
+const { banner: _esmBanner, ...seaCommon } = common;
+const seaResult = await build({
+  ...seaCommon,
+  format: 'cjs',
+  external: SEA_EXTERNAL,
+  // Narrower than `common.external` on purpose — see SEA_EXTERNAL above.
+  entryPoints: [join(SRC, 'bin.ts')],
+  outfile: join(OUT, 'bin.cjs'),
+  metafile: true,
+});
+assertNoStaleSrcJsShadow(seaResult.metafile, 'bin.cjs');
 
 // D-178 — the thin `:managed` image launcher (I-9 frozen verify-and-exec loop).
 // Bundled standalone so the `:managed` image carries ONLY the launcher + node,

@@ -6,21 +6,36 @@
  *  (D-174 P3): the panels still physically live under `settings/` — this route
  *  imports + composes them and supplies workspace chrome + caller forwarding.
  *
- *  Hosts two sections + one overlay:
+ *  Hosts one section + one overlay:
  *   - the packs browse → detail surface (`mountPacksSurface`, D-182): the unified
  *     list over the catalog ∪ installed roster → the `#packs/<slug>` detail
  *     (install / uninstall / grants). Sits directly under the route's "Packs"
  *     heading — no redundant subheading (it fronts the whole browse corpus, not
  *     just installed packs).
- *   - "Local tools" — `mountLocalToolsPanel`, the per-tool contract × risk
- *     reachability grid (D-182 §7.2). It sits with Packs because the tools a
- *     pack installs are this grid's rows.
  *   - The install-time cli grant dialog (`mountCliGrantDialog`, D-182 §7.1) —
  *     idle until a pack install adds a local-binary tool, then pops a
  *     fail-closed reachability grant over the Packs section. `runInstallWithGrant`
- *     wraps the Packs install caller to fire it, which is WHY Packs + Local
- *     tools travel together (the dialog reads/writes the same reachability cells
- *     the Local tools grid edits).
+ *     wraps the Packs install caller to fire it.
+ *
+ *  ── The retired "Local tools" section (2026-07-27) ────────────────────
+ *  This route used to append a SECOND section: the roster-wide cli reachability
+ *  grid (`mountLocalToolsPanel`, D-182 §7.2) — every installed cli tool × every
+ *  contract. It was appended unconditionally, and the list↔detail toggle happens
+ *  INSIDE the surface, so it also rendered under `#packs/<slug>` — where it read
+ *  as that pack's local tools while actually showing the whole roster (an http
+ *  pack like `adyen-management-accounts` ships no cli op, so nothing in it
+ *  referred to the pack on screen). Both axes of the grant matrix already exist
+ *  and are pack-honest, so the grid was a strictly wider duplicate:
+ *    - `#packs/<slug>` → ACCESS (`pack-access-controls.ts`) — ONE pack's ops ×
+ *      every contract, cli ops included (routed to `cli.reachability.set`).
+ *    - `#contracts/<id>` (`contract-grants-panel.ts`) — ONE contract × every
+ *      entry, cli ops included.
+ *  ⚠ The four `cli.reachability.*` / contracts callers below did NOT go with it —
+ *  three surviving consumers on the pack detail read them (ACCESS's cli toggles,
+ *  ACCESS's contract rows, and the supervised-daemon "not installed" gate). Do
+ *  NOT "disable local tools" by dropping them: that silently makes ACCESS's cli
+ *  op toggles inert (`pack-access-controls.ts` returns early with no writer) and
+ *  ungates daemon Start/Auto for a binary that isn't on PATH.
  */
 
 import { PRIMITIVE_STYLES } from '@recued/ui-shared/primitives';
@@ -37,6 +52,16 @@ import {
 } from './packs-surface.js';
 import { mountPackDiscovery } from '../discover/pack-discovery.js';
 import { DISCOVER_PANEL_STYLES } from '../discover/discover-panel.js';
+// The Use tab's surface styles — inert until a recipe-owning pack's detail
+// renders one.
+import {
+  PACK_APP_STYLES,
+  type PackAppExecuteCaller,
+  type PackAppRecordRefSearchCaller,
+} from './pack-app-view.js';
+// The result panel's OWN stylesheet — scoped to `RECIPE_RESULT_HOST_ATTR`, not
+// to the recipes route, which is what lets a view's output render here at all.
+import { RECIPE_RESULT_PANEL_STYLES } from '../recipes/recipe-result-panel.js';
 
 import {
   PACKS_PANEL_STYLES,
@@ -50,6 +75,7 @@ import {
 } from '../settings/packs-panel.js';
 import type {
   SupervisionListCaller,
+  SupervisionReachabilityCaller,
   SupervisionSetCaller,
 } from '../settings/supervision-controls.js';
 // Connections readiness — pack-row scope-coverage block + its scoped styles.
@@ -67,12 +93,14 @@ import {
   type OwnerOperationListCaller,
   type OwnerOperationUpsertCaller,
 } from '../settings/owner-operation-controls.js';
-// R3 — the contract-grant callers the Access panel needs beyond the
-// local-tools trio (cli list/set are structurally identical rpcs, reused
-// below; the contracts list has a dedicated option because the local-tools
-// copy is gated on a DIFFERENT feature flag).
+// R3 — the contract-grant callers the Access panel needs, including the cli
+// reachability list/set pair (the SAME `cli.reachability.*` rpcs the retired
+// roster-wide grid used) and the contracts list, which has a dedicated option
+// because the fallback copy is gated on a DIFFERENT feature flag.
 import type {
   GrantCatalogOperationsCaller,
+  GrantCliReachabilityListCaller,
+  GrantCliReachabilitySetCaller,
   GrantContractsCaller,
   GrantReadCaller,
   GrantWriteCaller,
@@ -83,15 +111,6 @@ import type {
 // until the picker renders).
 import { INSTALL_GRANT_PICKER_STYLES } from '../settings/install-grant-picker.js';
 import { INSTALL_CONNECT_PICKER_STYLES } from '../settings/install-connect-picker.js';
-import {
-  LOCAL_TOOLS_PANEL_STYLES,
-  mountLocalToolsPanel,
-  type LocalToolsContractsCaller,
-  type LocalToolsListCaller,
-  type LocalToolsPanelMount,
-  type LocalToolsSetCaller,
-  type LocalToolsUniverseCaller,
-} from '../settings/local-tools-panel.js';
 // D-182 §7.1 (increment 5) — the install-time cli grant dialog. Wraps the
 // Packs section's install caller so a pack that adds a local-binary (cli) tool
 // surfaces a fail-closed grant dialog after install (install → dialog → confirm).
@@ -107,8 +126,6 @@ export const PACKS_ROUTE_HOST_ATTR = 'data-recued-packs-route';
 export const PACKS_ROUTE_HEADING_ATTR = 'data-recued-packs-route-heading';
 export const PACKS_ROUTE_PACKS_SECTION_ATTR =
   'data-recued-packs-route-packs';
-export const PACKS_ROUTE_LOCAL_TOOLS_SECTION_ATTR =
-  'data-recued-packs-route-local-tools';
 export const PACKS_ROUTE_UNAVAILABLE_ATTR =
   'data-recued-packs-route-unavailable';
 
@@ -155,11 +172,6 @@ const PACKS_ROUTE_CHROME_STYLES = `
   color: var(--muted);
   font-size: 13px;
 }
-[${PACKS_ROUTE_LOCAL_TOOLS_SECTION_ATTR}] {
-  margin-top: 28px;
-  padding-top: 22px;
-  border-top: 1px solid var(--border);
-}
 @media (max-width: 720px) {
   [${PACKS_ROUTE_HOST_ATTR}] {
     padding: 18px 14px 28px;
@@ -172,7 +184,6 @@ export const PACKS_ROUTE_STYLES = [
   PACKS_PANEL_STYLES,
   INSTALL_GRANT_PICKER_STYLES,
   INSTALL_CONNECT_PICKER_STYLES,
-  LOCAL_TOOLS_PANEL_STYLES,
   CLI_GRANT_DIALOG_STYLES,
   CONNECTIONS_READINESS_STYLES,
   PACK_ACCESS_STYLES,
@@ -180,6 +191,8 @@ export const PACKS_ROUTE_STYLES = [
   // The unified surface (list↔detail toggle) + its browse-list panel styles.
   PACKS_SURFACE_STYLES,
   DISCOVER_PANEL_STYLES,
+  PACK_APP_STYLES,
+  RECIPE_RESULT_PANEL_STYLES,
   PACKS_ROUTE_CHROME_STYLES,
 ].join('\n');
 
@@ -194,10 +207,21 @@ export interface BootstrapPacksRouteOptions {
    *  renders only when BOTH are present. */
   packsResolveCaller?: PacksResolveCaller;
   packsInstallBySlugCaller?: PacksInstallBySlugCaller;
-  localToolsUniverseCaller?: LocalToolsUniverseCaller;
-  localToolsListCaller?: LocalToolsListCaller;
-  localToolsSetCaller?: LocalToolsSetCaller;
-  localToolsContractsCaller?: LocalToolsContractsCaller;
+  // ── The `cli.reachability.*` trio + its contracts list ──────────────
+  // Named for the local-tools CONCEPT (cli binaries), not the retired
+  // roster-wide section: each one is read by a surviving pack-detail consumer.
+  /** `cli.reachability.universe` — the supervised-daemon rows' binary-on-PATH
+   *  gate ("not installed" ⇒ Start/Auto disabled). */
+  localToolsUniverseCaller?: SupervisionReachabilityCaller;
+  /** `cli.reachability.list` — the effective state of the ACCESS panel's cli op
+   *  toggles (fail-closed allowlist, not `contract_grant`). */
+  localToolsListCaller?: GrantCliReachabilityListCaller;
+  /** `cli.reachability.set` — the ACCESS panel's cli op writes. Absent ⇒ those
+   *  toggles render inert, so do not drop this to "turn off local tools". */
+  localToolsSetCaller?: GrantCliReachabilitySetCaller;
+  /** `collection.contract.listContracts` — fallback source for the ACCESS
+   *  panel's contract rows (see {@link accessContractsCaller}). */
+  localToolsContractsCaller?: GrantContractsCaller;
   /** Supervision feature (Slice 4) — `supervision.{list,set}` callers for the
    *  pack-detail daemon controls. Both forwarded into `mountPacksPanel`. */
   supervisionListCaller?: SupervisionListCaller;
@@ -227,6 +251,31 @@ export interface BootstrapPacksRouteOptions {
   accessContractsCaller?: GrantContractsCaller;
   /** D-196 R6 — Seller tiers for the expanded install audience checklist. */
   sellerOverviewCaller?: () => Promise<import('@recued/contracts').SellerOverview>;
+  // ── The Use tab (pack as an app) ──────────────────────────────────
+  /** `recipes.list` — the pack's own recipe bodies, which the view / operation
+   *  split is derived from. Absent ⇒ no pack gets a Use tab. */
+  recipesListCaller?: () => Promise<{
+    recipes: ReadonlyArray<import('@recued/contracts').ServerRecipeListEntry>;
+  }>;
+  /** `execute` — runs a view. Same caller the recipes route uses. */
+  recipeExecuteCaller?: PackAppExecuteCaller;
+  /** `data.file.read` — authenticated owner file read for the Use tab's file
+   *  cards. The SAME caller the recipes route uses, so a file opens on
+   *  identical terms wherever it is rendered. */
+  fileReadCaller?: (args: { record_id: string }) => Promise<
+    import('../recipes/recipe-result-panel.js').ResultFileReadResult
+  >;
+  /** Pack-owned Records inventory for ref-valued editable result cells. */
+  recordRefSearchCaller?: PackAppRecordRefSearchCaller;
+  /** Opens the shared Run | Schedule modal for a pack operation. Owned HERE
+   *  rather than in the panel so one-modal-at-a-time holds for the route. */
+  openRunModal?: (
+    entry: import('@recued/contracts').ServerRecipeListEntry,
+    onRan?: (result: import('@recued/contracts').ServerExecuteResponse) => void,
+    /** A row action's `config` / `context`, so "Open" on a row opens the target
+     *  recipe already filled with that row's id. */
+    prefill?: { config?: Record<string, unknown>; context?: Record<string, unknown> },
+  ) => void;
   /** R22 list→detail — the `#packs/<slug>` deep-link segment. Opens that pack's
    *  DETAIL view on mount; the panel resyncs the hash as the selection changes
    *  (via `replaceState`, so in-page navigation never remounts). */
@@ -243,8 +292,11 @@ export interface BootstrapPacksRouteOptions {
 
 export interface PacksRoute {
   packsPanel(): PacksPanelMount | null;
-  localToolsPanel(): LocalToolsPanelMount | null;
   cliGrantDialog(): CliGrantDialogMount | null;
+  whenLoaded(): Promise<void>;
+  getRecoveryContextFreshness(): 'current' | 'unavailable';
+  /** Re-read the roster while preserving only the broad Packs landing. */
+  retryRecoveryContext?(): Promise<void>;
   dispose(): void;
 }
 
@@ -480,6 +532,25 @@ export const bootstrapPacksRoute = (
           ...(opts.sellerOverviewCaller !== undefined
             ? { runSellerOverview: opts.sellerOverviewCaller }
             : {}),
+          // ── Use tab ──
+          ...(opts.recipesListCaller !== undefined
+            ? { runRecipeList: opts.recipesListCaller }
+            : {}),
+          ...(opts.recipeExecuteCaller !== undefined
+            ? { runRecipeExecute: opts.recipeExecuteCaller }
+            : {}),
+          ...(opts.fileReadCaller !== undefined
+            ? { runFileRead: opts.fileReadCaller }
+            : {}),
+          ...(opts.recordRefSearchCaller !== undefined
+            ? { runRecordRefSearch: opts.recordRefSearchCaller }
+            : {}),
+          // The app view owns the result lifecycle: a task's returned output
+          // replaces the launcher with a receipt/detail, and returning from a
+          // successful write refreshes the open browse view.
+          ...(opts.openRunModal !== undefined
+            ? { openRunModal: opts.openRunModal }
+            : {}),
           ...(opts.contractGrantReadCaller !== undefined
             ? { runContractGrantRead: opts.contractGrantReadCaller }
             : {}),
@@ -535,62 +606,34 @@ export const bootstrapPacksRoute = (
   }
   routeRoot.appendChild(packsSection);
 
-  // ── Local tools section ──────────────────────────────────────────────
-  // The per-tool contract × risk reachability grid — which contracts may
-  // trigger recipes that shell out to a local binary (whisper / ffmpeg /
-  // magick / docling), and at what risk tier. Gated on the universe + list +
-  // set trio; the contract-rows caller is independently optional (absent ⇒
-  // Owner-only rows). `subscribe` keeps the contract rows live.
-  const localToolsSection = doc.createElement('section');
-  localToolsSection.className = 'packs-route-section';
-  localToolsSection.setAttribute(PACKS_ROUTE_LOCAL_TOOLS_SECTION_ATTR, '');
-  const localToolsHeading = doc.createElement('h2');
-  localToolsHeading.className = 'packs-route-section-title';
-  localToolsHeading.textContent = 'Local tools';
-  localToolsSection.appendChild(localToolsHeading);
-
-  let localTools: LocalToolsPanelMount | null = null;
-  if (
-    opts.localToolsUniverseCaller !== undefined
-    && opts.localToolsListCaller !== undefined
-    && opts.localToolsSetCaller !== undefined
-  ) {
-    const localToolsHost = doc.createElement('div');
-    localToolsSection.appendChild(localToolsHost);
-    localTools = mountLocalToolsPanel({
-      host: localToolsHost,
-      document: doc,
-      runUniverse: opts.localToolsUniverseCaller,
-      runList: opts.localToolsListCaller,
-      runSet: opts.localToolsSetCaller,
-      ...(opts.localToolsContractsCaller !== undefined
-        ? { runListContracts: opts.localToolsContractsCaller }
-        : {}),
-      ...(opts.subscribe !== undefined ? { subscribe: opts.subscribe } : {}),
-    });
-  } else {
-    appendUnavailable(
-      doc,
-      localToolsSection,
-      'Local tool reachability is not available on this server yet.',
-    );
-  }
-  routeRoot.appendChild(localToolsSection);
-
+  // No second section — the roster-wide "Local tools" grid is retired (header
+  // note). Per-pack cli reachability lives in the detail's ACCESS section; the
+  // per-contract view lives on `#contracts`.
   opts.root.appendChild(routeRoot);
 
   let disposed = false;
   return {
     packsPanel: () => packs,
-    localToolsPanel: () => localTools,
     cliGrantDialog: () => cliGrantDialog,
+    whenLoaded: () => packs?.whenLoaded() ?? Promise.resolve(),
+    getRecoveryContextFreshness: () =>
+      packs !== null && packs.getListError() === null
+        ? 'current'
+        : 'unavailable',
+    ...(packs !== null
+      ? {
+          retryRecoveryContext: async (): Promise<void> => {
+            packs?.refresh();
+            await packs?.whenLoaded();
+          },
+        }
+      : {}),
     dispose: () => {
       if (disposed) return;
       disposed = true;
-      // Reverse of construction: Local tools → Packs surface → cli grant dialog.
-      // The surface owns BOTH the browse list + the detail panel, so disposing it
-      // tears both down (don't also dispose `packs` — double-dispose).
-      if (localTools !== null) localTools.dispose();
+      // Reverse of construction: Packs surface → cli grant dialog. The surface
+      // owns BOTH the browse list + the detail panel, so disposing it tears both
+      // down (don't also dispose `packs` — double-dispose).
       if (packsSurface !== null) packsSurface.dispose();
       if (cliGrantDialog !== null) cliGrantDialog.dispose();
       try {

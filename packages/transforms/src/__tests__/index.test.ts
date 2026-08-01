@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest';
 import { TRANSFORMS, getTransform } from '../index.js';
 
 describe('TRANSFORMS registry', () => {
-  it('has 83 transforms', () => expect(TRANSFORMS.size).toBe(83));
+  // 90 as of `enrich_by` (the relational join the recipe language lacked — see
+  // its header in `collection.ts`). The count is a deliberate ratchet: an
+  // addition must be a decision, not a drift, and this is where it gets noticed.
+  it('has 91 transforms', () => expect(TRANSFORMS.size).toBe(91));
 
   it('all values are functions', () => {
     for (const [name, fn] of TRANSFORMS) {
@@ -13,8 +16,9 @@ describe('TRANSFORMS registry', () => {
   const expected = [
     // Tier 1
     'filter', 'sort', 'map', 'project', 'reduce', 'unique', 'flatten', 'slice', 'group_by', 'to_list', 'partition',
-    'merge', 'prefix_keys', 'pick', 'omit', 'rename', 'set',
-    'lowercase', 'uppercase', 'trim', 'split', 'contains_any', 'concat', 'replace', 'template', 'truncate', 'strip_html',
+    'merge', 'prefix_keys', 'pick', 'omit', 'rename', 'set', 'json_byte_length',
+    'json_stringify', 'json_parse', 'utf8_byte_length', 'sha256',
+    'lowercase', 'uppercase', 'trim', 'string_length', 'split', 'contains_any', 'concat', 'replace', 'template', 'truncate', 'strip_html',
     'round', 'clamp', 'to_number', 'math',
     'date_diff', 'date_format', 'date_add', 'date_parse', 'is_past', 'is_future', 'date_period',
     'compare', 'coalesce', 'switch', 'all', 'any', 'count', 'default', 'not', 'ternary', 'pluralize',

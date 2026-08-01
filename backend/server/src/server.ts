@@ -376,6 +376,8 @@ export interface ServerConfig {
   workEntityCrudDeps?: import('./work-entity-crud-handler.js').WorkEntityCrudRpcDeps;
   /** Immutable accepted intake-response reads for the owner Data browser. */
   formResponseDeps?: import('./form-response-handler.js').FormResponseRpcDeps;
+  /** D-221 owner-only pack Records explorer and lifecycle rpc deps. */
+  recordsRpcDeps?: import('./records-rpc-handler.js').RecordsRpcDeps;
   /** D-174 #22 — `data.timeline` read pair-RPC deps (Data route
    *  drill-down). Wraps the shared `handleTimelineRequest`. Absent →
    *  the method returns `not_configured`. */
@@ -1407,6 +1409,7 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
     // D-174 #22 — work-entity warehouse CRUD + timeline read (Data route).
     workEntityCrudDeps: config.workEntityCrudDeps,
     formResponseDeps: config.formResponseDeps,
+    recordsRpcDeps: config.recordsRpcDeps,
     timelineRpcDeps: config.timelineRpcDeps,
     memoryRpcDeps: config.memoryRpcDeps,
     fileReadRpcDeps: config.fileReadRpcDeps,

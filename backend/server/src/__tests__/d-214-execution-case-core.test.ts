@@ -58,6 +58,7 @@ const observation = (
   report_id: `report-${id}`,
   root_request_id: `root-${id}`,
   root_request: 'send the quarterly report to the customer',
+  session_id: 'session-fixture',
   governing_contract_id: 'owner',
   principal_key: 'user_self',
   policy_fingerprint: 'policy-a',
@@ -76,6 +77,10 @@ const observation = (
   flow_basis: 'executed',
   outcome: baseOutcome(),
   evidence_kinds: ['unverified_success'],
+    // ⚠ D-219 slice 7 — was 1. The negative floor is now 2, so a one-call
+  // fixture no longer admits at all and these tests would pass vacuously.
+  // The claims here are about STRENGTH, TALLIES and AUTHORIZATION states, not
+  // about the call floor, so the fixture moves rather than the assertion.
   substantive_call_count: 2,
   span_closed: true,
   intent_drifted: false,
@@ -112,7 +117,7 @@ describe('D-214 admission and deterministic aggregation', () => {
     ]).cases).toEqual([]);
     expect(rebuildExecutionCases([
       observation('4', {
-        substantive_call_count: 1,
+        substantive_call_count: 2,
       }),
     ]).cases).toEqual([]);
   });
@@ -134,7 +139,7 @@ describe('D-214 admission and deterministic aggregation', () => {
       observation('2', {
         flow_basis: 'proposed',
         evidence_kinds: ['typed_correction'],
-        substantive_call_count: 1,
+        substantive_call_count: 2,
         outcome: baseOutcome({
           authorization: 'dismissed',
           execution: 'not_executed',
@@ -148,29 +153,29 @@ describe('D-214 admission and deterministic aggregation', () => {
     expect(rebuildExecutionCases([
       observation('3', {
         evidence_kinds: ['untyped_decline'],
-        substantive_call_count: 1,
+        substantive_call_count: 2,
         executed: false,
       }),
       observation('4', {
         evidence_kinds: ['untyped_decline'],
-        substantive_call_count: 1,
+        substantive_call_count: 2,
         executed: false,
       }),
     ]).cases).toEqual([]);
     expect(onlyCase([
       observation('3', {
         evidence_kinds: ['untyped_decline'],
-        substantive_call_count: 1,
+        substantive_call_count: 2,
         executed: false,
       }),
       observation('4', {
         evidence_kinds: ['untyped_decline'],
-        substantive_call_count: 1,
+        substantive_call_count: 2,
         executed: false,
       }),
       observation('5', {
         evidence_kinds: ['untyped_decline'],
-        substantive_call_count: 1,
+        substantive_call_count: 2,
         executed: false,
       }),
     ]).independent_observations).toBe(3);
@@ -211,7 +216,7 @@ describe('D-214 admission and deterministic aggregation', () => {
       observation('1', { evidence_kinds: ['typed_acceptance'] }),
       observation('2', {
         evidence_kinds: ['typed_correction'],
-        substantive_call_count: 1,
+        substantive_call_count: 2,
         outcome: baseOutcome({ feedback: 'corrected' }),
       }),
     ];
@@ -255,7 +260,7 @@ describe('D-214 admission and deterministic aggregation', () => {
   it('excludes self-steered roots from independent recurrence', () => {
     const first = observation('1', {
       evidence_kinds: ['untyped_decline'],
-      substantive_call_count: 1,
+      substantive_call_count: 2,
       executed: false,
     });
     const key = executionCaseKey({
@@ -267,7 +272,7 @@ describe('D-214 admission and deterministic aggregation', () => {
     const rows = ['1', '2', '3'].map((id) =>
       observation(id, {
         evidence_kinds: ['untyped_decline'],
-        substantive_call_count: 1,
+        substantive_call_count: 2,
         executed: false,
         consulted_case_keys: id === '3' ? [key] : [],
       }));
@@ -321,7 +326,6 @@ describe('D-214 admission and deterministic aggregation', () => {
       executed: 4,
       verified_successes: 1,
       verification_failures: 0,
-      execution_failures: 0,
     });
     expect(row.history_outcome).toEqual({
       authorization: 'allowed',
@@ -515,7 +519,17 @@ describe('D-214 admission and deterministic aggregation', () => {
     });
   });
 
-  it('retains all five historical authorization states without defaulting to allowed', () => {
+  it('retains the historical authorization states without defaulting to allowed', () => {
+    // ⚠ D-219 slice 3 — `denied` no longer appears. A `gateway_denial`
+    // observation is EXCLUDED from becoming a case (a denial is a judgement
+    // about a moment, to be surfaced and asked again, not a standing fact), so
+    // there is no case left to carry that state. The other states are unchanged,
+    // which is what this still guards: nothing silently collapses to `allowed`.
+    //
+    // ⚠ D-219 slice 10 — `expired` goes the same way, and its three source rows
+    // are KEPT below on purpose: they sit at the recurrence floor, they used to
+    // form a case, and they now form none. An unanswered approval is silence,
+    // and silence is not a verdict about the approach.
     const sources: CaseSourceObservation[] = [
       observation('10', {
         policy_fingerprint: 'policy-not-required',
@@ -567,7 +581,7 @@ describe('D-214 admission and deterministic aggregation', () => {
             execution: 'not_executed',
           }),
           evidence_kinds: ['abandoned'],
-          substantive_call_count: 1,
+          substantive_call_count: 2,
           flow_basis: 'proposed',
           plan_accepted: false,
           executed: false,
@@ -581,9 +595,7 @@ describe('D-214 admission and deterministic aggregation', () => {
     );
     expect(Object.fromEntries(byPolicy)).toEqual({
       'policy-allowed': 'allowed',
-      'policy-denied': 'denied',
       'policy-dismissed': 'dismissed',
-      'policy-expired': 'expired',
       'policy-not-required': 'not_required',
     });
   });

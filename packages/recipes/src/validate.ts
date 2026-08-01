@@ -46,6 +46,7 @@ import {
   validateRequires,
   validateRunMode,
   validateEnrichmentSteps,
+  validateRequiresFormFields,
 } from './validate/structural.js';
 import {
   validateReferences,
@@ -111,6 +112,7 @@ export const validateRecipe = (input: unknown): ValidationResult => {
   validateRequires(r, add);
   validateRunMode(r, add);
   validateEnrichmentSteps(r, add);
+  validateRequiresFormFields(r, add);
   validateVariables(r, declaredStepIds, add);
   validateOutput(r, declaredStepIds, add);
   validateReferences(r, declaredStepIds, add);

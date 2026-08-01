@@ -106,6 +106,8 @@ import type { DishStore } from '../../dish-store.js';
 import type { ReceptionManageCredentialStore } from '../../storage/reception-manage-credential-store.js';
 import type { ReceptionManageRescheduleRunner } from '../../reception-manage-runner.js';
 import { DEFAULT_LOCAL_CALENDAR_SLUG } from '../../collections/calendar/local-provider.js';
+import type { RecordsStore } from '../../records/store.js';
+import { assertRecordsNonOwnerRecipeExposure } from '../../records/non-owner-exposure.js';
 
 /** Inputs to `composeReceptionSubstrate`. The six "required" handles
  *  gate the whole branch (mirroring the pre-extraction `if`); the
@@ -174,6 +176,9 @@ export interface ComposeReceptionSubstrateDeps {
    * configured row stale rather than silently generic. */
   readonly intakeRecipePairStore?: ReceptionIntakeRecipePairStore | undefined;
   readonly recipeStore?: RecipeStore | undefined;
+  /** D-221 — exact installed Records operation inventory for the reception
+   * exposure gate. */
+  readonly recordsStore?: RecordsStore | undefined;
   /** D-200 Slice 6g.10 — exact recipe-pinned Stripe/template readiness. */
   readonly connectionStore?: Pick<ConnectionStoreSqlite, 'get'> | undefined;
   readonly intakeFormNonceStore: IntakeFormNonceStore | undefined;
@@ -459,6 +464,22 @@ export const composeReceptionSubstrate = async (
       ? { getIntakeRecipePairStore: () => deps.intakeRecipePairStore! }
       : {}),
     ...(deps.recipeStore ? { getRecipeStore: () => deps.recipeStore! } : {}),
+    ...(deps.recordsStore
+      ? {
+          preflightNonOwnerRecipeExposure: (
+            recipe: import('@recued/contracts').RecipeDefinition,
+          ) => assertRecordsNonOwnerRecipeExposure(
+            recipe,
+            'reception',
+            {
+              isOperationId: (operationId) =>
+                deps.recordsStore!.isInstalledOperationId(operationId),
+              isCatalogOperation: (catalogSlug, operationKey) =>
+                deps.recordsStore!.isInstalledCatalogOperation(catalogSlug, operationKey),
+            },
+          ),
+        }
+      : {}),
     ...(deps.connectionStore
       ? { getConnectionStore: () => deps.connectionStore! }
       : {}),

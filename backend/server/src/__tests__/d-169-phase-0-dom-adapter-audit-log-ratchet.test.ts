@@ -312,20 +312,6 @@ describe('D-169 P0 - DOM adapter audit-log ratchet', () => {
     expect(await auditLog.listActivities()).toEqual([]);
   });
 
-  // Deferred per Codex 2026-05-28 7-angle Angle 1 allowance. The
-  // dispatcher's `recordSuccess` is gated on `result.status === 'ok'`
-  // at `dispatcher.ts:594` / `:674`, so the dispatcher `timeout` outcome
-  // is structurally excluded from emission. Slice-4's
-  // `'returns timeout for the first bridge timeout and does not try
-  // another bridge'` already exercises the dispatcher path with
-  // `vi.useFakeTimers()` + `vi.advanceTimersByTimeAsync`. Wiring the
-  // same pattern through the adapter requires advancing past two
-  // additional async boundaries (`orderForDispatch` audit-log query +
-  // `dispatchToBridge` send) which the simple `await Promise.resolve()`
-  // + `advanceTimersByTimeAsync` pair does not flush, and the unit-level
-  // gate already proves the structural exclusion.
-  it.todo('does not emit an audit row when the dispatch times out at the listener');
-
   it('records the row against the serving bridge after a capacity-gap fall-through', async () => {
     // bridge-a is attached more recently → ordered first; it returns a
     // capacity_gap_*. The dispatcher falls through to bridge-b, which

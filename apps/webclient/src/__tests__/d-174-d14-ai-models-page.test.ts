@@ -1120,12 +1120,14 @@ describe('Lever-2 per-slot (Phase 3) — chat catalog mode', () => {
     mount.dispose();
   });
 
-  it('the Automatic hint states the shipped default per source (free pool → Index, slots → Full)', async () => {
+  it('the Automatic hint states the shipped default per source (both → Index)', async () => {
     const { host, mount } = mountFixture();
     await mount.whenLoaded();
-    // The free-pool control recommends Index; the BYOK slot controls recommend Full.
+    // The hint renders `CHAT_CATALOG_SMART_DEFAULT_BY_SOURCE`, so it cannot
+    // drift from what the server serves. Since 2026-07-26 every source thins.
     expect(hasText(host, 'Automatic uses Index for the free pool')).toBe(true);
-    expect(hasText(host, 'Automatic uses Full for a BYOK slot')).toBe(true);
+    expect(hasText(host, 'Automatic uses Index for a BYOK slot')).toBe(true);
+    expect(hasText(host, 'Automatic uses Full for a BYOK slot')).toBe(false);
     mount.dispose();
   });
 

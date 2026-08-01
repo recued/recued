@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
+import type { ResolvedLanAddress } from '../network/resolve-lan-address.js';
+
 const listenerMocks = vi.hoisted(() => {
   const coordinator = {
     apply: vi.fn(),
@@ -29,7 +31,10 @@ const listenerMocks = vi.hoisted(() => {
     // stale `webclientHandler` field — R26.2 Delta 3 moved the webclient bundle
     // handler into `handlers.webclient`; it is no longer a top-level slot.)
     lanRootHandler: vi.fn(),
-    wsHandle: { clientCount: vi.fn(() => 3) },
+    wsHandle: {
+      clientCount: vi.fn(() => 3),
+      bridgeDispatcher: { tag: 'live-bridge-dispatcher' },
+    },
     close: vi.fn(),
   };
   const certChain = { kind: 'cert-chain' };
@@ -44,11 +49,19 @@ const listenerMocks = vi.hoisted(() => {
       hookListener: vi.fn(),
     })),
     createServerHandlerSet: vi.fn(() => handlerSet),
-    resolveLanAddress: vi.fn(() => ({
+    // Annotated with the real return type so an OPTIONAL field (today
+    // `override_ignored`) can be supplied by a test without the inferred
+    // literal type rejecting it.
+    resolveLanAddress: vi.fn((): ResolvedLanAddress => ({
       address: '192.168.1.10',
+      bind_address: '0.0.0.0',
       source: 'detected',
       candidates: [{ address: '192.168.1.10', iface: 'en0' }],
     })),
+    // Mocked so unit tests neither read this host's routing table nor spawn
+    // a `route` subprocess — and so the hint's arrival at the resolver is an
+    // assertion rather than whatever the machine happens to answer.
+    readDefaultRouteGateway: vi.fn(() => '192.168.1.1'),
     createCertChainHolder: vi.fn(() => certChain),
     createProductionPathListenerCoordinator: vi.fn(() => coordinator),
   };
@@ -65,6 +78,10 @@ vi.mock('../server.js', () => ({
 
 vi.mock('../network/resolve-lan-address.js', () => ({
   resolveLanAddress: listenerMocks.resolveLanAddress,
+}));
+
+vi.mock('../network/read-default-route-gateway.js', () => ({
+  readDefaultRouteGateway: listenerMocks.readDefaultRouteGateway,
 }));
 
 vi.mock('@recued/server-tls', () => ({
@@ -144,9 +161,12 @@ const resetListenerMocks = (): void => {
   listenerMocks.resolveLanAddress.mockReset();
   listenerMocks.resolveLanAddress.mockReturnValue({
     address: '192.168.1.10',
+    bind_address: '0.0.0.0',
     source: 'detected',
     candidates: [{ address: '192.168.1.10', iface: 'en0' }],
   });
+  listenerMocks.readDefaultRouteGateway.mockReset();
+  listenerMocks.readDefaultRouteGateway.mockReturnValue('192.168.1.1');
   listenerMocks.createCertChainHolder.mockReset();
   listenerMocks.createCertChainHolder.mockReturnValue(listenerMocks.certChain);
   listenerMocks.createProductionPathListenerCoordinator.mockReset();
@@ -273,6 +293,23 @@ const makeOptions = (
 }) as unknown as ComposeListenersOptions;
 
 describe('composeListeners', () => {
+  it('publishes the live bridge dispatcher after handler assembly and before listener coordination', async () => {
+    const publishBridgeDispatcher = vi.fn();
+
+    await composeListeners(makeOptions({ publishBridgeDispatcher }));
+
+    expect(publishBridgeDispatcher).toHaveBeenCalledOnce();
+    expect(publishBridgeDispatcher).toHaveBeenCalledWith(
+      listenerMocks.handlerSet.wsHandle.bridgeDispatcher,
+    );
+    expect(listenerMocks.createServerHandlerSet.mock.invocationCallOrder[0])
+      .toBeLessThan(publishBridgeDispatcher.mock.invocationCallOrder[0]);
+    expect(publishBridgeDispatcher.mock.invocationCallOrder[0])
+      .toBeLessThan(
+        listenerMocks.createProductionPathListenerCoordinator.mock.invocationCallOrder[0],
+      );
+  });
+
   it('threads live D-201 stores and binding-count retirement authority into WS', async () => {
     const options = makeOptions();
     const store = { tag: 'webhook-ingress-store' };
@@ -1644,7 +1681,12 @@ describe('composeListeners', () => {
 
       expect(result.serverHandlerSet).toBe(listenerMocks.handlerSet);
       expect(result.listenerCoordinator).toBe(listenerMocks.coordinator);
-      expect(result.lanBindAddress).toBe('192.168.1.10');
+      // Bind and advertised are DIFFERENT values now, deliberately: binding a
+      // single LAN address stops serving loopback, which is the one origin the
+      // bundled webclient can boot from. `0.0.0.0` serves both; the LAN IP is
+      // what the pairing address hints publish.
+      expect(result.lanBindAddress).toBe('0.0.0.0');
+      expect(result.lanAdvertisedAddress).toBe('192.168.1.10');
       expect(result.server.wsServer).toBe(listenerMocks.handlerSet.wsHandle);
       expect(result.server.port).toBe(4711);
       expect(listenerMocks.resolveLanAddress).toHaveBeenCalledTimes(1);
@@ -1670,9 +1712,105 @@ describe('composeListeners', () => {
       expect(listenerMocks.handlerSet.close).toHaveBeenCalledTimes(1);
       expect(listenerMocks.coordinator.stop).toHaveBeenCalledTimes(1);
       expect(logSpy).toHaveBeenCalledWith(
-        '[network] LAN bind: 192.168.1.10 (source=detected; candidates=1)',
+        '[network] LAN bind: 0.0.0.0 (reachable at 127.0.0.1 + 192.168.1.10;'
+        + ' source=detected; candidates=1)',
       );
     } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  // ── LAN bind override + default-route hint ──────────────────────────
+  //
+  // `resolveLanAddress` has accepted both inputs since the W3.5 P2 fold and
+  // the boot path supplied NEITHER — it called `resolveLanAddress()` bare, so
+  // the documented "Settings → Server → Network override" reached nothing and
+  // every multi-homed host resolved ambiguously and bound loopback.
+
+  it('threads the owner override AND the default-route hint into the resolver', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const runtimeConfig = {
+      get: vi.fn((key: string) => {
+        if (key === 'network.lan_bind_address') return '192.168.1.121';
+        if (key === 'public_port') return 443;
+        throw new Error(`unexpected key ${key}`);
+      }),
+    };
+
+    try {
+      await composeListeners(makeOptions({ runtimeConfig }));
+
+      expect(runtimeConfig.get).toHaveBeenCalledWith('network.lan_bind_address');
+      expect(listenerMocks.resolveLanAddress).toHaveBeenCalledWith({
+        override: '192.168.1.121',
+        defaultRouteGateway: '192.168.1.1',
+      });
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('passes an undefined override when there is no config store (dbless boot)', async () => {
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    try {
+      await composeListeners(makeOptions());
+      expect(listenerMocks.resolveLanAddress).toHaveBeenCalledWith({
+        override: undefined,
+        defaultRouteGateway: '192.168.1.1',
+      });
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+
+  it('WARNS loudly when the resolver rejected the override, naming the alternatives', async () => {
+    // A dropped override reads exactly like one that was never saved. The
+    // owner set this value precisely because the server was unreachable, so
+    // silence here sends them looking in the wrong place.
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    listenerMocks.resolveLanAddress.mockReturnValue({
+      address: '10.0.0.5',
+      bind_address: '0.0.0.0',
+      source: 'detected',
+      candidates: [{ address: '10.0.0.5', iface: 'en0' }],
+      override_ignored: { value: '192.168.1.121', reason: 'not_bindable_on_this_host' },
+    });
+
+    try {
+      await composeListeners(makeOptions());
+
+      const warning = String(warnSpy.mock.calls.at(-1)?.[0] ?? '');
+      expect(warning).toContain('192.168.1.121'); // the value that lost
+      expect(warning).toContain('not_bindable_on_this_host'); // why
+      expect(warning).toContain('10.0.0.5'); // what bound instead
+      expect(warning).toContain('en0'); // what the machine does offer
+    } finally {
+      warnSpy.mockRestore();
+      logSpy.mockRestore();
+    }
+  });
+
+  it('stays quiet when the override was honoured', async () => {
+    // Without this, an unconditional warning would satisfy the assertion
+    // above and stand as a permanent false alarm on every healthy boot.
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    listenerMocks.resolveLanAddress.mockReturnValue({
+      address: '192.168.1.121',
+      bind_address: '192.168.1.121',
+      source: 'override',
+      candidates: [{ address: '192.168.1.121', iface: 'en0' }],
+    });
+
+    try {
+      await composeListeners(makeOptions());
+      const warnings = warnSpy.mock.calls
+        .map((c) => String(c[0] ?? ''))
+        .filter((m) => m.includes('lan_bind_address'));
+      expect(warnings).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
       logSpy.mockRestore();
     }
   });
@@ -1682,6 +1820,7 @@ describe('composeListeners', () => {
     const runtimeConfig = {
       get: vi.fn((key: string) => {
         if (key === 'public_port') return 8443;
+        if (key === 'network.lan_bind_address') return '';
         throw new Error(`unexpected key ${key}`);
       }),
     };
@@ -2098,5 +2237,165 @@ describe('composeListeners — computeWouldWorsen wiring (R1 registry-shrink)', 
     ]);
     // An unrelated pack drops no local catalog → the registry is unchanged → [].
     expect(worsen!('some-other-pack')).toEqual([]);
+  });
+});
+
+/** D-220 Slice A2b — the composition WIRING, not the gate's logic.
+ *
+ *  ⚠ This test exists because a mutation deleting `formDefinitionReader` from
+ *  `compose-listeners.ts` broke NOTHING: the gate's own unit suite
+ *  (`d-220-save-form-contract.test.ts`) injects its own reader, so it proves the
+ *  logic while being structurally blind to whether production ever passes one.
+ *  A dep that no composition supplies is a gate that silently never runs — the
+ *  declared-not-backed shape. So this drives the real `composeListeners` and
+ *  asserts the reader arrives on `recipeSaveDeps` AND resolves a seeded form.
+ */
+describe('D-220 A2b — recipeSaveDeps carries a live form-definition reader', () => {
+  const intakeConfig = (fields: Array<Record<string, unknown>>) => ({
+    display_name: 'Drop-off',
+    form_definition: { form_definition_id: 'wired-form-v1', fields },
+    submission_processing_rule: {
+      target_kind: 'form_response',
+      fields_to_include_in_target: [],
+      fields_to_attach_as_metadata: [],
+    },
+    anti_spam: {
+      honeypot_fields: [],
+      rate_limit_per_ip: 5,
+      require_proof_of_work: false,
+      require_captcha: false,
+    },
+    required_visitor_fields: { email: 'required' },
+  });
+
+  it('resolves a live intake form and returns null for an unknown id', async () => {
+    const endpointStore = {
+      list: (filter?: { kind?: string }) => (filter?.kind === 'intake_form'
+        ? [{
+            endpoint_id: 'ep-wired',
+            kind: 'intake_form',
+            revoked_at: null,
+            metadata: intakeConfig([
+              { name: 'item_description', type: 'textarea', label: 'Item', required: true },
+            ]),
+          }]
+        : []),
+    };
+    const base = makeOptions();
+    await composeListeners(makeOptions({
+      storage: { ...base.storage, publicEndpointRegistryStoreRef: endpointStore },
+    }));
+    const config = (
+      listenerMocks.createServerHandlerSet.mock.calls as unknown as Array<[
+        Record<string, unknown>,
+      ]>
+    )[0]![0];
+    const deps = config.recipeSaveDeps as {
+      formDefinitionReader?: (id: string) => { fields: Array<{ name: string }> } | null;
+    };
+    // The wiring exists…
+    expect(deps.formDefinitionReader).toEqual(expect.any(Function));
+    // …and it reads the real registry rather than being a stub that returns null.
+    expect(deps.formDefinitionReader!('wired-form-v1')?.fields.map((f) => f.name))
+      .toEqual(['item_description']);
+    expect(deps.formDefinitionReader!('no-such-form')).toBeNull();
+  });
+
+  it('omits the reader when there is no endpoint registry to read', async () => {
+    const base = makeOptions();
+    await composeListeners(makeOptions({
+      storage: { ...base.storage },
+    }));
+    const config = (
+      listenerMocks.createServerHandlerSet.mock.calls as unknown as Array<[
+        Record<string, unknown>,
+      ]>
+    )[0]![0];
+    expect(
+      (config.recipeSaveDeps as Record<string, unknown>).formDefinitionReader,
+    ).toBeUndefined();
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// D-228 slice 3 — the generated-pack install closure, driven for real
+// ════════════════════════════════════════════════════════════════════
+
+/** ⛔⛔ THE TEST THAT WAS MISSING, and the defect it would have caught.
+ *
+ *  `installGeneratedPack` passed `{ manifest, install_scope? }` to
+ *  `handlePacksInstall` and OMITTED `granted_permissions`, which
+ *  `parsePacksInstallArgs` requires to be an array. Every generated-pack
+ *  install therefore threw `bad_request` and `install_scope` never reached
+ *  provisioning — slice 3 was inert in production while its own table entry
+ *  said "covered by typecheck and by reading". A whole-object `as` cast was
+ *  hiding it from the compiler, and read-verification demonstrably missed it.
+ *
+ *  ⚠ THIS DRIVES THE REAL CLOSURE against the REAL `handlePacksInstall`. Earlier
+ *  attempts tried to reach it through `handleMcpPackCommit`, which first runs a
+ *  live `handleConnectionProbe` (module-level `probeMcpStreamTools`, not
+ *  injectable) — but the defect was never in the probe. It was in what
+ *  `compose-listeners` builds, so that is where this drives.
+ *
+ *  🔑 `parsePacksInstallArgs` validates `granted_permissions` BEFORE the
+ *  manifest, so a deliberately thin manifest still exercises the check: the
+ *  assertion is about WHICH failure, not whether one happens. */
+describe('D-228 slice 3 — installGeneratedPack builds a valid packs.install call', () => {
+  const composeWithPackInstall = async () => {
+    const base = makeOptions();
+    // ⚠ BOTH are required: `connectionDeps` is spread only when a connection
+    // store exists, and the closure inside it only when a pack installer does.
+    // Omitting either yields no closure and a test that proves nothing.
+    await composeListeners(makeOptions({
+      rpc: { ...(base.rpc as Record<string, unknown>), packInstallDeps: { tag: 'pack-install' } },
+      app: { ...(base.app as Record<string, unknown>), connectionStoreRef: { get: () => null } },
+    }));
+    const config = (
+      listenerMocks.createServerHandlerSet.mock.calls as unknown as Array<[
+        Record<string, unknown>,
+      ]>
+    ).at(-1)![0];
+    const connectionDeps = config.connectionDeps as Record<string, unknown>;
+    return connectionDeps.installGeneratedPack as
+      ((m: unknown, s?: unknown) => Promise<void>) | undefined;
+  };
+
+  const errorOf = async (fn: () => Promise<unknown>): Promise<string> => {
+    try { await fn(); return ''; } catch (e) { return (e as Error).message ?? String(e); }
+  };
+
+  it('the closure exists once a pack installer is wired', async () => {
+    expect(await composeWithPackInstall()).toBeTypeOf('function');
+  });
+
+  /** ⛔⛔ THE REGRESSION GUARD. Before the fix this failed with
+   *  `granted_permissions must be an array of strings`, every single time. */
+  it('does NOT fail on missing granted_permissions', async () => {
+    const install = await composeWithPackInstall();
+    const msg = await errorOf(() => install!({ slug: 'generated-x', schema_version: 1 }));
+    expect(msg).not.toContain('granted_permissions');
+  });
+
+  /** ⚠ THE KNOWN POSITIVE — without it, "does not contain granted_permissions"
+   *  passes just as well when the call never reaches `parsePacksInstallArgs` at
+   *  all. This proves the probe can SEE the defect: hand the same handler an
+   *  args object missing the field and it says so. */
+  it('…and the same handler DOES say so when the field is absent', async () => {
+    const { handlePacksInstall } = await import('../pack-install-handler.js');
+    const msg = await errorOf(() => handlePacksInstall(
+      { tag: 'pack-install' } as never,
+      { manifest: { slug: 'generated-x', schema_version: 1 } } as never,
+      'recued-generated',
+    ));
+    expect(msg).toContain('granted_permissions must be an array of strings');
+  });
+
+  /** An absent selection must stay ABSENT rather than becoming an explicit
+   *  `undefined` — the parser reads the two differently (`install_scope !==
+   *  undefined` gates a shape check whose failure is a loud `bad_request`). */
+  it('an absent install_scope does not become an explicit undefined', async () => {
+    const install = await composeWithPackInstall();
+    const msg = await errorOf(() => install!({ slug: 'generated-x', schema_version: 1 }));
+    expect(msg).not.toContain('install_scope');
   });
 });

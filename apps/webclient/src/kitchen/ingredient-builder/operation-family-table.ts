@@ -32,6 +32,7 @@ import type {
   InstallGrantSelection,
   InstallScopeWho,
   MetaFieldType,
+  OpKind,
   OperationApproval,
   OperationArgEntry,
   OperationArgType,
@@ -59,6 +60,7 @@ import {
   ACCT_ALIAS_VALUES,
   DATE_GRANULARITIES,
   isCatalogKind,
+  isOpKind,
   isDateGranularity,
   ENTITY_FIELD_PRIVACY_KINDS,
   GRAPHQL_OPERATION_TYPES,
@@ -146,6 +148,10 @@ export const INGREDIENT_BUILDER_HTTP_WRITE_STYLE_ATTR =
   'data-recued-ingredient-builder-http-write-style';
 export const INGREDIENT_BUILDER_AUTH_MODEL_ATTR =
   'data-recued-ingredient-builder-auth-model';
+/** The loaded Table-A ingredient kind. Non-HTTP/CLI kinds are preserved and
+ *  shown read-only because their execution contract is carried by raw binds. */
+export const INGREDIENT_BUILDER_INGREDIENT_KIND_ATTR =
+  'data-recued-ingredient-builder-ingredient-kind';
 export const INGREDIENT_BUILDER_CLI_TOOL_ATTR =
   'data-recued-ingredient-builder-cli-tool';
 export const INGREDIENT_BUILDER_CLI_READINESS_ATTR =
@@ -227,10 +233,19 @@ export type IngredientBuilderSaveStage =
  *  Mirrors the catalog's `ApiExecutionBinding` / `ConnectorExecutionBinding`
  *  unions: the typed kinds (`rest`/`graphql`/`cli_invocation`/`method_call`)
  *  are authored via labeled flat fields; the three realtime-API kinds carry a
- *  raw-JSON fallback until they get typed forms. */
+ *  raw-JSON fallback until they get typed forms. `core.records` is the shipped
+ *  workflow/storage binding and uses that same lossless raw form. */
 export type BindingKindDraft =
   | 'rest'
   | 'graphql'
+  // D-225 Slice 1 — listed so the load-side `binding.kind as BindingKindDraft`
+  // cast stops asserting something false. mcp gets no typed form yet: it rides
+  // the raw-JSON fallback like the three realtime kinds, which already
+  // round-trips a binding verbatim (load stashes the whole object, save parses
+  // it back). A typed form belongs with D-225 Slice 2, and a GENERATED pack is
+  // minted from `tools/list` rather than hand-authored here at all.
+  | 'mcp'
+  | 'core.records'
   | 'cli_invocation'
   | 'method_call'
   | 'webhook_subscription'
@@ -339,6 +354,10 @@ export interface EntityFieldRowDraft {
   source: string;
   /** D-182 Tier-2 entity extras (authored in the per-field Advanced expander). */
   description: string;
+  /** Records-facing display name. */
+  label: string;
+  /** Records ref-slot target entity. */
+  references: string;
   /** the op id whose response sources this field (links it to its read op). */
   sourceOperation: string;
   /** request-side datetime filter granularity (`datetime` fields); '' omits. */
@@ -387,6 +406,9 @@ interface IngredientBuilderState {
   /** Composition governance/trust tier, preserved on round-trip (the old build
    *  hardcoded `private_byo`, downgrading a loaded official/acknowledged pack). */
   catalogKind: CatalogKind;
+  /** Table-A adapter kind. Kept separately from the legacy two-way auth label
+   *  so storage/workflow ingredients do not silently serialize as HTTP. */
+  ingredientKind: OpKind;
   authModel: CompositionAuthModel;
   cliTool: string;
   cliReadinessProbe: string;
@@ -401,6 +423,14 @@ interface IngredientBuilderState {
    *  at install IN ADDITION to the auto-derived read groups (the rare cold-start
    *  override). '' omits the field. */
   packDefaultGrantsText: string;
+  /** Loaded Source contracts are not yet directly editable in Kitchen, but
+   *  they are load-bearing catalog schema and must survive an inspect/save
+   *  round-trip unchanged. */
+  workEntitySources: CompositionIngredient['work_entity_sources'];
+  /** Runtime-generated MCP packs may require catalog lowering even when they
+   *  contain a single operation. Kitchen does not author this flag, but it
+   *  must preserve it when editing such a pack. */
+  forceCatalogLowering: CompositionIngredient['force_catalog_lowering'];
   rows: OperationFamilyRowDraft[];
   entityFields: EntityFieldRowDraft[];
   /** Entity-level cross-vendor aliases, keyed by trimmed entity name. Authored
@@ -478,11 +508,14 @@ export interface IngredientBuilderRoute {
    *  the shell's leave-guard seam (same predicate as the Unsaved cue and
    *  the two-tap New confirm). */
   hasUnsavedChanges(): boolean;
+  /** Save/review chain already dispatched to the source server. */
+  hasInFlightWork(): boolean;
   getState(): {
     draftId?: string;
     title: string;
     slug: string;
     connection: string;
+    ingredientKind: OpKind;
     authModel: CompositionAuthModel;
     cliTool: string;
     cliReadinessProbe: string;
@@ -520,44 +553,58 @@ export interface IngredientBuilderRoute {
 
 export const INGREDIENT_BUILDER_STYLES = `
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] {
-  max-width: 1280px;
+  box-sizing: border-box;
+  max-width: 1200px;
   margin: 0 auto;
-  padding: 24px 24px 32px;
+  padding: 20px 24px 40px;
   color: var(--fg);
 }
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-topbar {
   position: sticky;
-  top: 0;
+  top: 12px;
   z-index: 5;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 12px;
-  align-items: center;
-  justify-content: space-between;
-  margin: -4px -4px 16px;
-  padding: 12px 4px;
-  border-bottom: 1px solid var(--border);
-  background: var(--bg);
+  display: grid;
+  grid-template-columns: minmax(180px, 0.55fr) minmax(420px, 1.45fr) auto;
+  gap: 14px;
+  align-items: end;
+  margin: 0 0 24px;
+  padding: 16px 16px 0;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+  box-shadow: 0 8px 24px rgba(24, 24, 27, 0.06), 0 1px 2px rgba(24, 24, 27, 0.04);
 }
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-header {
-  display: flex;
-  gap: 12px;
-  align-items: center;
+  display: grid;
+  gap: 2px;
+  align-self: center;
+  min-width: 0;
+}
+[${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-eyebrow {
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+[${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-subtitle {
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.35;
 }
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] h1 {
   margin: 0;
-  font-size: 18px;
-  line-height: 1.2;
-  font-weight: 650;
+  font-size: 21px;
+  line-height: 1.15;
+  font-weight: 720;
+  letter-spacing: -0.02em;
   color: var(--fg-strong);
 }
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-nav {
   display: flex;
-  flex-wrap: wrap;
   gap: 4px;
-  margin-bottom: 16px;
-  padding-bottom: 4px;
-  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  scrollbar-width: thin;
 }
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-nav-tab[aria-current='page'] {
   font-weight: 650;
@@ -572,11 +619,11 @@ export const INGREDIENT_BUILDER_STYLES = `
   display: grid;
   gap: 16px;
   margin-bottom: 16px;
-  padding: 16px;
+  padding: 20px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 14px;
   background: var(--surface);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.035);
 }
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-identity-card {
   display: grid;
@@ -592,13 +639,13 @@ export const INGREDIENT_BUILDER_STYLES = `
 }
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-metric {
   display: grid;
-  gap: 4px;
+  gap: 6px;
   min-width: 0;
-  padding: 12px;
+  padding: 16px;
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   background: var(--surface);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+  box-shadow: 0 1px 2px rgba(24, 24, 27, 0.035);
 }
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-metric dt {
   margin: 0;
@@ -609,8 +656,8 @@ export const INGREDIENT_BUILDER_STYLES = `
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-metric dd {
   margin: 0;
   color: var(--fg-strong);
-  font-size: 13px;
-  font-weight: 650;
+  font-size: 14px;
+  font-weight: 700;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -630,10 +677,10 @@ export const INGREDIENT_BUILDER_STYLES = `
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] textarea {
   width: 100%;
   box-sizing: border-box;
-  min-height: 34px;
+  min-height: 38px;
   border: 1px solid var(--border-strong);
-  border-radius: 6px;
-  padding: 6px 10px;
+  border-radius: 9px;
+  padding: 8px 11px;
   color: var(--fg);
   background: var(--surface);
   font: inherit;
@@ -680,6 +727,29 @@ export const INGREDIENT_BUILDER_STYLES = `
   display: grid;
   gap: 12px;
   min-width: 0;
+}
+[${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-section-intro {
+  display: grid;
+  gap: 5px;
+  margin: 0 0 16px;
+  padding: 2px 2px 0;
+}
+[${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-section-intro h2 {
+  font-size: 18px;
+  letter-spacing: -0.015em;
+}
+[${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-section-intro p {
+  max-width: 720px;
+  margin: 0;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+[${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-section-lede {
+  margin: -4px 0 2px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.5;
 }
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-section-header {
   display: flex;
@@ -795,8 +865,9 @@ export const INGREDIENT_BUILDER_STYLES = `
 }
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] h2 {
   margin: 0;
-  font-size: 14px;
-  font-weight: 650;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   color: var(--fg-strong);
 }
 
@@ -1203,6 +1274,10 @@ export const INGREDIENT_BUILDER_STYLES = `
 @media (max-width: 1100px) {
   [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-topbar {
     position: static;
+    grid-template-columns: minmax(160px, 0.7fr) minmax(360px, 1.3fr);
+  }
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-status-line {
+    grid-column: 1 / -1;
   }
   [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-overview {
     grid-template-columns: repeat(3, minmax(120px, 1fr));
@@ -1228,6 +1303,14 @@ export const INGREDIENT_BUILDER_STYLES = `
   [${INGREDIENT_BUILDER_ROUTE_ATTR}] {
     padding: 16px 12px 24px;
   }
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-topbar {
+    grid-template-columns: 1fr;
+    padding: 14px 14px 0;
+    border-radius: 12px;
+  }
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-status-line {
+    grid-column: auto;
+  }
   [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-identity-card,
   [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-draft-picker {
     grid-template-columns: 1fr;
@@ -1242,7 +1325,6 @@ export const INGREDIENT_BUILDER_STYLES = `
     flex: 1 1 0;
   }
 }
-
 /* ── Polish pass (mirrors the recipe editor) ─────────────────────── */
 
 /* Clean state — hide the whole dirty cue (incl. the ::before dot; the
@@ -1257,17 +1339,18 @@ export const INGREDIENT_BUILDER_STYLES = `
 /* Section nav lives INSIDE the sticky topbar as a full-width underline-tab
  * row (the mini-app menu stays reachable while scrolled). */
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-topbar .ingredient-builder-nav {
-  flex-basis: 100%;
-  margin: 0 0 -12px;
-  padding: 0;
-  border-bottom: 0;
+  grid-column: 1 / -1;
+  margin: 4px -16px 0;
+  padding: 0 12px;
+  border-top: 1px solid var(--border);
 }
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-nav-tab.rx-btn {
+  flex: 0 0 auto;
   border: 0;
   border-bottom: 2px solid transparent;
   border-radius: 0;
   background: transparent;
-  padding: 8px 12px;
+  padding: 10px 12px 12px;
   font-weight: 600;
   color: var(--fg-muted);
 }
@@ -1278,6 +1361,7 @@ export const INGREDIENT_BUILDER_STYLES = `
 [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-nav-tab--active.rx-btn {
   color: var(--fg-strong);
   border-bottom-color: var(--accent);
+  background: var(--accent-weak);
 }
 /* Host-level validation issues (visible from every section). The scroll
  * margin keeps revealIssues() clear of the sticky topbar; the measured
@@ -1330,6 +1414,21 @@ export const INGREDIENT_BUILDER_STYLES = `
   white-space: nowrap;
   border: 0;
 }
+@media (max-width: 520px) {
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-topbar .ingredient-builder-nav {
+    flex-wrap: wrap;
+    gap: 0;
+    overflow: visible;
+    padding: 0;
+  }
+  [${INGREDIENT_BUILDER_ROUTE_ATTR}] .ingredient-builder-nav-tab.rx-btn {
+    flex: 1 1 33.333%;
+    justify-content: center;
+    min-width: 0;
+    padding-right: 6px;
+    padding-left: 6px;
+  }
+}
 `;
 
 const RISK_TIERS: readonly OperationRiskTier[] = [
@@ -1350,6 +1449,8 @@ const APPROVALS: readonly OperationApproval[] = [
 const BINDING_KINDS: readonly BindingKindDraft[] = [
   'rest',
   'graphql',
+  'mcp',
+  'core.records',
   'cli_invocation',
   'method_call',
   'webhook_subscription',
@@ -1463,6 +1564,8 @@ const defaultEntityField = (id: string): EntityFieldRowDraft => ({
   pii: '',
   source: 'manual',
   description: '',
+  label: '',
+  references: '',
   sourceOperation: '',
   dateGranularity: '',
   derivationKind: '',
@@ -1470,6 +1573,14 @@ const defaultEntityField = (id: string): EntityFieldRowDraft => ({
   derivationWonPath: '',
   reviewed: false,
 });
+
+/** The route keeps one blank starter row mounted so the first operation can be
+ * authored in place. Treat that editor shell as zero authored operations in
+ * headings and progress metrics until it has an operation key. */
+const authoredOperationRows = (
+  rows: readonly OperationFamilyRowDraft[],
+): readonly OperationFamilyRowDraft[] =>
+  rows.filter((row) => row.operation.trim().length > 0);
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -1833,6 +1944,8 @@ const entityFieldDraftsFromComposition = (
           pii: isEntityFieldPrivacyValue(field.pii) ? field.pii : '',
           source: typeof field.source === 'string' ? field.source : 'manual',
           description: typeof field.description === 'string' ? field.description : '',
+          label: typeof field.label === 'string' ? field.label : '',
+          references: typeof field.references === 'string' ? field.references : '',
           sourceOperation: typeof field.source_operation === 'string' ? field.source_operation : '',
           dateGranularity: isDateGranularity(field.date_granularity) ? field.date_granularity : '',
           derivationKind: derivation?.kind === 'closed_state' ? 'closed_state' : '',
@@ -2017,7 +2130,7 @@ const stateFromBody = (
     const entityAliases = entityAliasesFromComposition(composition);
     const ingredients = Array.isArray(composition.ingredients) ? composition.ingredients : [];
     const firstIngredient = isRecord(ingredients[0]) ? ingredients[0] : {};
-    const ingredientKind = typeof firstIngredient.kind === 'string' ? firstIngredient.kind : 'http';
+    const ingredientKind = isOpKind(firstIngredient.kind) ? firstIngredient.kind : 'http';
     const http = isRecord(firstIngredient.http) ? firstIngredient.http : {};
     const cli = isRecord(firstIngredient.cli) ? firstIngredient.cli : {};
     const materializedRows = rows.length > 0 ? rows : [defaultRow('row-0')];
@@ -2033,11 +2146,18 @@ const stateFromBody = (
       httpSearchStyle: isSearchStyle(http.search_style) ? http.search_style : '',
       httpWriteStyle: isWriteStyle(http.write_style) ? http.write_style : '',
       catalogKind: isCatalogKind(composition.catalog_kind) ? composition.catalog_kind : 'private_byo',
+      ingredientKind,
       authModel: ingredientKind === 'cli' ? 'cli_delegated' : 'recued_injected',
       cliTool: typeof cli.tool === 'string' ? cli.tool : '',
       cliReadinessProbe: stringArrayText(cli.probe),
       ...packStateFromManifest(pack, slug),
       packDefaultGrantsText: defaultGrantsText(composition.default_grants),
+      workEntitySources: Array.isArray(composition.work_entity_sources)
+        ? composition.work_entity_sources as NonNullable<CompositionIngredient['work_entity_sources']>
+        : undefined,
+      forceCatalogLowering: typeof composition.force_catalog_lowering === 'boolean'
+        ? composition.force_catalog_lowering
+        : undefined,
       rows: materializedRows,
       entityFields,
       entityAliases,
@@ -2059,11 +2179,14 @@ const stateFromBody = (
     httpSearchStyle: '',
     httpWriteStyle: '',
     catalogKind: 'private_byo',
+    ingredientKind: 'http',
     authModel: 'recued_injected',
     cliTool: '',
     cliReadinessProbe: '',
     ...packStateFromManifest(undefined, BLANK_DRAFT_SLUG),
     packDefaultGrantsText: '',
+    workEntitySources: undefined,
+    forceCatalogLowering: undefined,
     rows,
     entityFields: [],
     entityAliases: {},
@@ -2289,6 +2412,8 @@ const bindingFromRow = (
 const toIngredientEntityField = (row: EntityFieldRowDraft): IngredientEntityField => {
   const source = row.source.trim();
   const description = row.description.trim();
+  const label = row.label.trim();
+  const references = row.references.trim();
   const sourceOperation = row.sourceOperation.trim();
   const closedPath = row.derivationClosedPath.trim();
   const wonPath = row.derivationWonPath.trim();
@@ -2308,6 +2433,8 @@ const toIngredientEntityField = (row: EntityFieldRowDraft): IngredientEntityFiel
     ...(source.length > 0 ? { source } : {}),
     ...(sourceOperation.length > 0 ? { source_operation: sourceOperation } : {}),
     ...(description.length > 0 ? { description } : {}),
+    ...(label.length > 0 ? { label } : {}),
+    ...(references.length > 0 ? { references } : {}),
     ...(row.dateGranularity === '' ? {} : { date_granularity: row.dateGranularity }),
     ...(derivation !== undefined ? { derivation } : {}),
   };
@@ -2380,13 +2507,18 @@ const buildEntities = (
  *  state. The composition's slug is the ingredient slug (single-ingredient). */
 const buildIngredient = (state: IngredientBuilderState, slug: string): IngredientRow => {
   const entities = buildEntities(state.entityFields, state.entityAliases);
-  if (state.authModel === 'cli_delegated') {
+  if (state.ingredientKind === 'cli') {
     const tool = state.cliTool.trim() || slug || 'cli';
     const ingredient: IngredientRow = {
       slug,
       kind: 'cli',
       cli: { tool, probe: cliReadinessProbeForState(state, tool) },
     };
+    if (entities !== undefined) ingredient.entities = entities;
+    return ingredient;
+  }
+  if (state.ingredientKind !== 'http') {
+    const ingredient: IngredientRow = { slug, kind: state.ingredientKind };
     if (entities !== undefined) ingredient.entities = entities;
     return ingredient;
   }
@@ -2505,9 +2637,15 @@ const buildComposition = (state: IngredientBuilderState): CompositionIngredient 
     schema_version: 1,
     slug,
     catalog_kind: state.catalogKind,
+    ...(state.forceCatalogLowering !== undefined
+      ? { force_catalog_lowering: state.forceCatalogLowering }
+      : {}),
     ingredients: [buildIngredient(state, slug)],
     operations: state.rows.map((row) => toPackOperationRow(row, slug)),
     ...(defaultGrants.length > 0 ? { default_grants: defaultGrants } : {}),
+    ...(state.workEntitySources !== undefined
+      ? { work_entity_sources: state.workEntitySources }
+      : {}),
   };
 };
 
@@ -2706,6 +2844,19 @@ const appendSectionHeader = (
   badge.className = 'ingredient-builder-section-meta';
   host.appendChild(header);
   return header;
+};
+
+const appendSectionIntro = (
+  doc: Document,
+  host: HTMLElement,
+  title: string,
+  description: string,
+): void => {
+  const intro = doc.createElement('div');
+  intro.className = 'ingredient-builder-section-intro';
+  appendText(doc, intro, 'h2', title);
+  appendText(doc, intro, 'p', description);
+  host.appendChild(intro);
 };
 
 const appendPanelSummary = (
@@ -3120,6 +3271,8 @@ const renderOperationAdvancedFields = (
 const KIND_PILL_LABEL: Record<BindingKindDraft, string> = {
   rest: 'REST',
   graphql: 'GQL',
+  mcp: 'MCP',
+  'core.records': 'REC',
   cli_invocation: 'CLI',
   method_call: 'MTHD',
   webhook_subscription: 'HOOK',
@@ -3427,7 +3580,9 @@ const renderTable = (
     groupHeader.appendChild(groupName);
     const count = appendText(doc, groupHeader, 'span', plural(group.rows.length, 'operation'));
     count.className = 'ingredient-builder-section-meta';
-    groupEl.appendChild(groupHeader);
+    // A lone blank starter card is already introduced by the onboarding copy;
+    // an "Ungrouped · 1 operation" header above it contradicts that state.
+    if (!onlyBlankDefault) groupEl.appendChild(groupHeader);
 
     for (const entry of group.rows) {
       groupEl.appendChild(renderOperationCard(doc, state, entry, rerender));
@@ -3459,8 +3614,8 @@ const addCheckboxCell = (
 
 /** D-182 Tier-2 — the per-field "Advanced" extras: a second full-width row under
  *  the field's main row holding a collapsed `<details>` with the optional
- *  `IngredientEntityField` extras (description, the sourcing op, datetime
- *  granularity, and the `closed_state` derivation). Kept out of the main 10-column
+ *  `IngredientEntityField` extras (description/label/reference, the sourcing
+ *  op, datetime granularity, and the `closed_state` derivation). Kept out of the main 10-column
  *  row so the table stays legible; every control still renders into the DOM. */
 const appendEntityExtrasRow = (
   doc: Document,
@@ -3476,7 +3631,7 @@ const appendEntityExtrasRow = (
 
   const details = doc.createElement('details');
   details.className = 'ingredient-builder-panel';
-  appendPanelSummary(doc, details, 'Advanced', 'description · source op · derivation');
+  appendPanelSummary(doc, details, 'Advanced', 'label · reference · source op · derivation');
   const body = doc.createElement('div');
   body.className = 'ingredient-builder-panel-body';
   const grid = doc.createElement('div');
@@ -3486,6 +3641,14 @@ const appendEntityExtrasRow = (
     entry.description = next;
     markDirty(state);
   }), true);
+  addAdvancedField(doc, grid, 'Label', makeEntityTextInput(doc, entry.label, 'label', (next) => {
+    entry.label = next;
+    markDirty(state);
+  }));
+  addAdvancedField(doc, grid, 'References entity', makeEntityTextInput(doc, entry.references, 'references', (next) => {
+    entry.references = next;
+    markDirty(state);
+  }));
   addAdvancedField(doc, grid, 'Source operation', makeEntityTextInput(doc, entry.sourceOperation, 'source_operation', (next) => {
     entry.sourceOperation = next;
     markDirty(state);
@@ -3761,16 +3924,19 @@ const renderEditorOverview = (
   state: IngredientBuilderState,
   host: HTMLElement,
 ): void => {
-  const reviewedOps = state.rows.filter((row) => row.reviewed).length;
+  const authoredOps = authoredOperationRows(state.rows);
+  const reviewedOps = authoredOps.filter((row) => row.reviewed).length;
   const reviewedFields = state.entityFields.filter((field) => field.reviewed).length;
   const piiFields = state.entityFields.filter((field) => field.pii !== '').length;
   const metrics: Array<{ label: string; value: string }> = [
-    { label: 'Operations', value: `${reviewedOps}/${state.rows.length} reviewed` },
+    { label: 'Operations', value: `${reviewedOps}/${authoredOps.length} reviewed` },
     { label: 'Fields', value: `${reviewedFields}/${state.entityFields.length} reviewed` },
     { label: 'PII', value: plural(piiFields, 'tag') },
     {
       label: 'Auth',
-      value: state.authModel === 'cli_delegated' ? 'CLI delegated' : 'Connection',
+      value: state.ingredientKind === 'cli'
+        ? 'CLI delegated'
+        : state.ingredientKind === 'http' ? 'Connection' : state.ingredientKind,
     },
   ];
 
@@ -3971,6 +4137,7 @@ const renderDraftPicker = (
   field.appendChild(label);
   const select = doc.createElement('select');
   select.setAttribute(INGREDIENT_BUILDER_DRAFT_PICKER_ATTR, '');
+  select.setAttribute('aria-label', 'Draft');
   select.disabled = state.draftsStage === 'loading';
 
   const empty = doc.createElement('option');
@@ -4021,6 +4188,7 @@ const renderDraftPicker = (
   // ('Saved' vs 'Save') carries the clean/dirty signal; the button stays live.
   save.disabled = busy;
   save.setAttribute(INGREDIENT_BUILDER_SAVE_ATTR, '');
+  save.setAttribute('title', 'Save and validate draft (⌘S or Ctrl+S)');
   draftActions.appendChild(save);
 
   const refresh = makeButton(
@@ -4032,6 +4200,7 @@ const renderDraftPicker = (
   );
   refresh.disabled = state.draftsStage === 'loading';
   refresh.setAttribute(INGREDIENT_BUILDER_DRAFT_REFRESH_ATTR, '');
+  refresh.setAttribute('title', 'Reload saved drafts');
   draftActions.appendChild(refresh);
 
   // New, guarded by a two-tap confirm when the current draft has unsaved edits.
@@ -4073,13 +4242,24 @@ const renderPackSettings = (
   rerender: () => void,
   target: 'setup' | 'publish',
 ): void => {
+  appendSectionIntro(
+    doc,
+    host,
+    target === 'setup' ? 'Connection setup' : 'Publish details',
+    target === 'setup'
+      ? 'Choose how this pack reaches its service, then describe the result and request conventions.'
+      : 'Finish the pack identity, marketplace metadata, and install defaults before previewing it.',
+  );
   const grid = doc.createElement('div');
-  grid.className = 'ingredient-builder-pack-grid';
+  grid.className = 'ingredient-builder-pack-grid ingredient-builder-card';
   const addField = (labelText: string, child: HTMLElement): void => {
     const field = doc.createElement('div');
     field.className = 'ingredient-builder-field';
     const label = doc.createElement('label');
     label.textContent = labelText;
+    if (child.getAttribute('aria-label') === null) {
+      child.setAttribute('aria-label', labelText);
+    }
     field.appendChild(label);
     field.appendChild(child);
     grid.appendChild(field);
@@ -4088,20 +4268,35 @@ const renderPackSettings = (
   if (target === 'setup') {
     // The connector: how this pack's operations reach the world. The auth model
     // drives whether a cli binary (delegated) or a connection is authored.
-    const authSelect = makeSelectWithAttr(
-      doc,
-      state.authModel,
-      AUTH_MODELS,
-      INGREDIENT_BUILDER_AUTH_MODEL_ATTR,
-      '',
-      (next) => {
-        state.authModel = next;
-        markDirty(state);
-        rerender();
-      },
-    );
-    addField('Auth model', authSelect);
-    if (state.authModel === 'cli_delegated') {
+    // Closed local kinds such as storage have no connector config: show their
+    // real kind and preserve it instead of projecting it onto the HTTP form.
+    if (state.ingredientKind !== 'http' && state.ingredientKind !== 'cli') {
+      const kind = makeTextInputWithAttr(
+        doc,
+        state.ingredientKind,
+        INGREDIENT_BUILDER_INGREDIENT_KIND_ATTR,
+        '',
+        () => undefined,
+      );
+      kind.setAttribute('readonly', '');
+      addField('Ingredient kind', kind);
+    } else {
+      const authSelect = makeSelectWithAttr(
+        doc,
+        state.authModel,
+        AUTH_MODELS,
+        INGREDIENT_BUILDER_AUTH_MODEL_ATTR,
+        '',
+        (next) => {
+          state.authModel = next;
+          state.ingredientKind = next === 'cli_delegated' ? 'cli' : 'http';
+          markDirty(state);
+          rerender();
+        },
+      );
+      addField('Auth model', authSelect);
+    }
+    if (state.ingredientKind === 'cli') {
       addField('CLI tool', makeTextInputWithAttr(
         doc,
         state.cliTool,
@@ -4122,7 +4317,7 @@ const renderPackSettings = (
           markDirty(state);
         },
       ));
-    } else {
+    } else if (state.ingredientKind === 'http') {
       // api (`recued_injected`) connector config — base URL + the connection-KIND
       // these ops authenticate through + the catalog dialects. The secret auth
       // config itself is the D-125 connection record's job, not the pack.
@@ -4621,6 +4816,7 @@ export const bootstrapIngredientBuilderRoute = (
     state.httpSearchStyle = next.httpSearchStyle;
     state.httpWriteStyle = next.httpWriteStyle;
     state.catalogKind = next.catalogKind;
+    state.ingredientKind = next.ingredientKind;
     state.authModel = next.authModel;
     state.cliTool = next.cliTool;
     state.cliReadinessProbe = next.cliReadinessProbe;
@@ -4632,6 +4828,8 @@ export const bootstrapIngredientBuilderRoute = (
     state.packTagsText = next.packTagsText;
     state.packDependenciesText = next.packDependenciesText;
     state.packDefaultGrantsText = next.packDefaultGrantsText;
+    state.workEntitySources = next.workEntitySources;
+    state.forceCatalogLowering = next.forceCatalogLowering;
     state.rows = next.rows;
     state.entityFields = next.entityFields;
     state.entityAliases = next.entityAliases;
@@ -4975,10 +5173,20 @@ export const bootstrapIngredientBuilderRoute = (
     // metrics, and review detail live in non-sticky content below.
     const topbar = doc.createElement('section');
     topbar.className = 'ingredient-builder-topbar';
+    topbar.setAttribute('aria-label', 'Pack editor controls');
 
     const header = doc.createElement('div');
     header.className = 'ingredient-builder-header';
+    const eyebrow = appendText(doc, header, 'span', 'Ingredient workspace');
+    eyebrow.className = 'ingredient-builder-eyebrow';
     appendText(doc, header, 'h1', 'Pack editor');
+    const subtitle = appendText(
+      doc,
+      header,
+      'span',
+      'Define, review, and install a reusable capability.',
+    );
+    subtitle.className = 'ingredient-builder-subtitle';
     topbar.appendChild(header);
 
     const pickerRefs = renderDraftPicker(
@@ -4992,17 +5200,48 @@ export const bootstrapIngredientBuilderRoute = (
     // updates don't depend on the active view); only the active one is shown.
     const nav = doc.createElement('nav');
     nav.className = 'ingredient-builder-nav';
-    for (const entry of SECTIONS) {
+    nav.setAttribute('aria-label', 'Pack editor sections');
+    nav.setAttribute('role', 'tablist');
+    nav.setAttribute('aria-orientation', 'horizontal');
+    const focusSectionTab = (id: SectionId): void => {
+      const next = host.querySelector?.(
+        `[${INGREDIENT_BUILDER_SECTION_NAV_ATTR}="${id}"]`,
+      ) as { focus?: (options?: FocusOptions) => void } | null | undefined;
+      next?.focus?.({ preventScroll: true });
+    };
+    for (const [sectionIndex, entry] of SECTIONS.entries()) {
       const active = state.activeSection === entry.id;
       const tab = makeButton(doc, entry.label, 'secondary', 'sm', () => {
         if (state.activeSection === entry.id) return;
         state.activeSection = entry.id;
         rerender();
+        focusSectionTab(entry.id);
       });
       tab.className += active
         ? ' ingredient-builder-nav-tab ingredient-builder-nav-tab--active'
         : ' ingredient-builder-nav-tab';
       tab.setAttribute(INGREDIENT_BUILDER_SECTION_NAV_ATTR, entry.id);
+      tab.setAttribute('id', `ingredient-builder-tab-${entry.id}`);
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-controls', `ingredient-builder-panel-${entry.id}`);
+      tab.setAttribute('aria-selected', String(active));
+      tab.setAttribute('tabindex', active ? '0' : '-1');
+      tab.addEventListener('keydown', (event) => {
+        const key = (event as KeyboardEvent).key;
+        let nextIndex: number | null = null;
+        if (key === 'ArrowRight') nextIndex = (sectionIndex + 1) % SECTIONS.length;
+        if (key === 'ArrowLeft') {
+          nextIndex = (sectionIndex - 1 + SECTIONS.length) % SECTIONS.length;
+        }
+        if (key === 'Home') nextIndex = 0;
+        if (key === 'End') nextIndex = SECTIONS.length - 1;
+        if (nextIndex === null) return;
+        event.preventDefault();
+        const nextSection = SECTIONS[nextIndex]!;
+        state.activeSection = nextSection.id;
+        rerender();
+        focusSectionTab(nextSection.id);
+      });
       if (active) tab.setAttribute('aria-current', 'page');
       nav.appendChild(tab);
     }
@@ -5054,12 +5293,22 @@ export const bootstrapIngredientBuilderRoute = (
         ? 'ingredient-builder-section-view'
         : 'ingredient-builder-section-view is-hidden';
       el.setAttribute(INGREDIENT_BUILDER_SECTION_VIEW_ATTR, id);
+      el.setAttribute('id', `ingredient-builder-panel-${id}`);
+      el.setAttribute('role', 'tabpanel');
+      el.setAttribute('aria-labelledby', `ingredient-builder-tab-${id}`);
+      if (state.activeSection !== id) el.setAttribute('hidden', '');
       content.appendChild(el);
       return el;
     };
 
     // ── Overview — identity (title / slug) + metrics + review detail.
     const overview = view('overview');
+    appendSectionIntro(
+      doc,
+      overview,
+      'Draft overview',
+      'Name the pack and track its operation, field, privacy, and connection readiness at a glance.',
+    );
     const identity = doc.createElement('div');
     identity.className = 'ingredient-builder-card ingredient-builder-identity-card';
 
@@ -5073,6 +5322,7 @@ export const bootstrapIngredientBuilderRoute = (
       markDirty(state);
     });
     titleInput.setAttribute(INGREDIENT_BUILDER_TITLE_ATTR, '');
+    titleInput.setAttribute('aria-label', 'Draft title');
     titleWrap.appendChild(titleInput);
     identity.appendChild(titleWrap);
 
@@ -5094,6 +5344,7 @@ export const bootstrapIngredientBuilderRoute = (
       markDirty(state);
     });
     slugInput.setAttribute(INGREDIENT_BUILDER_SLUG_ATTR, '');
+    slugInput.setAttribute('aria-label', 'Slug');
     slugWrap.appendChild(slugInput);
     identity.appendChild(slugWrap);
     overview.appendChild(identity);
@@ -5107,13 +5358,19 @@ export const bootstrapIngredientBuilderRoute = (
 
     // ── Operations — family-grouped op cards.
     const operationsView = view('operations');
+    appendSectionIntro(
+      doc,
+      operationsView,
+      'Operations',
+      'Define the calls this pack can make and the approval policy each family carries.',
+    );
     const operations = doc.createElement('section');
-    operations.className = 'ingredient-builder-editor-section';
+    operations.className = 'ingredient-builder-editor-section ingredient-builder-card';
     const operationsHeader = appendSectionHeader(
       doc,
       operations,
       'Operation families',
-      plural(state.rows.length, 'operation'),
+      plural(authoredOperationRows(state.rows).length, 'operation'),
     );
     const add = makeButton(doc, 'Add operation', 'secondary', 'sm', () => {
       state.rows.push(defaultRow(`row-${nextRowId}`));
@@ -5128,8 +5385,14 @@ export const bootstrapIngredientBuilderRoute = (
 
     // ── Data fields — entity schema.
     const dataView = view('data');
+    appendSectionIntro(
+      doc,
+      dataView,
+      'Data fields',
+      'Describe the records these operations read or write, including aliases and privacy tags.',
+    );
     const entitySection = doc.createElement('section');
-    entitySection.className = 'ingredient-builder-editor-section';
+    entitySection.className = 'ingredient-builder-editor-section ingredient-builder-card';
     const entityHeader = appendSectionHeader(
       doc,
       entitySection,
@@ -5242,12 +5505,16 @@ export const bootstrapIngredientBuilderRoute = (
       // leaving mid-save could still lose the edits being saved.
       return saveInFlight || draftHasUnsavedContent(state);
     },
+    hasInFlightWork() {
+      return saveInFlight;
+    },
     getState() {
       return {
         ...(state.draftId !== undefined ? { draftId: state.draftId } : {}),
         title: state.title,
         slug: state.slug,
         connection: state.connection,
+        ingredientKind: state.ingredientKind,
         authModel: state.authModel,
         cliTool: state.cliTool,
         cliReadinessProbe: state.cliReadinessProbe,

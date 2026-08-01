@@ -1,9 +1,12 @@
 /** D-148 P4 — "Clear this browser" wipes only the documented surfaces. */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { clearThisBrowser } from '../auth/clear-this-browser.js';
+import type { PairFinalizeLockProvider } from '../auth/pair-code-success.js';
+import { inspectColdStartCredentials } from '../boot/cold-start-credential-repair.js';
 import { WEBCLIENT_SHELL_CACHE_NAME } from '../runtime/service-worker.js';
 import { createInMemoryWebclientLocalStore } from '../storage/local-store.js';
+import type { WebclientTokenStore } from '../storage/token-store.js';
 
 // Seed + assert the REAL constant, never a copy of its current value. A literal
 // here pins whatever the constant happens to say, so it stays green through
@@ -64,10 +67,161 @@ describe('D-148 P4 — clear this browser', () => {
       crypto_keys_wiper: async () => {
         wiped = true;
       },
+      on_local_credentials_cleared: () => {
+        throw new Error('advisory observer unavailable');
+      },
     });
     expect(wiped).toBe(true);
     expect(result.cleared_crypto_keys).toBe(true);
     expect(result.cleared_local_store).toBe(true);
+  });
+
+  it('signals at the durable credential boundary even when later cleanup fails', async () => {
+    const events: string[] = [];
+    const local_store = createInMemoryWebclientLocalStore({
+      server_url: 'wss://x',
+      server_public_key: 'pk',
+    });
+    const originalClear = local_store.clear.bind(local_store);
+    local_store.clear = async () => {
+      events.push('local-store');
+      await originalClear();
+    };
+
+    await expect(clearThisBrowser({
+      local_store,
+      on_local_credentials_cleared: () => {
+        events.push('sibling-signal');
+      },
+      crypto_keys_wiper: async () => {
+        events.push('crypto-key');
+      },
+      session_storage: {
+        clear: () => {
+          events.push('session-storage');
+          throw new Error('session storage unavailable');
+        },
+      },
+    })).rejects.toThrow('session storage unavailable');
+
+    expect(events).toEqual([
+      'local-store',
+      'sibling-signal',
+      'crypto-key',
+      'session-storage',
+    ]);
+    expect(await local_store.inspect()).toMatchObject({
+      server_url: null,
+      server_public_key: null,
+    });
+  });
+
+  it('holds the pair lock through key deletion, then releases before cache cleanup', async () => {
+    let tail: Promise<unknown> = Promise.resolve();
+    const request = vi.fn();
+    const pair_lock_provider: PairFinalizeLockProvider = {
+      request<T>(
+        name: string,
+        options: { mode: 'exclusive' },
+        callback: () => Promise<T>,
+      ): Promise<T> {
+        request(name, options);
+        const run = tail.catch(() => undefined).then(callback);
+        tail = run.then(
+          () => undefined,
+          () => undefined,
+        );
+        return run;
+      },
+    };
+    const local_store = createInMemoryWebclientLocalStore({
+      server_url: 'wss://x',
+      server_public_key: 'pk',
+    });
+    const events: string[] = [];
+    const originalClear = local_store.clear.bind(local_store);
+    const originalGet = local_store.get.bind(local_store);
+    let arrivalRead = false;
+    local_store.get = async (key) => {
+      arrivalRead = true;
+      return originalGet(key);
+    };
+    local_store.clear = async () => {
+      events.push('local-clear');
+      await originalClear();
+    };
+    let releaseKeyWipe!: () => void;
+    const keyWipeStarted = new Promise<void>((resolve) => {
+      releaseKeyWipe = resolve;
+    });
+    let announceKeyWipe!: () => void;
+    const keyWipeReached = new Promise<void>((resolve) => {
+      announceKeyWipe = resolve;
+    });
+    let releaseCache!: () => void;
+    const cacheGate = new Promise<void>((resolve) => {
+      releaseCache = resolve;
+    });
+    let announceCache!: () => void;
+    const cacheReached = new Promise<void>((resolve) => {
+      announceCache = resolve;
+    });
+
+    const clearPromise = clearThisBrowser({
+      local_store,
+      pair_lock_provider,
+      on_local_credentials_cleared: () => events.push('sibling-signal'),
+      crypto_keys_wiper: async () => {
+        events.push('key-start');
+        announceKeyWipe();
+        await keyWipeStarted;
+        events.push('key-finish');
+      },
+      cache_storage: {
+        async keys() {
+          events.push('cache-start');
+          announceCache();
+          await cacheGate;
+          events.push('cache-finish');
+          return [];
+        },
+        async delete() {
+          return true;
+        },
+      },
+    });
+    await keyWipeReached;
+
+    const arrival = inspectColdStartCredentials({
+      localStore: local_store,
+      tokenStore: {
+        wrap: vi.fn(),
+        unwrap: vi.fn(),
+      } as unknown as WebclientTokenStore,
+      pairLockProvider: pair_lock_provider,
+      settleMs: 10_000,
+    });
+    await Promise.resolve();
+    expect(arrivalRead).toBe(false);
+
+    releaseKeyWipe();
+    await cacheReached;
+    const arrivalHealth = await arrival;
+
+    expect(arrivalHealth).toEqual({ kind: 'continue' });
+    expect(arrivalRead).toBe(true);
+    expect(events).toEqual([
+      'local-clear',
+      'sibling-signal',
+      'key-start',
+      'key-finish',
+      'cache-start',
+    ]);
+    releaseCache();
+    await clearPromise;
+    expect(events.at(-1)).toBe('cache-finish');
+    expect(request).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls[0]?.[0]).toBe(request.mock.calls[1]?.[0]);
   });
 
   it('honors custom sw_cache_names', async () => {

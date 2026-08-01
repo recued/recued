@@ -39,12 +39,19 @@ export const MICROSOFT_AUTHORIZE_URL =
   'https://login.microsoftonline.com/common/oauth2/v2.0/authorize';
 
 /** Microsoft identity platform v2 token endpoint (`common` tenant). The
- *  canonical home for the Graph token URL — the mail + calendar OAuth configs
- *  (`GRAPH_OAUTH_CONFIG` / `GRAPH_CAL_OAUTH_CONFIG`) and the D-192 OneDrive
+ *  canonical home for the Graph token URL — the graph mail + calendar adapters
+ *  (`GRAPH_TOKEN_URL` / `GRAPH_CAL_TOKEN_URL`) and the D-192 OneDrive
  *  vendor-connection provider all POST their `authorization_code` /
  *  `refresh_token` exchanges here. Same `/common/` tenant as the authorize URL. */
 export const MICROSOFT_TOKEN_URL =
   'https://login.microsoftonline.com/common/oauth2/v2.0/token';
+
+/** Google OAuth2 token endpoint — the gmail + gcal adapters' counterpart to
+ *  `MICROSOFT_TOKEN_URL`. A PROTOCOL constant, not a credential: it is the one
+ *  piece of the old `GMAIL_OAUTH_CONFIG` / `GCAL_OAUTH_CONFIG` consts that
+ *  survived deleting the six `RECUED_*` OAuth env vars, since the stored-
+ *  credential path still needs somewhere to POST the exchange. */
+export const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
 // ── Scope strings ────────────────────────────────────────────────────
 
@@ -93,11 +100,31 @@ export const gmailScopes = (sendEnabled: boolean): string[] => [
   ...(sendEnabled ? [GMAIL_SEND_SCOPE] : []),
 ];
 
-export const graphMailScopes = (sendEnabled: boolean): string[] => [
+/** Microsoft mail-lane scopes.
+ *
+ *  `calendarEnabled` folds the CALENDAR scope into the SAME consent. Microsoft
+ *  is the one issuer where this costs nothing extra: its mail and calendar
+ *  adapters are both named `graph`, so their tokens live under one
+ *  `account.graph.<slug>.*` prefix and one grant genuinely serves both lanes
+ *  (`collections/calendar/enroll.ts` § 2). Their scope sets already overlap on
+ *  `offline_access` + `User.Read`; only `Calendars.ReadWrite` is new.
+ *
+ *  ⚠ That scope is read/WRITE, while mail defaults to read-only with send as a
+ *  separate opt-in. So this is gated on an explicit, unchecked-by-default choice
+ *  — never folded in silently — exactly as `sendEnabled` is.
+ *
+ *  Google is deliberately NOT symmetric: `gmail` and `gcal` are distinct adapter
+ *  names with distinct key prefixes, so one consent's tokens would have to be
+ *  fanned out to a second prefix. That is a separate change. */
+export const graphMailScopes = (
+  sendEnabled: boolean,
+  calendarEnabled = false,
+): string[] => [
   GRAPH_MAIL_READ_SCOPE,
   GRAPH_OFFLINE_SCOPE,
   GRAPH_USER_READ_SCOPE,
   ...(sendEnabled ? [GRAPH_MAIL_SEND_SCOPE] : []),
+  ...(calendarEnabled ? [GRAPH_CALENDAR_SCOPE] : []),
 ];
 
 export const gcalScopes = (): string[] => [GCAL_SCOPE];
@@ -161,14 +188,22 @@ const buildMicrosoftAuthorizeUrl = (
   return u.toString();
 };
 
-/** Build the Mail-lane consent URL for Gmail / Microsoft. */
+/** Build the Mail-lane consent URL for Gmail / Microsoft.
+ *
+ *  `calendar_enabled` applies to MICROSOFT ONLY — see {@link graphMailScopes}.
+ *  Passing it for `gmail` is ignored rather than an error, because the caller is
+ *  a form whose field set is provider-driven; silently widening Google's consent
+ *  would be the actual bug. */
 export const buildMailAuthorizeUrl = (
   provider: MailOAuthProvider,
-  params: AuthorizeUrlParams & { send_enabled: boolean },
+  params: AuthorizeUrlParams & { send_enabled: boolean; calendar_enabled?: boolean },
 ): string =>
   provider === 'gmail'
     ? buildGoogleAuthorizeUrl(gmailScopes(params.send_enabled), params)
-    : buildMicrosoftAuthorizeUrl(graphMailScopes(params.send_enabled), params);
+    : buildMicrosoftAuthorizeUrl(
+        graphMailScopes(params.send_enabled, params.calendar_enabled === true),
+        params,
+      );
 
 /** Build the Calendar-lane consent URL for Google / Microsoft. */
 export const buildCalendarAuthorizeUrl = (
@@ -405,15 +440,19 @@ export interface OpenerRelayMessage {
 // Recued-operated broker — D-062). Historically these were ENV-only
 // (`RECUED_{GMAIL,GCAL,GRAPH}_CLIENT_ID/SECRET`), which means SSHing into the
 // box — wrong for the "normal people / one-click VPS + webclient" onboarding.
-// These types back a UI surface where the user enters the credentials, stored
-// encrypted server-side, with the env vars kept as an operator fallback.
+// Those six env vars were DELETED (2026-07-28): they widened the secret's
+// exposure surface (plaintext in the process env — readable via `ps eww`,
+// `/proc/<pid>/environ`, shell history, `docker inspect`) and they bypassed
+// the vault lock, where the store path refuses with `locked` (423). No
+// distribution artifact ever set them. These types now back the ONLY
+// credential path — a UI surface where the owner enters the credentials,
+// stored encrypted server-side (AES-256-GCM, per-row AAD).
 
 /** The two OAuth app issuers a server can hold BYO credentials for. ONE Google
  *  Cloud OAuth app (`google`) covers BOTH Gmail and Google Calendar (same
  *  project, same client); ONE Microsoft Entra app (`microsoft`) covers Outlook
- *  mail AND calendar (Graph). This mirrors how the env vars already share
- *  `RECUED_GRAPH_*` across graph mail + calendar — per-issuer is the natural
- *  unit (one app to create, not one per mailbox-vs-calendar). */
+ *  mail AND calendar (Graph). Per-issuer is the natural unit — one app to
+ *  create, not one per mailbox-vs-calendar. */
 export type OAuthAppIssuer = 'google' | 'microsoft';
 
 export const OAUTH_APP_ISSUERS: readonly OAuthAppIssuer[] = ['google', 'microsoft'] as const;
@@ -427,12 +466,15 @@ export const oauthAppIssuerForProvider = (
 /** Per-issuer status for the setup UI (`server.getOAuthAppConfig`). NEVER
  *  carries the `client_secret` — it is write-only; `has_secret` only reports
  *  whether one is available. `source` says where the EFFECTIVE config comes
- *  from: `stored` (entered in the UI), `env` (a `RECUED_*` var), or `null`
- *  (unconfigured). `client_id` is the effective id, for display + pre-fill. */
+ *  from: `stored` (entered in the UI) or `null` (unconfigured). A third member
+ *  `'env'` was REMOVED with the six `RECUED_*` OAuth vars (2026-07-28) — the
+ *  encrypted store is now the only producer, so `client_id !== null` implies
+ *  `source === 'stored'`. `client_id` is the effective id, for display +
+ *  pre-fill. */
 export interface OAuthAppConfigStatus {
   client_id: string | null;
   has_secret: boolean;
-  source: 'stored' | 'env' | null;
+  source: 'stored' | null;
 }
 
 /** Full snapshot — one status per issuer. */
@@ -447,8 +489,10 @@ export interface SetOAuthAppConfigArgs {
   client_secret: string;
 }
 
-/** Args for `server.clearOAuthAppConfig` — remove an issuer's stored config
- *  (the effective config then reverts to the env var if one is set). */
+/** Args for `server.clearOAuthAppConfig` — remove an issuer's stored config.
+ *  The issuer is then UNCONFIGURED (`source: null`); there is no fallback tier
+ *  behind the store, so enroll surfaces `not_configured` until new credentials
+ *  are entered. */
 export interface ClearOAuthAppConfigArgs {
   issuer: OAuthAppIssuer;
 }

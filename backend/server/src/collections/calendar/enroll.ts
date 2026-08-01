@@ -50,8 +50,11 @@ import type { CollectionInstanceStore } from '../instance-store.js';
 import type { CalendarAdapterRegistry } from './adapter-registry.js';
 import { probeCalendarAdapter } from './adapter-registry.js';
 import {
+  defaultHttpFetcher,
   exchangeCodeForTokens,
+  fetchGraphGrantIdentity,
   keyPrefix as oauthKeyPrefix,
+  writeGraphGrantIdentity,
   OAuthError,
   type HttpFetcher,
   type OAuthAccountStore,
@@ -241,10 +244,32 @@ export const handleCalendarEnrollOAuth = async (
       409,
     );
   }
+  // ⛔ Refuse to CLOBBER a `graph` grant the mail lane is using.
+  //
+  // Microsoft mail and calendar share `account.graph.<slug>.*`, and a
+  // calendar-lane consent requests `graphCalendarScopes()` — which carries NO
+  // `Mail.Read`. Exchanging it here would overwrite the mail account's tokens
+  // with a grant that cannot read mail, breaking that mailbox at its next
+  // refresh. `attachGraphGrant` is the correct path: it adopts the existing
+  // grant (which already covers both lanes when the owner ticked the calendar
+  // box) instead of replacing it.
+  //
+  // `gcal` is exempt — its prefix differs from `gmail`, so there is nothing to
+  // clobber.
+  if (adapter === 'graph' && deps.instances.get('mail', slug)?.adapter_type === 'graph') {
+    throw new RpcError(
+      'conflict',
+      `collection.calendar.enrollOAuth: Microsoft mail account '${slug}' shares this `
+      + 'sign-in — a calendar-only consent would revoke its mail access. Use '
+      + "collection.calendar.attachGraphGrant to reuse that account's grant, or "
+      + 'enroll the calendar under a different name.',
+      409,
+    );
+  }
   if (!deps.oauthConfig) {
     throw new RpcError(
       'not_configured',
-      `collection.calendar.enrollOAuth: server has no OAuth client configured — set RECUED_GCAL_CLIENT_ID / RECUED_GRAPH_CLIENT_ID`,
+      `collection.calendar.enrollOAuth: server has no OAuth client configured — add your Google or Microsoft OAuth app under Connections → Calendar`,
       503,
     );
   }
@@ -261,8 +286,9 @@ export const handleCalendarEnrollOAuth = async (
   // `account.<adapter>.<slug>.*`. `gcal` uses `gcal` prefix (distinct
   // from `gmail` which uses `gmail`). `graph` shares the prefix with
   // mail — deliberate per D-117 adapter-name decision.
+  let exchanged: { access_token: string };
   try {
-    await exchangeCodeForTokens({
+    exchanged = await exchangeCodeForTokens({
       provider: adapter as OAuthProvider,
       slug,
       code,
@@ -281,6 +307,30 @@ export const handleCalendarEnrollOAuth = async (
       );
     }
     throw err;
+  }
+
+  // Record WHOSE grant this is, for `graph` only — the symmetric twin of the
+  // write in `collection.mail.enrollOAuth`.
+  //
+  // 🔑 Load-bearing even though nothing reads it on THIS path: a calendar-first
+  // enroll (no mail row yet, so the clobber guard above does not fire) would
+  // otherwise leave the grant anonymous, and a later mail enroll at the same slug
+  // would have nothing to compare against — the identity check would silently
+  // pass for a different account. The check is only as good as the data written
+  // BEFORE the sharing starts.
+  if (adapter === 'graph') {
+    // ⚠ `deps.fetcher ?? defaultHttpFetcher`, NOT a `deps.fetcher !== undefined`
+    // guard. Production composition (`wire-calendar-stack.ts`) does not pass a
+    // fetcher — it relies on the oauth module's default — so gating on presence
+    // would make this write dead in production while passing every test that
+    // injects one, leaving exactly the grants that need an identity anonymous.
+    const identity = await fetchGraphGrantIdentity(
+      exchanged.access_token,
+      deps.fetcher ?? defaultHttpFetcher,
+    );
+    if (identity !== null) {
+      await writeGraphGrantIdentity(deps.accountStore, slug, identity);
+    }
   }
 
   const factory = deps.adapters.get(adapter);
@@ -310,6 +360,141 @@ export const handleCalendarEnrollOAuth = async (
     platform: 'calendar',
     slug,
     adapter_type: adapter,
+    config,
+    caps,
+    auth_state: 'healthy',
+    last_synced_at: null,
+  });
+
+  const row = toRow(
+    stored.adapter_type as CalendarProviderKind,
+    caps,
+    stored.auth_state,
+    stored.slug,
+    stored.last_synced_at,
+  );
+
+  try {
+    await deps.onEnrolled?.(row);
+  } catch (err) {
+    throw new RpcError(
+      'adapter_start_failed',
+      (err as Error).message ?? 'calendar adapter failed to start',
+      500,
+    );
+  }
+
+  return { slug: row.slug, caps };
+};
+
+/** Microsoft-only — adopt the calendar lane onto the `graph` grant the MAIL lane
+ *  already holds, with no second consent.
+ *
+ *  Sound only because Microsoft's mail and calendar adapters are BOTH named
+ *  `graph`: their tokens live under one `account.graph.<slug>.*` prefix, so the
+ *  grant the mail enroll persisted is already the grant this adapter reads (§ 2
+ *  of this module's header). An OAuth code is single-use and the mail enroll has
+ *  spent it, so there is nothing left to exchange — only caps to probe and a row
+ *  to write.
+ *
+ *  ⛔ Three preconditions, because "no second consent" must not become "no
+ *  consent". Each one is checked, not assumed:
+ *
+ *    1. A MAIL instance exists at this slug on the `graph` adapter — the proof
+ *       that a Microsoft consent actually happened, and that it happened for THIS
+ *       account rather than some other slug the caller named.
+ *    2. A refresh token is present at `graph.<slug>.*`. Without it there is no
+ *       grant to adopt and the probe below would fail confusingly.
+ *    3. The probe SUCCEEDS. This is the real scope check: if the owner declined
+ *       `Calendars.ReadWrite` on the consent screen (which they can, even with
+ *       the box ticked), Graph rejects the calendar read and no row is written.
+ *       A row whose grant cannot serve it would be a lie the account list tells
+ *       forever.
+ *
+ *  ⚠ KNOWN RESIDUAL — the shared grant has no IDENTITY. Mail and calendar slugs
+ *  are independent user-chosen names, and nothing compares the Microsoft
+ *  tenant/subject behind them, so enrolling a DIFFERENT Microsoft account as mail
+ *  `work` overwrites the grant a calendar `work` was using. That aliasing
+ *  predates this path (the shared prefix is the D-117 design) but this path makes
+ *  same-slug the normal case, so it deserves naming: the durable fix is storing
+ *  tenant+subject at enroll and refusing a mismatch. Since the sync-outcome work,
+ *  such a mismatch at least degrades VISIBLY rather than silently.
+ *
+ *  There is deliberately no `gcal` twin — Google's `gmail` and `gcal` prefixes
+ *  differ, so there is nothing shared to adopt. */
+export const handleCalendarAttachGraphGrant = async (
+  deps: CalendarEnrollDeps,
+  args: EnrollOAuthInput,
+): Promise<{ slug: string; caps: CalendarCollectionCaps }> => {
+  const method = 'collection.calendar.attachGraphGrant';
+  const slug = requireSlug(args.slug);
+  refuseReservedSlug(method, slug);
+
+  // IDEMPOTENT on an already-attached row, deliberately. The row is committed
+  // before `onEnrolled` runs, so an adapter-start failure — or a response the
+  // client never received — leaves the row present while the caller believes the
+  // attach failed. A hard 409 on retry would make that state permanently
+  // unrecoverable from the UI. Re-attaching a `graph` row is a no-op worth
+  // reporting as success; a row on a DIFFERENT adapter is a genuine conflict,
+  // because adopting the grant would silently change what that row talks to.
+  const existingCalendar = deps.instances.get('calendar', slug);
+  if (existingCalendar) {
+    if (existingCalendar.adapter_type === 'graph') {
+      return { slug, caps: existingCalendar.caps as CalendarCollectionCaps };
+    }
+    throw new RpcError(
+      'conflict',
+      `${method}: calendar instance '${slug}' already exists on adapter `
+      + `'${existingCalendar.adapter_type}' — delete it first or pick another name`,
+      409,
+    );
+  }
+
+  // (1) The mail instance IS the consent receipt.
+  const mail = deps.instances.get('mail', slug);
+  if (!mail || mail.adapter_type !== 'graph') {
+    throw new RpcError(
+      'bad_request',
+      `${method}: no Microsoft mail account '${slug}' to adopt a grant from — `
+      + 'enroll the mail account first (this path never obtains its own consent)',
+      400,
+    );
+  }
+
+  // (2) The grant must actually be on disk under the shared prefix.
+  const prefix = oauthKeyPrefix('graph', slug);
+  const refresh = await deps.accountStore.get(`${prefix}.refresh_token`);
+  if (!refresh) {
+    throw new RpcError(
+      'bad_request',
+      `${method}: mail account '${slug}' holds no refresh token to share — re-authorize it`,
+      400,
+    );
+  }
+
+  const factory = deps.adapters.get('graph');
+  if (!factory) {
+    throw new RpcError('bad_request', `${method}: unknown calendar adapter 'graph'`, 400);
+  }
+
+  // (3) The probe is the scope check — a declined calendar consent fails HERE,
+  // before any row exists.
+  const config: Record<string, unknown> = buildOAuthConfig(slug, args);
+  let caps: CalendarCollectionCaps;
+  try {
+    caps = await probeCalendarAdapter(factory, {
+      slug,
+      config,
+      getAccountValue: async (key) => deps.accountStore.get(`${prefix}.${key}`),
+    });
+  } catch (err) {
+    throw classifyProbeError(err);
+  }
+
+  const stored = deps.instances.upsert({
+    platform: 'calendar',
+    slug,
+    adapter_type: 'graph',
     config,
     caps,
     auth_state: 'healthy',

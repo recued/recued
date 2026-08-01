@@ -146,7 +146,29 @@ describe('composeEventTriggers', () => {
         },
       },
     });
+    expect(request.execution_source).not.toHaveProperty('contract_id');
     expect(request).not.toHaveProperty('config');
+  });
+
+  it('stores safe copy for an internal permission invariant and logs the diagnostic', async () => {
+    const internal =
+      "D-153 P2.C gateRecipeAgainstPolicy: a source carrying a contract_id (actor 'system') requires a ContractSnapshot — the producer must resolve it before dispatch.";
+    vi.mocked(handleExecute).mockRejectedValueOnce(new Error(internal));
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    seedTrigger(store);
+    const bundle = compose()!;
+
+    try {
+      handlers[0]!.handler(makeEvent());
+      await bundle.dispatcher.drained();
+
+      expect(store.get('t-1')?.last_error).toBe(
+        'Recued stopped this automation because the required permissions could not be verified. The blocked action was not run.',
+      );
+      expect(errorLog).toHaveBeenCalledWith(expect.stringContaining(internal));
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 
   it('treats trigger-gate skips as non-errors and keeps the trigger enabled', async () => {

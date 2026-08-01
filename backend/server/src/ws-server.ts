@@ -308,6 +308,10 @@ import {
   type FormResponseRpcDeps,
 } from './form-response-handler.js';
 import {
+  makeRecordsRpcHandlers,
+  type RecordsRpcDeps,
+} from './records-rpc-handler.js';
+import {
   makeTimelineRpcHandlers,
   type TimelineRpcDeps,
 } from './timeline-rpc-handler.js';
@@ -438,7 +442,15 @@ const loadPrefsOrUndefined = (
 import type { LLMConfigManager } from './llm-config.js';
 import type { RuntimeConfigStore } from '@recued/config';
 
-const require = createRequire(import.meta.url);
+// ⛔ `?? __filename` is what makes this survive inside the SEA binary, not
+// defensive padding. esbuild replaces `import.meta` with `{}` in CJS output, so
+// `import.meta.url` is UNDEFINED there and `createRequire(undefined)` throws at
+// MODULE LOAD — `recued serve` died before printing anything with "The argument
+// 'filename' must be a file URL object, file URL string, or absolute path
+// string. Received undefined". `__filename` is native in CJS and never
+// evaluated under ESM (`??` short-circuits), so one expression covers the ESM
+// source, the ESM bundle, and the CJS/SEA bundle.
+const require = createRequire(import.meta.url ?? __filename);
 
 /** D-169 P0 follow-on — empty-but-typed capability profile used as the
  *  seed value at WS-upgrade `bridgeRegistry.attach()` time. The bridge
@@ -1205,6 +1217,8 @@ export interface AttachWebSocketOptions {
   /** Accepted Reception form responses for the owner Data browser. Summary
    *  list + full detail; the handler requires a registered paired client. */
   formResponseDeps?: FormResponseRpcDeps;
+  /** D-221 owner-only `records.*` explorer/lifecycle control plane. */
+  recordsRpcDeps?: RecordsRpcDeps;
   /** D-174 #22 — `data.timeline` read pair-RPC. Wraps the shared
    *  `handleTimelineRequest` query (third channel alongside MCP +
    *  recipe). Absent → returns `not_configured` (db-less harness or a
@@ -1393,6 +1407,7 @@ const buildWsBinding = (
     contactImportDeps,
     workEntityCrudDeps,
     formResponseDeps,
+    recordsRpcDeps,
     timelineRpcDeps,
     memoryRpcDeps,
     fileReadRpcDeps,
@@ -1898,6 +1913,9 @@ const buildWsBinding = (
     // slice itself enforces the registered-client boundary and the namespace
     // is reserved out of MCP.
     makeFormResponseHandlers(formResponseDeps),
+    // D-221 — full-ref Records explorer and lifecycle controls. Every arrow
+    // enforces a registered paired client and `records.` is MCP-reserved.
+    makeRecordsRpcHandlers(recordsRpcDeps),
     // D-174 #22 — `data.timeline` read pair-RPC (Data route drill-down).
     // Third isolated channel wrapping the shared `handleTimelineRequest`
     // (alongside MCP `recued_dataTimeline` + recipe `timeline-read`):
@@ -2023,9 +2041,9 @@ const buildWsBinding = (
   //      WsClient whose `client_token_id` matches the dispatcher's
   //      target + sends a JSON-stringified `BridgeWireEnvelope`.
   //      Disconnected bridges surface as `bridge_offline`; write errors
-  //      surface as `transport_error`; 429 / queue_full only comes back
-  //      via the inbound result frame (the bridge enforces its own
-  //      queue depth, not this transport).
+  //      surface as `transport_error`. A remote 429 / queue_full comes
+  //      back asynchronously as a rejected BridgeResult and resolves
+  //      the same per-attempt listener slot.
   // Gated on `bridgeRegistry` being wired — composes only when the
   // pair-shared registry is available. Test compositions that don't
   // exercise the bridge surface leave `bridgeRegistry` undefined; the
@@ -2078,20 +2096,13 @@ const buildWsBinding = (
      *    - `{ok: false, reason: 'transport_error', detail}` — the
      *      `ws.send()` call threw.
      *
-     *  Notably absent: `queue_full`. The dispatcher's 429-retry path
-     *  (`dispatchToBridge` in `bridges/dispatcher.ts` lines 446-471)
-     *  fires only on `send_result.reason === 'queue_full'`. For this
-     *  WS-based transport, the bridge's own queue-depth enforcement
-     *  surfaces queue_full inside a `BridgeResult` frame (not via the
-     *  synchronous transport return), so the dispatcher's transport-
-     *  level retry path is intentionally dead code through this
-     *  composition (Codex 2026-05-28 Angle 3 fold). The bridge SW
-     *  enforces its own FIFO + 24h idempotency cache (BRIDGE_MAX_QUEUE_DEPTH
-     *  + BRIDGE_IDEMPOTENCY_TTL_MS), so queue_full back-pressure is
-     *  handled at the producer side. A future transport that does
-     *  surface synchronous queue-depth signals (e.g., a server-side
-     *  per-bridge command FIFO) would populate the `queue_full` reason
-     *  here + light up the dispatcher's existing retry path. */
+     *  `queue_full` is necessarily absent from this synchronous return:
+     *  WS send completion only means the frame was written. The bridge
+     *  reports saturation as `{kind:'result', status:'rejected',
+     *  error.code:'queue_full'}`; the dispatcher's per-attempt waiter
+     *  consumes that control result and retries with backoff. Transports
+     *  that can report local queue depth may still return the existing
+     *  synchronous `queue_full` reason. */
     const sendEnvelope = (
       client_token_id: string,
       envelope: BridgeWireEnvelope,

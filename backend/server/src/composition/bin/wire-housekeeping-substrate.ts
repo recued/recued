@@ -44,6 +44,9 @@ import type { ContractStore } from '../../storage/contract-store.js';
 import type {
   SellerAccessReconcileDeps,
 } from '../../housekeeping/tasks/seller-access-reconcile.js';
+import type {
+  McpToolsDriftProbeDeps,
+} from '../../housekeeping/tasks/mcp-tools-drift-probe.js';
 import type { EnrichmentStore } from '../../storage/enrichment-store.js';
 import type { CrmRecordMirrorStore } from '../../storage/crm-record-mirror-store.js';
 import type { WorkEntityStore } from '../../storage/work-entity-store.js';
@@ -447,6 +450,19 @@ export interface ComposeHousekeepingSchedulerDeps {
    *  doesn't register, exactly like the sweeps above. */
   sellerAccessReconcileDeps?: SellerAccessReconcileDeps;
 
+  /** D-225 § 11 — deps for `mcp-tools-drift-probe`, the task that makes a stale
+   *  generated pack REPORT as stale. Built by the caller for the same reason as
+   *  `sellerAccessReconcileDeps`: it needs the connection store AND a bound
+   *  probe, and this composer has neither.
+   *
+   *  ⛔ Absent ⇒ the task does not register ⇒ `ConnectionHealth.tool_hashes` is
+   *  only ever refreshed when the owner acts, and the drift badge reports what
+   *  was true at the last manual probe. That is the pre-D-225-§11 behaviour, so
+   *  a boot without these deps is no worse than before — but it is also not the
+   *  detection this task exists to provide, and a harness that omits them is
+   *  not exercising it. */
+  mcpToolsDriftProbeDeps?: McpToolsDriftProbeDeps;
+
   /** D-148 § A.6.5 TLS cert renewal — registers only when all three
    *  refs are populated (rotation engine + production cert source +
    *  ACME renewer). */
@@ -680,6 +696,20 @@ export const composeHousekeepingScheduler = async (
     );
   }
 
+  // D-225 § 11 — `mcp-tools-drift-probe`. Slice 2 shipped the drift BADGE over
+  // data at rest; nothing refreshed that data on a cadence, so the badge could
+  // only report what was true at the owner's last manual probe. This
+  // registration is what turns it from a display of drift into a detector of
+  // one. It refreshes hashes only — re-minting stays the owner's decision.
+  if (deps.mcpToolsDriftProbeDeps) {
+    const { buildMcpToolsDriftProbeTask } = await import(
+      '../../housekeeping/tasks/mcp-tools-drift-probe.js'
+    );
+    registerHousekeepingTask(
+      buildMcpToolsDriftProbeTask({ deps: deps.mcpToolsDriftProbeDeps }),
+    );
+  }
+
   // D-172 resumable uploads — register the TTL/orphan sweep iff the webclient
   // upload service is wired (db + CAS). The reaper frees abandoned-session
   // scratch + budget on the idle cadence.
@@ -813,8 +843,20 @@ export const composeHousekeepingScheduler = async (
     autoApplyEntry.bindBusySignal(() => busy.isBusy());
     registerHousekeepingTask(
       createUpdateAutoApplyTask({
-        ports: autoApplyEntry.applyDeps.ports,
-        resolveForApply: autoApplyEntry.applyDeps.resolveForApply,
+        runCheck: autoApplyEntry.runCheck,
+        readLastReported: autoApplyEntry.readLastReported,
+        writeLastReported: autoApplyEntry.writeLastReported,
+        ...(autoApplyEntry.notifyOwner ? { notifyOwner: autoApplyEntry.notifyOwner } : {}),
+        // Absent on a delegated channel — the task checks and records there,
+        // and never applies.
+        ...(autoApplyEntry.applyDeps
+          ? {
+              apply: {
+                ports: autoApplyEntry.applyDeps.ports,
+                resolveForApply: autoApplyEntry.applyDeps.resolveForApply,
+              },
+            }
+          : {}),
         modeStore: autoApplyEntry.modeStore,
         channel: autoApplyEntry.channel,
         ...(autoApplyEntry.envMode !== undefined ? { envMode: autoApplyEntry.envMode } : {}),

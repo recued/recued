@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto';
+import { createFormDefinitionReader } from '../form-contract-gate.js';
 import { join, dirname } from 'node:path';
 
 import { createCertChainHolder, DEFAULT_PUBLIC_PORT } from '@recued/server-tls';
@@ -52,6 +53,10 @@ import {
   composeRecipeOpResolver,
 } from '../recipe-capability-wiring.js';
 import type { WebhookDoorEnrollDeps } from '../webhook-door-enroll.js';
+import { assertRecordsNonOwnerRecipeExposure } from '../records/non-owner-exposure.js';
+import { readRootProjections, readRootProjectionsBatch } from '../records/root-projection.js';
+import type { TimelineRollup } from '@recued/contracts';
+import type { ContactRpcDeps } from '../contact-handler.js';
 import { createReceptionInboxSubviewStore } from '../storage/reception-inbox-subview-store.js';
 import { createContractGrantEntryStore } from '../storage/contract-grant-entry-store.js';
 import { liveVendorRegistry } from '../connection-convention-families.js';
@@ -69,6 +74,7 @@ import {
   type ProductionPathListenerCoordinator,
 } from '../network/path-listener-coordinator.js';
 import { resolveLanAddress } from '../network/resolve-lan-address.js';
+import { readDefaultRouteGateway } from '../network/read-default-route-gateway.js';
 import {
   createServerHandlerSet,
   type ServerConfig,
@@ -76,7 +82,7 @@ import {
 } from '../server.js';
 import {
   loadWebclientBundleFromDisk,
-  resolveWebclientBundleDir,
+  resolveServedWebclientBundleDir,
   WebclientBundleLoadError,
 } from '../webclient-bundle-loader.js';
 import type { SystemStatusDeps } from '../system-status-handler.js';
@@ -120,6 +126,7 @@ import { emitAutomationRule } from '../events/emit-sites.js';
 import type { EventTriggerDispatcher } from '../triggers/dispatcher.js';
 import type { PollManagerHandle } from '../watch/poll-manager.js';
 import {
+  RpcError,
   catalogSlugForVendor,
   unionRequiredScopesForConnection,
   verifyWebclientBundle,
@@ -132,7 +139,21 @@ import {
   webhookProfileRequiresPairedConnection,
   getMessengerVendorDeclaration,
   listMessengerVendors,
+  GENERATED_PACK_PUBLISHER,
+  type FormFieldContractFormView,
 } from '@recued/contracts';
+// D-225 Slice 2 — the generated-pack install closure handed to connectionDeps.
+import { handlePacksInstall } from '../pack-install-handler.js';
+import { handlePacksUninstall } from '../pack-uninstall-handler.js';
+import { handleConnectionDelete } from '../connection-handler.js';
+import { removePackOwnerRulings } from '../pack-inventory.js';
+import { mcpConnectionForPackSlug } from '@recued/ingredient-authoring';
+import { executeLLM } from '@recued/llm';
+import {
+  CONNECTION_SETUP_GUIDE_MANIFEST,
+  CONNECTION_SETUP_GUIDE_TIMEOUT_MS,
+} from '../connection-setup-guide.js';
+import { parseIntakeFormConfig } from '../ports/reception/transformations/intake-form.js';
 import {
   purgeConnectionData as runPurgeConnectionData,
   previewConnectionPurgeCount as runPreviewConnectionPurgeCount,
@@ -140,7 +161,7 @@ import {
 import { listInstalledPackManifests } from '../pack-list-handler.js';
 import type { InitialAcmeDomainIssuer } from '../keys/rotation/acme-domain-renewer.js';
 import { buildApplyOrchestratorDeps, buildReleaseCheckDeps, buildUpdateModeDeps } from '../update/release-config.js';
-import { updateAutoApplyRegistry } from '../update/auto-apply-registry.js';
+import { buildUpdateReleaseEntry, updateAutoApplyRegistry } from '../update/auto-apply-registry.js';
 import { runUpdateBootReconcile as runUpdateBootReconcileImpl } from '../update/boot-reconcile.js';
 import type { RpcContext } from './compose-rpc-context.js';
 import type { StorageContext } from './compose-storage-context.js';
@@ -156,7 +177,14 @@ export interface ListenerServerFacade {
 export interface ComposeListenersResult {
   serverHandlerSet: ServerHandlerSet;
   listenerCoordinator: ProductionPathListenerCoordinator;
+  /** What the LAN listener BINDS (`0.0.0.0` for a detected LAN address).
+   *  Feeds the exposure machine's `bind_addresses.lan`. Not an address to
+   *  publish — see `lanAdvertisedAddress`. */
   lanBindAddress: string;
+  /** Where the server is REACHABLE on the LAN — the detected interface IP,
+   *  or loopback when none resolved. Feeds the pairing address hints
+   *  (`wss://<addr>:<port>/ws`), which `0.0.0.0` would make meaningless. */
+  lanAdvertisedAddress: string;
   /** True iff a verified webclient bundle loaded at boot, so `/webclient/*`
    *  (and the LAN bare-`/` redirect) actually serve. The boot banner uses it
    *  to decide whether to advertise the local webclient URL. */
@@ -200,6 +228,7 @@ export interface ComposeListenersOptions {
     | 'fileStack'
     | 'workEntityStoreRef'
     | 'formResponseStoreRef'
+    | 'recordsStore'
     | 's2sPreviewStoreRef'
     // D-170 — local manifest body store + recipe store back the
     // `ingredient.install` / `ingredient.uninstall` rpc (provisioning +
@@ -230,6 +259,10 @@ export interface ComposeListenersOptions {
     AppContext,
     | 'authDeps'
     | 'llmManager'
+    | 'resolveLlmConfig'
+    | 'llmQuota'
+    | 'llmAdapterRegistry'
+    | 'emptyTabProbe'
     | 'cacheDeps'
     // D-172 — the CAS root; the messenger media scratch dir is derived as a
     // data-volume sibling so large downloads stream to disk, not tmpfs.
@@ -412,6 +445,47 @@ export interface ComposeListenersOptions {
    *  state as `ROLE_RESTRICTION` "no bridge connected." */
   publishBridgeDispatcher?: (dispatcher: BridgeDispatcher | undefined) => void;
 }
+
+/** D-226 — the projection -> wire shape, in ONE place.
+ *
+ *  ⛔ ENUMERATING PROJECTION. It names the fields it forwards, so a field it
+ *  omits reaches the client as `undefined` and the section silently never
+ *  renders. That already happened once to `rollups` one layer out, which is why
+ *  the per-entity reader and the batched list reader now share this rather than
+ *  each keeping their own copy. */
+const toWireRollup = (
+  projection: ReturnType<typeof readRootProjections>[number],
+): TimelineRollup => ({
+  publisher: projection.publisher,
+  pack_slug: projection.pack_slug,
+  ...(projection.label === undefined ? {} : { label: projection.label }),
+  value: projection.value,
+  complete: projection.complete,
+  ...(projection.incomplete_reason === undefined
+    ? {}
+    : { incomplete_reason: projection.incomplete_reason }),
+});
+
+/** D-226 — ⛔ ONE definition for THREE call sites. `contactDeps` was built
+ *  three times in `composeListeners`; wiring the batched rollup reader into one
+ *  of them would have left the other two serving a contact list with no columns
+ *  and nothing failing anywhere — the shape that keeps costing us. */
+const buildContactDeps = (
+  contactStore: NonNullable<AppContext['contactStoreRef']>,
+  recordsStore: StorageContext['recordsStore'],
+): ContactRpcDeps => ({
+  store: contactStore,
+  // ⚠ BATCHED, and it must stay that way. Looping `readRootProjections` here
+  // would read identically and reintroduce the N+1 the batch exists to kill:
+  // 50 rows x 20 packs is 2,050 queries against 41.
+  rollupsForKeys: (emails: readonly string[]) => {
+    const out: Record<string, TimelineRollup[]> = {};
+    for (const [key, projections] of readRootProjectionsBatch(recordsStore, 'contact', emails)) {
+      out[key] = projections.map(toWireRollup);
+    }
+    return out;
+  },
+});
 
 export const composeListeners = async (
   options: ComposeListenersOptions,
@@ -847,23 +921,30 @@ export const composeListeners = async (
           cacheBlobsRoot: app.cacheBlobs?.root,
         })
       : undefined;
-  // D-178 P1 — publish the auto-apply entry for the housekeeping composer (which
-  // owns the engine-busy signal). It registers the `update-auto-apply` idle task
-  // + calls `bindBusySignal` to back the `isQuiesced` port above. Cleared
-  // (published `undefined`) on a delegated channel so a prior boot's entry can't
-  // leak into a re-compose.
+  // D-178 P1 — publish the periodic-release entry for the housekeeping composer
+  // (which owns the engine-busy signal). It registers the `update-auto-apply`
+  // idle task + calls `bindBusySignal` to back the `isQuiesced` port above.
+  // Cleared (published `undefined`) only on an UNSUPPORTED PLATFORM, so a prior
+  // boot's entry can't leak into a re-compose.
+  //
+  // ⛔ The gate is `releaseCheckDeps`, NOT `updateApplyDeps`. It used to be
+  // both — which registered NOTHING on `docker-baked` / `source`, the two
+  // channels whose default mode is `notify`. They defaulted to being told about
+  // releases and had nothing that ever looked.
   updateAutoApplyRegistry.publish(
-    updateApplyDeps && releaseCheckDeps
-      ? {
-          applyDeps: updateApplyDeps,
-          modeStore: updateModeDeps.store,
-          channel: updateModeDeps.channel,
-          ...(updateModeDeps.envMode !== undefined ? { envMode: updateModeDeps.envMode } : {}),
-          bindBusySignal: (fn) => {
-            isEngineBusy = fn;
-          },
-        }
-      : undefined,
+    buildUpdateReleaseEntry({
+      releaseCheckDeps,
+      applyDeps: updateApplyDeps,
+      modeStore: updateModeDeps.store,
+      channel: updateModeDeps.channel,
+      ...(updateModeDeps.envMode !== undefined ? { envMode: updateModeDeps.envMode } : {}),
+      bindBusySignal: (fn) => {
+        isEngineBusy = fn;
+      },
+      // D-158 — what makes `notify` mode reach a person rather than only the
+      // audit log. Absent on a db-less boot, where the audit row is the report.
+      ...(execution.notificationBlock ? { notificationBlock: execution.notificationBlock } : {}),
+    }),
   );
   // D-178 slice 4b items 3-4 — the on-boot reconcile thunk (commit / auto-revert
   // + ledger→audit replay). Run AFTER markBooted (the server is serving, so a
@@ -966,7 +1047,9 @@ export const composeListeners = async (
           // fail closed rather than becoming a weaker no-counterparty booking.
           getFormSubmissionPiiKey: () =>
             deriveFormSubmissionPiiKeyFromSubDek(app.keys!.getSubDEK('reception')),
-          ...(app.contactStoreRef ? { contactDeps: { store: app.contactStoreRef } } : {}),
+          ...(app.contactStoreRef
+      ? { contactDeps: buildContactDeps(app.contactStoreRef, storage.recordsStore) }
+      : {}),
         })
       : undefined;
 
@@ -1177,7 +1260,9 @@ export const composeListeners = async (
     ...(storage.formResponseStoreRef
       ? { formResponseStore: storage.formResponseStoreRef }
       : {}),
-    ...(app.contactStoreRef ? { contactDeps: { store: app.contactStoreRef } } : {}),
+    ...(app.contactStoreRef
+      ? { contactDeps: buildContactDeps(app.contactStoreRef, storage.recordsStore) }
+      : {}),
     ...(receptionCalendarSeam ? { createCalendarEvent: receptionCalendarSeam } : {}),
     ...(receptionBookingSeam ? { createBooking: receptionBookingSeam } : {}),
     ...(receptionAttachSeam ? { attachFile: receptionAttachSeam } : {}),
@@ -1481,6 +1566,17 @@ export const composeListeners = async (
           consumerStore: app.webhookConsumerStoreRef,
           now: () => Date.now(),
           resolveConfig: resolveWebhookInstallConfig,
+          preflightNonOwnerRecipeExposure: (recipe) =>
+            assertRecordsNonOwnerRecipeExposure(
+              recipe,
+              'webhook',
+              {
+                isOperationId: (operationId) =>
+                  storage.recordsStore.isInstalledOperationId(operationId),
+                isCatalogOperation: (catalogSlug, operationKey) =>
+                  storage.recordsStore.isInstalledCatalogOperation(catalogSlug, operationKey),
+              },
+            ),
           ...((): Pick<WebhookDoorEnrollDeps, 'resolveOp'> => {
             const resolveOp = composeRecipeOpResolver(execution.executeDeps);
             return resolveOp ? { resolveOp } : {};
@@ -1718,13 +1814,16 @@ export const composeListeners = async (
     });
   }));
 
-  // D-152 § A.16 — load the LAN-only webclient bundle from disk (the
-  // production wiring the substrate deferred). The release tarball extracts
-  // to `<data-volume>/webclient/` (a CAS-root sibling, same convention as the
+  // D-152 § A.16 — load the webclient bundle from disk (the production wiring
+  // the substrate deferred). The release tarball extracts to
+  // `<data-volume>/webclient/` (a CAS-root sibling, same convention as the
   // messenger media scratch dir above); `RECUED_WEBCLIENT_DIR` overrides for
-  // dev / non-standard layouts. The resulting handler is threaded onto the
-  // LAN listener only (public `/webclient/*` stays 404 — structural LAN-only
-  // design). Outcomes:
+  // non-standard layouts; and in a SOURCE CHECKOUT `apps/webclient/build` is
+  // picked up automatically (`resolveServedWebclientBundleDir`) so a dev serve
+  // needs no env var. Serving is grid-gated per listener — R26.2 Delta 3 made
+  // `/webclient` a first-class path role (`resolution.webclient`, LAN-on /
+  // public-off by default), so this is no longer the D-152 LAN-only carve-out;
+  // public serving is an owner opt-in on the exposure grid. Outcomes:
   //   - no dir / no manifest → `null`, mount stays dormant (the common case:
   //     the webclient is primarily served from app.recued.com).
   //   - manifest present-but-untrusted (unreadable / malformed / wrong shape),
@@ -1737,7 +1836,7 @@ export const composeListeners = async (
   // every path. The loader already re-hashed each file from disk into its
   // `sha256` slot, so this `verifyWebclientBundle` pass compares real bytes
   // against the shipped manifest.
-  const webclientBundleDir = resolveWebclientBundleDir(
+  const webclientBundleDir = resolveServedWebclientBundleDir(
     app.cacheBlobs?.root,
     process.env.RECUED_WEBCLIENT_DIR,
   );
@@ -1931,16 +2030,69 @@ export const composeListeners = async (
       // D-209 #1 W2b — a webhook-declaring save mints the recipe's door
       // after the cross-store save commits; status/arm read it back.
       ...(webhookDoorDeps ? { webhookDoor: webhookDoorDeps } : {}),
+      // D-220 Slice A2b — arming a `form_response.accepted` trigger onto a LIVE
+      // form whose fields contradict the recipe's `requires_form_fields` is
+      // refused at save. Reads the endpoint registry directly: `include_revoked`
+      // is deliberately NOT set, so a revoked form reads as absent — there is
+      // nothing live to contradict, and re-creating the form is gated by A2c.
+      // ⛔ Built by the SHARED factory, not an inline closure: the MCP save path
+      // needs the identical reader, and a second copy is how the two save paths
+      // drifted in the first place (finding 3.2).
+      ...(storage.publicEndpointRegistryStoreRef
+        ? {
+            formDefinitionReader: createFormDefinitionReader(
+              (filter) => storage.publicEndpointRegistryStoreRef!.list(filter),
+              parseIntakeFormConfig,
+            ),
+          }
+        : {}),
     },
     ...(recipeRunnabilityDeps ? { recipeRunnabilityDeps } : {}),
     approvalDeps: rpc.observabilityBundle.approvalDeps,
     ...(app.annotationDeps ? { annotationDeps: app.annotationDeps } : {}),
-    ...(app.contactStoreRef ? { contactDeps: { store: app.contactStoreRef } } : {}),
+    ...(app.contactStoreRef
+      ? { contactDeps: buildContactDeps(app.contactStoreRef, storage.recordsStore) }
+      : {}),
     ...(rpc.contactMergeDeps ? { contactMergeDeps: rpc.contactMergeDeps } : {}),
     ...(app.connectionStoreRef
       ? {
           connectionDeps: {
             store: app.connectionStoreRef,
+            // Owner-triggered "Suggest and guide" uses the live configured AI
+            // route and shared quota, but receives only the minimized prompt
+            // built by `connection-setup-guide.ts`. It never fetches the URL
+            // and never writes through the connection store.
+            setupGuide: {
+              generate: async (prompt: string): Promise<string> => {
+                const config = app.resolveLlmConfig();
+                if (!config) {
+                  throw new RpcError(
+                    'not_configured',
+                    'Set up an AI provider in Settings → AI before asking for a connection guide.',
+                    503,
+                    'collection.connection.suggestSetup',
+                  );
+                }
+                const body = await executeLLM(
+                  CONNECTION_SETUP_GUIDE_MANIFEST,
+                  {
+                    'llm.data': prompt,
+                    'llm.template_type': 'connection setup guide json',
+                    'llm.tone': 'clear and cautious',
+                  },
+                  {
+                    config,
+                    adapters: app.llmAdapterRegistry,
+                    quota: app.llmQuota,
+                    tabProbe: app.emptyTabProbe,
+                    webChatSupported: false,
+                    timeout_ms: CONNECTION_SETUP_GUIDE_TIMEOUT_MS,
+                  },
+                );
+                const content = (body as { content?: unknown })?.content;
+                return typeof content === 'string' ? content : JSON.stringify(body);
+              },
+            },
             ...(app.keys && app.keys.state() !== 'uninitialized'
               ? { getEncryptionKey: app.keys.keyProvider('connection') }
               : {}),
@@ -1955,6 +2107,95 @@ export const composeListeners = async (
               ? {
                   spawnStdioMcp:
                     execution.executorConfig.connectionMcp.spawnStdioMcp,
+                }
+              : {}),
+            // D-225 Slice 2 — the Save of the MCP enrollment chain. Supplied
+            // as a closure so the connection handler needs one verb rather than
+            // the whole install dep surface; absent (dbless / partial harness)
+            // ⇒ `mcpPackCommit` refuses instead of half-succeeding.
+            ...(rpc.packInstallDeps
+              ? {
+                  installGeneratedPack: async (
+                    manifest: unknown,
+                    install_scope?: unknown,
+                  ): Promise<void> => {
+                    // The generated publisher is VERIFIED here, not taken from
+                    // the manifest: the runtime authored this derivation, and
+                    // nothing on the wire chose the handle.
+                    await handlePacksInstall(
+                      rpc.packInstallDeps!,
+                      {
+                        manifest,
+                        // ⛔⛔ MANDATORY — `parsePacksInstallArgs` rejects
+                        // `packs.install` outright unless this is an ARRAY, so
+                        // omitting it made this whole closure throw on every
+                        // call and slice 3 was inert until a Codex review found
+                        // it. `[]` is the correct value, not a placeholder: the
+                        // checker seeds `granted` with BULK_PACK_INSTALL_PERMISSION
+                        // itself, and that is the only thing a generated pack's
+                        // `requires` carries (see `mcp-pack.ts` — it is what the
+                        // install is authorized BY, not a capability the pack
+                        // requests). A generated pack asks for no capabilities,
+                        // so granting none is both correct and fail-closed: if a
+                        // future generated pack ever declares a real requirement,
+                        // this install fails LOUDLY with `permission_denied`
+                        // naming it, rather than silently self-granting.
+                        granted_permissions: [],
+                        // D-228 slice 3 — spread only when chosen, so an absent
+                        // selection stays ABSENT rather than becoming an
+                        // explicit `undefined` the parser might read differently
+                        // from "not supplied".
+                        //
+                        // ⛔ The cast is NARROWED to this one field on purpose.
+                        // It used to wrap the WHOLE object (`{...} as
+                        // Parameters<...>[1]`), which suppressed the missing
+                        // `granted_permissions` above — a whole-object cast
+                        // silences the very check that would have caught it.
+                        // Only `install_scope` genuinely needs one (it arrives
+                        // as `unknown` from the connection handler); `manifest`
+                        // is typed `unknown` by the callee and needs none.
+                        ...(install_scope !== undefined
+                          ? {
+                              install_scope: install_scope as Parameters<
+                                typeof handlePacksInstall
+                              >[1]['install_scope'],
+                            }
+                          : {}),
+                      },
+                      GENERATED_PACK_PUBLISHER,
+                    );
+                  },
+                }
+              : {}),
+            // D-225 Slice 2 — destroy, direction 1: deleting an MCP connection
+            // tears down the pack it minted. ⛔ The deps handed to the uninstall
+            // OMIT `removeGeneratedPackConnection`, so the reverse cascade
+            // cannot fire back into the connection delete that is already
+            // running — the cycle is broken by ABSENCE, not by a flag.
+            ...(rpc.packUninstallDeps
+              ? {
+                  teardownGeneratedPack: async (packSlug: string): Promise<void> => {
+                    await handlePacksUninstall(
+                      rpc.packUninstallDeps!,
+                      { pack_slug: packSlug } as Parameters<typeof handlePacksUninstall>[1],
+                    );
+                    // ⛔ And the owner's per-op rulings, which pack uninstall
+                    // deliberately does NOT purge (correct for a marketplace
+                    // pack; wrong here, where the slug is derived-stable and a
+                    // re-enrolled connection would silently re-adopt them).
+                    if (rpc.packUninstallDeps!.contractStore) {
+                      removePackOwnerRulings(rpc.packUninstallDeps!.contractStore, [packSlug]);
+                    }
+                  },
+                }
+              : {}),
+            // D-225 Slice 2 — the drift badge's manifest lookup. Reuses the
+            // SAME registry the install path registers into, so the badge reads
+            // the pack that is actually live rather than a second view of it.
+            ...(rpc.packInstallDeps?.registry
+              ? {
+                  getInstalledCatalog: (slug: string) =>
+                    rpc.packInstallDeps!.registry!.get(slug),
                 }
               : {}),
             ...(app.enrichmentCascadeRef
@@ -2294,6 +2535,37 @@ export const composeListeners = async (
       ? {
           packUninstallDeps: {
             ...rpc.packUninstallDeps,
+            // D-225 Slice 2 — destroy, direction 2: uninstalling a GENERATED
+            // pack removes the MCP connection it was minted from. The mapping
+            // is RECOMPUTED (`mcpConnectionForPackSlug`) rather than stored —
+            // the slug is a one-way hash of `{kind, name}`, and a stored
+            // mapping could disagree with the derivation it claims to describe.
+            // ⛔ The connection-delete deps here OMIT `teardownGeneratedPack`,
+            // so this cannot cascade back into the uninstall already running.
+            ...(app.connectionStoreRef
+              ? {
+                  removeGeneratedPackConnection: async (
+                    packSlug: string,
+                  ): Promise<string | null> => {
+                    const store = app.connectionStoreRef!;
+                    const found = await mcpConnectionForPackSlug(
+                      packSlug,
+                      store.list({ kind: 'mcp' }).map((row) => ({
+                        kind: row.kind,
+                        name: row.name,
+                      })),
+                    );
+                    if (found === null) return null;
+                    await handleConnectionDelete(
+                      { store },
+                      { name: found.name, kind: 'mcp' } as Parameters<
+                        typeof handleConnectionDelete
+                      >[1],
+                    );
+                    return found.name;
+                  },
+                }
+              : {}),
             // D-209 #1 W2b — uninstall retires the pack's webhook doors
             // alongside their trigger rows (mint/retire symmetry).
             ...(webhookDoorDeps
@@ -2497,6 +2769,9 @@ export const composeListeners = async (
     ...(storage.formResponseStoreRef
       ? { formResponseDeps: { store: storage.formResponseStoreRef } }
       : {}),
+    // D-221 — #data Records uses this owner-pair control plane, never a
+    // `data.records.*` resolver or the agent-facing Tier-P executor.
+    recordsRpcDeps: { store: storage.recordsStore },
     // D-198 — `memory.*` owner-trusted pair-RPCs (Memory lens). Slice 1
     // `memory.list` reuses the audit store's `listRecent` origin filter; Slice
     // 2 adds the owner-authored `user_memory` store (create/get/update/delete +
@@ -2540,6 +2815,15 @@ export const composeListeners = async (
                   app.fileSourceSyncStateRef,
                 ),
               ),
+              // D-226 — each installed pack's declared projection onto this
+              // identity, computed from its live rows. The paired client is the
+              // owner's own UI, so it sees this on the same terms it sees
+              // private rows; the MCP channel wires the same loader behind its
+              // own grant fence.
+              rollupsForEntity: (collectionName: string, id: string) =>
+                collectionName === 'contact'
+                  ? readRootProjections(storage.recordsStore, 'contact', id).map(toWireRollup)
+                  : [],
             },
           },
         }
@@ -2700,16 +2984,52 @@ export const composeListeners = async (
   // even if the panel opens before the listener accepts traffic.
   wsHandleForStatusRef = serverHandlerSet.wsHandle;
 
-  // Resolve LAN bind address per § A.7.5 (auto-detect; loopback fallback
-  // when ambiguous so the Reachability Doctor / Settings UX can prompt
-  // for an override). Production deployments typically bind a single
-  // RFC1918 interface; multi-interface hosts (Docker / VPN / Wi-Fi) land
-  // on `ambiguous_lan_candidates` + loopback.
-  const lanResolution = resolveLanAddress();
-  const lanBindAddress = lanResolution.address;
+  // Resolve LAN bind address per § A.7.5, with both inputs the resolver has
+  // always accepted and nothing supplied until now:
+  //   - the owner's `network.lan_bind_address` (config.toml / setConfigField —
+  //     there is no generic runtime-config page in the webclient yet);
+  //   - the host's default-route gateway, which resolves the multi-interface
+  //     case (Docker bridge / VM bridge / VPN alongside the real LAN) that
+  //     otherwise lands on `ambiguous_lan_candidates` + loopback.
+  // Both are best-effort: no config store (dbless boot) or an unreadable
+  // routing table just returns undefined, which is the behaviour this call
+  // had unconditionally before.
+  const lanResolution = resolveLanAddress({
+    override: runtimeConfig
+      ? (runtimeConfig.get('network.lan_bind_address') as string)
+      : undefined,
+    defaultRouteGateway: readDefaultRouteGateway(),
+  });
+  // Two different addresses, deliberately (see `ResolvedLanAddress`):
+  //   - what the listener BINDS — `0.0.0.0` for a detected LAN address, so
+  //     the loopback origin the webclient needs is served too;
+  //   - what we ADVERTISE — the LAN IP, for pairing address hints + docs.
+  const lanBindAddress = lanResolution.bind_address;
+  const lanAdvertisedAddress = lanResolution.address;
+  // Spell out what the bind actually reaches. `0.0.0.0` serves loopback AND
+  // the LAN IP; a single address serves only itself — and an operator who
+  // pinned one needs to see that loopback went with it, because that is the
+  // origin the bundled webclient can boot from.
+  const reachable = lanBindAddress === '0.0.0.0'
+    ? [...new Set(['127.0.0.1', lanAdvertisedAddress])].join(' + ')
+    : lanBindAddress;
   console.log(
-    `[network] LAN bind: ${lanBindAddress} (source=${lanResolution.source}; candidates=${lanResolution.candidates.length})`,
+    `[network] LAN bind: ${lanBindAddress} (reachable at ${reachable};`
+    + ` source=${lanResolution.source}; candidates=${lanResolution.candidates.length})`,
   );
+  // Loud, standing, and actionable: a silently-dropped override reads exactly
+  // like one that was never saved. Names the value, why it lost, and what the
+  // machine actually offers.
+  if (lanResolution.override_ignored) {
+    console.warn(
+      `[network] ignoring network.lan_bind_address='${lanResolution.override_ignored.value}'`
+      + ` — this machine has no such address (reason=${lanResolution.override_ignored.reason}).`
+      + ` Bound ${lanBindAddress} instead.`
+      + (lanResolution.candidates.length > 0
+        ? ` Available: ${lanResolution.candidates.map((c) => `${c.address} (${c.iface})`).join(', ')}.`
+        : ''),
+    );
+  }
 
   // Cert holder starts empty — TLS-on-public is configured at a later
   // bind phase (Pro ACME flow / BYO upload via § A.6.3 TLSDomainStore).
@@ -2801,6 +3121,7 @@ export const composeListeners = async (
     serverHandlerSet,
     listenerCoordinator,
     lanBindAddress,
+    lanAdvertisedAddress,
     webclientServed: webclientBundle != null,
     server,
     eventTriggerDispatcher: eventTriggersBundle?.dispatcher,

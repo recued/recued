@@ -134,12 +134,27 @@ export const createReceptionManageRescheduleRunner = (
     // Config is passed EXPLICITLY — `handleExecute` only merges a dish overlay
     // for a run with no run_id, and we pass one (idempotency). The TARGET is the
     // credential's; only the new time is the visitor's.
+    //
+    // ⛔ EVERY KEY HERE MUST BE DECLARED BY THE RECIPE (D-222 Slice A). `config`
+    // is now declaration-bounded at the execute boundary, so a key absent from
+    // `reschedule-booking-managed`'s `variables` refuses the whole run as
+    // `undeclared_config_argument` (400) — for a VISITOR, on the one flow this
+    // runner exists to serve. `calendar_slug` used to be passed here and was
+    // never declared or read: the recipe addresses the booking by
+    // `{{config.booking_id}}` alone.
+    //
+    // ⚠ `calendar_slug` is now VESTIGIAL on the whole seam — it stays on
+    // `ReceptionManageRescheduleInput` and on `ReceptionManageRescheduleRun` only
+    // because those shapes and `d-210-reception-manage-handler` still name it. It
+    // has no consumer. Do NOT re-add it here to "use" it;
+    // `d-222-reception-manage-config-declared` fails if you do. Retiring the
+    // field through the handler seam + its `calendarSlug` dep is a separate
+    // cleanup.
     const result = await handleExecute(
       deps.executeDeps,
       {
         recipe_id: RECEPTION_MANAGE_RESCHEDULE_RECIPE_ID,
         config: {
-          calendar_slug: input.calendar_slug,
           booking_id: input.booking_id,
           new_start_at: input.new_start_at,
           new_end_at: input.new_end_at,

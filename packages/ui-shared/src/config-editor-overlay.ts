@@ -14,17 +14,29 @@ import type { VariableDefault } from '@recued/contracts';
 
 import {
   FILE_REF_VARIABLE_ATTR,
+  fileRefDisplayLabel,
   fileRefVariablePickerId,
   readWidgetValue,
   renderVariableWidget,
+  toFileRefIds,
   toWidgetShape,
 } from './variable-widgets.js';
+import {
+  FILE_REF_ARRAY_STYLES,
+  wireFileRefArray,
+  type FileRefArrayHandle,
+} from './file-ref-array.js';
 import {
   REF_PICKER_STYLES,
   wireRefPicker,
   type RefPickerHandle,
+  asRefPickerSearchPage,
   type RefPickerSearchCaller,
 } from './ref-picker/index.js';
+import {
+  wireRecordRefVariables,
+  type RecordRefVariableSearch,
+} from './record-ref-variable.js';
 import { wireFocusTrap, type FocusTrapHandle } from './focus-trap.js';
 
 const STYLES_MARKER = 'data-recued-config-editor-styles';
@@ -112,6 +124,7 @@ const CONFIG_EDITOR_STYLES = `
   display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px;
 }
 .config-editor-panel .var-multi-opt { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg); }
+${FILE_REF_ARRAY_STYLES}
 `;
 
 const injectStyles = (doc: Document): void => {
@@ -121,6 +134,12 @@ const injectStyles = (doc: Document): void => {
   style.textContent = `${CONFIG_EDITOR_STYLES}\n${REF_PICKER_STYLES}`;
   doc.head.appendChild(style);
 };
+
+// D-215 § 9e — `MISSING_FILE_PREFIX` / `fileRefDisplayLabel` moved to
+// `variable-widgets.js`. The rule gained a second consumer
+// (`file-ref-array.ts`, which this module imports), so a home here would be
+// a cycle. NOT re-exported: the root barrel `export *`s both modules, and
+// two stars offering one name is a trap worth not laying.
 
 export interface ConfigEditorOverlayOptions {
   document: Document;
@@ -137,6 +156,14 @@ export interface ConfigEditorOverlayOptions {
   /** Optional owner-file inventory. Present upgrades `type:'file_ref'`
    * variables from a pasteable ref box to the shared name→id picker. */
   fileRefSearch?: RefPickerSearchCaller;
+  /** Optional stored-record inventory, per ENTITY. Present upgrades
+   *  `type:'record_ref'` variables from a raw-id text box to the shared
+   *  name→id picker — the same two-step `fileRefSearch` uses.
+   *
+   *  ⚠ Keyed by entity because one form can reference more than one kind (a
+   *  tenancy names a customer AND a unit), so a single caller would have to
+   *  guess which inventory the box means. */
+  recordRefSearch?: RecordRefVariableSearch;
   /** Fired on confirm with the collected config. The host persists it. */
   onConfirm: (config: Record<string, unknown>) => void;
   /** Fired after the overlay detaches (any path) — host cleanup. */
@@ -168,6 +195,7 @@ export const wireConfigEditorOverlay = (
         ? ''
         : renderVariableWidget(toWidgetShape(key, def, config[key]), {
             fileRefPicker: opts.fileRefSearch !== undefined,
+            recordRefPicker: opts.recordRefSearch !== undefined,
             idPrefix: 'cfg-edit-var',
           });
     })
@@ -191,14 +219,17 @@ export const wireConfigEditorOverlay = (
     </section>`;
 
   let trap: FocusTrapHandle | null = null;
-  const fileRefPickers: RefPickerHandle[] = [];
+  const refPickers: RefPickerHandle[] = [];
+  const fileRefArrays: FileRefArrayHandle[] = [];
   let destroyed = false;
 
   const destroy = (): void => {
     if (destroyed) return;
     destroyed = true;
-    for (const picker of fileRefPickers) picker.destroy();
-    fileRefPickers.length = 0;
+    for (const picker of refPickers) picker.destroy();
+    refPickers.length = 0;
+    for (const list of fileRefArrays) list.destroy();
+    fileRefArrays.length = 0;
     trap?.release();
     trap = null;
     overlay.remove();
@@ -239,18 +270,55 @@ export const wireConfigEditorOverlay = (
 
   doc.body.appendChild(overlay);
 
+  // `record_ref` is independent of the owner's file inventory. Keep its one
+  // upgrade path in the shared helper so a record-only host still gets a live
+  // picker (and every host applies entity_filter + label hydration alike).
+  if (opts.recordRefSearch !== undefined) {
+    refPickers.push(...wireRecordRefVariables(overlay, {
+      variables: opts.variables,
+      values: config,
+      idPrefix: 'cfg-edit-var',
+      search: opts.recordRefSearch,
+      onChange: (key, value) => { config[key] = value; },
+    }));
+  }
+
   // Upgrade file-ref rows only when the host can search the owner's file
   // inventory. The hidden `data-var-*` input remains the committed authority;
   // labels typed into the combobox never leak into config as fake refs.
   if (opts.fileRefSearch !== undefined && typeof overlay.querySelector === 'function') {
+    const fileRefSearch = opts.fileRefSearch;
     for (const [key, def] of Object.entries(opts.variables)) {
       if (
         def === null
         || typeof def !== 'object'
         || Array.isArray(def)
-        || (def as { type?: unknown }).type !== 'file_ref'
         || !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(key)
       ) continue;
+      const hintType = (def as { type?: unknown }).type;
+
+      // D-215 slice 5 residual — the ORDERED list row. Its own wire module:
+      // the value is a sequence, so an append box plus reorder controls, not
+      // one combobox. Dispatched on the DECLARED type, per § 4.6's rule that
+      // the control follows the type and never the recipe.
+      if (hintType === 'file_ref[]') {
+        const list = wireFileRefArray(overlay, {
+          key,
+          label: String((def as { label?: unknown }).label ?? key),
+          idPrefix: 'cfg-edit-var',
+          search: fileRefSearch,
+          initialIds: toFileRefIds(
+            Object.prototype.hasOwnProperty.call(config, key)
+              ? config[key]
+              : (def as { default?: unknown }).default,
+          ),
+          onChange: (ids) => { config[key] = ids; },
+        });
+        if (list !== null) fileRefArrays.push(list);
+        continue;
+      }
+
+      if (hintType !== 'file_ref') continue;
       const pickerId = fileRefVariablePickerId(key, 'cfg-edit-var');
       if (overlay.querySelector(`[data-ref-picker="${pickerId}"]`) === null) continue;
       const raw = Object.prototype.hasOwnProperty.call(config, key)
@@ -262,7 +330,7 @@ export const wireConfigEditorOverlay = (
       const hidden = overlay.querySelector(
         `[${FILE_REF_VARIABLE_ATTR}="${key}"] [data-var-key="${key}"][data-var-type="file_ref"]`,
       ) as HTMLInputElement | null;
-      fileRefPickers.push(wireRefPicker(overlay, {
+      const picker = wireRefPicker(overlay, {
         search: opts.fileRefSearch,
         config: {
           pickerId,
@@ -277,7 +345,33 @@ export const wireConfigEditorOverlay = (
           config[key] = value;
           if (hidden !== null) hidden.value = value;
         },
-      }));
+      });
+      refPickers.push(picker);
+
+      // D-215 § 9e — a dish (or an auto-run row) can hold a `file_ref` whose
+      // underlying `data.file` was deleted. Nothing refcounts that: the
+      // eviction cascade's keepsets are `cache ∪ collection refs` and
+      // `shared ∪ annotation refs` — a config overlay is NOT a reference
+      // root. Until this, the stale id rendered as its own label, i.e. as an
+      // ordinary (if ugly) value, so a broken argument looked fine right up
+      // until the run failed.
+      //
+      // Resolve the current id against the owner's inventory and RELABEL it
+      // when absent. `setValue` deliberately does not fire `onChange`, so
+      // this never rewrites the committed value — a broken ref stays exactly
+      // as stored and is merely SHOWN as broken. Best-effort: a failing
+      // search leaves the raw id, which is the pre-existing rendering.
+      if (initialValue !== null) {
+        const storedId = initialValue.id;
+        void Promise.resolve(opts.fileRefSearch(storedId))
+          .then((result) => {
+            picker.setValue({
+              id: storedId,
+              label: fileRefDisplayLabel(storedId, asRefPickerSearchPage(result).options),
+            });
+          })
+          .catch(() => { /* leave the raw id — no worse than before */ });
+      }
     }
   }
 

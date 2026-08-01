@@ -1038,6 +1038,10 @@ describe('Codex P1 — freshness_budget_ms wired through MCP tool surface', () =
     baseVault: {},
     enrichmentStore: store,
     db,
+    // D-228 slice 6 — this suite's subject is the READ GATE / dispatch body,
+    // which only runs once the tool gate admits. An absent checklist now
+    // denies, so the owner principal is declared rather than implied.
+    ownerAdmitAll: true,
   });
 
   const parseToolResponse = <T>(res: unknown): T => {

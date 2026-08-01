@@ -69,6 +69,16 @@ export const AI_OUTPUT_VALIDATION_KINDS = [
   'events_not_array',
   /** `tool_calls` is not an array. */
   'tool_calls_not_array',
+  /** `tool_calls` IS an array, but an entry is not a well-formed `ToolCall`:
+   *  its `tool` is missing, not a string, or empty. Array-shape alone was not
+   *  enough — measured live (qwen3.7-plus, substrate-bench task 155): the model
+   *  emitted a tool_calls entry with no `tool` key, which passed this gate,
+   *  reached `resolveConcurrencySafe` → `registry.getByName(undefined)`, and
+   *  threw inside `topicOfEnrichmentToolName`'s `name.startsWith(...)`, taking
+   *  the whole turn down ("turn failed after accept"). This gate exists so
+   *  malformed model output halts CLEANLY with a closed-list reason instead of
+   *  tripping an invariant downstream; a nameless call is exactly that case. */
+  'tool_call_not_shaped',
 ] as const;
 export type AIOutputValidationKind =
   (typeof AI_OUTPUT_VALIDATION_KINDS)[number];
@@ -127,6 +137,26 @@ export const validateAIOutput = (
     issues.push({
       kind: 'tool_calls_not_array',
       detail: typeof o.tool_calls,
+    });
+  } else {
+    // Entry shape, not just array shape. A nameless entry cannot be repaired
+    // here — `coerceAIOutput` cannot invent the missing tool name — so the
+    // output is REJECTED rather than partially executed. Dropping the bad
+    // entry and dispatching the rest would silently run half of a plan the
+    // model meant as a whole, which is a worse failure than halting.
+    o.tool_calls.forEach((call, index) => {
+      const name = (call as { tool?: unknown } | null)?.tool;
+      if (typeof name !== 'string' || name.trim().length === 0) {
+        issues.push({
+          // Index + type only. Never the args: everything the model sees is
+          // alias-space at the PII boundary, and echoing tool args into a
+          // validation detail would route them past the egress scan.
+          kind: 'tool_call_not_shaped',
+          detail: `tool_calls[${index}].tool: ${
+            name === undefined ? 'missing' : typeof name
+          }`,
+        });
+      }
     });
   }
   return issues;

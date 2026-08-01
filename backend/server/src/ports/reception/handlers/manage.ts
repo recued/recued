@@ -68,9 +68,12 @@ const FORM_CONTENT_TYPE = 'application/x-www-form-urlencoded';
 /** The narrow reschedule-run seam (injected — the port cannot import the
  *  engine). Returns the held/completed/failed/no_door outcome.
  *
- *  ⚠ Moves the BOOKING since D-210 A.2 (slice 3b), not a calendar event —
- *  `calendar_slug` rides along only because the recipe config still names an
- *  instance for the non-reception reschedule paths. */
+ *  ⚠ Moves the BOOKING since D-210 A.2 (slice 3b), not a calendar event.
+ *  `calendar_slug` is VESTIGIAL: it rode along because the runner's recipe config
+ *  named it, and D-222 Slice A removed it from that config — an undeclared key
+ *  now refuses the whole run as `undeclared_config_argument` (400), and
+ *  `reschedule-booking-managed` never declared or read it. Nothing consumes this
+ *  field today; it stays only because this shape and its tests still name it. */
 export type ReceptionManageRescheduleRun = (input: {
   readonly calendar_slug: string;
   readonly booking_id: string;

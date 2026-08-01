@@ -24,6 +24,8 @@ export {
 
 export {
   isDockerArtifact,
+  isLibKey,
+  libKeyFor,
   MANIFEST_SCHEMA_VERSION,
   ManifestError,
   parseManifest,
@@ -33,6 +35,7 @@ export {
   type ChannelName,
   type ChannelRelease,
   type DockerArtifact,
+  type LibKey,
   type Platform,
   type ReleaseManifest,
 } from './manifest.js';
@@ -68,6 +71,7 @@ export {
 
 export {
   assertReleaseKeyValid,
+  EPHEMERAL_KEY_MARKER,
   releaseKeyStatus,
   ReleaseKeyError,
   signingKeyMatchesPin,

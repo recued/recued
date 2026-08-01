@@ -36,9 +36,11 @@ import type {
   SellerOverview,
   WebclientLocalKey,
   WebclientLocalStorage,
+  WebclientServerProfile,
   WebclientTokenRecord,
 } from '@recued/contracts';
 import { RunModal } from '@recued/ui-shared';
+import { generateRecoveryKey } from '@recued/crypto';
 import type { WebclientLocalStore } from '../storage/local-store.js';
 import type {
   WebclientTokenStore,
@@ -48,7 +50,11 @@ import type {
   WebclientWsState,
   WebclientWsTransport,
 } from '../realtime/ws-client.js';
-import { CONNECTION_CHIP_ATTR } from '../shell/connection-indicator.js';
+import {
+  CONNECTION_BANNER_ACTION_ATTR,
+  CONNECTION_BANNER_ATTR,
+  CONNECTION_STATUS_ANNOUNCER_ATTR,
+} from '../shell/connection-indicator.js';
 import { INGREDIENT_BUILDER_ENTITY_ADD_ROW_ATTR } from '../kitchen/ingredient-builder/operation-family-table.js';
 import { KITCHEN_ROUTE_TAB_ATTR } from '../kitchen/kitchen-route-chrome.js';
 import {
@@ -61,12 +67,78 @@ import {
   DATA_ROUTE_VERIFICATION_NEXT_ATTR,
 } from '../data/bootstrap-data-route.js';
 import {
+  CONTRACTS_ROUTE_ERROR_ATTR,
+  CONTRACTS_ROUTE_HEADING_ATTR,
+  CONTRACTS_ROUTE_LIST_TAB_ATTR,
+  CONTRACTS_ROUTE_ROW_ATTR,
+} from '../contracts/bootstrap-contracts-route.js';
+import {
   RECIPE_EDITOR_FORM_RESPONSE_READER_ATTR,
   RECIPE_EDITOR_RECIPE_ID_ATTR,
   RECIPE_EDITOR_SAVE_ATTR,
   RECIPE_EDITOR_TRIGGER_FORM_ID_ATTR,
 } from '../kitchen/recipe-editor/recipe-editor-route.js';
 import { SERVER_PILL_HOST_ATTR } from '../shell/server-pill-host.js';
+import { SERVER_SWITCH_CONTINUITY_SESSION_KEY } from '../shell/server-switch-continuity.js';
+import { createFoundationalOAuthReloadStore } from '../connections/foundational-oauth-reload.js';
+import {
+  CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+} from '../connections/credential-rotation-server-update-continuity.js';
+import {
+  CONNECTIONS_ROUTE_CONTENT_ATTR,
+} from '../connections/bootstrap-connections-route.js';
+import {
+  createBrowserCredentialRotationTabConvergence,
+  serverUpdateProgressStorageKey,
+} from '../connections/credential-rotation-tab-convergence.js';
+import {
+  SERVER_SWITCH_CONVERGENCE_ATTR,
+  SERVER_SWITCH_CONVERGENCE_ACTIVE_WORK_ITEM_ATTR,
+  SERVER_SWITCH_CONVERGENCE_CHECK_ATTR,
+  SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR,
+  SERVER_SWITCH_CONVERGENCE_COPY_ATTR,
+  SERVER_SWITCH_CONVERGENCE_DIALOG_ATTR,
+  SERVER_SWITCH_CONVERGENCE_DRAFT_ATTR,
+  SERVER_SWITCH_CONVERGENCE_ERROR_ATTR,
+  SERVER_SWITCH_CONVERGENCE_STATUS_ATTR,
+} from '../shell/server-switch-convergence.js';
+import {
+  SERVER_SWITCHER_ACTIVE_WORK_ITEM_ATTR,
+  SERVER_SWITCHER_ITEM_ATTR,
+  SERVER_SWITCHER_RECENCY_ATTR,
+  SERVER_SWITCHER_SWITCH_CANCEL_ATTR,
+  SERVER_SWITCHER_SWITCH_COMMIT_ATTR,
+  SERVER_SWITCHER_SWITCH_CONFIRM_ATTR,
+  SERVER_SWITCHER_SWITCH_ERROR_ATTR,
+  SERVER_SWITCHER_RENAME_ATTR,
+  SERVER_SWITCHER_RENAME_ERROR_ATTR,
+  SERVER_SWITCHER_RENAME_INPUT_ATTR,
+  SERVER_SWITCHER_RENAME_SAVE_ATTR,
+  SERVER_SWITCHER_REMOVE_ATTR,
+  SERVER_SWITCHER_REMOVE_ERROR_ATTR,
+  SERVER_SWITCHER_REMOVE_LOCAL_ATTR,
+  SERVER_SWITCHER_REMOVE_REVOKE_ATTR,
+  SERVER_SWITCHER_RETURN_TO_WORK_ATTR,
+} from '../shell/server-switcher.js';
+import { THEME_TOGGLE_ATTR } from '../shell/theme-controller.js';
+import { WebclientReauthRequiredError } from '../realtime/ws-client.js';
+import {
+  ACCOUNT_MENU_ADD_SERVER_ATTR,
+  ACCOUNT_MENU_ACTIVE_WORK_ATTR,
+  ACCOUNT_MENU_ACTIVE_WORK_ITEM_ATTR,
+  ACCOUNT_MENU_ACTIVE_WORK_RETURN_ATTR,
+  ACCOUNT_MENU_BADGE_ATTR,
+  ACCOUNT_MENU_CLOSE_ATTR,
+  ACCOUNT_MENU_POPOVER_ATTR,
+  ACCOUNT_MENU_SERVER_UPDATE_ATTR,
+  ACCOUNT_MENU_SERVER_UPDATE_RETURN_ATTR,
+  ACCOUNT_MENU_SERVER_UPDATE_STATUS_ATTR,
+  ACCOUNT_MENU_SERVER_SLOT_ATTR,
+  ACCOUNT_MENU_SETTINGS_ATTR,
+  ACCOUNT_MENU_THEME_SLOT_ATTR,
+  ACCOUNT_MENU_TRIGGER_ATTR,
+} from '../shell/account-menu.js';
+import type { WebclientProfileStore } from '../storage/local-store.js';
 import {
   WEBCLIENT_DEFAULT_ROUTE,
   WEBCLIENT_ROUTE_IDS,
@@ -83,18 +155,35 @@ import {
   WEBCLIENT_SHELL_STYLES_MARKER,
   WebclientUnpairedError,
   bootstrapWebclient,
+  buildRecipeExecuteArgs,
   deriveComposeReceptionStatusFromHostnames,
   parseRouteFromHash,
   type WebclientHashSource,
 } from '../webclient-bootstrap.js';
 import { WEBCLIENT_POLISH_STYLES } from '../shell/webclient-polish-styles.js';
 import {
+  RECOVERY_INTENT_ANNOUNCER_ATTR,
+  RECOVERY_INTENT_CUE_ATTR,
+} from '../shell/recovery-intent-landing.js';
+import {
+  RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+} from '../shell/recovery-intent-continuation.js';
+import {
+  ATTENTION_CONNECTION_RECOVERY_REVIEW_ATTR,
+  ATTENTION_INACTIVE_PROFILE_RECOVERY_ATTR,
+  ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR,
+  ATTENTION_RECOVERY_INTENT_CONTINUATION_ATTR,
   ATTENTION_TOPBAR_HOST_ATTR,
 } from '../attention/approval-attention-popover.js';
+import {
+  INACTIVE_PROFILE_RECOVERY_HINT_KEY_PREFIX,
+  INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+} from '../attention/inactive-profile-recovery.js';
 import {
   CHAT_ROUTE_INPUT_ATTR,
   CHAT_ROUTE_PLAN_CONTINUE_ATTR,
   CHAT_ROUTE_PLAN_TARGET_ATTR,
+  CHAT_ROUTE_SEND_ATTR,
 } from '../chat/bootstrap-chat-route.js';
 import {
   LOGS_ROUTE_CHAT_RETURN_ATTR,
@@ -110,6 +199,24 @@ import {
   SELLER_SETTINGS_FORM_SUBMIT_ATTR,
   SELLER_TIER_BULK_ADJUST_SUBMIT_ATTR,
 } from '../settings/seller-page.js';
+import {
+  ARCHIVE_BACKUP_MNEMONIC_ATTR,
+  ARCHIVE_BACKUP_RUN_BTN_ATTR,
+  ARCHIVE_BACKUP_START_BTN_ATTR,
+  ARCHIVE_BACKUP_VIEW_ATTR,
+} from '../settings/archive-backup-panel.js';
+import {
+  UPDATES_CHECK_BTN_ATTR,
+  UPDATES_CREDENTIAL_RETRY_ATTR,
+  UPDATES_CREDENTIAL_RETRY_RETURN_ATTR,
+  UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
+  UPDATES_RECEIPT_CLOSURE_CONFIRM_ATTR,
+  UPDATES_RECEIPT_CLOSURE_FINISH_ATTR,
+  UPDATES_RECEIPT_CLOSURE_REVIEW_BUTTON_ATTR,
+  UPDATES_RECEIPT_DIAGNOSTIC_ATTR,
+  UPDATES_RECEIPT_RECOVERY_ATTR,
+  UPDATES_RECEIPT_RETRY_ATTR,
+} from '../settings/updates-page.js';
 
 // ──────────────────────────────────────────────────────────────────
 // Fake element / document — same shape as the reception-bootstrap
@@ -120,9 +227,11 @@ interface FakeElement extends HTMLElement {
   attrs: Map<string, string>;
   childList: FakeElement[];
   parentRef: FakeElement | null;
+  focusCallCount: number;
   value: string;
   fireAttributeClick(attrs: Record<string, string>): void;
   fireInput(value: string): void;
+  fireConnectionField(key: string, value: string, tagName?: string): void;
   /** Synthesize a delegated click on this element, matching the
    *  `createActionDispatcher` listener contract: the target carries
    *  the supplied dataset + its `closest()` returns itself. Used by
@@ -143,7 +252,11 @@ const makeFakeElement = (tag: string): FakeElement => {
     attrs,
     childList,
     parentRef: null,
+    focusCallCount: 0,
     value: '',
+    get parentElement(): FakeElement | null {
+      return (el as FakeElement).parentRef;
+    },
     get children(): HTMLCollection {
       return childList as unknown as HTMLCollection;
     },
@@ -173,6 +286,9 @@ const makeFakeElement = (tag: string): FakeElement => {
     hasAttribute: (name: string): boolean => attrs.has(name),
     removeAttribute: (name: string): void => {
       attrs.delete(name);
+    },
+    focus: (): void => {
+      (el as FakeElement).focusCallCount += 1;
     },
     appendChild: ((child: FakeElement): FakeElement => {
       childList.push(child);
@@ -239,6 +355,22 @@ const makeFakeElement = (tag: string): FakeElement => {
         fn({ target: el as FakeElement } as unknown as Event);
       }
     },
+    fireConnectionField: (
+      key: string,
+      value: string,
+      tagName = 'INPUT',
+    ): void => {
+      const target = {
+        dataset: { connField: key },
+        value,
+        tagName,
+        closest: (): unknown => target,
+      } as unknown as HTMLElement;
+      const type = tagName === 'SELECT' ? 'change' : 'input';
+      for (const fn of [...listeners[type] ?? []]) {
+        fn({ target, type } as unknown as Event);
+      }
+    },
     // Slice 110 — the settings route's Privacy panel uses native
     // `click()` rather than the delegated `data-action` dispatcher
     // (each rendered state's buttons attach their own listener).
@@ -258,6 +390,12 @@ const makeFakeElement = (tag: string): FakeElement => {
 
 interface FakeDocument extends Document {
   styleElements: FakeElement[];
+  fireDocumentEvent(type: string, target: EventTarget): void;
+  createElement<K extends keyof HTMLElementTagNameMap>(
+    tagName: K,
+    options?: ElementCreationOptions,
+  ): FakeElement & HTMLElementTagNameMap[K];
+  createElement(tagName: string, options?: ElementCreationOptions): FakeElement;
 }
 
 const makeFakeDocument = (): FakeDocument => {
@@ -303,6 +441,11 @@ const makeFakeDocument = (): FakeDocument => {
     removeEventListener: ((evt: string, fn: (event: Event) => void): void => {
       docListeners[evt]?.delete(fn);
     }) as unknown as Document['removeEventListener'],
+    fireDocumentEvent: (type: string, target: EventTarget): void => {
+      for (const listener of [...(docListeners[type] ?? [])]) {
+        listener({ target } as unknown as Event);
+      }
+    },
   };
   return doc as FakeDocument;
 };
@@ -514,6 +657,16 @@ const buildOpts = () => {
 const flush = (): Promise<void> =>
   new Promise<void>((resolve) => setTimeout(resolve, 0));
 
+const memorySessionStorage = () => {
+  const data = new Map<string, string>();
+  return {
+    getItem: (key: string) => data.get(key) ?? null,
+    setItem: (key: string, value: string) => { data.set(key, value); },
+    removeItem: (key: string) => { data.delete(key); },
+    data,
+  };
+};
+
 const answerSellerMailList = (
   controls: FakeTransportControls,
   instances: ReadonlyArray<{
@@ -608,6 +761,9 @@ const receptionMounted = (root: FakeElement): boolean =>
 // span nested under its host anchor, so pill markup lives below the host node.
 const subtreeInnerHtml = (el: FakeElement): string =>
   el.innerHTML + el.childList.map(subtreeInnerHtml).join('');
+
+const subtreeText = (el: FakeElement): string =>
+  el.textContent + el.childList.map(subtreeText).join('');
 
 const exposureResolution = (receptionPublic: boolean) => ({
   health: { lan: true, public: false },
@@ -874,6 +1030,22 @@ describe('D-148 § A.4 — bootstrapWebclient: pair-state hydration', () => {
     );
     await handle.dispose();
   });
+
+  it('keeps passive sibling recovery silent while restoring its work context', async () => {
+    const fixture = buildOpts();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      reauthRecovery: { returnHash: '#reception' },
+      suppressInitialConnectedReceipt: true,
+    });
+
+    const banner = findChildByAttr(fixture.root, CONNECTION_BANNER_ATTR);
+    expect(banner).not.toBeNull();
+    expect(banner?.getAttribute('data-state')).toBe('ok');
+    expect(subtreeText(banner!)).not.toContain('Reconnected');
+
+    await handle.dispose();
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════
@@ -967,15 +1139,56 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
 
   it('keeps the global attention popover reachable from a non-approvals route', async () => {
     const fixture = buildOpts();
-    const handle = await bootstrapWebclient(fixture.opts);
+    const profileStore = buildProfileStore([
+      switcherProfile(
+        'p-attention',
+        'Alice home',
+        'wss://alice.recued.cloud:8443/ws',
+      ),
+    ], 'p-attention');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profileStore.store,
+    });
     expect(handle.activeRoute()).toBe('reception');
     const topbar = findChildByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR);
     expect(topbar).toBeDefined();
+
+    const connectionList = findRpcCall(
+      fixture.transportControls,
+      'collection.connection.list',
+    );
+    expect(connectionList).toBeDefined();
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: connectionList!.request_id,
+      result: {
+        connections: [{
+          kind: 'api',
+          name: 'attention-recovery',
+          display_name: 'Attention recovery',
+          auth_type: 'bearer',
+          updated_at: 9,
+        }],
+        credential_post_safe_stop_verifications: [{
+          kind: 'api',
+          name: 'attention-recovery',
+          status: 'pending',
+          acknowledged_at: 8,
+        }],
+      },
+    });
+    await flush();
 
     topbar!.fireClick({ action: 'open-attention' });
 
     expect(topbar!.innerHTML).toContain('attention-popover');
     expect(topbar!.innerHTML).toContain('href="#approvals"');
+    expect(topbar!.innerHTML).toContain('Finish recovery for Attention recovery');
+    expect(topbar!.innerHTML).toContain(
+      'href="#connections/others/finish-recovery/profile/p-attention/api/attention-recovery"',
+    );
+    expect(topbar!.innerHTML).toContain('Server profile: Alice home');
     expect(handle.activeRoute()).toBe('reception');
     await handle.dispose();
   });
@@ -1219,11 +1432,12 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
       'settings',
       'account',
     ]);
-    // Wiring: New chat/Chats → #chat, Log → #logs, Account → #settings. "Create"
+    // Wiring: New chat → its explicit draft address; Chats → the history
+    // landing. Log → #logs, Account → #settings. "Create"
     // is NOT a nav link — it's an action seat (opens the shared Create overlay),
     // asserted separately below.
     expect(drawerLinks.map((link) => link.getAttribute('href'))).toEqual([
-      '#chat',
+      '#chat/new',
       '#chat',
       '#data',
       '#recipes',
@@ -1305,7 +1519,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     // to #settings).
     fixture.hashSource.setHash('#settings');
     expect(activeSeatIds()).toEqual(['settings']);
-    // #chat lights "Chats" only — never the "New chat" seat (both wire to #chat).
+    // #chat lights "Chats" only — never the same-surface "New chat" seat.
     fixture.hashSource.setHash('#chat');
     expect(activeSeatIds()).toEqual(['chats']);
     // A route with NO drawer seat (Kitchen → reached via Recipes/Packs
@@ -1383,13 +1597,44 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     await handle.dispose();
   });
 
-  it('mounts the §D.L1 `●` account control deep-linking to Settings ▸ Account', async () => {
+  it('mounts the §D.L1 account MENU in the rightmost slot, with Settings inside it', async () => {
+    // The bare `<a href="#settings/account">` became a menu trigger: the same
+    // destination now lives in the menu's quick row, alongside the theme
+    // toggle that used to sit beside it in the bar.
     const fixture = buildOpts();
-    const handle = await bootstrapWebclient(fixture.opts);
-    const account = findChildByAttr(fixture.root, WEBCLIENT_SHELL_ACCOUNT_ATTR);
-    expect(account).not.toBeNull();
-    expect(account!.getAttribute('href')).toBe('#settings/account');
-    expect(account!.getAttribute('aria-label')).toBe('Account');
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+    });
+    await flush();
+
+    const slot = findChildByAttr(fixture.root, WEBCLIENT_SHELL_ACCOUNT_ATTR);
+    expect(slot).not.toBeNull();
+    const trigger = findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR);
+    expect(trigger).not.toBeNull();
+    expect(trigger!.getAttribute('aria-haspopup')).toBe('dialog');
+    expect(findByAttr(fixture.root, ACCOUNT_MENU_SETTINGS_ATTR)!.getAttribute('href'))
+      .toBe('#settings/account');
+    await handle.dispose();
+  });
+
+  it('moves the theme toggle out of the bar and into the menu', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+    });
+    await flush();
+
+    const slot = findByAttr(fixture.root, ACCOUNT_MENU_THEME_SLOT_ATTR);
+    expect(slot).not.toBeNull();
+    // The toggle is INSIDE the slot, not loose in the topbar — that is the
+    // icon the bar sheds.
+    expect(findByAttr(slot!, THEME_TOGGLE_ATTR)).not.toBeNull();
     await handle.dispose();
   });
 
@@ -2417,6 +2662,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
 
   it('threads cryptoKeysWiper through to the Settings route Privacy panel', async () => {
     let wiped = 0;
+    const onPrivacyCredentialsCleared = vi.fn();
     const fixture = buildOpts();
     fixture.hashSource.setHash('#settings');
     const handle = await bootstrapWebclient({
@@ -2424,6 +2670,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
       cryptoKeysWiper: async () => {
         wiped += 1;
       },
+      onPrivacyCredentialsCleared,
     });
     const settings = handle.settingsRoute()!;
     const panel = settings.clearThisBrowserPanel();
@@ -2431,6 +2678,7 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     await panel.clickConfirm();
     expect(panel.getState()).toBe('done');
     expect(wiped).toBe(1);
+    expect(onPrivacyCredentialsCleared).toHaveBeenCalledOnce();
     await handle.dispose();
   });
 
@@ -2479,10 +2727,16 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     await handle.dispose();
   });
 
-  it('slice 111 — clicking "Renew now" dispatches a tls.renew rpc envelope', async () => {
+  it('slice 111 — TLS renewal dispatches its rpc and protects the unresolved outcome across routes', async () => {
     const fixture = buildOpts();
-    fixture.hashSource.setHash('#settings');
-    const handle = await bootstrapWebclient(fixture.opts);
+    fixture.hashSource.setHash('#settings/server');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const reload = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+    });
     const tls = handle.settingsRoute()!.tlsRenewPanel()!;
 
     // Reset send tracker — the bootstrap's `events.subscribe` rpc
@@ -2512,11 +2766,298 @@ describe('D-148 § A.4 — bootstrapWebclient: route discriminator', () => {
     // default to its 7d lead).
     expect(tlsCall!.args).toEqual({});
 
+    // TLS renewal is a Settings action, not a page load. Its unknown outcome
+    // remains boot-scoped even after an ordinary route change, so navigating
+    // elsewhere cannot silently turn a later server switch into a clean one.
+    fixture.hashSource.setHash('#packs');
+    expect(handle.settingsRoute()).toBeNull();
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
+    const switchReview = findByAttr(
+      fixture.root,
+      SERVER_SWITCHER_SWITCH_CONFIRM_ATTR,
+    )!;
+    expect(subtreeText(switchReview)).toContain('Work is still finishing on home');
+    expect(subtreeText(
+      findByAttr(fixture.root, SERVER_SWITCHER_ACTIVE_WORK_ITEM_ATTR)!,
+    )).toContain('Saving a Settings change');
+    expect(findByAttr(
+      fixture.root,
+      SERVER_SWITCHER_SWITCH_COMMIT_ATTR,
+    )?.textContent).toBe('Switch and check later');
+    expect(reload).not.toHaveBeenCalled();
+
+    // The work lease retained the exact source route at dispatch time. The
+    // Account review can take the owner there, then the same named lease still
+    // protects a later switch review until the rpc actually settles.
+    expect(findByAttr(
+      fixture.root,
+      SERVER_SWITCHER_RETURN_TO_WORK_ATTR,
+    )?.textContent).toBe('Return to Settings');
+    findByAttr(fixture.root, SERVER_SWITCHER_RETURN_TO_WORK_ATTR)!.click();
+    expect(fixture.hashSource.getHash()).toBe('#settings/server');
+    expect(handle.settingsRoute()).not.toBeNull();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
+    expect(subtreeText(
+      findByAttr(fixture.root, SERVER_SWITCHER_ACTIVE_WORK_ITEM_ATTR)!,
+    )).toContain('Saving a Settings change');
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_CANCEL_ATTR)!.click();
+
     await handle.dispose();
     // Rebind the inflight rejection so the test doesn't surface as an
     // unhandled rejection. Disposing the conn rejects pending rpcs
     // with `transport_disposed`.
     await inflight.catch(() => undefined);
+  });
+
+  it('restores interrupted OAuth against the exact boot profile and Account return route', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const storage = memorySessionStorage();
+    expect(createFoundationalOAuthReloadStore({
+      storage,
+      scopeId: 'p1',
+      now: fixture.opts.now,
+    }).write({
+      lane: 'mail',
+      providerId: 'gmail',
+      slug: 'work',
+      accountValues: { name: 'work', send_enabled: 'false' },
+      clientId: 'GMAIL-CID',
+      phase: 'before_exchange',
+      phaseStartedAt: fixture.opts.now(),
+    })).toBe(true);
+
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      foundationalOAuthContinuityStorage: storage,
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    expect(subtreeText(
+      findByAttr(fixture.root, ACCOUNT_MENU_ACTIVE_WORK_ITEM_ATTR)!,
+    )).toContain('Gmail sign-in was interrupted');
+    expect(findByAttr(
+      fixture.root,
+      ACCOUNT_MENU_ACTIVE_WORK_RETURN_ATTR,
+    )?.textContent).toBe('Restart sign-in');
+
+    findByAttr(fixture.root, ACCOUNT_MENU_ACTIVE_WORK_RETURN_ATTR)!.click();
+    await flush();
+    expect(fixture.hashSource.getHash()).toBe('#connections/mail');
+    expect(storage.data.size).toBe(0);
+
+    await handle.dispose();
+  });
+
+  it('keeps a backup job attached across route changes and settles the shared lease once', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#settings/backup');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+    });
+    await flush();
+
+    findByAttr(fixture.root, ARCHIVE_BACKUP_START_BTN_ATTR)!.click();
+    findByAttr(fixture.root, ARCHIVE_BACKUP_MNEMONIC_ATTR)!
+      .fireInput(generateRecoveryKey().mnemonic);
+    findByAttr(fixture.root, ARCHIVE_BACKUP_RUN_BTN_ATTR)!.click();
+    await flush();
+
+    const rpcCalls = (method: string): Array<{
+      request_id: string;
+      args?: Record<string, unknown>;
+    }> => fixture.transportControls.sendCalls().filter(
+      (call): call is {
+        type: 'rpc';
+        method: string;
+        request_id: string;
+        args?: Record<string, unknown>;
+      } => call !== null
+        && typeof call === 'object'
+        && (call as { type?: unknown }).type === 'rpc'
+        && (call as { method?: unknown }).method === method
+        && typeof (call as { request_id?: unknown }).request_id === 'string',
+    );
+    const exportCall = rpcCalls('server.archive.export')[0]!;
+    expect(exportCall.args?.recoveryKey).toBeTypeOf('string');
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: exportCall.request_id,
+      result: { job_id: 'archive-job-1' },
+    });
+    await flush();
+    expect(rpcCalls('server.archive.status')).toHaveLength(1);
+
+    fixture.hashSource.setHash('#packs');
+    // The poll resolves after its original panel has unmounted. The boot keeps
+    // the unseen terminal receipt and changes the action copy instead of
+    // silently dropping the result with the disposed route.
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: rpcCalls('server.archive.status')[0]!.request_id,
+      result: {
+        state: 'done',
+        bytes_written: 4096,
+        progress_pct: 100,
+        path: '/data/exports/complete.recued.archive',
+      },
+    });
+    await flush();
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    expect(findByAttr(
+      fixture.root,
+      ACCOUNT_MENU_ACTIVE_WORK_ATTR,
+    )?.hasAttribute('hidden')).toBe(false);
+    expect(subtreeText(
+      findByAttr(fixture.root, ACCOUNT_MENU_ACTIVE_WORK_ITEM_ATTR)!,
+    )).toContain('Backup ready to review');
+    expect(findByAttr(
+      fixture.root,
+      ACCOUNT_MENU_ACTIVE_WORK_RETURN_ATTR,
+    )?.textContent).toBe('View backup result');
+    findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
+    expect(subtreeText(
+      findByAttr(fixture.root, SERVER_SWITCHER_ACTIVE_WORK_ITEM_ATTR)!,
+    )).toContain('Backup ready to review');
+    expect(subtreeText(
+      findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR)!,
+    )).toContain('A result is ready to review on home');
+    expect(findByAttr(
+      fixture.root,
+      SERVER_SWITCHER_RETURN_TO_WORK_ATTR,
+    )?.textContent).toBe('View backup result');
+
+    findByAttr(fixture.root, SERVER_SWITCHER_RETURN_TO_WORK_ATTR)!.click();
+    await flush();
+    expect(fixture.hashSource.getHash()).toBe('#settings/backup');
+    // The boot already observed the terminal status while Backup was
+    // unmounted. Re-entry consumes that exact receipt from memory instead of
+    // risking a second status request after the server job has expired.
+    expect(rpcCalls('server.archive.status')).toHaveLength(1);
+    expect(findByAttr(
+      fixture.root,
+      ARCHIVE_BACKUP_VIEW_ATTR,
+    )?.getAttribute(ARCHIVE_BACKUP_VIEW_ATTR)).toBe('export-done');
+
+    fixture.hashSource.setHash('#packs');
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
+    expect(findByAttr(
+      fixture.root,
+      SERVER_SWITCHER_ACTIVE_WORK_ITEM_ATTR,
+    )).toBeNull();
+    expect(subtreeText(
+      findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR)!,
+    )).toContain('Recued will reload this tab');
+
+    await handle.dispose();
+  });
+
+  it('keeps an acknowledged Chat turn visible after Chat unmounts until its terminal event', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat');
+    const handle = await bootstrapWebclient(fixture.opts);
+    await flush();
+
+    const rpcCalls = (method: string): Array<{
+      request_id: string;
+      args?: Record<string, unknown>;
+    }> => fixture.transportControls.sendCalls().filter(
+      (call): call is {
+        type: 'rpc';
+        method: string;
+        request_id: string;
+        args?: Record<string, unknown>;
+      } => call !== null
+        && typeof call === 'object'
+        && (call as { type?: unknown }).type === 'rpc'
+        && (call as { method?: unknown }).method === method
+        && typeof (call as { request_id?: unknown }).request_id === 'string',
+    );
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: rpcCalls('chat.sessions.list')[0]!.request_id,
+      result: { sessions: [] },
+    });
+    await flush();
+
+    findByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR)!.fireInput('Prepare the answer');
+    findByAttr(fixture.root, CHAT_ROUTE_SEND_ATTR)!.click();
+    await flush();
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: rpcCalls('chat.session.create')[0]!.request_id,
+      result: { session_id: 'chat_1' },
+    });
+    await flush();
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: rpcCalls('chat.session.get')[0]!.request_id,
+      result: {
+        id: 'chat_1',
+        title: 'Prepare the answer',
+        created_at: 1_000,
+        last_active_at: 1_000,
+        archived: false,
+        picker_state: { current: 'self' },
+        model_routing: {
+          current: 'byok',
+          provider: 'local',
+          model_id: 'local-default',
+          overridden: false,
+        },
+        messages: [],
+        plans: [],
+      },
+    });
+    await flush();
+    const sendCall = rpcCalls('chat.send')[0]!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: sendCall.request_id,
+      result: { turn_id: 'turn_1' },
+    });
+    await flush();
+
+    fixture.hashSource.setHash('#packs');
+    expect(findByAttr(
+      fixture.root,
+      ACCOUNT_MENU_BADGE_ATTR,
+    )?.getAttribute('data-state')).toBe('working');
+    expect(subtreeText(
+      findByAttr(fixture.root, ACCOUNT_MENU_ACTIVE_WORK_ITEM_ATTR)!,
+    )).toContain('Waiting for a Chat answer');
+    expect(findByAttr(
+      fixture.root,
+      ACCOUNT_MENU_ACTIVE_WORK_RETURN_ATTR,
+    )?.textContent).toBe('Return to Chat');
+
+    fixture.transportControls.fireMessage({
+      kind: 'chat.message_complete',
+      session_id: 'chat_1',
+      turn_id: 'turn_1',
+      final: { id: 'message_1' },
+      cursor: 1,
+    });
+    await flush();
+    expect(findByAttr(
+      fixture.root,
+      ACCOUNT_MENU_BADGE_ATTR,
+    )?.getAttribute('data-state')).toBe('ok');
+    expect(findByAttr(
+      fixture.root,
+      ACCOUNT_MENU_ACTIVE_WORK_ATTR,
+    )?.hasAttribute('hidden')).toBe(true);
+
+    await handle.dispose();
   });
 });
 
@@ -2629,10 +3170,18 @@ describe('D-148 § A.4 — bootstrapWebclient: dispose', () => {
 
   it('is idempotent', async () => {
     const fixture = buildOpts();
-    const handle = await bootstrapWebclient(fixture.opts);
+    const onSessionDispose = vi.fn(() => {
+      throw new Error('observer teardown failed');
+    });
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      onSessionDispose,
+    });
     await handle.dispose();
     await expect(handle.dispose()).resolves.toBeUndefined();
     await expect(handle.dispose()).resolves.toBeUndefined();
+    expect(onSessionDispose).toHaveBeenCalledOnce();
+    expect(fixture.transportControls.closeCount()).toBe(1);
   });
 });
 
@@ -3109,34 +3658,40 @@ describe('Tier 3 — bootstrapWebclient: server_heartbeat feeds half-open detect
     });
     await flush();
 
-    // The fake transport drives `connected` on open → the chip shows
-    // connected and the heartbeat-stale timer is now armed.
-    const chip = findByAttr(fixture.root, CONNECTION_CHIP_ATTR);
-    expect(chip).not.toBeNull();
-    expect(chip!.getAttribute('data-state')).toBe('connected');
+    // The chip is gone (the account badge is the visible signal now), so the
+    // observable for this wire is the aria-live announcer — which is the
+    // surface that still has to report `stalled`, since the badge stays
+    // deliberately silent for a state that self-heals.
+    const announcer = findByAttr(fixture.root, CONNECTION_STATUS_ANNOUNCER_ATTR);
+    expect(announcer).not.toBeNull();
+    expect(announcer!.textContent).toBe(''); // connected on open
 
     // No beats arrive → the two-phase stale timer crosses to `stalled`.
     fireOnlyLiveTimer(); // phase 1 → arms the confirmation timer
     fireOnlyLiveTimer(); // confirmation → stalled
-    expect(chip!.getAttribute('data-state')).toBe('stalled');
+    expect(announcer!.textContent).toContain('not responding');
 
     // THE WIRE UNDER TEST — a `server_heartbeat` broadcast must be demuxed to
     // `connectionStatus.noteHeartbeat()`, recovering the connection. If the
     // bootstrap's `type === 'server_heartbeat'` branch were missing or
     // mistyped, the frame would fall through to the event subscriber and the
-    // chip would stay `stalled` — so this assertion guards the dead-path.
+    // status would stay `stalled` — so this assertion guards the dead-path.
     fixture.transportControls.fireMessage({
       type: 'server_heartbeat',
       payload: { server_id: 'sha256:x', last_seen_at: 1, lifecycle_state: 'running' },
     });
-    expect(chip!.getAttribute('data-state')).toBe('connected');
+    expect(announcer!.textContent).toBe('');
 
     await handle.dispose();
   });
 });
 
 describe('D-109 — bootstrapWebclient: server-status pill from server_heartbeat', () => {
-  it('feeds a server_heartbeat snapshot to the topbar pill while connected', async () => {
+  it('feeds a server_heartbeat snapshot to the pill, now inside the account menu', async () => {
+    // The pill left the topbar — it is not a readout but the D-188 pause /
+    // restart control, so it moved into the account menu rather than being
+    // deleted. Its host attribute travels with it (every pill style is scoped
+    // under that attr), which is what this still finds.
     const fixture = buildOpts();
     const handle = await bootstrapWebclient(fixture.opts);
     await flush();
@@ -3146,6 +3701,8 @@ describe('D-109 — bootstrapWebclient: server-status pill from server_heartbeat
     // it is). D-188 wraps the pill in an anchor + popover under the host, so we
     // read the whole subtree, not the host's own (never-set) innerHTML string.
     const pillHost = findByAttr(fixture.root, SERVER_PILL_HOST_ATTR);
+    // It lives under the account menu now, not loose in the bar.
+    expect(findByAttr(fixture.root, ACCOUNT_MENU_SERVER_SLOT_ATTR)).toBe(pillHost);
     expect(pillHost).not.toBeNull();
     expect(subtreeInnerHtml(pillHost!)).toBe('');
 
@@ -3410,6 +3967,69 @@ describe('Data → Kitchen accepted-response automation handoff', () => {
 
     await handle.dispose();
   });
+
+  it('keeps an in-flight Kitchen save named and returnable after the editor unmounts', async () => {
+    const fixture = buildOpts();
+    const sourceHash = '#kitchen/new/form-response/forms%2Fclient%20intake';
+    fixture.hashSource.setHash(sourceHash);
+    const handle = await bootstrapWebclient(fixture.opts);
+    await flush();
+
+    const rpcCalls = (method: string): Array<{ request_id: string }> =>
+      fixture.transportControls.sendCalls().filter(
+        (call): call is { type: 'rpc'; method: string; request_id: string } =>
+          call !== null
+          && typeof call === 'object'
+          && (call as { type?: unknown }).type === 'rpc'
+          && (call as { method?: unknown }).method === method
+          && typeof (call as { request_id?: unknown }).request_id === 'string',
+      );
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: rpcCalls('recipe.list')[0]!.request_id,
+      result: { recipes: [] },
+    });
+    await flush();
+
+    findChildByAttr(fixture.root, RECIPE_EDITOR_SAVE_ATTR)!.click();
+    await flush();
+    const saveCall = rpcCalls('recipe.save')[0]!;
+    fixture.hashSource.setHash('#packs');
+
+    expect(handle.activeRoute()).toBe('packs');
+    expect(subtreeText(
+      findByAttr(fixture.root, ACCOUNT_MENU_ACTIVE_WORK_ITEM_ATTR)!,
+    )).toContain('Finishing Kitchen work');
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    expect(findByAttr(
+      fixture.root,
+      ACCOUNT_MENU_ACTIVE_WORK_RETURN_ATTR,
+    )?.textContent).toBe('Return to Kitchen');
+    findByAttr(fixture.root, ACCOUNT_MENU_ACTIVE_WORK_RETURN_ATTR)!.click();
+    expect(fixture.hashSource.getHash()).toBe(sourceHash);
+
+    // The exact-return mount starts its own read, but the original save lease
+    // remains boot-owned. Leaving again cannot orphan or duplicate that write.
+    fixture.hashSource.setHash('#packs');
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: saveCall.request_id,
+      result: {
+        saved: true,
+        recipe_id: 'handle-form-test-responses',
+        version: 1,
+        name: 'Handle accepted form responses',
+      },
+    });
+    await flush();
+
+    expect(findByAttr(
+      fixture.root,
+      ACCOUNT_MENU_ACTIVE_WORK_ATTR,
+    )?.hasAttribute('hidden')).toBe(true);
+
+    await handle.dispose();
+  });
 });
 
 // ──────────────────────────────────────────────────────────────────
@@ -3419,7 +4039,7 @@ describe('Data → Kitchen accepted-response automation handoff', () => {
 describe('leave guard — unsaved route work', () => {
   const buildGuardFixture = () => {
     const fixture = buildOpts();
-    const confirmFn = vi.fn(() => false);
+    const confirmFn = vi.fn<(message: string) => boolean>(() => false);
     const replaceState = vi.fn();
     const location = { hash: '' };
     const beforeUnloadListeners = new Set<(event: unknown) => void>();
@@ -3527,6 +4147,106 @@ describe('leave guard — unsaved route work', () => {
     await handle.dispose();
   });
 
+  it('keeps a credential draft on Back, uses exact safe copy, and guards reload', async () => {
+    const {
+      fixture,
+      confirmFn,
+      location,
+      beforeUnloadListeners,
+    } = buildGuardFixture();
+    fixture.hashSource.setHash('#connections/others');
+    const handle = await bootstrapWebclient(fixture.opts);
+    await flush();
+
+    const list = findRpcCall(
+      fixture.transportControls,
+      'collection.connection.list',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: list.request_id,
+      result: {
+        connections: [{
+          kind: 'api',
+          name: 'github-main',
+          display_name: 'GitHub',
+          config: { base_url: 'https://api.github.com' },
+          auth_type: 'bearer',
+          granted_scopes: [],
+          created_at: 90,
+          updated_at: 91,
+        }],
+      },
+    });
+    const packs = findRpcCall(fixture.transportControls, 'packs.list');
+    if (packs !== undefined) {
+      fixture.transportControls.fireMessage({
+        type: 'rpc_result',
+        request_id: packs.request_id,
+        result: { packs: [] },
+      });
+    }
+    for (let i = 0; i < 6; i += 1) await flush();
+
+    const content = findByAttr(
+      fixture.root,
+      CONNECTIONS_ROUTE_CONTENT_ATTR,
+    )!;
+    content.fireClick({
+      action: 'connections-edit',
+      kind: 'api',
+      name: 'github-main',
+    });
+    content.fireConnectionField(
+      'auth.token',
+      'private-memory-only-replacement',
+    );
+
+    const fireBeforeUnload = (): {
+      defaultPrevented: boolean;
+      returnValue: unknown;
+    } => {
+      const event = {
+        defaultPrevented: false,
+        returnValue: undefined as unknown,
+        preventDefault(): void {
+          event.defaultPrevented = true;
+        },
+      };
+      for (const listener of [...beforeUnloadListeners]) listener(event);
+      return event;
+    };
+    expect(fireBeforeUnload()).toMatchObject({
+      defaultPrevented: true,
+      returnValue: '',
+    });
+
+    fixture.hashSource.setHash('#connections/mail');
+
+    expect(confirmFn).toHaveBeenCalledOnce();
+    const prompt = confirmFn.mock.calls[0]![0];
+    expect(prompt).toMatch(
+      /discard changes to api\/github-main.*cancel to stay.*cannot be restored/i,
+    );
+    expect(prompt).not.toContain('private-memory-only-replacement');
+    expect(handle.activeRoute()).toBe('connections');
+    expect(location.hash).toBe('#connections/others');
+    expect(findByAttr(
+      fixture.root,
+      CONNECTIONS_ROUTE_CONTENT_ATTR,
+    )).toBe(content);
+
+    // Reverting the only edit removes both the native reload guard and the
+    // route confirmation, so a clean exit does not nag.
+    content.fireConnectionField('auth.token', '');
+    expect(fireBeforeUnload().defaultPrevented).toBe(false);
+    fixture.hashSource.setHash('#reception');
+    expect(confirmFn).toHaveBeenCalledOnce();
+    expect(handle.activeRoute()).toBe('reception');
+
+    await handle.dispose();
+  });
+
   it('beforeunload asks only while the mounted route is dirty; dispose detaches', async () => {
     const { fixture, beforeUnloadListeners } = buildGuardFixture();
     const handle = await bootstrapWebclient(fixture.opts);
@@ -3553,5 +4273,5977 @@ describe('leave guard — unsaved route work', () => {
 
     await handle.dispose();
     expect(beforeUnloadListeners.size).toBe(0);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════
+// Server switcher wiring
+// ══════════════════════════════════════════════════════════════════
+//
+// The switcher is the one server-related control that has to keep working
+// while the paired server is unreachable — every Server settings panel needs
+// the server it is trying to help you leave. These pin the wiring that makes
+// that true: it mounts from the LOCAL roster alone, a switch persists before
+// it reloads, and forgetting the server this tab is on reboots rather than
+// leaving the app running on credentials it no longer holds.
+
+/** Collect every node carrying `attr` — the switcher renders one row per
+ *  profile, so the single-hit `findByAttr` above cannot address them. */
+const findAllByAttr = (root: FakeElement, attr: string): FakeElement[] => {
+  const out: FakeElement[] = [];
+  const walk = (el: FakeElement): void => {
+    if (el.hasAttribute(attr)) out.push(el);
+    for (const child of el.childList) walk(child);
+  };
+  walk(root);
+  return out;
+};
+
+const buildProfileStore = (
+  profiles: ReadonlyArray<WebclientServerProfile>,
+  activeId: string | null,
+) => {
+  const state = { profiles: [...profiles], activeId };
+  const calls: string[] = [];
+  const store: WebclientProfileStore = {
+    async listProfiles() { return state.profiles; },
+    async activeProfileId() { return state.activeId; },
+    async ensureProfile(url) {
+      calls.push(`ensure:${url}`);
+      return state.activeId ?? '';
+    },
+    async switchProfile(id) {
+      calls.push(`switch:${id}`);
+      state.activeId = id;
+    },
+    async renameProfile(id, label) {
+      calls.push(`rename:${id}:${label}`);
+      const found = state.profiles.some((profile) => profile.id === id);
+      state.profiles = state.profiles.map((profile) =>
+        profile.id === id ? { ...profile, label } : profile,
+      );
+      return found ? label : null;
+    },
+    async removeProfile(id) {
+      calls.push(`remove:${id}`);
+      state.profiles = state.profiles.filter((p) => p.id !== id);
+      if (state.activeId === id) state.activeId = state.profiles[0]?.id ?? null;
+    },
+    async noteProfileConnected(id, at) {
+      calls.push(`connected:${id}:${at}`);
+      state.profiles = state.profiles.map((profile) =>
+        profile.id === id ? { ...profile, last_connected_at: at } : profile,
+      );
+    },
+    async beginNewProfile() { calls.push('begin'); },
+  };
+  return { store, calls, state };
+};
+
+const switcherProfile = (
+  id: string,
+  label: string,
+  server_url: string,
+): WebclientServerProfile => ({
+  id,
+  label,
+  server_url,
+  webclient_token: null,
+  server_public_key: null,
+  pair_metadata: null,
+  cert_pin_state: null,
+  last_connected_at: null,
+});
+
+const HOME_PROFILE = switcherProfile('p1', 'home', 'wss://home.example/ws');
+const OFFICE_PROFILE = switcherProfile('p2', 'office', 'wss://office.example/ws');
+const STUDIO_PROFILE = switcherProfile('p3', 'studio', 'wss://studio.example/ws');
+const REVOCABLE_HOME_PROFILE: WebclientServerProfile = {
+  ...HOME_PROFILE,
+  pair_metadata: {
+    paired_at: 1_700_000_000_000,
+    server_passport_fingerprint: 'fp-home',
+    server_handle_at_pair: 'home',
+    instance_id: 'instance-home',
+  },
+};
+
+const findRpcCall = (
+  controls: FakeTransportControls,
+  method: string,
+): { request_id: string; args: Record<string, unknown> } | undefined =>
+  controls.sendCalls().find(
+    (message): message is {
+      type: 'rpc';
+      request_id: string;
+      method: string;
+      args: Record<string, unknown>;
+    } =>
+      message !== null
+      && typeof message === 'object'
+      && (message as { type?: unknown }).type === 'rpc'
+      && (message as { method?: unknown }).method === method,
+  );
+
+const findLatestRpcCall = (
+  controls: FakeTransportControls,
+  method: string,
+): { request_id: string; args: Record<string, unknown> } | undefined =>
+  [...controls.sendCalls()].reverse().find(
+    (message): message is {
+      type: 'rpc';
+      request_id: string;
+      method: string;
+      args: Record<string, unknown>;
+    } =>
+      message !== null
+      && typeof message === 'object'
+      && (message as { type?: unknown }).type === 'rpc'
+      && (message as { method?: unknown }).method === method,
+  );
+
+const countRpcCalls = (
+  controls: FakeTransportControls,
+  method: string,
+): number => controls.sendCalls().filter(
+  (message) =>
+    message !== null
+    && typeof message === 'object'
+    && (message as { type?: unknown }).type === 'rpc'
+    && (message as { method?: unknown }).method === method,
+).length;
+
+describe('bootstrapWebclient: Account server profiles', () => {
+  it('restores a server-update retry and keeps it while the exact Connections preflight is in flight', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const continuityStorage = memorySessionStorage();
+    continuityStorage.setItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        version: 1,
+        scope_id: 'p1',
+        kind: 'api',
+        name: 'github-main',
+        phase: 'awaiting_reconnect',
+        started_at: 1_700_000_000_000,
+      }),
+    );
+    fixture.hashSource.setHash('#settings/updates');
+
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationServerUpdateContinuityStorage: continuityStorage,
+    });
+
+    const card = findChildByAttr(
+      fixture.root,
+      UPDATES_CREDENTIAL_RETRY_ATTR,
+    );
+    expect(card?.hasAttribute('hidden')).toBe(false);
+    expect(findChildByAttr(
+      card!,
+      UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
+    )?.textContent)
+      .toContain('Server reconnected');
+    expect(findChildByAttr(
+      fixture.root,
+      ACCOUNT_MENU_BADGE_ATTR,
+    )?.getAttribute('data-state'))
+      .toBe('working');
+
+    findChildByAttr(card!, UPDATES_CREDENTIAL_RETRY_RETURN_ATTR)?.click();
+
+    expect(handle.activeRoute()).toBe('connections');
+    expect(fixture.hashSource.getHash()).toBe(
+      '#connections/others/retry-credential-rotation/api/github-main',
+    );
+    expect(continuityStorage.getItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+    )).not.toBeNull();
+    expect(JSON.parse(continuityStorage.getItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+    )!)).toMatchObject({ phase: 'checking_return' });
+    expect(findChildByAttr(
+      fixture.root,
+      ACCOUNT_MENU_BADGE_ATTR,
+    )?.getAttribute('data-state'))
+      .toBe('working');
+    const inFlightGuide = findChildByAttr(
+      fixture.root,
+      ACCOUNT_MENU_SERVER_UPDATE_ATTR,
+    )!;
+    expect(inFlightGuide.children[0]?.textContent)
+      .toBe('Credential check underway');
+    expect(subtreeText(inFlightGuide)).not.toMatch(/recovery finished/i);
+    expect(findChildByAttr(
+      inFlightGuide,
+      ACCOUNT_MENU_SERVER_UPDATE_RETURN_ATTR,
+    )?.hasAttribute('disabled')).toBe(true);
+    const listCall = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.connection.list',
+    );
+    const packsCall = findRpcCall(fixture.transportControls, 'packs.list');
+    expect(listCall).toBeDefined();
+    expect(packsCall).toBeDefined();
+
+    // A definitive authoritative landing consumes the one-shot pointer and
+    // clears Account. Until both initial reads settle, reload remains safe.
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: listCall!.request_id,
+      result: { connections: [] },
+    });
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: packsCall!.request_id,
+      result: { packs: [] },
+    });
+    await flush();
+    await flush();
+    expect(continuityStorage.getItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+    )).toBeNull();
+    expect(findChildByAttr(
+      fixture.root,
+      ACCOUNT_MENU_BADGE_ATTR,
+    )?.getAttribute('data-state'))
+      .toBe('ok');
+
+    await handle.dispose();
+  });
+
+  it('restores an interrupted exact return as one explicit Account resume without replaying its receipt', async () => {
+    const continuityStorage = memorySessionStorage();
+    continuityStorage.setItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        version: 2,
+        scope_id: 'p1',
+        kind: 'api',
+        name: 'github-main',
+        phase: 'checking_return',
+        started_at: 1_700_000_000_000,
+        baseline_version: null,
+        triage_reason: null,
+        triage_check_status: null,
+        triage_current_version: null,
+        triage_channel: null,
+        triage_available_version: null,
+      }),
+    );
+    const firstFixture = buildOpts();
+    firstFixture.hashSource.setHash('#reception');
+    const firstProfiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const first = await bootstrapWebclient({
+      ...firstFixture.opts,
+      profileStore: firstProfiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationServerUpdateContinuityStorage: continuityStorage,
+    });
+    await flush();
+
+    let guide = findChildByAttr(
+      firstFixture.root,
+      ACCOUNT_MENU_SERVER_UPDATE_ATTR,
+    )!;
+    let resume = findChildByAttr(
+      guide,
+      ACCOUNT_MENU_SERVER_UPDATE_RETURN_ATTR,
+    )!;
+    expect(guide.children[0]?.textContent).toBe('Resume credential check');
+    expect(subtreeText(guide)).toMatch(
+      /interrupted before both authoritative reads finished/i,
+    );
+    expect(subtreeText(guide)).not.toMatch(
+      /recovery finished|running 26\./i,
+    );
+    expect(subtreeText(guide)).toMatch(
+      /current-state baselines.*not persisted or replayed/i,
+    );
+    expect(resume.textContent).toBe('Resume exact check');
+    expect(resume.hasAttribute('disabled')).toBe(false);
+    expect(findChildByAttr(
+      firstFixture.root,
+      ACCOUNT_MENU_BADGE_ATTR,
+    )?.getAttribute('data-state')).toBe('result-ready');
+
+    resume.click();
+    expect(first.activeRoute()).toBe('connections');
+    expect(firstFixture.hashSource.getHash()).toBe(
+      '#connections/others/retry-credential-rotation/api/github-main',
+    );
+    expect(guide.children[0]?.textContent).toBe(
+      'Credential check underway',
+    );
+    expect(resume.hasAttribute('disabled')).toBe(true);
+
+    // Leaving before the first list settles drops only this tab's active
+    // route ownership. The durable target remains available for a clean
+    // resume, and the consumed success receipt does not return.
+    firstFixture.hashSource.setHash('#reception');
+    expect(first.activeRoute()).toBe('reception');
+    expect(guide.children[0]?.textContent).toBe('Resume credential check');
+    expect(resume.hasAttribute('disabled')).toBe(false);
+    expect(JSON.parse(continuityStorage.getItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+    )!)).toMatchObject({ phase: 'checking_return' });
+    await first.dispose();
+
+    const reloadedFixture = buildOpts();
+    reloadedFixture.hashSource.setHash('#reception');
+    const reloadedProfiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const reloaded = await bootstrapWebclient({
+      ...reloadedFixture.opts,
+      profileStore: reloadedProfiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationServerUpdateContinuityStorage: continuityStorage,
+    });
+    await flush();
+
+    guide = findChildByAttr(
+      reloadedFixture.root,
+      ACCOUNT_MENU_SERVER_UPDATE_ATTR,
+    )!;
+    resume = findChildByAttr(
+      guide,
+      ACCOUNT_MENU_SERVER_UPDATE_RETURN_ATTR,
+    )!;
+    expect(guide.children[0]?.textContent).toBe('Resume credential check');
+    expect(subtreeText(guide)).not.toMatch(
+      /recovery finished|one-shot completion.*current-state baseline/i,
+    );
+    resume.click();
+    expect(reloaded.activeRoute()).toBe('connections');
+    expect(reloadedFixture.hashSource.getHash()).toBe(
+      '#connections/others/retry-credential-rotation/api/github-main',
+    );
+    expect(guide.children[0]?.textContent).toBe(
+      'Credential check underway',
+    );
+    expect(resume.hasAttribute('disabled')).toBe(true);
+    const listCallsBeforeDuplicate = reloadedFixture.transportControls
+      .sendCalls()
+      .filter((message) =>
+        message !== null
+        && typeof message === 'object'
+        && (message as { method?: unknown }).method
+          === 'collection.connection.list').length;
+    resume.click();
+    expect(reloadedFixture.transportControls.sendCalls().filter((message) =>
+      message !== null
+      && typeof message === 'object'
+      && (message as { method?: unknown }).method
+        === 'collection.connection.list')).toHaveLength(
+      listCallsBeforeDuplicate,
+    );
+
+    await reloaded.dispose();
+  });
+
+  it('restores an untouched clean editor, repeats current safety reads, and keeps only target orientation', async () => {
+    const continuityStorage = memorySessionStorage();
+    continuityStorage.setItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        version: 2,
+        scope_id: 'p1',
+        kind: 'api',
+        name: 'github-main',
+        phase: 'editor_ready',
+        started_at: 1_700_000_000_000,
+        baseline_version: null,
+        triage_reason: null,
+        triage_check_status: null,
+        triage_current_version: null,
+        triage_channel: null,
+        triage_available_version: null,
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#reception');
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationServerUpdateContinuityStorage: continuityStorage,
+    });
+    await flush();
+
+    let guide = findChildByAttr(
+      fixture.root,
+      ACCOUNT_MENU_SERVER_UPDATE_ATTR,
+    )!;
+    let resume = findChildByAttr(
+      guide,
+      ACCOUNT_MENU_SERVER_UPDATE_RETURN_ATTR,
+    )!;
+    expect(guide.children[0]?.textContent)
+      .toBe('Resume credential replacement');
+    expect(subtreeText(guide)).toMatch(
+      /clean credential editor.*closed before any field changed/i,
+    );
+    expect(subtreeText(guide)).toMatch(
+      /no field value.*server-recovery receipt is restored/i,
+    );
+    expect(subtreeText(guide)).not.toMatch(
+      /recovery finished|running 26\./i,
+    );
+    expect(resume.textContent).toBe('Resume clean editor');
+
+    resume.click();
+    expect(handle.activeRoute()).toBe('connections');
+    expect(JSON.parse(continuityStorage.getItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+    )!)).toMatchObject({ phase: 'checking_return' });
+    expect(guide.children[0]?.textContent).toBe(
+      'Credential check underway',
+    );
+
+    const connection = {
+      kind: 'api',
+      name: 'github-main',
+      display_name: 'GitHub',
+      config: { base_url: 'https://api.github.com' },
+      auth_type: 'bearer',
+      granted_scopes: [],
+      created_at: 90,
+      updated_at: 91,
+    };
+    const firstList = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.connection.list',
+    )!;
+    const packs = findRpcCall(fixture.transportControls, 'packs.list')!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: firstList.request_id,
+      result: { connections: [connection] },
+    });
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: packs.request_id,
+      result: { packs: [] },
+    });
+    for (let i = 0; i < 6; i += 1) await flush();
+
+    const activity = findRpcCall(
+      fixture.transportControls,
+      'collection.connection.credentialRotationActivity',
+    )!;
+    expect(activity.args).toEqual({
+      kind: 'api',
+      name: 'github-main',
+    });
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: activity.request_id,
+      result: { activity: { status: 'idle' } },
+    });
+    for (let i = 0; i < 6; i += 1) await flush();
+
+    const listCalls = fixture.transportControls.sendCalls().filter(
+      (message): message is {
+        type: 'rpc';
+        request_id: string;
+        method: string;
+        args: Record<string, unknown>;
+      } => message !== null
+        && typeof message === 'object'
+        && (message as { type?: unknown }).type === 'rpc'
+        && (message as { method?: unknown }).method
+          === 'collection.connection.list',
+    );
+    const latestList = listCalls[listCalls.length - 1]!;
+    expect(latestList.request_id).not.toBe(firstList.request_id);
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: latestList.request_id,
+      result: { connections: [connection] },
+    });
+    for (let i = 0; i < 10; i += 1) await flush();
+
+    const raw = continuityStorage.getItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+    )!;
+    expect(JSON.parse(raw)).toMatchObject({
+      scope_id: 'p1',
+      kind: 'api',
+      name: 'github-main',
+      phase: 'editor_ready',
+      baseline_version: null,
+    });
+    expect(raw).not.toMatch(
+      /credential|field|form|completed|activity|currentVersion|exactReturnActive/i,
+    );
+    const connectionContent = findChildByAttr(
+      fixture.root,
+      'data-recued-connections-route-content',
+    )!;
+    expect(subtreeInnerHtml(connectionContent)).toMatch(
+      /data-connection-credential-recovery="editor_ready".*no field value or credential was restored.*data-conn-field="auth\.token"/is,
+    );
+    guide = findChildByAttr(
+      fixture.root,
+      ACCOUNT_MENU_SERVER_UPDATE_ATTR,
+    )!;
+    expect(guide.children[0]?.textContent)
+      .toBe('Resume credential replacement');
+    expect(subtreeText(guide)).not.toMatch(
+      /recovery finished|running 26\./i,
+    );
+
+    fixture.hashSource.setHash('#reception');
+    expect(handle.activeRoute()).toBe('reception');
+    await handle.dispose();
+
+    const reloadedFixture = buildOpts();
+    reloadedFixture.hashSource.setHash('#reception');
+    const reloadedProfiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const reloaded = await bootstrapWebclient({
+      ...reloadedFixture.opts,
+      profileStore: reloadedProfiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationServerUpdateContinuityStorage: continuityStorage,
+    });
+    await flush();
+
+    guide = findChildByAttr(
+      reloadedFixture.root,
+      ACCOUNT_MENU_SERVER_UPDATE_ATTR,
+    )!;
+    resume = findChildByAttr(
+      guide,
+      ACCOUNT_MENU_SERVER_UPDATE_RETURN_ATTR,
+    )!;
+    expect(guide.children[0]?.textContent)
+      .toBe('Resume credential replacement');
+    expect(resume.textContent).toBe('Resume clean editor');
+    expect(subtreeText(guide)).not.toMatch(
+      /recovery finished|running 26\.|success receipt/i,
+    );
+    await reloaded.dispose();
+  });
+
+  it('records authoritative triage when the updated server still lacks the safe preflight', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const continuityStorage = memorySessionStorage();
+    continuityStorage.setItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        version: 2,
+        scope_id: 'p1',
+        kind: 'api',
+        name: 'github-main',
+        phase: 'ready',
+        started_at: 1_700_000_000_000,
+        baseline_version: '26.7.3',
+        triage_reason: null,
+        triage_check_status: null,
+        triage_current_version: null,
+        triage_channel: null,
+        triage_available_version: null,
+      }),
+    );
+    fixture.hashSource.setHash(
+      '#connections/others/retry-credential-rotation/api/github-main',
+    );
+
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationServerUpdateContinuityStorage: continuityStorage,
+    });
+    await flush();
+
+    const calls = fixture.transportControls.sendCalls();
+    const listCalls = calls.filter(
+      (message): message is {
+        type: 'rpc';
+        request_id: string;
+        method: string;
+        args: Record<string, unknown>;
+      } => message !== null
+        && typeof message === 'object'
+        && (message as { type?: unknown }).type === 'rpc'
+        && (message as { method?: unknown }).method
+          === 'collection.connection.list',
+    );
+    const listCall = listCalls[listCalls.length - 1];
+    const packsCall = findRpcCall(fixture.transportControls, 'packs.list');
+    expect(listCall).toBeDefined();
+    expect(packsCall).toBeDefined();
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: listCall!.request_id,
+      result: {
+        connections: [{
+          kind: 'api',
+          name: 'github-main',
+          display_name: 'GitHub',
+          config: { base_url: 'https://api.github.com' },
+          auth_type: 'bearer',
+          granted_scopes: [],
+          created_at: 90,
+          updated_at: 91,
+        }],
+      },
+    });
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: packsCall!.request_id,
+      result: { packs: [] },
+    });
+    for (let i = 0; i < 6; i += 1) await flush();
+
+    // Boot-level readiness reads can overtake the route's first list. The
+    // exact return deliberately owns a fresh generation in that case before
+    // it asks the activity RPC, so answer that newer baseline read too.
+    const retryListCalls = fixture.transportControls.sendCalls().filter(
+      (message): message is {
+        type: 'rpc';
+        request_id: string;
+        method: string;
+        args: Record<string, unknown>;
+      } => message !== null
+        && typeof message === 'object'
+        && (message as { type?: unknown }).type === 'rpc'
+        && (message as { method?: unknown }).method
+          === 'collection.connection.list',
+    );
+    const retryListCall = retryListCalls[retryListCalls.length - 1];
+    if (retryListCall?.request_id !== listCall!.request_id) {
+      fixture.transportControls.fireMessage({
+        type: 'rpc_result',
+        request_id: retryListCall!.request_id,
+        result: {
+          connections: [{
+            kind: 'api',
+            name: 'github-main',
+            display_name: 'GitHub',
+            config: { base_url: 'https://api.github.com' },
+            auth_type: 'bearer',
+            granted_scopes: [],
+            created_at: 90,
+            updated_at: 91,
+          }],
+        },
+      });
+      for (let i = 0; i < 6; i += 1) await flush();
+    }
+
+    const activityCall = findRpcCall(
+      fixture.transportControls,
+      'collection.connection.credentialRotationActivity',
+    );
+    expect(activityCall).toBeDefined();
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: activityCall!.request_id,
+      error: {
+        code: 'unknown_method',
+        message: 'method unavailable',
+      },
+    });
+    await flush();
+
+    const updateCheck = findRpcCall(
+      fixture.transportControls,
+      'update.check',
+    );
+    expect(updateCheck).toBeDefined();
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: updateCheck!.request_id,
+      result: {
+        status: 'up-to-date',
+        current_version: '26.7.3',
+        channel: 'stable',
+      },
+    });
+    await flush();
+    await flush();
+
+    expect(JSON.parse(continuityStorage.getItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+    )!)).toMatchObject({
+      phase: 'triage',
+      baseline_version: '26.7.3',
+      triage_reason: 'running_version_unchanged',
+      triage_check_status: 'up-to-date',
+      triage_current_version: '26.7.3',
+    });
+    const guide = findChildByAttr(
+      fixture.root,
+      ACCOUNT_MENU_SERVER_UPDATE_ATTR,
+    )!;
+    expect(guide.hasAttribute('hidden')).toBe(false);
+    expect(guide.children[0]?.textContent).toBe('Server update needs attention');
+    expect(findChildByAttr(
+      guide,
+      ACCOUNT_MENU_SERVER_UPDATE_STATUS_ATTR,
+    )?.textContent).toContain('Running 26.7.3');
+    expect(findChildByAttr(
+      fixture.root,
+      ACCOUNT_MENU_TRIGGER_ATTR,
+    )?.getAttribute('aria-label')).toContain('diagnosis is ready');
+
+    await handle.dispose();
+  });
+
+  it('converges a sibling capability result only after this tab repeats the server read and preserves its exact route', async () => {
+    type ChannelListener = (event: MessageEvent<unknown>) => void;
+    const rooms = new Map<string, Set<CapabilityChannel>>();
+    class CapabilityChannel {
+      readonly listeners = new Set<ChannelListener>();
+
+      constructor(readonly name: string) {
+        const room = rooms.get(name) ?? new Set<CapabilityChannel>();
+        room.add(this);
+        rooms.set(name, room);
+      }
+
+      postMessage(message: unknown): void {
+        for (const peer of rooms.get(this.name) ?? []) {
+          if (peer === this) continue;
+          for (const listener of [...peer.listeners]) {
+            listener({ data: message } as MessageEvent<unknown>);
+          }
+        }
+      }
+
+      addEventListener(_type: 'message', listener: ChannelListener): void {
+        this.listeners.add(listener);
+      }
+
+      removeEventListener(_type: 'message', listener: ChannelListener): void {
+        this.listeners.delete(listener);
+      }
+
+      close(): void {
+        rooms.get(this.name)?.delete(this);
+        this.listeners.clear();
+      }
+    }
+
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const continuityStorage = memorySessionStorage();
+    const pulseStorage = memorySessionStorage();
+    continuityStorage.setItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        version: 2,
+        scope_id: 'p1',
+        kind: 'api',
+        name: 'github-main',
+        phase: 'triage',
+        started_at: 1_700_000_000_000,
+        baseline_version: '26.7.3',
+        triage_reason: 'running_version_unchanged',
+        triage_check_status: 'up-to-date',
+        triage_current_version: '26.7.3',
+        triage_channel: 'stable',
+        triage_available_version: null,
+      }),
+    );
+    fixture.hashSource.setHash('#settings/updates');
+    const makeView = () => ({
+      BroadcastChannel: CapabilityChannel,
+      localStorage: pulseStorage,
+      history: { replaceState: vi.fn() },
+      location: { hash: '#settings/updates' },
+      addEventListener: (): void => undefined,
+      removeEventListener: (): void => undefined,
+    });
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = makeView();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationServerUpdateContinuityStorage: continuityStorage,
+      credentialRotationTabStorage: pulseStorage,
+    });
+    await flush();
+
+    const capabilityCalls = () => fixture.transportControls.sendCalls().filter(
+      (message): message is {
+        type: 'rpc';
+        request_id: string;
+        method: string;
+        args: Record<string, unknown>;
+      } => message !== null
+        && typeof message === 'object'
+        && (message as { type?: unknown }).type === 'rpc'
+        && (message as { method?: unknown }).method
+          === 'collection.connection.credentialRotationActivity',
+    );
+    const restoredMarkerCheck = capabilityCalls()[0];
+    expect(restoredMarkerCheck?.args).toEqual({
+      kind: 'api',
+      name: 'github-main',
+    });
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: restoredMarkerCheck!.request_id,
+      error: {
+        code: 'unknown_method',
+        message: 'method unavailable',
+      },
+    });
+    await flush();
+    await flush();
+    expect(JSON.parse(continuityStorage.getItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+    )!)).toMatchObject({ phase: 'triage' });
+
+    const source = createBrowserCredentialRotationTabConvergence({
+      document: {
+        defaultView: makeView(),
+        visibilityState: 'visible',
+        addEventListener: (): void => undefined,
+        removeEventListener: (): void => undefined,
+      } as unknown as Document,
+      scopeId: 'p1',
+      storage: pulseStorage,
+      eventId: (() => {
+        const ids = ['foreign-capability', 'matching-capability'];
+        return () => ids.shift()!;
+      })(),
+    })!;
+
+    source.notifyServerCapabilityResolved({
+      kind: 'api',
+      name: 'another-connection',
+    });
+    await flush();
+    expect(capabilityCalls()).toHaveLength(1);
+
+    source.notifyServerCapabilityResolved({
+      kind: 'api',
+      name: 'github-main',
+    });
+    const activityCall = capabilityCalls()[1];
+    expect(capabilityCalls()).toHaveLength(2);
+    expect(activityCall?.args).toEqual({
+      kind: 'api',
+      name: 'github-main',
+    });
+    // The sibling message is advisory: durable triage and the current route
+    // remain untouched until this tab's own selected-server reply arrives.
+    expect(JSON.parse(continuityStorage.getItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+    )!)).toMatchObject({ phase: 'triage' });
+    expect(fixture.hashSource.getHash()).toBe('#settings/updates');
+
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: activityCall!.request_id,
+      result: { activity: { status: 'idle' } },
+    });
+    await flush();
+    await flush();
+
+    expect(continuityStorage.getItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+    )).toBeNull();
+    const card = findChildByAttr(
+      fixture.root,
+      UPDATES_CREDENTIAL_RETRY_ATTR,
+    )!;
+    expect(card.getAttribute('data-phase')).toBe('resolved_elsewhere');
+    expect(findChildByAttr(
+      card,
+      UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
+    )?.textContent).toMatch(
+      /fresh, read-only check confirmed.*stayed on server updates/i,
+    );
+    expect(findChildByAttr(
+      fixture.root,
+      ACCOUNT_MENU_BADGE_ATTR,
+    )?.getAttribute('data-state')).toBe('result-ready');
+    expect(findChildByAttr(
+      fixture.root,
+      ACCOUNT_MENU_TRIGGER_ATTR,
+    )?.getAttribute('aria-label')).toContain(
+      'Credential check is ready for api/github-main',
+    );
+    expect(handle.activeRoute()).toBe('settings');
+    expect(fixture.hashSource.getHash()).toBe('#settings/updates');
+
+    findChildByAttr(card, UPDATES_CREDENTIAL_RETRY_RETURN_ATTR)?.click();
+    expect(handle.activeRoute()).toBe('connections');
+    expect(fixture.hashSource.getHash()).toBe(
+      '#connections/others/retry-credential-rotation/api/github-main',
+    );
+    expect(JSON.parse(continuityStorage.getItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+    )!)).toMatchObject({
+      scope_id: 'p1',
+      kind: 'api',
+      name: 'github-main',
+      phase: 'checking_return',
+    });
+
+    source.close();
+    await handle.dispose();
+    expect(rooms.size === 0 || [...rooms.values()].every((room) => room.size === 0))
+      .toBe(true);
+  });
+
+  it('verifies a restored accepted receipt after a cold return without changing the exact route', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const continuityStorage = memorySessionStorage();
+    const tabStorage = memorySessionStorage();
+    const progressKey = serverUpdateProgressStorageKey('p1');
+    continuityStorage.setItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        version: 2,
+        scope_id: 'p1',
+        kind: 'api',
+        name: 'github-main',
+        phase: 'triage',
+        started_at: 1_700_000_000_000,
+        baseline_version: '26.7.3',
+        triage_reason: 'running_version_unchanged',
+        triage_check_status: 'up-to-date',
+        triage_current_version: '26.7.3',
+        triage_channel: 'stable',
+        triage_available_version: null,
+      }),
+    );
+    tabStorage.setItem(progressKey, JSON.stringify({
+      type: 'recued.webclient.server-update-progress',
+      version: 1,
+      scope_id: 'p1',
+      event_id: 'accepted-before-reload',
+      phase: 'awaiting_reconnect',
+      operation: 'update',
+      started_at: 1_700_000_000_000,
+      operation_id: 'server-ledger-receipt',
+    }));
+    fixture.hashSource.setHash('#settings/updates');
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      localStorage: tabStorage,
+      history: { replaceState: vi.fn() },
+      location: { hash: '#settings/updates' },
+      addEventListener: (): void => undefined,
+      removeEventListener: (): void => undefined,
+    };
+
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationServerUpdateContinuityStorage: continuityStorage,
+      credentialRotationTabStorage: tabStorage,
+    });
+    await flush();
+
+    const outcomeCall = findRpcCall(
+      fixture.transportControls,
+      'update.operation_status',
+    );
+    expect(outcomeCall?.args).toEqual({
+      operation_id: 'server-ledger-receipt',
+      include_closed: true,
+    });
+    expect(handle.activeRoute()).toBe('settings');
+    expect(fixture.hashSource.getHash()).toBe('#settings/updates');
+    expect(findChildByAttr(
+      fixture.root,
+      UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
+    )?.textContent).toMatch(/checking.*server-issued restart receipt/i);
+
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: outcomeCall!.request_id,
+      result: { status: 'completed', operation: 'update' },
+    });
+    await flush();
+    await flush();
+
+    expect(JSON.parse(tabStorage.getItem(progressKey)!)).toMatchObject({
+      phase: 'idle',
+      operation: 'update',
+      started_at: 1_700_000_000_000,
+    });
+    const capabilityCall = findRpcCall(
+      fixture.transportControls,
+      'collection.connection.credentialRotationActivity',
+    );
+    expect(capabilityCall?.args).toEqual({
+      kind: 'api',
+      name: 'github-main',
+    });
+    expect(handle.activeRoute()).toBe('settings');
+    expect(fixture.hashSource.getHash()).toBe('#settings/updates');
+
+    await handle.dispose();
+  });
+
+  it('does not let a late receipt reply clear a newer server action', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const tabStorage = memorySessionStorage();
+    const progressKey = serverUpdateProgressStorageKey('p1');
+    tabStorage.setItem(progressKey, JSON.stringify({
+      type: 'recued.webclient.server-update-progress',
+      version: 1,
+      scope_id: 'p1',
+      event_id: 'older-update',
+      phase: 'awaiting_reconnect',
+      operation: 'update',
+      started_at: 1_700_000_000_000,
+      operation_id: 'older-update-receipt',
+    }));
+    const storageListeners = new Set<EventListener>();
+    fixture.hashSource.setHash('#settings/updates');
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      localStorage: tabStorage,
+      history: { replaceState: vi.fn() },
+      location: { hash: '#settings/updates' },
+      addEventListener(type: string, listener: EventListener): void {
+        if (type === 'storage') storageListeners.add(listener);
+      },
+      removeEventListener(type: string, listener: EventListener): void {
+        if (type === 'storage') storageListeners.delete(listener);
+      },
+    };
+
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationTabStorage: tabStorage,
+    });
+    await flush();
+
+    const outcomeCalls = () => fixture.transportControls.sendCalls().filter(
+      (message): message is {
+        type: 'rpc';
+        request_id: string;
+        method: string;
+        args: Record<string, unknown>;
+      } => message !== null
+        && typeof message === 'object'
+        && (message as { type?: unknown }).type === 'rpc'
+        && (message as { method?: unknown }).method
+          === 'update.operation_status',
+    );
+    const olderCall = outcomeCalls()[0]!;
+    expect(olderCall.args).toEqual({
+      operation_id: 'older-update-receipt',
+      include_closed: true,
+    });
+
+    const newerRaw = JSON.stringify({
+      type: 'recued.webclient.server-update-progress',
+      version: 1,
+      scope_id: 'p1',
+      event_id: 'newer-rollback',
+      phase: 'awaiting_reconnect',
+      operation: 'rollback',
+      started_at: 1_700_000_000_001,
+      operation_id: 'newer-rollback-receipt',
+    });
+    tabStorage.setItem(progressKey, newerRaw);
+    for (const listener of [...storageListeners]) {
+      listener({
+        key: progressKey,
+        newValue: newerRaw,
+      } as StorageEvent);
+    }
+    await flush();
+    const newerCall = outcomeCalls()[1]!;
+    expect(newerCall.args).toEqual({
+      operation_id: 'newer-rollback-receipt',
+      include_closed: true,
+    });
+
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: olderCall.request_id,
+      result: { status: 'completed', operation: 'update' },
+    });
+    await flush();
+    await flush();
+
+    expect(JSON.parse(tabStorage.getItem(progressKey)!)).toMatchObject({
+      phase: 'awaiting_reconnect',
+      operation: 'rollback',
+      operation_id: 'newer-rollback-receipt',
+    });
+    expect(handle.activeRoute()).toBe('settings');
+    expect(fixture.hashSource.getHash()).toBe('#settings/updates');
+
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: newerCall.request_id,
+      result: {
+        status: 'waiting_for_restart',
+        operation: 'rollback',
+      },
+    });
+    await flush();
+    await handle.dispose();
+  });
+
+  it.each([
+    {
+      label: 'the old server still awaits restart',
+      reply: {
+        result: {
+          status: 'waiting_for_restart',
+          operation: 'rollback',
+        },
+      },
+    },
+    {
+      label: 'the verification read fails',
+      reply: {
+        error: {
+          code: 'temporarily_unavailable',
+          message: 'try again',
+        },
+      },
+    },
+    {
+      label: 'the selected server no longer knows the receipt',
+      reply: {
+        result: {
+          status: 'unknown',
+        },
+      },
+    },
+    {
+      label: 'the receipt resolves to a different operation',
+      reply: {
+        result: {
+          status: 'completed',
+          operation: 'update',
+        },
+      },
+    },
+  ])('keeps a restored receipt latched when $label', async ({ reply }) => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const tabStorage = memorySessionStorage();
+    const progressKey = serverUpdateProgressStorageKey('p1');
+    tabStorage.setItem(progressKey, JSON.stringify({
+      type: 'recued.webclient.server-update-progress',
+      version: 1,
+      scope_id: 'p1',
+      event_id: 'rollback-before-reload',
+      phase: 'awaiting_reconnect',
+      operation: 'rollback',
+      started_at: 1_700_000_000_000,
+      operation_id: 'rollback-ledger-receipt',
+    }));
+    fixture.hashSource.setHash('#settings/updates');
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      localStorage: tabStorage,
+      history: { replaceState: vi.fn() },
+      location: { hash: '#settings/updates' },
+      addEventListener: (): void => undefined,
+      removeEventListener: (): void => undefined,
+    };
+
+    const scheduledReceiptRetries: Array<() => void> = [];
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationTabStorage: tabStorage,
+      serverUpdateReceiptScheduleRetry: (callback) => {
+        scheduledReceiptRetries.push(callback);
+        return () => undefined;
+      },
+    });
+    await flush();
+    const outcomeCall = findRpcCall(
+      fixture.transportControls,
+      'update.operation_status',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: outcomeCall.request_id,
+      ...reply,
+    });
+    await flush();
+    await flush();
+
+    expect(JSON.parse(tabStorage.getItem(progressKey)!)).toMatchObject({
+      phase: 'awaiting_reconnect',
+      operation: 'rollback',
+      operation_id: 'rollback-ledger-receipt',
+    });
+    expect(findChildByAttr(
+      fixture.root,
+      UPDATES_CHECK_BTN_ATTR,
+    )?.hasAttribute('disabled')).toBe(true);
+    const recovery = findChildByAttr(
+      fixture.root,
+      UPDATES_RECEIPT_RECOVERY_ATTR,
+    )!;
+    const automaticallyRetrying =
+      'error' in reply
+      || (
+        'result' in reply
+        && reply.result.status === 'waiting_for_restart'
+      );
+    expect(recovery.getAttribute('data-phase')).toBe(
+      automaticallyRetrying ? 'waiting' : 'unknown',
+    );
+    expect(recovery.getAttribute('aria-busy')).toBe(
+      automaticallyRetrying ? 'true' : null,
+    );
+    expect(findChildByAttr(
+      recovery,
+      UPDATES_RECEIPT_RETRY_ATTR,
+    )?.hasAttribute('disabled')).toBe(false);
+    expect(scheduledReceiptRetries).toHaveLength(
+      automaticallyRetrying ? 1 : 0,
+    );
+    expect(findChildByAttr(
+      recovery,
+      UPDATES_RECEIPT_DIAGNOSTIC_ATTR,
+    )?.hasAttribute('hidden')).toBe(automaticallyRetrying);
+    expect(subtreeText(recovery)).not.toContain('rollback-ledger-receipt');
+    expect(subtreeText(recovery)).not.toContain('try again');
+    expect(handle.activeRoute()).toBe('settings');
+    expect(fixture.hashSource.getHash()).toBe('#settings/updates');
+    await handle.dispose();
+  });
+
+  it('retires a permanently unknown receipt only after the server records closure and the owner finishes', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const tabStorage = memorySessionStorage();
+    const continuityStorage = memorySessionStorage();
+    continuityStorage.setItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        version: 2,
+        scope_id: 'p1',
+        kind: 'api',
+        name: 'github-main',
+        phase: 'triage',
+        started_at: 1_700_000_000_000,
+        baseline_version: '26.7.3',
+        triage_reason: 'running_version_unchanged',
+        triage_check_status: 'up-to-date',
+        triage_current_version: '26.7.3',
+        triage_channel: 'stable',
+        triage_available_version: null,
+      }),
+    );
+    const progressKey = serverUpdateProgressStorageKey('p1');
+    tabStorage.setItem(progressKey, JSON.stringify({
+      type: 'recued.webclient.server-update-progress',
+      version: 1,
+      scope_id: 'p1',
+      event_id: 'unknown-before-reload',
+      phase: 'awaiting_reconnect',
+      operation: 'rollback',
+      started_at: 1_700_000_000_000,
+      operation_id: 'rollback-ledger-receipt',
+    }));
+    fixture.hashSource.setHash('#settings/updates');
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      localStorage: tabStorage,
+      history: { replaceState: vi.fn() },
+      location: { hash: '#settings/updates' },
+      addEventListener: (): void => undefined,
+      removeEventListener: (): void => undefined,
+    };
+
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationTabStorage: tabStorage,
+      credentialRotationServerUpdateContinuityStorage: continuityStorage,
+    });
+    await flush();
+    const statusCall = findRpcCall(
+      fixture.transportControls,
+      'update.operation_status',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: statusCall.request_id,
+      result: { status: 'unknown' },
+    });
+    await flush();
+
+    const recovery = findChildByAttr(
+      fixture.root,
+      UPDATES_RECEIPT_RECOVERY_ATTR,
+    )!;
+    findChildByAttr(
+      recovery,
+      UPDATES_RECEIPT_CLOSURE_REVIEW_BUTTON_ATTR,
+    )?.click();
+    expect(recovery.getAttribute('data-phase')).toBe('reviewing_closure');
+    expect(JSON.parse(tabStorage.getItem(progressKey)!)).toMatchObject({
+      phase: 'awaiting_reconnect',
+      operation_id: 'rollback-ledger-receipt',
+    });
+    findChildByAttr(
+      recovery,
+      UPDATES_RECEIPT_CLOSURE_CONFIRM_ATTR,
+    )?.click();
+    await flush();
+    const closeCall = findRpcCall(
+      fixture.transportControls,
+      'update.operation_close',
+    )!;
+    expect(closeCall.args).toEqual({
+      operation_id: 'rollback-ledger-receipt',
+      expected_operation: 'rollback',
+    });
+    expect(recovery.getAttribute('data-phase')).toBe('closing');
+    expect(JSON.parse(tabStorage.getItem(progressKey)!)).toMatchObject({
+      phase: 'awaiting_reconnect',
+    });
+
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: closeCall.request_id,
+      result: {
+        status: 'closed_unresolved',
+        operation: 'rollback',
+      },
+    });
+    await flush();
+    expect(recovery.getAttribute('data-phase')).toBe('closed');
+    expect(subtreeText(recovery)).toMatch(
+      /did not claim the rollback succeeded or failed/i,
+    );
+    expect(JSON.parse(tabStorage.getItem(progressKey)!)).toMatchObject({
+      phase: 'awaiting_reconnect',
+      operation_id: 'rollback-ledger-receipt',
+    });
+    expect(findChildByAttr(
+      fixture.root,
+      UPDATES_CHECK_BTN_ATTR,
+    )?.hasAttribute('disabled')).toBe(true);
+
+    findChildByAttr(
+      recovery,
+      UPDATES_RECEIPT_CLOSURE_FINISH_ATTR,
+    )?.click();
+    await flush();
+    expect(recovery.getAttribute('data-phase')).toBe('checking_baseline');
+    expect(JSON.parse(tabStorage.getItem(progressKey)!)).toMatchObject({
+      phase: 'awaiting_reconnect',
+      operation_id: 'rollback-ledger-receipt',
+    });
+    expect(findChildByAttr(
+      fixture.root,
+      UPDATES_CHECK_BTN_ATTR,
+    )?.hasAttribute('disabled')).toBe(true);
+
+    const baselineCall = findRpcCall(
+      fixture.transportControls,
+      'update.check',
+    )!;
+    const affectedConnectionCall = findRpcCall(
+      fixture.transportControls,
+      'collection.connection.credentialRotationActivity',
+    )!;
+    expect(affectedConnectionCall.args).toEqual({
+      kind: 'api',
+      name: 'github-main',
+    });
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: baselineCall.request_id,
+      result: {
+        status: 'up-to-date',
+        current_version: '26.8.1',
+        channel: 'stable',
+      },
+    });
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: affectedConnectionCall.request_id,
+      result: { activity: { status: 'idle' } },
+    });
+    await flush();
+    expect(recovery.getAttribute('data-phase')).toBe('baseline_confirmed');
+    expect(subtreeText(recovery)).toMatch(
+      /running 26\.8\.1.*github-main.*no credential verification.*current state only.*original rollback outcome remains unknown/is,
+    );
+    expect(JSON.parse(tabStorage.getItem(progressKey)!)).toMatchObject({
+      phase: 'awaiting_reconnect',
+      operation_id: 'rollback-ledger-receipt',
+    });
+    fixture.transportControls.fireState('reconnecting');
+    fixture.transportControls.fireState('connected');
+    await flush();
+    expect(recovery.getAttribute('data-phase')).toBe('baseline_confirmed');
+    expect(JSON.parse(tabStorage.getItem(progressKey)!)).toMatchObject({
+      phase: 'awaiting_reconnect',
+      operation_id: 'rollback-ledger-receipt',
+    });
+
+    const returnCallOffset = fixture.transportControls.sendCalls().length;
+    findChildByAttr(
+      recovery,
+      UPDATES_RECEIPT_CLOSURE_FINISH_ATTR,
+    )?.click();
+    await flush();
+    await flush();
+    expect(JSON.parse(tabStorage.getItem(progressKey)!)).toMatchObject({
+      phase: 'idle',
+      operation: 'rollback',
+    });
+    expect(recovery.getAttribute('data-phase')).toBe('completed');
+    expect(subtreeText(recovery)).toMatch(
+      /recovery finished.*controls are available again.*one-shot.*will not replay.*original rollback.*unknown/is,
+    );
+    expect(handle.activeRoute()).toBe('connections');
+    expect(fixture.hashSource.getHash()).toBe(
+      '#connections/others/retry-credential-rotation/api/github-main',
+    );
+
+    type RpcCall = {
+      type: 'rpc';
+      request_id: string;
+      method: string;
+      args: Record<string, unknown>;
+    };
+    const returnCalls = (method: string): RpcCall[] =>
+      fixture.transportControls.sendCalls().slice(returnCallOffset).filter(
+        (message): message is RpcCall =>
+          message !== null
+          && typeof message === 'object'
+          && (message as { type?: unknown }).type === 'rpc'
+          && (message as { method?: unknown }).method === method,
+      );
+    const answered = new Set<string>();
+    const connectionRow = {
+      kind: 'api',
+      name: 'github-main',
+      display_name: 'GitHub',
+      config: { base_url: 'https://api.github.com' },
+      auth_type: 'bearer',
+      granted_scopes: [],
+      created_at: 90,
+      updated_at: 91,
+    };
+    const answerPendingRouteReads = (): void => {
+      for (const call of returnCalls('collection.connection.list')) {
+        if (answered.has(call.request_id)) continue;
+        answered.add(call.request_id);
+        fixture.transportControls.fireMessage({
+          type: 'rpc_result',
+          request_id: call.request_id,
+          result: { connections: [connectionRow] },
+        });
+      }
+      for (const call of returnCalls('packs.list')) {
+        if (answered.has(call.request_id)) continue;
+        answered.add(call.request_id);
+        fixture.transportControls.fireMessage({
+          type: 'rpc_result',
+          request_id: call.request_id,
+          result: { packs: [] },
+        });
+      }
+    };
+
+    answerPendingRouteReads();
+    for (let i = 0; i < 8; i += 1) await flush();
+    answerPendingRouteReads();
+    for (let i = 0; i < 8; i += 1) await flush();
+    const returnActivity = returnCalls(
+      'collection.connection.credentialRotationActivity',
+    )[0];
+    expect(returnActivity?.args).toEqual({
+      kind: 'api',
+      name: 'github-main',
+    });
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: returnActivity!.request_id,
+      result: { activity: { status: 'idle' } },
+    });
+    for (let i = 0; i < 8; i += 1) await flush();
+    answerPendingRouteReads();
+    for (let i = 0; i < 12; i += 1) await flush();
+
+    const connectionContent = findChildByAttr(
+      fixture.root,
+      'data-recued-connections-route-content',
+    )!;
+    expect(subtreeInnerHtml(connectionContent)).toMatch(
+      /data-connection-credential-recovery="restart_ready".*server recovery is finished and server-change controls are unlocked.*original rollback outcome remains unknown.*data-conn-field="auth\.token"/is,
+    );
+    expect(subtreeInnerHtml(connectionContent)).not.toContain(
+      'rollback-ledger-receipt',
+    );
+    expect(JSON.parse(continuityStorage.getItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+    )!)).toMatchObject({
+      scope_id: 'p1',
+      kind: 'api',
+      name: 'github-main',
+      phase: 'editor_ready',
+      baseline_version: null,
+    });
+    expect(findChildByAttr(
+      fixture.root,
+      ACCOUNT_MENU_BADGE_ATTR,
+    )?.getAttribute('data-state')).toBe('result-ready');
+    const readyGuide = findChildByAttr(
+      fixture.root,
+      ACCOUNT_MENU_SERVER_UPDATE_ATTR,
+    )!;
+    expect(readyGuide.children[0]?.textContent)
+      .toBe('Resume credential replacement');
+    expect(subtreeText(readyGuide)).not.toMatch(
+      /recovery finished|running 26\.8\.1/i,
+    );
+    await handle.dispose();
+  });
+
+  it('keeps accepted restart progress local until this tab reconnects and rechecks capability', async () => {
+    type ChannelListener = (event: MessageEvent<unknown>) => void;
+    const rooms = new Map<string, Set<ProgressChannel>>();
+    class ProgressChannel {
+      readonly listeners = new Set<ChannelListener>();
+
+      constructor(readonly name: string) {
+        const room = rooms.get(name) ?? new Set<ProgressChannel>();
+        room.add(this);
+        rooms.set(name, room);
+      }
+
+      postMessage(message: unknown): void {
+        for (const peer of rooms.get(this.name) ?? []) {
+          if (peer === this) continue;
+          for (const listener of [...peer.listeners]) {
+            listener({ data: message } as MessageEvent<unknown>);
+          }
+        }
+      }
+
+      addEventListener(_type: 'message', listener: ChannelListener): void {
+        this.listeners.add(listener);
+      }
+
+      removeEventListener(_type: 'message', listener: ChannelListener): void {
+        this.listeners.delete(listener);
+      }
+
+      close(): void {
+        rooms.get(this.name)?.delete(this);
+        this.listeners.clear();
+      }
+    }
+
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    const continuityStorage = memorySessionStorage();
+    const tabStorage = memorySessionStorage();
+    continuityStorage.setItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        version: 2,
+        scope_id: 'p1',
+        kind: 'api',
+        name: 'github-main',
+        phase: 'triage',
+        started_at: 1_700_000_000_000,
+        baseline_version: '26.7.3',
+        triage_reason: 'running_version_unchanged',
+        triage_check_status: 'up-to-date',
+        triage_current_version: '26.7.3',
+        triage_channel: 'stable',
+        triage_available_version: null,
+      }),
+    );
+    fixture.hashSource.setHash('#settings/updates');
+    const makeView = () => ({
+      BroadcastChannel: ProgressChannel,
+      localStorage: tabStorage,
+      history: { replaceState: vi.fn() },
+      location: { hash: '#settings/updates' },
+      addEventListener: (): void => undefined,
+      removeEventListener: (): void => undefined,
+    });
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = makeView();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      credentialRotationServerUpdateContinuityStorage: continuityStorage,
+      credentialRotationTabStorage: tabStorage,
+    });
+    await flush();
+
+    const capabilityCalls = () => fixture.transportControls.sendCalls().filter(
+      (message): message is {
+        type: 'rpc';
+        request_id: string;
+        method: string;
+        args: Record<string, unknown>;
+      } => message !== null
+        && typeof message === 'object'
+        && (message as { type?: unknown }).type === 'rpc'
+        && (message as { method?: unknown }).method
+          === 'collection.connection.credentialRotationActivity',
+    );
+    const initialCheck = capabilityCalls()[0]!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: initialCheck.request_id,
+      error: {
+        code: 'unknown_method',
+        message: 'method unavailable',
+      },
+    });
+    await flush();
+
+    const source = createBrowserCredentialRotationTabConvergence({
+      document: {
+        defaultView: makeView(),
+        visibilityState: 'visible',
+        addEventListener: (): void => undefined,
+        removeEventListener: (): void => undefined,
+      } as unknown as Document,
+      scopeId: 'p1',
+      storage: tabStorage,
+      now: () => 1_700_000_000_000,
+      eventId: (() => {
+        const ids = [
+          'applying-update',
+          'premature-capability-pulse',
+          'accepted-restart',
+          'source-reconnected',
+        ];
+        return () => ids.shift()!;
+      })(),
+    })!;
+
+    source.notifyServerUpdateProgress({
+      phase: 'applying',
+      operation: 'update',
+    });
+    await flush();
+    const progress = findChildByAttr(
+      fixture.root,
+      UPDATES_CREDENTIAL_RETRY_ATTR,
+    )!;
+    expect(progress.hasAttribute('hidden')).toBe(false);
+    expect(progress.getAttribute('aria-busy')).toBe('true');
+    expect(findChildByAttr(
+      progress,
+      UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
+    )?.textContent).toMatch(/open Recued tab.*duplicate server action/i);
+    expect(handle.activeRoute()).toBe('settings');
+    expect(fixture.hashSource.getHash()).toBe('#settings/updates');
+
+    // An advisory sibling pulse while the server action is active must not
+    // race a capability read against the old/in-transition server.
+    source.notifyServerCapabilityResolved({
+      kind: 'api',
+      name: 'github-main',
+    });
+    await flush();
+    expect(capabilityCalls()).toHaveLength(1);
+
+    source.notifyServerUpdateProgress({
+      phase: 'awaiting_reconnect',
+      operation: 'update',
+    });
+    await flush();
+    expect(findRpcCall(
+      fixture.transportControls,
+      'update.operation_status',
+    )).toBeUndefined();
+    expect(findChildByAttr(
+      progress,
+      UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
+    )?.textContent).toMatch(/accepted.*waiting to observe the restart/i);
+
+    // The source tab recovered first. Its idle signal must not unlock this
+    // receiver before this receiver observes its own transport boundary.
+    await source.clearServerUpdateProgress(
+      source.readServerUpdateProgress()!,
+    );
+    await flush();
+    expect(findChildByAttr(
+      progress,
+      UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
+    )?.textContent).toMatch(/accepted.*waiting to observe the restart/i);
+    expect(capabilityCalls()).toHaveLength(1);
+
+    fixture.transportControls.fireState('reconnecting');
+    fixture.transportControls.fireState('connected');
+    await flush();
+    const reconnectCheck = capabilityCalls()[1]!;
+    expect(reconnectCheck.args).toEqual({
+      kind: 'api',
+      name: 'github-main',
+    });
+    expect(findChildByAttr(
+      progress,
+      UPDATES_CREDENTIAL_RETRY_STATUS_ATTR,
+    )?.textContent).toMatch(/returned server still lacks.*safe preflight/i);
+    expect(progress.hasAttribute('aria-busy')).toBe(false);
+    expect(JSON.parse(continuityStorage.getItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+    )!)).toMatchObject({ phase: 'triage' });
+
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: reconnectCheck.request_id,
+      result: { activity: { status: 'idle' } },
+    });
+    await flush();
+    await flush();
+    expect(continuityStorage.getItem(
+      CREDENTIAL_ROTATION_SERVER_UPDATE_CONTINUITY_SESSION_KEY,
+    )).toBeNull();
+    expect(findChildByAttr(
+      fixture.root,
+      UPDATES_CREDENTIAL_RETRY_ATTR,
+    )?.getAttribute('data-phase')).toBe('resolved_elsewhere');
+    expect(handle.activeRoute()).toBe('settings');
+    expect(fixture.hashSource.getHash()).toBe('#settings/updates');
+
+    source.close();
+    await handle.dispose();
+  });
+
+  it('restores the hydrated server through ensureProfile before connecting', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+    });
+
+    expect(profiles.calls[0]).toBe(
+      'ensure:wss://alice.recued.cloud:8443/ws',
+    );
+    expect(fixture.transportControls.openCount()).toBe(1);
+    await handle.dispose();
+  });
+
+  it('records each successful socket connection against the exact booted profile', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    let now = 1_700_000_000_000;
+    const onServerProfilesChanged = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      now: () => now,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      onServerProfilesChanged,
+    });
+    await flush();
+
+    expect(profiles.calls).toContain('connected:p1:1700000000000');
+    expect(profiles.state.profiles.find((profile) => profile.id === 'p1')?.last_connected_at)
+      .toBe(1_700_000_000_000);
+    expect(onServerProfilesChanged).toHaveBeenCalledOnce();
+
+    now += 60_000;
+    fixture.transportControls.fireState('reconnecting');
+    fixture.transportControls.fireState('connected');
+    await flush();
+
+    expect(profiles.calls).toContain('connected:p1:1700000060000');
+    expect(onServerProfilesChanged).toHaveBeenCalledTimes(2);
+    await handle.dispose();
+  });
+
+  it('renders the roster inside the account menu, from local storage alone', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+    });
+    await flush();
+
+    const trigger = findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR);
+    expect(trigger).not.toBeNull();
+    trigger!.click();
+    // Rendered from the roster, with no rpc involved — the transport is never
+    // asked anything to produce this list.
+    expect(subtreeText(findByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)!))
+      .toContain('home');
+    await handle.dispose();
+  });
+
+  it('renames a profile locally without reloading and signals sibling tabs', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const reload = vi.fn();
+    const onServerProfilesChanged = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      onServerProfilesChanged,
+    });
+    await flush();
+    onServerProfilesChanged.mockClear();
+
+    const trigger = findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!;
+    trigger.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_RENAME_ATTR)[0]!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_RENAME_INPUT_ATTR)!
+      .fireInput('Home workspace');
+    findByAttr(fixture.root, SERVER_SWITCHER_RENAME_SAVE_ATTR)!.click();
+    await flush();
+
+    expect(profiles.calls).toContain('rename:p1:Home workspace');
+    expect(profiles.state.profiles.find((profile) => profile.id === 'p1')?.label)
+      .toBe('Home workspace');
+    expect(reload).not.toHaveBeenCalled();
+    expect(onServerProfilesChanged).toHaveBeenCalledOnce();
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    expect(subtreeText(findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)[0]!))
+      .toContain('Home workspace');
+    expect(findByAttr(fixture.root, SERVER_SWITCHER_RECENCY_ATTR)?.textContent)
+      .toBe('Connected now');
+    await handle.dispose();
+  });
+
+  it('keeps rename failure inline and does not signal an uncommitted name', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    profiles.store.renameProfile = async () => {
+      throw new Error('indexeddb is unavailable');
+    };
+    const onServerProfilesChanged = vi.fn();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      onServerProfilesChanged,
+    });
+    await flush();
+    onServerProfilesChanged.mockClear();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_RENAME_ATTR)!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_RENAME_INPUT_ATTR)!
+      .fireInput('Home workspace');
+    findByAttr(fixture.root, SERVER_SWITCHER_RENAME_SAVE_ATTR)!.click();
+    await flush();
+
+    expect(findByAttr(fixture.root, SERVER_SWITCHER_RENAME_ERROR_ATTR)?.textContent)
+      .toContain('indexeddb is unavailable');
+    expect(onServerProfilesChanged).not.toHaveBeenCalled();
+    errors.mockRestore();
+    await handle.dispose();
+  });
+
+  it('re-reads the roster on a sibling profile-change hint without remounting', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const discoveryStorage = memorySessionStorage();
+    discoveryStorage.setItem(
+      `${INACTIVE_PROFILE_RECOVERY_HINT_KEY_PREFIX}p2`,
+      JSON.stringify({
+        version: 1,
+        profile_id: 'p2',
+        has_recoveries: true,
+        observed_at: 1_699_999_880_000,
+      }),
+    );
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      inactiveProfileRecoveryStorage: discoveryStorage,
+    });
+    await flush();
+    expect(findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)).toHaveLength(2);
+
+    profiles.state.profiles = [HOME_PROFILE];
+    handle.refreshServerProfiles?.();
+    await flush();
+
+    expect(findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)).toHaveLength(1);
+    expect(discoveryStorage.data.has(
+      `${INACTIVE_PROFILE_RECOVERY_HINT_KEY_PREFIX}p2`,
+    )).toBe(false);
+    await handle.dispose();
+  });
+
+  it('still mounts without a profile store — the menu owns theme + settings too', async () => {
+    // The account menu is not gated on profiles: it absorbed the theme toggle
+    // and the Settings link, so a caller with no roster still needs it. The
+    // servers row simply reports an empty roster.
+    const fixture = buildOpts();
+    const handle = await bootstrapWebclient(fixture.opts);
+    await flush();
+    expect(findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)).not.toBeNull();
+    expect(findByAttr(fixture.root, ACCOUNT_MENU_SETTINGS_ATTR)).not.toBeNull();
+    expect(findByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)).toBeNull();
+    await handle.dispose();
+  });
+
+  it('records only profile-level recovery availability from a valid active-server list', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const discoveryStorage = memorySessionStorage();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      inactiveProfileRecoveryStorage: discoveryStorage,
+    });
+    const connectionList = findRpcCall(
+      fixture.transportControls,
+      'collection.connection.list',
+    );
+    expect(connectionList).toBeDefined();
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: connectionList!.request_id,
+      result: {
+        connections: [{
+          kind: 'api',
+          name: 'private-provider-name',
+          display_name: 'Private provider label',
+          auth_type: 'bearer',
+          updated_at: 9,
+        }],
+        credential_post_safe_stop_verifications: [{
+          kind: 'api',
+          name: 'private-provider-name',
+          status: 'pending',
+          acknowledged_at: 8,
+        }],
+      },
+    });
+    await flush();
+
+    const raw = discoveryStorage.data.get(
+      `${INACTIVE_PROFILE_RECOVERY_HINT_KEY_PREFIX}p1`,
+    ) ?? '';
+    expect(JSON.parse(raw)).toEqual({
+      version: 1,
+      profile_id: 'p1',
+      has_recoveries: true,
+      observed_at: 1_700_000_000_000,
+    });
+    expect(raw).not.toContain('private-provider-name');
+    expect(raw).not.toContain('Private provider label');
+    expect(raw).not.toContain('home.example');
+    await handle.dispose();
+  });
+
+  it('opens an inactive reminder on the exact profile, then preserves the ordinary reviewed switch boundary', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#reception/private-detail-id');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const discoveryStorage = memorySessionStorage();
+    const reviewStorage = memorySessionStorage();
+    discoveryStorage.setItem(
+      `${INACTIVE_PROFILE_RECOVERY_HINT_KEY_PREFIX}p2`,
+      JSON.stringify({
+        version: 1,
+        profile_id: 'p2',
+        has_recoveries: true,
+        observed_at: 1_699_999_880_000,
+      }),
+    );
+    const reload = vi.fn();
+    const replaceHashForServerSwitch = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch,
+      inactiveProfileRecoveryStorage: discoveryStorage,
+      inactiveProfileRecoveryReviewStorage: reviewStorage,
+    });
+    await flush();
+    const connectionList = findRpcCall(
+      fixture.transportControls,
+      'collection.connection.list',
+    );
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: connectionList!.request_id,
+      result: { connections: [] },
+    });
+    await flush();
+
+    const topbar = findChildByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain(ATTENTION_INACTIVE_PROFILE_RECOVERY_ATTR);
+    expect(topbar.innerHTML).toContain('office may still need connection recovery');
+    expect(topbar.innerHTML).toContain('not a live result');
+    expect(topbar.innerHTML).not.toContain('data-connection-name');
+
+    topbar.fireClick({
+      action: 'review-inactive-connection-recovery',
+      serverProfileId: 'p2',
+    });
+    await flush();
+    expect(findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)?.getAttribute(
+      'aria-expanded',
+    )).toBe('true');
+    expect(findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR).some(
+      (item) => item.getAttribute('data-profile-id') === 'p2',
+    )).toBe(true);
+    expect(profiles.state.activeId).toBe('p1');
+    expect(reload).not.toHaveBeenCalled();
+    const rawReview = reviewStorage.data.get(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+    ) ?? '';
+    expect(JSON.parse(rawReview)).toMatchObject({
+      version: 3,
+      source_profile_id: 'p1',
+      target_profile_id: 'p2',
+      return_hash: '#reception',
+      return_context: 'detail_withheld',
+      phase: 'switching',
+    });
+    expect(rawReview).not.toContain('private-detail-id');
+
+    const office = findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)
+      .find((item) => item.getAttribute('data-profile-id') === 'p2');
+    office!.click();
+    expect(findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR))
+      .not.toBeNull();
+    expect(profiles.state.activeId).toBe('p1');
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    await flush();
+
+    expect(profiles.state.activeId).toBe('p2');
+    expect(replaceHashForServerSwitch).toHaveBeenCalledWith('#reception');
+    expect(reload).toHaveBeenCalledOnce();
+    expect(reviewStorage.data.has(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+    )).toBe(true);
+    await handle.dispose();
+  });
+
+  it('keeps a failed inactive-profile switch retryable until Account is explicitly dismissed', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const discoveryStorage = memorySessionStorage();
+    const reviewStorage = memorySessionStorage();
+    discoveryStorage.setItem(
+      `${INACTIVE_PROFILE_RECOVERY_HINT_KEY_PREFIX}p2`,
+      JSON.stringify({
+        version: 1,
+        profile_id: 'p2',
+        has_recoveries: true,
+        observed_at: 1_699_999_880_000,
+      }),
+    );
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: () => { throw new Error('reload denied'); },
+      inactiveProfileRecoveryStorage: discoveryStorage,
+      inactiveProfileRecoveryReviewStorage: reviewStorage,
+    });
+    await flush();
+    const connectionList = findRpcCall(
+      fixture.transportControls,
+      'collection.connection.list',
+    );
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: connectionList!.request_id,
+      result: { connections: [] },
+    });
+    await flush();
+
+    const topbar = findChildByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    topbar.fireClick({ action: 'open-attention' });
+    topbar.fireClick({
+      action: 'review-inactive-connection-recovery',
+      serverProfileId: 'p2',
+    });
+    await flush();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)
+      .find((item) => item.getAttribute('data-profile-id') === 'p2')!
+      .click();
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    await flush();
+
+    expect(profiles.state.activeId).toBe('p1');
+    expect(findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_ERROR_ATTR)?.textContent)
+      .toContain('try the switch again');
+    expect(reviewStorage.data.has(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+    )).toBe(true);
+    expect(findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)?.getAttribute(
+      'aria-expanded',
+    )).toBe('true');
+
+    // Closing Account is an explicit abandonment boundary. Unlike the failed
+    // attempt itself, it retires the one-shot destination review.
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    expect(reviewStorage.data.has(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+    )).toBe(false);
+
+    errors.mockRestore();
+    await handle.dispose();
+  });
+
+  it('rechecks the switched-to profile authoritatively, retires an all-clear, and never replays its receipt', async () => {
+    const discoveryStorage = memorySessionStorage();
+    const reviewStorage = memorySessionStorage();
+    discoveryStorage.setItem(
+      `${INACTIVE_PROFILE_RECOVERY_HINT_KEY_PREFIX}p2`,
+      JSON.stringify({
+        version: 1,
+        profile_id: 'p2',
+        has_recoveries: true,
+        observed_at: 1_699_999_880_000,
+      }),
+    );
+    reviewStorage.setItem(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+      JSON.stringify({
+        version: 1,
+        target_profile_id: 'p2',
+        started_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p2');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      localStore: buildPairedStore({
+        server_url: OFFICE_PROFILE.server_url,
+      }),
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      inactiveProfileRecoveryStorage: discoveryStorage,
+      inactiveProfileRecoveryReviewStorage: reviewStorage,
+    });
+    const topbar = findChildByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    expect(topbar.innerHTML).toContain(ATTENTION_CONNECTION_RECOVERY_REVIEW_ATTR);
+    expect(topbar.innerHTML).toContain('Checking office');
+
+    const connectionList = findRpcCall(
+      fixture.transportControls,
+      'collection.connection.list',
+    );
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: connectionList!.request_id,
+      result: { connections: [] },
+    });
+    await flush();
+
+    expect(topbar.innerHTML).toContain('office is clear');
+    expect(topbar.innerHTML).toContain('fresh authoritative check found no');
+    expect(reviewStorage.data.has(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+    )).toBe(false);
+    expect(JSON.parse(discoveryStorage.data.get(
+      `${INACTIVE_PROFILE_RECOVERY_HINT_KEY_PREFIX}p2`,
+    ) ?? '')).toMatchObject({
+      profile_id: 'p2',
+      has_recoveries: false,
+    });
+    await handle.dispose();
+
+    const reloadedFixture = buildOpts();
+    const reloadedProfiles = buildProfileStore(
+      [HOME_PROFILE, OFFICE_PROFILE],
+      'p2',
+    );
+    const reloaded = await bootstrapWebclient({
+      ...reloadedFixture.opts,
+      localStore: buildPairedStore({
+        server_url: OFFICE_PROFILE.server_url,
+      }),
+      profileStore: reloadedProfiles.store,
+      reloadForServerSwitch: vi.fn(),
+      inactiveProfileRecoveryStorage: discoveryStorage,
+      inactiveProfileRecoveryReviewStorage: reviewStorage,
+    });
+    const reloadedTopbar = findChildByAttr(
+      reloadedFixture.root,
+      ATTENTION_TOPBAR_HOST_ATTR,
+    )!;
+    expect(reloadedTopbar.innerHTML).not.toContain('attention-popover');
+    expect(reloadedTopbar.innerHTML).not.toContain(
+      ATTENTION_CONNECTION_RECOVERY_REVIEW_ATTR,
+    );
+    await reloaded.dispose();
+  });
+
+  it('turns a recovery excursion all-clear into a neutral exact-route return without replaying success after reload', async () => {
+    const reviewStorage = memorySessionStorage();
+    reviewStorage.setItem(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+      JSON.stringify({
+        version: 3,
+        source_profile_id: 'p1',
+        target_profile_id: 'p2',
+        return_hash: '#data/files',
+        return_context: 'area',
+        phase: 'switching',
+        started_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p2');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      localStore: buildPairedStore({
+        server_url: OFFICE_PROFILE.server_url,
+      }),
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      inactiveProfileRecoveryReviewStorage: reviewStorage,
+    });
+    const topbar = findChildByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    expect(topbar.innerHTML).toContain('Checking office');
+    const connectionList = findRpcCall(
+      fixture.transportControls,
+      'collection.connection.list',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: connectionList.request_id,
+      result: { connections: [] },
+    });
+    await flush();
+
+    expect(topbar.innerHTML).toContain('office is clear');
+    expect(topbar.innerHTML).toContain(ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR);
+    expect(topbar.innerHTML).toContain('Return to home when you’re ready');
+    expect(JSON.parse(reviewStorage.data.get(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+    ) ?? '')).toMatchObject({
+      phase: 'return_ready',
+      source_profile_id: 'p1',
+      target_profile_id: 'p2',
+      return_hash: '#data/files',
+    });
+    await handle.dispose();
+
+    const reloadedFixture = buildOpts();
+    const reloadedProfiles = buildProfileStore(
+      [HOME_PROFILE, OFFICE_PROFILE],
+      'p2',
+    );
+    const switchStorage = memorySessionStorage();
+    const replaceHashForServerSwitch = vi.fn();
+    const reload = vi.fn();
+    const reloaded = await bootstrapWebclient({
+      ...reloadedFixture.opts,
+      localStore: buildPairedStore({
+        server_url: OFFICE_PROFILE.server_url,
+      }),
+      profileStore: reloadedProfiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch,
+      serverSwitchContinuityStorage: switchStorage,
+      inactiveProfileRecoveryReviewStorage: reviewStorage,
+    });
+    await flush();
+    const reloadedTopbar = findChildByAttr(
+      reloadedFixture.root,
+      ATTENTION_TOPBAR_HOST_ATTR,
+    )!;
+    expect(reloadedTopbar.innerHTML).not.toContain('attention-popover');
+    expect(reloadedTopbar.innerHTML).not.toContain('office is clear');
+    expect(reloadedTopbar.innerHTML).not.toContain('fresh authoritative check');
+    reloadedTopbar.fireClick({ action: 'open-attention' });
+    expect(reloadedTopbar.innerHTML).toContain(
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR,
+    );
+    expect(reloadedTopbar.innerHTML).toContain(
+      'Return to home when you’re ready',
+    );
+    expect(reloadedTopbar.innerHTML).not.toContain('office is clear');
+
+    reloadedTopbar.fireClick({
+      action: 'review-recovery-excursion-return',
+      serverProfileId: 'p1',
+    });
+    expect(findByAttr(
+      reloadedFixture.root,
+      ACCOUNT_MENU_TRIGGER_ATTR,
+    )?.getAttribute('aria-expanded')).toBe('true');
+    expect(reloadedProfiles.state.activeId).toBe('p2');
+    findAllByAttr(reloadedFixture.root, SERVER_SWITCHER_ITEM_ATTR)
+      .find((item) => item.getAttribute('data-profile-id') === 'p1')!
+      .click();
+    expect(findByAttr(
+      reloadedFixture.root,
+      SERVER_SWITCHER_SWITCH_CONFIRM_ATTR,
+    )).not.toBeNull();
+    findByAttr(
+      reloadedFixture.root,
+      SERVER_SWITCHER_SWITCH_COMMIT_ATTR,
+    )!.click();
+    await flush();
+
+    expect(reloadedProfiles.state.activeId).toBe('p1');
+    expect(replaceHashForServerSwitch).toHaveBeenCalledWith('#data/files');
+    expect(reload).toHaveBeenCalledOnce();
+    expect(JSON.parse(switchStorage.data.get(
+      SERVER_SWITCH_CONTINUITY_SESSION_KEY,
+    ) ?? '')).toEqual({
+      v: 3,
+      target_profile_id: 'p1',
+      kind: 'recovery_return',
+      landing_hash: '#data/files',
+      return_context: 'area',
+    });
+    expect(reviewStorage.data.has(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+    )).toBe(false);
+    await reloaded.dispose();
+  });
+
+  it('keeps the excursion through repair and unlocks return only on a later authoritative all-clear', async () => {
+    const reviewStorage = memorySessionStorage();
+    reviewStorage.setItem(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+      JSON.stringify({
+        version: 2,
+        source_profile_id: 'p1',
+        target_profile_id: 'p2',
+        return_hash: '#chat',
+        phase: 'switching',
+        started_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p2');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      localStore: buildPairedStore({
+        server_url: OFFICE_PROFILE.server_url,
+      }),
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      inactiveProfileRecoveryReviewStorage: reviewStorage,
+    });
+    const firstList = findRpcCall(
+      fixture.transportControls,
+      'collection.connection.list',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: firstList.request_id,
+      result: {
+        connections: [{
+          kind: 'api',
+          name: 'needs-repair',
+          display_name: 'Needs repair',
+          auth_type: 'bearer',
+          updated_at: 9,
+        }],
+        credential_post_safe_stop_verifications: [{
+          kind: 'api',
+          name: 'needs-repair',
+          status: 'pending',
+          acknowledged_at: 8,
+        }],
+      },
+    });
+    await flush();
+    const topbar = findChildByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    expect(topbar.innerHTML).toContain('Finish recovery for Needs repair');
+    expect(topbar.innerHTML).not.toContain(
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR,
+    );
+    expect(JSON.parse(reviewStorage.data.get(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+    ) ?? '')).toMatchObject({ phase: 'recovering' });
+
+    topbar.fireClick({ action: 'dismiss-connection-recovery-review' });
+    topbar.fireClick({ action: 'open-attention' });
+    const secondList = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.connection.list',
+    )!;
+    expect(secondList.request_id).not.toBe(firstList.request_id);
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: secondList.request_id,
+      result: { connections: [] },
+    });
+    await flush();
+
+    expect(topbar.innerHTML).toContain(
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR,
+    );
+    expect(JSON.parse(reviewStorage.data.get(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+    ) ?? '')).toMatchObject({ phase: 'return_ready' });
+    await handle.dispose();
+  });
+
+  it('retires a return whose source profile disappeared and keeps the current server unchanged', async () => {
+    const reviewStorage = memorySessionStorage();
+    reviewStorage.setItem(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+      JSON.stringify({
+        version: 2,
+        source_profile_id: 'p1',
+        target_profile_id: 'p2',
+        return_hash: '#chat',
+        phase: 'return_ready',
+        started_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([OFFICE_PROFILE], 'p2');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      localStore: buildPairedStore({
+        server_url: OFFICE_PROFILE.server_url,
+      }),
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      inactiveProfileRecoveryReviewStorage: reviewStorage,
+    });
+    await flush();
+
+    const topbar = findChildByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    expect(topbar.innerHTML).not.toContain(
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR,
+    );
+    expect(reviewStorage.data.has(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+    )).toBe(false);
+    expect(profiles.state.activeId).toBe('p2');
+    await handle.dispose();
+  });
+
+  it('gives a newly opened recovery review one clear excursion owner', async () => {
+    const discoveryStorage = memorySessionStorage();
+    const reviewStorage = memorySessionStorage();
+    discoveryStorage.setItem(
+      `${INACTIVE_PROFILE_RECOVERY_HINT_KEY_PREFIX}p3`,
+      JSON.stringify({
+        version: 1,
+        profile_id: 'p3',
+        has_recoveries: true,
+        observed_at: 1_699_999_880_000,
+      }),
+    );
+    reviewStorage.setItem(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+      JSON.stringify({
+        version: 2,
+        source_profile_id: 'p1',
+        target_profile_id: 'p2',
+        return_hash: '#chat',
+        phase: 'return_ready',
+        started_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    const profiles = buildProfileStore(
+      [HOME_PROFILE, OFFICE_PROFILE, STUDIO_PROFILE],
+      'p2',
+    );
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      localStore: buildPairedStore({
+        server_url: OFFICE_PROFILE.server_url,
+      }),
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      inactiveProfileRecoveryStorage: discoveryStorage,
+      inactiveProfileRecoveryReviewStorage: reviewStorage,
+    });
+    await flush();
+    const connectionList = findRpcCall(
+      fixture.transportControls,
+      'collection.connection.list',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: connectionList.request_id,
+      result: { connections: [] },
+    });
+    await flush();
+
+    const topbar = findChildByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR,
+    );
+    expect(topbar.innerHTML).toContain('studio may still need connection recovery');
+    topbar.fireClick({
+      action: 'review-inactive-connection-recovery',
+      serverProfileId: 'p3',
+    });
+
+    expect(JSON.parse(reviewStorage.data.get(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+    ) ?? '')).toMatchObject({
+      version: 3,
+      source_profile_id: 'p2',
+      target_profile_id: 'p3',
+      return_hash: '#reception',
+      return_context: 'area',
+      phase: 'switching',
+    });
+    expect(findByAttr(
+      fixture.root,
+      ACCOUNT_MENU_TRIGGER_ATTR,
+    )?.getAttribute('aria-expanded')).toBe('true');
+
+    // Cancelling the newly opened review retires that one owner. The older
+    // home return was deliberately superseded and cannot linger in memory.
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    expect(reviewStorage.data.has(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+    )).toBe(false);
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).not.toContain(
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR,
+    );
+    expect(profiles.state.activeId).toBe('p2');
+    await handle.dispose();
+  });
+
+  it('keeps the saved return retryable when its reviewed reload fails and restores the target route', async () => {
+    const reviewStorage = memorySessionStorage();
+    reviewStorage.setItem(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+      JSON.stringify({
+        version: 2,
+        source_profile_id: 'p1',
+        target_profile_id: 'p2',
+        return_hash: '#data/files',
+        phase: 'return_ready',
+        started_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p2');
+    const replaceHashForServerSwitch = vi.fn();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      localStore: buildPairedStore({
+        server_url: OFFICE_PROFILE.server_url,
+      }),
+      profileStore: profiles.store,
+      reloadForServerSwitch: () => { throw new Error('reload denied'); },
+      replaceHashForServerSwitch,
+      inactiveProfileRecoveryReviewStorage: reviewStorage,
+    });
+    await flush();
+    const topbar = findChildByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    topbar.fireClick({ action: 'open-attention' });
+    topbar.fireClick({
+      action: 'review-recovery-excursion-return',
+      serverProfileId: 'p1',
+    });
+    findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)
+      .find((item) => item.getAttribute('data-profile-id') === 'p1')!
+      .click();
+    findByAttr(
+      fixture.root,
+      SERVER_SWITCHER_SWITCH_COMMIT_ATTR,
+    )!.click();
+    await flush();
+
+    expect(profiles.state.activeId).toBe('p2');
+    expect(replaceHashForServerSwitch).toHaveBeenNthCalledWith(
+      1,
+      '#data/files',
+    );
+    expect(replaceHashForServerSwitch).toHaveBeenLastCalledWith('#reception');
+    expect(reviewStorage.data.has(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+    )).toBe(true);
+    expect(findByAttr(
+      fixture.root,
+      SERVER_SWITCHER_SWITCH_ERROR_ATTR,
+    )?.textContent).toContain('try the switch again');
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR,
+    );
+    errors.mockRestore();
+    await handle.dispose();
+  });
+
+  it('retires the excursion only when the owner explicitly chooses to stay', async () => {
+    const reviewStorage = memorySessionStorage();
+    reviewStorage.setItem(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+      JSON.stringify({
+        version: 2,
+        source_profile_id: 'p1',
+        target_profile_id: 'p2',
+        return_hash: '#chat',
+        phase: 'return_ready',
+        started_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p2');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      localStore: buildPairedStore({
+        server_url: OFFICE_PROFILE.server_url,
+      }),
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      inactiveProfileRecoveryReviewStorage: reviewStorage,
+    });
+    await flush();
+    const topbar = findChildByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    topbar.fireClick({ action: 'open-attention' });
+    topbar.fireClick({
+      action: 'dismiss-recovery-excursion-return',
+      serverProfileId: 'p1',
+    });
+
+    expect(reviewStorage.data.has(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+    )).toBe(false);
+    expect(topbar.innerHTML).not.toContain(
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR,
+    );
+    expect(profiles.state.activeId).toBe('p2');
+    await handle.dispose();
+  });
+
+  it('preserves an unavailable destination recheck across reload and settles only from the next valid list', async () => {
+    const discoveryStorage = memorySessionStorage();
+    const reviewStorage = memorySessionStorage();
+    reviewStorage.setItem(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+      JSON.stringify({
+        version: 1,
+        target_profile_id: 'p2',
+        started_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p2');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      localStore: buildPairedStore({
+        server_url: OFFICE_PROFILE.server_url,
+      }),
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      inactiveProfileRecoveryStorage: discoveryStorage,
+      inactiveProfileRecoveryReviewStorage: reviewStorage,
+    });
+    const connectionList = findRpcCall(
+      fixture.transportControls,
+      'collection.connection.list',
+    );
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: connectionList!.request_id,
+      error: {
+        code: 'temporary_failure',
+        message: 'selected server unavailable',
+      },
+    });
+    await flush();
+
+    const topbar = findChildByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    expect(topbar.innerHTML).toContain('Couldn’t confirm office yet');
+    expect(topbar.innerHTML).toContain('Retry check');
+    expect(reviewStorage.data.has(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+    )).toBe(true);
+    await handle.dispose();
+    expect(reviewStorage.data.has(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+    )).toBe(true);
+
+    const retriedFixture = buildOpts();
+    const retriedProfiles = buildProfileStore(
+      [HOME_PROFILE, OFFICE_PROFILE],
+      'p2',
+    );
+    const retried = await bootstrapWebclient({
+      ...retriedFixture.opts,
+      localStore: buildPairedStore({
+        server_url: OFFICE_PROFILE.server_url,
+      }),
+      profileStore: retriedProfiles.store,
+      reloadForServerSwitch: vi.fn(),
+      inactiveProfileRecoveryStorage: discoveryStorage,
+      inactiveProfileRecoveryReviewStorage: reviewStorage,
+    });
+    const retriedTopbar = findChildByAttr(
+      retriedFixture.root,
+      ATTENTION_TOPBAR_HOST_ATTR,
+    )!;
+    expect(retriedTopbar.innerHTML).toContain('Checking office');
+    const retriedConnectionList = findRpcCall(
+      retriedFixture.transportControls,
+      'collection.connection.list',
+    );
+    retriedFixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: retriedConnectionList!.request_id,
+      result: { connections: [] },
+    });
+    await flush();
+
+    expect(retriedTopbar.innerHTML).toContain('office is clear');
+    expect(reviewStorage.data.has(
+      INACTIVE_PROFILE_RECOVERY_REVIEW_SESSION_KEY,
+    )).toBe(false);
+    await retried.dispose();
+  });
+
+  it('keeps Account and Settings available when the local profile roster cannot load', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    profiles.store.listProfiles = async () => {
+      throw new Error('indexeddb roster unavailable');
+    };
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+    });
+
+    // Account is mounted before the async roster read. A storage failure may
+    // leave the profile list empty, but cannot remove theme, Settings, or the
+    // banner's only recovery destination.
+    const trigger = findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR);
+    expect(trigger).not.toBeNull();
+    trigger!.click();
+    expect(findByAttr(fixture.root, ACCOUNT_MENU_SETTINGS_ATTR)).not.toBeNull();
+    await flush();
+    expect(findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)).not.toBeNull();
+    expect(errors).toHaveBeenCalledWith(
+      'webclient: account menu refresh failed',
+      expect.any(Error),
+    );
+
+    errors.mockRestore();
+    await handle.dispose();
+  });
+
+  it('badges the trigger when the connection controller reports offline', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      connectionStatusGraceMs: 0,
+    });
+    await flush();
+    // Same controller the chip reads, so badge and chip can never disagree.
+    const badge = findByAttr(fixture.root, ACCOUNT_MENU_BADGE_ATTR);
+    expect(badge).not.toBeNull();
+    expect(['ok', 'unreachable']).toContain(badge!.getAttribute('data-state'));
+    await handle.dispose();
+  });
+
+  it('a switch PERSISTS before it reloads', async () => {
+    // Order matters: reloading first would boot against the old active
+    // profile and read as "the click did nothing".
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const onActiveServerProfileChanged = vi.fn();
+    const reload = vi.fn(() => {
+      expect(profiles.calls).toContain('switch:p2');
+    });
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      onActiveServerProfileChanged,
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    const rows = findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR);
+    rows[1]!.click();
+    expect(findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR)).not.toBeNull();
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    await flush();
+
+    expect(profiles.calls).toEqual([
+      'ensure:wss://alice.recued.cloud:8443/ws',
+      'connected:p1:1700000000000',
+      'switch:p2',
+    ]);
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(onActiveServerProfileChanged).toHaveBeenCalledOnce();
+    await handle.dispose();
+  });
+
+  it('restores an exact recovery only when switching to the profile bound in its handoff', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash(
+      '#connections/others/finish-recovery/profile/p2/api/shared-name',
+    );
+    const replaceState = vi.fn();
+    (fixture.fakeDoc as unknown as { defaultView: unknown }).defaultView = {
+      history: { replaceState },
+    };
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const replaceHashForServerSwitch = vi.fn();
+    const reload = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch,
+    });
+    await flush();
+
+    // A valid profile-bound URL survives an ordinary reload. It cannot select
+    // current-server work, and is already the exact landing for p2.
+    expect(replaceState).not.toHaveBeenCalled();
+    const connectionContent = findChildByAttr(
+      fixture.root,
+      'data-recued-connections-route-content',
+    )!;
+    expect(subtreeInnerHtml(connectionContent)).toContain(
+      'This recovery belongs to another server',
+    );
+    expect(subtreeInnerHtml(connectionContent)).toContain('office');
+    expect(subtreeInnerHtml(connectionContent)).toContain('home');
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    const rows = findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR);
+    rows[1]!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    await flush();
+
+    expect(profiles.calls).toContain('switch:p2');
+    expect(replaceHashForServerSwitch).not.toHaveBeenCalled();
+    expect(fixture.hashSource.getHash()).toBe(
+      '#connections/others/finish-recovery/profile/p2/api/shared-name',
+    );
+    expect(reload).toHaveBeenCalledTimes(1);
+    await handle.dispose();
+  });
+
+  it('retires a bound recovery address when the owner dismisses its profile handoff', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash(
+      '#connections/others/finish-recovery/profile/p2/api/shared-name',
+    );
+    const replaceState = vi.fn();
+    (fixture.fakeDoc as unknown as { defaultView: unknown }).defaultView = {
+      history: { replaceState },
+    };
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+    });
+    await flush();
+    expect(replaceState).not.toHaveBeenCalled();
+
+    const connectionContent = findChildByAttr(
+      fixture.root,
+      'data-recued-connections-route-content',
+    )!;
+    connectionContent.fireClick({
+      action: 'connections-dismiss-post-safe-stop-profile',
+    });
+
+    expect(replaceState).toHaveBeenCalledWith(
+      null,
+      '',
+      '#connections/others',
+    );
+    expect(subtreeInnerHtml(connectionContent)).not.toContain(
+      'This recovery belongs to another server',
+    );
+    await handle.dispose();
+  });
+
+  it('strips a bound recovery when switching to a different profile', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash(
+      '#connections/others/finish-recovery/profile/p2/api/shared-name',
+    );
+    const profiles = buildProfileStore(
+      [HOME_PROFILE, OFFICE_PROFILE, STUDIO_PROFILE],
+      'p1',
+    );
+    const replaceHashForServerSwitch = vi.fn();
+    const reload = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch,
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    const rows = findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR);
+    rows[2]!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    await flush();
+
+    expect(profiles.calls).toContain('switch:p3');
+    expect(replaceHashForServerSwitch).toHaveBeenCalledWith(
+      '#connections/others',
+    );
+    expect(reload).toHaveBeenCalledTimes(1);
+    await handle.dispose();
+  });
+
+  it('does not resurrect a dismissed target when History cleanup is unavailable', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash(
+      '#connections/others/finish-recovery/profile/p2/api/shared-name',
+    );
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const replaceHashForServerSwitch = vi.fn();
+    const reload = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch,
+    });
+    await flush();
+
+    const connectionContent = findChildByAttr(
+      fixture.root,
+      'data-recued-connections-route-content',
+    )!;
+    connectionContent.fireClick({
+      action: 'connections-dismiss-post-safe-stop-profile',
+    });
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    const rows = findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR);
+    rows[1]!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    await flush();
+
+    expect(profiles.calls).toContain('switch:p2');
+    expect(replaceHashForServerSwitch).toHaveBeenCalledWith(
+      '#connections/others',
+    );
+    expect(replaceHashForServerSwitch).not.toHaveBeenCalledWith(
+      '#connections/others/finish-recovery/profile/p2/api/shared-name',
+    );
+    expect(reload).toHaveBeenCalledTimes(1);
+    await handle.dispose();
+  });
+
+  it('blocks a post-dismiss switch when no safe address rewrite exists', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash(
+      '#connections/others/finish-recovery/profile/p2/api/shared-name',
+    );
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const reload = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+    });
+    await flush();
+
+    const connectionContent = findChildByAttr(
+      fixture.root,
+      'data-recued-connections-route-content',
+    )!;
+    connectionContent.fireClick({
+      action: 'connections-dismiss-post-safe-stop-profile',
+    });
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    const rows = findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR);
+    rows[1]!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    await flush();
+
+    expect(profiles.calls).not.toContain('switch:p2');
+    expect(reload).not.toHaveBeenCalled();
+    expect(subtreeText(findByAttr(
+      fixture.root,
+      SERVER_SWITCHER_SWITCH_CONFIRM_ATTR,
+    )!)).toContain(
+      'cannot safely remove the current server’s detail link',
+    );
+    await handle.dispose();
+  });
+
+  it('re-reviews work that appears while the initiating switch preflight awaits storage', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat/session/chat_1');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const reload = vi.fn();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch: vi.fn(),
+    });
+    await flush();
+
+    const readActiveProfile = profiles.store.activeProfileId.bind(profiles.store);
+    let preflightStarted = false;
+    let releasePreflight = (): void => undefined;
+    const preflightGate = new Promise<void>((resolve) => {
+      releasePreflight = resolve;
+    });
+    profiles.store.activeProfileId = async () => {
+      if (!preflightStarted) {
+        preflightStarted = true;
+        await preflightGate;
+      }
+      return readActiveProfile();
+    };
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    await vi.waitFor(() => expect(preflightStarted).toBe(true));
+
+    // A request completion or host integration can update the route while the
+    // Account review is busy even though ordinary pointer input is disabled.
+    findChildByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR)!
+      .fireInput('Arrived while the active profile was being checked');
+    releasePreflight();
+    await flush();
+
+    expect(profiles.state.activeId).toBe('p1');
+    expect(profiles.calls).not.toContain('switch:p2');
+    expect(reload).not.toHaveBeenCalled();
+    expect(subtreeText(
+      findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR)!,
+    )).toContain('Your unsent Chat draft stays only in this tab');
+    expect(findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_ERROR_ATTR)?.textContent)
+      .toContain('Review the updated boundary');
+
+    errors.mockRestore();
+    await handle.dispose();
+  });
+
+  it('rolls back a persisted target when source work changes before reload', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat/session/chat_1');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const persistProfile = profiles.store.switchProfile.bind(profiles.store);
+    const reload = vi.fn();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    let targetPersisted = false;
+    let releasePersist = (): void => undefined;
+    const persistGate = new Promise<void>((resolve) => {
+      releasePersist = resolve;
+    });
+    profiles.store.switchProfile = async (id) => {
+      await persistProfile(id);
+      if (id === 'p2') {
+        targetPersisted = true;
+        await persistGate;
+      }
+    };
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch: vi.fn(),
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    await vi.waitFor(() => expect(targetPersisted).toBe(true));
+    expect(profiles.state.activeId).toBe('p2');
+
+    findChildByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR)!
+      .fireInput('Arrived after the target pointer was written');
+    releasePersist();
+    await flush();
+
+    expect(profiles.state.activeId).toBe('p1');
+    expect(profiles.calls).toContain('switch:p2');
+    expect(profiles.calls).toContain('switch:p1');
+    expect(reload).not.toHaveBeenCalled();
+    expect(findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_ERROR_ATTR)?.textContent)
+      .toContain('Review the updated boundary');
+    expect(subtreeText(
+      findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR)!,
+    )).toContain('Your unsent Chat draft stays only in this tab');
+
+    errors.mockRestore();
+    await handle.dispose();
+  });
+
+  it('a failed switch does NOT reload — the browser stays where it was', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    profiles.store.switchProfile = async () => { throw new Error('idb closed'); };
+    const reload = vi.fn();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    await flush();
+
+    // Reloading into an unchanged store would look exactly like a no-op click
+    // while quietly dropping the intent.
+    expect(reload).not.toHaveBeenCalled();
+    expect(findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_ERROR_ATTR)?.textContent)
+      .toContain('Your work is still here');
+    errors.mockRestore();
+    await handle.dispose();
+  });
+
+  it('rolls back when target verification fails after the profile write returned', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const readActive = profiles.store.activeProfileId.bind(profiles.store);
+    const switchProfile = profiles.store.switchProfile.bind(profiles.store);
+    let rejectNextVerification = false;
+    profiles.store.switchProfile = async (id) => {
+      await switchProfile(id);
+      if (id === 'p2') rejectNextVerification = true;
+    };
+    profiles.store.activeProfileId = async () => {
+      if (rejectNextVerification) {
+        rejectNextVerification = false;
+        throw new Error('verification read failed');
+      }
+      return readActive();
+    };
+    const reload = vi.fn();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    await flush();
+
+    expect(profiles.state.activeId).toBe('p1');
+    expect(profiles.calls).toContain('switch:p2');
+    expect(profiles.calls).toContain('switch:p1');
+    expect(reload).not.toHaveBeenCalled();
+    expect(findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_ERROR_ATTR)?.textContent)
+      .toContain('Couldn’t confirm the selected server');
+
+    errors.mockRestore();
+    await handle.dispose();
+  });
+
+  it('reviews a Chat draft, scrubs its source session, and suppresses only the confirmed reload prompt', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat/session/chat_1');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const storage = memorySessionStorage();
+    const replaceHash = vi.fn();
+    const confirmFn = vi.fn<(message: string) => boolean>(() => false);
+    const beforeUnloadListeners = new Set<(event: {
+      preventDefault(): void;
+      returnValue?: unknown;
+    }) => void>();
+    const pageHideListeners = new Set<() => void>();
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      confirm: confirmFn,
+      location: { hash: '#chat/session/chat_1' },
+      history: { replaceState: vi.fn() },
+      addEventListener: (name: string, listener: (event: {
+        preventDefault(): void;
+        returnValue?: unknown;
+      }) => void) => {
+        if (name === 'beforeunload') beforeUnloadListeners.add(listener);
+        if (name === 'pagehide') {
+          pageHideListeners.add(listener as unknown as () => void);
+        }
+      },
+      removeEventListener: (name: string, listener: (event: {
+        preventDefault(): void;
+        returnValue?: unknown;
+      }) => void) => {
+        if (name === 'beforeunload') beforeUnloadListeners.delete(listener);
+        if (name === 'pagehide') {
+          pageHideListeners.delete(listener as unknown as () => void);
+        }
+      },
+    };
+    const onServerProfilesChanged = vi.fn();
+    const onActiveServerProfileChanged = vi.fn();
+    let switchReloadPrevented: boolean | null = null;
+    const reload = vi.fn(() => {
+      const event = {
+        prevented: false,
+        returnValue: undefined as unknown,
+        preventDefault(): void { event.prevented = true; },
+      };
+      for (const listener of [...beforeUnloadListeners]) listener(event);
+      switchReloadPrevented = event.prevented;
+      for (const listener of [...pageHideListeners]) listener();
+    });
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch: replaceHash,
+      serverSwitchContinuityStorage: storage,
+      onServerProfilesChanged,
+      onActiveServerProfileChanged,
+    });
+    await flush();
+    onServerProfilesChanged.mockClear();
+    onActiveServerProfileChanged.mockClear();
+
+    const draft = findChildByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR);
+    expect(draft).not.toBeNull();
+    draft!.fireInput('Private thought for the home server');
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
+
+    const review = findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_CONFIRM_ATTR);
+    expect(subtreeText(review!)).toContain('Your unsent Chat draft stays only in this tab');
+    expect(profiles.state.activeId).toBe('p1');
+    expect(reload).not.toHaveBeenCalled();
+
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    await flush();
+
+    expect(profiles.state.activeId).toBe('p2');
+    expect(replaceHash).toHaveBeenCalledWith('#chat');
+    expect(reload).toHaveBeenCalledOnce();
+    expect(switchReloadPrevented).toBe(false);
+    expect(onActiveServerProfileChanged).toHaveBeenCalledOnce();
+    expect(onServerProfilesChanged).not.toHaveBeenCalled();
+    expect(confirmFn).not.toHaveBeenCalled();
+    const marker = storage.data.get(SERVER_SWITCH_CONTINUITY_SESSION_KEY) ?? '';
+    expect(marker).toContain('p2');
+    expect(marker).not.toContain('Private thought');
+    expect(marker).not.toContain('chat_1');
+
+    await handle.dispose();
+  });
+
+  it('rolls the profile and safe-hash rewrite back when the switch reload is rejected', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat/session/chat_1');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const storage = memorySessionStorage();
+    const rewrittenHashes: string[] = [];
+    const onServerProfilesChanged = vi.fn();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: () => { throw new Error('reload denied'); },
+      replaceHashForServerSwitch: (hash) => { rewrittenHashes.push(hash); },
+      serverSwitchContinuityStorage: storage,
+      onServerProfilesChanged,
+    });
+    await flush();
+    onServerProfilesChanged.mockClear();
+    findChildByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR)!
+      .fireInput('Keep this if reload cannot start');
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    await flush();
+
+    expect(profiles.state.activeId).toBe('p1');
+    expect(rewrittenHashes).toEqual(['#chat', '#chat/session/chat_1']);
+    expect(storage.data.has(SERVER_SWITCH_CONTINUITY_SESSION_KEY)).toBe(false);
+    expect(onServerProfilesChanged).not.toHaveBeenCalled();
+    expect(findChildByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR)?.value)
+      .toBe('Keep this if reload cannot start');
+    expect(findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_ERROR_ATTR)?.textContent)
+      .toContain('Your work is still here');
+
+    errors.mockRestore();
+    await handle.dispose();
+  });
+
+  it('restores the source hash when an injected rewrite mutates before throwing', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat/session/chat_1');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const rewrittenHashes: string[] = [];
+    const reload = vi.fn();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch: (hash) => {
+        rewrittenHashes.push(hash);
+        if (hash === '#chat') throw new Error('rewrite observer failed');
+      },
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    await flush();
+
+    expect(profiles.state.activeId).toBe('p1');
+    expect(rewrittenHashes).toEqual(['#chat', '#chat/session/chat_1']);
+    expect(reload).not.toHaveBeenCalled();
+    expect(findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_ERROR_ATTR)?.textContent)
+      .toContain('Your work is still here');
+
+    errors.mockRestore();
+    await handle.dispose();
+  });
+
+  it('preserves a newer sibling choice and requires this stale tab to reload', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore(
+      [HOME_PROFILE, OFFICE_PROFILE, STUDIO_PROFILE],
+      'p1',
+    );
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const reload = vi.fn(() => {
+      // Another tab commits a different choice while this tab is attempting
+      // its reload. This shell must not roll that newer pointer back to p1.
+      profiles.state.activeId = 'p3';
+      throw new Error('reload denied');
+    });
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    await flush();
+
+    expect(profiles.state.activeId).toBe('p3');
+    expect(profiles.calls).toContain('switch:p2');
+    expect(profiles.calls).not.toContain('switch:p1');
+    const switchError = findByAttr(
+      fixture.root,
+      SERVER_SWITCHER_SWITCH_ERROR_ATTR,
+    );
+    expect(switchError?.textContent).toContain('changed in another tab');
+    expect(switchError?.textContent).toContain('Reload this tab');
+
+    errors.mockRestore();
+    await handle.dispose();
+  });
+
+  it('shows a one-shot arrival receipt only when the connected boot matches the switch target', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      SERVER_SWITCH_CONTINUITY_SESSION_KEY,
+      JSON.stringify({ v: 1, target_profile_id: 'p1' }),
+    );
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      serverSwitchContinuityStorage: storage,
+    });
+
+    expect(subtreeText(findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!))
+      .toContain('Now using home.');
+    expect(findByAttr(
+      fixture.root,
+      CONNECTION_BANNER_ACTION_ATTR,
+    )!.hasAttribute('hidden')).toBe(true);
+    expect(storage.data.has(SERVER_SWITCH_CONTINUITY_SESSION_KEY)).toBe(false);
+    await handle.dispose();
+
+    const mismatchedStorage = memorySessionStorage();
+    mismatchedStorage.setItem(
+      SERVER_SWITCH_CONTINUITY_SESSION_KEY,
+      JSON.stringify({ v: 1, target_profile_id: 'p2' }),
+    );
+    const mismatchFixture = buildOpts();
+    const mismatchProfiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const mismatchHandle = await bootstrapWebclient({
+      ...mismatchFixture.opts,
+      profileStore: mismatchProfiles.store,
+      reloadForServerSwitch: vi.fn(),
+      serverSwitchContinuityStorage: mismatchedStorage,
+    });
+    expect(subtreeText(findByAttr(mismatchFixture.root, CONNECTION_BANNER_ATTR)!))
+      .not.toContain('Now using');
+    expect(mismatchedStorage.data.has(SERVER_SWITCH_CONTINUITY_SESSION_KEY)).toBe(false);
+    await mismatchHandle.dispose();
+  });
+
+  it('confirms a recovery return only after its safe work area is current', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      SERVER_SWITCH_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        v: 3,
+        target_profile_id: 'p1',
+        kind: 'recovery_return',
+        landing_hash: '#contracts',
+        return_context: 'area',
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    let fireRouteMutation = (): void => undefined;
+    const mutationObserve = vi.fn();
+    const mutationDisconnect = vi.fn();
+    class TestMutationObserver {
+      constructor(callback: MutationCallback) {
+        fireRouteMutation = (): void => {
+          callback([], this as unknown as MutationObserver);
+        };
+      }
+      observe(...args: unknown[]): void {
+        mutationObserve(...args);
+      }
+      disconnect(): void {
+        mutationDisconnect();
+      }
+    }
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      MutationObserver:
+        TestMutationObserver as unknown as typeof MutationObserver,
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      serverSwitchContinuityStorage: storage,
+    });
+
+    const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
+    const action = findByAttr(fixture.root, CONNECTION_BANNER_ACTION_ATTR)!;
+    const content = routeContentRoot(fixture.root);
+    expect(subtreeText(banner)).not.toContain('Back on home');
+    await flush();
+    const list = findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: list.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+    expect(content.getAttribute('tabindex')).toBe('-1');
+    expect(subtreeText(banner)).toContain(
+      'Back on home. Contracts is refreshed and ready.',
+    );
+    expect(action.textContent).toBe('Continue in Contracts');
+    expect(action.hasAttribute('hidden')).toBe(false);
+    expect(storage.data.has(SERVER_SWITCH_CONTINUITY_SESSION_KEY)).toBe(false);
+
+    // The receipt remains a useful one-shot return even if the person browses
+    // elsewhere before selecting it. The newly mounted route must earn the
+    // focus with its own read; the old receipt cannot certify a new mount.
+    fixture.hashSource.setHash('#chat');
+    const broadFocusesBeforeReturn = content.focusCallCount;
+    action.click();
+    expect(fixture.hashSource.getHash()).toBe('#contracts');
+    expect(content.focusCallCount).toBe(broadFocusesBeforeReturn);
+    const returnList = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    expect(returnList.request_id).not.toBe(list.request_id);
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: returnList.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+    const landedRow = findByAttr(
+      fixture.root,
+      CONTRACTS_ROUTE_ROW_ATTR,
+    )!;
+    const orientationAnnouncement = findByAttr(
+      fixture.root,
+      RECOVERY_INTENT_ANNOUNCER_ATTR,
+    )!;
+    expect(landedRow.focusCallCount).toBe(1);
+    expect(landedRow.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe('continue');
+    expect(orientationAnnouncement.textContent).toBe('Continue here.');
+    expect(content.focusCallCount).toBe(broadFocusesBeforeReturn);
+    expect(banner.getAttribute('data-state')).toBe('ok');
+    expect(action.hasAttribute('hidden')).toBe(true);
+
+    const rowParent = landedRow.parentRef!;
+    const replacementRow = fixture.fakeDoc.createElement('a');
+    replacementRow.setAttribute(CONTRACTS_ROUTE_ROW_ATTR, 'private-replacement');
+    replacementRow.setAttribute('href', '#contracts/private-replacement');
+    rowParent.removeChild(landedRow);
+    rowParent.appendChild(replacementRow);
+    fireRouteMutation();
+    expect(landedRow.hasAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe(false);
+    expect(replacementRow.focusCallCount).toBe(1);
+    expect(replacementRow.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe(
+      'continue',
+    );
+    expect(orientationAnnouncement.textContent).toBe('Continue here.');
+    expect(mutationObserve).toHaveBeenCalledOnce();
+    expect(mutationObserve).toHaveBeenCalledWith(
+      content,
+      expect.objectContaining({
+        attributes: true,
+        childList: true,
+        subtree: true,
+        attributeFilter: expect.arrayContaining([
+          'aria-busy',
+          'aria-current',
+          'aria-disabled',
+          'aria-hidden',
+          'aria-selected',
+          'data-armed',
+          'data-recued-contracts-error',
+          'data-recued-contracts-row',
+          'data-recued-logs-status',
+          'data-recued-recipes-runnability',
+          'disabled',
+          'hidden',
+          'href',
+          'inert',
+        ]),
+      }),
+    );
+    expect(mutationDisconnect).not.toHaveBeenCalled();
+
+    // The row can remain usable while an authoritative error arrives. The
+    // old action intent is now stale: land on that exact condition, update the
+    // generic cue once, and never expose its server-owned detail in the shell
+    // announcement.
+    const invalidatedError = fixture.fakeDoc.createElement('p');
+    invalidatedError.setAttribute(
+      CONTRACTS_ROUTE_ERROR_ATTR,
+      'private-server-error',
+    );
+    invalidatedError.textContent = 'Private server-owned detail';
+    content.appendChild(invalidatedError);
+    fireRouteMutation();
+    expect(replacementRow.hasAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe(false);
+    expect(invalidatedError.focusCallCount).toBe(1);
+    expect(invalidatedError.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe(
+      'review',
+    );
+    expect(orientationAnnouncement.textContent).toBe(
+      'This changed. Review this status before continuing.',
+    );
+    expect(orientationAnnouncement.textContent).not.toContain(
+      'Private server-owned detail',
+    );
+    fireRouteMutation();
+    expect(invalidatedError.focusCallCount).toBe(1);
+    expect(orientationAnnouncement.textContent).toBe(
+      'This changed. Review this status before continuing.',
+    );
+
+    // When that exact condition resolves, return to the same still-current
+    // row once. This is orientation only: it neither invokes the row nor
+    // revives the already-consumed connection receipt.
+    invalidatedError.removeAttribute(CONTRACTS_ROUTE_ERROR_ATTR);
+    fireRouteMutation();
+    expect(invalidatedError.hasAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe(false);
+    expect(replacementRow.focusCallCount).toBe(2);
+    expect(replacementRow.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe(
+      'continue',
+    );
+    expect(orientationAnnouncement.textContent).toBe(
+      'Ready again. Continue here.',
+    );
+    expect(orientationAnnouncement.textContent).not.toContain(
+      'Private server-owned detail',
+    );
+    expect(banner.getAttribute('data-state')).toBe('ok');
+    expect(action.hasAttribute('hidden')).toBe(true);
+    fireRouteMutation();
+    expect(replacementRow.focusCallCount).toBe(2);
+    expect(orientationAnnouncement.textContent).toBe(
+      'Ready again. Continue here.',
+    );
+
+    fixture.hashSource.setHash('#chat');
+    expect(replacementRow.hasAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe(false);
+    expect(invalidatedError.hasAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe(false);
+    expect(orientationAnnouncement.textContent).toBe('');
+    expect(mutationDisconnect).toHaveBeenCalledOnce();
+    await handle.dispose();
+
+    // The marker was retired before the first arrival rendered, so a refresh
+    // cannot replay either its success copy or its resume action.
+    const refreshedFixture = buildOpts();
+    refreshedFixture.hashSource.setHash('#contracts');
+    const refreshedProfiles = buildProfileStore(
+      [HOME_PROFILE, OFFICE_PROFILE],
+      'p1',
+    );
+    const refreshed = await bootstrapWebclient({
+      ...refreshedFixture.opts,
+      profileStore: refreshedProfiles.store,
+      reloadForServerSwitch: vi.fn(),
+      serverSwitchContinuityStorage: storage,
+    });
+    const refreshedBanner = findByAttr(
+      refreshedFixture.root,
+      CONNECTION_BANNER_ATTR,
+    )!;
+    expect(subtreeText(refreshedBanner)).not.toContain('Back on home');
+    expect(findByAttr(
+      refreshedFixture.root,
+      CONNECTION_BANNER_ACTION_ATTR,
+    )!.hasAttribute('hidden')).toBe(true);
+    expect(findByAttr(
+      refreshedFixture.root,
+      RECOVERY_INTENT_ANNOUNCER_ATTR,
+    )).toBeNull();
+    await refreshed.dispose();
+  });
+
+  it('restores a paused recovery return from Attention through a fresh route-owned read', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+      JSON.stringify({
+        v: 1,
+        profile_id: 'p1',
+        landing_hash: '#contracts',
+        intent: 'continue',
+        paused_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      recoveryIntentContinuationStorage: storage,
+    });
+    await flush();
+    const initialList = findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: initialList.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+
+    // Browsing elsewhere must not move focus or replay the consumed return. The
+    // quiet marker remains a deliberate, profile-bound Attention action.
+    fixture.hashSource.setHash('#chat');
+    await flush();
+    const topbar = findByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
+    expect(topbar.innerHTML).toContain('top-bar-attention-badge');
+    expect(subtreeText(banner)).not.toContain('Back on');
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      ATTENTION_RECOVERY_INTENT_CONTINUATION_ATTR,
+    );
+    expect(topbar.innerHTML).toContain('data-phase="ready"');
+    expect(topbar.innerHTML).toContain('Finish returning to Contracts');
+    expect(topbar.innerHTML).toContain('Recued paused this return');
+    expect(topbar.innerHTML).not.toContain('Contracts is ready');
+    expect(topbar.innerHTML).not.toContain('Rechecking Contracts');
+    expect(topbar.innerHTML).not.toContain('Couldn’t verify Contracts');
+
+    topbar.fireClick({ action: 'resume-recovery-intent-continuation' });
+    expect(fixture.hashSource.getHash()).toBe('#contracts');
+    expect(topbar.innerHTML).not.toContain('attention-popover');
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      true,
+    );
+    const returnList = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    expect(returnList.request_id).not.toBe(initialList.request_id);
+    const returnedRowBeforeRead = findByAttr(
+      fixture.root,
+      CONTRACTS_ROUTE_ROW_ATTR,
+    );
+    expect(returnedRowBeforeRead?.focusCallCount ?? 0).toBe(0);
+
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: returnList.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+
+    const returnedRow = findByAttr(fixture.root, CONTRACTS_ROUTE_ROW_ATTR)!;
+    expect(returnedRow.focusCallCount).toBe(1);
+    expect(returnedRow.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe('continue');
+    expect(findByAttr(
+      fixture.root,
+      RECOVERY_INTENT_ANNOUNCER_ATTR,
+    )?.textContent).toBe('Continue here.');
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      false,
+    );
+    expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
+    expect(subtreeText(banner)).not.toContain('Back on');
+    expect(findByAttr(
+      fixture.root,
+      CONNECTION_BANNER_ACTION_ATTR,
+    )!.hasAttribute('hidden')).toBe(true);
+    await handle.dispose();
+  });
+
+  it('rechecks an already mounted paused-return area before restoring focus', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+      JSON.stringify({
+        v: 1,
+        profile_id: 'p1',
+        landing_hash: '#contracts',
+        intent: 'choose_again',
+        paused_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      recoveryIntentContinuationStorage: storage,
+    });
+    await flush();
+    const initialList = findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: initialList.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+
+    const topbar = findByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain('Return to Contracts and choose again');
+    topbar.fireClick({ action: 'resume-recovery-intent-continuation' });
+    await flush();
+    const recheck = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    expect(recheck.request_id).not.toBe(initialList.request_id);
+    const listTab = findChildrenByAttr(
+      fixture.root,
+      CONTRACTS_ROUTE_LIST_TAB_ATTR,
+    ).find((tab) => tab.getAttribute('aria-selected') === 'true')!;
+    expect(listTab.focusCallCount).toBe(0);
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      true,
+    );
+    const readsWhileChecking = countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    );
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="checking"');
+    expect(topbar.innerHTML).toContain('Rechecking Contracts');
+    expect(topbar.innerHTML).toContain('Rechecking&hellip;');
+    expect(topbar.innerHTML).toContain('disabled');
+    expect(topbar.innerHTML).toMatch(
+      /<button[^>]*aria-busy="true"[^>]*disabled[^>]*>\s*Rechecking&hellip;/s,
+    );
+    expect(topbar.innerHTML).not.toContain(
+      'data-action="resume-recovery-intent-continuation"',
+    );
+    topbar.fireClick({ action: 'resume-recovery-intent-continuation' });
+    await flush();
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsWhileChecking);
+
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: recheck.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+    const refreshedListTab = findChildrenByAttr(
+      fixture.root,
+      CONTRACTS_ROUTE_LIST_TAB_ATTR,
+    ).find((tab) => tab.getAttribute('aria-selected') === 'true')!;
+    expect(refreshedListTab.focusCallCount).toBe(1);
+    expect(refreshedListTab.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe(
+      'choose_again',
+    );
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      false,
+    );
+    expect(topbar.innerHTML).not.toContain('attention-popover');
+    await handle.dispose();
+  });
+
+  it('turns an unsuccessful authoritative recheck into explicit recovery and retries cleanly', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+      JSON.stringify({
+        v: 1,
+        profile_id: 'p1',
+        landing_hash: '#contracts',
+        intent: 'continue',
+        paused_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      recoveryIntentContinuationStorage: storage,
+    });
+    await flush();
+    const initialList = findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: initialList.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+
+    const topbar = findByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    topbar.fireClick({ action: 'open-attention' });
+    topbar.fireClick({ action: 'resume-recovery-intent-continuation' });
+    await flush();
+    const failedRecheck = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="checking"');
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: failedRecheck.request_id,
+      error: {
+        code: 'unavailable',
+        message: 'private transport diagnostic',
+      },
+    });
+    await flush();
+
+    const reviewError = findByAttr(
+      fixture.root,
+      CONTRACTS_ROUTE_ERROR_ATTR,
+    )!;
+    expect(reviewError.focusCallCount).toBe(0);
+    expect(reviewError.hasAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe(false);
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      true,
+    );
+    expect(topbar.innerHTML).toContain('attention-popover');
+    expect(topbar.innerHTML).toContain('data-phase="failed"');
+    expect(topbar.innerHTML).toContain('data-remediation="retry"');
+    expect(topbar.innerHTML).toContain('Contracts couldn’t be refreshed');
+    expect(topbar.innerHTML).toContain('Review Contracts');
+    expect(topbar.innerHTML).toContain('Try again');
+    expect(topbar.innerHTML).not.toContain('private transport diagnostic');
+
+    topbar.fireClick({ action: 'resume-recovery-intent-continuation' });
+    await flush();
+    const successfulRecheck = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    expect(successfulRecheck.request_id).not.toBe(failedRecheck.request_id);
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="checking"');
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: successfulRecheck.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+
+    const returnedRow = findByAttr(fixture.root, CONTRACTS_ROUTE_ROW_ATTR)!;
+    expect(returnedRow.focusCallCount).toBe(1);
+    expect(returnedRow.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe('continue');
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      false,
+    );
+    expect(topbar.innerHTML).not.toContain('attention-popover');
+    expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
+    await handle.dispose();
+  });
+
+  it('repairs a connection-bound failure through Account and retries the exact intent once', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+      JSON.stringify({
+        v: 1,
+        profile_id: 'p1',
+        landing_hash: '#contracts',
+        intent: 'choose_again',
+        paused_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      enablePermissionsPanel: false,
+      profileStore: profiles.store,
+      recoveryIntentContinuationStorage: storage,
+    });
+    await flush();
+    const initialList = findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: initialList.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+
+    const topbar = findByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
+    const account = findByAttr(fixture.root, ACCOUNT_MENU_POPOVER_ATTR)!;
+    const accountTrigger = findByAttr(
+      fixture.root,
+      ACCOUNT_MENU_TRIGGER_ATTR,
+    )!;
+    topbar.fireClick({ action: 'open-attention' });
+    topbar.fireClick({ action: 'resume-recovery-intent-continuation' });
+    await flush();
+    const interruptedRecheck = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    expect(interruptedRecheck.request_id).not.toBe(initialList.request_id);
+
+    // The route-owned read loses its transport. The raw RPC diagnostic stays
+    // below the shell boundary; Attention exposes only a closed-list repair.
+    fixture.transportControls.fireState('closed');
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: interruptedRecheck.request_id,
+      error: {
+        code: 'unavailable',
+        message: 'private reconnect transport diagnostic',
+      },
+    });
+    await flush();
+    fixture.hashSource.setHash('#chat');
+    await flush();
+    expect(fixture.hashSource.getHash()).toBe('#chat');
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="failed"');
+    expect(topbar.innerHTML).toContain('data-remediation="connection"');
+    expect(topbar.innerHTML).toContain(
+      'Reconnect before returning to Contracts',
+    );
+    expect(topbar.innerHTML).toContain('Review connection');
+    expect(topbar.innerHTML).toContain('Review Contracts');
+    expect(topbar.innerHTML).not.toContain('Try again');
+    expect(topbar.innerHTML).not.toContain('connection lost');
+    expect(topbar.innerHTML).not.toContain(
+      'private reconnect transport diagnostic',
+    );
+    expect(topbar.innerHTML).not.toContain(
+      'collection.contract.listContracts',
+    );
+    const readsBeforeRepair = countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    );
+
+    topbar.fireClick({
+      action: 'remediate-recovery-intent-connection',
+    });
+    await flush();
+    expect(topbar.innerHTML).not.toContain('attention-popover');
+    expect(account.hasAttribute('hidden')).toBe(false);
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      true,
+    );
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsBeforeRepair);
+
+    fixture.transportControls.fireState('connected');
+    fixture.transportControls.fireState('disconnected');
+    await flush();
+    expect(account.hasAttribute('hidden')).toBe(false);
+    expect(accountTrigger.focusCallCount).toBe(0);
+    expect(fixture.hashSource.getHash()).toBe('#chat');
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsBeforeRepair);
+
+    fixture.transportControls.fireState('connected');
+    await flush();
+    expect(account.hasAttribute('hidden')).toBe(true);
+    expect(accountTrigger.focusCallCount).toBe(1);
+    expect(fixture.hashSource.getHash()).toBe('#contracts');
+    const exactRetry = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    expect(exactRetry.request_id).not.toBe(interruptedRecheck.request_id);
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsBeforeRepair + 1);
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      true,
+    );
+
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: exactRetry.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+    const listTab = findChildrenByAttr(
+      fixture.root,
+      CONTRACTS_ROUTE_LIST_TAB_ATTR,
+    ).find((tab) => tab.getAttribute('aria-selected') === 'true')!;
+    expect(listTab.focusCallCount).toBe(1);
+    expect(listTab.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe(
+      'choose_again',
+    );
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      false,
+    );
+    expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
+    expect(subtreeText(banner)).not.toContain('Back on');
+    expect(subtreeText(banner)).not.toContain('refreshed and ready');
+
+    // A duplicate connected observation cannot replay the one-shot retry or
+    // its exact arrival cue.
+    fixture.transportControls.fireState('connected');
+    await flush();
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsBeforeRepair + 1);
+    expect(listTab.focusCallCount).toBe(1);
+    await handle.dispose();
+  });
+
+  it('keeps a committed profile action ahead of the reconnect-owned exact retry', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+      JSON.stringify({
+        v: 1,
+        profile_id: 'p1',
+        landing_hash: '#contracts',
+        intent: 'continue',
+        paused_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    let rejectSwitch: (error: Error) => void = () => undefined;
+    const switchInFlight = new Promise<void>((_resolve, reject) => {
+      rejectSwitch = reject;
+    });
+    const profileStore: WebclientProfileStore = {
+      ...profiles.store,
+      async switchProfile() {
+        await switchInFlight;
+      },
+    };
+    const reload = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      enablePermissionsPanel: false,
+      profileStore,
+      reloadForServerSwitch: reload,
+      recoveryIntentContinuationStorage: storage,
+    });
+    await flush();
+    const initialList = findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: initialList.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+
+    const topbar = findByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    const account = findByAttr(fixture.root, ACCOUNT_MENU_POPOVER_ATTR)!;
+    const accountTrigger = findByAttr(
+      fixture.root,
+      ACCOUNT_MENU_TRIGGER_ATTR,
+    )!;
+    topbar.fireClick({ action: 'open-attention' });
+    topbar.fireClick({ action: 'resume-recovery-intent-continuation' });
+    await flush();
+    const interruptedRecheck = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireState('closed');
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: interruptedRecheck.request_id,
+      error: { code: 'unavailable', message: 'private transport detail' },
+    });
+    await flush();
+    fixture.hashSource.setHash('#chat');
+    await flush();
+    topbar.fireClick({ action: 'open-attention' });
+    topbar.fireClick({ action: 'remediate-recovery-intent-connection' });
+    await flush();
+    expect(account.hasAttribute('hidden')).toBe(false);
+
+    const office = findChildrenByAttr(
+      fixture.root,
+      SERVER_SWITCHER_ITEM_ATTR,
+    ).find((item) => item.getAttribute('data-profile-id') === 'p2')!;
+    office.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    const readsBeforeReconnect = countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    );
+
+    fixture.transportControls.fireState('connected');
+    await flush();
+    expect(account.hasAttribute('hidden')).toBe(false);
+    expect(accountTrigger.focusCallCount).toBe(0);
+    expect(fixture.hashSource.getHash()).toBe('#chat');
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsBeforeReconnect);
+    expect(reload).not.toHaveBeenCalled();
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      true,
+    );
+
+    rejectSwitch(new Error('private switch failure'));
+    await flush();
+    expect(account.hasAttribute('hidden')).toBe(false);
+    findByAttr(fixture.root, ACCOUNT_MENU_CLOSE_ATTR)!.click();
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="ready"');
+    expect(topbar.innerHTML).toContain('Recheck area');
+    expect(topbar.innerHTML).not.toContain('Waiting for connection');
+    expect(topbar.innerHTML).not.toContain('private switch failure');
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsBeforeReconnect);
+    await handle.dispose();
+  });
+
+  it('fails closed when an already mounted area has no authoritative retry seam', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+      JSON.stringify({
+        v: 1,
+        profile_id: 'p1',
+        landing_hash: '#settings',
+        intent: 'continue',
+        paused_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#settings');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      recoveryIntentContinuationStorage: storage,
+    });
+    await flush();
+
+    const topbar = findByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain('Finish returning to Settings');
+    topbar.fireClick({ action: 'resume-recovery-intent-continuation' });
+    await flush();
+    topbar.fireClick({ action: 'open-attention' });
+
+    expect(topbar.innerHTML).toContain('data-phase="failed"');
+    expect(topbar.innerHTML).toContain('data-remediation="review"');
+    expect(topbar.innerHTML).toContain('Review Settings before continuing');
+    expect(topbar.innerHTML).toContain('Review Settings');
+    expect(topbar.innerHTML).not.toContain('Try again');
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      true,
+    );
+    expect(subtreeText(banner)).not.toContain('Back on');
+    expect(subtreeText(banner)).not.toContain('refreshed and ready');
+
+    fixture.transportControls.fireState('reconnecting');
+    fixture.transportControls.fireState('connected');
+    await flush();
+    expect(topbar.innerHTML).toContain('data-phase="failed"');
+    expect(topbar.innerHTML).toContain('data-remediation="review"');
+    expect(topbar.innerHTML).toContain('Review Settings before continuing');
+    expect(topbar.innerHTML).not.toContain('Try again');
+    await handle.dispose();
+  });
+
+  it('re-arms a failed recheck on reconnect without claiming or starting success', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+      JSON.stringify({
+        v: 1,
+        profile_id: 'p1',
+        landing_hash: '#contracts',
+        intent: 'continue',
+        paused_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      recoveryIntentContinuationStorage: storage,
+    });
+    await flush();
+    const initialList = findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: initialList.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+
+    const topbar = findByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
+    topbar.fireClick({ action: 'open-attention' });
+    topbar.fireClick({ action: 'resume-recovery-intent-continuation' });
+    await flush();
+    const failedRecheck = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: failedRecheck.request_id,
+      error: { code: 'unavailable', message: 'private reconnect failure' },
+    });
+    await flush();
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="failed"');
+    const readsBeforeReconnect = countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    );
+
+    fixture.transportControls.fireState('reconnecting');
+    fixture.transportControls.fireState('connected');
+    await flush();
+
+    expect(topbar.innerHTML).toContain('data-phase="ready"');
+    expect(topbar.innerHTML).toContain('Finish returning to Contracts');
+    expect(topbar.innerHTML).toContain('Recheck area');
+    expect(topbar.innerHTML).not.toContain('Couldn’t verify Contracts');
+    expect(topbar.innerHTML).not.toContain('Try again');
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsBeforeReconnect);
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      true,
+    );
+    expect(subtreeText(banner)).not.toContain('Back on');
+    await handle.dispose();
+  });
+
+  it('reviews a failed recheck through a fresh broad-route landing without a success claim', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+      JSON.stringify({
+        v: 1,
+        profile_id: 'p1',
+        landing_hash: '#contracts',
+        intent: 'continue',
+        paused_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      recoveryIntentContinuationStorage: storage,
+    });
+    await flush();
+    const initialList = findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: initialList.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+
+    const topbar = findByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
+    topbar.fireClick({ action: 'open-attention' });
+    topbar.fireClick({ action: 'resume-recovery-intent-continuation' });
+    await flush();
+    const failedRecheck = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: failedRecheck.request_id,
+      error: { code: 'unavailable', message: 'private first failure' },
+    });
+    await flush();
+
+    expect(findByAttr(
+      fixture.root,
+      CONTRACTS_ROUTE_ERROR_ATTR,
+    )?.focusCallCount).toBe(1);
+    fixture.hashSource.setHash('#chat');
+    await flush();
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="failed"');
+    topbar.fireClick({ action: 'review-recovery-intent-continuation' });
+    expect(fixture.hashSource.getHash()).toBe('#contracts');
+    expect(topbar.innerHTML).not.toContain('attention-popover');
+    const reviewRead = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    expect(reviewRead.request_id).not.toBe(failedRecheck.request_id);
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: reviewRead.request_id,
+      error: { code: 'unavailable', message: 'private review failure' },
+    });
+    await flush();
+
+    const reviewError = findByAttr(
+      fixture.root,
+      CONTRACTS_ROUTE_ERROR_ATTR,
+    )!;
+    expect(reviewError.focusCallCount).toBe(1);
+    expect(reviewError.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe('review');
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      false,
+    );
+    expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
+    expect(subtreeText(banner)).not.toContain('Back on');
+    expect(subtreeText(banner)).not.toContain('refreshed and ready');
+    await handle.dispose();
+  });
+
+  it('quietly retires the paused return when the person resumes that area directly', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+      JSON.stringify({
+        v: 1,
+        profile_id: 'p1',
+        landing_hash: '#contracts',
+        intent: 'continue',
+        paused_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      recoveryIntentContinuationStorage: storage,
+    });
+    await flush();
+    const initialList = findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: initialList.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+
+    const topbar = findByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    const row = findByAttr(fixture.root, CONTRACTS_ROUTE_ROW_ATTR)!;
+    expect(topbar.innerHTML).toContain('top-bar-attention-badge');
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      true,
+    );
+
+    // A deliberate interaction in the same broad route means the person has
+    // already resumed ownership. Retire the quiet reminder without moving
+    // focus, announcing completion, or restoring the old orientation cue.
+    fixture.fakeDoc.fireDocumentEvent('pointerdown', row);
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      false,
+    );
+    expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
+    expect(row.focusCallCount).toBe(0);
+    expect(row.hasAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe(false);
+    expect(findByAttr(
+      fixture.root,
+      RECOVERY_INTENT_ANNOUNCER_ATTR,
+    )?.textContent ?? '').toBe('');
+    await handle.dispose();
+  });
+
+  it('retires a paused return when Attention is unavailable', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+      JSON.stringify({
+        v: 1,
+        profile_id: 'p1',
+        landing_hash: '#contracts',
+        intent: 'continue',
+        paused_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      enableApprovalsRoute: false,
+      profileStore: profiles.store,
+      recoveryIntentContinuationStorage: storage,
+    });
+
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      false,
+    );
+    expect(findByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)).toBeNull();
+    await handle.dispose();
+  });
+
+  it('restores the exact handoff when an unsaved Chat draft declines the return', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      SERVER_SWITCH_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        v: 3,
+        target_profile_id: 'p1',
+        kind: 'recovery_return',
+        landing_hash: '#contracts',
+        return_context: 'area',
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    const confirm = vi.fn(() => false);
+    const location: { hash: string } = {} as { hash: string };
+    Object.defineProperty(location, 'hash', {
+      configurable: true,
+      get: () => fixture.hashSource.getHash(),
+      set: (hash: string) => { fixture.hashSource.setHash(hash); },
+    });
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      confirm,
+      location,
+      history: { replaceState: vi.fn(), pushState: vi.fn() },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      serverSwitchContinuityStorage: storage,
+    });
+    await flush();
+    const list = findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: list.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+
+    const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
+    const action = findByAttr(fixture.root, CONNECTION_BANNER_ACTION_ATTR)!;
+    expect(action.textContent).toBe('Continue in Contracts');
+    fixture.hashSource.setHash('#chat');
+    await flush();
+    const sessions = findLatestRpcCall(
+      fixture.transportControls,
+      'chat.sessions.list',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: sessions.request_id,
+      result: { sessions: [] },
+    });
+    await flush();
+    const input = findChildByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR)!;
+    input.fireInput('Keep this unfinished thought');
+    const contractReads = countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    );
+
+    action.click();
+
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(handle.activeRoute()).toBe('chat');
+    expect(fixture.hashSource.getHash()).toBe('#chat');
+    expect(findChildByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR)?.value).toBe(
+      'Keep this unfinished thought',
+    );
+    expect(subtreeText(banner)).toContain(
+      'Back on home. Contracts is refreshed and ready.',
+    );
+    expect(action.textContent).toBe('Continue in Contracts');
+    expect(action.hasAttribute('hidden')).toBe(false);
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(contractReads);
+    await handle.dispose();
+  });
+
+  it('reconciles a route move instead of calling stale arrival context ready', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      SERVER_SWITCH_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        v: 3,
+        target_profile_id: 'p1',
+        kind: 'recovery_return',
+        landing_hash: '#contracts',
+        return_context: 'area',
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      serverSwitchContinuityStorage: storage,
+    });
+    await flush();
+    const list = findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    expect(list).toBeDefined();
+
+    fixture.hashSource.setHash('#chat');
+    await flush();
+
+    const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
+    const action = findByAttr(fixture.root, CONNECTION_BANNER_ACTION_ATTR)!;
+    expect(banner.getAttribute('data-state')).toBe('attention');
+    expect(subtreeText(banner)).toContain('tab has moved since arrival');
+    expect(subtreeText(banner)).not.toContain('refreshed and ready');
+    expect(action.textContent).toBe('Return to Contracts');
+    const content = routeContentRoot(fixture.root);
+    const broadFocusesBeforeReturn = content.focusCallCount;
+    action.click();
+    expect(fixture.hashSource.getHash()).toBe('#contracts');
+    expect(subtreeText(banner)).toContain(
+      'Checking Contracts on home for the latest information',
+    );
+    const returnedList = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    expect(returnedList.request_id).not.toBe(list.request_id);
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: returnedList.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+    expect(findByAttr(
+      fixture.root,
+      CONTRACTS_ROUTE_ROW_ATTR,
+    )?.focusCallCount).toBe(1);
+    expect(content.focusCallCount).toBe(broadFocusesBeforeReturn);
+    expect(action.textContent).toBe('Continue in Contracts');
+    await handle.dispose();
+  });
+
+  it('explains when source-owned detail was withheld from a fresh return area', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      SERVER_SWITCH_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        v: 3,
+        target_profile_id: 'p1',
+        kind: 'recovery_return',
+        landing_hash: '#contracts',
+        return_context: 'detail_withheld',
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      serverSwitchContinuityStorage: storage,
+    });
+    await flush();
+    const list = findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: list.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+
+    const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
+    const action = findByAttr(fixture.root, CONNECTION_BANNER_ACTION_ATTR)!;
+    expect(banner.getAttribute('data-state')).toBe('attention');
+    expect(subtreeText(banner)).toContain('Contracts is refreshed');
+    expect(subtreeText(banner)).toContain(
+      'item you had open wasn’t carried across servers',
+    );
+    expect(subtreeText(banner)).not.toContain('refreshed and ready');
+    expect(action.textContent).toBe('Choose again in Contracts');
+    const content = routeContentRoot(fixture.root);
+    const broadFocusesBeforeChoose = content.focusCallCount;
+    const activeListTab = findChildrenByAttr(
+      fixture.root,
+      CONTRACTS_ROUTE_LIST_TAB_ATTR,
+    ).find((tab) => tab.getAttribute('aria-selected') === 'true')!;
+    action.click();
+    expect(activeListTab.focusCallCount).toBe(1);
+    expect(activeListTab.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe(
+      'choose_again',
+    );
+    expect(findByAttr(
+      fixture.root,
+      RECOVERY_INTENT_ANNOUNCER_ATTR,
+    )?.textContent).toBe('Choose again here.');
+    expect(content.focusCallCount).toBe(broadFocusesBeforeChoose);
+    await handle.dispose();
+  });
+
+  it('retries an unavailable arrival read through the route and resolves the intent', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      SERVER_SWITCH_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        v: 3,
+        target_profile_id: 'p1',
+        kind: 'recovery_return',
+        landing_hash: '#contracts',
+        return_context: 'area',
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      serverSwitchContinuityStorage: storage,
+    });
+    await flush();
+    const list = findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: list.request_id,
+      error: { code: 'unavailable', message: 'read unavailable' },
+    });
+    await flush();
+
+    const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
+    const action = findByAttr(fixture.root, CONNECTION_BANNER_ACTION_ATTR)!;
+    expect(banner.getAttribute('data-state')).toBe('attention');
+    expect(subtreeText(banner)).toContain('couldn’t confirm Contracts is current');
+    expect(subtreeText(banner)).not.toContain('refreshed and ready');
+    expect(action.textContent).toBe('Retry Contracts');
+
+    // If the person browsed away while deciding, returning mounts one fresh
+    // route read. That read is the retry; the handoff must not double-fetch.
+    const callsBeforeReturn = countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    );
+    fixture.hashSource.setHash('#chat');
+    action.click();
+    expect(fixture.hashSource.getHash()).toBe('#contracts');
+    expect(subtreeText(banner)).toContain(
+      'Checking Contracts on home for the latest information',
+    );
+    expect(action.hasAttribute('hidden')).toBe(true);
+    await flush();
+    const firstRetry = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    expect(firstRetry.request_id).not.toBe(list.request_id);
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(callsBeforeReturn + 1);
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: firstRetry.request_id,
+      error: { code: 'unavailable', message: 'still unavailable' },
+    });
+    await flush();
+    expect(subtreeText(banner)).toContain('couldn’t confirm Contracts is current');
+    expect(action.textContent).toBe('Retry Contracts');
+
+    action.click();
+    await flush();
+    const successfulRetry = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    expect(successfulRetry.request_id).not.toBe(firstRetry.request_id);
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: successfulRetry.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+    expect(subtreeText(banner)).toContain(
+      'Back on home. Contracts is refreshed and ready.',
+    );
+    expect(action.textContent).toBe('Continue in Contracts');
+    await handle.dispose();
+  });
+
+  it('fails closed when the saved area has no authoritative reader', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      SERVER_SWITCH_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        v: 3,
+        target_profile_id: 'p1',
+        kind: 'recovery_return',
+        landing_hash: '#contracts',
+        return_context: 'area',
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      enableContractsPanel: false,
+      reloadForServerSwitch: vi.fn(),
+      serverSwitchContinuityStorage: storage,
+    });
+    await flush();
+
+    const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
+    const action = findByAttr(fixture.root, CONNECTION_BANNER_ACTION_ATTR)!;
+    expect(subtreeText(banner)).toContain('hasn’t confirmed Contracts is current');
+    expect(subtreeText(banner)).not.toContain('refreshed and ready');
+    expect(action.textContent).toBe('Review Contracts');
+    expect(findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBeUndefined();
+    action.click();
+    expect(findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBeUndefined();
+    expect(findByAttr(
+      fixture.root,
+      CONTRACTS_ROUTE_HEADING_ATTR,
+    )?.focusCallCount).toBe(1);
+    await handle.dispose();
+  });
+
+  it('waits for a routed Review read before focusing its resulting error', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      SERVER_SWITCH_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        v: 2,
+        target_profile_id: 'p1',
+        kind: 'recovery_return',
+        landing_hash: '#contracts',
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      serverSwitchContinuityStorage: storage,
+    });
+    await flush();
+    const initialList = findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: initialList.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+
+    const action = findByAttr(fixture.root, CONNECTION_BANNER_ACTION_ATTR)!;
+    expect(action.textContent).toBe('Review Contracts');
+    fixture.hashSource.setHash('#chat');
+    const content = routeContentRoot(fixture.root);
+    const broadFocusesBeforeReview = content.focusCallCount;
+    action.click();
+    expect(fixture.hashSource.getHash()).toBe('#contracts');
+    const heading = findByAttr(
+      fixture.root,
+      CONTRACTS_ROUTE_HEADING_ATTR,
+    )!;
+    expect(heading.focusCallCount).toBe(0);
+    expect(content.focusCallCount).toBe(broadFocusesBeforeReview);
+
+    const reviewList = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    expect(reviewList.request_id).not.toBe(initialList.request_id);
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: reviewList.request_id,
+      error: { code: 'unavailable', message: 'review read unavailable' },
+    });
+    await flush();
+
+    const reviewError = findByAttr(
+      fixture.root,
+      CONTRACTS_ROUTE_ERROR_ATTR,
+    )!;
+    expect(reviewError.focusCallCount).toBe(1);
+    expect(reviewError.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe('review');
+    expect(findByAttr(
+      fixture.root,
+      RECOVERY_INTENT_ANNOUNCER_ATTR,
+    )?.textContent).toBe(
+      'Review this status before continuing.',
+    );
+    expect(heading.focusCallCount).toBe(0);
+    expect(content.focusCallCount).toBe(broadFocusesBeforeReview);
+    expect(action.hasAttribute('hidden')).toBe(true);
+    await handle.dispose();
+  });
+
+  it('downgrades a retryable result across a reconnect to review only', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      SERVER_SWITCH_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        v: 3,
+        target_profile_id: 'p1',
+        kind: 'recovery_return',
+        landing_hash: '#contracts',
+        return_context: 'area',
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      serverSwitchContinuityStorage: storage,
+    });
+    await flush();
+    const list = findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+
+    fixture.transportControls.fireState('reconnecting');
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: list.request_id,
+      error: { code: 'unavailable', message: 'read interrupted' },
+    });
+    await flush();
+    fixture.transportControls.fireState('connected');
+    await flush();
+
+    const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
+    const action = findByAttr(fixture.root, CONNECTION_BANNER_ACTION_ATTR)!;
+    expect(subtreeText(banner)).toContain(
+      'server is connected, but Recued hasn’t confirmed Contracts is current',
+    );
+    expect(action.textContent).toBe('Review Contracts');
+    const contractReads = countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    );
+    action.click();
+    await flush();
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(contractReads);
+    await handle.dispose();
+  });
+
+  it('does not claim resumed work when a recovery arrival route no longer matches', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      SERVER_SWITCH_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        v: 2,
+        target_profile_id: 'p1',
+        kind: 'recovery_return',
+        landing_hash: '#data/files',
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      serverSwitchContinuityStorage: storage,
+    });
+
+    const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
+    expect(subtreeText(banner)).toContain('Now using home.');
+    expect(subtreeText(banner)).not.toContain('ready where you left it');
+    expect(findByAttr(
+      fixture.root,
+      CONNECTION_BANNER_ACTION_ATTR,
+    )!.hasAttribute('hidden')).toBe(true);
+    expect(storage.data.has(SERVER_SWITCH_CONTINUITY_SESSION_KEY)).toBe(false);
+    await handle.dispose();
+  });
+
+  it('does not claim a feature-gated return area that the shell cannot mount', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      SERVER_SWITCH_CONTINUITY_SESSION_KEY,
+      JSON.stringify({
+        v: 2,
+        target_profile_id: 'p1',
+        kind: 'recovery_return',
+        landing_hash: '#approvals',
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#approvals');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      enableApprovalsRoute: false,
+      reloadForServerSwitch: vi.fn(),
+      serverSwitchContinuityStorage: storage,
+    });
+
+    const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
+    expect(handle.activeRoute()).toBe('chat');
+    expect(findByAttr(fixture.root, 'data-recued-chat-route')).not.toBeNull();
+    expect(subtreeText(banner)).toContain('Now using home.');
+    expect(subtreeText(banner)).not.toContain('Approvals is ready');
+    expect(findByAttr(
+      fixture.root,
+      CONNECTION_BANNER_ACTION_ATTR,
+    )!.hasAttribute('hidden')).toBe(true);
+    expect(storage.data.has(SERVER_SWITCH_CONTINUITY_SESSION_KEY)).toBe(false);
+    await handle.dispose();
+  });
+
+  it('silently converges a clean sibling to the durable target and scrubs source detail', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat/session/source-chat/answer/source-message');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const storage = memorySessionStorage();
+    const replaceHash = vi.fn();
+    const reload = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch: replaceHash,
+      serverSwitchContinuityStorage: storage,
+    });
+    await flush();
+
+    profiles.state.activeId = 'p2';
+    // The production BroadcastChannel hint carries no target identity.
+    handle.requestServerProfileConvergence();
+    await flush();
+
+    expect(handle.serverProfileId()).toBe('p1');
+    expect(replaceHash).toHaveBeenCalledWith('#chat');
+    expect(reload).toHaveBeenCalledOnce();
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_ATTR)).toBeNull();
+    // Only the tab that initiated the choice earns "Now using …".
+    expect(storage.data.has(SERVER_SWITCH_CONTINUITY_SESSION_KEY)).toBe(false);
+
+    await handle.dispose();
+  });
+
+  it('releases an immediate pause when a delayed switch hint finds the source profile active again', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const reload = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+    });
+    await flush();
+
+    // The detail-free signal can outlive a switch that another tab already
+    // rolled back. It still pauses synchronously, but the durable source pointer
+    // must release that pause without a modal or reload.
+    handle.requestServerProfileConvergence();
+    expect(findByAttr(fixture.root, WEBCLIENT_SHELL_HOST_ATTR)?.hasAttribute('inert'))
+      .toBe(true);
+    await flush();
+
+    expect(findByAttr(fixture.root, WEBCLIENT_SHELL_HOST_ATTR)?.hasAttribute('inert'))
+      .toBe(false);
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_ATTR)).toBeNull();
+    expect(reload).not.toHaveBeenCalled();
+
+    await handle.dispose();
+  });
+
+  it('restores a clean sibling route and offers an inline retry when reload is refused', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat/session/source-chat/answer/source-message');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const replaceHash = vi.fn();
+    let failReload = true;
+    const reload = vi.fn(() => {
+      if (failReload) throw new Error('reload refused');
+    });
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch: replaceHash,
+    });
+    await flush();
+
+    profiles.state.activeId = 'p2';
+    handle.requestServerProfileConvergence('p2');
+    await flush();
+
+    expect(reload).toHaveBeenCalledOnce();
+    expect(replaceHash.mock.calls.map(([hash]) => hash)).toEqual([
+      '#chat',
+      '#chat/session/source-chat/answer/source-message',
+    ]);
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_ERROR_ATTR)?.textContent)
+      .toContain('Your work is still here');
+    expect(findByAttr(fixture.root, WEBCLIENT_SHELL_HOST_ATTR)?.hasAttribute('inert'))
+      .toBe(true);
+
+    failReload = false;
+    // A late source-route change cannot ride a confirmation that described a
+    // clean tab. Programmatic completions can still update an inert route, so
+    // the commit path re-probes and makes the new discard boundary explicit.
+    findChildByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR)!
+      .fireInput('Arrived after the failed automatic reload');
+    findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)!.click();
+    await flush();
+
+    expect(reload).toHaveBeenCalledOnce();
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_DRAFT_ATTR)?.value)
+      .toBe('Arrived after the failed automatic reload');
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)?.textContent)
+      .toBe('Switch and discard draft');
+
+    findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)!.click();
+    await flush();
+
+    expect(reload).toHaveBeenCalledTimes(2);
+    expect(replaceHash.mock.calls.map(([hash]) => hash)).toEqual([
+      '#chat',
+      '#chat/session/source-chat/answer/source-message',
+      '#chat',
+    ]);
+
+    errors.mockRestore();
+    await handle.dispose();
+  });
+
+  it('lets the same sibling target recover after a transient active-profile read failure', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const reload = vi.fn();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+    });
+    await flush();
+
+    const readActiveProfile = profiles.store.activeProfileId.bind(profiles.store);
+    let failNextRead = true;
+    profiles.store.activeProfileId = async () => {
+      if (failNextRead) {
+        failNextRead = false;
+        throw new Error('temporary IndexedDB read failure');
+      }
+      return readActiveProfile();
+    };
+    profiles.state.activeId = 'p2';
+
+    handle.requestServerProfileConvergence('p2');
+    await flush();
+    expect(reload).not.toHaveBeenCalled();
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_ERROR_ATTR)?.textContent)
+      .toContain('couldn’t confirm the selected server');
+    expect(findByAttr(fixture.root, WEBCLIENT_SHELL_HOST_ATTR)?.hasAttribute('inert'))
+      .toBe(true);
+
+    // Resetting the target dedupe allows the same BroadcastChannel/focus hint
+    // to refresh the destination. Once an error boundary has been shown, the
+    // reload remains explicit instead of disappearing underneath the user.
+    handle.requestServerProfileConvergence('p2');
+    await flush();
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_ERROR_ATTR)).toBeNull();
+    expect(reload).not.toHaveBeenCalled();
+
+    findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)!.click();
+    await flush();
+    expect(reload).toHaveBeenCalledOnce();
+
+    errors.mockRestore();
+    await handle.dispose();
+  });
+
+  it('pauses immediately and requires confirmation if clean work becomes dirty during the final pointer read', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat/session/source-chat');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const reload = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch: vi.fn(),
+    });
+    await flush();
+
+    const readActiveProfile = profiles.store.activeProfileId.bind(profiles.store);
+    let readCount = 0;
+    let releaseFinalRead = (): void => undefined;
+    const finalRead = new Promise<void>((resolve) => {
+      releaseFinalRead = resolve;
+    });
+    profiles.store.activeProfileId = async () => {
+      readCount += 1;
+      if (readCount === 2) await finalRead;
+      return readActiveProfile();
+    };
+    profiles.state.activeId = 'p2';
+
+    handle.requestServerProfileConvergence('p2');
+    expect(findByAttr(fixture.root, WEBCLIENT_SHELL_HOST_ATTR)?.hasAttribute('inert'))
+      .toBe(true);
+    await vi.waitFor(() => expect(readCount).toBe(2));
+
+    // Fake DOM input can model a programmatic/in-flight edit even while inert.
+    // The final work-state check must still refuse the silent reload.
+    findChildByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR)!
+      .fireInput('Arrived while the server pointer was being confirmed');
+    releaseFinalRead();
+    await flush();
+
+    expect(reload).not.toHaveBeenCalled();
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_DRAFT_ATTR)?.value)
+      .toBe('Arrived while the server pointer was being confirmed');
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)?.textContent)
+      .toBe('Switch and discard draft');
+
+    await handle.dispose();
+  });
+
+  it('holds a sibling on unsettled Chat work until it finishes or the owner explicitly leaves', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const reload = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch: vi.fn(),
+    });
+    await flush();
+
+    const rpcCalls = (): Array<{
+      method?: unknown;
+      request_id?: unknown;
+    }> => fixture.transportControls.sendCalls().filter(
+      (call): call is { method?: unknown; request_id?: unknown } =>
+        call !== null
+        && typeof call === 'object'
+        && (call as { type?: unknown }).type === 'rpc',
+    );
+    const sessionsList = rpcCalls().find(
+      (call) => call.method === 'chat.sessions.list',
+    );
+    expect(typeof sessionsList?.request_id).toBe('string');
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: sessionsList!.request_id,
+      result: { sessions: [] },
+    });
+    await flush();
+
+    findChildByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR)!
+      .fireInput('Ask the source server to prepare this');
+    findChildByAttr(fixture.root, CHAT_ROUTE_SEND_ATTR)!.click();
+    await flush();
+    const create = rpcCalls().find(
+      (call) => call.method === 'chat.session.create',
+    );
+    expect(typeof create?.request_id).toBe('string');
+
+    profiles.state.activeId = 'p2';
+    handle.requestServerProfileConvergence('p2');
+    await flush();
+
+    const dialog = findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_DIALOG_ATTR)!;
+    expect(subtreeText(dialog)).toContain('Work is still finishing on the original server');
+    expect(subtreeText(dialog)).toContain('outcome or receipt stays on the original server');
+    expect(subtreeText(findByAttr(
+      fixture.root,
+      SERVER_SWITCH_CONVERGENCE_ACTIVE_WORK_ITEM_ATTR,
+    )!)).toContain('Finishing a Chat action');
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_DRAFT_ATTR)?.value)
+      .toBe('Ask the source server to prepare this');
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_CHECK_ATTR)?.textContent)
+      .toBe('Check status');
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)?.textContent)
+      .toBe('Switch and check later');
+    expect(reload).not.toHaveBeenCalled();
+
+    // The source request settles with a known failure while the tab is paused.
+    // Recheck must downgrade to the retained draft boundary, not reload under
+    // the owner or keep claiming that work is still in flight.
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: create!.request_id,
+      error: {
+        code: 'temporary_failure',
+        message: 'Could not create the Chat session',
+        status: 503,
+      },
+    });
+    await flush();
+    findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_CHECK_ATTR)!.click();
+    await flush();
+
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_CHECK_ATTR)).toBeNull();
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_STATUS_ATTR)?.textContent)
+      .toContain('request finished on home');
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_DRAFT_ATTR)?.value)
+      .toBe('Ask the source server to prepare this');
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)?.textContent)
+      .toBe('Switch and discard draft');
+    expect(reload).not.toHaveBeenCalled();
+
+    findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)!.click();
+    await flush();
+    expect(reload).toHaveBeenCalledOnce();
+
+    await handle.dispose();
+  });
+
+  it('pauses a dirty sibling, keeps its draft copyable, then suppresses the duplicate unload prompt', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat/session/source-chat');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const storage = memorySessionStorage();
+    const replaceHash = vi.fn();
+    const clipboardWrite = vi.fn(async () => undefined);
+    const beforeUnloadListeners = new Set<(event: {
+      preventDefault(): void;
+      returnValue?: unknown;
+    }) => void>();
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      navigator: { clipboard: { writeText: clipboardWrite } },
+      addEventListener: (name: string, listener: (event: {
+        preventDefault(): void;
+        returnValue?: unknown;
+      }) => void) => {
+        if (name === 'beforeunload') beforeUnloadListeners.add(listener);
+      },
+      removeEventListener: (name: string, listener: (event: {
+        preventDefault(): void;
+        returnValue?: unknown;
+      }) => void) => {
+        if (name === 'beforeunload') beforeUnloadListeners.delete(listener);
+      },
+    };
+    let reloadPrevented: boolean | null = null;
+    const reload = vi.fn(() => {
+      const event = {
+        prevented: false,
+        returnValue: undefined as unknown,
+        preventDefault(): void { event.prevented = true; },
+      };
+      for (const listener of [...beforeUnloadListeners]) listener(event);
+      reloadPrevented = event.prevented;
+    });
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch: replaceHash,
+      serverSwitchContinuityStorage: storage,
+    });
+    await flush();
+    findChildByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR)!
+      .fireInput('Private source-server thought');
+
+    profiles.state.activeId = 'p2';
+    handle.requestServerProfileConvergence('p2');
+    await flush();
+
+    const dialog = findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_DIALOG_ATTR);
+    expect(dialog?.getAttribute('role')).toBe('alertdialog');
+    expect(dialog?.getAttribute('aria-modal')).toBe('true');
+    expect(dialog?.getAttribute('aria-describedby')).toBe(
+      'recued-server-switch-convergence-identity '
+      + 'recued-server-switch-convergence-detail '
+      + 'recued-server-switch-convergence-boundary',
+    );
+    expect(subtreeText(dialog!)).toContain('home (wss://home.example/ws)');
+    expect(subtreeText(dialog!)).toContain('office (wss://office.example/ws)');
+    expect(subtreeText(dialog!)).toContain('never move it to another server');
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_DRAFT_ATTR)?.value)
+      .toBe('Private source-server thought');
+    expect(findByAttr(fixture.root, WEBCLIENT_SHELL_HOST_ATTR)?.hasAttribute('inert'))
+      .toBe(true);
+    expect(reload).not.toHaveBeenCalled();
+
+    findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COPY_ATTR)!.click();
+    await flush();
+    expect(clipboardWrite).toHaveBeenCalledWith('Private source-server thought');
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_STATUS_ATTR)?.textContent)
+      .toContain('still not stored on the new server');
+
+    findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)!.click();
+    await flush();
+
+    expect(replaceHash).toHaveBeenCalledWith('#chat');
+    expect(reload).toHaveBeenCalledOnce();
+    expect(reloadPrevented).toBe(false);
+    expect(storage.data.has(SERVER_SWITCH_CONTINUITY_SESSION_KEY)).toBe(false);
+
+    await handle.dispose();
+  });
+
+  it('requires a fresh dirty-tab confirmation when a third profile wins', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat/session/source-chat');
+    const profiles = buildProfileStore(
+      [HOME_PROFILE, OFFICE_PROFILE, STUDIO_PROFILE],
+      'p1',
+    );
+    const reload = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      replaceHashForServerSwitch: vi.fn(),
+    });
+    await flush();
+    findChildByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR)!
+      .fireInput('Keep this source draft');
+
+    profiles.state.activeId = 'p2';
+    handle.requestServerProfileConvergence('p2');
+    await flush();
+    profiles.state.activeId = 'p3';
+    findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)!.click();
+    await flush();
+    await flush();
+
+    expect(reload).not.toHaveBeenCalled();
+    const dialog = findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_DIALOG_ATTR)!;
+    expect(subtreeText(dialog)).toContain('studio (wss://studio.example/ws)');
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_ERROR_ATTR)?.textContent)
+      .toContain('changed again');
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)?.textContent)
+      .toBe('Switch and discard draft');
+
+    findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_COMMIT_ATTR)!.click();
+    await flush();
+    expect(reload).toHaveBeenCalledOnce();
+
+    await handle.dispose();
+  });
+
+  it('dismisses sibling convergence without losing work when the active choice is reversed', async () => {
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat/session/source-chat');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+      replaceHashForServerSwitch: vi.fn(),
+    });
+    await flush();
+    const draft = findChildByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR)!;
+    draft.fireInput('Keep this when the choice returns home');
+
+    profiles.state.activeId = 'p2';
+    handle.requestServerProfileConvergence('p2');
+    await flush();
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_ATTR)).not.toBeNull();
+
+    profiles.state.activeId = 'p1';
+    handle.requestServerProfileConvergence('p1');
+
+    expect(findByAttr(fixture.root, SERVER_SWITCH_CONVERGENCE_ATTR)).toBeNull();
+    expect(findByAttr(fixture.root, WEBCLIENT_SHELL_HOST_ATTR)?.hasAttribute('inert'))
+      .toBe(false);
+    expect(draft.value).toBe('Keep this when the choice returns home');
+
+    await handle.dispose();
+  });
+
+  it('keeps the profile and explains when removal cannot read the durable roster', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const reload = vi.fn();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+    });
+    await flush();
+    profiles.store.listProfiles = async () => {
+      throw new Error('indexeddb read failed');
+    };
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_REMOVE_ATTR)[1]!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_REMOVE_LOCAL_ATTR)!.click();
+    await flush();
+
+    expect(profiles.calls).not.toContain('remove:p2');
+    expect(reload).not.toHaveBeenCalled();
+    expect(findByAttr(fixture.root, SERVER_SWITCHER_REMOVE_ERROR_ATTR)?.textContent)
+      .toContain('Nothing was removed');
+
+    errors.mockRestore();
+    await handle.dispose();
+  });
+
+  it('forgetting locally reboots for the ACTIVE server and only re-renders another', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const reload = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+    });
+    await flush();
+
+    // Forget the NON-active one — the app is still validly connected.
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    const removes = findAllByAttr(fixture.root, SERVER_SWITCHER_REMOVE_ATTR);
+    removes[1]!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_REMOVE_LOCAL_ATTR)!.click();
+    await flush();
+    expect(profiles.calls).toContain('remove:p2');
+    expect(reload).not.toHaveBeenCalled();
+
+    // Forget the ACTIVE one — the app would otherwise keep running against
+    // credentials the store no longer holds.
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    const remaining = findAllByAttr(fixture.root, SERVER_SWITCHER_REMOVE_ATTR);
+    remaining[0]!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_REMOVE_LOCAL_ATTR)!.click();
+    await flush();
+    expect(profiles.calls).toContain('remove:p1');
+    expect(reload).toHaveBeenCalledTimes(1);
+
+    await handle.dispose();
+  });
+
+  it('revokes the active paired instance before local removal, suppresses expected reauth, and signals siblings', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore(
+      [REVOCABLE_HOME_PROFILE, OFFICE_PROFILE],
+      'p1',
+    );
+    const reload = vi.fn();
+    const onReauthRequired = vi.fn();
+    const onServerProfileRemoved = vi.fn();
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      onReauthRequired,
+      onServerProfileRemoved,
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_REMOVE_ATTR)[0]!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_REMOVE_REVOKE_ATTR)!.click();
+    await flush();
+
+    const revoke = findRpcCall(fixture.transportControls, 'pair.revoke');
+    expect(revoke?.args).toEqual({ instance_id: 'instance-home' });
+    expect(profiles.calls).not.toContain('remove:p1');
+
+    // Self-revoke closes this socket with reauth_required. This is expected,
+    // not a reason to wipe into the guided repair flow while Account owns the
+    // deliberate revoke → forget transaction.
+    fixture.transportControls.fireState('reauth_required');
+    expect(onReauthRequired).not.toHaveBeenCalled();
+    fixture.transportControls.fireMessage({
+      type: 'instance_revoked',
+      instance_id: 'instance-home',
+      at: 1_700_000_000_000,
+    });
+    await flush();
+
+    expect(profiles.calls).toContain('remove:p1');
+    expect(onServerProfileRemoved).toHaveBeenCalledOnce();
+    expect(reload).toHaveBeenCalledOnce();
+    expect(onReauthRequired).not.toHaveBeenCalled();
+
+    await handle.dispose();
+  });
+
+  it('keeps a locally-stuck revoked profile actionable until local forget succeeds', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([REVOCABLE_HOME_PROFILE], 'p1');
+    const originalRemove = profiles.store.removeProfile.bind(profiles.store);
+    let rejectRemoval = true;
+    profiles.store.removeProfile = async (id) => {
+      if (rejectRemoval) throw new Error('indexeddb write failed');
+      await originalRemove(id);
+    };
+    const reload = vi.fn();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_REMOVE_ATTR)!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_REMOVE_REVOKE_ATTR)!.click();
+    await flush();
+    expect(findRpcCall(fixture.transportControls, 'pair.revoke')).toBeDefined();
+    fixture.transportControls.fireMessage({
+      type: 'instance_revoked',
+      instance_id: 'instance-home',
+    });
+    await flush();
+
+    expect(profiles.state.profiles).toContainEqual(expect.objectContaining({
+      ...REVOCABLE_HOME_PROFILE,
+      last_connected_at: 1_700_000_000_000,
+    }));
+    expect(reload).not.toHaveBeenCalled();
+    expect(findByAttr(fixture.root, SERVER_SWITCHER_REMOVE_ERROR_ATTR)?.textContent)
+      .toContain('Access was revoked');
+    expect(findByAttr(fixture.root, SERVER_SWITCHER_REMOVE_LOCAL_ATTR)).not.toBeNull();
+
+    rejectRemoval = false;
+    findByAttr(fixture.root, SERVER_SWITCHER_REMOVE_LOCAL_ATTR)!.click();
+    await flush();
+
+    expect(profiles.calls).toContain('remove:p1');
+    expect(reload).toHaveBeenCalledOnce();
+    errors.mockRestore();
+    await handle.dispose();
+  });
+
+  it('keeps the profile after a real revoke failure and restores ordinary reauth recovery', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([REVOCABLE_HOME_PROFILE], 'p1');
+    const reload = vi.fn();
+    const onReauthRequired = vi.fn();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+      onReauthRequired,
+      selfRevokeReceiptGraceMs: 0,
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_REMOVE_ATTR)!.click();
+    findByAttr(fixture.root, SERVER_SWITCHER_REMOVE_REVOKE_ATTR)!.click();
+    await flush();
+    const revoke = findRpcCall(fixture.transportControls, 'pair.revoke');
+    expect(revoke).toBeDefined();
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: revoke!.request_id,
+      error: {
+        code: 'forbidden',
+        message: 'revoke was refused',
+      },
+    });
+    await flush();
+    await flush();
+
+    expect(profiles.calls).not.toContain('remove:p1');
+    expect(profiles.state.profiles).toContainEqual(expect.objectContaining({
+      ...REVOCABLE_HOME_PROFILE,
+      last_connected_at: 1_700_000_000_000,
+    }));
+    expect(reload).not.toHaveBeenCalled();
+    expect(findByAttr(fixture.root, SERVER_SWITCHER_REMOVE_ERROR_ATTR)?.textContent)
+      .toContain('saved profile is still here');
+
+    fixture.transportControls.transport.send = async () => {
+      throw new WebclientReauthRequiredError('bearer rejected after revoke failure');
+    };
+    void handle.conn()('pair.list', undefined).catch(() => undefined);
+    await flush();
+    expect(onReauthRequired).toHaveBeenCalledOnce();
+
+    errors.mockRestore();
+    await handle.dispose();
+  });
+
+  it('dispose removes the account menu from the topbar', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+    });
+    await flush();
+    expect(findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)).not.toBeNull();
+    await handle.dispose();
+    expect(findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)).toBeNull();
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════
+// Cold start against an unreachable server
+// ══════════════════════════════════════════════════════════════════
+
+describe('bootstrapWebclient: cold start with the server down', () => {
+  it('mounts the shell — an unreachable server is NOT a boot failure', async () => {
+    // The property the whole offline story rests on, and one easy to break by
+    // accident: `ws-client.connect()` swallows a non-reauth connect failure
+    // (sets `reconnecting`, queues a retry, returns), so the bootstrap runs to
+    // completion with no live socket. If anything ever made that rejection
+    // propagate, boot would abort into the startup-failure splash — where
+    // there is no shell, no badge, and no way to reach another server, which
+    // is precisely the dead end this work removed.
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    (fixture.opts.transport as unknown as { open: () => Promise<void> }).open =
+      async () => {
+        throw new Error(
+          'webclient.browser-transport: WS closed before open (code=1006)',
+        );
+      };
+
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: vi.fn(),
+    });
+    await flush();
+
+    expect(findChildByAttr(fixture.root, WEBCLIENT_SHELL_HOST_ATTR)).not.toBeNull();
+    // And the two surfaces that make the outage actionable are both present:
+    // the account menu (local roster, no rpc) and the outage banner.
+    expect(findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)).not.toBeNull();
+    expect(findByAttr(fixture.root, CONNECTION_BANNER_ATTR)).not.toBeNull();
+
+    // The roster is reachable from there with nothing running on the far end.
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    expect(findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)).toHaveLength(2);
+
+    await handle.dispose();
+  });
+
+  it('a REAUTH rejection still aborts — that one is not a connectivity problem', async () => {
+    // The distinction that keeps the tolerance honest: a rejected bearer must
+    // reach the re-pair path rather than be absorbed as "server down". The
+    // ws-client identifies it positively (`isReauthError`) instead of treating
+    // every rejection alike.
+    const fixture = buildOpts();
+    let state = '';
+    (fixture.opts.transport as unknown as {
+      open: () => Promise<void>;
+      onState: (l: (s: string) => void) => () => void;
+    }).open = async () => {
+      throw new WebclientReauthRequiredError('bearer rejected on connect (close 4401)');
+    };
+    const handle = await bootstrapWebclient(fixture.opts);
+    await flush();
+    void state;
+    // Boot still completes (the client parks in `reauth_required` and the
+    // re-pair path owns it) — what must NOT happen is a silent reconnect loop
+    // hammering a server that has rejected this bearer.
+    expect(findChildByAttr(fixture.root, WEBCLIENT_SHELL_HOST_ATTR)).not.toBeNull();
+    await handle.dispose();
+  });
+});
+
+describe('bootstrapWebclient: adding a server', () => {
+  it('opens a pending attempt and reloads into the pair form', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const reload = vi.fn(() => {
+      // Persist first, same rule as a switch: reloading before the attempt is
+      // recorded would boot straight back into the old server.
+      expect(profiles.calls).toContain('begin');
+    });
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findByAttr(fixture.root, ACCOUNT_MENU_ADD_SERVER_ATTR)!.click();
+    await flush();
+
+    expect(profiles.calls).toEqual([
+      'ensure:wss://alice.recued.cloud:8443/ws',
+      'connected:p1:1700000000000',
+      'begin',
+    ]);
+    expect(reload).toHaveBeenCalledTimes(1);
+    await handle.dispose();
+  });
+
+  it('a failed attempt does NOT reload', async () => {
+    const fixture = buildOpts();
+    const profiles = buildProfileStore([HOME_PROFILE], 'p1');
+    profiles.store.beginNewProfile = async () => { throw new Error('idb closed'); };
+    const reload = vi.fn();
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      profileStore: profiles.store,
+      reloadForServerSwitch: reload,
+    });
+    await flush();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findByAttr(fixture.root, ACCOUNT_MENU_ADD_SERVER_ATTR)!.click();
+    await flush();
+
+    // Reloading into an unchanged store would land back on the same server and
+    // read as a no-op click.
+    expect(reload).not.toHaveBeenCalled();
+    errors.mockRestore();
+    await handle.dispose();
+  });
+});
+
+/** D-222 audit fold — the webclient→server `execute` wire.
+ *
+ *  `buildRecipeExecuteArgs` is the ONE adapter between every route that runs a
+ *  recipe and the `execute` rpc. It lived inside the `bootstrapWebclient`
+ *  closure, where no test could reach it, and D-222 shipped with `invocation`
+ *  dropped right there: `bootstrap-recipes-route` passed it, the server accepted
+ *  it, and this adapter deleted it — so every owner filter submit arrived as an
+ *  ordinary run and the server skipped stored hash/section re-resolution AND the
+ *  per-block allowlist. Nothing was red, because the route's own tests inject
+ *  their own `recipeExecuteCaller` and never compose the real one.
+ *
+ *  ⚠ THE TYPE CANNOT CARRY THIS. The registry's `execute` request has an
+ *  `[k: string]: unknown` index signature, so a shape with members missing
+ *  typechecks. These are the guard. */
+describe('D-222 — buildRecipeExecuteArgs (the execute wire)', () => {
+  it('forwards a filter invocation — the member D-222 dropped', () => {
+    // The positive case: the input that would DO THE THING if the forwarding
+    // were gone. A test that only asserted the absent case below would pass
+    // against the broken adapter that shipped.
+    const invocation = {
+      kind: 'output.filter' as const,
+      recipe_hash: 'stored-hash',
+      section_index: 1,
+    };
+    expect(buildRecipeExecuteArgs({
+      recipe_id: 'job-board',
+      config: { status: 'open', cursor: '' },
+      invocation,
+    })).toEqual({
+      recipe_id: 'job-board',
+      trigger_source: 'manual',
+      config: { status: 'open', cursor: '' },
+      invocation,
+    });
+  });
+
+  it('omits every optional member the caller did not supply', () => {
+    // Not `{ config: undefined, ... }` — an explicit undefined would travel the
+    // wire as a present key, and `request.invocation !== undefined` is exactly
+    // what the server's filter admission branches on.
+    const args = buildRecipeExecuteArgs({ recipe_id: 'daily-brief' });
+    expect(args).toEqual({ recipe_id: 'daily-brief', trigger_source: 'manual' });
+    expect(Object.keys(args).sort()).toEqual(['recipe_id', 'trigger_source']);
+  });
+
+  it('forwards the targeting-guard context', () => {
+    expect(buildRecipeExecuteArgs({
+      recipe_id: 'brief-contact',
+      context: { entity_id: 'c-1' },
+    })).toEqual({
+      recipe_id: 'brief-contact',
+      trigger_source: 'manual',
+      context: { entity_id: 'c-1' },
+    });
+  });
+
+  // ⛔ THE DRIFT GUARD, and the reason this file is the right home for it: the
+  // instance above was one symptom of a class — a caller member that no test
+  // names is dropped in silence. This fails when `RecipeExecuteCaller` gains a
+  // member that this adapter does not forward, so the next one cannot ship the
+  // same way. Add the member to the caller AND to the forwarding above.
+  it('forwards EVERY member of the caller contract', () => {
+    const supplied = {
+      recipe_id: 'job-board',
+      config: { status: 'open' },
+      context: { entity_id: 'c-1' },
+      invocation: {
+        kind: 'output.filter' as const,
+        recipe_hash: 'stored-hash',
+        section_index: 0,
+      },
+    };
+    const wire = buildRecipeExecuteArgs(supplied);
+    for (const key of Object.keys(supplied)) {
+      expect(
+        Object.prototype.hasOwnProperty.call(wire, key),
+        `buildRecipeExecuteArgs dropped '${key}' — the route supplies it and the `
+          + `server accepts it, so it would be lost in silence`,
+      ).toBe(true);
+      expect(wire[key]).toEqual(supplied[key as keyof typeof supplied]);
+    }
   });
 });

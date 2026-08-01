@@ -395,6 +395,45 @@ export const WEBCLIENT_POLISH_STYLES = `
   box-shadow: 0 1px 2px rgba(24, 24, 27, 0.035);
 }
 
+/* ════════════════════════════════════════════════════════════════
+   10 · One-shot recovery-intent orientation
+   ════════════════════════════════════════════════════════════════ */
+@keyframes recued-recovery-intent-arrive {
+  from {
+    outline-offset: 10px;
+  }
+  to {
+    outline-offset: 4px;
+  }
+}
+/* :focus is intentional: recovery focus is programmatic, and the extra
+   pseudo-class also outranks the shell's generic :focus-visible reset. */
+[data-recued-webclient-shell] [data-recued-webclient-content]
+  [data-recued-recovery-intent-cue]:focus {
+  --wc-recovery-intent-color: var(--accent);
+  outline: 3px solid var(--wc-recovery-intent-color);
+  outline-offset: 4px;
+  animation: recued-recovery-intent-arrive 520ms ease-out 1;
+}
+[data-recued-recovery-intent-announcer] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+@media (forced-colors: active) {
+  [data-recued-webclient-shell] [data-recued-webclient-content]
+    [data-recued-recovery-intent-cue]:focus {
+    --wc-recovery-intent-color: Highlight;
+  }
+}
+
 @media (max-width: 640px) {
   [data-recued-webclient-shell] {
     --wc-control-h: 40px;
@@ -407,6 +446,10 @@ export const WEBCLIENT_POLISH_STYLES = `
   [data-recued-webclient-shell] *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
+  }
+  [data-recued-webclient-shell] [data-recued-webclient-content]
+    [data-recued-recovery-intent-cue]:focus {
+    animation: none !important;
   }
 }
 `;

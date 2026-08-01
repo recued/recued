@@ -9,12 +9,21 @@ import {
   type AuditEntry,
 } from '@recued/storage';
 import type { Checkpoint, Commit } from '@recued/contracts';
-import { D165_CONTRACT_SCHEMA, setVendorAliasRegistryResolver } from '@recued/contracts';
+import {
+  D165_CONTRACT_SCHEMA,
+  isMcpInboundTokenToolAuthorized,
+  setVendorAliasRegistryResolver,
+} from '@recued/contracts';
 import { getArg } from '../cli/parse.js';
+import {
+  createChatInboundTokenStore,
+  deriveMcpInboundTokenId,
+} from '../storage/chat-inbound-token-store.js';
 import type { BootTrace } from '../cli/boot-trace.js';
 import { openDatabase } from '../open-database.js';
 import { createManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
+import { createRecordsStore } from '../records/index.js';
 import { createSQLiteCollection } from '../sqlite-collection.js';
 import { ensureAuditIndexes } from '../audit-indexes.js';
 import {
@@ -62,7 +71,7 @@ import { createContractStore } from '../storage/contract-store.js';
 import { createSellerStore } from '../storage/seller-store.js';
 import { createSellerOrderStore } from '../storage/seller-order-store.js';
 import { createFormResponseStore } from '../storage/form-response-store.js';
-import { reconcileOwnerGrants } from '../owner-grant-reconcile.js';
+import { grandfatherPrimitiveGrants, reconcileOwnerGrants } from '../owner-grant-reconcile.js';
 import { createSeededCatalogOperationProfileStore } from '../connection-operation-profile-boot.js';
 import { createCollectionRegistry } from '../collections/registry.js';
 import { createWatcherDispatcher } from '../watchers/index.js';
@@ -109,6 +118,7 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
 
   const manifests = createManifestRegistry();
   const recipeStore = createRecipeStore(undefined, db);
+  const recordsStore = createRecordsStore(db);
   const eventBus = createEventBus();
   const serverInstanceId = await ensureServerInstanceId(db);
   const serverDisplayName = env.RECUED_SERVER_NAME ?? hostname() ?? 'recued';
@@ -152,7 +162,22 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   });
 
   options.bootTrace?.mark('vault-init-start');
-  const vaultStore = await createServerVaultStore(db);
+  // An ENROLLED realm's rows are sealed under `sub_dek.vault`, so this profile
+  // must key the store the same way the serve path does
+  // (`compose-storage-context.ts`) — `keys` is auto-unlocked just above.
+  // Constructing it bare instead fell through to the legacy `ensureDek`, which
+  // minted a fresh plaintext DEK row and then failed the AES-GCM tag on the
+  // first stored credential, killing `recued --mcp` at boot with an unhandled
+  // OperationError. Gated on the bundle rather than passed unconditionally: a
+  // pre-D-148 realm has no server bundle and keeps its rows under the legacy
+  // `server_dek`, and the keyed store has no fallback — it throws outright when
+  // the provider yields null, so an unconditional provider would trade this bug
+  // for a silent credential blackout on exactly those realms.
+  const vaultStore = await createServerVaultStore(db, {
+    ...(initialServerBundle
+      ? { getEncryptionKey: () => keys.keyProvider('vault')() ?? null }
+      : {}),
+  });
   const persistedVault = await loadVaultAsObject(
     vaultStore,
     await listVaultPublishers(db),
@@ -209,6 +234,10 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   // atomic), preserving any explicit owner revoke. Same db + boot ordering as the serve
   // path so both surfaces agree on the owner's "fully-granted contract" state.
   reconcileOwnerGrants(contractStore);
+  // D-228 slice 5 — same grandfather as the serve path, same ordering. This is
+  // the surface that actually dispatches the gated Tier-1 tools, so skipping it
+  // here would strip them from every scoped door on the MCP wire.
+  grandfatherPrimitiveGrants(contractStore);
   // D-165 P3.grant migration — durable user-manual operation-group grants live as
   // `contract.grant` rows, merged into the profile seed below so the MCP (agent →
   // gateway) path honours write grants made via the webclient grant rpc (both
@@ -325,6 +354,7 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
 
   const executeDepsBundle = composeExecuteDeps({
     recipeStore,
+    recordsStore,
     executorConfig,
     baseVault,
     serverInstanceId,
@@ -394,6 +424,37 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
   executeDepsRef = executeDepsBundle.executeDeps;
 
   options.bootTrace?.mark('dispatch-mcp');
+  // ⛔⛔ D-228 slice 1 — THIS SURFACE CARRIES A CONTRACT OR IT CARRIES NOTHING.
+  //
+  // Until now this call supplied no `inboundTokenAuthorize`, and
+  // `buildMcpContractSnapshot`'s fallback handed back every slug clearing two
+  // hardcoded fences — its own comment called that *"governed by no contract
+  // (the owner reads all)"*. But PROXIMITY IS NOT IDENTITY: Claude Desktop is a
+  // third-party application, and so is any local process that can reach a stdio
+  // server. Running on the owner's machine does not make a caller the owner.
+  //
+  // A bearer resolves to its inbound-token record and the SAME predicate the
+  // HTTP door uses (`isMcpInboundTokenToolAuthorized`) — no second enforcement
+  // path. Absent or unknown ⇒ no authorizer ⇒ the snapshot yields an empty
+  // catalog, and the reason is printed rather than left as a mystery.
+  //
+  // ⚠ stderr, never stdout: stdout is the MCP protocol stream on stdio.
+  const bearer = getArg(options.args, 'token') ?? env.RECUED_MCP_TOKEN;
+  const tokenRecord = bearer !== undefined && bearer.length > 0
+    ? createChatInboundTokenStore(db).getTokenById(deriveMcpInboundTokenId(bearer))
+    : null;
+  if (bearer !== undefined && bearer.length > 0 && tokenRecord === null) {
+    console.error(
+      '[recued mcp] the supplied token was not recognised — no tools will be offered. '
+      + 'Check it against Settings → MCP Tokens.',
+    );
+  } else if (tokenRecord === null) {
+    console.error(
+      '[recued mcp] no token supplied, so no tools will be offered. '
+      + 'This surface derives its catalog from the contract its caller carries. '
+      + 'Pass --token <bearer> or set RECUED_MCP_TOKEN; create one in Settings → MCP Tokens.',
+    );
+  }
   startMCPServer({
     ...executeDepsBundle.executeDeps,
     vaultStore,
@@ -401,5 +462,15 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
       ? { housekeepingStateStore: housekeepingStores.stateStore }
       : {}),
     internalRegistry: chatBundle.internalRegistry,
+    ...(tokenRecord
+      ? {
+          mcpTokenId: tokenRecord.token_id,
+          ...(tokenRecord.contract_id !== undefined && tokenRecord.contract_id !== null
+            ? { boundContractId: tokenRecord.contract_id, boundContractActive: true }
+            : {}),
+          inboundTokenAuthorize: (tool_name: string): boolean =>
+            isMcpInboundTokenToolAuthorized(tokenRecord, tool_name, Date.now()),
+        }
+      : {}),
   });
 }

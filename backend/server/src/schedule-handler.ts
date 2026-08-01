@@ -29,6 +29,7 @@ import type { ScheduleStore } from './schedule-store.js';
 import type { DishStore } from './dish-store.js';
 import type { DishContextStore } from './dish-context-store.js';
 import { reconcileManagedConfigDish } from './managed-config-dish.js';
+import { retireSchedule } from './schedule-retire.js';
 import type { RecipeStore } from './recipe-store.js';
 import type { WsClient } from './ws-server.js';
 import type { EventBus } from './events/bus.js';
@@ -315,6 +316,16 @@ export const updateSchedule = (
   }
 
   const now = deps.now?.() ?? Date.now();
+  // D-215 — a retained terminal one-shot is the owner's retry handle. Turning
+  // it back on must make it eligible to fire again; merely flipping `enabled`
+  // leaves `last_run_at` populated, and the scheduler immediately disables it
+  // again without dispatching. Keep this transition narrow so pausing and
+  // resuming a not-yet-fired one-shot does not erase any evidence.
+  const rearmingOneShot = existing.mode === 'one_shot'
+    && !existing.enabled
+    && enabled
+    && existing.last_run_at !== null
+    && (existing.last_status === 'error' || existing.last_status === 'skipped');
   const updated: Schedule = {
     ...existing,
     cron_expression,
@@ -322,6 +333,9 @@ export const updateSchedule = (
     next_run_at: existing.mode === 'one_shot'
       ? (existing.run_at ?? existing.next_run_at)
       : computeNextRun(cron_expression, now),
+    ...(rearmingOneShot
+      ? { last_run_at: null, last_status: null, last_error: null }
+      : {}),
   };
 
   // Updates are usually ≤ existing size, but explicitly check the net
@@ -374,6 +388,19 @@ export const updateSchedule = (
     }
   }
 
+  // A skipped one-shot commonly retained a disabled managed dish. Re-arming
+  // the schedule while leaving that dish paused would only produce another
+  // skip, so revive the dish the schedule itself owns. Never touch an assigned
+  // dish or one managed by a different rule.
+  if (rearmingOneShot && updated.dish_id !== undefined && deps.dishStore) {
+    const ownedDish = deps.dishStore.get(updated.dish_id);
+    if (ownedDish !== null
+      && ownedDish.managed_by_schedule_id === schedule_id
+      && !ownedDish.enabled) {
+      deps.dishStore.set({ ...ownedDish, enabled: true });
+    }
+  }
+
   deps.store.set(updated);
   emitSchedule(deps.eventBus, 'updated');
   return { schedule: updated };
@@ -383,24 +410,11 @@ export const deleteSchedule = (
   deps: ScheduleHandlerDeps,
   schedule_id: string,
 ): { deleted: true } => {
-  // Read the row before deletion so we can dissolve the dish this
-  // schedule auto-minted for its overlay (D-179 config-on-schedule).
-  const existing = deps.store.get(schedule_id);
-  const deleted = deps.store.delete(schedule_id);
-  if (!deleted) {
+  // D-215 slice 1 — row delete + managed-dish dissolve now live in
+  // `retireSchedule`, shared with the scheduler's one-shot success path so
+  // the `managed_by_schedule_id` guard is written exactly once.
+  if (!retireSchedule(deps, schedule_id)) {
     throw new RpcError('not_found', `Schedule '${schedule_id}' not found`, 404);
-  }
-  // Dissolve the managed overlay dish — only one this schedule owns
-  // (`managed_by_schedule_id` match); a user-assigned binding is never
-  // touched. Mirrors the trigger reconciler's managed-dish cleanup.
-  if (existing?.dish_id !== undefined && deps.dishStore) {
-    const dish = deps.dishStore.get(existing.dish_id);
-    if (dish && dish.managed_by_schedule_id === schedule_id) {
-      deps.dishStore.delete(existing.dish_id);
-      // Clear the dish's continuity snapshot too (mirrors deleteDish +
-      // the reconciler's managed-dish dissolution) so nothing orphans.
-      deps.dishContextStore?.clear(existing.dish_id);
-    }
   }
   emitSchedule(deps.eventBus, 'updated');
   return { deleted: true };

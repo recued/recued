@@ -9,12 +9,7 @@
 import { e } from './escape.js';
 import { renderBlockEmpty, renderBlockError } from './block-error.js';
 import type { RenderContext } from './types.js';
-
-type RecipeOutputAction = {
-  kind: 'recipe.run';
-  label: string;
-  recipe_id: string;
-};
+import type { RecipeOutputAction } from '@recued/contracts';
 
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value !== null && typeof value === 'object' && !Array.isArray(value)

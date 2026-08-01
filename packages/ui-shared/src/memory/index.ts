@@ -12,6 +12,7 @@ export {
   pickFreshestMetaSnapshot,
   collapseToFreshestPerTopic,
   ENTITY_DETAIL_PANEL_STYLES,
+  renderRollupsSection,
   type EntityDetailPanelProps,
   type EnrichmentSummary,
 } from './entity-detail-panel.js';

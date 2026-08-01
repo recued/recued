@@ -251,10 +251,18 @@ describe('prefetch — format', () => {
   it('empty candidates → empty string', () => {
     expect(formatPrefetchContext([])).toBe('');
   });
-  it('labels candidates with explicit speculative framing', () => {
+  it('labels candidates with explicit on-file framing', () => {
     const s = formatPrefetchContext(CANDS);
-    expect(s).toContain('speculative');
-    expect(s).toContain('verify');
+    // ⚠ The word "speculative" is GONE on purpose — it claimed the entity might
+    // not be on file, which an alias can never mean, and it contradicted
+    // `PII_ALIAS_NOTICE` badly enough that a live model refused to act. The
+    // surviving intent is that the block is FRAMED at all.
+    expect(s).toContain('already on file');
+    // ⚠ The wrong-MATCH caution survives; only its wording changed. Assert the
+    // substance so a reword that keeps the caution stays green, while one that
+    // DROPS it still fails — the earlier `toContain('verify')` was pinning a
+    // word, not a guarantee.
+    expect(s).toContain('wrong entity');
     expect(s).toContain('Lucía Castellanos (contact, ref: lucia@x.com)');
     expect(s).toContain('Acme Corp (company, ref: acme)');
     expect(s).not.toContain('Multiple stored contacts');
@@ -269,8 +277,8 @@ describe('prefetch — format', () => {
     expect(blocks).toHaveLength(2);
     const confidentBlock = blocks[0] ?? '';
     const ambiguousBlock = blocks[1] ?? '';
-    expect(confidentBlock).toContain('speculative');
-    expect(confidentBlock).toContain('verify');
+    expect(confidentBlock).toContain('already on file');
+    expect(confidentBlock).toContain('wrong entity');
     expect(confidentBlock).toContain('Bob Stone (contact, ref: bob@x.com)');
     expect(confidentBlock).not.toContain('Sarah Adams');
     expect(ambiguousBlock).toContain('Multiple stored contacts');
@@ -287,13 +295,13 @@ describe('prefetch — format', () => {
     expect(s).toContain('Multiple stored contacts');
     expect(s).toContain('Do NOT assume');
     expect(s).toContain('ask the user to clarify');
-    expect(s).not.toContain('speculative');
+    expect(s).not.toContain('already on file');
     expect(s).not.toContain('\n\n');
   });
   it('drops a label-less candidate line instead of rendering a nameless fragment', () => {
     // Codex fold: a single-token common-word NAME ("April") matches but the
     // B4 seed gate withholds its label — the line would render as
-    // `-  (contact, ref: …)`, a fragment the model cannot connect to anything
+    // `-  (contact)`, a fragment the model cannot connect to anything
     // (the bench measured this shape collapsing prefetch trust). The candidate
     // still seeds the ledger at the gather; only the unusable line drops.
     const s = formatPrefetchContext([
@@ -392,7 +400,7 @@ describe('prefetch — contributePrefetch', () => {
     const block = renderPart(parts[0]);
     const blocks = block.split('\n\n');
     expect(blocks).toHaveLength(2);
-    expect(blocks[0]).toContain('speculative');
+    expect(blocks[0]).toContain('already on file');
     expect(blocks[0]).toContain('Bob Stone (contact, ref: bob@x.com)');
     expect(blocks[0]).not.toContain('Sarah Adams');
     expect(blocks[1]).toContain('Do NOT assume');

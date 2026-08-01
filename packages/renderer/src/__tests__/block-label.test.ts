@@ -29,6 +29,21 @@ const DATA: Record<string, unknown> = {
   copyable: 'copy me',
   json: { stock: 4 },
   file_artifact: [{ file_id: 'f1', filename: 'a.pdf', size_bytes: 10, mime_type: 'application/pdf' }],
+  filter: {
+    section_index: 0,
+    recipe_hash: 'stored-recipe-hash',
+    fields: ['query'],
+    hidden: [],
+    submit: 'Search',
+    definitions: { query: { label: 'Query', type: 'text', default: '' } },
+    values: { query: '' },
+  },
+  record_fields: {
+    entity: 'job',
+    fields: [
+      { key: 'title', label: 'Title', kind: 'string', present: true, value: 'Replace the pump' },
+    ],
+  },
   button: [{ kind: 'recipe.run', label: 'Run', recipe_id: 'r' }],
   link_button: [{ label: 'Pay', url: 'https://example.com/pay' }],
 };
@@ -56,7 +71,13 @@ describe('every kind that can show a heading honours `label`', () => {
   for (const kind of OUTPUT_TYPES) {
     if (ACTION_KINDS.has(kind)) continue;
     it(`${kind} renders its authored label`, () => {
-      const html = renderSection({ kind, data: DATA[kind], label: 'Previous Inventory' });
+      const html = renderSection({
+        kind,
+        data: DATA[kind],
+        label: 'Previous Inventory',
+        ...(kind === 'filter' ? { filter: DATA.filter } : {}),
+        ...(kind === 'record_fields' ? { record_fields: DATA.record_fields } : {}),
+      });
       expect(html, `${kind} dropped its label`).toContain('Previous Inventory');
     });
   }

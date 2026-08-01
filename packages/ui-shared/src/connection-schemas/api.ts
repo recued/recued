@@ -1,24 +1,32 @@
 /** D-125 P7.2 — schema for `connection.api` enrollment.
  *
- *  Six auth variants reach the connection.api handler (P4.1):
- *    bearer | basic | header | query | oauth2_refresh |
- *    oauth2_client_credentials
- *  Each surfaces its own subset of fields once the user picks the auth
- *  type from the select. `none` is excluded from the dialog — a public
- *  endpoint without auth is rare enough that the user can pick a
- *  no-op `header` value if they really need it; keeping the picker
- *  small reads cleaner. */
+ *  Every enrollable `ConnectionAuth` variant reaches the connection.api handler
+ *  (P4.1) and surfaces its own subset of fields once the user picks the auth
+ *  type from the select. `none` is excluded from the dialog — a public endpoint
+ *  without auth is rare enough that the user can pick a no-op `header` value if
+ *  they really need it; keeping the picker small reads cleaner.
+ *
+ *  ⚠ **The variant list is no longer enumerated in this comment either
+ *  (D-218).** It said "six" and had drifted; a prose count of a closed
+ *  vocabulary is one more copy to fall behind. `AUTH_TYPES` derives from
+ *  `CONNECTION_AUTH_TYPES`. */
+
+import { CONNECTION_AUTH_TYPES, type ConnectionAuthType } from '@recued/contracts';
 
 import type { ConnectionSchema } from './types.js';
 
-const AUTH_TYPES = [
-  'bearer',
-  'basic',
-  'header',
-  'query',
-  'oauth2_refresh',
-  'oauth2_client_credentials',
-] as const;
+/** The ENROLLABLE auth types — every `ConnectionAuth` discriminant except
+ *  `none`, which is not something an owner fills a form in for.
+ *
+ *  ⚠ **DERIVED, not copied (D-218).** This was a hand-kept list, and so were the
+ *  contracts descriptor list and the connection handler's set. Widening
+ *  `ConnectionAuth` left all three silently short and every one of them still
+ *  typechecked — a subset always does. The exclusion of `none` is now WRITTEN
+ *  DOWN rather than implied by an omission, so a future type joins the form
+ *  automatically and leaving one out has to be a decision. */
+const AUTH_TYPES = CONNECTION_AUTH_TYPES.filter(
+  (t): t is Exclude<ConnectionAuthType, 'none'> => t !== 'none',
+);
 
 const ifAuth = (...types: readonly string[]): (v: Record<string, string>) => boolean => {
   const set = new Set<string>(types);
@@ -160,6 +168,29 @@ export const apiSchema: ConnectionSchema = {
       type: 'url',
       showWhen: ifAuth('oauth2_refresh', 'oauth2_client_credentials'),
       placeholder: 'https://oauth.example.com/token',
+    },
+    // D-218 — AT Protocol session exchange (Bluesky, or any PDS).
+    //
+    // ⛔ **Two fields, and NO endpoint field — that absence is the security
+    // property (§ 7.5b).** Every other exchanging type here asks for a token
+    // endpoint; this one derives the session URLs from the connection's own
+    // Base URL, so the app password can only ever be POSTed to the host this
+    // connection already talks to. A third field here would quietly become a
+    // credential-only destination nobody would think to audit.
+    {
+      key: 'auth.identifier',
+      label: 'Handle or DID',
+      type: 'text',
+      showWhen: ifAuth('atproto_session'),
+      placeholder: 'alice.bsky.social',
+      help: 'Your account handle or DID. Set Base URL to your PDS (https://bsky.social for Bluesky).',
+    },
+    {
+      key: 'auth.app_password',
+      label: 'App Password',
+      type: 'secret',
+      showWhen: ifAuth('atproto_session'),
+      help: 'An APP password, not your account password — create one in your account settings and revoke it there to cut access. Recued exchanges it for a short-lived session and keeps it so an expired session can renew itself without you.',
     },
     // OAuth2 client credentials. This secret is mandatory for the
     // machine-to-machine grant, unlike public-client refresh-token flows.

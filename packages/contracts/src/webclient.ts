@@ -68,6 +68,55 @@ export const WEBCLIENT_LOCAL_STORAGE_FIELDS: ReadonlyArray<string> = [
   'cert_pin_state',
 ] as const;
 
+/** Server profiles — the same five fields, once per paired server.
+ *
+ *  WHY the list above did not simply grow: those five ARE the per-server
+ *  material, and a browser that has paired to two servers holds two of each.
+ *  Keeping them as top-level singletons is what made "my server is offline"
+ *  a dead end — the only way to point this browser somewhere else was to
+ *  clear site data, because there was nowhere for a second server's values
+ *  to live. So the PHYSICAL layout becomes a roster of profile records
+ *  (`WEBCLIENT_PROFILE_STORAGE_FIELDS`) and the five names above stay the
+ *  LOGICAL view of whichever profile is active.
+ *
+ *  The user-facing promise is unchanged in kind: still exactly these five
+ *  per server, still no bearer-derived plaintext, and now enumerable per
+ *  server rather than silently overwritten by the last pairing.
+ *
+ *  `webclient_token` stays AES-GCM-wrapped with AAD over
+ *  `(token_id, server_url, server_public_key)` — all three live INSIDE the
+ *  profile, so a token lifted from one profile into another fails AEAD
+ *  verify at unwrap. Profile isolation is cryptographic, not conventional. */
+export interface WebclientServerProfile {
+  /** Stable local identifier. Generated in the browser, never sent anywhere
+   *  — the server has no notion of profiles. */
+  id: string;
+  /** User-editable display name. Seeded from `server_handle_at_pair`, or the
+   *  URL host when no handle is known. */
+  label: string;
+  /** WS endpoint (`wss://host:port/ws`). Also part of the token AAD, so
+   *  changing it for an existing profile invalidates that profile's stored
+   *  bearer by construction — a re-pair, not an edit. */
+  server_url: string;
+  webclient_token: WebclientTokenRecord | null;
+  server_public_key: string | null;
+  pair_metadata: WebclientPairMetadata | null;
+  cert_pin_state: WebclientCertPinState | null;
+  /** Unix-ms of the last connect that reached `connected`. Orders the
+   *  switcher and picks the fallback when an active profile is removed.
+   *  Null until this profile has connected once. */
+  last_connected_at: number | null;
+}
+
+/** The PHYSICAL IndexedDB keys. Two, replacing the five singletons: the
+ *  roster, and which of its entries the runtime is currently using. The
+ *  closed-list guard + CI ratchet assert on these; the five logical names
+ *  are served out of the active record. */
+export const WEBCLIENT_PROFILE_STORAGE_FIELDS: ReadonlyArray<string> = [
+  'server_profiles',
+  'active_profile_id',
+] as const;
+
 /** Inspectable shape the Settings → Privacy page renders. The five
  *  IDB-durable fields per spec § A.4.1 mapping above;
  *  `ephemeral_session_state` lives in sessionStorage (not IndexedDB)

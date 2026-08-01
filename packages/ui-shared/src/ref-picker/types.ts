@@ -45,9 +45,29 @@ export interface RefPickerSelection {
  *  immediately. Implementations should tolerate an empty query (return
  *  the top-N or an empty list); `wire.ts` decides whether to call based
  *  on `minChars`. */
+/** What a search returns. A bare array is the whole answer. The object form
+ *  lets a host say the answer is INCOMPLETE — it read a capped page and the
+ *  query may match something it never saw.
+ *
+ *  ⛔ This exists because "no match" and "no match in the first 50 rows I
+ *  happened to read" are the same screen otherwise, and the user acts on the
+ *  first reading. A picker that quietly cannot see a record is worse than one
+ *  that admits it, because the missing record looks like a missing FACT. */
+export interface RefPickerSearchPage {
+  readonly options: readonly RefPickerOption[];
+  /** The underlying read hit its page cap, so matches may be missing. */
+  readonly truncated?: boolean;
+}
+
 export type RefPickerSearchCaller = (
   query: string,
-) => Promise<readonly RefPickerOption[]>;
+) => Promise<readonly RefPickerOption[] | RefPickerSearchPage>;
+
+/** Normalize either search-result shape to the object form. */
+export const asRefPickerSearchPage = (
+  result: readonly RefPickerOption[] | RefPickerSearchPage,
+): RefPickerSearchPage =>
+  Array.isArray(result) ? { options: result } : (result as RefPickerSearchPage);
 
 /** The pure UI state. Held by `wire.ts` in JS (so it survives a host
  *  re-paint) and consumed by the renderers. */
@@ -69,10 +89,15 @@ export interface RefPickerState {
   selectedId: string | null;
   /** The committed label (display text), or null when empty. */
   selectedLabel: string | null;
+  /** The last search read a capped page — shown as a trailing status row so
+   *  an absent match reads as "not found HERE", not "does not exist". */
+  truncated: boolean;
 }
 
 /** Static config the renderers need — stable across the picker's life. */
 export interface RefPickerRenderConfig {
+  /** Overrides the sentence shown when a search read a capped page. */
+  truncatedText?: string;
   /** Unique-per-picker marker. The shell carries `data-ref-picker=<id>`;
    *  `wire.ts` finds its subtree by it. */
   pickerId: string;
@@ -126,6 +151,9 @@ export interface WireRefPickerOptions {
 export interface RefPickerHandle {
   /** Current committed selection, or null when empty. */
   getValue(): RefPickerSelection | null;
+  /** Current visible query text. Primarily useful for safe async label
+   *  hydration: a late resolver must not overwrite text the user has typed. */
+  getQuery(): string;
   /** Programmatically set (or clear, with null) the selection. Repaints
    *  the picker's subtree; does NOT fire `onChange`. */
   setValue(selection: RefPickerSelection | null): void;

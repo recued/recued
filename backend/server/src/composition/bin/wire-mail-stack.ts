@@ -29,6 +29,13 @@ import {
 import type { BlobStore } from '../../storage/index.js';
 
 export interface ComposeMailStackBootDeps {
+  /** LAZY accessor for the shared `CollectionRegistry`, forwarded to the stack
+   *  so a post-boot enroll registers immediately.
+   *
+   *  ⚠ This interface is a FIELD-BY-FIELD copier into `composeMailStack` below —
+   *  a field added to the caller but not forwarded here is silently absent and
+   *  typechecks clean at every layer (both ends are optional). Add to BOTH. */
+  getCollectionRegistry?: () => import('../../collections/registry.js').CollectionRegistry | undefined;
   /** SQLite handle. Undefined-or-`cacheBlobs`-undefined → composer
    *  returns `undefined`. */
   db: Database.Database | undefined;
@@ -92,6 +99,7 @@ export const composeMailBoot = (
     fileReadDeps,
     inboundAttachmentDeps,
     isVaultUnlocked,
+    getCollectionRegistry,
   } = deps;
 
   if (!db || !cacheBlobs) return undefined;
@@ -102,6 +110,7 @@ export const composeMailBoot = (
       blobs: cacheBlobs,
       bus: warehouseBus,
       ...(auditLog ? { auditLog } : {}),
+      ...(getCollectionRegistry ? { getCollectionRegistry } : {}),
       ...(fileReadDeps ? { fileReadDeps } : {}),
       ...(inboundAttachmentDeps ? { inboundAttachmentDeps } : {}),
       ...(contactStore

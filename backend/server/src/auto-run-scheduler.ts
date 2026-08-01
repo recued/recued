@@ -32,7 +32,6 @@ import {
 } from '@recued/scheduler';
 import {
   AUTO_RUN_SERVER_FLOOR_MS,
-  OWNER_CONTRACT_ID,
   type CircuitBreakerState,
   type RecipeDefinition,
 } from '@recued/contracts';
@@ -40,6 +39,7 @@ import type { RecipeStore } from './recipe-store.js';
 import type { ExecuteHandlerDeps } from './execute-handler.js';
 import { handleExecute } from './execute-handler.js';
 import type { ExecuteRequest, ExecuteResponse } from './types.js';
+import { presentAutomationFailure } from './automation-failure.js';
 
 // ────────────────────────────────────────────────────────────────
 // Circuit-breaker persistence (SQLite)
@@ -377,6 +377,15 @@ export const createServerAutoRunScheduler = (
     let outcome: 'success' | 'skipped' | 'failed' = 'failed';
     let nextRunHint: number | undefined;
     let failureReason: string | undefined;
+    const visibleFailure = (failure: unknown): string => {
+      const presented = presentAutomationFailure(failure);
+      if (presented.redacted) {
+        console.error(
+          `[auto-run] recipe ${recipe_id} internal failure: ${presented.internalMessage}`,
+        );
+      }
+      return presented.userMessage;
+    };
     try {
       // D-153 P2.C — pass typed `ExecutionSource` so the execute-handler's
       // policy gate evaluates this run against the
@@ -402,10 +411,14 @@ export const createServerAutoRunScheduler = (
           actor: 'system',
           event_kind: 'auto_run_tick',
           source_recipe: recipe_id,
-          // D-209 §1.4 — the owner's own automation runs under the owner contract:
-          // has-contract → `read` ceiling → writes HOLD for review (silence earned via
-          // the D-177 learner). A normal auto-run — no split from a pair-triggered one.
-          contract_id: OWNER_CONTRACT_ID,
+          // ⛔ D-215 slice 1a — NO `contract_id` here, deliberately. Same
+          // finding as `scheduler.ts` (see the long note there): D-209 §1.4's
+          // stamp changed neither the ceiling (a contract-free `system`
+          // non-housekeeping source already resolves to the same `read` HOLD)
+          // nor the grant axis (the owner sentinel is rejected as a bound door
+          // id), but made every source contract-bearing — so
+          // `gateRecipeAgainstPolicy` threw "requires a ContractSnapshot" and
+          // every auto-run tick failed at the gate.
         },
         process_id,
         ...(configDishId !== null ? { dish_id: configDishId } : {}),
@@ -422,11 +435,11 @@ export const createServerAutoRunScheduler = (
       } else {
         outcome = 'failed';
         const first = result.errors[0] as { message?: string } | undefined;
-        failureReason = first?.message ?? 'execution failed';
+        failureReason = visibleFailure(first?.message ?? 'execution failed');
       }
     } catch (e) {
       outcome = 'failed';
-      failureReason = e instanceof Error ? e.message : String(e);
+      failureReason = visibleFailure(e);
     } finally {
       inflightCount--;
     }

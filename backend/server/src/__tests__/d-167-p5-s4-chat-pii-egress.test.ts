@@ -482,7 +482,18 @@ describe('D-167 P5 S4 — wrapExecuteAiCallForPii (ENACT)', () => {
     };
     const shape = context.cards[0]!.request_shape;
     expect(shape.surface_terms).toEqual(['email', 'pii.Person1']);
-    expect(shape.segmented_terms).toEqual(['send', 'm1@d1.invalid']);
+    // ⚠ D-227 — the composite is now `pii.Person1@d1.invalid` (this fixture's
+    // contact name renders the email's local part). It stays ONE token, exactly
+    // as `m1@d1.invalid` did.
+    //
+    // ⛔ An interim revision of this file expected it SPLIT into
+    // `['pii.Person1', 'd1.invalid']`, and I wrote a note reasoning about what
+    // that would mean for D-214 case matching. The split was not a consequence
+    // of the new form at all — it was the AUTHORITY BUG: `reverseKeyForAliasToken`
+    // typed the composite by its local part, so the token was never recognised
+    // whole. Fixing that restored the single token and the speculation with it.
+    // A consequence explained before it is confirmed is a story, not a finding.
+    expect(shape.segmented_terms).toEqual(['send', 'pii.Person1@d1.invalid']);
     expect(shape.entity_slots).toEqual([
       { role: 'pii.Person1', kind: 'person' },
     ]);
@@ -509,15 +520,106 @@ describe('D-167 P5 S4 — wrapExecuteAiCallForPii (ENACT)', () => {
       }>
     )[0]!.result;
     expect(critiqueResult.owner).toBe('pii.Person1');
-    expect(critiqueResult.email).toBe('m1@d1.invalid');
+    // ⚠ D-227 — this fixture's contact name renders its email's local part, so
+    // the composite carries her person alias.
+    //
+    // ⛔ THIRD VALUE THIS ASSERTION HAS HELD TODAY, and the first two were me
+    // chasing symptoms of the authority bug rather than the bug: `m1` (before),
+    // then `m2` (a "counter gap" I explained at length), now the linked form.
+    // Only the last one is real. When an assertion keeps moving, stop updating
+    // it and go find what is actually changing underneath.
+    expect(critiqueResult.email).toBe('pii.Person1@d1.invalid');
     expect(critiqueShape.surface_terms).toEqual(['pii.Person1']);
     expect(critiqueShape.segmented_terms).toEqual(['pii.Person1']);
     const cardsJson = JSON.stringify(context);
     expect(cardsJson).not.toMatch(/delphine|rowntree|example/iu);
     expect(cardsJson).toMatch(/(?:pii\.Person|m\d+@d\d+\.invalid)/u);
     expect(readPiiRedactionSummary(currentPlan)?.counts).toEqual({
+      // ⚠ 8, unchanged from before D-227 — as it should be. The composite is one
+      // token either way, so it contributes one replacement either way. The
+      // interim 9 was the authority bug splitting it, same as the term
+      // assertion above; both reverted once the real cause was fixed.
       content_text_replacements: 8,
     });
+  });
+
+  it('aliases the D-219 ordinary-path precedent block on the SAME boundary', async () => {
+    // ⛔⛔ THIS SCAN IS AN ENUMERATION, which is the hazard the test exists for.
+    // `uniformContentScanDataFields` names each model-bound field by hand, so a
+    // NEW field is silently absent from it and reaches the provider unaliased
+    // with nothing failing — no error, no summary entry, no red test. D-219's
+    // precedent block is a second such field, and its `request` facets are
+    // normalized derivatives of the owner's own prompt: exactly the class of
+    // value the D-214 card carries one field away.
+    //
+    // The witness is the one the guard PERMITS: a phrase the ledger knows,
+    // present in the block and absent from this turn's text, must come back
+    // aliased. Asserting only that no leak occurred would pass against a block
+    // that was never scanned at all.
+    const { ledger } = freshLedger();
+    const seedPlan = makePlan({
+      ledger,
+      resolver: (packet) => {
+        const record = packet as Record<string, unknown>;
+        return typeof record.owner === 'string'
+          ? [{ path: 'owner', kind: 'name' as const }]
+          : [];
+      },
+    });
+    const providerPackets: Record<string, unknown>[] = [];
+    const real: ExecuteChatAiCall = async (_m, input) => {
+      providerPackets.push(
+        JSON.parse(String(input['llm.prompt'])) as Record<string, unknown>,
+      );
+      return {
+        body: { response: 'ok', events: [], tool_calls: [] } satisfies AIOutput,
+      };
+    };
+    await wrapExecuteAiCallForPii(real, seedPlan)(MANIFEST, {
+      'llm.prompt': JSON.stringify({
+        owner: 'Delphine Rowntree',
+        user_message: 'save this contact',
+      }),
+    });
+
+    const currentPlan = makePlan({ ledger });
+    await wrapExecuteAiCallForPii(real, currentPlan)(MANIFEST, {
+      'llm.prompt': JSON.stringify({
+        user_message: 'do that again',
+        chat_tail: [{ role: 'user', content: 'do that again' }],
+        execution_precedent: {
+          notice: 'Historical evidence only.',
+          cards: [{
+            request: ['email delphine rowntree'],
+            flows: [{
+              tool_sequence: ['contact.search', 'mail.send'],
+              outcome: ['You confirmed this was right.'],
+            }],
+          }],
+        },
+      }),
+    });
+
+    const precedent = providerPackets[1]?.execution_precedent as {
+      cards: Array<{
+        request: string[];
+        flows: Array<{ tool_sequence: string[]; outcome: string[] }>;
+      }>;
+    };
+    // ⚠ `cap_pii.Person1`, not `pii.Person1`, and that is correct rather than a
+    // near-miss: the ledger was seeded with the CAPITALIZED "Delphine
+    // Rowntree", while a request facet is normalized lowercase — so the facet
+    // resolves to the canonical's casing SIBLING, which is what the `cap_`
+    // prefix means. The identity number is shared, so it still names the same
+    // person to the model.
+    expect(precedent.cards[0]!.request).toEqual(['email cap_pii.Person1']);
+    expect(JSON.stringify(precedent)).not.toMatch(/delphine|rowntree/iu);
+    // ⚠ The SHAPE must survive untouched. An egress that aliased tool names
+    // would hand the model a procedure it cannot execute, which is a worse
+    // failure than the leak — silent, and only visible as the model calling
+    // something that does not exist.
+    expect(precedent.cards[0]!.flows[0]!.tool_sequence)
+      .toEqual(['contact.search', 'mail.send']);
   });
 
   it('redacts an ambiguous normalized D-214 phrase without granting restore authority', async () => {

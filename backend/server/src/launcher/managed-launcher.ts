@@ -60,6 +60,25 @@ export const LAUNCHER_VERSION = 1;
  *  nothing from the server bundle (I-9 frozen). */
 export const SIG_SIDECAR_SUFFIX = '.minisig';
 
+/** D-178 item 6 — where the SEA binary loads its native addon from, RELATIVE to
+ *  the directory holding the executable (`open-database.ts` resolves
+ *  `dirname(process.execPath)/lib/better_sqlite3.node`). Duplicated here for the
+ *  same I-9 reason as `SIG_SIDECAR_SUFFIX` — the launcher imports nothing from
+ *  the server bundle — and pinned against the server's own derivation by
+ *  `managed-launcher.test.ts`, because a silent drift here would seed and revert
+ *  a file the binary never looks at. */
+export const ADDON_RELATIVE_PATH = 'lib/better_sqlite3.node';
+
+/** Suffix the apply path uses for the preserved previous copy of both the
+ *  executable and the addon (`recued.old`, `…/better_sqlite3.node.old`).
+ *  Lockstep with `release-config.ts`; see `ADDON_RELATIVE_PATH`. */
+export const OLD_SUFFIX = '.old';
+
+/** The addon path for a given binary path — the launcher's half of the
+ *  agreement `release-config.ts` makes on the server side. */
+export const addonPathFor = (binaryPath: string): string =>
+  join(dirname(binaryPath), ...ADDON_RELATIVE_PATH.split('/'));
+
 /** Consecutive failed boots of the current uncommitted binary before the
  *  launcher reverts to `recued.old` (matches `apply-state-machine.BOOT_FAILURE_
  *  THRESHOLD`). */
@@ -156,6 +175,38 @@ export const verifyBinarySignature = (binaryPath: string, pubkey: string): boole
   }
 };
 
+/** D-178 item 6 — verify the WHOLE payload: the executable AND the native addon
+ *  it dlopen's at its first database open.
+ *
+ *  ⛔ Verifying only the exe would leave the EASIER attack open. The launcher's
+ *  re-verify exists because the data volume is mutable and outside the image's
+ *  trust boundary (I-2, defense in depth); on such a volume, swapping
+ *  `lib/better_sqlite3.node` gets arbitrary native code into the server's own
+ *  address space with all of its privileges, without touching the one file that
+ *  was being checked.
+ *
+ *  An install with NO addon at all verifies as far as the exe goes — that is a
+ *  pre-sidecar volume, and refusing it would brick every existing docker-thin
+ *  install on upgrade. A PRESENT addon must verify; a present-but-unsigned or
+ *  present-and-tampered one does not.
+ *
+ *  ⚠ `addonPath` is passed EXPLICITLY rather than derived from `binaryPath`.
+ *  Deriving looks right and is wrong for the rollback candidate: the old exe is
+ *  `<binDir>/recued.old`, whose dirname is still `<binDir>`, so a derived path
+ *  yields the LIVE addon — and the old payload would be pronounced verified
+ *  against the very addon it is being rolled back away from. */
+export const verifyPayloadSignature = (
+  binaryPath: string,
+  addonPath: string,
+  pubkey: string,
+): boolean => {
+  if (!verifyBinarySignature(binaryPath, pubkey)) return false;
+  if (!pubkey) return true;
+  // Absent → nothing to verify (pre-sidecar volume). Present → must pass.
+  if (!existsSync(addonPath)) return true;
+  return verifyBinarySignature(addonPath, pubkey);
+};
+
 /** Read the boot-failure count off the sidecar JSON (release-agnostic — the
  *  launcher only needs "how many times has the current binary failed since the
  *  last reset"; the server re-keys + resets it on a healthy/committed boot). A
@@ -210,18 +261,32 @@ export const resetFailureCount = (counterPath: string): void => {
  *  unverified content. A fully atomic pair-swap (verified-pair directory rename)
  *  is the proper fix — follow-up before docker-thin GA. */
 export const revertToOld = (currentPath: string, oldPath: string): void => {
-  const curSig = `${currentPath}${SIG_SIDECAR_SUFFIX}`;
-  const oldSig = `${oldPath}${SIG_SIDECAR_SUFFIX}`;
-  if (process.platform === 'win32' && existsSync(currentPath)) rmSync(currentPath);
-  renameSync(oldPath, currentPath);
-  if (existsSync(oldSig)) {
-    if (process.platform === 'win32' && existsSync(curSig)) rmSync(curSig);
-    renameSync(oldSig, curSig);
-  } else if (existsSync(curSig)) {
-    // Reverted binary has no sig of its own — drop the stale current sig so the
-    // next verify can't pair the old binary with a new-binary signature.
-    rmSync(curSig);
-  }
+  /** Move `from` into `to`, carrying the detached sig and never leaving a
+   *  mismatched pair behind (a stale destination sig would let the next verify
+   *  check the restored file against the signature of the one it replaced). */
+  const swapWithSig = (from: string, to: string): void => {
+    const fromSig = `${from}${SIG_SIDECAR_SUFFIX}`;
+    const toSig = `${to}${SIG_SIDECAR_SUFFIX}`;
+    if (process.platform === 'win32' && existsSync(to)) rmSync(to);
+    renameSync(from, to);
+    if (existsSync(fromSig)) {
+      if (existsSync(toSig)) rmSync(toSig);
+      renameSync(fromSig, toSig);
+    } else if (existsSync(toSig)) {
+      rmSync(toSig);
+    }
+  };
+
+  swapWithSig(oldPath, currentPath);
+
+  // ⛔ The addon reverts WITH the exe. A revert that restores only the
+  // executable pairs it with the addon of the release being abandoned — an
+  // N-API ABI mismatch that fails at the first database open, i.e. the revert
+  // "succeeds" and the container still cannot serve. Absent `.old` addon means
+  // a pre-sidecar install: nothing to restore, and the live one stays put.
+  const addon = addonPathFor(currentPath);
+  const addonOld = `${addon}${OLD_SUFFIX}`;
+  if (existsSync(addonOld)) swapWithSig(addonOld, addon);
 };
 
 /** First-boot seed: when the data volume has no binary yet, copy the baked
@@ -236,6 +301,21 @@ export const seedIfAbsent = (currentPath: string, binDir: string, seedBinaryPath
   copyFileSync(seedBinaryPath, currentPath);
   const seedSig = `${seedBinaryPath}${SIG_SIDECAR_SUFFIX}`;
   if (existsSync(seedSig)) copyFileSync(seedSig, `${currentPath}${SIG_SIDECAR_SUFFIX}`);
+
+  // ⛔ The seed is the exe AND its addon. Seeding the exe alone produces a
+  // volume that verifies, execs, and then dies at the first database open — on
+  // FIRST BOOT, where there is no `.old` to revert to and the boot-failure
+  // counter just burns its three attempts. The addon is baked beside the seed
+  // exe in the image (`Dockerfile.managed`), the same relative layout the
+  // running binary resolves.
+  const seedAddon = join(dirname(seedBinaryPath), ...ADDON_RELATIVE_PATH.split('/'));
+  if (existsSync(seedAddon)) {
+    const addon = addonPathFor(currentPath);
+    mkdirSync(dirname(addon), { recursive: true });
+    copyFileSync(seedAddon, addon);
+    const seedAddonSig = `${seedAddon}${SIG_SIDECAR_SUFFIX}`;
+    if (existsSync(seedAddonSig)) copyFileSync(seedAddonSig, `${addon}${SIG_SIDECAR_SUFFIX}`);
+  }
   return true;
 };
 
@@ -327,7 +407,8 @@ const defaultRunBinary = (binaryPath: string, args: string[], env: NodeJS.Proces
 export const runLauncher = async (opts: RunLauncherOptions): Promise<number> => {
   const binDir = opts.binDir ?? '/data/bin';
   const currentPath = join(binDir, 'recued');
-  const oldPath = `${currentPath}.old`;
+  const oldPath = `${currentPath}${OLD_SUFFIX}`;
+  const addonPath = addonPathFor(currentPath);
   const counterPath = join(binDir, 'boot-failures.json');
   const ledgerPath = join(opts.dataDir ?? dirname(binDir), UPDATE_LEDGER_FILE);
   const runBinary = opts.runBinary ?? defaultRunBinary;
@@ -357,11 +438,13 @@ export const runLauncher = async (opts: RunLauncherOptions): Promise<number> => 
   const MAX_ITERATIONS = 50;
 
   for (let iter = 0; iter < MAX_ITERATIONS; iter++) {
+    // Whole-payload verification (exe + addon). The `.old` candidate is paired
+    // with the `.old` ADDON, not the live one — see `verifyPayloadSignature`.
     const decision = decideLaunch({
       currentExists: existsSync(currentPath),
-      currentVerified: verifyBinarySignature(currentPath, opts.pubkey),
+      currentVerified: verifyPayloadSignature(currentPath, addonPath, opts.pubkey),
       oldExists: existsSync(oldPath),
-      oldVerified: verifyBinarySignature(oldPath, opts.pubkey),
+      oldVerified: verifyPayloadSignature(oldPath, `${addonPath}${OLD_SUFFIX}`, opts.pubkey),
       failureCount: readFailureCount(counterPath),
       threshold: BOOT_FAILURE_THRESHOLD,
     });

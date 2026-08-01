@@ -346,6 +346,7 @@ const mkRegistry = (records: CollectionRecord[], slug = 'work'): MailThreadHandl
     register: () => {},
     get: (platform, s) =>
       platform === 'mail' && s === slug ? collection : undefined,
+    unregister: () => false,
     list: () => [collection],
     dispose: async () => {},
   };

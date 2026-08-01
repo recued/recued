@@ -46,7 +46,7 @@ describe('deriveRecipeTargeting — context prong', () => {
     expect(targeting.targets.map((t) => t.key)).toEqual(['alpha', 'email_body', 'zeta']);
   });
 
-  it('never counts engine/client-injected fields (tabs/server/bridge/event/recipe)', () => {
+  it('never counts engine/client-injected fields (tabs/server/bridge/event/recipe/caller)', () => {
     const targeting = deriveRecipeTargeting({
       recipe_id: 'reactive-recipe',
       steps: [
@@ -59,6 +59,7 @@ describe('deriveRecipeTargeting — context prong', () => {
             c: '{{context.tabs}}',
             d: '{{context.bridge.online}}',
             e: '{{context.recipe.prev_total}}',
+            f: '{{context.caller.contract_id}}',
           },
         },
       ],

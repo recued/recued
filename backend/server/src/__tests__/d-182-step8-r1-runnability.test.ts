@@ -35,7 +35,7 @@ const CRM_READ_RECIPE = {
   version: 1,
   ttl: 300,
   metadata: { name: 'r1-crm-read', description: 'unit', author: 'test', supported_platforms: [] },
-  variables: { crm: { type: 'connection', connection_kind: 'api' } },
+  variables: { crm: { label: 'CRM connection', type: 'connection', connection_kind: 'api' } },
   steps: [
     { id: 'deals', op: 'core.crm.deal.search', args: { limit: 50 } },
     // Count over the (empty) result — proves the empty [] flows through a
@@ -52,7 +52,7 @@ const CRM_WRITE_RECIPE = {
   version: 1,
   ttl: 300,
   metadata: { name: 'r1-crm-write', description: 'unit', author: 'test', supported_platforms: [] },
-  variables: { crm: { type: 'connection', connection_kind: 'api' } },
+  variables: { crm: { label: 'CRM connection', type: 'connection', connection_kind: 'api' } },
   steps: [{ id: 'mk', op: 'core.crm.deal.create', args: { name: 'New deal' } }],
   output: { sidebar: [] },
 } as unknown as RecipeDefinition;
@@ -129,7 +129,7 @@ const ACCT_WRITE_RECIPE = {
   version: 1,
   ttl: 300,
   metadata: { name: 'r1-acct-write', description: 'unit', author: 'test', supported_platforms: [] },
-  variables: { acct: { type: 'connection', connection_kind: 'api' } },
+  variables: { acct: { label: 'Accounting connection', type: 'connection', connection_kind: 'api' } },
   steps: [{ id: 'mk', op: 'core.acct.invoice.create', args: { amount: 100 } }],
   output: { sidebar: [] },
 } as unknown as RecipeDefinition;

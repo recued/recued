@@ -9,6 +9,12 @@ import type { CorrectionEventsStore } from '../storage/correction-events-store.j
 import type {
   ExecutionCaseLifecycle,
 } from '../chat-execution-case-tools.js';
+import type {
+  ExecutionCaseArgumentStore,
+} from '../storage/execution-case-argument-store.js';
+import type {
+  ExecutionCaseCompiler,
+} from '../execution-case-compiler.js';
 
 export interface StartRetentionPrunersOptions {
   readonly backgroundServices: BackgroundServiceRegistry;
@@ -16,6 +22,14 @@ export interface StartRetentionPrunersOptions {
   readonly auditRetention: AuditRetention | undefined;
   readonly s2sPreviewStore: S2SPreviewStore | undefined;
   readonly correctionEventsStore: CorrectionEventsStore | undefined;
+  /** D-219 — the capture-only argument buffer's age sweep. */
+  readonly executionCaseArgumentStore?:
+    | Pick<ExecutionCaseArgumentStore, 'pruneOlderThan'>
+    | undefined;
+  /** D-219 — the source-corpus retention sweep. */
+  readonly executionCaseSourcePruner?:
+    | Pick<ExecutionCaseCompiler, 'pruneSourcesOlderThan'>
+    | undefined;
   /** D-157 N.8 — the stale-checkpoint sweep's stores + the notification
    *  block's ask-state reads. Any absent piece degrades per
    *  `composeRetentionPruners` (missing store skips the registration;

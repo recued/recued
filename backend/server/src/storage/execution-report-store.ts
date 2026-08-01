@@ -103,6 +103,20 @@ export interface ExecutionReportStore {
   listAll(): Promise<StoredExecutionReport[]>;
   /** Unsealed compiler coverage boundary for the hot-path currency check. */
   closedReportIds(): string[];
+  /** ⛔ EVERY report id, sealed payloads UNTOUCHED.
+   *
+   *  `rebuildMaterialized` needs one thing from the report table — the set of
+   *  ids that still exist — and it used to get it from `listAll()`, which opens
+   *  FOUR AEAD-sealed fields per row. Measured over 200 sequential turns that
+   *  was the single largest per-turn cost (~6.3 ms/compile at 100 reports, and
+   *  growing with the corpus), spent entirely to discard the plaintext.
+   *
+   *  ⚠ Deliberately ALL ids, not `closedReportIds()`. Every source report is
+   *  closed today, so the two agree — but that is a property of another
+   *  function, and an existence check that silently means "exists AND closed"
+   *  is the kind of unreachable-therefore-fine reasoning that stops being true
+   *  without anything failing. */
+  allReportIds(): string[];
   listForRoot(root_request_id: string): Promise<StoredExecutionReport[]>;
   close(
     report_id: string,
@@ -151,6 +165,9 @@ export const createExecutionReportStore = (
   const selectAll = db.prepare(`
     SELECT * FROM execution_reports
     ORDER BY reported_at ASC, report_id ASC
+  `);
+  const selectAllIds = db.prepare(`
+    SELECT report_id FROM execution_reports ORDER BY report_id ASC
   `);
   const selectClosedIds = db.prepare(`
     SELECT report_id
@@ -305,6 +322,11 @@ export const createExecutionReportStore = (
 
     closedReportIds() {
       return (selectClosedIds.all() as Array<{ report_id: string }>)
+        .map((row) => row.report_id);
+    },
+
+    allReportIds() {
+      return (selectAllIds.all() as Array<{ report_id: string }>)
         .map((row) => row.report_id);
     },
 

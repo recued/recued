@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { CIRCUIT_BREAKER_THRESHOLD, OWNER_CONTRACT_ID } from '@recued/contracts';
+import { CIRCUIT_BREAKER_THRESHOLD } from '@recued/contracts';
 import type { RecipeDefinition } from '@recued/contracts';
 import {
   createCircuitBreakerStore,
@@ -261,9 +261,15 @@ describe('ServerAutoRunHandle.tick', () => {
       actor: 'system',
       event_kind: 'auto_run_tick',
       source_recipe: 'r',
-      // D-209 §1.4 — the owner's own auto-run carries the owner contract.
-      contract_id: OWNER_CONTRACT_ID,
     });
+    // ⛔ D-215 slice 1a — the source must be CONTRACT-FREE. D-209 §1.4 stamped
+    // `contract_id: OWNER_CONTRACT_ID` here; it changed neither the ceiling nor
+    // the grant axis, but made the source contract-BEARING, so
+    // `gateRecipeAgainstPolicy` threw and every auto-run tick died at the gate
+    // (background automation was dead in production from `4f4268a41` until
+    // `22a0e5176`). Asserted by name as well as by `toEqual`, so re-adding the
+    // stamp fails against the REASON, not just against a shape.
+    expect(Object.hasOwn(calls[0].execution_source!, 'contract_id')).toBe(false);
     expect(calls[0].process_id).toBe(handle.roster.get('r')!.process_id);
     // No config dish set ⇒ a dishless fire (recipe defaults), unchanged.
     expect(calls[0].dish_id).toBeUndefined();
@@ -397,6 +403,32 @@ describe('ServerAutoRunHandle.tick', () => {
       consecutive_failures: 1,
       last_failure_reason: 'engine crashed',
     });
+  });
+
+  it('persists safe copy for an internal permission invariant and logs the diagnostic', async () => {
+    const internal =
+      "D-153 P2.C gateRecipeAgainstPolicy: a source carrying a contract_id (actor 'system') requires a ContractSnapshot — the producer must resolve it before dispatch.";
+    const { execute } = mkExecutor([new Error(internal)]);
+    const errorLog = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const handle = createServerAutoRunScheduler({
+      recipeStore: mkRecipeStore([makeReactiveRecipe('r')]),
+      execute,
+      circuitStore: circuit,
+      now: () => 500,
+      setTimer: () => 1,
+      clearTimer: () => {},
+    });
+
+    try {
+      await handle.refreshRoster();
+      await handle.tick();
+      expect(circuit.get('r')?.last_failure_reason).toBe(
+        'Recued stopped this automation because the required permissions could not be verified. The blocked action was not run.',
+      );
+      expect(errorLog).toHaveBeenCalledWith(expect.stringContaining(internal));
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 });
 

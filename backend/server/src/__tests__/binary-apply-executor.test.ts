@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeypair, sign } from '@recued/release';
@@ -61,6 +61,69 @@ describe('verifyArtifactFile (fail-closed, I-2)', () => {
 });
 
 describe('preserveAndSwap / rollbackSwap', () => {
+  // ── D-178 S1 rev 2 item 4 — the exe and its native addon move TOGETHER ──
+  // A new binary against the old `.node` is an N-API ABI mismatch that fails at
+  // the first database open — past the swap, where the only net left is the
+  // boot-failure counter, and that net only works if the revert restores BOTH.
+  const withSidecar = () => {
+    const d = dir();
+    const binary = join(d, 'recued');
+    const old = join(d, 'recued.old');
+    const staged = join(d, 'recued.staged');
+    mkdirSync(join(d, 'lib'), { recursive: true });
+    const sidecar = {
+      stagedPath: join(d, 'addon.staged'),
+      livePath: join(d, 'lib', 'better_sqlite3.node'),
+      oldPath: join(d, 'lib', 'better_sqlite3.node.old'),
+    };
+    writeFileSync(binary, 'OLD-EXE');
+    writeFileSync(sidecar.livePath, 'OLD-ADDON');
+    writeFileSync(staged, 'NEW-EXE');
+    writeFileSync(sidecar.stagedPath, 'NEW-ADDON');
+    return { d, binary, old, staged, sidecar };
+  };
+
+  it('swaps the exe AND the addon as a set', () => {
+    const t = withSidecar();
+    preserveAndSwap(t.staged, t.binary, t.old, t.sidecar);
+    expect(readFileSync(t.binary, 'utf8')).toBe('NEW-EXE');
+    expect(readFileSync(t.sidecar.livePath, 'utf8')).toBe('NEW-ADDON');
+    // both previous halves preserved as the rollback target
+    expect(readFileSync(t.old, 'utf8')).toBe('OLD-EXE');
+    expect(readFileSync(t.sidecar.oldPath, 'utf8')).toBe('OLD-ADDON');
+  });
+
+  it('⛔ rollback restores the addon too, not just the exe', () => {
+    // Restoring the old exe next to the NEW addon is the SAME ABI mismatch that
+    // caused the rollback: it would report success and still not open a database.
+    const t = withSidecar();
+    preserveAndSwap(t.staged, t.binary, t.old, t.sidecar);
+    rollbackSwap(t.old, t.binary, t.sidecar);
+    expect(readFileSync(t.binary, 'utf8')).toBe('OLD-EXE');
+    expect(readFileSync(t.sidecar.livePath, 'utf8')).toBe('OLD-ADDON');
+  });
+
+  it('leaves NO half-applied state when the addon swap fails', () => {
+    // The crash window with no owner: the boot-health gate cannot see a partial
+    // apply until the next boot, and by then the staged file is gone.
+    const t = withSidecar();
+    // Make the addon rename fail by removing the staged addon after the exe
+    // stage — the same shape as a mid-swap crash or a cross-device move.
+    rmSync(t.sidecar.stagedPath);
+    expect(() => preserveAndSwap(t.staged, t.binary, t.old, t.sidecar)).toThrow();
+    // Everything back as it was: old exe live, old addon live.
+    expect(readFileSync(t.binary, 'utf8')).toBe('OLD-EXE');
+    expect(readFileSync(t.sidecar.livePath, 'utf8')).toBe('OLD-ADDON');
+  });
+
+  it('still works with no sidecar at all (docker-thin / pre-sidecar installs)', () => {
+    const t = withSidecar();
+    preserveAndSwap(t.staged, t.binary, t.old);
+    expect(readFileSync(t.binary, 'utf8')).toBe('NEW-EXE');
+    // untouched — an install without a managed sidecar must not have one invented
+    expect(readFileSync(t.sidecar.livePath, 'utf8')).toBe('OLD-ADDON');
+  });
+
   it('preserves current as recued.old then swaps the staged in, and rolls back', () => {
     const d = dir();
     const binary = join(d, 'recued');

@@ -415,6 +415,11 @@ describe('Automation route — rendering', () => {
 
     expect(rig.host.attrs.has(AUTOMATION_ROUTE_HOST_ATTR)).toBe(true);
     expect(rig.doc.styleElements[0]?.attrs.has(AUTOMATION_ROUTE_STYLES_MARKER)).toBe(true);
+    const routeStyles = (rig.doc.styleElements[0] as unknown as { textContent?: string })
+      .textContent ?? '';
+    expect(routeStyles).toContain('.automation-filter > .ref-picker');
+    expect(routeStyles).toContain('flex-wrap: wrap');
+    expect(routeStyles).toContain('min-width: 220px');
     expect(rig.route.getActiveSection()).toBe('auto-run');
     expectOnlySection(rig.host.innerHTML, 'auto_run');
     expectSubnavCounts(rig.host.innerHTML, {
@@ -446,6 +451,27 @@ describe('Automation route — rendering', () => {
     expect(rig.route.getActiveSection()).toBe('schedules');
     expectOnlySection(rig.host.innerHTML, 'schedule');
     expect(rig.host.innerHTML).toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="schedule:sch_1"`);
+  });
+
+  it('renders a one-shot as one instant, never as its compatibility cron', async () => {
+    const rig = mountRoute({
+      initialSection: 'schedules',
+      schedulesListCaller: async () => ({
+        schedules: [schedule({
+          mode: 'one_shot',
+          run_at: NOW + 60_000,
+          cron_expression: '17 4 9 12 *',
+        })],
+      }),
+    });
+    await rig.route.whenLoaded();
+
+    expect(rig.host.innerHTML).toContain('Once —');
+    expect(rig.host.innerHTML).not.toContain('17 4 9 12 *');
+
+    clickAction(rig.host, 'detail:schedule', 'sch_1');
+    expect(rig.host.innerHTML).toContain('Once —');
+    expect(rig.host.innerHTML).not.toContain('17 4 9 12 *');
   });
 
   it('labels disarmed and tripped states distinctly inside their active tabs', async () => {

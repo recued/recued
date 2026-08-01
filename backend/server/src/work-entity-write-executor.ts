@@ -290,10 +290,11 @@ export interface ResolvedOp {
    *  (graphql else rest). Drives write-arg composition: a graphql op sends the
    *  narrow patch as flat graphql `variables`, a REST op as nested `body.<top>`
    *  request-body args. */
-  transport: 'rest' | 'graphql';
+  transport: 'rest' | 'graphql' | 'mcp';
   /** D-192 — per-connection scoping args resolved from `op_arg_bindings[slot]`
    *  against the connection config at prepare time (Google Tasks `tasklist` on a
-   *  targeted read). Merged FLAT into the op args at dispatch, alongside the
+   *  targeted read; a federated project scope on a targeted write). Merged FLAT
+   *  into the op args at dispatch, alongside the
    *  id_arg. Absent when the slot declares no `op_arg_bindings` (the common
    *  single-id case). Resolved at prepare because that is where the connection
    *  config is in hand (`resolveDeclaration`). */
@@ -528,9 +529,14 @@ export interface WorkEntitySourceWriteExecutor {
  *  mutation variable (its write-path name); a REST field nests under `body.` so
  *  the shared composer folds it into the request body tree. */
 const pushableWireKey = (
-  transport: 'rest' | 'graphql',
+  transport: 'rest' | 'graphql' | 'mcp',
   remotePath: string,
-): string => (transport === 'graphql' ? remotePath : `body.${remotePath}`);
+  // D-225 Slice 3 — REST is the odd one out. A graphql variable and an MCP tool
+  // argument are both a NAMED argument; only REST nests its fields under a
+  // request-body tree. Keyed on `rest` rather than listing the others so a
+  // future named-argument transport is right by default instead of silently
+  // getting the body prefix.
+): string => (transport === 'rest' ? `body.${remotePath}` : remotePath);
 
 
 /** The maximum |ms-epoch| `Date.prototype.toISOString` can format —
@@ -1006,7 +1012,18 @@ const resolveOp = (
   const executesKind = (
     manifest.surfaces?.api?.executes as Record<string, { kind?: string }> | undefined
   )?.[opKey]?.kind;
-  const transport: 'rest' | 'graphql' = executesKind === 'graphql' ? 'graphql' : 'rest';
+  // D-225 Slice 3 — mcp joins as a first-class write transport. It composes
+  // like graphql (named arguments, no body tree — `pushableWireKey`), so the
+  // Slice-1 refusal is retired rather than widened.
+  //
+  // ⚠ The `rest` fallback stays the default for everything else, which is
+  // correct for the REST binding kinds and fail-closed for the realtime ones:
+  // a webhook/queue/push binding never reaches here, because
+  // `validateWorkEntitySources` refuses a Source op bound to one.
+  const transport: 'rest' | 'graphql' | 'mcp' =
+    executesKind === 'graphql' ? 'graphql'
+      : executesKind === 'mcp' ? 'mcp'
+        : 'rest';
   return {
     ok: true,
     op: {
@@ -1326,6 +1343,32 @@ export const createWorkEntitySourceWriteExecutor = (
     if (!writeResolved.ok) return configFail(writeResolved.reason);
     let writeOp = writeResolved.op;
 
+    // D-192 — connection-config args for a TARGETED WRITE. These are the write
+    // sibling of `withReadConfigArgs`: a peer/container scope must reach the
+    // bound operation before the id and narrow patch are composed. Resolve at
+    // prepare time while the connection config is in hand and fail before the
+    // local write when a required value is unset.
+    if (operation !== 'create') {
+      const writeConfigSlot =
+        operation === 'complete'
+        && (declaration.ops.complete === undefined || declaration.ops.complete === null)
+          ? 'update'
+          : operation;
+      const writeArgs = resolveConfigArgBindings(
+        declaration.op_arg_bindings?.[writeConfigSlot],
+        connection_config,
+      );
+      if (!writeArgs.ok) {
+        return configFail(
+          `the ${writeConfigSlot} op on source '${source_id}' needs arg '${writeArgs.arg}' from `
+          + `connection config '${writeArgs.config_key}', which is unset — configure it on the connection`,
+        );
+      }
+      if (Object.keys(writeArgs.args).length > 0) {
+        writeOp = { ...writeOp, configArgs: writeArgs.args };
+      }
+    }
+
     // D-192 — source-dependency container args for a TARGETED WRITE (update / delete /
     // complete). MS To Do's task lives under a `todoTaskListId`; its update PATCHes
     // `/lists/{list}/tasks/{task}`, so the SAME stored list id that scopes the sync
@@ -1348,7 +1391,47 @@ export const createWorkEntitySourceWriteExecutor = (
       const depWrite = resolvePersistDependencyWriteArgs(deps.dependencyStore, source_id, declaration, writeBindSlot);
       if (!depWrite.ok) return configFail(depWrite.reason);
       if (Object.keys(depWrite.args).length > 0) {
+        for (const key of Object.keys(depWrite.args)) {
+          if (Object.prototype.hasOwnProperty.call(writeOp.configArgs ?? {}, key)) {
+            return configFail(
+              `write op arg '${key}' on source '${source_id}' is bound by both a config binding and a source dependency — one authority per arg`,
+            );
+          }
+        }
         writeOp = { ...writeOp, configArgs: { ...(writeOp.configArgs ?? {}), ...depWrite.args } };
+      }
+    }
+
+    // A targeted write's record id, conditional token, and narrow patch are
+    // composed by the executor itself. Connection/dependency scope args must
+    // never claim one of those same wire keys: `composeWireArgs` would refuse
+    // the duplicate only during dispatch, after the dispatcher has already
+    // committed the local edit and staged a pending write. Catch the complete
+    // merged config-arg set here so even kernel-authored declarations that did
+    // not pass through the publish validator fail before any local side effect.
+    if (operation !== 'create') {
+      const binding = writeOp.binding!; // resolveOp requires targeted bindings.
+      const ownedArgs = new Map<string, string>([
+        [binding.id_arg, `record id argument '${binding.id_arg}'`],
+      ]);
+      if (binding.precondition_arg !== undefined) {
+        ownedArgs.set(
+          binding.precondition_arg,
+          `conditional-write argument '${binding.precondition_arg}'`,
+        );
+      }
+      for (const entry of pushable) {
+        const wireKey = pushableWireKey(writeOp.transport, entry.remote_path);
+        ownedArgs.set(wireKey, `patch argument '${wireKey}' for field '${entry.field}'`);
+      }
+      for (const argName of Object.keys(writeOp.configArgs ?? {})) {
+        const owner = ownedArgs.get(argName);
+        if (owner !== undefined) {
+          return configFail(
+            `write op config arg '${argName}' on source '${source_id}' collides with ${owner} — `
+            + 'scope args must not overwrite targeted-write-owned arguments',
+          );
+        }
       }
     }
 

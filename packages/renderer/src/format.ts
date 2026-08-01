@@ -25,17 +25,20 @@ export const formatValue = (value: unknown, format?: string): string => {
     // never guesses; a number outside both ranges is NOT a recent timestamp and
     // falls through to the pre-existing String(value) — ZERO regression, this
     // can only improve a value that renders as a bare integer today.
-    if (format === 'date' || format === 'relative') {
+    if (format === 'date' || format === 'datetime' || format === 'relative') {
       const ms = toRecentMs(value);
       if (ms !== null) {
-        return format === 'date' ? formatDate(new Date(ms).toISOString())
-          : formatRelative(new Date(ms).toISOString());
+        const iso = new Date(ms).toISOString();
+        if (format === 'date') return formatDate(iso);
+        if (format === 'datetime') return formatDateTime(iso);
+        return formatRelative(iso);
       }
     }
     return String(value);
   }
   if (typeof value === 'string') {
     if (format === 'date') return formatDate(value);
+    if (format === 'datetime') return formatDateTime(value);
     if (format === 'relative') return formatRelative(value);
     return value;
   }
@@ -63,6 +66,23 @@ export const formatDate = (s: string): string => {
   if (Number.isNaN(d.getTime())) return s;
   return d.toLocaleDateString(undefined, {
     year: 'numeric', month: 'short', day: 'numeric',
+  });
+};
+
+/** Day AND time. `formatDate` is day-only by design and every shipped `table`
+ *  column with `format: "date"` depends on that, so a datetime needs its own
+ *  hint rather than a change to the shared one.
+ *
+ *  ⛔ Found live: a Cal.com booking rendered "Aug 3, 2026" through the date
+ *  path, dropping 16:00 — the single fact a person reading an appointment needs
+ *  most. A fixture cannot catch this; it renders exactly as wrongly and looks
+ *  fine. */
+export const formatDateTime = (s: string): string => {
+  const d = new Date(s);
+  if (Number.isNaN(d.getTime())) return s;
+  return d.toLocaleString(undefined, {
+    year: 'numeric', month: 'short', day: 'numeric',
+    hour: '2-digit', minute: '2-digit',
   });
 };
 

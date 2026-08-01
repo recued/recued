@@ -16,13 +16,34 @@
  *  that only reconverge at the top of the boot. Tests get isolation via
  *  `createUpdateAutoApplyRegistry()`; production uses the default singleton. */
 
+import type { ReleaseCheckResponse } from '@recued/contracts';
+
+import type { NotificationBlock, NotificationMessage } from '@recued/notification';
+
 import type { UpdateApplyDeps } from '../update-handler.js';
+import { runReleaseCheck, type ReleaseCheckDeps } from './release-check.js';
 import type { DistributionChannel, UpdateModeStore } from './update-mode-store.js';
 
 export interface UpdateAutoApplyEntry {
+  /** The CHECK (`runReleaseCheck` bound to the booted release deps). Required —
+   *  it is what the task always has, on every supported platform.
+   *
+   *  ⚠ This entry used to be published only when `applyDeps` existed, which
+   *  meant `docker-baked` and `source` — the two channels that DEFAULT to
+   *  `notify` — registered no periodic task at all and so never checked. The
+   *  check is the required half; apply is the optional one. */
+  runCheck: () => Promise<ReleaseCheckResponse>;
   /** Apply orchestrator deps (ports + `resolveForApply`). Shared with the manual
-   *  `update.apply` rpc — same ledger lock, same I-2 verify boundary. */
-  applyDeps: UpdateApplyDeps;
+   *  `update.apply` rpc — same ledger lock, same I-2 verify boundary. ABSENT on
+   *  a delegated channel (no self-apply path exists there). */
+  applyDeps?: UpdateApplyDeps;
+  /** Read / record the available version already reported to the owner, so a
+   *  daily check doesn't re-announce the same release forever. */
+  readLastReported: () => string | null;
+  writeLastReported: (version: string) => void;
+  /** D-158 — push an available release to the owner's channels. Absent when the
+   *  boot composed no notification block. */
+  notifyOwner?: (message: NotificationMessage) => Promise<void>;
   /** Apply-policy store + channel + raw env mode, for the effective-mode gate. */
   modeStore: UpdateModeStore;
   channel: DistributionChannel;
@@ -34,12 +55,58 @@ export interface UpdateAutoApplyEntry {
 }
 
 export interface UpdateAutoApplyRegistry {
-  /** Publish from `composeListeners`. `undefined` on a delegated channel /
-   *  unsupported platform (no self-apply path) clears any prior entry. */
+  /** Publish from `composeListeners`. `undefined` on an UNSUPPORTED PLATFORM
+   *  (no release deps at all) clears any prior entry. A delegated channel still
+   *  publishes — it has a check, just no apply. */
   publish(entry: UpdateAutoApplyEntry | undefined): void;
   /** Consume from `composeHousekeepingScheduler`. */
   consume(): UpdateAutoApplyEntry | undefined;
 }
+
+export interface BuildUpdateReleaseEntryInputs {
+  /** Absent only on an unsupported platform. */
+  releaseCheckDeps: ReleaseCheckDeps | undefined;
+  /** Absent on a delegated channel (`docker-baked` / `source`). */
+  applyDeps: UpdateApplyDeps | undefined;
+  modeStore: UpdateModeStore;
+  channel: DistributionChannel;
+  envMode?: string;
+  bindBusySignal: (isEngineBusy: () => boolean) => void;
+  /** The composed D-158 block, when this boot has one. */
+  notificationBlock?: Pick<NotificationBlock, 'notify'>;
+}
+
+/** Build the registry entry from the booted release deps.
+ *
+ *  🔑 EXTRACTED FROM THE COMPOSITION CLOSURE ON PURPOSE. This decision — which
+ *  installs get a periodic release task at all — lived inline in
+ *  `composeListeners`, where no test could reach it, and it was wrong: it
+ *  required `applyDeps`, so the delegated channels got no task. Logic that
+ *  decides whether a subsystem exists does not belong somewhere unreachable. */
+export const buildUpdateReleaseEntry = (
+  inputs: BuildUpdateReleaseEntryInputs,
+): UpdateAutoApplyEntry | undefined => {
+  const deps = inputs.releaseCheckDeps;
+  if (!deps) return undefined;
+  return {
+    runCheck: () => runReleaseCheck(deps),
+    readLastReported: () => deps.loadState().last_reported_version ?? null,
+    // Read-modify-write AFTER the check has run, so this composes over the
+    // anti-replay sequence the check itself may have just advanced.
+    writeLastReported: (version) => deps.saveState({ ...deps.loadState(), last_reported_version: version }),
+    ...(inputs.applyDeps ? { applyDeps: inputs.applyDeps } : {}),
+    // Bound here rather than passed as a closure from the composer so the block
+    // is reached the same way on every boot path, and so the wiring test can
+    // see whether it was wired at all.
+    ...(inputs.notificationBlock
+      ? { notifyOwner: (message: NotificationMessage) => inputs.notificationBlock!.notify(message) }
+      : {}),
+    modeStore: inputs.modeStore,
+    channel: inputs.channel,
+    ...(inputs.envMode !== undefined ? { envMode: inputs.envMode } : {}),
+    bindBusySignal: inputs.bindBusySignal,
+  };
+};
 
 export const createUpdateAutoApplyRegistry = (): UpdateAutoApplyRegistry => {
   let entry: UpdateAutoApplyEntry | undefined;

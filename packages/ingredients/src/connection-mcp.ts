@@ -73,6 +73,7 @@ import type {
   ConnectionHealth,
   ConnectionRow,
   McpTransport,
+  McpToolDescriptor,
 } from '@recued/contracts';
 import type { ConnectionHandlerCtx, ConnectionKindHandler } from './connection.js';
 import { IngredientError, type ResolvedCall } from './types.js';
@@ -401,7 +402,7 @@ class McpStreamSession {
  *  `auth_failed` classification; transport/open/request failures still throw
  *  and are classified as unreachable by that layer. */
 export type McpStreamProbeResult =
-  | { ok: true; tools: string[] }
+  | { ok: true; tools: string[]; descriptors: McpToolDescriptor[] }
   | {
       ok: false;
       stage: 'initialize' | 'tools_list';
@@ -418,7 +419,7 @@ export type McpStreamProbeResult =
 export const MCP_TOOL_LIST_PROBE_MAX_PAGES = 100;
 
 export type McpToolListPageResult =
-  | { ok: true; tools: string[]; nextCursor?: string }
+  | { ok: true; tools: string[]; descriptors: McpToolDescriptor[]; nextCursor?: string }
   | { ok: false };
 
 /** Validate one MCP `tools/list` result page. Tool names form an enforcement
@@ -432,17 +433,42 @@ export const parseMcpToolListPage = (result: unknown): McpToolListPageResult => 
   const record = result as Record<string, unknown>;
   if (!Array.isArray(record.tools)) return { ok: false };
   const tools: string[] = [];
+  // D-225 Slice 2 — retain the DESCRIPTOR, not just the name. A generated pack
+  // is minted from `{ name, input_schema }`, and the grant identity it derives
+  // is a hash over that pair — so a probe that kept only names would leave the
+  // generator unable to distinguish a tool from the same tool with a different
+  // argument shape. `tools` is preserved verbatim alongside because it is
+  // PERSISTED (`ConnectionHealth.tools`) and read by the dispatch-time
+  // pre-validation; widening the stored element type would have made every
+  // already-stored row unreadable.
+  const descriptors: McpToolDescriptor[] = [];
   for (const tool of record.tools) {
     if (!tool || typeof tool !== 'object' || Array.isArray(tool)) return { ok: false };
-    const name = (tool as Record<string, unknown>).name;
+    const entry = tool as Record<string, unknown>;
+    const name = entry.name;
     if (typeof name !== 'string' || name.length === 0) return { ok: false };
     tools.push(name);
+    const descriptor: McpToolDescriptor = { name };
+    if (typeof entry.description === 'string') descriptor.description = entry.description;
+    // MCP publishes `inputSchema`; the stored shape is snake_case.
+    if (entry.inputSchema !== undefined) descriptor.input_schema = entry.inputSchema;
+    // Carried for DISPLAY only — never for tiering. It is the server's claim
+    // about its own tool, so nothing that gates may read it (see
+    // `GENERATED_RISK` in `@recued/ingredient-authoring`'s mcp-pack).
+    const annotations = entry.annotations;
+    if (annotations !== null && typeof annotations === 'object' && !Array.isArray(annotations)) {
+      const hint = (annotations as Record<string, unknown>).destructiveHint;
+      if (typeof hint === 'boolean') descriptor.destructive_hint = hint;
+      const readOnly = (annotations as Record<string, unknown>).readOnlyHint;
+      if (typeof readOnly === 'boolean') descriptor.read_only_hint = readOnly;
+    }
+    descriptors.push(descriptor);
   }
   if (Object.prototype.hasOwnProperty.call(record, 'nextCursor')) {
     if (typeof record.nextCursor !== 'string') return { ok: false };
-    return { ok: true, tools, nextCursor: record.nextCursor };
+    return { ok: true, tools, descriptors, nextCursor: record.nextCursor };
   }
-  return { ok: true, tools };
+  return { ok: true, tools, descriptors };
 };
 
 const streamProbeTimeoutError = (timeoutMs: number): Error => {
@@ -515,6 +541,11 @@ export const probeMcpStreamTools = async (
     }
 
     const tools = new Set<string>();
+    // D-225 Slice 2 — carried beside the name set so a caller can derive
+    // descriptor hashes (drift detection) without a second round trip. Deduped
+    // on NAME, matching the name set: a server repeating a tool across pages
+    // must not produce two descriptors that then look like drift.
+    const descriptors = new Map<string, McpToolDescriptor>();
     const seenCursors = new Set<string>();
     let cursor: string | undefined;
     for (let pageIndex = 0; pageIndex < MCP_TOOL_LIST_PROBE_MAX_PAGES; pageIndex += 1) {
@@ -535,7 +566,10 @@ export const probeMcpStreamTools = async (
         return { ok: false, stage: 'tools_list', reason: 'invalid_response' };
       }
       for (const name of page.tools) tools.add(name);
-      if (page.nextCursor === undefined) return { ok: true, tools: [...tools] };
+      for (const d of page.descriptors) if (!descriptors.has(d.name)) descriptors.set(d.name, d);
+      if (page.nextCursor === undefined) {
+        return { ok: true, tools: [...tools], descriptors: [...descriptors.values()] };
+      }
       if (seenCursors.has(page.nextCursor)) {
         return { ok: false, stage: 'tools_list', reason: 'pagination_cycle' };
       }

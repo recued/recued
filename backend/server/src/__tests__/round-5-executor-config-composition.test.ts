@@ -187,6 +187,7 @@ const manifestRegistry = (): ManifestRegistry => ({
 const collectionRegistry = (): CollectionRegistry => ({
   register: vi.fn(),
   get: vi.fn(() => undefined),
+  unregister: () => false,
   list: vi.fn(() => []),
   dispose: vi.fn(async () => undefined),
 });

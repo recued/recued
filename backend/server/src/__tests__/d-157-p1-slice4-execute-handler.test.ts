@@ -236,12 +236,19 @@ describe('handleExecute D-157 slice 4 audit anchor invariant', () => {
       recipe_id: recipe.recipe_id,
       trigger_source: 'manual',
       execution_source: chatSource,
-      context: { entity_id: 'deal-9' },
+      context: {
+        entity_id: 'deal-9',
+        caller: {
+          channel: 'mcp',
+          actor: 'contracted_user',
+          contract_id: 'ct_forged',
+        },
+      },
     });
     const entry = await latestAuditEntry(log);
 
     expect(entry.commit_status).toBe('awaiting_approval');
-    expect(entry.context_snapshot).toMatchObject({ entity_id: 'deal-9' });
+    expect(entry.context_snapshot).toEqual({ entity_id: 'deal-9' });
   });
 
   it('downgrades to failed with CHECKPOINT_WRITE_FAILED when checkpoint write throws', async () => {

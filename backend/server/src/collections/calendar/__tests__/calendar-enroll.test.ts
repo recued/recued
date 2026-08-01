@@ -34,6 +34,7 @@ import {
   handleCalendarDelete,
   handleCalendarResync,
   handleCalendarReauth,
+  handleCalendarAttachGraphGrant,
   type CalendarEnrollDeps,
 } from '../enroll.js';
 import type { OAuthAccountStore, OAuthProviderConfig } from '../../mail/oauth.js';
@@ -662,6 +663,204 @@ describe('collection.calendar.reauth', () => {
     });
     const res = await handleCalendarReauth(h.deps, { slug: 'work' });
     expect(res).toEqual({ ok: true });
+    h.db.close();
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// collection.calendar.attachGraphGrant
+// ────────────────────────────────────────────────────────────────
+/** D-118 mail-setup "Also connect Calendar" (5c3f8c832).
+ *
+ *  This path NEVER obtains its own consent — it adopts the Microsoft Graph
+ *  grant already held by an enrolled mail account. That makes it a
+ *  credential-REUSE surface, and its safety rests entirely on the binding
+ *  below: the calendar slug must name a `graph` MAIL account, and the refresh
+ *  token is read from THAT account's own key prefix (`graph.<slug>.*`). There
+ *  is no argument through which a caller can name a different donor.
+ *
+ *  It shipped with no behavioural coverage — the only two files that mentioned
+ *  it asserted its NAME appeared in a list. It also shipped missing from
+ *  `SERVER_RPC_METHODS`, which bricked boot and is now caught at typecheck by
+ *  `server-rpc-registry-method-list-ratchet.test.ts`. These tests cover what
+ *  the handler DOES. */
+describe('collection.calendar.attachGraphGrant', () => {
+  const GRAPH_REFRESH_KEY = 'graph.work.refresh_token';
+
+  /** A harness with an enrolled Microsoft MAIL account at `slug` whose grant is
+   *  on disk — the precondition the whole path is built around. */
+  const withDonorMail = (
+    slug = 'work',
+    probe: () => Promise<ProbedCalendarCaps> = async () => FULL_PROBED,
+  ): Harness => {
+    const h = setup([makeFactory('graph', probe)]);
+    h.instances.upsert({
+      platform: 'mail',
+      slug,
+      adapter_type: 'graph',
+      config: {},
+      caps: {} as never,
+      auth_state: 'healthy',
+      last_synced_at: null,
+    });
+    h.account.data.set(`graph.${slug}.refresh_token`, 'donor-rt');
+    return h;
+  };
+
+  it('attaches a calendar row by adopting the mail account grant', async () => {
+    // The POSITIVE case. Without it, every refusal below is indistinguishable
+    // from a handler that refuses everything.
+    const h = withDonorMail();
+    const res = await handleCalendarAttachGraphGrant(h.deps, { slug: 'work' });
+    expect(res.slug).toBe('work');
+    expect(res.caps.read).toBe('yes');
+
+    const row = h.instances.get('calendar', 'work');
+    expect(row?.adapter_type).toBe('graph');
+    expect(row?.auth_state).toBe('healthy');
+    h.db.close();
+  });
+
+  it('never writes a second grant — it reads the donor mail account key', async () => {
+    // The adoption must not copy/duplicate the credential under a calendar-
+    // specific key: two copies means a re-auth can silently fix one and leave
+    // the other stale.
+    const h = withDonorMail();
+    await handleCalendarAttachGraphGrant(h.deps, { slug: 'work' });
+    const refreshKeys = [...h.account.data.keys()].filter((k) =>
+      k.endsWith('.refresh_token'),
+    );
+    expect(refreshKeys).toEqual([GRAPH_REFRESH_KEY]);
+    h.db.close();
+  });
+
+  it('refuses the reserved local slug', async () => {
+    const h = withDonorMail('local');
+    await expect(
+      handleCalendarAttachGraphGrant(h.deps, { slug: 'local' }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    h.db.close();
+  });
+
+  // ── The binding: you may only adopt YOUR OWN account's grant ────
+  it('refuses when no mail account of that name exists', async () => {
+    const h = setup([makeFactory('graph', async () => FULL_PROBED)]);
+    await expect(
+      handleCalendarAttachGraphGrant(h.deps, { slug: 'work' }),
+    ).rejects.toMatchObject({ code: 'bad_request' });
+    expect(h.instances.get('calendar', 'work')).toBeNull();
+    h.db.close();
+  });
+
+  it('⛔ refuses to adopt a DIFFERENT account\'s grant', async () => {
+    // The security property: a grant belonging to mail 'other' must not be
+    // reachable by attaching calendar 'work'. Nothing in the input names a
+    // donor — the requested slug is the only selector.
+    //
+    // ⚠ MUTATION NOTE — this pins the OUTCOME and cannot attribute the layer,
+    // because the rule is enforced TWICE:
+    //   1. the donor row lookup, `instances.get('mail', slug)`; and
+    //   2. the token read, `oauthKeyPrefix('graph', slug)` — which is the
+    //      structural one: the refresh token is ALWAYS read from the REQUESTED
+    //      slug's prefix, so a wrong donor still finds no credential.
+    // Breaking (1) alone does NOT red this test — (2) still refuses. Breaking
+    // BOTH does (verified 2026-07-28). That is defence in depth, not a gap;
+    // recorded here so a future reader does not mistake a surviving mutant for
+    // a weak test. ⇒ two-layers-validating-one-rule.
+    const h = setup([makeFactory('graph', async () => FULL_PROBED)]);
+    h.instances.upsert({
+      platform: 'mail',
+      slug: 'other',
+      adapter_type: 'graph',
+      config: {},
+      caps: {} as never,
+      auth_state: 'healthy',
+      last_synced_at: null,
+    });
+    h.account.data.set('graph.other.refresh_token', 'someone-elses-rt');
+
+    await expect(
+      handleCalendarAttachGraphGrant(h.deps, { slug: 'work' }),
+    ).rejects.toMatchObject({ code: 'bad_request' });
+    expect(h.instances.get('calendar', 'work')).toBeNull();
+    // And the donor is untouched.
+    expect(h.account.data.get('graph.other.refresh_token')).toBe('someone-elses-rt');
+    h.db.close();
+  });
+
+  it('refuses when the same-named mail account is NOT Microsoft', async () => {
+    // An imap account under the same slug holds no Graph grant to share.
+    const h = setup([makeFactory('graph', async () => FULL_PROBED)]);
+    h.instances.upsert({
+      platform: 'mail',
+      slug: 'work',
+      adapter_type: 'imap',
+      config: {},
+      caps: {} as never,
+      auth_state: 'healthy',
+      last_synced_at: null,
+    });
+    await expect(
+      handleCalendarAttachGraphGrant(h.deps, { slug: 'work' }),
+    ).rejects.toMatchObject({ code: 'bad_request' });
+    expect(h.instances.get('calendar', 'work')).toBeNull();
+    h.db.close();
+  });
+
+  it('refuses when the mail account holds no refresh token', async () => {
+    const h = withDonorMail();
+    h.account.data.delete(GRAPH_REFRESH_KEY);
+    await expect(
+      handleCalendarAttachGraphGrant(h.deps, { slug: 'work' }),
+    ).rejects.toMatchObject({ code: 'bad_request' });
+    expect(h.instances.get('calendar', 'work')).toBeNull();
+    h.db.close();
+  });
+
+  // ── The probe IS the scope check ────────────────────────────────
+  it('⛔ a DECLINED calendar consent creates NO row', async () => {
+    // The handler's own comment claims "a declined calendar consent fails
+    // HERE, before any row exists". Nothing verified it. If a row survived a
+    // failed probe, the user would hold a calendar instance advertising
+    // `auth_state: healthy` for a scope they never granted.
+    const h = withDonorMail('work', async () => {
+      throw new Error('403 insufficient scope: Calendars.Read not granted');
+    });
+    await expect(
+      handleCalendarAttachGraphGrant(h.deps, { slug: 'work' }),
+    ).rejects.toBeInstanceOf(RpcError);
+    expect(h.instances.get('calendar', 'work')).toBeNull();
+    h.db.close();
+  });
+
+  // ── Idempotency ─────────────────────────────────────────────────
+  it('re-attaching an existing graph calendar is a no-op success', async () => {
+    // Deliberate: the row commits before onEnrolled runs, so a lost response
+    // would otherwise strand the user with a state the UI cannot recover from.
+    const h = withDonorMail();
+    const first = await handleCalendarAttachGraphGrant(h.deps, { slug: 'work' });
+    const second = await handleCalendarAttachGraphGrant(h.deps, { slug: 'work' });
+    expect(second.slug).toBe(first.slug);
+    expect(h.instances.list('calendar').filter((r) => r.slug === 'work')).toHaveLength(1);
+    h.db.close();
+  });
+
+  it('conflicts when a calendar of that name is on a DIFFERENT adapter', async () => {
+    // Adopting the grant would silently change what that row talks to.
+    const h = withDonorMail();
+    h.instances.upsert({
+      platform: 'calendar',
+      slug: 'work',
+      adapter_type: 'caldav',
+      config: {},
+      caps: {} as never,
+      auth_state: 'healthy',
+      last_synced_at: null,
+    });
+    await expect(
+      handleCalendarAttachGraphGrant(h.deps, { slug: 'work' }),
+    ).rejects.toMatchObject({ code: 'conflict' });
+    expect(h.instances.get('calendar', 'work')?.adapter_type).toBe('caldav');
     h.db.close();
   });
 });

@@ -5,8 +5,20 @@
  *  commit (pending → dispatch → terminal outcome), and a dispatch past
  *  the `MAX_DISPATCH_DEPTH` loop ceiling is refused.
  *
- *  Authored INERT — slice 3b.3 wires `wrapWithCommitGateway` into the
- *  engine's executor chokepoint.
+ *  ⚠ **This header used to say "Authored INERT — slice 3b.3 wires
+ *  `wrapWithCommitGateway` into the engine's executor chokepoint."** That was
+ *  true when written at slice 3b.2 and became false on 2026-05-20, when 3b.3
+ *  (`fe29dbdbb`) landed the wiring. It is corrected here because it actively
+ *  misled a reader into concluding the Gateway never runs (D-225 § 13.3).
+ *
+ *  LIVE as of 3b.3: `execute-handler.ts:3364` wraps the engine executor,
+ *  gated on `commitGatewayActive` (`runIdentity !== undefined &&
+ *  deps.commitStore !== undefined`). That is the ONLY production call site.
+ *
+ *  ⛔ The door path does NOT go through it. `raw-op-dispatch.ts` dispatches via
+ *  `runCatalogOperation` and re-implements `handleExecute`'s admission gates in
+ *  parallel ("IDENTICAL to `handleExecute`'s"), so a door-originated raw op
+ *  gets no commit-Gateway wrap and no `MAX_DISPATCH_DEPTH` ceiling.
  *
  *  Spec: D-153 § Gateway / § Commit substrate.
  */

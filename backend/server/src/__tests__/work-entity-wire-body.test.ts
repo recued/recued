@@ -81,7 +81,7 @@ describe('composeWireArgs — graphql', () => {
     const r = composeWireArgs([['body.data.name', 'T']], 'graphql');
     expect(r).toMatchObject({ ok: false });
     if (r.ok) return;
-    expect(r.reason).toContain('flat variable name');
+    expect(r.reason).toContain('flat argument name');
   });
 
   it('rejects a duplicate variable', () => {
@@ -100,5 +100,57 @@ describe('wireTransportOf', () => {
   it('defaults to rest for a non-graphql / absent binding', () => {
     expect(wireTransportOf(manifest({ 'project.create': { kind: 'rest' } }), 'project.create')).toBe('rest');
     expect(wireTransportOf(manifest(), 'anything')).toBe('rest');
+  });
+
+  // ── D-225 Slice 1 ───────────────────────────────────────────────────────
+  it('reports mcp as ITSELF rather than letting the rest default absorb it', () => {
+    expect(wireTransportOf(manifest({ 'project.create': { kind: 'mcp' } }), 'project.create')).toBe('mcp');
+  });
+});
+
+describe('composeWireArgs — mcp (D-225 Slice 3)', () => {
+  /** Slice 1 REFUSED mcp here, to stop it falling into the rest default and
+   *  composing a `body.*` tree for a transport whose handler reads `args` — a
+   *  write dispatched with arguments the tool never sees, request succeeding.
+   *
+   *  🔑 Slice 3 built the composer and found the Slice-1 refusal's stated reason
+   *  half wrong. It said MCP arguments were "a typed object per the tool
+   *  inputSchema, not a REST body tree or graphql variables" — but a graphql
+   *  operation's variables are ALSO a typed object of named arguments. REST is
+   *  the odd one out: only it has a URL plus a body TREE. So mcp joins the
+   *  graphql branch instead of getting a third one.
+   */
+  it('🔑 D-225 Slice 3 — composes mcp like GRAPHQL: flat named arguments', () => {
+    // Slice 1 refused mcp here, and Slice 3 found the stated reason half wrong:
+    // a graphql operation's variables are ALSO a typed object of named
+    // arguments. REST is the odd one out — only it has a body TREE. So mcp
+    // takes the graphql branch rather than getting a third one.
+    const args = ok(composeWireArgs([['title', 'Ship it'], ['workspace', 'w1']], 'mcp'));
+    expect(args).toEqual({ title: 'Ship it', workspace: 'w1' });
+  });
+
+  it('rejects a dotted key on mcp — a body path is a REST shape', () => {
+    const r = composeWireArgs([['body.data.name', 'Ship it']], 'mcp');
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('unreachable');
+    expect(r.reason).toMatch(/mcp wire arg/);
+    expect(r.reason).toMatch(/flat argument name/);
+  });
+
+  it('an empty arg list composes to empty args, not a refusal', () => {
+    // An arg-less tool call is legitimate — `tools/call` with `arguments: {}`.
+    expect(ok(composeWireArgs([], 'mcp'))).toEqual({});
+  });
+
+  it('refuses a duplicate mcp argument — one authority per arg', () => {
+    expect(composeWireArgs([['title', 'a'], ['title', 'b']], 'mcp').ok).toBe(false);
+  });
+
+  it('leaves rest and graphql composing exactly as before', () => {
+    // The regression half: mcp joining the graphql branch must not change what
+    // that branch does for graphql, nor touch rest's body-tree composition.
+    expect(ok(composeWireArgs([['body.data.name', 'x']], 'rest')))
+      .toEqual({ 'body.data': { name: 'x' } });
+    expect(ok(composeWireArgs([['name', 'x']], 'graphql'))).toEqual({ name: 'x' });
   });
 });

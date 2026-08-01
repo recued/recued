@@ -49,9 +49,15 @@ import {
 
 import { getInstalledPack, isPackInstalledAtVersion, listInstalledPacks } from './pack-inventory.js';
 import { reviewOwnerOperationsForPackUpdate } from './owner-operation-update-review.js';
+import {
+  prepareRecordsUpdateReview,
+  type PackInstallRpcDeps,
+} from './pack-install-handler.js';
+import type { RecordsMigrationArtifact } from './records/install-coordinator.js';
 import type { RecipeStore } from './recipe-store.js';
 import type { ContractStore } from './storage/contract-store.js';
 import type { WsClient } from './ws-server.js';
+import type { RecordsStore } from './records/store.js';
 
 export interface PackListRpcDeps {
   /** Per-pair recipe store. Required — the recipe-bearing `installed`
@@ -65,6 +71,13 @@ export interface PackListRpcDeps {
    *  undefined → an empty-recipes pack degrades to `installed: false`
    *  (its prior behavior); recipe-bearing packs are unaffected. */
   contractStore?: ContractStore;
+  /** D-221 full-ref install/readiness registry. */
+  recordsStore?: RecordsStore;
+  resolveRecordsMigrationArtifacts?: (input: {
+    owner: { publisher: string; pack_slug: string };
+    from_version: number;
+    target_version: number;
+  }) => Promise<readonly RecordsMigrationArtifact[]>;
   /** Override the default community/packs directory. Tests pass a
    *  scratch dir; production callers leave undefined to use the
    *  bundled location. */
@@ -189,7 +202,43 @@ const projectManifest = (
   manifest: BulkPackManifest,
   recipeStore: RecipeStore,
   contractStore: ContractStore | undefined,
+  recordsStore?: RecordsStore,
 ): PackListEntry => {
+  const recordsNamespace = recordsStore?.getNamespace({
+    publisher: manifest.publisher,
+    pack_slug: manifest.slug,
+  }) ?? null;
+  if (recordsNamespace !== null) {
+    const active = recordsNamespace.state.state === 'ready';
+    const ownsRetainedNamespace = active || recordsNamespace.state.state === 'orphaned';
+    const installedVersion = recordsNamespace.state.state === 'ready'
+      ? recordsNamespace.state.version
+      : recordsNamespace.state.state === 'orphaned'
+        ? recordsNamespace.state.last_version
+        : 0;
+    const installed = active && installedVersion >= manifest.version;
+    const ownerOperationReview =
+      contractStore !== undefined && ownsRetainedNamespace && !installed
+        ? reviewOwnerOperationsForPackUpdate(contractStore, manifest)
+        : [];
+    return {
+      slug: manifest.slug,
+      publisher: manifest.publisher,
+      name: manifest.name,
+      description: manifest.description,
+      version: manifest.version,
+      pre_install: manifest.pre_install === true,
+      installed,
+      installed_any_version: ownsRetainedNamespace,
+      ...(ownerOperationReview.length > 0
+        ? { owner_operation_review: ownerOperationReview }
+        : {}),
+      requires: [...manifest.requires],
+      recipe_count: manifest.recipes.length,
+      body_visibility_grant_count: manifest.mcp_body_visibility_grants?.length ?? 0,
+      manifest,
+    };
+  }
   const installedPack = contractStore === undefined
     ? null
     : getInstalledPack(contractStore, manifest.slug);
@@ -277,8 +326,14 @@ export const listVersionExactInstalledPackManifests = (
   if (contractStore === undefined) return [];
   const packDir = deps.packDir ?? findCommunityPackDir();
   return loadPackManifests(packDir).filter((manifest) =>
-    projectManifest(manifest, deps.recipeStore, contractStore).installed
-    && isPackInstalledAtVersion(contractStore, manifest.slug, manifest.version));
+    projectManifest(manifest, deps.recipeStore, contractStore, deps.recordsStore).installed
+    && (
+      deps.recordsStore?.getNamespace({
+        publisher: manifest.publisher,
+        pack_slug: manifest.slug,
+      })?.state.state === 'ready'
+      || isPackInstalledAtVersion(contractStore, manifest.slug, manifest.version)
+    ));
 };
 
 export const handlePacksList = async (
@@ -290,9 +345,38 @@ export const handlePacksList = async (
   // The panel can re-group visually (installed / foundation / rest) on
   // top of a stable sort without a second-pass server query.
   manifests.sort((a, b) => a.slug.localeCompare(b.slug));
-  const packs = manifests.map((m) =>
-    projectManifest(m, deps.recipeStore, deps.contractStore),
-  );
+  const packs = await Promise.all(manifests.map(async (manifest) => {
+    const base = projectManifest(
+      manifest,
+      deps.recipeStore,
+      deps.contractStore,
+      deps.recordsStore,
+    );
+    if (deps.recordsStore === undefined || base.installed) return base;
+    try {
+      const prepared = await prepareRecordsUpdateReview(
+        deps as PackInstallRpcDeps,
+        manifest,
+        async (slug) => {
+          const recipe = deps.recipeStore.getBundled(slug);
+          return recipe === null
+            ? null
+            : { recipe, publisher_id: manifest.publisher, version: recipe.version };
+        },
+      );
+      return prepared?.transition === null || prepared === null
+        ? base
+        : {
+            ...base,
+            records_review: prepared.transition.review,
+            manifest_review_hash: prepared.review_hash,
+          };
+    } catch {
+      // Fail closed: no review token means the update submit is refused. The
+      // authoring/install diagnostics retain the concrete validation message.
+      return base;
+    }
+  }));
   // D-182 — the full installed-version set from the inventory (bundled +
   // marketplace), so the Discover install-state join can flag a
   // marketplace-installed pack's installed / upgrade state even though its
@@ -306,6 +390,18 @@ export const handlePacksList = async (
     version: r.version,
     ...(r.publisher !== undefined ? { publisher: r.publisher } : {}),
   }));
+  for (const namespace of deps.recordsStore?.listNamespaces() ?? []) {
+    if (namespace.state.state !== 'ready') continue;
+    const existing = installed_versions.find((entry) =>
+      entry.slug === namespace.owner.pack_slug
+      && entry.publisher === namespace.owner.publisher);
+    if (existing) existing.version = namespace.state.version;
+    else installed_versions.push({
+      slug: namespace.owner.pack_slug,
+      publisher: namespace.owner.publisher,
+      version: namespace.state.version,
+    });
+  }
   return { packs, installed_versions };
 };
 

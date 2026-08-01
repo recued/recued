@@ -91,6 +91,17 @@ describe('reconcileDeclarativeTriggers', () => {
     });
   });
 
+  it('leaves D-221 record pointers exclusively on the transactional outbox path', () => {
+    const result = reconcile([
+      storedRecipe('records-watcher', [
+        { event: 'record.created', filter: { kind: 'job' } },
+        { event: 'record.*' },
+      ]),
+    ]);
+    expect(result).toMatchObject({ created: 0, skipped: 2, changed: false });
+    expect(store.list()).toEqual([]);
+  });
+
   it('is idempotent and PRESERVES the user enabled toggle + row identity across reconciles', () => {
     reconcile([storedRecipe('r1', [{ event: 'data.connection.api.hubspot.deal.**.updated' }])]);
     const row = store.list()[0]!;

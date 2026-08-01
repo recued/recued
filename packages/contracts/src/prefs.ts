@@ -151,6 +151,27 @@ export const INSTANCE_PREFS = {
       'cooperation noise per § B.6.1; opt in for visibility into the ' +
       'tool loop.',
   },
+  // D-219 slice 9c — the owner-facing "worth remembering?" ask raised at the
+  // end of a turn that made more than one governed call. ON by default: the
+  // corpus is only ever owner-attested, verdicts cannot be collected
+  // retroactively, and a turn that is never asked about can never become
+  // precedent.
+  //
+  // ⚠ THIS ONE IS CONSUMED SERVER-SIDE, unlike every `ui.*` pref above, which
+  // the client reads to decide what it renders. The ask is RAISED by the server
+  // and fanned out by the notification block, so it is not per-device in effect
+  // even though prefs are stored per instance. The server resolves it as
+  // "OFF ANYWHERE ⇒ OFF" — see `executionCaseOfferEnabled`.
+  'chat.execution_case_offer': {
+    type: 'boolean',
+    default: true,
+    description:
+      'After a turn where Recued worked through several steps, ask whether ' +
+      'the result turned out right. Your answer is the only thing that ' +
+      'becomes precedent — Recued never counts its own account of a turn. ' +
+      'Turning this off on any paired device stops the question everywhere, ' +
+      'because the question is asked once for the whole server, not per device.',
+  },
   'ui.transparency.max_redaction_tier': {
     type: 'string',
     default: 'summary_only',

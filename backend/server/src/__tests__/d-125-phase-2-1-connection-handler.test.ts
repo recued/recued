@@ -30,10 +30,12 @@ import {
   type ConnectionStoreSqlite,
 } from '../storage/connection-store.js';
 import {
+  encodeAuthForStorage,
   handleConnectionDelete,
   handleConnectionEnroll,
   handleConnectionList,
   handleConnectionProbe,
+  handleConnectionRotateCredentials,
   handleConnectionUpdate,
 } from '../connection-handler.js';
 
@@ -148,6 +150,48 @@ describe('handleConnectionEnroll', () => {
         },
       ),
     ).rejects.toBeInstanceOf(RpcError);
+  });
+
+  it.each([
+    ['no app_password', { type: 'atproto_session', identifier: 'alice.bsky.social' }],
+    ['no identifier', { type: 'atproto_session', app_password: 'abcd-efgh' }],
+    ['blank app_password', {
+      type: 'atproto_session', identifier: 'alice.bsky.social', app_password: '',
+    }],
+  ])('D-218 — rejects an atproto_session enroll with %s', async (_label, auth) => {
+    // ⚠ A half-filled credential row would enroll a connection that can never
+    // exchange a session, and the failure would surface much later as a
+    // dispatch error rather than here, where the owner is actually looking.
+    await expect(
+      handleConnectionEnroll(
+        { store },
+        {
+          name: 'bluesky', kind: 'api', display_name: 'Bluesky',
+          config: { base_url: 'https://bsky.social' },
+          auth: auth as never,
+        },
+      ),
+    ).rejects.toBeInstanceOf(RpcError);
+  });
+
+  it('D-218 — accepts a complete atproto_session enroll with NO endpoint field', async () => {
+    // ⛔ The absence is the point (§ 7.5b): the session URLs derive from
+    // base_url, so there is no destination field to fill in and none to get
+    // wrong. A row enrolls with exactly two credential fields.
+    await expect(
+      handleConnectionEnroll(
+        { store },
+        {
+          name: 'bluesky', kind: 'api', display_name: 'Bluesky',
+          config: { base_url: 'https://bsky.social' },
+          auth: {
+            type: 'atproto_session',
+            identifier: 'alice.bsky.social',
+            app_password: 'abcd-efgh-ijkl-mnop',
+          } as never,
+        },
+      ),
+    ).resolves.toBeDefined();
   });
 
   it('rejects invalid kind values', async () => {
@@ -267,6 +311,52 @@ describe('handleConnectionEnroll', () => {
 
     expect(store.count()).toBe(0);
   });
+
+  it('rejects unsafe OAuth credential destinations without persisting a row', async () => {
+    const unsafeAuths: unknown[] = [
+      {
+        type: 'oauth2_refresh',
+        refresh_token: 'refresh-secret',
+        client_id: 'client-id',
+        token_endpoint: 'http://oauth.example.com/token',
+      },
+      {
+        type: 'oauth2_refresh',
+        refresh_token: 'refresh-secret',
+        client_id: 'client-id',
+        token_endpoint: 'https://owner:password@oauth.example.com/token',
+      },
+      {
+        type: 'oauth2_client_credentials',
+        client_id: 'client-id',
+        client_secret: 'client-secret',
+        token_endpoint: 'https:oauth.example.com/token',
+      },
+      {
+        type: 'oauth2_client_credentials',
+        client_id: 'client-id',
+        client_secret: 'client-secret',
+        token_endpoint: 'https://oauth.example.com/token#ignored',
+      },
+    ];
+
+    for (const [index, auth] of unsafeAuths.entries()) {
+      await expect(
+        handleConnectionEnroll(
+          { store },
+          {
+            name: `unsafe-oauth-${index}`,
+            kind: 'api',
+            display_name: 'Unsafe OAuth',
+            config: {},
+            auth: auth as ConnectionAuth,
+          },
+        ),
+      ).rejects.toThrow(/auth\.token_endpoint must be a complete HTTPS URL/);
+    }
+
+    expect(store.count()).toBe(0);
+  });
 });
 
 describe('handleConnectionList', () => {
@@ -294,6 +384,10 @@ describe('handleConnectionList', () => {
   it('returns every connection when called with no args', async () => {
     const { connections } = await handleConnectionList({ store }, undefined);
     expect(connections.map((c) => c.name).sort()).toEqual(['gh-mcp', 'hubspot']);
+    expect(connections.find((c) => c.name === 'hubspot')?.updated_at)
+      .toBe(1_700_000_010_000);
+    expect(connections.find((c) => c.name === 'gh-mcp')?.updated_at)
+      .toBe(1_700_000_020_000);
   });
 
   it('filters by kind', async () => {
@@ -308,6 +402,39 @@ describe('handleConnectionList', () => {
     const flat = JSON.stringify(connections);
     expect(flat.includes('t1')).toBe(false);
     expect(flat.includes('t2')).toBe(false);
+  });
+
+  it('surfaces only the non-secret auth discriminant for reuse matching', async () => {
+    const { connections } = await handleConnectionList({ store }, undefined);
+    expect(connections.map((c) => [c.name, c.auth_type]).sort())
+      .toEqual([['gh-mcp', 'bearer'], ['hubspot', 'bearer']]);
+    expect(JSON.stringify(connections)).not.toContain('"token"');
+  });
+
+  it('reads the auth discriminant through vault encryption and fails closed while locked', async () => {
+    const key = new Uint8Array(32).fill(7);
+    const row = store.get('api', 'hubspot')!;
+    store.upsert({
+      ...row,
+      auth_ciphertext: await encodeAuthForStorage(
+        bearer('encrypted-token'),
+        { kind: 'api', name: 'hubspot' },
+        () => key,
+      ),
+    });
+
+    const unlocked = await handleConnectionList(
+      { store, getEncryptionKey: () => key },
+      { kind: 'api' },
+    );
+    expect(unlocked.connections[0]?.auth_type).toBe('bearer');
+    expect(JSON.stringify(unlocked.connections)).not.toContain('encrypted-token');
+
+    const locked = await handleConnectionList(
+      { store, getEncryptionKey: () => null },
+      { kind: 'api' },
+    );
+    expect(locked.connections[0]?.auth_type).toBeUndefined();
   });
 
   it('D-194 #6 — stamps bound_pack_slugs on api rows from the closure (mcp + unwired left undefined)', async () => {
@@ -534,20 +661,50 @@ describe('handleConnectionUpdate', () => {
     expect(row?.display_name).toBe('HubSpot Prod'); // Untouched.
   });
 
-  it('round-trips an auth patch and the new token never appears in the response', async () => {
-    const result = await handleConnectionUpdate(
+  it('rejects a stale editor revision and advances a matching revision monotonically', async () => {
+    const before = store.get('api', 'hubspot')!;
+    await expect(handleConnectionUpdate(
+      { store, now: () => before.updated_at },
+      {
+        name: 'hubspot',
+        kind: 'api',
+        expected_updated_at: before.updated_at - 1,
+        patch: { display_name: 'Must not land' },
+      },
+    )).rejects.toMatchObject({
+      code: 'conflict',
+      details: { existing_credential_preserved: true },
+    });
+    expect(store.get('api', 'hubspot')).toEqual(before);
+
+    await handleConnectionUpdate(
+      { store, now: () => before.updated_at },
+      {
+        name: 'hubspot',
+        kind: 'api',
+        expected_updated_at: before.updated_at,
+        patch: { display_name: 'Current editor' },
+      },
+    );
+    expect(store.get('api', 'hubspot')).toMatchObject({
+      display_name: 'Current editor',
+      updated_at: before.updated_at + 1,
+    });
+  });
+
+  it('rejects the legacy unverified auth-patch path without changing the row', async () => {
+    const before = store.get('api', 'hubspot');
+    await expect(handleConnectionUpdate(
       { store },
       {
         name: 'hubspot', kind: 'api',
         patch: { auth: bearer('NEW-SECRET-DO-NOT-LEAK') },
       },
-    );
-    const flat = JSON.stringify(result.connection);
-    expect(flat.includes('NEW-SECRET-DO-NOT-LEAK')).toBe(false);
-    // The row carries the new ciphertext though.
-    const row = store.get('api', 'hubspot');
-    const decoded = Buffer.from(row!.auth_ciphertext, 'base64').toString('utf8');
-    expect(decoded).toContain('NEW-SECRET-DO-NOT-LEAK');
+    )).rejects.toMatchObject({
+      code: 'credential_verification_required',
+      details: { existing_credential_preserved: true },
+    });
+    expect(store.get('api', 'hubspot')).toEqual(before);
   });
 
   it('throws not_found when the connection does not exist', async () => {
@@ -567,16 +724,6 @@ describe('handleConnectionUpdate', () => {
       { display_name: '   ' },
       { config: null as unknown as Record<string, unknown> },
       { config: [] as unknown as Record<string, unknown> },
-      { auth: { tokenButNoType: 't' } as unknown as ConnectionAuth },
-      { auth: { type: 'cookie', value: 'sid=1' } as unknown as ConnectionAuth },
-      { auth: { type: 'bearer' } as unknown as ConnectionAuth },
-      {
-        auth: {
-          type: 'oauth2_refresh',
-          refresh_token: 'r',
-          client_id: 'cid',
-        } as unknown as ConnectionAuth,
-      },
     ];
 
     for (const patch of invalidPatches) {
@@ -587,10 +734,58 @@ describe('handleConnectionUpdate', () => {
         ),
       ).rejects.toBeInstanceOf(RpcError);
     }
+    const invalidAuth = [
+      { tokenButNoType: 't' } as unknown as ConnectionAuth,
+      { type: 'cookie', value: 'sid=1' } as unknown as ConnectionAuth,
+      { type: 'bearer' } as unknown as ConnectionAuth,
+      {
+        type: 'oauth2_refresh',
+        refresh_token: 'r',
+        client_id: 'cid',
+      } as unknown as ConnectionAuth,
+    ];
+    for (const auth of invalidAuth) {
+      await expect(
+        handleConnectionRotateCredentials(
+          { store },
+          {
+            attempt_id: 'rotation-invalid-test-0001',
+            name: 'hubspot',
+            kind: 'api',
+            patch: { auth },
+          },
+        ),
+      ).rejects.toBeInstanceOf(RpcError);
+    }
 
     const row = store.get('api', 'hubspot');
     expect(row?.display_name).toBe('HubSpot Prod');
     expect(JSON.parse(row!.config_json)).toEqual({ base_url: 'https://api.hubapi.com' });
+  });
+
+  it('rejects an unsafe OAuth endpoint patch without changing the stored row', async () => {
+    const before = store.get('api', 'hubspot');
+
+    await expect(
+      handleConnectionRotateCredentials(
+        { store, now: () => 1_700_000_090_000 },
+        {
+          attempt_id: 'rotation-unsafe-url-0001',
+          name: 'hubspot',
+          kind: 'api',
+          patch: {
+            auth: {
+              type: 'oauth2_refresh',
+              refresh_token: 'replacement-refresh-token',
+              client_id: 'replacement-client-id',
+              token_endpoint: 'https://owner:password@oauth.example.com/token',
+            },
+          },
+        },
+      ),
+    ).rejects.toThrow(/auth\.token_endpoint must be a complete HTTPS URL/);
+
+    expect(store.get('api', 'hubspot')).toEqual(before);
   });
 });
 

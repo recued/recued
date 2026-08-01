@@ -41,9 +41,20 @@ export const CRON_PRESETS: Array<{ label: string; expression: string; group: str
   { label: 'Weekly Friday 5:00 PM', expression: '0 17 * * 5', group: 'Weekly' },
   { label: 'Weekends Saturday 10:00 AM', expression: '0 10 * * 6', group: 'Weekly' },
   // Monthly
+  //
+  // ⛔ There is no "last day" or "last weekday" preset, and one must not be
+  // added: `cronMatchesAt` implements standard 5-field cron (`*`, `*/n`,
+  // ranges, comma lists) with no `L` / `LW` / `#` extensions, so neither is
+  // expressible. This slot previously held `Last weekday 5:00 PM` carrying
+  // `0 17 * * 5` — byte-identical to `Weekly Friday 5:00 PM` above, so it
+  // fired every Friday. `describeCron` matches presets by expression and
+  // returns the FIRST hit, so anyone who picked it was already shown
+  // "Weekly Friday 5:00 PM"; the label was the only thing claiming monthly.
+  // 28 is the last day-of-month that exists in every month, February
+  // included — a higher number silently skips the short ones.
   { label: '1st of month at 9:00 AM', expression: '0 9 1 * *', group: 'Monthly' },
   { label: '15th of month at 9:00 AM', expression: '0 9 15 * *', group: 'Monthly' },
-  { label: 'Last weekday 5:00 PM', expression: '0 17 * * 5', group: 'Monthly' },
+  { label: '28th of month at 5:00 PM', expression: '0 17 28 * *', group: 'Monthly' },
 ];
 
 /** Build a cron expression from interval picker selections. */
@@ -80,6 +91,15 @@ const formatTime12 = (hour: number, min: string): string => {
   return `${h12}:${m} ${ampm}`;
 };
 
+/** English ordinal for a day-of-month. The teens are the exception that a
+ *  bare `n % 10` lookup gets wrong — 11/12/13 take "th", not "st"/"nd"/"rd"
+ *  — and every month reaches them. */
+const ordinal = (n: number): string => {
+  const teen = n % 100;
+  if (teen >= 11 && teen <= 13) return `${n}th`;
+  return `${n}${['th', 'st', 'nd', 'rd'][n % 10] ?? 'th'}`;
+};
+
 const describeDow = (dow: string): string => {
   if (dow === '*') return 'Daily';
   if (dow === '1-5') return 'Weekdays';
@@ -107,19 +127,28 @@ export const describeCron = (expr: string): string => {
 
   // Fixed time patterns
   if (mon === '*') {
-    const domPart = dom === '*' ? '' : dom === '1' ? '1st of month ' : `${dom}th of month `;
+    // A day-of-month field is not always a bare number — `buildCronFromInterval`
+    // emits `1-7,15-21` for biweekly — so the ordinal applies only when it IS
+    // one. Anything else is named as the day set it is.
+    const domPart = dom === '*' ? ''
+      : /^\d+$/.test(dom) ? `${ordinal(Number(dom))} of month `
+      : `days ${dom} of month `;
+    // "15th of month Daily" contradicts itself: a day-of-month already says how
+    // often this fires, so the `*` day-of-week adds nothing. A REAL day-of-week
+    // alongside one still matters and is kept.
+    const dowPart = dom !== '*' && dow === '*' ? '' : `${describeDow(dow)} `;
 
     // Single hour: "30 7 * * *" → "Daily at 7:30 AM"
     if (/^\d+$/.test(hour) && /^\d+$/.test(min)) {
       const h = parseInt(hour, 10);
       const time = formatTime12(h, min.padStart(2, '0'));
-      return `${domPart}${describeDow(dow)} at ${time}`;
+      return `${domPart}${dowPart}at ${time}`;
     }
 
     // Multiple hours: "0 9,17 * * *" → "Daily at 9:00 AM & 5:00 PM"
     if (/^\d+(,\d+)+$/.test(hour) && /^\d+$/.test(min)) {
       const hours = hour.split(',').map((h) => formatTime12(parseInt(h, 10), min));
-      return `${domPart}${describeDow(dow)} at ${hours.join(' & ')}`;
+      return `${domPart}${dowPart}at ${hours.join(' & ')}`;
     }
   }
 

@@ -151,10 +151,16 @@ import type {
   ReachabilityReport,
   RpcRequest,
   ServerRpcRegistry,
+  WebclientServerProfile,
   WebclientTokenRecord,
 } from '@recued/contracts';
 import { canBindHostname } from '@recued/contracts';
-import { Upload } from '@recued/ui-shared';
+import {
+  bindRecordRefSearchToRecipe,
+  createRecordRefSearchCaller,
+} from './record-ref-search.js';
+import {
+  RunModal, Upload } from '@recued/ui-shared';
 
 import {
   createBroadcastSubscriber,
@@ -183,6 +189,58 @@ import {
   type ConnectionIndicatorMount,
 } from './shell/connection-indicator.js';
 import {
+  SERVER_SWITCHER_STYLES,
+  serverSwitchReviewCoversActiveWork,
+  serverSwitchReviewCoversWorkState,
+  serverSwitchWorkStateHasChatDraft,
+  type ServerSwitchWorkState,
+} from './shell/server-switcher.js';
+import {
+  createServerSwitchWorkTracker,
+  type ServerSwitchActiveWork,
+  type ServerSwitchWorkDetails,
+  type ServerSwitchWorkLease,
+} from './shell/server-switch-work-tracker.js';
+import {
+  mountAccountMenu,
+  ACCOUNT_MENU_STYLES,
+  ACCOUNT_MENU_STYLES_MARKER,
+  type AccountMenuMount,
+} from './shell/account-menu.js';
+import { humanizeRpcError } from './shell/rpc-error-copy.js';
+import { runSelfPairRevocation } from './shell/server-profile-revocation.js';
+import {
+  consumeServerSwitchArrival,
+  requestServerSwitchReload,
+  safeServerSwitchLandingHash,
+  serverSwitchLandingAreaLabel,
+  type RecoveryReturnContext,
+  type ServerSwitchContinuityStorage,
+} from './shell/server-switch-continuity.js';
+import {
+  reconcileRecoveryContext,
+  recoveryReturnAfterReconnectReceipt,
+  recoveryReturnReceipt,
+  type RecoveryContextProbe,
+  type RecoveryReturnReceipt,
+} from './shell/recovery-return-reconciliation.js';
+import {
+  focusRecoveryIntentLanding,
+  mountRecoveryIntentOrientation,
+  type RecoveryLandingIntent,
+} from './shell/recovery-intent-landing.js';
+import {
+  createRecoveryIntentContinuationStore,
+  type RecoveryIntentContinuation,
+  type RecoveryIntentContinuationStorage,
+} from './shell/recovery-intent-continuation.js';
+import {
+  mountServerSwitchConvergence,
+  type ServerSwitchConvergenceIdentity,
+  type ServerSwitchConvergenceMount,
+  type ServerSwitchConvergenceState,
+} from './shell/server-switch-convergence.js';
+import {
   mountWebclientServerPill,
   isServerHeartbeatSnapshot,
   SERVER_PILL_STYLES,
@@ -208,7 +266,10 @@ import {
   type PassportFetchVerifyFailureContext,
   type PassportFetchVerifyPairRequiredContext,
 } from './realtime/passport-fetch-verify.js';
-import { bootstrapReceptionRoute } from './settings/reception-bootstrap.js';
+import {
+  bootstrapReceptionRoute,
+  type BootstrapReceptionRouteOptions,
+} from './settings/reception-bootstrap.js';
 import { createArchiveDownload } from './settings/archive-download.js';
 import { createArchiveUpload } from './settings/archive-upload.js';
 import { createArchiveRebindStash } from './settings/archive-rebind-stash.js';
@@ -253,13 +314,23 @@ import {
   type GrantReadCaller,
   type GrantReadByEntryCaller,
   type GrantWriteCaller,
+  type GrantContractsCaller,
   type GrantContractsCaller as GrantMatrixContractsCaller,
   type GrantCatalogOperationsCaller,
+  // The cli reachability pair the by-pack ACCESS panel writes its cli op
+  // toggles through (the roster-wide Local tools grid that used to own these
+  // rpcs is retired — ACCESS + `#contracts` are the two surviving axes).
+  type GrantCliReachabilityListCaller,
+  type GrantCliReachabilitySetCaller,
   type GrantRegistryDescribeCaller,
   type GrantSetDoorTypesCaller,
 } from './contracts/contract-grants-panel.js';
 import {
   bootstrapConnectionsRoute,
+  parseConnectionsCredentialRotationRetry,
+  resolveProfileBoundPostSafeStopRecovery,
+  serializeConnectionsCredentialRotationRetry,
+  serializeConnectionsPostSafeStopRecovery,
 } from './connections/bootstrap-connections-route.js';
 import {
   bootstrapPacksRoute,
@@ -273,10 +344,12 @@ import type {
 } from './settings/owner-operation-controls.js';
 import {
   bootstrapRecipesRoute,
+  type RecipeConfigSetCaller,
   type RecipeExecuteCaller,
   type RecipesListCaller,
   type RecipesPiiCaller,
   type RecipesRunnabilityCaller,
+  type RecipesSchedulesCreateCaller,
   type RecipesToolCatalogCaller,
 } from './recipes/bootstrap-recipes-route.js';
 import { fileRefOptionsFromMirrorResults } from './recipes/file-ref-picker.js';
@@ -310,6 +383,16 @@ import {
   type DataAnnotationListCaller,
   type DataLinkListCaller,
   type DataSharedListCaller,
+  type DataRecordsNamespaceListCaller,
+  type DataRecordsKindListCaller,
+  type DataRecordsSearchCaller,
+  type DataRecordsGetCaller,
+  type DataRecordsDeleteCaller,
+  type DataRecordsRetentionListCaller,
+  type DataRecordsExportCaller,
+  type DataRecordsOutboxListCaller,
+  type DataRecordsOutboxRetireCaller,
+  type DataRecordsPurgeCaller,
   type DataFormResponseGetCaller,
   type DataFormResponseListCaller,
   type DataFormResponseUpdateCaller,
@@ -349,6 +432,11 @@ import {
   isAutomationSectionToken,
   type AuthStateCaller as AutomationAuthStateCaller,
   type AutoRunListCaller as AutomationAutoRunListCaller,
+  type DishesListCaller as AutomationDishesListCaller,
+  type DishesUpdateCaller as AutomationDishesUpdateCaller,
+  type DishesDeleteCaller as AutomationDishesDeleteCaller,
+  type DishesCreateCaller as AutomationDishesCreateCaller,
+  type DishesHistoryCaller as AutomationDishesHistoryCaller,
   type AutoRunUpdateCaller as AutomationAutoRunUpdateCaller,
   type RecipeNamesCaller as AutomationRecipeNamesCaller,
   type SchedulesDeleteCaller as AutomationSchedulesDeleteCaller,
@@ -363,6 +451,7 @@ import {
 } from './automation/bootstrap-automation-route.js';
 import {
   bootstrapChatRoute,
+  type ChatRouteRecoveryDraft,
   type ChatRouteConn,
 } from './chat/bootstrap-chat-route.js';
 import {
@@ -393,6 +482,7 @@ import {
   kitchenPackDraftId,
   parseChatAnswerAddress,
   parseChatPlanAddress,
+  parseChatSessionAddress,
   parseDataEntityVerificationAddress,
   parseLogsRunAddress,
   parseRouteFromHash,
@@ -419,6 +509,7 @@ import type {
 } from './settings/packs-panel.js';
 import type {
   SupervisionListCaller,
+  SupervisionReachabilityCaller,
   SupervisionSetCaller,
 } from './settings/supervision-controls.js';
 import type {
@@ -433,8 +524,18 @@ import {
 } from './notify-toasts.js';
 import {
   mountApprovalAttentionPopover,
+  type AttentionInactiveConnectionRecoveryHint,
+  type AttentionRecoveryExcursionReturn,
+  type AttentionRecoveryIntentContinuation,
+  type AttentionRecoveryIntentRemediation,
   type ApprovalAttentionPopoverMount,
 } from './attention/approval-attention-popover.js';
+import {
+  createBrowserInactiveProfileRecoveryDiscovery,
+  createInactiveProfileRecoveryReviewContinuity,
+  type InactiveProfileRecoveryStorage,
+  type InactiveProfileRecoveryReviewState,
+} from './attention/inactive-profile-recovery.js';
 import {
   mountLiveControlBubble,
   type LiveControlBubbleMount,
@@ -443,12 +544,41 @@ import {
   mountThemeToggle,
   THEME_TOGGLE_ATTR,
   THEME_TOGGLE_STYLES,
+  type ThemeToggleMount,
 } from './shell/theme-controller.js';
 import type {
   MailLaneCallers,
   CalendarLaneCallers,
   FileLaneCallers,
 } from './connections/accounts-lane-panel.js';
+import { createFoundationalOAuthContinuity } from './connections/foundational-oauth-continuity.js';
+import type { FoundationalOAuthContinuityStorage } from './connections/foundational-oauth-reload.js';
+import {
+  createProviderSetupContinuityStore,
+  type ProviderSetupContinuityStorage,
+} from './connections/provider-setup-continuity.js';
+import {
+  createCredentialRotationContinuityStore,
+  type CredentialRotationContinuityStorage,
+} from './connections/credential-rotation-continuity.js';
+import {
+  classifyCredentialRotationServerUpdateTriage,
+  createCredentialRotationServerUpdateContinuity,
+  type CredentialRotationServerUpdateContinuityStorage,
+  type CredentialRotationServerUpdateTarget,
+} from './connections/credential-rotation-server-update-continuity.js';
+import {
+  createBrowserCredentialRotationTabConvergence,
+  type CredentialRotationTabConvergence,
+  type CredentialRotationTabHint,
+  type CredentialRotationTabStorage,
+  type ServerUpdateTabProgress,
+} from './connections/credential-rotation-tab-convergence.js';
+import {
+  createServerUpdateReceiptVerification,
+  type ServerUpdateReceiptVerificationController,
+  type ServerUpdateReceiptVerificationScheduler,
+} from './connections/server-update-receipt-verification.js';
 import type {
   WebhooksCreateCaller,
   WebhooksCredentialRetireCaller,
@@ -469,10 +599,17 @@ import type {
 import type {
   ConnectionsEnrollListCaller,
   ConnectionsEnrollCaller,
+  ConnectionsRotateCredentialsCaller,
+  ConnectionsCredentialRotationStatusCaller,
+  ConnectionsCredentialRotationActivityCaller,
+  ConnectionsAcknowledgeCredentialRotationSafeStopCaller,
+  ConnectionsCredentialRotationServerUpdateTriageCaller,
   ConnectionsUpdateCaller,
   ConnectionsDeleteCaller,
   ConnectionsPreviewPurgeCaller,
   ConnectionsProbeCaller,
+  ConnectionsMcpPackPreviewCaller,
+  ConnectionsMcpPackCommitCaller,
   ConnectionsGetMatchPatternsCaller,
   ConnectionsSetMatchPatternsCaller,
   ConnectionsEngagementHealthCaller,
@@ -480,6 +617,7 @@ import type {
   ConnectionsMailListCaller,
   ConnectionsStartVendorOAuthCaller,
   ConnectionsTakeVendorOAuthResultCaller,
+  ConnectionsSuggestSetupCaller,
 } from './settings/connections-enroll-panel.js';
 import type {
   PermissionsListOverridesCaller,
@@ -501,12 +639,6 @@ import type {
   ContractsRevokeCaller,
 } from './settings/contracts-panel.js';
 import type {
-  LocalToolsContractsCaller,
-  LocalToolsListCaller,
-  LocalToolsSetCaller,
-  LocalToolsUniverseCaller,
-} from './settings/local-tools-panel.js';
-import type {
   SuggestionsAcceptCaller,
   SuggestionsDismissCaller,
   SuggestionsListCaller,
@@ -524,6 +656,26 @@ import type {
   TransparencyPrefsGetCaller,
   TransparencyPrefsSetCaller,
 } from './settings/transparency-panel.js';
+import {
+  LEARNING_DRAFT_RPC_TIMEOUT_MS,
+  type LearningCaseForgetCaller,
+  type LearningCasesListCaller,
+  type LearningDraftRecipeCaller,
+  type LearningPrefsGetCaller,
+  type LearningPrefsSetCaller,
+} from './settings/learning-panel.js';
+import {
+  RECIPE_DRAFT_CONFIRMATION,
+  RECIPE_REFINE_CONFIRMATION,
+} from '@recued/contracts';
+import {
+  readExecutionCaseDraft,
+  stashExecutionCaseDraft,
+  type ExecutionCaseDraftStorage,
+} from './kitchen/recipe-editor/execution-case-draft-stash.js';
+import {
+  mountExecutionCaseDraftRoute,
+} from './kitchen/recipe-editor/mount-execution-case-draft-route.js';
 import type {
   AiModelsConfigFieldSetCaller,
   AiModelsConfigSchemaGetCaller,
@@ -612,7 +764,11 @@ import {
 import type {
   ReceptionStatusInput,
 } from './settings/reception.js';
-import type { WebclientLocalStore } from './storage/local-store.js';
+import type {
+  WebclientLocalStore,
+  WebclientProfileStore,
+} from './storage/local-store.js';
+import { defaultProfileLabel } from './storage/server-profiles.js';
 import type {
   WebclientTokenStore,
   WebclientTokenAad,
@@ -666,8 +822,7 @@ export const WEBCLIENT_SHELL_DRAWER_STUB_ATTR =
  *  same modal as the L1 composer button). Carries the seat id. */
 export const WEBCLIENT_SHELL_DRAWER_ACTION_ATTR =
   'data-recued-webclient-drawer-action';
-/** The `●` account control in the top bar (§D.L1) — deep-links to
- *  Settings ▸ Account. */
+/** The Account and server-profiles control in the top bar (§D.L1). */
 export const WEBCLIENT_SHELL_ACCOUNT_ATTR =
   'data-recued-webclient-account';
 export const WEBCLIENT_SHELL_CONTENT_ATTR =
@@ -681,13 +836,13 @@ export const WEBCLIENT_SHELL_CONTENT_ATTR =
  * `WebclientDrawerSection` renders its items then a divider; the trailing
  * `pinnedBottom` section (Settings / Account) sinks to the drawer foot.
  *
- * Wiring: `New chat`/`Chats` → `#chat` (the chat home is the empty-hash default
- * landing, §D.L1 Step 5), `Create` is an ACTION seat that opens the shared
+ * Wiring: `New chat` → `#chat/new`; `Chats` → `#chat` (the history home is the
+ * empty-hash default landing, §D.L1 Step 5). `Create` is an ACTION seat that opens the shared
  * Create overlay (the same 4-kind capture as the L1 composer button — it
  * absorbed the retired `#compose` route), `Account` → `#settings` (an Account
  * Settings subview until shell-routing deep-links it). `Packs` is its own
- * `#packs` route (D-187 §6 follow-on — installed packs + the Local tools they
- * install), promoted out of Settings. `home`/`kitchen`/`approvals` are
+ * `#packs` route (D-187 §6 follow-on — the browse → detail surface over the
+ * catalog ∪ installed roster), promoted out of Settings. `home`/`kitchen`/`approvals` are
  * deliberately absent: the cockpit was
  * retired (chat is the landing), Kitchen is reached via Recipes/Packs
  * [Author/Edit], Approvals is the top-bar 🔔 bell.
@@ -699,11 +854,15 @@ interface WebclientDrawerItem {
   /** Where this seat navigates, or `null` for a not-yet-built stub / an action
    *  seat (which fires a shell callback instead of navigating). */
   readonly route: WebclientRouteId | null;
+  /** Optional positional tail for a distinct destination on the same route.
+   * `New chat` uses `['new']` so it cannot collapse into the Chats history
+   * landing while still participating in the shell's leave guard. */
+  readonly segments?: ReadonlyArray<string>;
   /** Leading affordance glyph for action seats (`+ New chat`, `✎ Create`). */
   readonly glyph?: string;
   /** Whether this seat owns the active highlight for its `route`. EXACTLY one
-   *  seat per route sets this, so the duplicate wirings (New chat + Chats →
-   *  #chat, Settings + Account → #settings) light a single row. */
+   *  seat per route sets this, so same-surface destinations (New chat + Chats
+   *  under Chat, Settings + Account under Settings) light a single row. */
   readonly highlight?: boolean;
   /** A disabled "coming soon" seat — no link, no navigation, no highlight. */
   readonly stub?: boolean;
@@ -721,7 +880,13 @@ interface WebclientDrawerSection {
 const WEBCLIENT_DRAWER_SECTIONS: ReadonlyArray<WebclientDrawerSection> = [
   {
     items: [
-      { id: 'new-chat', label: 'New chat', glyph: '+', route: 'chat' },
+      {
+        id: 'new-chat',
+        label: 'New chat',
+        glyph: '+',
+        route: 'chat',
+        segments: ['new'],
+      },
       { id: 'chats', label: 'Chats', route: 'chat', highlight: true },
     ],
   },
@@ -841,31 +1006,33 @@ const WEBCLIENT_SHELL_STYLES = `
   background: var(--accent);
   box-shadow: 0 0 0 5px var(--accent-weak);
 }
-/* The theme toggle takes the auto margin so it + the attention host both
-   sit at the right edge of the topbar (toggle then attention). */
+/* The theme toggle is mounted inside Account. The rule remains scoped for
+   bespoke shells that mount it directly. */
 [${WEBCLIENT_SHELL_TOPBAR_ATTR}] [${THEME_TOGGLE_ATTR}] {
   margin-left: auto;
 }
 [${WEBCLIENT_SHELL_ATTENTION_HOST_ATTR}] {
-  margin-left: 0;
+  /* This host starts the right-hand cluster. The retired connection chip used
+     to provide the flexible spacer; keep Account pinned to the viewport edge
+     now that the non-visual announcer has no width. */
+  margin-left: auto;
 }
-/* Connection-status chip slot — sits just after the brand on the left.
-   Empty (zero-width) until the bootstrap mounts the chip into it. */
+/* Screen-reader connection-status host. It has no visual footprint; sustained
+   outages use the route-independent banner and Account owns all detail/actions. */
 [${WEBCLIENT_SHELL_CONNECTION_HOST_ATTR}] {
   display: inline-flex;
   align-items: center;
 }
-[${WEBCLIENT_SHELL_CONNECTION_HOST_ATTR}]:not(:empty) {
-  margin-left: 2px;
-}
-/* §D.L1 — the account control, rightmost in the top bar. A small round
-   icon-link, sibling to the drawer toggle / theme glyphs. */
+/* §D.L1 — the account control, rightmost in the top bar. Its full 44px frame
+   is the interactive target, not a smaller host around an overflowing button. */
 [${WEBCLIENT_SHELL_ACCOUNT_ATTR}] {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  box-sizing: border-box;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
   border-radius: 999px;
   border: 1px solid var(--border);
   background: var(--surface);
@@ -1094,16 +1261,8 @@ const WEBCLIENT_SHELL_STYLES = `
   [${WEBCLIENT_SHELL_TOPBAR_ATTR}] .webclient-shell-brand {
     font-size: 15px;
   }
-  [${WEBCLIENT_SHELL_CONNECTION_HOST_ATTR}]:not(:empty) {
-    margin-left: 0;
-  }
-  /* Uptime is secondary status and the connection chip already carries the
-     actionable online/offline state. Keeping both pills in the fixed row can
-     force the shell wider than a phone viewport once the first heartbeat
-     arrives, so omit uptime at the narrow breakpoint. */
-  [${SERVER_PILL_HOST_ATTR}] {
-    display: none;
-  }
+  /* Server health and pause/restart controls now live inside the scroll-bounded
+     Account dialog, so they remain available at phone widths. */
   [${WEBCLIENT_SHELL_DRAWER_ATTR}] {
     width: min(300px, 92vw);
   }
@@ -1120,12 +1279,11 @@ interface WebclientShell {
   readonly root: HTMLElement;
   readonly contentRoot: HTMLElement;
   readonly attentionHost: HTMLElement;
-  /** Topbar slot for the live connection-status chip (mounted by the
-   *  bootstrap from the `connection-status` controller). */
+  /** Non-visual host for connection-status announcements. */
   readonly connectionHost: HTMLElement;
-  /** Topbar slot for the server-status pill (D-109) — sits next to the
-   *  connection chip; the bootstrap feeds it `server_heartbeat` snapshots. */
-  readonly serverPillHost: HTMLElement;
+  /** Topbar's rightmost slot — the account menu (trigger + badge + theme +
+   *  settings + servers) mounts here. */
+  readonly accountHost: HTMLElement;
   readonly setActiveRoute: (route: WebclientRouteId) => void;
   readonly dispose: () => void;
 }
@@ -1189,46 +1347,31 @@ const createWebclientShell = (opts: {
   brand.setAttribute('href', serializeShellRoute('chat'));
   brand.textContent = 'Recued';
   topbar.appendChild(brand);
-  // Live connection-status chip slot — sits next to the brand on the left.
-  // The bootstrap mounts the chip (+ the route-independent offline banner)
-  // from the `connection-status` controller into this host. Empty until
-  // then so a shell built without the controller (a bespoke composition /
-  // a test) renders no chip rather than a broken one.
-  const connectionHost = doc.createElement('span');
+  // Visually hidden connection-status announcer slot. The retired chip and its
+  // popover no longer render here; the persistent banner announces sustained
+  // outages and Account owns server identity, detail, and actions.
+  const connectionHost = doc.createElement('div');
   connectionHost.setAttribute(WEBCLIENT_SHELL_CONNECTION_HOST_ATTR, '');
   topbar.appendChild(connectionHost);
-  // Server-status pill slot — sits next to the connection chip (both are
-  // "server connection" info): chip = "can I reach it", pill = "Server · 12h".
-  // Empty until the bootstrap mounts the pill + feeds it heartbeat snapshots.
-  const serverPillHost = doc.createElement('span');
-  serverPillHost.setAttribute(SERVER_PILL_HOST_ATTR, '');
-  topbar.appendChild(serverPillHost);
-  // Light / dark / system theme toggle — pinned to the right of the topbar
-  // (the `margin-left: auto` topbar rule pushes it + the attention host to
-  // the right). Applies the persisted theme to <html> on mount (idempotent
-  // with the index.html inline boot script).
-  const themeToggle = mountThemeToggle({
-    host: topbar,
-    document: doc,
-  });
+  // The server-status pill NO LONGER sits in the bar. It moved into the
+  // account menu, which is now the one "me and my server" surface. It is not
+  // merely a readout:
+  // it carries the D-188 pause / restart controls, so this is a rehome, not
+  // a removal.
+  // The theme toggle NO LONGER sits in the bar — it moved into the account
+  // menu's quick row, so the topbar carries one icon fewer. It is mounted
+  // later, into the slot that menu exposes; `margin-left: auto` on the
+  // attention host still pushes the right-hand cluster over.
   const attentionHost = doc.createElement('div');
   attentionHost.setAttribute(WEBCLIENT_SHELL_ATTENTION_HOST_ATTR, '');
   topbar.appendChild(attentionHost);
-  // §D.L1 — the account control, the topbar's rightmost slot. Modeled on
-  // the (unused-in-webclient) ui-shared `renderAvatar`, but a plain nav entry:
-  // it deep-links to Settings ▸ Account (where account binding / tier / the
-  // dashboard link live). A user-icon glyph — the webclient pairs to a server
-  // and doesn't surface a recued.com identity at the topbar.
-  const accountLink = doc.createElement('a');
-  accountLink.setAttribute(WEBCLIENT_SHELL_ACCOUNT_ATTR, '');
-  accountLink.setAttribute('href', serializeShellRoute('settings', 'account'));
-  accountLink.setAttribute('aria-label', 'Account');
-  accountLink.setAttribute('title', 'Account');
-  // Inline SVG user icon (inherits currentColor). innerHTML is a safe property
-  // set under the node fake-DOM (no jsdom) and renders in the real browser.
-  accountLink.innerHTML =
-    '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2"></path><circle cx="12" cy="7" r="4"></circle></svg>';
-  topbar.appendChild(accountLink);
+  // §D.L1 — the account slot, the topbar's rightmost. The bootstrap mounts
+  // the account MENU here (trigger + badge + theme + settings + servers).
+  // Empty until then, so a shell composed without the menu renders nothing
+  // rather than a broken control.
+  const accountHost = doc.createElement('div');
+  accountHost.setAttribute(WEBCLIENT_SHELL_ACCOUNT_ATTR, '');
+  topbar.appendChild(accountHost);
   shellRoot.appendChild(topbar);
 
   // ── Body: just the content mount (the drawer overlays it off-canvas) ──
@@ -1236,6 +1379,9 @@ const createWebclientShell = (opts: {
   body.className = 'webclient-shell-body';
   const contentRoot = doc.createElement('main');
   contentRoot.setAttribute(WEBCLIENT_SHELL_CONTENT_ATTR, '');
+  // A recovery-return receipt can hand keyboard and assistive-technology focus
+  // back to the mounted work area without guessing at a route-owned control.
+  contentRoot.setAttribute('tabindex', '-1');
   body.appendChild(contentRoot);
   shellRoot.appendChild(body);
 
@@ -1374,10 +1520,13 @@ const createWebclientShell = (opts: {
       }
       const link = doc.createElement('a');
       // The link hook carries the SEAT id (unique), not the route — two seats
-      // can share a route (New chat/Chats → #chat, Settings/Account →
-      // #settings) and must stay individually addressable.
+      // can share a route (New chat/Chats under Chat, Settings/Account under
+      // Settings) and must stay individually addressable.
       link.setAttribute(WEBCLIENT_SHELL_DRAWER_LINK_ATTR, item.id);
-      link.setAttribute('href', serializeShellRoute(item.route));
+      link.setAttribute(
+        'href',
+        serializeShellRoute(item.route, ...(item.segments ?? [])),
+      );
       // Close on navigate — the route swap happens via the href. Return focus
       // to the ☰ trigger: the seat we'd otherwise leave focus on goes
       // visibility:hidden with the closing drawer (dropping focus to <body>),
@@ -1474,11 +1623,10 @@ const createWebclientShell = (opts: {
     contentRoot,
     attentionHost,
     connectionHost,
-    serverPillHost,
+    accountHost,
     setActiveRoute,
     dispose: () => {
       docEvents.removeEventListener?.('keydown', onDocKeydown);
-      themeToggle.dispose();
       try {
         opts.root.removeChild(shellRoot);
       } catch {
@@ -1529,6 +1677,16 @@ export interface BootstrapWebclientOptions {
   /** Closed-list 5-field local store (`createIndexedDbWebclientLocalStore`
    *  in production; `createInMemoryWebclientLocalStore` in tests). */
   localStore: WebclientLocalStore;
+  /** The roster half of the same store, when the caller has one.
+   *
+   *  Separate from `localStore` on purpose: the five-key surface is what the
+   *  rest of the bootstrap (and every hand-rolled test fixture) speaks, while
+   *  cold-boot profile restore + the switcher need the profile methods.
+   *  Production passes the same object for both —
+   *  `createIndexedDbWebclientLocalStore` returns a
+   *  `WebclientProfileAwareStore`. Absent ⇒ no explicit profile restore and no
+   *  switcher, which is the compatibility reading for a caller with no roster. */
+  profileStore?: WebclientProfileStore;
   /** Bearer wrap/unwrap store — `crypto.subtle` AES-GCM backed in
    *  production; deterministic fake in tests. */
   tokenStore: WebclientTokenStore;
@@ -1559,6 +1717,10 @@ export interface BootstrapWebclientOptions {
     err: Error,
     context: TokenRotationFailureContext,
   ) => void;
+  /** Best-effort observer after a rotated token envelope is durable. The
+   * pair-fallback host uses this to converge same-origin sibling tabs without
+   * treating this tab's own rotation as an external credential replacement. */
+  onTokenRotated?: (record: WebclientTokenRecord) => void;
   /** Optional sink for `cert.rotation_notice` + `cert.rotation_reverted`
    *  handler failures. Stages: `verify` / `read_pair_context` /
    *  `persist`. Defaults to silent — failures degrade to "the pin
@@ -1580,6 +1742,24 @@ export interface BootstrapWebclientOptions {
    *  the `done` state's result row reports
    *  `cleared_crypto_keys: false`. */
   cryptoKeysWiper?: () => Promise<void>;
+  /** Host lifecycle hook immediately after Settings clears the durable
+   * five-field credential record. Unlike `onPrivacyClear`, this still fires
+   * when a later cache, session, or key cleanup step fails. */
+  onPrivacyCredentialsCleared?: () => void;
+  /** Best-effort host signal after a server profile has been durably removed.
+   *  The pair-fallback host broadcasts a credential-free convergence hint so
+   *  sibling tabs re-read the shared profile store.
+   *  @deprecated Use `onServerProfilesChanged`, which also covers names and
+   *  connection recency. */
+  onServerProfileRemoved?: () => void;
+  /** Best-effort host signal after the local server roster changes without a
+   *  credential-generation change: rename, connection recency, or removal.
+   *  Sibling tabs use it only as a hint and re-read durable storage. */
+  onServerProfilesChanged?: () => void;
+  /** Best-effort, detail-free host signal after the durable active-profile
+   * pointer moves. Siblings use the distinct hint to pause before their first
+   * IndexedDB read, then resolve the exact target from durable storage. */
+  onActiveServerProfileChanged?: () => void;
   /** § A.4.1 — telemetry sink invoked after a successful Privacy
    *  panel clear. Receives the structured `ClearThisBrowserResult` +
    *  the `sw_unregistered` flag. Best-effort; throws are swallowed
@@ -1603,6 +1783,24 @@ export interface BootstrapWebclientOptions {
    *  because the recovery UX is owned by the host (`webclient-main`
    *  in production). */
   onReauthRequired?: () => void;
+  /** In-memory return context captured before a reauth-required teardown.
+   * Production passes it only into the post-pair bootstrap: the exact route
+   * remounts from `returnHash`, an unsent Chat draft is restored after its
+   * durable session hydrates, and the connection surface confirms recovery. */
+  reauthRecovery?: WebclientRecoverySnapshot;
+  /** Optional one-shot confirmation for the first connected frame. The pair
+   * fallback uses this after pairing or a successful explicit startup retry;
+   * it remains in memory only and shares the route-independent connection
+   * receipt used by guided reauth. */
+  initialConnectedReceiptCopy?: string;
+  /** Suppress both the explicit and guided-reauth first-connected receipt for
+   * a passive sibling-tab adoption. Recovery route/draft context still lands;
+   * only the tab that actually completed pairing owns the confirmation. */
+  suppressInitialConnectedReceipt?: boolean;
+  /** Host-owned lifecycle hook invoked once when this mounted shell begins
+   * disposal. Pair-fallback uses it to retire the tab credential observer
+   * before the shell and its route closures disappear. */
+  onSessionDispose?: () => void;
   /** § A.6.5 / slice 111 — when set to `true`, the Settings route
    *  mounts the Server section's TLS renew panel and binds its rpc
    *  caller to the bootstrap's typed conn. The caller does NOT
@@ -1883,11 +2081,67 @@ export interface BootstrapWebclientOptions {
    *  Tests opt out by passing `false`. */
   enableNotifyToasts?: boolean;
   /** Live connection indicator — when not explicitly `false` (the default is
-   *  ON), the bootstrap mounts the topbar connection-status chip + the
+   *  ON), the bootstrap mounts a screen-reader status announcer + the
    *  route-independent offline banner, both driven by the `connection-status`
-   *  controller. Tests that assert exact topbar / root DOM opt out with
-   *  `false` (same discipline as `enableNotifyToasts`). */
+   *  controller. Account owns the visible status detail and recovery actions.
+   *  Tests that assert exact root DOM opt out with `false`. */
   enableConnectionIndicator?: boolean;
+  /** Reload seam for a server switch. Defaults to `location.reload()`; tests
+   *  inject a spy. Mirrors `startup-reload-recovery`'s `reload` option — a
+   *  boot is how this app changes which server it is talking to, since every
+   *  live surface (ws client, broadcast cursor, route caches) is wired to
+   *  exactly one. */
+  reloadForServerSwitch?: () => void;
+  /** Same-tab, one-shot switch receipt storage. Defaults to sessionStorage;
+   *  null disables the receipt without preventing a safe switch. */
+  serverSwitchContinuityStorage?: ServerSwitchContinuityStorage | null;
+  /** Privacy-safe, same-tab interrupted OAuth marker. Defaults to
+   * sessionStorage and is bound to the active server profile; null disables
+   * reload recovery without ever persisting codes, state, or secrets. */
+  foundationalOAuthContinuityStorage?: FoundationalOAuthContinuityStorage | null;
+  /** Privacy-safe, same-tab provider-app guide draft. Defaults to
+   * sessionStorage, is bound to the active server profile, and never stores
+   * connection-form values or credentials. */
+  providerSetupContinuityStorage?: ProviderSetupContinuityStorage | null;
+  /** Secret-free, same-tab pointer for an interrupted credential replacement.
+   * Defaults to sessionStorage and is bound to the active server profile. */
+  credentialRotationContinuityStorage?: CredentialRotationContinuityStorage | null;
+  /** Secret-free, same-tab pointer from an unsupported rotation preflight,
+   * through a server update/restart, back to that exact connection. */
+  credentialRotationServerUpdateContinuityStorage?:
+    CredentialRotationServerUpdateContinuityStorage | null;
+  /** Origin-wide, privacy-safe rotation pulse storage. Persisted pulses contain
+   * only profile scope + opaque event id; connection identity is ephemeral on
+   * BroadcastChannel. Defaults to localStorage, null disables that fallback. */
+  credentialRotationTabStorage?: CredentialRotationTabStorage | null;
+  /** Origin-wide, profile-only last-observed recovery availability. Records
+   * contain an opaque profile id, boolean, and observation time only. Defaults
+   * to localStorage; null disables inactive-profile discovery. */
+  inactiveProfileRecoveryStorage?: InactiveProfileRecoveryStorage | null;
+  /** Same-tab, profile-only intent from an inactive reminder through the
+   * deliberate switch reload to a fresh Attention list. Defaults to
+   * sessionStorage; null disables automatic destination recheck continuity. */
+  inactiveProfileRecoveryReviewStorage?:
+    InactiveProfileRecoveryStorage | null;
+  /** Same-tab, privacy-safe continuation after automatic recovery focus pauses.
+   * Stores only active profile, scrubbed route, closed intent, and timestamp. */
+  recoveryIntentContinuationStorage?:
+    RecoveryIntentContinuationStorage | null;
+  /** Bounded receipt-retry timer seam. Production uses a short setTimeout;
+   * tests may capture callbacks without sleeping. */
+  serverUpdateReceiptScheduleRetry?:
+    ServerUpdateReceiptVerificationScheduler;
+  /** D-219 item 2b — same-tab carrier for an AI-written recipe draft. Defaults
+   *  to sessionStorage; null disables the Kitchen hand-off without breaking the
+   *  panel. */
+  draftStashStorage?: ExecutionCaseDraftStorage | null;
+  /** Silent URL rewrite used to remove source-server record ids before the
+   *  reload. Production defaults to history.replaceState. */
+  replaceHashForServerSwitch?: (hash: string) => void;
+  /** Short grace for the final `instance_revoked` frame after a self-revoke
+   *  rpc loses its reply with the closing socket. Production uses the helper
+   *  default; deterministic tests may shorten it. */
+  selfRevokeReceiptGraceMs?: number;
   /** Shell-frame Step 2 — when not explicitly `false` (the default is ON), the
    *  route-independent live-control bubble (D-181 RUNNING + D-186 GRANTS) mounts
    *  at the webclient root beside the bell. Tests that don't exercise it opt out
@@ -1922,14 +2176,19 @@ export interface BootstrapWebclientOptions {
    *  auth path is sufficient. Tests opt out by passing `false`. */
   enableContractsPanel?: boolean;
   /** D-182 §7.2 (increment 4) — when not explicitly `false` (the default is ON),
-   *  the cli.reachability callers are wired. D-187 §6 — these feed the top-level
-   *  `#packs` route's Local tools section: the per-tool contract × risk
-   *  reachability grid. Reads `cli.reachability.universe` + `cli.reachability.list`
-   *  + `collection.contract.listContracts` and writes `cli.reachability.set` per
-   *  cell. The `cli.reachability.` family is reserved from MCP (owner-only), so
-   *  the webclient's bearer auth path is sufficient. Tests opt out by passing
-   *  `false`. */
-  enableLocalToolsPanel?: boolean;
+   *  the cli.reachability callers are wired: reads `cli.reachability.universe` +
+   *  `cli.reachability.list` + `collection.contract.listContracts`, writes
+   *  `cli.reachability.set`. The `cli.reachability.` family is reserved from MCP
+   *  (owner-only), so the webclient's bearer auth path is sufficient. Tests opt
+   *  out by passing `false`.
+   *
+   *  ⚠ 2026-07-27 — renamed from `enableLocalToolsPanel`. The roster-wide "Local
+   *  tools" section it used to gate is deleted, but these callers are NOT
+   *  panel-specific: passing `false` now also strips the by-pack ACCESS panel's
+   *  cli op toggles (they render inert with no `set` writer) and ungates
+   *  supervised-daemon Start/Auto for a binary that isn't on PATH. It is a
+   *  cli-reachability kill-switch, not a UI toggle. */
+  enableCliReachability?: boolean;
   /** D-174/D-175 — when not explicitly `false` (the default is ON), the
    *  Settings -> Account section mounts the recued.com binding touchpoint.
    *  It reads `account.bindingStatus` + `pro_convenience.status`, relays
@@ -1983,9 +2242,32 @@ export interface WebclientHandle {
    *  can read the latest snapshot without round-tripping through
    *  `localStore`. */
   certPinStateWatcher(): CertPinStateWatcher | null;
+  /** Exact local profile this live shell booted against. Unlike the durable
+   * active pointer, this value never changes during the handle's lifetime. */
+  serverProfileId(): string | null;
+  /** Reconcile this already-mounted shell after a sibling changed the durable
+   * active profile. Clean routes reload silently; dirty routes pause behind an
+   * explicit, copy-safe discard boundary. A detail-free cross-tab hint omits
+   * the target so this handle resolves it from durable storage itself. */
+  requestServerProfileConvergence(targetProfileId?: string): void;
+  /** Capture the exact in-memory work that a forced re-pair would otherwise
+   * destroy. Durable route data is intentionally excluded and re-read from
+   * the server after pairing. */
+  captureRecoverySnapshot(): WebclientRecoverySnapshot;
+  /** Re-read the local server roster without remounting the shell. The
+   *  pair-fallback host calls this on credential-free sibling-tab hints, even
+   *  when the active credential generation itself did not change. */
+  refreshServerProfiles?(): void;
   /** Tear down every constructed surface in reverse order (DD#6).
    *  Idempotent. */
   dispose(): Promise<void>;
+}
+
+export interface WebclientRecoverySnapshot {
+  /** Exact live hash, including deep-link segments silently written by Chat. */
+  readonly returnHash: string;
+  /** Present only when Chat currently holds non-empty unsent composer text. */
+  readonly chatDraft?: ChatRouteRecoveryDraft;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -2121,6 +2403,49 @@ const hostnameFromHandle = (handle: string): string | null => {
   return normalized.includes('.') ? normalized : `${normalized}.recued.cloud`;
 };
 
+/** Build the `execute` rpc args for a route-initiated recipe run.
+ *
+ *  ⛔ EXTRACTED AND EXPORTED ON PURPOSE — this is the whole webclient→server
+ *  wire for `execute`, and a member missing here is dropped SILENTLY while the
+ *  route that supplied it still reads as correct. Inside the `bootstrapWebclient`
+ *  closure it was unreachable by any test, and D-222 shipped with `invocation`
+ *  erased right here: `bootstrap-recipes-route` passed it, `buildRpcExecuteRequest`
+ *  on the server accepted it, and this adapter in between quietly deleted it — so
+ *  every filter submit arrived as an ordinary run and the server skipped stored
+ *  hash/section re-resolution AND the per-block allowlist. The route's own tests
+ *  substitute their own `recipeExecuteCaller`, so they could never see it.
+ *
+ *  ⚠ A TYPE CANNOT GUARD THIS. The registry's `execute` request carries an
+ *  `[k: string]: unknown` index signature, so a narrower hand-written shape — and
+ *  a derived one — both typecheck with members missing. Only a test over this
+ *  function proves the wire carries what the caller handed it. Mirrors the
+ *  server's `buildRpcExecuteRequest`, exported for the same reason. */
+export const buildRecipeExecuteArgs = (
+  args: Parameters<RecipeExecuteCaller>[0],
+): RpcRequest<ServerRpcRegistry, 'execute'> => {
+  const executeArgs: RpcRequest<ServerRpcRegistry, 'execute'> = {
+    recipe_id: args.recipe_id,
+    trigger_source: 'manual',
+  };
+  if (args.config !== undefined) {
+    executeArgs.config = args.config;
+  }
+  // Targeting guard (design § 8) — the run modal's filled target
+  // fields ride the run as caller context (e.g. `{ entity_id }`).
+  if (args.context !== undefined) {
+    executeArgs.context = args.context;
+  }
+  // D-222 § 6.2 — host control-plane provenance for a submit that came through
+  // an authored `filter` block. Without it the server cannot tell a filter
+  // submit from an ordinary run carrying the same `config`, so a stale view
+  // submits silently instead of refusing `filter_invocation_stale`. The ordinary
+  // run modal never authors it.
+  if (args.invocation !== undefined) {
+    executeArgs.invocation = args.invocation;
+  }
+  return executeArgs;
+};
+
 /** Compose the webclient PWA. Returns a handle whose `dispose()` tears
  *  down every constructed surface in reverse order. Throws
  *  `WebclientUnpairedError` synchronously (as a rejected promise) when
@@ -2130,6 +2455,43 @@ export const bootstrapWebclient = async (
 ): Promise<WebclientHandle> => {
   // 1. Hydrate pair state — the rest of the pipeline depends on this.
   const pair = await hydratePairState(options.localStore);
+  // Restore the hydrated server as a named profile deliberately. The logical
+  // five-key read above already resolves through the persisted active pointer,
+  // but making the roster boundary explicit keeps cold boot (including lazy
+  // legacy migration) from depending on `set('server_url')` side effects that
+  // happen to have run during an earlier pairing.
+  const bootProfileId = options.profileStore !== undefined
+    ? await options.profileStore.ensureProfile(pair.serverUrl)
+    : null;
+  let bootProfileLabel = defaultProfileLabel(pair.serverUrl);
+  let knownServerProfiles: ReadonlyArray<WebclientServerProfile> = [];
+  const serverSwitchArrival = consumeServerSwitchArrival(
+    options.serverSwitchContinuityStorage,
+  );
+  let serverSwitchArrivalReceiptCopy: string | undefined;
+  let serverSwitchArrivalProfileLabel: string | undefined;
+  if (
+    serverSwitchArrival !== null
+    && bootProfileId !== null
+    && serverSwitchArrival.targetProfileId === bootProfileId
+    && options.profileStore !== undefined
+  ) {
+    try {
+      const arrivedProfile = (await options.profileStore.listProfiles())
+        .find((profile) => profile.id === bootProfileId);
+      if (arrivedProfile !== undefined) {
+        const arrivedLabel = arrivedProfile.label.trim();
+        serverSwitchArrivalProfileLabel = arrivedLabel.length > 0
+          ? arrivedLabel
+          : bootProfileLabel;
+        serverSwitchArrivalReceiptCopy =
+          `Now using ${serverSwitchArrivalProfileLabel}.`;
+      }
+    } catch {
+      // The target id was verified, but identity copy without the local roster
+      // would be vague. The switch still succeeds; only its receipt degrades.
+    }
+  }
   const aad = buildAad(pair);
 
   // 2. WS client — `resolveBearer` re-unwraps on every reconnect (DD#2).
@@ -2242,6 +2604,14 @@ export const bootstrapWebclient = async (
     ws,
     connectionStatus,
   });
+  // A self-`pair.revoke` intentionally closes this session. Keep that known
+  // retirement out of the generic rejected-credential recovery funnel: the
+  // Account action owns revoke → durable local removal → reload. If the
+  // revoke itself fails, replay any reauth signal that arrived while the
+  // attempt was in flight so a genuinely rejected session still recovers.
+  let intentionalProfileRetirement = false;
+  let suppressedRetirementReauth = false;
+  let replaySuppressedRetirementReauth = (): void => undefined;
   const onApprovalChanged: ApprovalChangedSubscriber = (listener) =>
     ws.onMessage((message) => {
       const event = parseApprovalChangedMessage(message);
@@ -2261,6 +2631,9 @@ export const bootstrapWebclient = async (
     ws,
     ...(options.onTokenRotationError !== undefined
       ? { onError: options.onTokenRotationError }
+      : {}),
+    ...(options.onTokenRotated !== undefined
+      ? { onRotated: options.onTokenRotated }
       : {}),
   });
 
@@ -2382,6 +2755,58 @@ export const bootstrapWebclient = async (
   let activeRoute: WebclientRouteId = hashSource
     ? resolveRoute(hashSource.getHash())
     : WEBCLIENT_DEFAULT_ROUTE;
+  let activeHash = hashSource?.getHash() ?? serializeShellRoute(activeRoute);
+  let recoveryReturnArrival: {
+    readonly landingHash: string;
+    readonly areaLabel: string;
+    readonly profileLabel: string;
+    readonly returnContext: RecoveryReturnContext | undefined;
+  } | undefined;
+  if (
+    serverSwitchArrivalProfileLabel !== undefined
+    && serverSwitchArrival?.recoveryReturnLandingHash !== undefined
+    && serverSwitchArrival.recoveryReturnLandingHash === activeHash
+    // A feature-gated route can resolve to a different mounted surface while
+    // leaving its original hash in the address bar. Confirm resumed work only
+    // when the route named by the marker is the route this shell will mount.
+    && parseRouteFromHash(activeHash) === activeRoute
+  ) {
+    const areaLabel = serverSwitchLandingAreaLabel(activeHash);
+    recoveryReturnArrival = {
+      landingHash: activeHash,
+      areaLabel,
+      profileLabel: serverSwitchArrivalProfileLabel,
+      returnContext: serverSwitchArrival.recoveryReturnContext,
+    };
+  }
+  let settledProfileRecoveryNeedsAddressCleanup = false;
+  const serverSwitchLandingHash = (
+    sourceHash: string,
+    targetProfileId: string,
+  ): string => {
+    if (settledProfileRecoveryNeedsAddressCleanup) {
+      return safeServerSwitchLandingHash(sourceHash);
+    }
+    const route = parseShellRoute(sourceHash);
+    if (route.surface === 'connections') {
+      const resolution = resolveProfileBoundPostSafeStopRecovery(
+        route.segments,
+        targetProfileId,
+      );
+      if (resolution.status === 'matched') {
+        return serializeConnectionsPostSafeStopRecovery(resolution.target);
+      }
+    }
+    return safeServerSwitchLandingHash(sourceHash);
+  };
+  const navigateHash = (hash: string): void => {
+    if (hashSource?.setHash !== undefined) {
+      hashSource.setHash(hash);
+      return;
+    }
+    const location = doc.defaultView?.location;
+    if (location !== undefined) location.hash = hash;
+  };
 
   // Mount the active route. The discriminator now knows two routes:
   // `'reception'` (default) and `'settings'` (slice 110 — currently
@@ -2407,15 +2832,1337 @@ export const bootstrapWebclient = async (
     onCreateSeat: () => createSeatHandler?.(),
   });
 
-  // Live connection indicator — the topbar chip + the route-independent
-  // offline banner, both driven by the `connection-status` controller.
-  // Mounted at the shell's connection slot + at `options.root` (the
-  // banner survives route swaps, like the notify toasts). Default ON;
+  // Live connection callout — a visually hidden topbar announcer plus the
+  // route-independent offline/restoration banner, both driven by the
+  // `connection-status` controller. Default ON;
   // `enableConnectionIndicator: false` opts out (tests that assert exact
   // topbar / root DOM without the chrome). See `shell/connection-indicator.ts`.
   let connectionIndicator: ConnectionIndicatorMount | null = null;
+  let deferredRecoveryReturnArrival: typeof recoveryReturnArrival;
+  let pendingRecoveryReturnAction: {
+    readonly landingHash: string;
+    readonly onArrival: (handle: RecoveryContextProbe) => void;
+    readonly onDeclined: () => void;
+  } | null = null;
+  let resolveRecoveryReturnDeparture: (() => void) | null = null;
+  const markRecoveryReturnDeparted = (): void => {
+    const resolve = resolveRecoveryReturnDeparture;
+    resolveRecoveryReturnDeparture = null;
+    resolve?.();
+  };
+  let accountMenu: AccountMenuMount | null = null;
+  let approvalAttentionPopover: ApprovalAttentionPopoverMount | null = null;
+  const recoveryIntentContinuationStore =
+    createRecoveryIntentContinuationStore({
+      document: doc,
+      ...(options.recoveryIntentContinuationStorage !== undefined
+        ? { storage: options.recoveryIntentContinuationStorage }
+        : {}),
+      ...(options.now !== undefined ? { now: options.now } : {}),
+    });
+  let recoveryIntentContinuationMarker: RecoveryIntentContinuation | null =
+    bootProfileId === null
+      ? null
+      : recoveryIntentContinuationStore.readForProfile(bootProfileId);
+  if (bootProfileId === null) recoveryIntentContinuationStore.retire();
+  if (
+    recoveryIntentContinuationMarker !== null
+    && (
+      recoveryReturnArrival !== undefined
+      || resolveRoute(recoveryIntentContinuationMarker.landingHash)
+        !== parseRouteFromHash(recoveryIntentContinuationMarker.landingHash)
+    )
+  ) {
+    // A fresh recovery arrival supersedes an older paused landing. Likewise, a
+    // feature-gated route that no longer mounts cannot retain a dead action.
+    recoveryIntentContinuationStore.retire();
+    recoveryIntentContinuationMarker = null;
+  }
+  let recoveryIntentContinuationPhase:
+    AttentionRecoveryIntentContinuation['phase'] = 'ready';
+  let recoveryIntentContinuationRemediation:
+    AttentionRecoveryIntentRemediation | null = null;
+  const recoveryIntentContinuationPresentation = (
+    marker: RecoveryIntentContinuation,
+    phase = recoveryIntentContinuationPhase,
+    remediation = recoveryIntentContinuationRemediation,
+  ): AttentionRecoveryIntentContinuation => ({
+    serverProfileId: marker.profileId,
+    serverProfileLabel: bootProfileLabel,
+    landingHash: marker.landingHash,
+    areaLabel: serverSwitchLandingAreaLabel(marker.landingHash),
+    intent: marker.intent,
+    phase,
+    remediation,
+  });
+  let recoveryIntentContinuation = recoveryIntentContinuationMarker === null
+    ? null
+    : recoveryIntentContinuationPresentation(
+        recoveryIntentContinuationMarker,
+      );
+  let recoveryIntentLandingHash = recoveryReturnArrival?.landingHash
+    ?? recoveryIntentContinuationMarker?.landingHash
+    ?? null;
+  let recoveryIntentContinuationExpiryTimer:
+    | ReturnType<typeof globalThis.setTimeout>
+    | null = null;
+  let recoveryIntentContinuationRunGeneration = 0;
+  let recoveryIntentContinuationRunInFlight = false;
+  let recoveryIntentRetryOnReconnect = false;
+  let recoveryIntentOwnershipListenersActive = false;
+  const recoveryIntentOwnershipEvents = [
+    'pointerdown',
+    'click',
+    'keydown',
+    'input',
+  ] as const;
+  function onRecoveryIntentRouteOwnership(event: Event): void {
+    const marker = recoveryIntentContinuationMarker;
+    const eventTarget = event.target as Node | null;
+    if (
+      marker === null
+      || eventTarget === null
+      || !appShell.contentRoot.contains(eventTarget)
+    ) return;
+    const currentHash = hashSource?.getHash() ?? activeHash;
+    if (safeServerSwitchLandingHash(currentHash) !== marker.landingHash) return;
+    recoveryIntentLandingHash = null;
+    retireRecoveryIntentContinuation();
+  }
+  const attachRecoveryIntentOwnershipListeners = (): void => {
+    if (recoveryIntentOwnershipListenersActive) return;
+    recoveryIntentOwnershipListenersActive = true;
+    for (const type of recoveryIntentOwnershipEvents) {
+      doc.addEventListener(type, onRecoveryIntentRouteOwnership, true);
+    }
+  };
+  const detachRecoveryIntentOwnershipListeners = (): void => {
+    if (!recoveryIntentOwnershipListenersActive) return;
+    recoveryIntentOwnershipListenersActive = false;
+    for (const type of recoveryIntentOwnershipEvents) {
+      doc.removeEventListener(type, onRecoveryIntentRouteOwnership, true);
+    }
+  };
+  const cancelRecoveryIntentContinuationExpiry = (): void => {
+    if (recoveryIntentContinuationExpiryTimer === null) return;
+    globalThis.clearTimeout(recoveryIntentContinuationExpiryTimer);
+    recoveryIntentContinuationExpiryTimer = null;
+  };
+  const scheduleRecoveryIntentContinuationExpiry = (): void => {
+    cancelRecoveryIntentContinuationExpiry();
+    const marker = recoveryIntentContinuationMarker;
+    if (marker === null) return;
+    let currentTime: number;
+    try {
+      const candidate = (options.now ?? Date.now)();
+      currentTime = Number.isSafeInteger(candidate) && candidate >= 0
+        ? candidate
+        : Date.now();
+    } catch {
+      currentTime = Date.now();
+    }
+    const delay = Math.max(0, marker.expiresAt - currentTime);
+    recoveryIntentContinuationExpiryTimer = globalThis.setTimeout(() => {
+      recoveryIntentContinuationExpiryTimer = null;
+      if (recoveryIntentContinuationMarker?.pausedAt !== marker.pausedAt) return;
+      recoveryIntentContinuationRunGeneration += 1;
+      recoveryIntentContinuationRunInFlight = false;
+      recoveryIntentLandingHash = null;
+      detachRecoveryIntentOwnershipListeners();
+      recoveryIntentContinuationStore.retire();
+      recoveryIntentContinuationMarker = null;
+      recoveryIntentContinuation = null;
+      recoveryIntentContinuationPhase = 'ready';
+      recoveryIntentContinuationRemediation = null;
+      recoveryIntentRetryOnReconnect = false;
+      approvalAttentionPopover?.setRecoveryIntentContinuation(null);
+    }, delay);
+  };
+  const setRecoveryIntentContinuationState = (
+    phase: AttentionRecoveryIntentContinuation['phase'],
+    remediation: AttentionRecoveryIntentRemediation | null = null,
+  ): void => {
+    const marker = recoveryIntentContinuationMarker;
+    if (
+      marker === null
+      || (
+        recoveryIntentContinuationPhase === phase
+        && recoveryIntentContinuationRemediation === remediation
+      )
+    ) return;
+    recoveryIntentContinuationPhase = phase;
+    recoveryIntentContinuationRemediation = remediation;
+    recoveryIntentContinuation = recoveryIntentContinuationPresentation(
+      marker,
+      phase,
+      remediation,
+    );
+    approvalAttentionPopover?.setRecoveryIntentContinuation(
+      recoveryIntentContinuation,
+    );
+  };
+  const setRecoveryIntentContinuation = (
+    marker: RecoveryIntentContinuation,
+  ): void => {
+    const current = recoveryIntentContinuationMarker;
+    const changed = current === null
+      || current.profileId !== marker.profileId
+      || current.landingHash !== marker.landingHash
+      || current.intent !== marker.intent
+      || current.pausedAt !== marker.pausedAt;
+    if (changed) {
+      recoveryIntentContinuationRunGeneration += 1;
+      recoveryIntentContinuationRunInFlight = false;
+    }
+    recoveryIntentContinuationPhase = 'ready';
+    recoveryIntentContinuationRemediation = null;
+    recoveryIntentRetryOnReconnect = false;
+    recoveryIntentContinuationMarker = marker;
+    recoveryIntentContinuation = recoveryIntentContinuationPresentation(
+      marker,
+      'ready',
+      null,
+    );
+    approvalAttentionPopover?.setRecoveryIntentContinuation(
+      recoveryIntentContinuation,
+    );
+    attachRecoveryIntentOwnershipListeners();
+    scheduleRecoveryIntentContinuationExpiry();
+  };
+  const retireRecoveryIntentContinuation = (
+    completedRouteLanding = false,
+  ): void => {
+    recoveryIntentContinuationRunGeneration += 1;
+    recoveryIntentContinuationRunInFlight = false;
+    cancelRecoveryIntentContinuationExpiry();
+    detachRecoveryIntentOwnershipListeners();
+    recoveryIntentContinuationStore.retire();
+    recoveryIntentContinuationMarker = null;
+    recoveryIntentContinuation = null;
+    recoveryIntentContinuationPhase = 'ready';
+    recoveryIntentContinuationRemediation = null;
+    recoveryIntentRetryOnReconnect = false;
+    if (completedRouteLanding) {
+      approvalAttentionPopover?.completeRecoveryIntentContinuation();
+    } else {
+      approvalAttentionPopover?.setRecoveryIntentContinuation(null);
+    }
+  };
+  let resumeRecoveryIntentContinuation: (
+    continuation: AttentionRecoveryIntentContinuation,
+    source?: 'attention' | 'connection_repaired',
+  ) => 'started' | 'missing' | 'unavailable' = () => 'unavailable';
+  let reviewRecoveryIntentContinuation: (
+    continuation: AttentionRecoveryIntentContinuation,
+  ) => 'started' | 'missing' | 'unavailable' = () => 'unavailable';
+  let remediateRecoveryIntentConnection: (
+    continuation: AttentionRecoveryIntentContinuation,
+  ) => 'started' | 'missing' | 'unavailable' = () => 'unavailable';
+  const detachRecoveryIntentContinuationReconnect = reconnect(() => {
+    const marker = recoveryIntentContinuationMarker;
+    if (marker === null) return;
+    if (
+      recoveryIntentContinuationPhase === 'waiting_for_connection'
+      && recoveryIntentContinuationRemediation === 'connection'
+      && recoveryIntentRetryOnReconnect
+    ) {
+      // The owner explicitly chose connection remediation. Let every status
+      // listener observe `connected` first, then close the Account detour and
+      // retry the exact scrubbed route + closed-list landing intent once.
+      recoveryIntentRetryOnReconnect = false;
+      const pausedAt = marker.pausedAt;
+      void Promise.resolve().then(() => {
+        if (
+          recoveryIntentContinuationMarker?.pausedAt !== pausedAt
+          || recoveryIntentContinuationPhase !== 'waiting_for_connection'
+          || recoveryIntentContinuationRemediation !== 'connection'
+        ) return;
+        if (connectionStatus.status() !== 'connected') {
+          // A second drop can overtake this microtask. Keep the explicit wait
+          // armed for the next stable connected observation; do not close
+          // Account or dispatch a route read into another transition.
+          recoveryIntentRetryOnReconnect = true;
+          return;
+        }
+        // The owner armed an automatic exact return, so Account is normally
+        // only the remediation detour. A deliberate profile mutation that
+        // crossed its commit boundary keeps ownership, though: do not close
+        // its progress or navigate a route retry underneath it. The durable
+        // intent remains as a quiet manual recheck if that operation returns.
+        if (
+          accountMenu?.isOpen() === true
+          && !accountMenu.close()
+        ) {
+          setRecoveryIntentContinuationState('ready');
+          return;
+        }
+        const result = resumeRecoveryIntentContinuation(
+          recoveryIntentContinuationPresentation(
+            marker,
+            'waiting_for_connection',
+            'connection',
+          ),
+          'connection_repaired',
+        );
+        if (
+          result === 'unavailable'
+          && recoveryIntentContinuationMarker?.pausedAt === pausedAt
+        ) setRecoveryIntentContinuationState('ready');
+      });
+      return;
+    }
+    if (
+      recoveryIntentContinuationPhase === 'failed'
+      && recoveryIntentContinuationRemediation !== 'review'
+    ) {
+      // A reconnect alone never navigates. It only makes a failed saved return
+      // manually actionable again unless the owner armed the exact retry above.
+      // A review-only route has no retry seam for reconnect to restore, so its
+      // explicit route-review diagnosis remains truthful.
+      setRecoveryIntentContinuationState('ready');
+    }
+  });
+  if (recoveryIntentContinuationMarker !== null) {
+    attachRecoveryIntentOwnershipListeners();
+  }
+  scheduleRecoveryIntentContinuationExpiry();
+  const inactiveProfileRecoveryDiscovery =
+    createBrowserInactiveProfileRecoveryDiscovery({
+      document: doc,
+      ...(options.inactiveProfileRecoveryStorage !== undefined
+        ? { storage: options.inactiveProfileRecoveryStorage }
+        : {}),
+      ...(options.now !== undefined ? { now: options.now } : {}),
+    });
+  const inactiveProfileRecoveryReview =
+    createInactiveProfileRecoveryReviewContinuity({
+      document: doc,
+      ...(options.inactiveProfileRecoveryReviewStorage !== undefined
+        ? { storage: options.inactiveProfileRecoveryReviewStorage }
+        : {}),
+      ...(options.now !== undefined ? { now: options.now } : {}),
+    });
+  const initialInactiveProfileRecoveryReview = bootProfileId === null
+    ? null
+    : inactiveProfileRecoveryReview.readForProfile(bootProfileId);
+  type RecoveryExcursionState = Extract<
+    InactiveProfileRecoveryReviewState,
+    { readonly sourceProfileId: string }
+  >;
+  const asRecoveryExcursion = (
+    state: InactiveProfileRecoveryReviewState | null,
+  ): RecoveryExcursionState | null =>
+    state !== null && 'sourceProfileId' in state ? state : null;
+  let activeRecoveryExcursion = asRecoveryExcursion(
+    initialInactiveProfileRecoveryReview,
+  );
+  let recoveryExcursionReturn: AttentionRecoveryExcursionReturn | null = null;
+  let pendingRecoveryExcursionReturn: RecoveryExcursionState | null = null;
+  let inactiveConnectionRecoveryHints: ReadonlyArray<
+    AttentionInactiveConnectionRecoveryHint
+  > = [];
+  let pendingInactiveProfileRecoveryReviewId: string | null = null;
+  let detachInactiveProfileRecoveryDiscovery = (): void => undefined;
+  let themeToggle: ThemeToggleMount | null = null;
+  let unsubscribeAccountStatus: (() => void) | null = null;
+  let detachServerSwitchWork = (): void => undefined;
+  let requestServerProfileRefresh = (): void => undefined;
+  let refreshActivePostSafeStopProfileContext = (
+    _profiles: ReadonlyArray<WebclientServerProfile>,
+  ): void => undefined;
+  // The inline switch review is the discard authority for this one reload.
+  // Keep the ordinary native guard armed for every other reload/close.
+  let intentionalServerSwitchReload = false;
+  let serverSwitchConvergence: ServerSwitchConvergenceMount | null = null;
+  let serverSwitchConvergenceRevision = 0;
+  const pendingServerSwitchTarget = Symbol('pending-server-switch-target');
+  let serverSwitchConvergenceTargetId:
+    | string
+    | typeof pendingServerSwitchTarget
+    | null = null;
+  let releaseServerSwitchPause: (() => void) | null = null;
+  let detachPendingServerSwitchSignal = (): void => undefined;
+  let disposed = false;
+  const profileStore = options.profileStore;
+  const refreshRecoveryExcursionReturn = (
+    profiles: ReadonlyArray<WebclientServerProfile>,
+  ): void => {
+    const excursion = activeRecoveryExcursion;
+    if (
+      excursion === null
+      || bootProfileId === null
+      || excursion.targetProfileId !== bootProfileId
+    ) {
+      recoveryExcursionReturn = null;
+      approvalAttentionPopover?.setRecoveryExcursionReturn(null);
+      return;
+    }
+    const source = profiles.find((profile) =>
+      profile.id === excursion.sourceProfileId
+      && profile.server_url.length > 0);
+    if (source === undefined) {
+      inactiveProfileRecoveryReview.retire(excursion.targetProfileId);
+      activeRecoveryExcursion = null;
+      pendingRecoveryExcursionReturn = null;
+      recoveryExcursionReturn = null;
+      approvalAttentionPopover?.setRecoveryExcursionReturn(null);
+      return;
+    }
+    if (excursion.phase !== 'return_ready') {
+      recoveryExcursionReturn = null;
+      approvalAttentionPopover?.setRecoveryExcursionReturn(null);
+      return;
+    }
+    const label = source.label.trim();
+    recoveryExcursionReturn = {
+      serverProfileId: source.id,
+      serverProfileLabel: label.length > 0
+        ? label
+        : defaultProfileLabel(source.server_url),
+    };
+    approvalAttentionPopover?.setRecoveryExcursionReturn(
+      recoveryExcursionReturn,
+    );
+  };
+  const refreshInactiveConnectionRecoveryHints = (
+    profiles: ReadonlyArray<WebclientServerProfile>,
+  ): void => {
+    if (bootProfileId === null || accountMenu === null) {
+      inactiveConnectionRecoveryHints = [];
+      approvalAttentionPopover?.setInactiveConnectionRecoveryHints([]);
+      return;
+    }
+    const inactiveProfiles = profiles.filter((profile) =>
+      profile.id !== bootProfileId && profile.server_url.length > 0);
+    const observed = inactiveProfileRecoveryDiscovery.read(
+      inactiveProfiles.map((profile) => profile.id),
+    );
+    const profileById = new Map(
+      inactiveProfiles.map((profile) => [profile.id, profile] as const),
+    );
+    inactiveConnectionRecoveryHints = observed.flatMap((hint) => {
+      const profile = profileById.get(hint.profileId);
+      if (profile === undefined) return [];
+      const label = profile.label.trim();
+      return [{
+        serverProfileId: profile.id,
+        serverProfileLabel: label.length > 0
+          ? label
+          : defaultProfileLabel(profile.server_url),
+        observedAt: hint.observedAt,
+      }];
+    });
+    approvalAttentionPopover?.setInactiveConnectionRecoveryHints(
+      inactiveConnectionRecoveryHints,
+    );
+  };
+  detachInactiveProfileRecoveryDiscovery =
+    inactiveProfileRecoveryDiscovery.subscribe(() => {
+      if (knownServerProfiles.length === 0) {
+        requestServerProfileRefresh();
+        return;
+      }
+      refreshInactiveConnectionRecoveryHints(knownServerProfiles);
+    });
+  const beginInactiveConnectionRecoveryReview = (
+    profileId: string,
+  ): 'opened' | 'missing' | 'unavailable' => {
+    if (accountMenu === null || profileStore === undefined) {
+      return 'unavailable';
+    }
+    const profile = knownServerProfiles.find((candidate) =>
+      candidate.id === profileId && candidate.server_url.length > 0);
+    if (profile === undefined || profileId === bootProfileId) {
+      inactiveProfileRecoveryDiscovery.purge(profileId);
+      refreshInactiveConnectionRecoveryHints(knownServerProfiles);
+      return 'missing';
+    }
+    // Account's outside-click guard runs in the capture phase, before this
+    // Attention action. Opening now lets us report a missing rendered target
+    // synchronously while the ordinary profile click remains the deliberate
+    // selection boundary.
+    const openResult = accountMenu.openServerProfile(profileId);
+    if (openResult === 'opened') {
+      if (
+        pendingInactiveProfileRecoveryReviewId !== null
+        && pendingInactiveProfileRecoveryReviewId !== profileId
+      ) {
+        inactiveProfileRecoveryReview.retire(
+          pendingInactiveProfileRecoveryReviewId,
+        );
+      }
+      pendingInactiveProfileRecoveryReviewId = profileId;
+      const excursionReturnHash = safeServerSwitchLandingHash(activeHash);
+      const armed = bootProfileId === null
+        ? inactiveProfileRecoveryReview.arm(profileId)
+        : inactiveProfileRecoveryReview.armExcursion({
+            sourceProfileId: bootProfileId,
+            targetProfileId: profileId,
+            returnHash: excursionReturnHash,
+            returnContext: excursionReturnHash === activeHash
+              ? 'area'
+              : 'detail_withheld',
+          });
+      if (armed && activeRecoveryExcursion !== null) {
+        // One tab carries one excursion. A successfully opened new recovery
+        // review deliberately supersedes its older return; an unavailable or
+        // missing Account target above never gets this authority.
+        activeRecoveryExcursion = null;
+        pendingRecoveryExcursionReturn = null;
+        recoveryExcursionReturn = null;
+        approvalAttentionPopover?.setRecoveryExcursionReturn(null);
+      }
+      return 'opened';
+    }
+    if (openResult === 'missing') {
+      inactiveProfileRecoveryDiscovery.purge(profileId);
+      refreshInactiveConnectionRecoveryHints(knownServerProfiles);
+      return 'missing';
+    }
+    return 'unavailable';
+  };
+  const beginRecoveryExcursionReturn = (
+    profileId: string,
+  ): 'opened' | 'missing' | 'unavailable' => {
+    const excursion = activeRecoveryExcursion;
+    if (
+      accountMenu === null
+      || profileStore === undefined
+      || excursion === null
+      || excursion.phase !== 'return_ready'
+      || excursion.sourceProfileId !== profileId
+    ) return 'unavailable';
+    const source = knownServerProfiles.find((profile) =>
+      profile.id === profileId && profile.server_url.length > 0);
+    if (source === undefined) {
+      inactiveProfileRecoveryReview.retire(excursion.targetProfileId);
+      activeRecoveryExcursion = null;
+      pendingRecoveryExcursionReturn = null;
+      recoveryExcursionReturn = null;
+      approvalAttentionPopover?.setRecoveryExcursionReturn(null);
+      return 'missing';
+    }
+    pendingRecoveryExcursionReturn = excursion;
+    const openResult = accountMenu.openServerProfile(profileId);
+    if (openResult === 'opened') return 'opened';
+    pendingRecoveryExcursionReturn = null;
+    if (openResult === 'missing') {
+      inactiveProfileRecoveryReview.retire(excursion.targetProfileId);
+      activeRecoveryExcursion = null;
+      recoveryExcursionReturn = null;
+      approvalAttentionPopover?.setRecoveryExcursionReturn(null);
+      return 'missing';
+    }
+    return 'unavailable';
+  };
+  const switchLocation = options.reloadForServerSwitch === undefined
+    ? (globalThis as { location?: Location }).location
+    : undefined;
+  const reloadForServerSwitch = options.reloadForServerSwitch
+    ?? (switchLocation !== undefined ? () => switchLocation.reload() : undefined);
+  const switchHistory = options.replaceHashForServerSwitch === undefined
+    ? doc?.defaultView?.history
+    : undefined;
+  const replaceHashForServerSwitch = options.replaceHashForServerSwitch
+    ?? (typeof switchHistory?.replaceState === 'function'
+      ? (hash: string): void => switchHistory.replaceState(null, '', hash)
+      : undefined);
+  const replaceActiveHashWithoutNavigation = (hash: string): boolean => {
+    if (replaceHashForServerSwitch === undefined) return false;
+    try {
+      replaceHashForServerSwitch(hash);
+      activeHash = hash;
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  const currentRouteWorkDetails = (): ServerSwitchWorkDetails => {
+    const routeCopy: Record<WebclientRouteId, { label: string; returnLabel: string }> = {
+      reception: { label: 'Updating Reception', returnLabel: 'Return to Reception' },
+      settings: { label: 'Saving a Settings change', returnLabel: 'Return to Settings' },
+      approvals: { label: 'Resolving an approval', returnLabel: 'Return to Approvals' },
+      kitchen: { label: 'Finishing Kitchen work', returnLabel: 'Return to Kitchen' },
+      contracts: { label: 'Updating Contracts', returnLabel: 'Return to Contracts' },
+      connections: { label: 'Updating a connection', returnLabel: 'Return to Connections' },
+      packs: { label: 'Updating a pack', returnLabel: 'Return to Packs' },
+      recipes: { label: 'Finishing a Recipe action', returnLabel: 'Return to Recipes' },
+      automation: { label: 'Updating automation', returnLabel: 'Return to Automation' },
+      data: { label: 'Saving a Data change', returnLabel: 'Return to Data' },
+      logs: { label: 'Finishing a run action', returnLabel: 'Return to Runs' },
+      chat: { label: 'Finishing a Chat action', returnLabel: 'Return to Chat' },
+    };
+    return {
+      ...routeCopy[activeRoute],
+      returnHref: activeHash,
+    };
+  };
+  const switchWorkTracker = createServerSwitchWorkTracker(
+    currentRouteWorkDetails,
+  );
+  // A foundational OAuth consent popup belongs to this authenticated boot,
+  // not to the Connections route that happened to open it. Its Account work
+  // item remains actionable while routes swap, then becomes a one-shot result
+  // link back to the exact Mail / Calendar lane.
+  const foundationalOAuthContinuity = createFoundationalOAuthContinuity({
+    beginWork: (details) => switchWorkTracker.begin(details),
+    storage: options.foundationalOAuthContinuityStorage,
+    scopeId: bootProfileId,
+    ...(options.now !== undefined ? { now: options.now } : {}),
+  });
+  const providerSetupContinuity = createProviderSetupContinuityStore({
+    storage: options.providerSetupContinuityStorage,
+    scopeId: bootProfileId,
+    ...(options.now !== undefined ? { now: options.now } : {}),
+  });
+  const credentialRotationContinuity = createCredentialRotationContinuityStore({
+    storage: options.credentialRotationContinuityStorage,
+    scopeId: bootProfileId,
+    ...(options.now !== undefined ? { now: options.now } : {}),
+  });
+  const credentialRotationServerUpdateContinuity =
+    createCredentialRotationServerUpdateContinuity({
+      storage: options.credentialRotationServerUpdateContinuityStorage,
+      scopeId: bootProfileId,
+      status: connectionStatus.status,
+      onStatus: connectionStatus.onStatus,
+      ...(options.now !== undefined ? { now: options.now } : {}),
+    });
+  let serverUpdateReceiptVerification:
+    ServerUpdateReceiptVerificationController | null = null;
+  const retireServerUpdateReturn = (
+    target: CredentialRotationServerUpdateTarget,
+  ): void => {
+    credentialRotationServerUpdateContinuity.retire(target);
+    const completion = serverUpdateReceiptVerification?.read() ?? null;
+    const affected = completion?.baseline?.affectedConnection;
+    if (
+      completion?.phase === 'completed'
+      && affected?.kind === target.kind
+      && affected.name === target.name
+    ) {
+      serverUpdateReceiptVerification?.dismissCompletion();
+    }
+  };
+  const accountServerUpdateGuideFor = (
+    target: CredentialRotationServerUpdateTarget,
+  ) => {
+    const marker = credentialRotationServerUpdateContinuity.read();
+    const matchingMarker = marker !== null
+      && marker.kind === target.kind
+      && marker.name === target.name
+      ? marker
+      : null;
+    return {
+      connectionIdentity: `${target.kind}/${target.name}`,
+      updateHref: serializeShellRoute('settings', 'updates'),
+      returnHref: serializeConnectionsCredentialRotationRetry(target),
+      reloadSafe: credentialRotationServerUpdateContinuity.isDurable(),
+      phase: matchingMarker?.phase ?? 'guide',
+      ...(matchingMarker?.exactReturnActive === true
+        ? { exactReturnActive: true as const }
+        : {}),
+      ...(matchingMarker?.serverUpdateTriage !== undefined
+        ? { serverUpdateTriage: matchingMarker.serverUpdateTriage }
+        : {}),
+      ...(matchingMarker?.serverUpdateProgress !== undefined
+        ? { serverUpdateProgress: matchingMarker.serverUpdateProgress }
+        : {}),
+      ...(matchingMarker?.serverUpdateVerification !== undefined
+        ? {
+            serverUpdateVerification:
+              matchingMarker.serverUpdateVerification,
+          }
+        : {}),
+    };
+  };
+  const syncAccountServerUpdateGuide = (): void => {
+    const marker = credentialRotationServerUpdateContinuity.read();
+    accountMenu?.setServerUpdateGuide(
+      marker === null ? null : accountServerUpdateGuideFor(marker),
+    );
+  };
+  let credentialRotationTabConvergence:
+    CredentialRotationTabConvergence | null = null;
+  let detachCredentialRotationServerUpdateGuide =
+    credentialRotationServerUpdateContinuity.subscribe((marker) => {
+      if (
+        marker !== null
+        && marker.serverUpdateProgress === undefined
+      ) {
+        const progress =
+          credentialRotationTabConvergence?.readServerUpdateProgress()
+          ?? null;
+        if (progress !== null) {
+          // A guide can begin after the server-global update already started.
+          // Project the current tab latch immediately instead of waiting for a
+          // second channel message that may never arrive.
+          credentialRotationServerUpdateContinuity
+            .observeServerUpdateProgress(progress);
+        }
+      }
+      syncAccountServerUpdateGuide();
+    });
+  credentialRotationTabConvergence =
+    createBrowserCredentialRotationTabConvergence({
+      document: doc,
+      scopeId: bootProfileId,
+      ...(options.credentialRotationTabStorage !== undefined
+        ? { storage: options.credentialRotationTabStorage }
+        : {}),
+      ...(options.now !== undefined ? { now: options.now } : {}),
+    });
+  const initialServerUpdateProgress =
+    credentialRotationTabConvergence?.readServerUpdateProgress() ?? null;
+  credentialRotationServerUpdateContinuity.observeServerUpdateProgress(
+    initialServerUpdateProgress,
+  );
+  type ServerUpdateReconnectLineage = Pick<
+    ServerUpdateTabProgress,
+    'operation' | 'startedAt' | 'operationId'
+  >;
+  const sameServerUpdateLineage = (
+    progress: ServerUpdateTabProgress,
+    lineage: ServerUpdateReconnectLineage | null,
+  ): boolean => lineage !== null
+    && progress.operation === lineage.operation
+    && progress.startedAt === lineage.startedAt
+    && progress.operationId === lineage.operationId;
+  const serverUpdateLineageOf = (
+    progress: ServerUpdateTabProgress,
+  ): ServerUpdateReconnectLineage => ({
+    operation: progress.operation,
+    startedAt: progress.startedAt,
+    ...(progress.operationId !== undefined
+      ? { operationId: progress.operationId }
+      : {}),
+  });
+  // A reconnect is proof only when this live tab already observed the accepted
+  // restart for this exact action lineage. A cold/reloaded tab's ordinary
+  // initial connect is not a restart boundary: when an opaque receipt is
+  // available it must ask the selected server to resolve that exact receipt.
+  // Keep the legacy fallback only for pre-receipt durable markers. An older
+  // disconnect must never settle a later update or rollback, and an
+  // "applying" disconnect is not strong enough to claim that the server had
+  // accepted a restart yet.
+  let serverUpdateReconnectProof =
+    initialServerUpdateProgress?.phase === 'awaiting_reconnect'
+      && initialServerUpdateProgress.operationId === undefined
+      && connectionStatus.status() !== 'connected'
+      ? serverUpdateLineageOf(initialServerUpdateProgress)
+      : null;
+  let detachCredentialRotationCapabilityResolution: () => void =
+    () => undefined;
+  let detachCredentialRotationCapabilityLineage: () => void =
+    () => undefined;
+  let detachCredentialRotationCapabilityReconnect: () => void =
+    () => undefined;
+  let detachServerUpdateReceiptVerification: () => void =
+    () => undefined;
+  type UntypedRpcCall = (method: string, payload?: unknown) => Promise<unknown>;
+  const rawUntypedRpcCall = rpcConn.call as unknown as UntypedRpcCall;
+  /** Lift only owner-started writes/actions into the boot-scoped tracker. Reads
+   * stay quiet, while a route may still use its fully typed Conn facade. */
+  const trackSelectedRpcMethods = <T>(methods: ReadonlySet<string>): T => (
+    (method: string, payload?: unknown): Promise<unknown> => {
+      const invoke = (): Promise<unknown> => payload === undefined
+        ? rawUntypedRpcCall(method)
+        : rawUntypedRpcCall(method, payload);
+      return methods.has(method)
+        ? switchWorkTracker.track(invoke)()
+        : invoke();
+    }
+  ) as T;
+  interface ServerSwitchWorkSnapshot {
+    readonly workState: ServerSwitchWorkState;
+    readonly chatDraft: ChatRouteRecoveryDraft | null;
+    readonly activeWork: ReadonlyArray<ServerSwitchActiveWork>;
+  }
+  const currentServerSwitchWorkSnapshot = (): ServerSwitchWorkSnapshot => {
+    // Boot-owned leases are authoritative even if a route-local probe is
+    // broken. Capture them outside the route try/catch so the fail-closed path
+    // retains their names, exact return routes, and one-use action ids.
+    const trackedWork = switchWorkTracker.activeWork();
+    try {
+      const chatDraft = mountedRouteHandle.getRecoveryDraft?.() ?? null;
+      const hasChatDraft = chatDraft !== null
+        && chatDraft.text.trim().length > 0;
+      const hasUnsavedChanges = mountedRouteHandle.hasUnsavedChanges?.() === true;
+      const routeHasInFlightWork = (
+        mountedRouteHandle.hasRouteInFlightWork
+        ?? mountedRouteHandle.hasInFlightWork
+      )?.() === true;
+      const hasInFlightWork = switchWorkTracker.hasInFlightWork()
+        || routeHasInFlightWork;
+      // Native route state covers multi-step UI work that does not travel
+      // through a wrapped caller (Chat streaming, local cleanup). Give it a
+      // useful source-route identity when there is no more specific lease.
+      const trackedCurrentRoute = trackedWork.some(
+        (work) => work.returnHref === activeHash,
+      );
+      const activeWork = [
+        ...trackedWork,
+        ...(routeHasInFlightWork && !trackedCurrentRoute ? [{
+            id: `route:${activeRoute}:${activeHash}`,
+            ...currentRouteWorkDetails(),
+          }] : []),
+      ];
+      if (hasInFlightWork) {
+        if (hasChatDraft) {
+          return {
+            workState: 'in_flight_with_chat_draft',
+            chatDraft,
+            activeWork,
+          };
+        }
+        if (hasUnsavedChanges) {
+          return {
+            workState: 'in_flight_with_unsaved_changes',
+            chatDraft: null,
+            activeWork,
+          };
+        }
+        return { workState: 'in_flight', chatDraft: null, activeWork };
+      }
+      if (hasChatDraft) {
+        return { workState: 'chat_draft', chatDraft, activeWork: [] };
+      }
+      return {
+        workState: hasUnsavedChanges ? 'unsaved_changes' : 'clean',
+        chatDraft: null,
+        activeWork: [],
+      };
+    } catch {
+      // A broken route probe is never evidence that leaving is safe.
+      return trackedWork.length > 0
+        ? {
+            workState: 'in_flight_with_unsaved_changes',
+            chatDraft: null,
+            activeWork: trackedWork,
+          }
+        : { workState: 'unsaved_changes', chatDraft: null, activeWork: [] };
+    }
+  };
+  const currentServerSwitchWorkState = (): ServerSwitchWorkState =>
+    currentServerSwitchWorkSnapshot().workState;
+  const currentServerSwitchActiveWork = (): ReadonlyArray<ServerSwitchActiveWork> =>
+    currentServerSwitchWorkSnapshot().activeWork;
+
+  // Chat's send rpc acknowledges acceptance before the model turn finishes.
+  // Keep one boot-scoped lease through the terminal broadcast so navigating
+  // away from Chat does not turn a still-running answer into invisible work.
+  const chatTurnLeases = new Set<ServerSwitchWorkLease>();
+  const chatTurnLeaseById = new Map<string, ServerSwitchWorkLease>();
+  const settledChatTurnIds = new Set<string>();
+  const releaseChatTurnLease = (lease: ServerSwitchWorkLease): void => {
+    lease();
+    chatTurnLeases.delete(lease);
+    for (const [turnId, candidate] of chatTurnLeaseById) {
+      if (candidate === lease) chatTurnLeaseById.delete(turnId);
+    }
+  };
+  const settleChatTurn = (turnId: string): void => {
+    const lease = chatTurnLeaseById.get(turnId);
+    if (lease !== undefined) {
+      releaseChatTurnLease(lease);
+      return;
+    }
+    settledChatTurnIds.add(turnId);
+    while (settledChatTurnIds.size > 100) {
+      const oldest = settledChatTurnIds.values().next().value;
+      if (oldest === undefined) break;
+      settledChatTurnIds.delete(oldest);
+    }
+  };
+  const detachChatTurnCompleteWork = subscriber.on(
+    'chat.message_complete',
+    (event) => settleChatTurn(event.turn_id),
+  );
+  const detachChatTurnFailedWork = subscriber.on(
+    'chat.transparency',
+    (event) => {
+      if (
+        event.event !== null
+        && typeof event.event === 'object'
+        && (event.event as { kind?: unknown }).kind === 'engine.turn_failed'
+      ) {
+        settleChatTurn(event.turn_id);
+      }
+    },
+  );
+
+  const pauseServerSwitchSurface = (): void => {
+    if (
+      serverSwitchConvergence !== null
+      || releaseServerSwitchPause !== null
+    ) return;
+    const obscured = new Map<HTMLElement, boolean>();
+    for (const child of Array.from(options.root.children)) {
+      const element = child as HTMLElement;
+      obscured.set(element, element.hasAttribute('inert'));
+      element.setAttribute('inert', '');
+    }
+    releaseServerSwitchPause = (): void => {
+      for (const [element, wasInert] of obscured) {
+        if (!wasInert) element.removeAttribute('inert');
+      }
+    };
+  };
+  const resumeServerSwitchSurface = (): void => {
+    const release = releaseServerSwitchPause;
+    releaseServerSwitchPause = null;
+    release?.();
+  };
+  const signalServerProfilesChanged = (profileRemoved = false): void => {
+    try {
+      options.onServerProfilesChanged?.();
+    } catch (err) {
+      // The durable local write already won. A sibling hint is best-effort and
+      // cannot roll it back.
+      console.error('webclient: server profile signal failed', err);
+    }
+    if (!profileRemoved) return;
+    try {
+      options.onServerProfileRemoved?.();
+    } catch (err) {
+      // Compatibility callback for older hosts; same post-commit semantics.
+      console.error('webclient: server profile removal signal failed', err);
+    }
+  };
+  const signalActiveServerProfileChanged = (): void => {
+    if (options.onActiveServerProfileChanged === undefined) {
+      // Compatibility for direct hosts that only consume the original roster
+      // callback. Production pair fallback provides the distinct fast hint.
+      signalServerProfilesChanged();
+      return;
+    }
+    try {
+      options.onActiveServerProfileChanged();
+    } catch (err) {
+      // The durable pointer already won. Focus reconciliation remains the
+      // fallback if the immediate sibling hint cannot be delivered.
+      console.error('webclient: active server profile signal failed', err);
+    }
+  };
+  const armAcceptedServerSwitchSignal = (): boolean => {
+    const pageEvents = doc.defaultView as unknown as {
+      addEventListener?: (type: string, listener: (event: Event) => void) => void;
+      removeEventListener?: (type: string, listener: (event: Event) => void) => void;
+    } | null;
+    if (typeof pageEvents?.addEventListener !== 'function') return false;
+    detachPendingServerSwitchSignal();
+    let armed = true;
+    const onPageHide = (): void => {
+      if (!armed) return;
+      armed = false;
+      pageEvents.removeEventListener?.('pagehide', onPageHide);
+      detachPendingServerSwitchSignal = (): void => undefined;
+      // pagehide proves the browser accepted the reload. Signal here instead
+      // of after location.reload(), where Chromium may tear the document down
+      // before the post-reload statement runs.
+      signalActiveServerProfileChanged();
+    };
+    pageEvents.addEventListener('pagehide', onPageHide);
+    detachPendingServerSwitchSignal = (): void => {
+      if (!armed) return;
+      armed = false;
+      pageEvents.removeEventListener?.('pagehide', onPageHide);
+      detachPendingServerSwitchSignal = (): void => undefined;
+    };
+    return true;
+  };
+
+  const profileIdentity = (
+    profile: WebclientServerProfile | undefined,
+    fallback: ServerSwitchConvergenceIdentity,
+  ): ServerSwitchConvergenceIdentity => profile === undefined
+    ? fallback
+    : {
+        id: profile.id,
+        label: profile.label.trim().length > 0 ? profile.label : fallback.label,
+        serverUrl: profile.server_url,
+      };
+
+  const fallbackConvergenceIdentities = (
+    targetProfileId: string,
+  ): {
+    source: ServerSwitchConvergenceIdentity;
+    target: ServerSwitchConvergenceIdentity;
+  } => ({
+    source: {
+      id: bootProfileId ?? 'source-profile',
+      label: 'the server this tab opened with',
+      serverUrl: pair.serverUrl,
+    },
+    target: {
+      id: targetProfileId,
+      label: 'the newly selected server',
+      serverUrl: '',
+    },
+  });
+
+  const convergenceIdentities = async (
+    targetProfileId: string,
+  ): Promise<{
+    source: ServerSwitchConvergenceIdentity;
+    target: ServerSwitchConvergenceIdentity;
+  }> => {
+    const fallback = fallbackConvergenceIdentities(targetProfileId);
+    let profiles: ReadonlyArray<WebclientServerProfile> = [];
+    try {
+      profiles = await profileStore?.listProfiles() ?? [];
+    } catch {
+      // Identity degrades to explicit, non-invented fallback copy. The active
+      // pointer remains authoritative and convergence must still be possible.
+    }
+    return {
+      source: profileIdentity(
+        profiles.find((profile) => profile.id === bootProfileId),
+        fallback.source,
+      ),
+      target: profileIdentity(
+        profiles.find((profile) => profile.id === targetProfileId),
+        fallback.target,
+      ),
+    };
+  };
+
+  const closeServerSwitchConvergence = (): void => {
+    serverSwitchConvergenceRevision += 1;
+    serverSwitchConvergenceTargetId = null;
+    serverSwitchConvergence?.dispose();
+    serverSwitchConvergence = null;
+    resumeServerSwitchSurface();
+  };
+
+  const buildServerSwitchConvergenceState = (
+    identities: {
+      source: ServerSwitchConvergenceIdentity;
+      target: ServerSwitchConvergenceIdentity;
+    },
+    extra: Pick<ServerSwitchConvergenceState, 'error' | 'status'> = {},
+    workSnapshot = currentServerSwitchWorkSnapshot(),
+  ): ServerSwitchConvergenceState => {
+    return {
+      ...identities,
+      workState: workSnapshot.workState,
+      ...(workSnapshot.activeWork.length > 0
+        ? { activeWork: workSnapshot.activeWork }
+        : {}),
+      ...(
+        serverSwitchWorkStateHasChatDraft(workSnapshot.workState)
+        && workSnapshot.chatDraft !== null
+          ? { chatDraft: workSnapshot.chatDraft.text }
+          : {}
+      ),
+      ...extra,
+    };
+  };
+
+  const reloadForSiblingServerSwitch = async (
+    requestedTargetProfileId: string,
+    reviewedWork: Pick<
+      ServerSwitchWorkSnapshot,
+      'workState' | 'activeWork'
+    > | null,
+  ): Promise<'reload_requested' | 'choice_reverted' | 'confirmation_required'> => {
+    if (
+      profileStore === undefined
+      || reloadForServerSwitch === undefined
+      || bootProfileId === null
+    ) {
+      throw new Error('This tab cannot finish the server change automatically.');
+    }
+    let activeTarget: string | null;
+    try {
+      activeTarget = await profileStore.activeProfileId();
+    } catch (cause) {
+      throw new Error(
+        'Recued couldn’t confirm the selected server. Your work is still here; try again.',
+        { cause },
+      );
+    }
+    if (activeTarget === bootProfileId) {
+      // The origin-wide choice was reversed before this owner committed. The
+      // still-mounted shell is coherent again; retain all in-memory work.
+      closeServerSwitchConvergence();
+      return 'choice_reverted';
+    }
+    if (activeTarget === null) {
+      throw new Error(
+        'The selected server is no longer saved. Reload this tab to review server setup.',
+      );
+    }
+    if (activeTarget !== requestedTargetProfileId) {
+      requestServerProfileConvergence(
+        activeTarget,
+        'The active server changed again. Review the updated destination before switching this tab.',
+      );
+      throw new Error(
+        'The active server changed again. Review the updated destination before switching this tab.',
+      );
+    }
+
+    // A clean tab can become dirty while the active-profile read is awaiting
+    // IndexedDB. The provisional inert boundary prevents ordinary interaction,
+    // and this final check protects against programmatic/in-flight edits before
+    // any source-owned route or draft is discarded.
+    const latestWork = currentServerSwitchWorkSnapshot();
+    const requiresConfirmation = reviewedWork === null
+      ? latestWork.workState !== 'clean'
+      : !serverSwitchReviewCoversWorkState(
+          reviewedWork.workState,
+          latestWork.workState,
+        ) || !serverSwitchReviewCoversActiveWork(
+          reviewedWork.activeWork,
+          latestWork.activeWork,
+        );
+    if (requiresConfirmation) {
+      return 'confirmation_required';
+    }
+
+    const sourceHash = activeHash;
+    const landingHash = serverSwitchLandingHash(
+      sourceHash,
+      requestedTargetProfileId,
+    );
+    if (
+      landingHash !== sourceHash
+      && replaceHashForServerSwitch === undefined
+    ) {
+      throw new Error(
+        'This tab cannot safely remove the original server’s detail link before reloading.',
+      );
+    }
+    let hashRewriteAttempted = false;
+    try {
+      if (landingHash !== sourceHash) {
+        hashRewriteAttempted = true;
+        replaceHashForServerSwitch?.(landingHash);
+      }
+      // The convergence overlay/clean-state check is the discard authority for
+      // this reload. Do not arm the initiating tab's success marker: a sibling
+      // silently follows the durable choice and must not replay its receipt.
+      intentionalServerSwitchReload = true;
+      reloadForServerSwitch();
+      return 'reload_requested';
+    } catch (error) {
+      intentionalServerSwitchReload = false;
+      if (hashRewriteAttempted) {
+        try {
+          replaceHashForServerSwitch?.(sourceHash);
+        } catch {
+          /* in-memory work remains behind the blocking boundary */
+        }
+      }
+      throw new Error(
+        'This tab could not reload automatically. Your work is still here; try again.',
+        { cause: error },
+      );
+    }
+  };
+
+  const showServerSwitchConvergence = (
+    identities: {
+      source: ServerSwitchConvergenceIdentity;
+      target: ServerSwitchConvergenceIdentity;
+    },
+    notice?: string,
+  ): void => {
+    const state = buildServerSwitchConvergenceState(identities, {
+      ...(notice !== undefined ? { error: notice } : {}),
+    });
+    // Transfer the temporary inert lease to the modal synchronously so there
+    // is no interactive gap while the durable pointer and live shell differ.
+    resumeServerSwitchSurface();
+    if (serverSwitchConvergence === null) {
+      serverSwitchConvergence = mountServerSwitchConvergence({
+        portal: options.root,
+        background: appShell.root,
+        document: doc,
+        state,
+        onContinue: async (
+          targetProfileId,
+          reviewedWorkState,
+          reviewedActiveWork = [],
+        ) => {
+          const latestWorkSnapshot = currentServerSwitchWorkSnapshot();
+          const latestWorkState = latestWorkSnapshot.workState;
+          if (!serverSwitchReviewCoversWorkState(
+            reviewedWorkState,
+            latestWorkState,
+          ) || !serverSwitchReviewCoversActiveWork(
+            reviewedActiveWork,
+            latestWorkSnapshot.activeWork,
+          )) {
+            const latestIdentities = await convergenceIdentities(targetProfileId);
+            if (disposed) return;
+            serverSwitchConvergence?.update(
+              buildServerSwitchConvergenceState(latestIdentities, {
+                status: 'Your work changed while this choice was open. Review the updated boundary before switching.',
+              }),
+            );
+            return;
+          }
+          const outcome = await reloadForSiblingServerSwitch(targetProfileId, {
+            workState: reviewedWorkState,
+            activeWork: reviewedActiveWork,
+          });
+          if (outcome === 'confirmation_required') {
+            const latestIdentities = await convergenceIdentities(targetProfileId);
+            if (disposed) return;
+            serverSwitchConvergence?.update(
+              buildServerSwitchConvergenceState(latestIdentities, {
+                status: 'Your work changed while this switch was being checked. Review the updated boundary before switching.',
+              }),
+            );
+          }
+        },
+        onCheck: async (expectedTargetProfileId) => {
+          if (
+            profileStore === undefined
+            || bootProfileId === null
+          ) {
+            throw new Error('This tab cannot check the server change automatically.');
+          }
+          let activeTarget: string | null;
+          try {
+            activeTarget = await profileStore.activeProfileId();
+          } catch (cause) {
+            throw new Error(
+              'Recued couldn’t confirm the selected server. Your work is still here; try again.',
+              { cause },
+            );
+          }
+          if (activeTarget === bootProfileId) {
+            closeServerSwitchConvergence();
+            return null;
+          }
+          if (activeTarget === null) {
+            throw new Error(
+              'The selected server is no longer saved. Your source-server work is still here.',
+            );
+          }
+          const identities = await convergenceIdentities(activeTarget);
+          if (disposed) return null;
+          const changed = activeTarget !== expectedTargetProfileId;
+          const latestWorkSnapshot = currentServerSwitchWorkSnapshot();
+          const latestWorkState = latestWorkSnapshot.workState;
+          const sourceLabel = identities.source.label;
+          const resultReadyOnly = latestWorkSnapshot.activeWork.length > 0
+            && latestWorkSnapshot.activeWork.every(
+              (work) => work.phase === 'result_ready',
+            );
+          const status = resultReadyOnly
+            ? `A result is ready to review on ${sourceLabel}. It will stay on that server if you switch this tab.`
+            : latestWorkState === 'in_flight'
+            || latestWorkState === 'in_flight_with_chat_draft'
+            || latestWorkState === 'in_flight_with_unsaved_changes'
+              ? `Work is still finishing on ${sourceLabel}. Stay here and check again.`
+              : latestWorkState === 'clean'
+                ? `The request settled on ${sourceLabel}. You can switch this tab; its result or error stays there.`
+                : `The request finished on ${sourceLabel}. Review the remaining work before switching.`;
+          return buildServerSwitchConvergenceState(identities, {
+            ...(changed
+              ? {
+                error: 'The active server changed again. Review the updated destination before switching this tab.',
+              }
+              : {}),
+            status,
+          }, latestWorkSnapshot);
+        },
+      });
+    } else {
+      serverSwitchConvergence.update(state);
+    }
+  };
+
+  const requestServerProfileConvergence = (
+    requestedTargetProfileId?: string,
+    notice?: string,
+  ): void => {
+    if (
+      requestedTargetProfileId !== undefined
+      && requestedTargetProfileId === bootProfileId
+    ) {
+      closeServerSwitchConvergence();
+      return;
+    }
+    if (
+      disposed
+      || bootProfileId === null
+      || profileStore === undefined
+    ) return;
+    const requestedTargetKey = requestedTargetProfileId
+      ?? pendingServerSwitchTarget;
+    if (serverSwitchConvergenceTargetId === requestedTargetKey) return;
+    // Pause every existing root surface before the first async profile read.
+    // A clean sibling must not gain a last-moment old-server interaction while
+    // another tab's durable choice already points somewhere else.
+    pauseServerSwitchSurface();
+    serverSwitchConvergenceTargetId = requestedTargetKey;
+    const revision = ++serverSwitchConvergenceRevision;
+    void (async () => {
+      // Empty is an intentionally unresolved UI identity, never a durable
+      // profile id produced by the store. A retry must resolve and display the
+      // exact target before a dirty tab can discard its source work.
+      let targetProfileId = requestedTargetProfileId ?? '';
+      try {
+        const activeTarget = await profileStore.activeProfileId();
+        if (disposed || revision !== serverSwitchConvergenceRevision) return;
+        if (activeTarget === bootProfileId) {
+          closeServerSwitchConvergence();
+          return;
+        }
+        if (activeTarget !== null) {
+          targetProfileId = activeTarget;
+          serverSwitchConvergenceTargetId = activeTarget;
+        }
+        const identities = await convergenceIdentities(targetProfileId);
+        if (disposed || revision !== serverSwitchConvergenceRevision) return;
+        const workState = currentServerSwitchWorkState();
+        if (workState === 'clean' && serverSwitchConvergence === null) {
+          try {
+            const outcome = await reloadForSiblingServerSwitch(
+              targetProfileId,
+              null,
+            );
+            if (outcome === 'confirmation_required') {
+              showServerSwitchConvergence(identities, notice);
+            }
+            return;
+          } catch (error) {
+            if (disposed || revision !== serverSwitchConvergenceRevision) return;
+            const message = error instanceof Error
+              ? error.message
+              : 'This tab could not reload automatically. Try again.';
+            showServerSwitchConvergence(identities, message);
+            return;
+          }
+        }
+        showServerSwitchConvergence(identities, notice);
+      } catch (error) {
+        if (!disposed && revision === serverSwitchConvergenceRevision) {
+          // Keep the source shell paused and surface a safe retry. Resetting the
+          // target dedupe also lets the next BroadcastChannel/focus hint retry
+          // the durable read without requiring the user to discard anything.
+          serverSwitchConvergenceTargetId = null;
+          console.error('webclient: sibling server-switch convergence failed', error);
+          showServerSwitchConvergence(
+            fallbackConvergenceIdentities(targetProfileId),
+            'Recued couldn’t confirm the selected server. Your work is still here; try again.',
+          );
+        }
+      }
+    })();
+  };
+  const diagnosticClipboard = doc.defaultView?.navigator?.clipboard;
+  const serverUpdateDiagnosticWriter =
+    typeof diagnosticClipboard?.writeText === 'function'
+      ? (summary: string) => diagnosticClipboard.writeText(summary)
+      : undefined;
   if (options.enableConnectionIndicator !== false) {
-    // Inject the chip + banner styles once into <head> (marker-guarded so a
+    // Inject the announcer + banner styles once into <head> (marker-guarded so a
     // re-bootstrap on the same document doesn't stack them) — the same
     // mount-creates-nodes / bootstrap-injects-styles split the notify toasts
     // use, which keeps `mountConnectionIndicator` touching only createElement.
@@ -2430,42 +4177,655 @@ export const bootstrapWebclient = async (
       connStyle.textContent = CONNECTION_INDICATOR_STYLES;
       doc.head.appendChild(connStyle);
     }
+    // A recovery return earns its receipt only after the mounted route's own
+    // first server read settles. Ordinary profile switches and reauth returns
+    // keep their immediate, one-shot receipt.
+    deferredRecoveryReturnArrival =
+      options.suppressInitialConnectedReceipt !== true
+      && options.initialConnectedReceiptCopy === undefined
+        ? recoveryReturnArrival
+        : undefined;
+    const initialConnectedReceiptCopy =
+      options.suppressInitialConnectedReceipt === true
+        ? undefined
+        : options.initialConnectedReceiptCopy
+          ?? (deferredRecoveryReturnArrival === undefined
+            ? serverSwitchArrivalReceiptCopy
+            : undefined)
+          ?? (deferredRecoveryReturnArrival === undefined
+            && options.reauthRecovery !== undefined
+            ? options.reauthRecovery.chatDraft !== undefined
+              ? 'Reconnected. Your Chat draft is ready where you left it.'
+              : 'Reconnected. You’re back where you left off.'
+            : undefined);
     connectionIndicator = mountConnectionIndicator({
-      chipHost: appShell.connectionHost,
+      statusHost: appShell.connectionHost,
       bannerHost: options.root,
       document: doc,
       status: connectionStatus.status,
       onStatus: connectionStatus.onStatus,
+      ...(initialConnectedReceiptCopy !== undefined
+        ? {
+            receiptOnFirstConnected: true,
+            firstConnectedReceiptCopy: initialConnectedReceiptCopy,
+          }
+        : {}),
+      // "Review server profiles" opens Account — the badge, explanation, and
+      // profile list all live there. It used to open a second popover whose
+      // third step linked to Settings ▸ Server, every panel of which is rpc-
+      // driven and therefore unreachable during the outage that raised it.
+      onRecoveryAction: () => accountMenu?.open(),
     });
-    // D-109 server-status pill — grouped with the connection chip. Same
-    // style-inject discipline (marker-guarded). Hides while not connected
-    // (B1: the chip owns the down-signal); fed snapshots in the demux above.
+    // Account menu — the topbar's rightmost control, and the answer to
+    // "where do I go when my server stops answering".
+    //
+    // The route-independent banner reports an outage; this is where the owner
+    // can act on it. Its badge is driven by the same `connection-status`
+    // controller, and the profile list reads local storage only, so it stays
+    // usable with nothing running on the other end.
     if (
       doc.head !== undefined
-      && doc.head.querySelector(`style[${SERVER_PILL_STYLES_MARKER}]`) === null
+      && doc.head.querySelector(`style[${ACCOUNT_MENU_STYLES_MARKER}]`) === null
     ) {
-      const pillStyle = doc.createElement('style');
-      pillStyle.setAttribute(SERVER_PILL_STYLES_MARKER, '');
-      pillStyle.textContent = SERVER_PILL_STYLES;
-      doc.head.appendChild(pillStyle);
+      const accountStyle = doc.createElement('style');
+      accountStyle.setAttribute(ACCOUNT_MENU_STYLES_MARKER, '');
+      accountStyle.textContent = `${ACCOUNT_MENU_STYLES}\n${SERVER_SWITCHER_STYLES}`;
+      doc.head.appendChild(accountStyle);
     }
-    serverPill = mountWebclientServerPill({
-      host: appShell.serverPillHost,
-      status: connectionStatus.status,
-      onStatus: connectionStatus.onStatus,
-      // D-188 — the master pause control. Owner-only `server.setPaused` rides
-      // the bearer-gated WS (never MCP-bridged); reachable while paused since
-      // it never routes through the op-admission gate.
-      runSetPaused: (active: boolean) =>
-        rpcConn.call('server.setPaused', { active }),
-      // D-188 — restart control (drain + supervisor handoff). The popover gates
-      // the button on a respawning supervisor_mode from the heartbeat, so an
-      // un-supervised server never shows it; it doubles as the crash-halt
-      // recovery action.
-      runRequestRestart: () =>
-        rpcConn.call('server.requestRestart', { reason: 'webclient' }),
-    });
+    // Re-read the roster from storage rather than trusting a cached copy:
+    // another tab may have switched, renamed, or forgotten a server since
+    // this one booted.
+    const refreshAccountMenu = (): void => {
+      void (async () => {
+        try {
+          const [profiles, activeId] = await Promise.all([
+            profileStore?.listProfiles() ?? Promise.resolve([]),
+            profileStore?.activeProfileId() ?? Promise.resolve(null),
+          ]);
+          const currentProfileIds = new Set(
+            profiles.map((profile) => profile.id),
+          );
+          for (const previous of knownServerProfiles) {
+            if (!currentProfileIds.has(previous.id)) {
+              inactiveProfileRecoveryDiscovery.purge(previous.id);
+            }
+          }
+          knownServerProfiles = profiles;
+          const bootProfile = profiles.find((profile) =>
+            profile.id === bootProfileId);
+          if (bootProfile !== undefined) {
+            const label = bootProfile.label.trim();
+            bootProfileLabel = label.length > 0
+              ? label
+              : defaultProfileLabel(bootProfile.server_url);
+            if (recoveryIntentContinuationMarker !== null) {
+              recoveryIntentContinuation =
+                recoveryIntentContinuationPresentation(
+                  recoveryIntentContinuationMarker,
+                );
+              approvalAttentionPopover?.setRecoveryIntentContinuation(
+                recoveryIntentContinuation,
+              );
+            }
+            approvalAttentionPopover?.setConnectionRecoveryProfileLabel(
+              bootProfileLabel,
+            );
+          }
+          if (
+            pendingInactiveProfileRecoveryReviewId !== null
+            && !profiles.some((profile) =>
+              profile.id === pendingInactiveProfileRecoveryReviewId
+              && profile.server_url.length > 0)
+          ) {
+            inactiveProfileRecoveryReview.retire(
+              pendingInactiveProfileRecoveryReviewId,
+            );
+            inactiveProfileRecoveryDiscovery.purge(
+              pendingInactiveProfileRecoveryReviewId,
+            );
+            pendingInactiveProfileRecoveryReviewId = null;
+          }
+          refreshInactiveConnectionRecoveryHints(profiles);
+          refreshRecoveryExcursionReturn(profiles);
+          refreshActivePostSafeStopProfileContext(profiles);
+          accountMenu?.refresh(profiles, activeId);
+        } catch (err) {
+          // A roster read failure must not take down the shell; the menu keeps
+          // showing what it last rendered.
+          console.error('webclient: account menu refresh failed', err);
+        }
+      })();
+    };
+    requestServerProfileRefresh = refreshAccountMenu;
+    // Mount the Account surface synchronously, then hydrate its local roster.
+    // Theme, Settings, and the banner handoff must remain usable even when an
+    // IndexedDB profile read is slow or fails; gating the whole menu on that
+    // Promise made the banner's only action briefly inert and could remove the
+    // account control altogether on a storage error.
+    try {
+        accountMenu = mountAccountMenu({
+          host: appShell.accountHost,
+          document: doc,
+          profiles: [],
+          activeProfileId: null,
+          unreachable: connectionStatus.status() === 'offline',
+          activeConnected: connectionStatus.status() === 'connected',
+          ...(options.now !== undefined ? { now: options.now } : {}),
+          ...(serverUpdateDiagnosticWriter !== undefined
+            ? { serverUpdateDiagnosticWriter }
+            : {}),
+          settingsHref: serializeShellRoute('settings', 'account'),
+          onClose: () => {
+            if (pendingInactiveProfileRecoveryReviewId !== null) {
+              inactiveProfileRecoveryReview.retire(
+                pendingInactiveProfileRecoveryReviewId,
+              );
+              pendingInactiveProfileRecoveryReviewId = null;
+            }
+            // Closing the reviewed return does not abandon it. Keep the
+            // durable neutral Attention offer; only clear this Account-open
+            // selection so a later unrelated switch cannot inherit its route.
+            pendingRecoveryExcursionReturn = null;
+          },
+          ...(profileStore !== undefined && reloadForServerSwitch !== undefined
+            ? {
+              onAddServer: () => {
+                void (async () => {
+                  // Open a pending profile, then reload. The boot reads no
+                  // `server_url` and lands on the pair form — the existing,
+                  // fully-tested pairing surface rather than a second one
+                  // built inside this menu. Pairing adopts the pending
+                  // record; abandoning is recoverable because that form now
+                  // offers a way back to a server that still works.
+                  try {
+                    await profileStore.beginNewProfile();
+                  } catch (err) {
+                    console.error('webclient: add server failed', err);
+                    refreshAccountMenu();
+                    return;
+                  }
+                  reloadForServerSwitch();
+                })();
+              },
+            }
+            : {}),
+          switchWorkState: currentServerSwitchWorkState,
+          switchActiveWork: currentServerSwitchActiveWork,
+          activeWork: switchWorkTracker.activeWork(),
+          onReturnToWork: navigateHash,
+          onResumeServerUpdateGuide: (guide) => {
+            const marker = credentialRotationServerUpdateContinuity.read();
+            if (
+              marker?.phase === 'resolved_elsewhere'
+              && guide.returnHref
+                === serializeConnectionsCredentialRotationRetry(marker)
+            ) {
+              credentialRotationServerUpdateContinuity
+                .resumeResolvedRetry(marker);
+            }
+          },
+          onDismissServerUpdateGuide: (guide) => {
+            const marker = credentialRotationServerUpdateContinuity.read();
+            if (
+              marker !== null
+              && guide.returnHref
+                === serializeConnectionsCredentialRotationRetry(marker)
+            ) {
+              retireServerUpdateReturn(marker);
+            }
+          },
+          onRetryServerUpdateReceipt: () => {
+            serverUpdateReceiptVerification?.retry();
+          },
+          onFinishServerUpdateReceiptClosure: () => {
+            serverUpdateReceiptVerification?.finishClosure();
+          },
+          onSwitch: async (
+            id,
+            reviewedWorkState,
+            reviewedActiveWork = [],
+          ) => {
+            // Persist FIRST, verify the exact target, silently remove any
+            // source-owned URL identity, then reload. The inline profile-list
+            // review above is the one discard decision; the ordinary native
+            // beforeunload guard is suppressed only after every precondition
+            // has committed.
+            if (
+              pendingInactiveProfileRecoveryReviewId !== null
+              && pendingInactiveProfileRecoveryReviewId !== id
+            ) {
+              inactiveProfileRecoveryReview.retire(
+                pendingInactiveProfileRecoveryReviewId,
+              );
+              pendingInactiveProfileRecoveryReviewId = null;
+            }
+            if (
+              profileStore === undefined
+              || reloadForServerSwitch === undefined
+              || bootProfileId === null
+            ) {
+              throw new Error('Server switching is not available in this tab.');
+            }
+            const sourceHash = activeHash;
+            const recoveryReturn =
+              pendingRecoveryExcursionReturn?.sourceProfileId === id
+                ? pendingRecoveryExcursionReturn
+                : null;
+            const landingHash = recoveryReturn?.returnHash
+              ?? serverSwitchLandingHash(sourceHash, id);
+            if (
+              landingHash !== sourceHash
+              && replaceHashForServerSwitch === undefined
+            ) {
+              throw new Error(
+                'This tab cannot safely remove the current server’s detail link before switching.',
+              );
+            }
+
+            let switchAttempted = false;
+            let hashRewriteAttempted = false;
+            let failureStage:
+              | 'preflight_read'
+              | 'preflight_changed'
+              | 'work_changed'
+              | 'persist'
+              | 'verify'
+              | 'rewrite'
+              | 'reload' = 'preflight_read';
+            try {
+              const activeBeforeSwitch = await profileStore.activeProfileId();
+              if (activeBeforeSwitch !== bootProfileId) {
+                failureStage = 'preflight_changed';
+                throw new Error('active profile changed before switch');
+              }
+              const workBeforePersist = currentServerSwitchWorkSnapshot();
+              if (!serverSwitchReviewCoversWorkState(
+                reviewedWorkState,
+                workBeforePersist.workState,
+              ) || !serverSwitchReviewCoversActiveWork(
+                reviewedActiveWork,
+                workBeforePersist.activeWork,
+              )) {
+                failureStage = 'work_changed';
+                throw new Error('source work changed before switch');
+              }
+
+              failureStage = 'persist';
+              switchAttempted = true;
+              await profileStore.switchProfile(id);
+              failureStage = 'verify';
+              if (await profileStore.activeProfileId() !== id) {
+                throw new Error('selected profile was not made active');
+              }
+              const workBeforeReload = currentServerSwitchWorkSnapshot();
+              if (!serverSwitchReviewCoversWorkState(
+                reviewedWorkState,
+                workBeforeReload.workState,
+              ) || !serverSwitchReviewCoversActiveWork(
+                reviewedActiveWork,
+                workBeforeReload.activeWork,
+              )) {
+                failureStage = 'work_changed';
+                throw new Error('source work changed while switch was finishing');
+              }
+
+              failureStage = 'rewrite';
+              if (landingHash !== sourceHash) {
+                hashRewriteAttempted = true;
+                replaceHashForServerSwitch?.(landingHash);
+              }
+
+              failureStage = 'reload';
+              intentionalServerSwitchReload = true;
+              const acceptedReloadSignalArmed = armAcceptedServerSwitchSignal();
+              requestServerSwitchReload({
+                targetProfileId: id,
+                ...(recoveryReturn !== null
+                  ? { recoveryReturnLandingHash: landingHash }
+                  : {}),
+                ...(recoveryReturn?.returnContext !== undefined
+                  ? { recoveryReturnContext: recoveryReturn.returnContext }
+                  : {}),
+                ...(options.serverSwitchContinuityStorage !== undefined
+                  ? { storage: options.serverSwitchContinuityStorage }
+                  : {}),
+                reload: reloadForServerSwitch,
+              });
+              // Account closes after an accepted switch. That close is not an
+              // abandonment: leave the session marker for the destination
+              // boot, but clear this source-tab owner so `onClose` cannot
+              // retire it before navigation commits. A thrown reload stays in
+              // the catch path with the owner intact, so the person can retry
+              // here or explicitly close Account to abandon the handoff.
+              if (pendingInactiveProfileRecoveryReviewId === id) {
+                pendingInactiveProfileRecoveryReviewId = null;
+              }
+              // The reviewed switch is now accepted. Whether the owner chose
+              // the saved source or deliberately selected another profile,
+              // this target-owned excursion no longer has work to resume.
+              if (activeRecoveryExcursion !== null) {
+                inactiveProfileRecoveryReview.retire(
+                  activeRecoveryExcursion.targetProfileId,
+                );
+                activeRecoveryExcursion = null;
+                recoveryExcursionReturn = null;
+                approvalAttentionPopover?.setRecoveryExcursionReturn(null);
+              }
+              pendingRecoveryExcursionReturn = null;
+              // Non-window/test hosts cannot expose pagehide; their injected
+              // reload returning is the strongest available acceptance seam.
+              if (!acceptedReloadSignalArmed) {
+                signalActiveServerProfileChanged();
+              }
+            } catch (err) {
+              detachPendingServerSwitchSignal();
+              intentionalServerSwitchReload = false;
+              let rollbackFailed = false;
+              let pointerChangedExternally = false;
+              if (switchAttempted) {
+                let activeAfterFailure: string | null | undefined;
+                try {
+                  activeAfterFailure = await profileStore.activeProfileId();
+                } catch {
+                  // An unreadable pointer after a returned/partial write is
+                  // unsafe. An idempotent rollback below is the only way to
+                  // keep this still-mounted shell aligned with its source.
+                  activeAfterFailure = undefined;
+                }
+                try {
+                  // Do not overwrite a positively observed newer sibling-tab
+                  // choice. Roll back the selected target—or an unreadable
+                  // result—to the server this live shell is still using.
+                  if (activeAfterFailure === id || activeAfterFailure === undefined) {
+                    await profileStore.switchProfile(bootProfileId);
+                    if (await profileStore.activeProfileId() !== bootProfileId) {
+                      rollbackFailed = true;
+                    }
+                  } else if (activeAfterFailure !== bootProfileId) {
+                    // A sibling won with another profile. Preserve its choice,
+                    // but this old shell is no longer coherent with storage.
+                    pointerChangedExternally = true;
+                  }
+                } catch {
+                  rollbackFailed = true;
+                }
+              }
+              if (hashRewriteAttempted) {
+                try {
+                  replaceHashForServerSwitch?.(sourceHash);
+                } catch {
+                  // The mounted route and its in-memory work still exist. A
+                  // stale address-bar rewrite is less harmful than claiming
+                  // the server pointer recovered when it did not.
+                }
+              }
+              console.error('webclient: server switch failed', err);
+              refreshAccountMenu();
+              if (pointerChangedExternally) {
+                throw new Error(
+                  'The active server changed in another tab while this switch was finishing. Reload this tab before continuing.',
+                );
+              }
+              if (rollbackFailed) {
+                throw new Error(
+                  'The saved server changed, but this tab couldn’t reload. Reload this tab before continuing.',
+                );
+              }
+              if (failureStage === 'preflight_changed') {
+                throw new Error(
+                  'The active server changed in another tab. Review the server list and try again.',
+                );
+              }
+              if (failureStage === 'work_changed') {
+                throw new Error(
+                  'Your work changed while this switch was finishing. Review the updated boundary before switching.',
+                );
+              }
+              if (failureStage === 'verify') {
+                throw new Error(
+                  'Couldn’t confirm the selected server. Nothing was switched here.',
+                );
+              }
+              if (failureStage === 'reload') {
+                throw new Error(
+                  'This tab couldn’t reload automatically. Your work is still here; try the switch again.',
+                );
+              }
+              throw new Error(
+                'Couldn’t switch servers. Your work is still here; try again.',
+              );
+            }
+          },
+          ...(profileStore !== undefined
+            ? {
+              onRename: async (id: string, label: string) => {
+                try {
+                  const savedLabel = await profileStore.renameProfile(id, label);
+                  if (savedLabel === null) {
+                    throw new Error(
+                      'This server profile was removed in another tab.',
+                    );
+                  }
+                  signalServerProfilesChanged();
+                  return savedLabel;
+                } catch (err) {
+                  console.error('webclient: rename server profile failed', err);
+                  throw new Error(
+                    `Couldn’t save this server name. ${humanizeRpcError(err)}`,
+                  );
+                }
+              },
+            }
+            : {}),
+          ...(profileStore !== undefined && reloadForServerSwitch !== undefined
+            ? {
+              onRemove: async (id, mode) => {
+                const [profiles, activeId] = await Promise.all([
+                  profileStore.listProfiles(),
+                  profileStore.activeProfileId(),
+                ]).catch((err: unknown): never => {
+                  console.error('webclient: read server profile failed', err);
+                  throw new Error(
+                    'Couldn’t check this saved server profile. Nothing was removed. Try again.',
+                  );
+                });
+                const profile = profiles.find((candidate) => candidate.id === id);
+                if (profile === undefined) {
+                  // A sibling tab already completed the durable operation.
+                  // Treat that as convergence, not as a destructive-action
+                  // failure that asks the owner to retry a missing record.
+                  inactiveProfileRecoveryReview.retire(id);
+                  inactiveProfileRecoveryDiscovery.purge(id);
+                  if (pendingInactiveProfileRecoveryReviewId === id) {
+                    pendingInactiveProfileRecoveryReviewId = null;
+                  }
+                  refreshAccountMenu();
+                  return;
+                }
+                const wasActive = activeId === id;
+                let revokeCommitted = false;
+
+                if (mode === 'revoke') {
+                  const instanceId = profile.pair_metadata?.instance_id?.trim() ?? '';
+                  if (!wasActive) {
+                    throw new Error(
+                      'Switch to this server before revoking this browser’s access.',
+                    );
+                  }
+                  if (connectionStatus.status() !== 'connected') {
+                    throw new Error(
+                      'Reconnect to this server before revoking access. The saved profile is still available.',
+                    );
+                  }
+                  if (instanceId.length === 0) {
+                    throw new Error(
+                      'This older profile has no revocable browser identity. Forget it on this browser instead.',
+                    );
+                  }
+
+                  intentionalProfileRetirement = true;
+                  try {
+                    await runSelfPairRevocation({
+                      instanceId,
+                      runRevoke: (signal) =>
+                        rpcConn.call(
+                          'pair.revoke',
+                          { instance_id: instanceId },
+                          { signal },
+                        ),
+                      onMessage: ws.onMessage,
+                      ...(options.selfRevokeReceiptGraceMs !== undefined
+                        ? {
+                            receiptGraceMs:
+                              options.selfRevokeReceiptGraceMs,
+                          }
+                        : {}),
+                    });
+                    revokeCommitted = true;
+                  } catch (err) {
+                    intentionalProfileRetirement = false;
+                    replaySuppressedRetirementReauth();
+                    console.error('webclient: revoke server access failed', err);
+                    throw new Error(
+                      `Couldn’t revoke this browser’s access. ${humanizeRpcError(err)} The saved profile is still here; retry or forget it locally.`,
+                    );
+                  }
+                }
+
+                try {
+                  // Remote proof FIRST, durable local deletion SECOND. A
+                  // failed revoke therefore never silently degrades into a
+                  // local forget and leaves the server-side bearer live.
+                  await profileStore.removeProfile(id);
+                } catch (err) {
+                  console.error('webclient: forget server failed', err);
+                  if (revokeCommitted) {
+                    // Keep retirement suppression: this bearer really was
+                    // revoked, and the inline local-only action is now the
+                    // honest recovery from a failed IndexedDB deletion.
+                    throw new Error(
+                      'Access was revoked, but this browser could not remove the saved profile. Try “Forget on this browser” again.',
+                    );
+                  }
+                  throw new Error(
+                    `Couldn’t forget this server on this browser. ${humanizeRpcError(err)}`,
+                  );
+                }
+
+                inactiveProfileRecoveryReview.retire(id);
+                inactiveProfileRecoveryDiscovery.purge(id);
+                if (pendingInactiveProfileRecoveryReviewId === id) {
+                  pendingInactiveProfileRecoveryReviewId = null;
+                }
+
+                signalServerProfilesChanged(true);
+
+                // Forgetting the server this tab is CONNECTED to leaves the
+                // app running against credentials it no longer holds, so that
+                // case reboots onto the roster fallback. Forgetting any other
+                // profile is a local roster edit and only needs a re-render.
+                if (wasActive) reloadForServerSwitch();
+                else refreshAccountMenu();
+              },
+            }
+            : {}),
+        });
+        detachServerSwitchWork = switchWorkTracker.subscribe((work) => {
+          accountMenu?.setActiveWork(work);
+        });
+        // A reload restores the privacy-safe pointer quietly: discoverable in
+        // Account, but never forcing the popover over the owner's exact route.
+        syncAccountServerUpdateGuide();
+        // The theme toggle lives in the menu's quick row now, so it mounts
+        // once the menu exists and exposes its slot.
+        themeToggle = mountThemeToggle({
+          host: accountMenu.themeSlot(),
+          document: doc,
+        });
+        // D-109 server-status pill — now INSIDE this menu (see the topbar
+        // note above). Mounted HERE, not beside the menu: the slot only
+        // exists once `mountAccountMenu` has returned. Same style-inject
+        // discipline (marker-guarded). The pill
+        // still hides itself while not connected (the banner + active profile
+        // own the down-signal), so the menu's status row collapses then.
+        if (
+          doc.head !== undefined
+          && doc.head.querySelector(`style[${SERVER_PILL_STYLES_MARKER}]`) === null
+        ) {
+          const pillStyle = doc.createElement('style');
+          pillStyle.setAttribute(SERVER_PILL_STYLES_MARKER, '');
+          pillStyle.textContent = SERVER_PILL_STYLES;
+          doc.head.appendChild(pillStyle);
+        }
+        // The menu's slot IS the pill host now, so it has to carry the host
+        // attribute: every pill style is scoped under it, and a slot without
+        // it renders an unstyled pill.
+        const pillHost = accountMenu.serverSlot();
+        pillHost.setAttribute(SERVER_PILL_HOST_ATTR, '');
+        serverPill = mountWebclientServerPill({
+          host: pillHost,
+          status: connectionStatus.status,
+          onStatus: connectionStatus.onStatus,
+          // D-188 — the master pause control. Owner-only `server.setPaused`
+          // rides the bearer-gated WS (never MCP-bridged); reachable while
+          // paused since it never routes through the op-admission gate.
+          runSetPaused: (active: boolean) =>
+            rpcConn.call('server.setPaused', { active }),
+          // D-188 — restart control (drain + supervisor handoff). The popover
+          // gates the button on a respawning supervisor_mode from the
+          // heartbeat, so an un-supervised server never shows it; it doubles
+          // as the crash-halt recovery action.
+          runRequestRestart: () =>
+            rpcConn.call('server.requestRestart', { reason: 'webclient' }),
+        });
+        // Badge follows the same controller as the banner, so the two can
+        // never disagree about whether the current server is reachable.
+        unsubscribeAccountStatus = connectionStatus.onStatus((status) => {
+          accountMenu?.setUnreachable(status === 'offline');
+          accountMenu?.setActiveConnected(status === 'connected');
+        });
+        refreshAccountMenu();
+      } catch (err) {
+        console.error('webclient: account menu unavailable', err);
+      }
   }
+
+  // Profile recency belongs to the exact credential generation this shell
+  // hydrated, not whatever shared active pointer a sibling may write later.
+  // Drive it from the raw socket's `connected` transition (rather than the
+  // coarse status controller, whose stalled -> connected recovery is not a new
+  // connection). Writes are serialized so a quick reconnect cannot overtake
+  // the prior stamp. Failure is non-fatal: the live app remains connected and
+  // the next reconnect tries again.
+  let profileRecencyObserverDisposed = false;
+  let profileRecencyWrite: Promise<void> = Promise.resolve();
+  let profileRecencyFailureReported = false;
+  const detachProfileRecency =
+    options.profileStore !== undefined
+    && bootProfileId !== null
+    && bootProfileId.length > 0
+      ? ws.onState((state) => {
+          if (state !== 'connected') return;
+          const connectedAt = (options.now ?? Date.now)();
+          if (!Number.isFinite(connectedAt) || connectedAt < 0) return;
+          const run = profileRecencyWrite.then(async () => {
+            await options.profileStore!.noteProfileConnected(
+              bootProfileId,
+              connectedAt,
+            );
+            profileRecencyFailureReported = false;
+            if (profileRecencyObserverDisposed) return;
+            requestServerProfileRefresh();
+            signalServerProfilesChanged();
+          });
+          profileRecencyWrite = run.catch((err: unknown) => {
+            if (!profileRecencyFailureReported) {
+              profileRecencyFailureReported = true;
+              console.error('webclient: server profile recency update failed', err);
+            }
+          });
+        })
+      : (): void => undefined;
 
   // Slice 111 — production composer for the `tls.renew` caller seam.
   // `enableTlsRenewPanel: false` opts out (tests that don't exercise
@@ -2549,6 +4909,115 @@ export const bootstrapWebclient = async (
         force?: boolean;
         dry_run?: boolean;
       }) => rpcConn.call('server.archive.import', args);
+
+  // An archive export is longer-lived than its start rpc. Keep the start
+  // promise + server job id at boot scope so leaving Settings does not orphan
+  // the operation; a later `#settings/backup` mount can attach to the same
+  // promise and resume polling without asking for the recovery key again.
+  type ActiveArchiveExport = {
+    readonly start: Promise<{ job_id: string }>;
+    jobId: string | null;
+    terminalStatus: Awaited<
+      ReturnType<NonNullable<typeof archiveStatusCaller>>
+    > | null;
+    readonly release: ServerSwitchWorkLease;
+  };
+  let activeArchiveExport: ActiveArchiveExport | null = null;
+  const settleActiveArchiveExport = (jobId?: string): void => {
+    if (
+      activeArchiveExport === null
+      || (jobId !== undefined
+        && activeArchiveExport.jobId !== null
+        && activeArchiveExport.jobId !== jobId)
+    ) return;
+    activeArchiveExport.release();
+    activeArchiveExport = null;
+  };
+  const continuousArchiveExportCaller = archiveExportCaller === undefined
+    ? undefined
+    : (args: Parameters<NonNullable<typeof archiveExportCaller>>[0]) => {
+        if (activeArchiveExport !== null) {
+          return Promise.reject(new Error(
+            'A backup is already running. Return to Backup & Recovery to check it.',
+          ));
+        }
+        const release = switchWorkTracker.begin({
+          id: 'settings:archive-export',
+          label: 'Creating a full backup',
+          returnHref: serializeShellRoute('settings', 'backup'),
+          returnLabel: 'View backup progress',
+        });
+        const start = Promise.resolve().then(() => archiveExportCaller(args));
+        const entry: ActiveArchiveExport = {
+          start,
+          jobId: null,
+          terminalStatus: null,
+          release,
+        };
+        activeArchiveExport = entry;
+        void start.then(
+          ({ job_id }) => {
+            if (activeArchiveExport !== entry) return;
+            entry.jobId = job_id;
+            release.update({ jobId: job_id });
+          },
+          () => {
+            if (activeArchiveExport !== entry) return;
+            release.update({
+              label: 'Backup could not start — view details',
+              returnLabel: 'View backup details',
+              phase: 'result_ready',
+            });
+          },
+        );
+        return start;
+      };
+  const continuousArchiveStatusCaller = archiveStatusCaller === undefined
+    ? undefined
+    : async (args: Parameters<NonNullable<typeof archiveStatusCaller>>[0]) => {
+        const entry = activeArchiveExport;
+        if (
+          entry !== null
+          && entry.terminalStatus !== null
+          && (entry.jobId === null || entry.jobId === args.job_id)
+        ) {
+          return entry.terminalStatus;
+        }
+        let status: Awaited<ReturnType<NonNullable<typeof archiveStatusCaller>>>;
+        try {
+          status = await archiveStatusCaller(args);
+        } catch (error) {
+          if (
+            activeArchiveExport !== null
+            && (activeArchiveExport.jobId === null
+              || activeArchiveExport.jobId === args.job_id)
+          ) {
+            activeArchiveExport.release.update({
+              label: 'Backup status needs attention',
+              returnLabel: 'Check backup status',
+            });
+          }
+          throw error;
+        }
+        if (
+          (status.state === 'done' || status.state === 'error')
+          && activeArchiveExport !== null
+          && (activeArchiveExport.jobId === null
+            || activeArchiveExport.jobId === args.job_id)
+        ) {
+          activeArchiveExport.terminalStatus = status;
+          activeArchiveExport.release.update({
+            label: status.state === 'done'
+              ? 'Backup ready to review'
+              : 'Backup finished with an error',
+            returnLabel: status.state === 'done'
+              ? 'View backup result'
+              : 'View backup details',
+            phase: 'result_ready',
+          });
+        }
+        return status;
+      };
 
   // M5 S2b — stash the rebind a committing restore returns so the post-restart
   // reconnect re-pairs seamlessly (the swap wiped this driving client's bearer
@@ -2873,26 +5342,8 @@ export const bootstrapWebclient = async (
   // runnability: a failure just means no PII lines render.
   const recipesPiiCaller: RecipesPiiCaller = () =>
     rpcConn.call('recipe.pii', undefined);
-  const recipeExecuteCaller: RecipeExecuteCaller = (args) => {
-    const executeArgs: {
-      recipe_id: string;
-      config?: Record<string, unknown>;
-      context?: Record<string, unknown>;
-      trigger_source: string;
-    } = {
-      recipe_id: args.recipe_id,
-      trigger_source: 'manual',
-    };
-    if (args.config !== undefined) {
-      executeArgs.config = args.config;
-    }
-    // Targeting guard (design § 8) — the run modal's filled target
-    // fields ride the run as caller context (e.g. `{ entity_id }`).
-    if (args.context !== undefined) {
-      executeArgs.context = args.context;
-    }
-    return rpcConn.call('execute', executeArgs);
-  };
+  const recipeExecuteCaller: RecipeExecuteCaller = (args) =>
+    rpcConn.call('execute', buildRecipeExecuteArgs(args));
 
   // D-210 Appendix B — build the absolute manage URL from the paired WS server.
   // The RPC intentionally returns a path: a WS call has no request Host, while
@@ -2904,14 +5355,15 @@ export const bootstrapWebclient = async (
       : url.protocol === 'ws:' ? 'http:' : url.protocol;
     return `${protocol}//${url.host}`;
   };
-  const manageRescheduleLinkCaller: DataManageRescheduleLinkCaller = async (input) => {
-    const result = await rpcConn.call('reception.manage.mint', input);
-    const serverUrl = (await options.localStore.get('server_url')) ?? pair.serverUrl;
-    return {
-      url: `${receptionHttpBaseFromWsUrl(serverUrl)}${result.manage_path}`,
-      expires_at: result.expires_at,
-    };
-  };
+  const manageRescheduleLinkCaller: DataManageRescheduleLinkCaller =
+    switchWorkTracker.track(async (input) => {
+      const result = await rpcConn.call('reception.manage.mint', input);
+      const serverUrl = (await options.localStore.get('server_url')) ?? pair.serverUrl;
+      return {
+        url: `${receptionHttpBaseFromWsUrl(serverUrl)}${result.manage_path}`,
+        expires_at: result.expires_at,
+      };
+    });
 
   // D-174 P5 — Data route callers. These are local-UI pair RPCs only:
   // editable own-it rows use contact.* + work_entity.*, while mirror
@@ -2923,9 +5375,13 @@ export const bootstrapWebclient = async (
   const dataWorkEntityGetCaller: DataWorkEntityGetCaller = (args) =>
     rpcConn.call('work_entity.get', args);
   const dataWorkEntityUpsertCaller: DataWorkEntityUpsertCaller = (args) =>
-    rpcConn.call('work_entity.upsert', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('work_entity.upsert', input),
+    )(args);
   const dataWorkEntityDeleteCaller: DataWorkEntityDeleteCaller = (args) =>
-    rpcConn.call('work_entity.delete', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('work_entity.delete', input),
+    )(args);
   const dataContactListCaller: DataContactListCaller = (args) =>
     rpcConn.call('contact.list', args);
   const dataContactGetCaller: DataContactGetCaller = (args) =>
@@ -2935,9 +5391,13 @@ export const bootstrapWebclient = async (
   const dataContactContributionsCaller: DataContactContributionsCaller = (args) =>
     rpcConn.call('contact.contributions', args);
   const dataContactUpsertCaller: DataContactUpsertCaller = (args) =>
-    rpcConn.call('contact.upsert', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('contact.upsert', input),
+    )(args);
   const dataContactDeleteCaller: DataContactDeleteCaller = (args) =>
-    rpcConn.call('contact.delete', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('contact.delete', input),
+    )(args);
   // D-205 #2b — `#data/contact/scan`. These four rpcs shipped with D-138 and
   // have had NO caller until now; `contact.merge.*` is in the MCP reserved-prefix
   // set, so a merge decision is user-authoritative by construction and this is
@@ -2945,11 +5405,17 @@ export const bootstrapWebclient = async (
   const dataContactMergeListCaller: DataContactMergeListCaller = (args) =>
     rpcConn.call('contact.merge.list', args);
   const dataContactMergeConfirmCaller: DataContactMergeConfirmCaller = (args) =>
-    rpcConn.call('contact.merge.confirm', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('contact.merge.confirm', input),
+    )(args);
   const dataContactMergeRejectCaller: DataContactMergeRejectCaller = (args) =>
-    rpcConn.call('contact.merge.reject', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('contact.merge.reject', input),
+    )(args);
   const dataContactMergeScanNowCaller: DataContactMergeScanNowCaller = (args) =>
-    rpcConn.call('contact.merge.scan_now', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('contact.merge.scan_now', input),
+    )(args);
   // D-205 #2c — the Sources health strip. The first reader of the contact runner's
   // per-cycle counters, which have been persisted and unread since D-205 #1.
   const dataContactSourceListCaller: DataContactSourceListCaller = () =>
@@ -2960,24 +5426,34 @@ export const bootstrapWebclient = async (
   const dataContactImportCandidatesCaller: DataContactImportCandidatesCaller = (args) =>
     rpcConn.call('contact.import.candidates', args);
   const dataContactImportPromoteCaller: DataContactImportPromoteCaller = (args) =>
-    rpcConn.call('contact.import.promote', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('contact.import.promote', input),
+    )(args);
   // D-205 #5c — the manual vCard / CSV import. A BATCH `contact.upsert`, not a Source:
   // everything it writes lands at the `manual` rung, and the review shows only the
   // CONFLICTS — the adds have nothing to overwrite.
   const dataContactImportFilePreviewCaller: DataContactImportFilePreviewCaller = (args) =>
     rpcConn.call('contact.import.file_preview', args);
   const dataContactImportFileApplyCaller: DataContactImportFileApplyCaller = (args) =>
-    rpcConn.call('contact.import.file_apply', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('contact.import.file_apply', input),
+    )(args);
   const dataFormResponseListCaller: DataFormResponseListCaller = (args) =>
     rpcConn.call('form_response.list', args);
   const dataFormResponseGetCaller: DataFormResponseGetCaller = (args) =>
     rpcConn.call('form_response.get', args);
   const dataFormResponseUpdateCaller: DataFormResponseUpdateCaller = (args) =>
-    rpcConn.call('form_response.update', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('form_response.update', input),
+    )(args);
   const dataFormResponseSetStateCaller: DataFormResponseSetStateCaller = (args) =>
-    rpcConn.call('form_response.set_state', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('form_response.set_state', input),
+    )(args);
   const dataFormResponseExportCaller: DataFormResponseExportCaller = (args) =>
-    rpcConn.call('form_response.export', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('form_response.export', input),
+    )(args);
   // Wire the §D.L2 drawer "Create" action seat (its shell thunk resolves here)
   // to the shared Create overlay — the same 4-kind capture the L1 composer
   // [✎ Create] button opens, with the same local-write callers as Data. Track
@@ -3006,6 +5482,28 @@ export const bootstrapWebclient = async (
     });
     return fileRefOptionsFromMirrorResults(results);
   };
+  /** D-221 record picker — one pack entity's rows as pickable options.
+   *
+   *  ⚠ `records.search` filters by FIELD, not by free text, and which field
+   *  holds the human name differs per entity. So a page is fetched and matched
+   *  in memory — which is what `RefPicker` is built for ("a server-backed
+   *  inventory and an in-memory one share one shape"). It is honest for the
+   *  sizes a picker is usable at and does NOT pretend to search the whole book:
+   *  beyond a page the owner narrows by typing against what was fetched.
+   *
+   *  The label is a best guess (`name` / `label` / `title`, else the first
+   *  string field, else the id) and the id is ALWAYS the sublabel — so a wrong
+   *  guess is cosmetic and the owner can still tell two rows apart. Nothing
+   *  here gates anything: the op's own binding still admits or refuses the
+   *  write.
+   */
+  // The `record_ref` picker's inventory read — extracted to `record-ref-search.ts`
+  // so the capped-page disclosure is reachable by a test. See its header.
+  const recordRefSearchCaller = createRecordRefSearchCaller({
+    search: (args) => rpcConn.call('records.search', args) as Promise<
+      { records?: Array<Record<string, unknown>> }>,
+  });
+
   // D-198 Slice 1b — the Memory lens feed read (owner-trusted whole-feed `memory.list`).
   const dataMemoryListCaller: DataMemoryListCaller = (args) =>
     rpcConn.call('memory.list', args);
@@ -3013,13 +5511,21 @@ export const bootstrapWebclient = async (
   const dataMemoryGetCaller: DataMemoryGetCaller = (args) =>
     rpcConn.call('memory.get', args);
   const dataMemoryCreateCaller: DataMemoryCreateCaller = (args) =>
-    rpcConn.call('memory.create', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('memory.create', input),
+    )(args);
   const dataMemoryUpdateCaller: DataMemoryUpdateCaller = (args) =>
-    rpcConn.call('memory.update', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('memory.update', input),
+    )(args);
   const dataMemoryDeleteCaller: DataMemoryDeleteCaller = (args) =>
-    rpcConn.call('memory.delete', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('memory.delete', input),
+    )(args);
   const dataMemoryImportCaller: DataMemoryImportCaller = (args) =>
-    rpcConn.call('memory.import', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('memory.import', input),
+    )(args);
   // D-198 Slice 5 — the generic collection explorer reads (schema-driven
   // list→detail over the adapter-backed collections; mail / calendar tabs).
   const dataCollectionListInstancesCaller: DataCollectionListInstancesCaller = () =>
@@ -3038,6 +5544,35 @@ export const bootstrapWebclient = async (
   // durable SQLite tier; `shared.` alone would hit the ephemeral cache tier).
   const dataSharedListCaller: DataSharedListCaller = () =>
     rpcConn.call('shared.list', { prefix: 'data.shared.' });
+  // D-221 — owner-pair Records explorer. This deliberately uses only the
+  // MCP-reserved `records.*` control plane; recipes use stamped Tier-P ops and
+  // never acquire a `data.records.*` resolver.
+  const dataRecordsNamespaceListCaller: DataRecordsNamespaceListCaller = () =>
+    rpcConn.call('records.namespace.list', undefined);
+  const dataRecordsKindListCaller: DataRecordsKindListCaller = (args) =>
+    rpcConn.call('records.kind.list', args);
+  const dataRecordsSearchCaller: DataRecordsSearchCaller = (args) =>
+    rpcConn.call('records.search', args);
+  const dataRecordsGetCaller: DataRecordsGetCaller = (args) =>
+    rpcConn.call('records.get', args);
+  const dataRecordsDeleteCaller: DataRecordsDeleteCaller = (args) =>
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('records.delete', input),
+    )(args);
+  const dataRecordsRetentionListCaller: DataRecordsRetentionListCaller = (args) =>
+    rpcConn.call('records.retention.list', args);
+  const dataRecordsExportCaller: DataRecordsExportCaller = (args) =>
+    rpcConn.call('records.export', args);
+  const dataRecordsOutboxListCaller: DataRecordsOutboxListCaller = (args) =>
+    rpcConn.call('records.outbox.list', args);
+  const dataRecordsOutboxRetireCaller: DataRecordsOutboxRetireCaller = (args) =>
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('records.outbox.retire', input),
+    )(args);
+  const dataRecordsPurgeCaller: DataRecordsPurgeCaller = (args) =>
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('records.purge', input),
+    )(args);
   // D-172 Half-A "open" — owner file-content read for the Files-tab download.
   // Owner-trusted `data.file.read` pair-RPC (bearer-gated WS = the auth), not
   // the contract/egress-gated op path.
@@ -3047,13 +5582,19 @@ export const bootstrapWebclient = async (
   // rpc registry; the chunk BYTES ride a DEDICATED binary `/ws/upload` socket
   // the host opens via this factory (ui-shared can't reach the token store).
   const dataUploadCreateCaller: DataUploadCreateCaller = (args) =>
-    rpcConn.call('upload.create', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('upload.create', input),
+    )(args);
   const dataUploadProbeCaller: DataUploadProbeCaller = (args) =>
     rpcConn.call('upload.probe', args);
   const dataUploadFinalizeCaller: DataUploadFinalizeCaller = (args) =>
-    rpcConn.call('upload.finalize', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('upload.finalize', input),
+    )(args);
   const dataUploadDeleteCaller: DataUploadDeleteCaller = (args) =>
-    rpcConn.call('upload.delete', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('upload.delete', input),
+    )(args);
   // Open an authenticated binary upload socket. Mirrors `resolveBearer`
   // (DD#2 — unwrap fresh, never cache plaintext) + `buildDefaultConnectUrl`,
   // but rewrites the pinned `…/ws` path to `…/ws/upload` and pins
@@ -3096,16 +5637,45 @@ export const bootstrapWebclient = async (
   const runsActiveCaller: RunsActiveCaller = (args) =>
     rpcConn.call('execution.active', args);
   const runsKillCaller: RunsKillCaller = (args) =>
-    rpcConn.call('execution.kill', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('execution.kill', input),
+      {
+        label: 'Stopping an active run',
+        returnHref: serializeShellRoute('logs', 'active'),
+        returnLabel: 'View active runs',
+      },
+    )(args);
   const runsCancelCaller: RunsCancelCaller = (args) =>
-    rpcConn.call('execution.cancel', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('execution.cancel', input),
+      {
+        label: 'Cancelling an active run',
+        returnHref: serializeShellRoute('logs', 'active'),
+        returnLabel: 'View active runs',
+      },
+    )(args);
   const runsPromoteCaller: RunsPromoteCaller = (args) =>
-    rpcConn.call('execution.promote', args);
+    switchWorkTracker.track(
+      (input: typeof args) => rpcConn.call('execution.promote', input),
+      {
+        label: 'Promoting an active run',
+        returnHref: serializeShellRoute('logs', 'active'),
+        returnLabel: 'View active runs',
+      },
+    )(args);
   // D-186 Slice C — the Runs "Active passes" (session-grant) live-control seam.
   const runsGrantsListCaller: RunsSessionGrantListCaller = (args) =>
     rpcConn.call('collection.contract.session_grant.list', args);
   const runsGrantsRevokeCaller: RunsSessionGrantRevokeCaller = (args) =>
-    rpcConn.call('collection.contract.session_grant.revoke', args);
+    switchWorkTracker.track(
+      (input: typeof args) =>
+        rpcConn.call('collection.contract.session_grant.revoke', input),
+      {
+        label: 'Revoking an active pass',
+        returnHref: serializeShellRoute('logs', 'active'),
+        returnLabel: 'View active runs',
+      },
+    )(args);
 
   // Reactive-substrate slice 1 — Automation route callers. The four
   // mechanism families (schedules / event-triggers / watches / auto-run)
@@ -3125,6 +5695,23 @@ export const bootstrapWebclient = async (
     rpcConn.call('triggers.delete', args);
   const automationAutoRunListCaller: AutomationAutoRunListCaller = () =>
     rpcConn.call('auto_run.list', undefined);
+  // D-215 slice 3 — the Dishes section's read. `last_runs` rides along on
+  // the same response (one audit scan server-side), so the list needs no
+  // second round-trip for its last-outcome column.
+  const automationDishesListCaller: AutomationDishesListCaller = () =>
+    rpcConn.call('dishes.list', {});
+  // D-215 slice 4 — a user-assigned dish's own mutations. A MANAGED dish
+  // never reaches these: the route routes a one-shot to `schedules.*` and
+  // every other managed dish to a link, and the server-side guard refuses
+  // them regardless (defence in depth, not belt-and-braces theatre).
+  const automationDishesUpdateCaller: AutomationDishesUpdateCaller = (args) =>
+    rpcConn.call('dishes.update', args);
+  const automationDishesDeleteCaller: AutomationDishesDeleteCaller = (args) =>
+    rpcConn.call('dishes.delete', args);
+  const automationDishesCreateCaller: AutomationDishesCreateCaller = (args) =>
+    rpcConn.call('dishes.create', args);
+  const automationDishesHistoryCaller: AutomationDishesHistoryCaller = (args) =>
+    rpcConn.call('dishes.history', args);
   const automationAutoRunUpdateCaller: AutomationAutoRunUpdateCaller = (args) =>
     rpcConn.call('auto_run.update', args);
   const automationWatchListCaller: AutomationWatchListCaller = () =>
@@ -3164,7 +5751,14 @@ export const bootstrapWebclient = async (
   const approvalResolveCaller: ApprovalResolveCaller | undefined =
     options.enableApprovalsRoute === false
       ? undefined
-      : (args) => rpcConn.call('approval.resolve', args);
+      : (args) => switchWorkTracker.track(
+          (input: typeof args) => rpcConn.call('approval.resolve', input),
+          {
+            label: 'Resolving an approval',
+            returnHref: serializeShellRoute('approvals'),
+            returnLabel: 'View approvals',
+          },
+        )(args);
   const approvalSubscribeCaller: ApprovalSubscribeCaller | undefined =
     options.enableApprovalsRoute === false
       ? undefined
@@ -3176,7 +5770,15 @@ export const bootstrapWebclient = async (
   const notificationAsksSubmitAnswerCaller: AsksSubmitAnswerCaller | undefined =
     options.enableApprovalsRoute === false
       ? undefined
-      : (args) => rpcConn.call('notification.submitAnswer', args);
+      : (args) => switchWorkTracker.track(
+          (input: typeof args) =>
+            rpcConn.call('notification.submitAnswer', input),
+          {
+            label: 'Sending an approval answer',
+            returnHref: serializeShellRoute('approvals'),
+            returnLabel: 'View approvals',
+          },
+        )(args);
   // Resolve a durable Chat plan from #approvals / the bell popover.
   // approve → chat.plan.approve, reject → chat.plan.cancel (wire verb
   // unchanged; only the label is "Reject"). Branched so each call carries a
@@ -3185,13 +5787,52 @@ export const bootstrapWebclient = async (
     options.enableApprovalsRoute === false
       ? undefined
       : (args: { plan_id: string; decision: 'approve' | 'reject' }) =>
-          args.decision === 'approve'
-            ? rpcConn.call('chat.plan.approve', { plan_id: args.plan_id })
-            : rpcConn.call('chat.plan.cancel', { plan_id: args.plan_id });
+          switchWorkTracker.track(
+            async (input: typeof args) => input.decision === 'approve'
+              ? rpcConn.call('chat.plan.approve', { plan_id: input.plan_id })
+              : rpcConn.call('chat.plan.cancel', { plan_id: input.plan_id }),
+            {
+              label: args.decision === 'approve'
+                ? 'Approving a Chat action'
+                : 'Rejecting a Chat action',
+              returnHref: serializeShellRoute('approvals'),
+              returnLabel: 'View approvals',
+            },
+          )(args);
   const chatPlanPendingListCaller =
     options.enableApprovalsRoute === false
       ? undefined
       : () => rpcConn.call('chat.plans.pending.list', undefined);
+
+  // One authoritative read serves both the global Attention recovery
+  // projection and the Apps & APIs route. Keeping one caller seam avoids a
+  // parallel notification store or a second recovery RPC.
+  let connectionListReadInFlight: Promise<
+    Awaited<ReturnType<ConnectionsEnrollListCaller>>
+  > | null = null;
+  const connectionsEnrollListCaller: ConnectionsEnrollListCaller | undefined =
+    options.enableConnectionsEnrollPanel === false
+      ? undefined
+      : () => {
+          if (connectionListReadInFlight !== null) {
+            return connectionListReadInFlight;
+          }
+          const read = rpcConn.call(
+            'collection.connection.list',
+            undefined,
+          );
+          connectionListReadInFlight = read;
+          const releaseTurnDedupe = (): void => {
+            if (connectionListReadInFlight === read) {
+              connectionListReadInFlight = null;
+            }
+          };
+          // Coalesce shell + route reads started in this mount turn, but never
+          // let a slow background Attention read hold a later route refresh.
+          void Promise.resolve().then(releaseTurnDedupe);
+          void read.then(releaseTurnDedupe, releaseTurnDedupe);
+          return read;
+        };
 
   // Route-independent durable Chat approval inbox. It subscribes before its
   // first all-session snapshot, replays racing events over that read, and
@@ -3211,7 +5852,7 @@ export const bootstrapWebclient = async (
   // route-independent chrome mounted at the webclient root, so it
   // survives hash route swaps and reuses the exact approval.* plus
   // notification.pending_asks callers as the #approvals deep queue.
-  const approvalAttentionPopover: ApprovalAttentionPopoverMount | null =
+  approvalAttentionPopover =
     approvalListCaller !== undefined
       && approvalResolveCaller !== undefined
       && approvalSubscribeCaller !== undefined
@@ -3234,8 +5875,124 @@ export const bootstrapWebclient = async (
           ...(chatPlanResolveCaller !== undefined
             ? { runChatPlanResolve: chatPlanResolveCaller }
             : {}),
+          ...(recoveryIntentContinuation !== null
+            ? {
+                initialRecoveryIntentContinuation:
+                  recoveryIntentContinuation,
+              }
+            : {}),
+          onResumeRecoveryIntentContinuation: (continuation) =>
+            resumeRecoveryIntentContinuation(continuation),
+          onReviewRecoveryIntentContinuation: (continuation) =>
+            reviewRecoveryIntentContinuation(continuation),
+          ...(accountMenu !== null
+            ? {
+                onRemediateRecoveryIntentConnection: (continuation) =>
+                  remediateRecoveryIntentConnection(continuation),
+              }
+            : {}),
+          onDismissRecoveryIntentContinuation:
+            retireRecoveryIntentContinuation,
+          ...(connectionsEnrollListCaller !== undefined
+            && bootProfileId !== null
+            && bootProfileId.trim().length > 0
+            && bootProfileId.length <= 256
+            ? {
+                runConnectionRecoveryList: connectionsEnrollListCaller,
+                connectionRecoveryProfile: {
+                  id: bootProfileId,
+                  label: bootProfileLabel,
+                },
+                inactiveConnectionRecoveryHints,
+                ...(accountMenu !== null && profileStore !== undefined
+                  ? {
+                      onReviewInactiveConnectionRecovery:
+                        beginInactiveConnectionRecoveryReview,
+                    }
+                  : {}),
+                ...(initialInactiveProfileRecoveryReview !== null
+                  && (activeRecoveryExcursion === null
+                    || activeRecoveryExcursion.phase !== 'return_ready')
+                  ? {
+                      initialConnectionRecoveryReview: {
+                        serverProfileId:
+                          initialInactiveProfileRecoveryReview.targetProfileId,
+                      },
+                    }
+                  : {}),
+                ...(recoveryExcursionReturn !== null
+                  ? {
+                      initialRecoveryExcursionReturn:
+                        recoveryExcursionReturn,
+                    }
+                  : {}),
+                onReviewRecoveryExcursionReturn:
+                  beginRecoveryExcursionReturn,
+                onDismissRecoveryExcursionReturn: () => {
+                  if (activeRecoveryExcursion === null) return;
+                  inactiveProfileRecoveryReview.retire(
+                    activeRecoveryExcursion.targetProfileId,
+                  );
+                  activeRecoveryExcursion = null;
+                  pendingRecoveryExcursionReturn = null;
+                  recoveryExcursionReturn = null;
+                },
+                onConnectionRecoverySnapshot: (snapshot) => {
+                  inactiveProfileRecoveryDiscovery.record({
+                    profileId: snapshot.serverProfileId,
+                    hasRecoveries: snapshot.hasRecoveries,
+                    observedAt: snapshot.observedAt,
+                  });
+                  const next = asRecoveryExcursion(
+                    inactiveProfileRecoveryReview.recordSnapshot(
+                      snapshot.serverProfileId,
+                      snapshot.hasRecoveries,
+                    ),
+                  );
+                  if (next !== null) {
+                    activeRecoveryExcursion = next;
+                    if (knownServerProfiles.length > 0) {
+                      refreshRecoveryExcursionReturn(knownServerProfiles);
+                    }
+                  }
+                },
+                onConnectionRecoveryReviewDismissed: (profileId) => {
+                  inactiveProfileRecoveryReview.retire(profileId);
+                  if (
+                    activeRecoveryExcursion?.targetProfileId === profileId
+                  ) {
+                    activeRecoveryExcursion = null;
+                    pendingRecoveryExcursionReturn = null;
+                    recoveryExcursionReturn = null;
+                    approvalAttentionPopover?.setRecoveryExcursionReturn(null);
+                  }
+                },
+                connectionRecoveryHref:
+                  serializeConnectionsPostSafeStopRecovery,
+                subscribeConnectionRecovery: (listener: () => void) =>
+                  credentialRotationTabConvergence?.subscribe((hint) => {
+                    if (
+                      hint.type === 'reconcile'
+                      || hint.type === 'credential_rotation_safe_stop_resolved'
+                      || hint.type === 'credential_rotated'
+                    ) listener();
+                  }) ?? (() => {}),
+                ...(options.now !== undefined ? { now: options.now } : {}),
+              }
+            : {}),
         })
       : null;
+
+  if (
+    approvalAttentionPopover === null
+    && recoveryIntentContinuationMarker !== null
+  ) {
+    // A continuation without its only discovery surface would be invisible
+    // state. Retire it immediately instead of carrying an unusable reminder
+    // until its timer or a later route interaction happens to clean it up.
+    recoveryIntentLandingHash = null;
+    retireRecoveryIntentContinuation();
+  }
 
   // Shell-frame Step 2 — the live-control bubble (D-181 RUNNING + D-186
   // GRANTS), route-independent chrome mounted at the webclient root beside the
@@ -3275,16 +6032,20 @@ export const bootstrapWebclient = async (
       : {
           list: () => rpcConn.call('collection.mail.list', undefined),
           enrollImap: (args) =>
-            rpcConn.call(
-              'collection.mail.enrollImap',
-              args as RpcRequest<ServerRpcRegistry, 'collection.mail.enrollImap'>,
-            ),
-          enrollOAuth: (args) =>
-            rpcConn.call(
-              'collection.mail.enrollOAuth',
-              args as RpcRequest<ServerRpcRegistry, 'collection.mail.enrollOAuth'>,
-            ),
-          delete: (args) => rpcConn.call('collection.mail.delete', args),
+            switchWorkTracker.track((input: typeof args) =>
+              rpcConn.call(
+                'collection.mail.enrollImap',
+                input as RpcRequest<ServerRpcRegistry, 'collection.mail.enrollImap'>,
+              ))(args),
+          // Foundational OAuth owns one lease over save + consent + exchange;
+          // wrapping this final RPC separately would expose a duplicate action.
+          enrollOAuth: (args) => rpcConn.call(
+            'collection.mail.enrollOAuth',
+            args as RpcRequest<ServerRpcRegistry, 'collection.mail.enrollOAuth'>,
+          ),
+          delete: (args) => switchWorkTracker.track(
+            (input: typeof args) => rpcConn.call('collection.mail.delete', input),
+          )(args),
         };
   // Shared OAuth client-config caller — lane-agnostic (Mail + Calendar
   // sign-in). Forwarded INDEPENDENTLY of the per-lane enroll callers.
@@ -3309,19 +6070,31 @@ export const bootstrapWebclient = async (
       ? undefined
       : {
           list: () => rpcConn.call('collection.calendar.list', undefined),
-          delete: (args) => rpcConn.call('collection.calendar.delete', args),
-          resync: (args) => rpcConn.call('collection.calendar.resync', args),
-          reauth: (args) => rpcConn.call('collection.calendar.reauth', args),
-          enrollOAuth: (args) =>
-            rpcConn.call(
-              'collection.calendar.enrollOAuth',
-              args as RpcRequest<ServerRpcRegistry, 'collection.calendar.enrollOAuth'>,
-            ),
+          delete: (args) => switchWorkTracker.track(
+            (input: typeof args) => rpcConn.call('collection.calendar.delete', input),
+          )(args),
+          resync: (args) => switchWorkTracker.track(
+            (input: typeof args) => rpcConn.call('collection.calendar.resync', input),
+          )(args),
+          reauth: (args) => switchWorkTracker.track(
+            (input: typeof args) => rpcConn.call('collection.calendar.reauth', input),
+          )(args),
+          enrollOAuth: (args) => rpcConn.call(
+            'collection.calendar.enrollOAuth',
+            args as RpcRequest<ServerRpcRegistry, 'collection.calendar.enrollOAuth'>,
+          ),
+          // Microsoft-only — adopt the `graph` grant the mail enroll just wrote,
+          // so the "Also connect Calendar" opt-in needs no second consent.
+          attachGraphGrant: (args) => rpcConn.call(
+            'collection.calendar.attachGraphGrant',
+            args as RpcRequest<ServerRpcRegistry, 'collection.calendar.attachGraphGrant'>,
+          ),
           enrollBasic: (args) =>
-            rpcConn.call(
-              'collection.calendar.enrollBasic',
-              args as RpcRequest<ServerRpcRegistry, 'collection.calendar.enrollBasic'>,
-            ),
+            switchWorkTracker.track((input: typeof args) =>
+              rpcConn.call(
+                'collection.calendar.enrollBasic',
+                input as RpcRequest<ServerRpcRegistry, 'collection.calendar.enrollBasic'>,
+              ))(args),
         };
   const connectionsFileLane: FileLaneCallers | undefined =
     options.enableConnectionsEnrollPanel === false
@@ -3329,25 +6102,26 @@ export const bootstrapWebclient = async (
       : {
           list: () => rpcConn.call('collection.listInstances', { type: 'file' }),
           enroll: (args) =>
-            rpcConn.call(
-              'collection.file.enroll',
-              args as RpcRequest<ServerRpcRegistry, 'collection.file.enroll'>,
-            ),
-          delete: (args) => rpcConn.call('collection.file.delete', args),
-          resync: (args) => rpcConn.call('collection.file.resync', args),
+            switchWorkTracker.track((input: typeof args) =>
+              rpcConn.call(
+                'collection.file.enroll',
+                input as RpcRequest<ServerRpcRegistry, 'collection.file.enroll'>,
+              ))(args),
+          delete: (args) => switchWorkTracker.track(
+            (input: typeof args) => rpcConn.call('collection.file.delete', input),
+          )(args),
+          resync: (args) => switchWorkTracker.track(
+            (input: typeof args) => rpcConn.call('collection.file.resync', input),
+          )(args),
         };
 
-  // D-165 P3.enroll-host — Connections ENROLLMENT section callers. Default ON;
-  // tests opt out via `enableConnectionsEnrollPanel: false`. All five wired
-  // together (the settings route gates the section on ALL of them). The list
-  // caller is UNFILTERED (every kind, unlike the grant panel's api-only list).
+  // D-165 P3.enroll-host — remaining Connections ENROLLMENT callers. Default
+  // ON; tests opt out via `enableConnectionsEnrollPanel: false`. The shared,
+  // unfiltered list caller lives above because persistent Attention consumes
+  // the same read as this route.
   // Per-pair-only by `collection.connection.` being reserved from MCP; the
   // webclient bearer auth path is sufficient. A pre-enroll server surfaces the
   // rpc unknown-method error inside the page's inline error, not a route crash.
-  const connectionsEnrollListCaller: ConnectionsEnrollListCaller | undefined =
-    options.enableConnectionsEnrollPanel === false
-      ? undefined
-      : () => rpcConn.call('collection.connection.list', undefined);
   const connectionsEnrollCaller: ConnectionsEnrollCaller | undefined =
     options.enableConnectionsEnrollPanel === false
       ? undefined
@@ -3356,6 +6130,285 @@ export const bootstrapWebclient = async (
     options.enableConnectionsEnrollPanel === false
       ? undefined
       : (args) => rpcConn.call('collection.connection.update', args);
+  const connectionsRotateCredentialsCaller: ConnectionsRotateCredentialsCaller | undefined =
+    options.enableConnectionsEnrollPanel === false
+      ? undefined
+      : (args) => rpcConn.call('collection.connection.rotateCredentials', args);
+  const connectionsCredentialRotationStatusCaller:
+    ConnectionsCredentialRotationStatusCaller | undefined =
+      options.enableConnectionsEnrollPanel === false
+        ? undefined
+        : (args) => rpcConn.call(
+            'collection.connection.credentialRotationStatus',
+            args,
+          );
+  const connectionsCredentialRotationActivityCaller:
+    ConnectionsCredentialRotationActivityCaller | undefined =
+      options.enableConnectionsEnrollPanel === false
+        ? undefined
+        : (args) => rpcConn.call(
+            'collection.connection.credentialRotationActivity',
+            args,
+          );
+  const connectionsAcknowledgeCredentialRotationSafeStopCaller:
+    ConnectionsAcknowledgeCredentialRotationSafeStopCaller | undefined =
+      options.enableConnectionsEnrollPanel === false
+        ? undefined
+        : (args) => rpcConn.call(
+            'collection.connection.acknowledgeCredentialRotationSafeStop',
+            args,
+          );
+
+  let credentialRotationCapabilityCheck: {
+    readonly key: string;
+    readonly startedAt: number;
+  } | null = null;
+  let credentialRotationCapabilityCheckGeneration = 0;
+  serverUpdateReceiptVerification =
+    createServerUpdateReceiptVerification({
+      readProgress: () => credentialRotationTabConvergence
+        ?.readServerUpdateProgress() ?? null,
+      isConnected: () => connectionStatus.status() === 'connected',
+      verify: (operationId) => rpcConn.call('update.operation_status', {
+        operation_id: operationId,
+        include_closed: true,
+      }),
+      close: (operationId, expectedOperation) =>
+        rpcConn.call('update.operation_close', {
+          operation_id: operationId,
+          expected_operation: expectedOperation,
+        }),
+      readCurrentState: async (progress) => {
+        const readAffectedTarget = () => {
+          const marker = credentialRotationServerUpdateContinuity.read();
+          const markerProgress = marker?.serverUpdateProgress;
+          return marker !== null
+            && markerProgress?.phase === 'awaiting_reconnect'
+            && sameServerUpdateLineage(markerProgress, progress)
+            ? { kind: marker.kind, name: marker.name }
+            : null;
+        };
+        const target = readAffectedTarget();
+        const affectedConnection = target === null
+          ? Promise.resolve(undefined)
+          : connectionsCredentialRotationActivityCaller === undefined
+            ? Promise.resolve({
+                ...target,
+                activity: 'unavailable' as const,
+              })
+            : connectionsCredentialRotationActivityCaller(target).then(
+                ({ activity }) => ({
+                  ...target,
+                  activity: activity.status,
+                }),
+                () => ({
+                  ...target,
+                  activity: 'unavailable' as const,
+                }),
+              );
+        const [release, affected] = await Promise.all([
+          rpcConn.call('update.check', undefined),
+          affectedConnection,
+        ]);
+        const latestTarget = readAffectedTarget();
+        if (
+          target === null
+            ? latestTarget !== null
+            : latestTarget === null
+              || latestTarget.kind !== target.kind
+              || latestTarget.name !== target.name
+        ) {
+          // A connection-specific continuation changed while the two fresh
+          // reads were settling. Do not label either identity as the affected
+          // current-state baseline; the explicit retry will read one coherent
+          // target from this same selected server.
+          throw new Error('affected connection changed during baseline read');
+        }
+        return {
+          release,
+          ...(affected === undefined
+            ? {}
+            : { affectedConnection: affected }),
+        };
+      },
+      clearProgress: async (progress) =>
+        await credentialRotationTabConvergence
+          ?.clearServerUpdateProgress(progress) ?? false,
+      ...(options.serverUpdateReceiptScheduleRetry !== undefined
+        ? { scheduleRetry: options.serverUpdateReceiptScheduleRetry }
+        : {}),
+    });
+  detachServerUpdateReceiptVerification =
+    serverUpdateReceiptVerification.subscribe((state) => {
+      credentialRotationServerUpdateContinuity
+        .observeServerUpdateVerification(state);
+    });
+  const reconcileServerUpdateOutcome = (): void => {
+    if (disposed) return;
+    serverUpdateReceiptVerification?.reconcile();
+  };
+  const reconcileCredentialRotationServerCapability = (
+    hint: CredentialRotationTabHint,
+  ): void => {
+    if (
+      hint.type !== 'server_capability_resolved'
+      && hint.type !== 'reconcile'
+    ) return;
+    if (connectionsCredentialRotationActivityCaller === undefined) return;
+    const marker = credentialRotationServerUpdateContinuity.read();
+    if (marker?.phase !== 'triage') return;
+    if (
+      marker.serverUpdateProgress !== undefined
+      || (
+        credentialRotationTabConvergence?.readServerUpdateProgress() ?? null
+      ) !== null
+    ) {
+      // A focus pulse or reconnect can race the accepted restart. Do not ask
+      // the old/in-transition server to settle the credential handoff, and do
+      // not clear the server-global progress from that premature reply.
+      return;
+    }
+    if (
+      hint.type === 'server_capability_resolved'
+      && (hint.kind !== marker.kind || hint.name !== marker.name)
+    ) return;
+    const target = { kind: marker.kind, name: marker.name };
+    const key = `${target.kind}/${target.name}`;
+    if (
+      credentialRotationCapabilityCheck?.key === key
+      && credentialRotationCapabilityCheck.startedAt === marker.startedAt
+    ) return;
+    const generation = ++credentialRotationCapabilityCheckGeneration;
+    credentialRotationCapabilityCheck = {
+      key,
+      startedAt: marker.startedAt,
+    };
+    // Treat every channel/pulse/focus signal as advisory. Only a fresh reply
+    // from this tab's currently paired server can replace durable triage.
+    void connectionsCredentialRotationActivityCaller(target).then(async (result) => {
+      if (generation !== credentialRotationCapabilityCheckGeneration) return;
+      if (
+        result.activity.status !== 'idle'
+        && result.activity.status !== 'pending'
+      ) return;
+      const latest = credentialRotationServerUpdateContinuity.read();
+      if (
+        latest?.phase !== 'triage'
+        || latest.kind !== target.kind
+        || latest.name !== target.name
+        || latest.startedAt !== marker.startedAt
+      ) return;
+      const resolved = credentialRotationServerUpdateContinuity
+        .markCapabilityResolvedElsewhere(target);
+      if (resolved) {
+        const progress = credentialRotationTabConvergence
+          ?.readServerUpdateProgress() ?? null;
+        if (progress !== null) {
+          await credentialRotationTabConvergence
+            ?.clearServerUpdateProgress(progress);
+        }
+      }
+    }).catch(() => {
+      // Unknown/failed reads leave the durable diagnosis intact. A later
+      // opaque pulse, focus, or visibility return may retry it safely.
+    }).finally(() => {
+      if (generation === credentialRotationCapabilityCheckGeneration) {
+        credentialRotationCapabilityCheck = null;
+      }
+    });
+  };
+  detachCredentialRotationCapabilityResolution =
+    credentialRotationTabConvergence?.subscribe((hint) => {
+      if (hint.type === 'server_update_progress') {
+        credentialRotationServerUpdateContinuity
+          .observeServerUpdateProgress(hint.progress);
+        reconcileServerUpdateOutcome();
+        if (hint.progress === null) {
+          serverUpdateReconnectProof = null;
+          // The exact local action lineage is now settled. Only at this point
+          // may the returned server authoritatively resolve the saved
+          // credential-capability diagnosis.
+          reconcileCredentialRotationServerCapability({ type: 'reconcile' });
+          return;
+        }
+        if (hint.progress.phase === 'applying') {
+          serverUpdateReconnectProof = null;
+        } else if (
+          hint.progress.operationId === undefined
+          && !sameServerUpdateLineage(
+            hint.progress,
+            serverUpdateReconnectProof,
+          )
+        ) {
+          serverUpdateReconnectProof =
+            connectionStatus.status() !== 'connected'
+              ? serverUpdateLineageOf(hint.progress)
+              : null;
+        }
+        if (
+          hint.progress.phase === 'awaiting_reconnect'
+          && hint.progress.operationId === undefined
+          && connectionStatus.status() === 'connected'
+          && sameServerUpdateLineage(
+            hint.progress,
+            serverUpdateReconnectProof,
+          )
+        ) {
+          const settled = hint.progress;
+          serverUpdateReconnectProof = null;
+          void credentialRotationTabConvergence
+            ?.clearServerUpdateProgress(settled);
+        }
+        reconcileServerUpdateOutcome();
+        return;
+      }
+      if (hint.type === 'reconcile') reconcileServerUpdateOutcome();
+      reconcileCredentialRotationServerCapability(hint);
+    }) ?? (() => undefined);
+  // Any continuity mutation is a newer lineage, even when two user actions
+  // share the same Date.now() value. Invalidate the older reply directly
+  // instead of manufacturing a future recovery timestamp.
+  detachCredentialRotationCapabilityLineage =
+    credentialRotationServerUpdateContinuity.subscribe(() => {
+      credentialRotationCapabilityCheckGeneration += 1;
+      credentialRotationCapabilityCheck = null;
+    });
+  detachCredentialRotationCapabilityReconnect =
+    connectionStatus.onStatus((status) => {
+      const progress = credentialRotationTabConvergence
+        ?.readServerUpdateProgress() ?? null;
+      if (progress === null) {
+        serverUpdateReconnectProof = null;
+      } else if (
+        progress.phase === 'awaiting_reconnect'
+        && progress.operationId === undefined
+        && status !== 'connected'
+      ) {
+        serverUpdateReconnectProof = serverUpdateLineageOf(progress);
+      } else if (
+        progress.phase === 'awaiting_reconnect'
+        && progress.operationId === undefined
+        && sameServerUpdateLineage(progress, serverUpdateReconnectProof)
+      ) {
+        serverUpdateReconnectProof = null;
+        void credentialRotationTabConvergence
+          ?.clearServerUpdateProgress(progress);
+      } else if (progress.phase === 'applying') {
+        serverUpdateReconnectProof = null;
+      }
+      if (status === 'connected') {
+        reconcileServerUpdateOutcome();
+        reconcileCredentialRotationServerCapability({ type: 'reconcile' });
+      }
+    });
+  void credentialRotationTabConvergence
+    ?.reconcileServerUpdateProgress()
+    .then(() => reconcileServerUpdateOutcome());
+  reconcileServerUpdateOutcome();
+  // A restored triage marker may boot after the sibling's one-shot channel
+  // message and opaque storage pulse have already happened. Re-read the
+  // selected server once now instead of waiting for a later focus transition.
+  reconcileCredentialRotationServerCapability({ type: 'reconcile' });
   const connectionsDeleteCaller: ConnectionsDeleteCaller | undefined =
     options.enableConnectionsEnrollPanel === false
       ? undefined
@@ -3369,6 +6422,22 @@ export const bootstrapWebclient = async (
     options.enableConnectionsEnrollPanel === false
       ? undefined
       : (args) => rpcConn.call('collection.connection.probe', args);
+  // D-225 Slice 2 — the generated-pack enrollment chain. Preview PROBES the
+  // server live (the owner classifies what it says now, not a cached list);
+  // commit installs and carries `reviewed_ops` so the server can refuse if the
+  // tools changed while the owner was deciding.
+  const connectionsMcpPackPreviewCaller: ConnectionsMcpPackPreviewCaller | undefined =
+    options.enableConnectionsEnrollPanel === false
+      ? undefined
+      : (args) => rpcConn.call('collection.connection.mcpPackPreview', args);
+  const connectionsMcpPackCommitCaller: ConnectionsMcpPackCommitCaller | undefined =
+    options.enableConnectionsEnrollPanel === false
+      ? undefined
+      : (args) => rpcConn.call('collection.connection.mcpPackCommit', args);
+  const connectionsSuggestSetupCaller: ConnectionsSuggestSetupCaller | undefined =
+    options.enableConnectionsEnrollPanel === false
+      ? undefined
+      : (args) => rpcConn.call('collection.connection.suggestSetup', args);
   // D-192 M4c-UI — messenger trigger read + merge-write for the slack/telegram
   // "Message triggers" editor. Gated on the same enrollment flag.
   const connectionsGetMatchPatternsCaller: ConnectionsGetMatchPatternsCaller | undefined =
@@ -3660,26 +6729,32 @@ export const bootstrapWebclient = async (
     options.enableContractsPanel === false
       ? undefined
       : (args) => rpcConn.call('collection.contract.setDoorTypes', args);
-  // D-182 §7.2 (increment 4) — Settings → Local tools reachability grid. The
-  // universe/list reads + the per-cell set write are all under the MCP-reserved
-  // `cli.reachability.` prefix (owner-only). The grid also reads the contract
-  // list for its rows — a dedicated caller (not the `enableContractsPanel`-gated
-  // one) so the grid mounts even when #contracts is disabled. A pre-increment-4
-  // server surfaces the rpc unknown-method error inside the panel's error chip.
-  const localToolsUniverseCaller: LocalToolsUniverseCaller | undefined =
-    options.enableLocalToolsPanel === false
+  // D-182 §7.2 (increment 4) — the cli-reachability callers. The universe/list
+  // reads + the per-cell set write are all under the MCP-reserved
+  // `cli.reachability.` prefix (owner-only). The contracts read is a dedicated
+  // caller (not the `enableContractsPanel`-gated one) so the consumers below
+  // still get contract rows when #contracts is disabled. A pre-increment-4
+  // server surfaces the rpc unknown-method error inside the consuming panel's
+  // error chip.
+  //
+  // Three consumers, all on the `#packs` detail (the roster-wide Local tools
+  // section these were built for is retired — see `bootstrap-packs-route.ts`):
+  // the ACCESS panel's cli op toggles (list + set + contracts) and the
+  // supervised-daemon binary-on-PATH gate (universe).
+  const localToolsUniverseCaller: SupervisionReachabilityCaller | undefined =
+    options.enableCliReachability === false
       ? undefined
       : () => rpcConn.call('cli.reachability.universe', undefined);
-  const localToolsListCaller: LocalToolsListCaller | undefined =
-    options.enableLocalToolsPanel === false
+  const localToolsListCaller: GrantCliReachabilityListCaller | undefined =
+    options.enableCliReachability === false
       ? undefined
       : () => rpcConn.call('cli.reachability.list', undefined);
-  const localToolsSetCaller: LocalToolsSetCaller | undefined =
-    options.enableLocalToolsPanel === false
+  const localToolsSetCaller: GrantCliReachabilitySetCaller | undefined =
+    options.enableCliReachability === false
       ? undefined
       : (args) => rpcConn.call('cli.reachability.set', args);
-  const localToolsContractsCaller: LocalToolsContractsCaller | undefined =
-    options.enableLocalToolsPanel === false
+  const localToolsContractsCaller: GrantContractsCaller | undefined =
+    options.enableCliReachability === false
       ? undefined
       : () => rpcConn.call('collection.contract.listContracts', undefined);
   // D-177 N.13 (P6c) — the staged-trust "Suggested rules" section (same panel
@@ -3901,6 +6976,41 @@ export const bootstrapWebclient = async (
   const updateRollbackCaller: UpdateRollbackCaller | undefined = updatesEnabled
     ? () => rpcConn.call('update.rollback', undefined)
     : undefined;
+  const connectionsCredentialRotationServerUpdateTriageCaller:
+    ConnectionsCredentialRotationServerUpdateTriageCaller | undefined =
+      options.enableConnectionsEnrollPanel === false
+        ? undefined
+        : async (target) => {
+            let check: Awaited<ReturnType<UpdateCheckCaller>> | null = null;
+            if (updateCheckCaller !== undefined) {
+              try {
+                check = await updateCheckCaller();
+              } catch {
+                // The absent activity method remains authoritative. The
+                // diagnosis will explicitly say the signed check was
+                // unavailable instead of turning a read failure into a guess.
+              }
+            }
+            let triage = credentialRotationServerUpdateContinuity
+              .markStillUnsupported(target, check);
+            if (
+              triage === null
+              && credentialRotationServerUpdateContinuity.read() === null
+            ) {
+              // A manually restored exact retry URL may arrive without its
+              // session marker. Once the selected server itself confirms the
+              // capability is absent, reconstruct only the safe target and
+              // diagnosis so Account does not fall back into the generic
+              // update loop.
+              credentialRotationServerUpdateContinuity.begin(target);
+              triage = credentialRotationServerUpdateContinuity
+                .markStillUnsupported(target, check);
+            }
+            return triage ?? classifyCredentialRotationServerUpdateTriage(
+              undefined,
+              check,
+            );
+          };
   const updatesStartPoll = (cb: () => void, ms: number): (() => void) => {
     const id = setInterval(cb, ms);
     return () => clearInterval(id);
@@ -3918,6 +7028,54 @@ export const bootstrapWebclient = async (
     options.enableTransparencyPanel === false
       ? undefined
       : (args) => rpcConn.call('prefs.set', args);
+
+  // D-219 slice 9c — Settings → Learning: the `chat.execution_case_offer`
+  // pref over the SAME pair-WS prefs rpc. Its own caller pair rather than
+  // reusing the transparency thunks, so a test can drive either panel in
+  // isolation and neither panel's failure surfaces in the other. Rides the
+  // transparency enable flag: both are prefs panels on the same rpc, and a
+  // harness that stubs out one has no server for the other either.
+  const learningPrefsGetCaller: LearningPrefsGetCaller | undefined =
+    options.enableTransparencyPanel === false
+      ? undefined
+      : () => rpcConn.call('prefs.get', undefined);
+  const learningPrefsSetCaller: LearningPrefsSetCaller | undefined =
+    options.enableTransparencyPanel === false
+      ? undefined
+      : (args) => rpcConn.call('prefs.set', args);
+
+  // D-219 item 2 — Settings → Learning: WHAT Recued has learned, and unlearning
+  // one case. Wired as a PAIR, on the same flag as the pref thunks above: a
+  // page that lists what was learned and cannot unlearn it reads as a control
+  // surface without being one, which is worse than not listing it.
+  const learningCasesListCaller: LearningCasesListCaller | undefined =
+    options.enableTransparencyPanel === false
+      ? undefined
+      : () => rpcConn.call('chat.execution.learned', undefined);
+  const learningCaseForgetCaller: LearningCaseForgetCaller | undefined =
+    options.enableTransparencyPanel === false
+      ? undefined
+      : (args) => rpcConn.call('chat.execution.forget', args);
+  // D-219 item 2b — ask the owner's own model to draft a recipe from a case.
+  const learningDraftRecipeCaller: LearningDraftRecipeCaller | undefined =
+    options.enableTransparencyPanel === false
+      ? undefined
+      // ⛔ THE DEFAULT 30s TIMEOUT LOSES THIS CALL. Every other rpc here is a
+      // local read; this one waits on the owner's model writing a whole recipe,
+      // which on a reasoning model is comfortably past 30s. Live run
+      // 2026-07-29: the server drafted fine and the CLIENT gave up at exactly
+      // 30s, so the owner paid for a draft, saw "Your server isn't responding
+      // right now", and got nothing — and an immediate retry hit the
+      // singleflight. The server's own generate path is the real ceiling; this
+      // just stops the client abandoning a call it already paid for.
+      : (args) => rpcConn.call('chat.execution.draft_recipe', args, {
+          timeout: LEARNING_DRAFT_RPC_TIMEOUT_MS,
+        });
+  /** Same-tab carrier for an AI-written draft between Settings and the Kitchen.
+   *  ⚠ sessionStorage by default, so a refresh keeps a draft the owner paid
+   *  for; absent storage degrades to no hand-off rather than throwing. */
+  const draftStashStorage = options.draftStashStorage
+    ?? (typeof sessionStorage === 'undefined' ? null : sessionStorage);
 
   // D-145 PA11 — Housekeeping LLM result cache card, relocated under
   // D-174 D14's AI / Models section.
@@ -4203,27 +7361,67 @@ export const bootstrapWebclient = async (
     return parsed.surface === route ? parsed.segments[index] : undefined;
   };
 
-  const navigateHash = (hash: string): void => {
-    if (hashSource?.setHash !== undefined) {
-      hashSource.setHash(hash);
-      return;
-    }
-    const location = doc.defaultView?.location;
-    if (location !== undefined) location.hash = hash;
-  };
-
   const mountRoute = (
     route: WebclientRouteId,
-  ): {
+  ): RecoveryContextProbe & {
     update?: () => void;
     dispose: () => void;
     /** Leave-guard seam — a route with unsaved work returns true and the
      *  hash listener asks before tearing it down. Absent = never guarded. */
     hasUnsavedChanges?: () => boolean;
+    /** Optional privacy-safe context for the route-change confirmation.
+     * Native beforeunload prompts remain browser-controlled. */
+    unsavedChangesPrompt?: () => string | null;
+    /** User-started source work whose outcome is not known yet. */
+    hasInFlightWork?: () => boolean;
+    /** Native mount-only work before the boot-scoped tracker is composed. */
+    hasRouteInFlightWork?: () => boolean;
     /** Same-surface deep links can opt into an in-place transition. This is
      * used by Chat plan handoffs to preserve a same-thread composer draft. */
     navigateDeepLink?: (hash: string) => boolean;
+    /** Chat-only in-memory rescue seam for a forced re-pair. */
+    getRecoveryDraft?: () => ChatRouteRecoveryDraft | null;
   } => {
+    settledProfileRecoveryNeedsAddressCleanup = false;
+    refreshActivePostSafeStopProfileContext = () => undefined;
+    const withTrackedServerSwitchWork = <T extends { dispose(): void }>(
+      handle: T,
+    ): T & {
+      hasInFlightWork(): boolean;
+      hasRouteInFlightWork(): boolean;
+      retryRecoveryContext?: () => Promise<void>;
+    } => {
+      const routeHasInFlightWork = (
+        handle as T & { hasInFlightWork?: () => boolean }
+      ).hasInFlightWork;
+      const explicitRecoveryRetry = (
+        handle as T & { retryRecoveryContext?: () => Promise<void> }
+      ).retryRecoveryContext;
+      const routeRefresh = (
+        handle as T & { refresh?: () => void | Promise<void> }
+      ).refresh;
+      const routeWhenLoaded = (
+        handle as T & { whenLoaded?: () => Promise<void> }
+      ).whenLoaded;
+      const retryRecoveryContext = explicitRecoveryRetry ?? routeRefresh;
+      return {
+        ...handle,
+        ...(retryRecoveryContext !== undefined
+          ? {
+              retryRecoveryContext: async (): Promise<void> => {
+                await retryRecoveryContext.call(handle);
+                // A few route refresh seams schedule their read and return
+                // synchronously. Await the route-owned boundary after dispatch
+                // so the receipt never races ahead of the authoritative result.
+                await routeWhenLoaded?.call(handle);
+              },
+            }
+          : {}),
+        hasInFlightWork: () => switchWorkTracker.hasInFlightWork()
+          || routeHasInFlightWork?.call(handle) === true,
+        hasRouteInFlightWork: () => routeHasInFlightWork?.call(handle) === true,
+      };
+    };
     if (route === 'contracts') {
       activeSettingsRoute = null;
       const contractsSubview = deepLinkSegment('contracts');
@@ -4233,7 +7431,7 @@ export const bootstrapWebclient = async (
       const contractsListTab = isContractsListTab(contractsListTabCandidate)
         ? contractsListTabCandidate
         : undefined;
-      return bootstrapContractsRoute({
+      return withTrackedServerSwitchWork(bootstrapContractsRoute({
         root: appShell.contentRoot,
         serverUrl: pair.serverUrl,
         ...(options.document !== undefined ? { document: options.document } : {}),
@@ -4243,8 +7441,12 @@ export const bootstrapWebclient = async (
           && permissionsListCatalogOperationsCaller !== undefined
           ? {
               permissionsListOverridesCaller,
-              permissionsDeleteOverrideCaller,
-              permissionsUpsertOverrideCaller,
+              permissionsDeleteOverrideCaller: switchWorkTracker.track(
+                permissionsDeleteOverrideCaller,
+              ),
+              permissionsUpsertOverrideCaller: switchWorkTracker.track(
+                permissionsUpsertOverrideCaller,
+              ),
               permissionsListCatalogOperationsCaller,
             }
           : {}),
@@ -4253,12 +7455,20 @@ export const bootstrapWebclient = async (
           && permissionsRevokeInboundTokenCaller !== undefined
           ? {
               permissionsListInboundTokensCaller,
-              permissionsIssueInboundTokenCaller,
-              permissionsRevokeInboundTokenCaller,
+              permissionsIssueInboundTokenCaller: switchWorkTracker.track(
+                permissionsIssueInboundTokenCaller,
+              ),
+              permissionsRevokeInboundTokenCaller: switchWorkTracker.track(
+                permissionsRevokeInboundTokenCaller,
+              ),
             }
           : {}),
         ...(permissionsUpdateInboundTokenCaller !== undefined
-          ? { permissionsUpdateInboundTokenCaller }
+          ? {
+              permissionsUpdateInboundTokenCaller: switchWorkTracker.track(
+                permissionsUpdateInboundTokenCaller,
+              ),
+            }
           : {}),
         ...(permissionsToolCatalogCaller !== undefined
           ? { permissionsToolCatalogCaller }
@@ -4268,17 +7478,25 @@ export const bootstrapWebclient = async (
           && permissionsListContractsCaller !== undefined
           && permissionsUpdateInboundContractCaller !== undefined
           ? {
-              permissionsMintContractCaller,
-              permissionsRevokeContractCaller,
+              permissionsMintContractCaller: switchWorkTracker.track(
+                permissionsMintContractCaller,
+              ),
+              permissionsRevokeContractCaller: switchWorkTracker.track(
+                permissionsRevokeContractCaller,
+              ),
               permissionsListContractsCaller,
-              permissionsUpdateInboundContractCaller,
+              permissionsUpdateInboundContractCaller: switchWorkTracker.track(
+                permissionsUpdateInboundContractCaller,
+              ),
             }
           : {}),
         ...(contractsListCaller !== undefined
           && contractsRevokeCaller !== undefined
           ? {
               contractsListCaller,
-              contractsRevokeCaller,
+              contractsRevokeCaller: switchWorkTracker.track(
+                contractsRevokeCaller,
+              ),
             }
           : {}),
         ...(grantReadCaller !== undefined
@@ -4287,7 +7505,7 @@ export const bootstrapWebclient = async (
           ? {
               grantReadCaller,
               grantReadByEntryCaller,
-              grantWriteCaller,
+              grantWriteCaller: switchWorkTracker.track(grantWriteCaller),
               ...(grantListContractsCaller !== undefined
                 ? { grantListContractsCaller }
                 : {}),
@@ -4298,16 +7516,25 @@ export const bootstrapWebclient = async (
                 ? { grantRegistryDescribeCaller }
                 : {}),
               ...(grantSetDoorTypesCaller !== undefined
-                ? { grantSetDoorTypesCaller }
+                ? {
+                    grantSetDoorTypesCaller: switchWorkTracker.track(
+                      grantSetDoorTypesCaller,
+                    ),
+                  }
                 : {}),
               // GAP-B fix — route CLI ops in the Ops grant panel to
               // cli_reachability (their real authority), reusing the same
-              // `cli.reachability.{list,set}` callers the Local-tools grid uses.
+              // `cli.reachability.{list,set}` callers the by-pack ACCESS panel
+              // writes through.
               ...(localToolsListCaller !== undefined
                 ? { grantCliReachabilityListCaller: localToolsListCaller }
                 : {}),
               ...(localToolsSetCaller !== undefined
-                ? { grantCliReachabilitySetCaller: localToolsSetCaller }
+                ? {
+                    grantCliReachabilitySetCaller: switchWorkTracker.track(
+                      localToolsSetCaller,
+                    ),
+                  }
                 : {}),
             }
           : {}),
@@ -4316,8 +7543,12 @@ export const bootstrapWebclient = async (
           && suggestionsDismissCaller !== undefined
           ? {
               suggestionsListCaller,
-              suggestionsAcceptCaller,
-              suggestionsDismissCaller,
+              suggestionsAcceptCaller: switchWorkTracker.track(
+                suggestionsAcceptCaller,
+              ),
+              suggestionsDismissCaller: switchWorkTracker.track(
+                suggestionsDismissCaller,
+              ),
             }
           : {}),
         ...(scopedSuggestionsListCaller !== undefined
@@ -4325,8 +7556,12 @@ export const bootstrapWebclient = async (
           && scopedSuggestionsDismissCaller !== undefined
           ? {
               scopedSuggestionsListCaller,
-              scopedSuggestionsAcceptCaller,
-              scopedSuggestionsDismissCaller,
+              scopedSuggestionsAcceptCaller: switchWorkTracker.track(
+                scopedSuggestionsAcceptCaller,
+              ),
+              scopedSuggestionsDismissCaller: switchWorkTracker.track(
+                scopedSuggestionsDismissCaller,
+              ),
             }
           : {}),
         runsListCaller,
@@ -4339,11 +7574,97 @@ export const bootstrapWebclient = async (
               initialContractTab: deepLinkSegment('contracts', 1),
             }
           : {}),
-      });
+      }));
     }
     if (route === 'connections') {
       activeSettingsRoute = null;
-      return bootstrapConnectionsRoute({
+      // Capture the complete address before consuming a temporary retry or
+      // validating a profile-bound recovery. Account's credential retry is
+      // one-shot; a valid recovery address remains reload-safe until the owner
+      // settles it or switches to a different profile.
+      const connectionsAddress = hashSource === null
+        ? null
+        : parseShellRoute(hashSource.getHash());
+      const connectionsSegments = connectionsAddress?.surface === 'connections'
+        ? connectionsAddress.segments
+        : [];
+      const initialCredentialRotationServerUpdateRetry =
+        parseConnectionsCredentialRotationRetry(connectionsSegments);
+      const postSafeStopRecoveryResolution =
+        resolveProfileBoundPostSafeStopRecovery(
+          connectionsSegments,
+          bootProfileId,
+        );
+      const initialPostSafeStopRecovery =
+        postSafeStopRecoveryResolution.status === 'matched'
+          ? {
+              kind: postSafeStopRecoveryResolution.target.kind,
+              name: postSafeStopRecoveryResolution.target.name,
+            }
+          : null;
+      const postSafeStopProfileHandoff = (() => {
+        if (postSafeStopRecoveryResolution.status === 'unbound') {
+          return {
+            reason: 'unbound' as const,
+            activeProfileLabel: bootProfileLabel,
+            serverProfilesAvailable:
+              accountMenu !== null && profileStore !== undefined,
+          };
+        }
+        if (postSafeStopRecoveryResolution.status !== 'profile_mismatch') {
+          return null;
+        }
+        const sourceProfile = knownServerProfiles.find((profile) =>
+          profile.id === postSafeStopRecoveryResolution.target.serverProfileId);
+        const sourceProfileLabel = sourceProfile?.label.trim();
+        return {
+          reason: 'profile_mismatch' as const,
+          activeProfileLabel: bootProfileLabel,
+          ...(sourceProfileLabel !== undefined && sourceProfileLabel.length > 0
+            ? { sourceProfileLabel }
+            : {}),
+          serverProfilesAvailable:
+            accountMenu !== null && profileStore !== undefined,
+        };
+      })();
+      const initialCredentialRotationServerUpdateCompletion = (() => {
+        if (initialCredentialRotationServerUpdateRetry === null) return null;
+        const marker = credentialRotationServerUpdateContinuity.read();
+        const verification = marker?.serverUpdateVerification
+          ?? serverUpdateReceiptVerification?.read()
+          ?? null;
+        const affected = verification?.baseline?.affectedConnection;
+        return verification?.phase === 'completed'
+          && marker?.kind === initialCredentialRotationServerUpdateRetry.kind
+          && marker.name === initialCredentialRotationServerUpdateRetry.name
+          && affected?.kind === initialCredentialRotationServerUpdateRetry.kind
+          && affected.name === initialCredentialRotationServerUpdateRetry.name
+          ? verification
+          : null;
+      })();
+      let exactReturnOwned = false;
+      if (initialCredentialRotationServerUpdateRetry !== null) {
+        exactReturnOwned =
+          credentialRotationServerUpdateContinuity.beginExactReturn(
+            initialCredentialRotationServerUpdateRetry,
+          );
+        const canonicalHash = serializeShellRoute('connections', 'others');
+        const history = doc.defaultView?.history;
+        if (history?.replaceState !== undefined) {
+          try {
+            history.replaceState(null, '', canonicalHash);
+            activeHash = canonicalHash;
+          } catch {
+            // A constrained embedder may reject History writes. The retry is
+            // still safe; only one-shot address cleanup degrades.
+          }
+        }
+      }
+      if (postSafeStopRecoveryResolution.status === 'unbound') {
+        const canonicalHash = serializeShellRoute('connections', 'others');
+        replaceActiveHashWithoutNavigation(canonicalHash);
+      }
+      const connectionsRoute = bootstrapConnectionsRoute({
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
         navigate: navigateHash,
@@ -4351,16 +7672,83 @@ export const bootstrapWebclient = async (
         // segment 1 = a foundational account to open in detail, OR the
         // `enroll` verb with segment 2 = a vendor to pre-open the Others
         // enroll form for (`#connections/others/enroll/<vendor>` — the packs
-        // "Set up" CTA).
-        ...(deepLinkSegment('connections') !== undefined
-          ? { initialTab: deepLinkSegment('connections') }
+        // "Set up" CTA), OR the one-shot credential-retry return consumed
+        // above.
+        ...(connectionsSegments[0] !== undefined
+          ? { initialTab: connectionsSegments[0] }
           : {}),
-        ...(deepLinkSegment('connections', 1) !== undefined
-          ? { initialDetailSlug: deepLinkSegment('connections', 1) }
+        ...(connectionsSegments[1] !== undefined
+          ? { initialDetailSlug: connectionsSegments[1] }
           : {}),
-        ...(deepLinkSegment('connections', 1) === 'enroll'
-          && deepLinkSegment('connections', 2) !== undefined
-          ? { initialEnrollVendor: deepLinkSegment('connections', 2) }
+        ...(connectionsSegments[1] === 'enroll'
+          && connectionsSegments[2] !== undefined
+          ? { initialEnrollVendor: connectionsSegments[2] }
+          : {}),
+        ...(initialCredentialRotationServerUpdateRetry !== null
+          ? {
+              initialCredentialRotationServerUpdateRetry,
+            }
+          : {}),
+        ...(initialPostSafeStopRecovery !== null
+          ? { initialPostSafeStopRecovery }
+          : {}),
+        postSafeStopProfileLabel: bootProfileLabel,
+        ...(postSafeStopProfileHandoff !== null
+          ? { postSafeStopProfileHandoff }
+          : {}),
+        ...(accountMenu !== null && profileStore !== undefined
+          ? {
+              onOpenPostSafeStopServerProfiles: () => accountMenu?.open(),
+            }
+          : {}),
+        onPostSafeStopProfileHandoffSettled: () => {
+          const canonicalHash = serializeShellRoute('connections', 'others');
+          settledProfileRecoveryNeedsAddressCleanup =
+            !replaceActiveHashWithoutNavigation(canonicalHash);
+        },
+        ...(exactReturnOwned
+          && initialCredentialRotationServerUpdateCompletion !== null
+          ? {
+              initialCredentialRotationServerUpdateCompletion,
+            }
+          : {}),
+        onCredentialRotationServerUpdateRetrySettled: (target) => {
+          retireServerUpdateReturn(target);
+        },
+        onCredentialRotationCleanEditorReady: (target) => {
+          if (
+            !credentialRotationServerUpdateContinuity
+              .markExactEditorReady(target)
+          ) {
+            throw new Error(
+              'credential rotation clean-editor continuity was not accepted',
+            );
+          }
+        },
+        onCredentialRotationCleanEditorChanged: (target) => {
+          retireServerUpdateReturn(target);
+        },
+        onCredentialRotationServerUpdateRetryInterrupted: (target) => {
+          credentialRotationServerUpdateContinuity
+            .interruptExactReturn(target);
+        },
+        ...(accountMenu !== null
+          ? {
+              onOpenCredentialRotationServerUpdateGuide: (target) => {
+                const current =
+                  credentialRotationServerUpdateContinuity.read();
+                const preservedTriage = current !== null
+                  && current.phase === 'triage'
+                  && current.kind === target.kind
+                  && current.name === target.name;
+                if (!preservedTriage) {
+                  credentialRotationServerUpdateContinuity.begin(target);
+                }
+                accountMenu?.openServerUpdateGuide(
+                  accountServerUpdateGuideFor(target),
+                );
+              },
+            }
           : {}),
         // Foundational lanes (Mail · Calendar · Files).
         ...(connectionsMailLane !== undefined ? { mail: connectionsMailLane } : {}),
@@ -4377,20 +7765,91 @@ export const bootstrapWebclient = async (
         ...(connectionsSetOAuthAppConfig !== undefined
           ? { setOAuthAppConfig: connectionsSetOAuthAppConfig }
           : {}),
+        foundationalOAuthContinuity,
+        providerSetupContinuity,
+        credentialRotationContinuity,
+        ...(credentialRotationTabConvergence !== null
+          ? { credentialRotationTabConvergence }
+          : {}),
+        credentialRotationServerUpdateContinuity,
+        onReconnect: (listener) => connectionStatus.onStatus((status) => {
+          if (status === 'connected') listener();
+        }),
+        ...(options.now !== undefined ? { now: options.now } : {}),
         // Others — the generic connection.* REACH enroll panel.
         ...(connectionsEnrollListCaller !== undefined
           && connectionsEnrollCaller !== undefined
           && connectionsUpdateCaller !== undefined
+          && connectionsRotateCredentialsCaller !== undefined
           && connectionsDeleteCaller !== undefined
           && connectionsProbeCaller !== undefined
           ? {
               connectionsEnrollListCaller,
-              connectionsEnrollCaller,
-              connectionsUpdateCaller,
-              connectionsDeleteCaller,
-              connectionsProbeCaller,
+              connectionsEnrollCaller: switchWorkTracker.track(
+                connectionsEnrollCaller,
+              ),
+              connectionsUpdateCaller: switchWorkTracker.track(
+                connectionsUpdateCaller,
+              ),
+              connectionsRotateCredentialsCaller: switchWorkTracker.track(
+                connectionsRotateCredentialsCaller,
+              ),
+              ...(connectionsCredentialRotationStatusCaller !== undefined
+                ? { connectionsCredentialRotationStatusCaller }
+                : {}),
+              ...(connectionsCredentialRotationActivityCaller !== undefined
+                ? { connectionsCredentialRotationActivityCaller }
+                : {}),
+              ...(connectionsAcknowledgeCredentialRotationSafeStopCaller
+                !== undefined
+                ? {
+                    connectionsAcknowledgeCredentialRotationSafeStopCaller:
+                      switchWorkTracker.track(
+                        connectionsAcknowledgeCredentialRotationSafeStopCaller,
+                      ),
+                  }
+                : {}),
+              ...(connectionsCredentialRotationServerUpdateTriageCaller
+                !== undefined
+                ? {
+                    connectionsCredentialRotationServerUpdateTriageCaller,
+                  }
+                : {}),
+              connectionsDeleteCaller: switchWorkTracker.track(
+                connectionsDeleteCaller,
+              ),
+              connectionsProbeCaller: switchWorkTracker.track(
+                connectionsProbeCaller,
+              ),
+              ...(connectionsMcpPackPreviewCaller !== undefined
+                ? {
+                    connectionsMcpPackPreviewCaller: switchWorkTracker.track(
+                      connectionsMcpPackPreviewCaller,
+                    ),
+                  }
+                : {}),
+              ...(connectionsMcpPackCommitCaller !== undefined
+                ? {
+                    connectionsMcpPackCommitCaller: switchWorkTracker.track(
+                      connectionsMcpPackCommitCaller,
+                    ),
+                  }
+                : {}),
+              ...(connectionsSuggestSetupCaller !== undefined
+                ? {
+                    connectionsSuggestSetupCaller: switchWorkTracker.track(
+                      connectionsSuggestSetupCaller,
+                    ),
+                  }
+                : {}),
               connectionsGetMatchPatternsCaller,
-              connectionsSetMatchPatternsCaller,
+              ...(connectionsSetMatchPatternsCaller !== undefined
+                ? {
+                    connectionsSetMatchPatternsCaller: switchWorkTracker.track(
+                      connectionsSetMatchPatternsCaller,
+                    ),
+                  }
+                : {}),
               ...(connectionsPreviewPurgeCaller !== undefined
                 ? { connectionsPreviewPurgeCaller }
                 : {}),
@@ -4400,7 +7859,12 @@ export const bootstrapWebclient = async (
           ? { connectionsEngagementHealthCaller }
           : {}),
         ...(connectionsReprobeEngagementCapabilitiesCaller !== undefined
-          ? { connectionsReprobeEngagementCapabilitiesCaller }
+          ? {
+              connectionsReprobeEngagementCapabilitiesCaller:
+                switchWorkTracker.track(
+                  connectionsReprobeEngagementCapabilitiesCaller,
+                ),
+            }
           : {}),
         // Fork 1 B — reuse the packs.list caller so the enroll dialog can
         // pre-fill the editable vendor-scope field from installed packs' needs.
@@ -4413,8 +7877,12 @@ export const bootstrapWebclient = async (
         ...(connectionsStartVendorOAuthCaller !== undefined
           && connectionsTakeVendorOAuthResultCaller !== undefined
           ? {
-              connectionsStartVendorOAuthCaller,
-              connectionsTakeVendorOAuthResultCaller,
+              connectionsStartVendorOAuthCaller: switchWorkTracker.track(
+                connectionsStartVendorOAuthCaller,
+              ),
+              connectionsTakeVendorOAuthResultCaller: switchWorkTracker.track(
+                connectionsTakeVendorOAuthResultCaller,
+              ),
             }
           : {}),
         ...(webhooksListCaller !== undefined
@@ -4434,55 +7902,194 @@ export const bootstrapWebclient = async (
           && webhooksRetentionPruneCaller !== undefined
           ? {
               webhooksListCaller,
-              webhooksCreateCaller,
-              webhooksCredentialWriteCaller,
-              webhooksCredentialRetireCaller,
-              webhooksManualConfirmCaller,
-              webhooksRegistrationReconcileCaller,
-              webhooksEnableCaller,
-              webhooksDisableCaller,
-              webhooksTestDeliveryCaller,
+              webhooksCreateCaller: switchWorkTracker.track(webhooksCreateCaller),
+              webhooksCredentialWriteCaller: switchWorkTracker.track(
+                webhooksCredentialWriteCaller,
+              ),
+              webhooksCredentialRetireCaller: switchWorkTracker.track(
+                webhooksCredentialRetireCaller,
+              ),
+              webhooksManualConfirmCaller: switchWorkTracker.track(
+                webhooksManualConfirmCaller,
+              ),
+              webhooksRegistrationReconcileCaller: switchWorkTracker.track(
+                webhooksRegistrationReconcileCaller,
+              ),
+              webhooksEnableCaller: switchWorkTracker.track(webhooksEnableCaller),
+              webhooksDisableCaller: switchWorkTracker.track(webhooksDisableCaller),
+              webhooksTestDeliveryCaller: switchWorkTracker.track(
+                webhooksTestDeliveryCaller,
+              ),
               webhooksDeliveryListCaller,
               webhooksDeliveryGetCaller,
               webhooksDeliveryEventGetCaller,
               webhooksRejectedDeliveryListCaller,
-              webhooksRetireCaller,
-              webhooksRetentionPruneCaller,
+              webhooksRetireCaller: switchWorkTracker.track(webhooksRetireCaller),
+              webhooksRetentionPruneCaller: switchWorkTracker.track(
+                webhooksRetentionPruneCaller,
+              ),
             }
           : {}),
         subscribe: subscriber.on,
       });
+      const sourceProfileId =
+        postSafeStopRecoveryResolution.status === 'profile_mismatch'
+          ? postSafeStopRecoveryResolution.target.serverProfileId
+          : null;
+      const updatePostSafeStopProfileContext = (
+        profiles: ReadonlyArray<WebclientServerProfile>,
+      ): void => {
+        const activeProfile = profiles.find((profile) =>
+          profile.id === bootProfileId);
+        const activeLabel = activeProfile === undefined
+          ? bootProfileLabel
+          : activeProfile.label.trim().length > 0
+            ? activeProfile.label.trim()
+            : defaultProfileLabel(activeProfile.server_url);
+        const sourceProfile = sourceProfileId === null
+          ? undefined
+          : profiles.find((profile) => profile.id === sourceProfileId);
+        const sourceLabel = sourceProfile === undefined
+          ? undefined
+          : sourceProfile.label.trim().length > 0
+            ? sourceProfile.label.trim()
+            : defaultProfileLabel(sourceProfile.server_url);
+        connectionsRoute.setPostSafeStopProfileContext({
+          activeProfileLabel: activeLabel,
+          ...(sourceLabel !== undefined
+            ? { sourceProfileLabel: sourceLabel }
+            : {}),
+        });
+      };
+      refreshActivePostSafeStopProfileContext =
+        updatePostSafeStopProfileContext;
+      if (knownServerProfiles.length > 0) {
+        updatePostSafeStopProfileContext(knownServerProfiles);
+      }
+      if (
+        exactReturnOwned
+        && initialCredentialRotationServerUpdateCompletion !== null
+      ) {
+        // The one-shot completion crossed into this first Connections mount as
+        // a direct memory value. Retire the verifier's copy only after that
+        // mount succeeds, so interruption or a later resume cannot replay the
+        // success receipt while mount failure remains recoverable.
+        serverUpdateReceiptVerification?.dismissCompletion();
+      }
+      const trackedConnectionsRoute =
+        withTrackedServerSwitchWork(connectionsRoute);
+      return {
+        ...trackedConnectionsRoute,
+        dispose: () => {
+          if (
+            refreshActivePostSafeStopProfileContext
+              === updatePostSafeStopProfileContext
+          ) {
+            refreshActivePostSafeStopProfileContext = () => undefined;
+          }
+          trackedConnectionsRoute.dispose();
+        },
+      };
     }
     if (route === 'packs') {
       activeSettingsRoute = null;
+      /** The one run modal the Packs route may have open. Held here (not in the
+       *  panel) so the one-modal-at-a-time rule is a property of the route
+       *  rather than of whichever surface happened to open it. */
+      let packsRunModal: RunModal.RunModalHandle | null = null;
       // The unified `#packs` surface — one list → detail (the [Installed |
       // Discover] tab split is retired). `bootstrapPacksRoute` now composes the
       // browse list (discover panel over the catalog ∪ roster union) → the
       // `#packs/<slug>` detail (the packs panel in detail-only mode, resolving a
       // marketplace pack whose manifest isn't bundled) internally. This branch
       // just forwards the same packs.* + cli.reachability + grant callers.
-      return bootstrapPacksRoute({
+      return withTrackedServerSwitchWork(bootstrapPacksRoute({
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
         ...(packsListCaller !== undefined ? { packsListCaller } : {}),
-        ...(packsInstallCaller !== undefined ? { packsInstallCaller } : {}),
-        ...(packsUninstallCaller !== undefined ? { packsUninstallCaller } : {}),
+        ...(packsInstallCaller !== undefined
+          ? { packsInstallCaller: switchWorkTracker.track(packsInstallCaller) }
+          : {}),
+        ...(packsUninstallCaller !== undefined
+          ? { packsUninstallCaller: switchWorkTracker.track(packsUninstallCaller) }
+          : {}),
         ...(packsResolveCaller !== undefined ? { packsResolveCaller } : {}),
-        ...(packsInstallBySlugCaller !== undefined ? { packsInstallBySlugCaller } : {}),
-        ...(sellerOverviewCaller !== undefined ? { sellerOverviewCaller } : {}),
-        ...(supervisionListCaller !== undefined ? { supervisionListCaller } : {}),
-        ...(supervisionSetCaller !== undefined ? { supervisionSetCaller } : {}),
-        ...(localToolsUniverseCaller !== undefined
-          && localToolsListCaller !== undefined
-          && localToolsSetCaller !== undefined
+        ...(packsInstallBySlugCaller !== undefined
           ? {
-              localToolsUniverseCaller,
-              localToolsListCaller,
-              localToolsSetCaller,
-              ...(localToolsContractsCaller !== undefined
-                ? { localToolsContractsCaller }
-                : {}),
+              packsInstallBySlugCaller: switchWorkTracker.track(
+                packsInstallBySlugCaller,
+              ),
             }
+          : {}),
+        ...(sellerOverviewCaller !== undefined ? { sellerOverviewCaller } : {}),
+        // ── Use tab — the pack rendered as the app it is ──
+        // The SAME list + execute callers the recipes route uses: the pack
+        // detail runs a pack's own recipes, so a second execute seam here
+        // would be a second place for run semantics to drift.
+        recipesListCaller,
+        recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
+        // The SAME owner file read the recipes route uses — a verified file
+        // card opens on identical terms wherever it renders.
+        fileReadCaller: (args) => rpcConn.call('data.file.read', args),
+        // The SAME pack-owned Records inventory as the Recipes route. Ref
+        // cells in a Use-tab editable table therefore become scoped name
+        // pickers instead of asking the owner to type a durable id.
+        recordRefSearchCaller,
+        // The pack's operations open the shared Run | Schedule modal. Owned at
+        // the route so one-modal-at-a-time holds; `onRan` hands the returned
+        // output back to Pack Use, where it becomes the current task result.
+        openRunModal: (entry, onRan, prefill) => {
+          if (packsRunModal !== null) return;
+          const runRecordRefSearch = bindRecordRefSearchToRecipe(
+            recordRefSearchCaller,
+            entry.recipe,
+          );
+          packsRunModal = RunModal.wireRunModal({
+            recipe: entry,
+            ...(options.document !== undefined ? { document: options.document } : {}),
+            initialTab: 'run',
+            execute: switchWorkTracker.track(recipeExecuteCaller),
+            fileRefSearch: fileRefSearchCaller,
+            ...(runRecordRefSearch !== undefined
+              ? { recordRefSearch: runRecordRefSearch }
+              : {}),
+            onClose: () => { packsRunModal = null; },
+            ...(onRan !== undefined ? { onRan } : {}),
+          });
+          // A row action carries the chosen record — fill the form with it, so
+          // "Open" on a building row opens `show-building` already pointed at
+          // that building. Mirrors the recipes route's own prefill.
+          if (prefill?.config !== undefined) {
+            let configText = '{}';
+            try {
+              configText = JSON.stringify(prefill.config, null, 2) ?? '{}';
+            } catch {
+              configText = '{}';
+            }
+            packsRunModal.setConfigText(configText);
+          }
+          if (prefill?.context !== undefined) {
+            packsRunModal.setContextValues(prefill.context);
+          }
+        },
+        ...(supervisionListCaller !== undefined ? { supervisionListCaller } : {}),
+        ...(supervisionSetCaller !== undefined
+          ? { supervisionSetCaller: switchWorkTracker.track(supervisionSetCaller) }
+          : {}),
+        // Forwarded INDEPENDENTLY. These used to ride an all-three gate because
+        // the retired Local tools section needed the universe+list+set trio to
+        // mount; each now has its own consumer on the pack detail, so an
+        // all-three gate would strip ACCESS's cli toggles on a server that
+        // serves list/set but not universe.
+        ...(localToolsUniverseCaller !== undefined
+          ? { localToolsUniverseCaller }
+          : {}),
+        ...(localToolsListCaller !== undefined ? { localToolsListCaller } : {}),
+        ...(localToolsSetCaller !== undefined
+          ? { localToolsSetCaller: switchWorkTracker.track(localToolsSetCaller) }
+          : {}),
+        ...(localToolsContractsCaller !== undefined
+          ? { localToolsContractsCaller }
           : {}),
         // Reuse the unfiltered enrolled-connection list (same caller the
         // connections + recipes routes use) so each pack row can show
@@ -4497,7 +8104,11 @@ export const bootstrapWebclient = async (
           ? { contractGrantReadCaller: grantReadCaller }
           : {}),
         ...(grantWriteCaller !== undefined
-          ? { contractGrantWriteCaller: grantWriteCaller }
+          ? {
+              contractGrantWriteCaller: switchWorkTracker.track(
+                grantWriteCaller,
+              ),
+            }
           : {}),
         ...(grantCatalogOperationsCaller !== undefined
           ? { catalogOperationsCaller: grantCatalogOperationsCaller }
@@ -4509,10 +8120,18 @@ export const bootstrapWebclient = async (
           ? { ownerOperationListCaller }
           : {}),
         ...(ownerOperationUpsertCaller !== undefined
-          ? { ownerOperationUpsertCaller }
+          ? {
+              ownerOperationUpsertCaller: switchWorkTracker.track(
+                ownerOperationUpsertCaller,
+              ),
+            }
           : {}),
         ...(ownerOperationDeleteCaller !== undefined
-          ? { ownerOperationDeleteCaller }
+          ? {
+              ownerOperationDeleteCaller: switchWorkTracker.track(
+                ownerOperationDeleteCaller,
+              ),
+            }
           : {}),
         // The Access panel's contract rows ride the SAME flag family as the
         // grant callers (enableContractsPanel) — the local-tools contracts
@@ -4534,7 +8153,7 @@ export const bootstrapWebclient = async (
           activeHash = hash;
         },
         subscribe: subscriber.on,
-      });
+      }));
     }
     if (route === 'recipes') {
       activeSettingsRoute = null;
@@ -4545,6 +8164,10 @@ export const bootstrapWebclient = async (
       const initialRecipeId = recipeSegment !== 'install'
         ? recipeSegment
         : undefined;
+      const createRecipeSchedule: RecipesSchedulesCreateCaller = (args) =>
+        rpcConn.call('schedules.create', args);
+      const setRecipeConfig: RecipeConfigSetCaller = (args) =>
+        rpcConn.call('recipe_config.set', args);
       // Wrap the run-library route in the [Installed | Discover] tab shell. The
       // route mounts UNCHANGED into the Installed pane; the Discover pane
       // browses the marketplace recipe catalog (lazy-loaded on first open).
@@ -4553,7 +8176,7 @@ export const bootstrapWebclient = async (
           root: host,
           ...(options.document !== undefined ? { document: options.document } : {}),
           recipesListCaller,
-          recipeExecuteCaller,
+          recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
           runnabilityCaller: recipesRunnabilityCaller,
           piiCaller: recipesPiiCaller,
           ...(recipesToolCatalogCaller !== undefined
@@ -4565,24 +8188,38 @@ export const bootstrapWebclient = async (
           ...(connectionsEnrollListCaller !== undefined
             ? { connectionsListCaller: connectionsEnrollListCaller }
             : {}),
+          // D-221 — the installed-pack roster backs the recipe detail's Records
+          // disclosure (what a recipe reads / writes / DELETES in pack-owned
+          // storage) and its author-declared risk, both joined from each
+          // manifest's composition operation rows. Optional + soft: absent →
+          // the disclosure says the roster is unavailable.
+          ...(packsListCaller !== undefined ? { packsListCaller } : {}),
           // R24 — pack install/uninstall moved to the dedicated #packs route
-          // (the recipes route keeps only the by-pack FILTER, off depends_on).
+          // (the recipes route keeps only the by-pack FILTER).
           // Schedule callers light up the shared Run | Schedule modal's
           // Schedule tab (quick-schedule from a recipe's detail); the list
           // callers feed the automation status line. Trigger management lives
           // at #automation; bundled recipes also get a quick auto-run toggle.
+          dishesListCaller: automationDishesListCaller,
           schedulesListCaller: automationSchedulesListCaller,
-          schedulesCreateCaller: (args) => rpcConn.call('schedules.create', args),
-          schedulesUpdateCaller: automationSchedulesUpdateCaller,
-          schedulesDeleteCaller: automationSchedulesDeleteCaller,
+          schedulesCreateCaller: switchWorkTracker.track(createRecipeSchedule),
+          schedulesUpdateCaller: switchWorkTracker.track(
+            automationSchedulesUpdateCaller,
+          ),
+          schedulesDeleteCaller: switchWorkTracker.track(
+            automationSchedulesDeleteCaller,
+          ),
           triggersListCaller: automationTriggersListCaller,
           autoRunListCaller: automationAutoRunListCaller,
-          autoRunUpdateCaller: automationAutoRunUpdateCaller,
+          autoRunUpdateCaller: switchWorkTracker.track(
+            automationAutoRunUpdateCaller,
+          ),
           // D-179 — the recipe detail's install-config editor (default-dish
           // overlay applied as a base to every dishless run).
           recipeConfigGetCaller: (args) => rpcConn.call('recipe_config.get', args),
-          recipeConfigSetCaller: (args) => rpcConn.call('recipe_config.set', args),
+          recipeConfigSetCaller: switchWorkTracker.track(setRecipeConfig),
           fileRefSearchCaller,
+          recordRefSearchCaller,
           // D-200 — the same paired-client owner read used by Data Files backs
           // exact artifact preview/download in recipe results. The result host
           // rechecks ref/hash/MIME/name/size before it opens returned bytes.
@@ -4601,7 +8238,7 @@ export const bootstrapWebclient = async (
           subscribe: subscriber.on,
         });
       let recipeDiscover: ReturnType<typeof mountRecipeDiscovery> | null = null;
-      return mountDiscoverySurface({
+      return withTrackedServerSwitchWork(mountDiscoverySurface({
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
         mountInstalled,
@@ -4609,13 +8246,19 @@ export const bootstrapWebclient = async (
           recipeDiscover = mountRecipeDiscovery({
             host,
             ...(options.document !== undefined ? { document: options.document } : {}),
-            installBySlug: recipeInstallBySlugCaller,
+            installBySlug: switchWorkTracker.track(recipeInstallBySlugCaller),
             listInstalled: recipesListCaller,
             // Deps box — resolve the recipe's depends_on against the pack roster
             // and co-install missing packs in the consent dialog. Both gate on
             // the packs feature (absent ⇒ one-click install).
             ...(packsListCaller !== undefined ? { listPacks: packsListCaller } : {}),
-            ...(packsInstallBySlugCaller !== undefined ? { installPack: packsInstallBySlugCaller } : {}),
+            ...(packsInstallBySlugCaller !== undefined
+              ? {
+                  installPack: switchWorkTracker.track(
+                    packsInstallBySlugCaller,
+                  ),
+                }
+              : {}),
             ...(recipeInstallIntent !== undefined
               ? { initialInstallRecipeId: recipeInstallIntent }
               : {}),
@@ -4634,7 +8277,7 @@ export const bootstrapWebclient = async (
         onReactivate: (tab) => {
           if (tab === 'discover') recipeDiscover?.refresh();
         },
-      });
+      }));
     }
     if (route === 'data') {
       activeSettingsRoute = null;
@@ -4650,7 +8293,7 @@ export const bootstrapWebclient = async (
       const dataEntityVerificationAddress = parsedDataRoute === null
         ? null
         : parseDataEntityVerificationAddress(parsedDataRoute);
-      return bootstrapDataRoute({
+      return withTrackedServerSwitchWork(bootstrapDataRoute({
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
         workEntitySourceListCaller: dataWorkEntitySourceListCaller,
@@ -4678,7 +8321,7 @@ export const bootstrapWebclient = async (
         formResponseSetStateCaller: dataFormResponseSetStateCaller,
         formResponseExportCaller: dataFormResponseExportCaller,
         recipeListCaller: recipesListCaller,
-        recipeExecuteCaller,
+        recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
         manageRescheduleLinkCaller,
         timelineCaller: dataTimelineCaller,
         mirrorSearchCaller: dataMirrorSearchCaller,
@@ -4694,6 +8337,16 @@ export const bootstrapWebclient = async (
         annotationListCaller: dataAnnotationListCaller,
         linkListCaller: dataLinkListCaller,
         sharedListCaller: dataSharedListCaller,
+        recordsNamespaceListCaller: dataRecordsNamespaceListCaller,
+        recordsKindListCaller: dataRecordsKindListCaller,
+        recordsSearchCaller: dataRecordsSearchCaller,
+        recordsGetCaller: dataRecordsGetCaller,
+        recordsDeleteCaller: dataRecordsDeleteCaller,
+        recordsRetentionListCaller: dataRecordsRetentionListCaller,
+        recordsExportCaller: dataRecordsExportCaller,
+        recordsOutboxListCaller: dataRecordsOutboxListCaller,
+        recordsOutboxRetireCaller: dataRecordsOutboxRetireCaller,
+        recordsPurgeCaller: dataRecordsPurgeCaller,
         uploadCreateCaller: dataUploadCreateCaller,
         uploadProbeCaller: dataUploadProbeCaller,
         uploadFinalizeCaller: dataUploadFinalizeCaller,
@@ -4757,31 +8410,62 @@ export const bootstrapWebclient = async (
                 }
               : {}),
         subscribe: subscriber.on,
-      });
+      }));
     }
     if (route === 'automation') {
       activeSettingsRoute = null;
-      return bootstrapAutomationRoute({
+      const createAutomationSchedule: RunModal.RunModalSchedulesCreateCaller =
+        (args) => rpcConn.call('schedules.create', args);
+      const createAutomationTrigger: RunModal.RunModalTriggersCreateCaller =
+        (args) => rpcConn.call('triggers.create', args);
+      return withTrackedServerSwitchWork(bootstrapAutomationRoute({
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
         schedulesListCaller: automationSchedulesListCaller,
-        schedulesUpdateCaller: automationSchedulesUpdateCaller,
-        schedulesDeleteCaller: automationSchedulesDeleteCaller,
+        schedulesUpdateCaller: switchWorkTracker.track(
+          automationSchedulesUpdateCaller,
+        ),
+        schedulesDeleteCaller: switchWorkTracker.track(
+          automationSchedulesDeleteCaller,
+        ),
         triggersListCaller: automationTriggersListCaller,
-        triggersUpdateCaller: automationTriggersUpdateCaller,
-        triggersDeleteCaller: automationTriggersDeleteCaller,
+        triggersUpdateCaller: switchWorkTracker.track(
+          automationTriggersUpdateCaller,
+        ),
+        triggersDeleteCaller: switchWorkTracker.track(
+          automationTriggersDeleteCaller,
+        ),
+        dishesListCaller: automationDishesListCaller,
+        dishesUpdateCaller: switchWorkTracker.track(
+          automationDishesUpdateCaller,
+        ),
+        dishesDeleteCaller: switchWorkTracker.track(
+          automationDishesDeleteCaller,
+        ),
+        dishesCreateCaller: switchWorkTracker.track(
+          automationDishesCreateCaller,
+        ),
+        dishesHistoryCaller: automationDishesHistoryCaller,
         autoRunListCaller: automationAutoRunListCaller,
-        autoRunUpdateCaller: automationAutoRunUpdateCaller,
+        autoRunUpdateCaller: switchWorkTracker.track(
+          automationAutoRunUpdateCaller,
+        ),
         watchListCaller: automationWatchListCaller,
-        watchUpdateCaller: automationWatchUpdateCaller,
-        watchRunNowCaller: automationWatchRunNowCaller,
+        watchUpdateCaller: switchWorkTracker.track(
+          automationWatchUpdateCaller,
+        ),
+        watchRunNowCaller: switchWorkTracker.track(
+          automationWatchRunNowCaller,
+        ),
         recipeNamesCaller,
         authStateCaller: automationAuthStateCaller,
         // R21 create path — Add → recipe picker → the shared run-modal on
         // the Schedule|Trigger tab.
         recipeEntriesCaller: () => rpcConn.call('recipe.list', undefined),
-        schedulesCreateCaller: (args) => rpcConn.call('schedules.create', args),
-        triggersCreateCaller: (args) => rpcConn.call('triggers.create', args),
+        schedulesCreateCaller: switchWorkTracker.track(
+          createAutomationSchedule,
+        ),
+        triggersCreateCaller: switchWorkTracker.track(createAutomationTrigger),
         fileRefSearchCaller,
         // R21 — keep the router's cached activeHash in lockstep with the
         // route's in-page replaceState syncs (tab/detail changes fire no
@@ -4807,7 +8491,7 @@ export const bootstrapWebclient = async (
         })(),
         ...(options.now !== undefined ? { now: options.now } : {}),
         subscribe: subscriber.on,
-      });
+      }));
     }
     if (route === 'logs') {
       activeSettingsRoute = null;
@@ -4823,7 +8507,7 @@ export const bootstrapWebclient = async (
         : parseLogsRunAddress(parsedLogsRoute);
       const logsSegment = deepLinkSegment('logs');
       const logsRecipeId = deepLinkSegment('logs', 1);
-      return bootstrapLogsRoute({
+      return withTrackedServerSwitchWork(bootstrapLogsRoute({
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
         listCaller: runsListCaller,
@@ -4853,7 +8537,7 @@ export const bootstrapWebclient = async (
               : {}),
         ...(options.now !== undefined ? { now: options.now } : {}),
         subscribe: subscriber.on,
-      });
+      }));
     }
     if (route === 'chat') {
       activeSettingsRoute = null;
@@ -4866,12 +8550,13 @@ export const bootstrapWebclient = async (
       const chatPlanAddress = parsedChatRoute === null
         ? null
         : parseChatPlanAddress(parsedChatRoute);
+      const chatSessionAddress = parsedChatRoute === null
+        ? null
+        : parseChatSessionAddress(parsedChatRoute);
       const chatDeepLink = deepLinkSegment('chat');
       const chatSessionId = chatPlanAddress?.sessionId
         ?? chatAnswerAddress?.sessionId
-        ?? (chatDeepLink === 'session'
-          ? deepLinkSegment('chat', 1)
-          : undefined);
+        ?? chatSessionAddress?.sessionId;
       const chatConnectedSource = hashSource === null
         ? null
         : parseChatConnectedSource(parseShellRoute(hashSource.getHash()));
@@ -4882,15 +8567,63 @@ export const bootstrapWebclient = async (
           : chatConnectedSource.lane === 'calendar'
             ? connectionsCalendarLane
             : connectionsFileLane;
+      const createChatSchedule: RunModal.RunModalSchedulesCreateCaller =
+        (args) => rpcConn.call('schedules.create', args);
+      const rawChatConn = rpcConn.call as unknown as (
+        method: string,
+        payload?: unknown,
+      ) => Promise<unknown>;
+      const chatConn = ((method: string, payload?: unknown): Promise<unknown> => {
+        const invoke = (): Promise<unknown> => payload === undefined
+          ? rawChatConn(method)
+          : rawChatConn(method, payload);
+        if (method !== 'chat.send') return invoke();
+        const release = switchWorkTracker.begin({
+          label: 'Waiting for a Chat answer',
+          returnHref: activeHash,
+          returnLabel: 'Return to Chat',
+        });
+        chatTurnLeases.add(release);
+        let result: Promise<unknown>;
+        try {
+          result = invoke();
+        } catch (error) {
+          releaseChatTurnLease(release);
+          throw error;
+        }
+        return result.then(
+          (value) => {
+            const turnId = value !== null
+              && typeof value === 'object'
+              && typeof (value as { turn_id?: unknown }).turn_id === 'string'
+              ? (value as { turn_id: string }).turn_id
+              : null;
+            if (turnId === null || settledChatTurnIds.delete(turnId)) {
+              releaseChatTurnLease(release);
+            } else {
+              release.update({ jobId: turnId });
+              chatTurnLeaseById.set(turnId, release);
+            }
+            return value;
+          },
+          (error: unknown) => {
+            releaseChatTurnLease(release);
+            throw error;
+          },
+        );
+      }) as ChatRouteConn;
       // The live-control "running" bubble was lifted out of the chat header into
       // route-independent shell chrome (`liveControlBubble`, mounted above), so
       // the chat route no longer wires the `execution.*` callers.
       const chatRoute = bootstrapChatRoute({
         root: appShell.contentRoot,
-        conn: rpcConn.call as ChatRouteConn,
+        conn: chatConn,
         ...(options.document !== undefined ? { document: options.document } : {}),
         subscribe: subscriber.on,
         reconnect,
+        ...(options.reauthRecovery?.chatDraft !== undefined
+          ? { initialRecoveryDraft: options.reauthRecovery.chatDraft }
+          : {}),
         // Shell-frame Step 4 — the [✎ Create] composer overlay reuses the
         // compose route's local-write callers.
         contactUpsertCaller: dataContactUpsertCaller,
@@ -4899,17 +8632,46 @@ export const bootstrapWebclient = async (
         // recipe.list / execute / schedules.* / auto_run.* callers the
         // Recipes + Automation routes already use.
         recipeListCaller: recipesListCaller,
-        recipeExecuteCaller,
+        recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
         schedulesListCaller: automationSchedulesListCaller,
-        schedulesCreateCaller: (args) => rpcConn.call('schedules.create', args),
-        schedulesUpdateCaller: automationSchedulesUpdateCaller,
-        schedulesDeleteCaller: automationSchedulesDeleteCaller,
+        schedulesCreateCaller: switchWorkTracker.track(createChatSchedule),
+        schedulesUpdateCaller: switchWorkTracker.track(
+          automationSchedulesUpdateCaller,
+        ),
+        schedulesDeleteCaller: switchWorkTracker.track(
+          automationSchedulesDeleteCaller,
+        ),
         autoRunListCaller: automationAutoRunListCaller,
-        autoRunUpdateCaller: automationAutoRunUpdateCaller,
+        autoRunUpdateCaller: switchWorkTracker.track(
+          automationAutoRunUpdateCaller,
+        ),
         // The default landing owns the first-run activation surface. Embedded
         // chat mounts opt in explicitly so their established empty state stays
         // stable.
         enableFirstRunActivation: true,
+        // Bare Chat is the returning-user history landing. Typed setup/source
+        // links and `#chat/new` remain deliberate draft experiences; a
+        // session/answer/plan link opens its exact durable thread below.
+        initialLanding:
+          chatDeepLink === undefined ? 'history' : 'new',
+        onAddressChange: (hash, mode) => {
+          const history = doc.defaultView?.history;
+          const writer = mode === 'push'
+            ? history?.pushState
+            : history?.replaceState;
+          if (writer === undefined) return;
+          try {
+            writer.call(history, null, '', hash);
+            // History API writes do not emit hashchange. Keep the router's
+            // deep-link comparison baseline aligned so Back/Forward evaluates
+            // against the address the Chat mount actually owns.
+            activeHash = hash;
+          } catch {
+            // Constrained embedders may reject History writes. The in-memory
+            // Chat transition still succeeds; only reload/back continuity
+            // degrades.
+          }
+        },
         ...(chatDeepLink === 'start'
           ? { initialStarterPrompt: true }
           : {}),
@@ -4959,8 +8721,9 @@ export const bootstrapWebclient = async (
                 : {}),
             }
           : {}),
+        ...(options.now !== undefined ? { now: options.now } : {}),
       });
-      return {
+      return withTrackedServerSwitchWork({
         ...chatRoute,
         navigateDeepLink: (hash: string): boolean => {
           const address = parseChatPlanAddress(parseShellRoute(hash));
@@ -4968,7 +8731,7 @@ export const bootstrapWebclient = async (
             ? false
             : chatRoute.openPlanLanding(address);
         },
-      };
+      });
     }
     if (route === 'settings') {
       const sellerRouteMode = deepLinkSegment('settings', 2);
@@ -4987,17 +8750,74 @@ export const bootstrapWebclient = async (
           ? serializeShellRoute('chat', 'start')
           : serializeChatConnectedSource(chatSetupConnectedSource)
         : serializeShellRoute('chat', 'session', chatSetupSessionId);
-      const settings = bootstrapSettingsRoute({
+      const downloadDriver = archiveDownload;
+      const trackedArchiveDownload = downloadDriver === undefined
+        ? undefined
+        : (
+            request: Parameters<NonNullable<typeof archiveDownload>>[0],
+          ): ReturnType<NonNullable<typeof archiveDownload>> => {
+            const release = switchWorkTracker.begin();
+            try {
+              const cancel = downloadDriver({
+                ...request,
+                onError: (message) => {
+                  release();
+                  request.onError(message);
+                },
+                onDone: () => {
+                  release();
+                  request.onDone();
+                },
+              });
+              return () => {
+                release();
+                cancel();
+              };
+            } catch (error) {
+              release();
+              throw error;
+            }
+          };
+      const uploadDriver = archiveUpload;
+      const trackedArchiveUpload = uploadDriver === undefined
+        ? undefined
+        : (
+            request: Parameters<NonNullable<typeof archiveUpload>>[0],
+          ): ReturnType<NonNullable<typeof archiveUpload>> => {
+            const release = switchWorkTracker.begin();
+            try {
+              const cancel = uploadDriver({
+                ...request,
+                onError: (message) => {
+                  release();
+                  request.onError(message);
+                },
+                onDone: (result) => {
+                  release();
+                  request.onDone(result);
+                },
+              });
+              return () => {
+                release();
+                cancel();
+              };
+            } catch (error) {
+              release();
+              throw error;
+            }
+          };
+      const settings = withTrackedServerSwitchWork(bootstrapSettingsRoute({
         root: appShell.contentRoot,
         localStore: options.localStore,
         // D-196 1d — the same generic runner the Recipes route uses; the Seller
         // page's order actions launch recipes through it rather than each one
         // needing its own `server.seller.*` method.
-        recipeExecuteCaller,
+        recipeExecuteCaller: switchWorkTracker.track(recipeExecuteCaller),
         ...(options.document !== undefined ? { document: options.document } : {}),
         ...(hashSource !== null
           ? {
               initialSectionId: deepLinkSegment('settings'),
+              initialServerTabId: deepLinkSegment('settings', 1),
               ...(deepLinkSegment('settings', 1) === 'setup'
                 ? { initialAiModelsView: 'chat-setup' as const }
                 : {}),
@@ -5019,10 +8839,18 @@ export const bootstrapWebclient = async (
         ...(options.cryptoKeysWiper !== undefined
           ? { cryptoKeysWiper: options.cryptoKeysWiper }
           : {}),
+        ...(options.onPrivacyCredentialsCleared !== undefined
+          ? {
+              onLocalCredentialsCleared:
+                options.onPrivacyCredentialsCleared,
+            }
+          : {}),
         ...(options.onPrivacyClear !== undefined
           ? { onCleared: options.onPrivacyClear }
           : {}),
-        ...(tlsRenewCaller !== undefined ? { tlsRenewCaller } : {}),
+        ...(tlsRenewCaller !== undefined
+          ? { tlsRenewCaller: switchWorkTracker.track(tlsRenewCaller) }
+          : {}),
         // R26.2 Delta 1 — the Exposure grid mounts only when all four callers
         // are present (the route's `canMountExposure` gate). `runHasDdns` is
         // independently optional.
@@ -5032,13 +8860,23 @@ export const bootstrapWebclient = async (
           && exposureSetPublicMcpAckCaller !== undefined
           ? {
               exposureGetCaller,
-              exposureApplyPresetCaller,
-              exposureSetPathResolutionCaller,
-              exposureSetPublicMcpAckCaller,
+              exposureApplyPresetCaller: switchWorkTracker.track(
+                exposureApplyPresetCaller,
+              ),
+              exposureSetPathResolutionCaller: switchWorkTracker.track(
+                exposureSetPathResolutionCaller,
+              ),
+              exposureSetPublicMcpAckCaller: switchWorkTracker.track(
+                exposureSetPublicMcpAckCaller,
+              ),
             }
           : {}),
         ...(exposureSetApexCaller !== undefined
-          ? { exposureSetApexCaller }
+          ? {
+              exposureSetApexCaller: switchWorkTracker.track(
+                exposureSetApexCaller,
+              ),
+            }
           : {}),
         ...(exposureHasDdnsCaller !== undefined
           ? { exposureHasDdnsCaller }
@@ -5048,13 +8886,19 @@ export const bootstrapWebclient = async (
           ? { onTlsRenewed: options.onTlsRenewed }
           : {}),
         ...(keyHealthLoader !== undefined && keyRotateCaller !== undefined
-          ? { keyHealthLoader, keyRotateCaller }
+          ? {
+              keyHealthLoader,
+              keyRotateCaller: switchWorkTracker.track(keyRotateCaller),
+            }
           : {}),
         // D-212 §7.10 — keyfile posture on the Key Health page.
         ...(systemStatusLoader !== undefined ? { systemStatusLoader } : {}),
         ...(certPinWatcher !== null ? { certPinWatcher } : {}),
         ...(pairListCaller !== undefined && pairRevokeCaller !== undefined
-          ? { pairListCaller, pairRevokeCaller }
+          ? {
+              pairListCaller,
+              pairRevokeCaller: switchWorkTracker.track(pairRevokeCaller),
+            }
           : {}),
         ...(options.currentInstanceId !== undefined
           ? { currentInstanceId: options.currentInstanceId }
@@ -5066,7 +8910,9 @@ export const bootstrapWebclient = async (
           && notificationsSetChannelCaller !== undefined
           ? {
               notificationsDescribeCaller,
-              notificationsSetChannelCaller,
+              notificationsSetChannelCaller: switchWorkTracker.track(
+                notificationsSetChannelCaller,
+              ),
               // D-169 P1 — per-bridge sub-row callers. Always paired
               // with the channel-level callers (same gate); the
               // notifications panel renders the sub-row group only
@@ -5075,12 +8921,19 @@ export const bootstrapWebclient = async (
                 && notificationsSetBridgeModeCaller !== undefined
                 ? {
                     notificationsDescribeBridgesCaller,
-                    notificationsSetBridgeModeCaller,
+                    notificationsSetBridgeModeCaller: switchWorkTracker.track(
+                      notificationsSetBridgeModeCaller,
+                    ),
                   }
                 : {}),
               // R31 — the verification-phrase caller (panel-level).
               ...(notificationsSetVerificationPhraseCaller !== undefined
-                ? { notificationsSetVerificationPhraseCaller }
+                ? {
+                    notificationsSetVerificationPhraseCaller:
+                      switchWorkTracker.track(
+                        notificationsSetVerificationPhraseCaller,
+                      ),
+                  }
                 : {}),
             }
           : {}),
@@ -5099,132 +8952,345 @@ export const bootstrapWebclient = async (
           ? { aiModelsDefaultModelPrefGetCaller }
           : {}),
         ...(aiModelsDefaultModelPrefSetCaller !== undefined
-          ? { aiModelsDefaultModelPrefSetCaller }
+          ? {
+              aiModelsDefaultModelPrefSetCaller: switchWorkTracker.track(
+                aiModelsDefaultModelPrefSetCaller,
+              ),
+            }
           : {}),
         ...(aiModelsGetLLMConfigCaller !== undefined
           ? { aiModelsGetLLMConfigCaller }
           : {}),
         ...(aiModelsSetLLMSlotCaller !== undefined
-          ? { aiModelsSetLLMSlotCaller }
+          ? {
+              aiModelsSetLLMSlotCaller: switchWorkTracker.track(
+                aiModelsSetLLMSlotCaller,
+              ),
+            }
           : {}),
         ...(aiModelsSetEmbeddingsSlotCaller !== undefined
-          ? { aiModelsSetEmbeddingsSlotCaller }
+          ? {
+              aiModelsSetEmbeddingsSlotCaller: switchWorkTracker.track(
+                aiModelsSetEmbeddingsSlotCaller,
+              ),
+            }
           : {}),
         ...(aiModelsUpsertFreePoolEntryCaller !== undefined
-          ? { aiModelsUpsertFreePoolEntryCaller }
+          ? {
+              aiModelsUpsertFreePoolEntryCaller: switchWorkTracker.track(
+                aiModelsUpsertFreePoolEntryCaller,
+              ),
+            }
           : {}),
         ...(aiModelsRemoveFreePoolEntryCaller !== undefined
-          ? { aiModelsRemoveFreePoolEntryCaller }
+          ? {
+              aiModelsRemoveFreePoolEntryCaller: switchWorkTracker.track(
+                aiModelsRemoveFreePoolEntryCaller,
+              ),
+            }
           : {}),
         ...(aiModelsSetFreePoolEntryEnabledCaller !== undefined
-          ? { aiModelsSetFreePoolEntryEnabledCaller }
+          ? {
+              aiModelsSetFreePoolEntryEnabledCaller: switchWorkTracker.track(
+                aiModelsSetFreePoolEntryEnabledCaller,
+              ),
+            }
           : {}),
         ...(aiModelsSetChatCatalogModeCaller !== undefined
-          ? { aiModelsSetChatCatalogModeCaller }
+          ? {
+              aiModelsSetChatCatalogModeCaller: switchWorkTracker.track(
+                aiModelsSetChatCatalogModeCaller,
+              ),
+            }
           : {}),
         ...(aiModelsGetLlmPromptsCaller !== undefined
           ? { aiModelsGetLlmPromptsCaller }
           : {}),
         ...(aiModelsSetLlmPromptCaller !== undefined
-          ? { aiModelsSetLlmPromptCaller }
+          ? {
+              aiModelsSetLlmPromptCaller: switchWorkTracker.track(
+                aiModelsSetLlmPromptCaller,
+              ),
+            }
           : {}),
         ...(aiModelsGetConfigSchemaCaller !== undefined
           ? { aiModelsGetConfigSchemaCaller }
           : {}),
         ...(aiModelsSetConfigFieldCaller !== undefined
-          ? { aiModelsSetConfigFieldCaller }
+          ? {
+              aiModelsSetConfigFieldCaller: switchWorkTracker.track(
+                aiModelsSetConfigFieldCaller,
+              ),
+            }
           : {}),
         ...(aiModelsHousekeepingConfigReadCaller !== undefined
           ? { aiModelsHousekeepingConfigReadCaller }
           : {}),
         ...(aiModelsHousekeepingConfigWriteCaller !== undefined
-          ? { aiModelsHousekeepingConfigWriteCaller }
+          ? {
+              aiModelsHousekeepingConfigWriteCaller: switchWorkTracker.track(
+                aiModelsHousekeepingConfigWriteCaller,
+              ),
+            }
           : {}),
         ...(sellerOverviewCaller !== undefined ? { sellerOverviewCaller } : {}),
         ...(sellerOrdersCaller !== undefined ? { sellerOrdersCaller } : {}),
         ...(sellerOfferStateTransitionCaller !== undefined
-          ? { sellerOfferStateTransitionCaller }
+          ? {
+              sellerOfferStateTransitionCaller: switchWorkTracker.track(
+                sellerOfferStateTransitionCaller,
+              ),
+            }
           : {}),
         ...(sellerMailListCaller !== undefined ? { sellerMailListCaller } : {}),
         ...(sellerSettingsUpdateCaller !== undefined
-          ? { sellerSettingsUpdateCaller }
+          ? {
+              sellerSettingsUpdateCaller: switchWorkTracker.track(
+                sellerSettingsUpdateCaller,
+              ),
+            }
           : {}),
         ...(sellerManualTierUpsertCaller !== undefined
-          ? { sellerManualTierUpsertCaller }
+          ? {
+              sellerManualTierUpsertCaller: switchWorkTracker.track(
+                sellerManualTierUpsertCaller,
+              ),
+            }
           : {}),
         ...(sellerCreatePassTierCaller !== undefined
-          ? { sellerCreatePassTierCaller }
+          ? {
+              sellerCreatePassTierCaller: switchWorkTracker.track(
+                sellerCreatePassTierCaller,
+              ),
+            }
           : {}),
         ...(sellerManualCustomerIssueCaller !== undefined
-          ? { sellerManualCustomerIssueCaller }
+          ? {
+              sellerManualCustomerIssueCaller: switchWorkTracker.track(
+                sellerManualCustomerIssueCaller,
+              ),
+            }
           : {}),
         ...(sellerManualCustomerExtendCaller !== undefined
-          ? { sellerManualCustomerExtendCaller }
+          ? {
+              sellerManualCustomerExtendCaller: switchWorkTracker.track(
+                sellerManualCustomerExtendCaller,
+              ),
+            }
           : {}),
         ...(sellerManualCustomerSwapTierCaller !== undefined
-          ? { sellerManualCustomerSwapTierCaller }
+          ? {
+              sellerManualCustomerSwapTierCaller: switchWorkTracker.track(
+                sellerManualCustomerSwapTierCaller,
+              ),
+            }
           : {}),
         ...(sellerManualCustomerCloseCaller !== undefined
-          ? { sellerManualCustomerCloseCaller }
+          ? {
+              sellerManualCustomerCloseCaller: switchWorkTracker.track(
+                sellerManualCustomerCloseCaller,
+              ),
+            }
           : {}),
         ...(sellerManualCustomerReissueTokenCaller !== undefined
-          ? { sellerManualCustomerReissueTokenCaller }
+          ? {
+              sellerManualCustomerReissueTokenCaller: switchWorkTracker.track(
+                sellerManualCustomerReissueTokenCaller,
+              ),
+            }
           : {}),
         ...(sellerManualTierBulkAdjustCaller !== undefined
-          ? { sellerManualTierBulkAdjustCaller }
+          ? {
+              sellerManualTierBulkAdjustCaller: switchWorkTracker.track(
+                sellerManualTierBulkAdjustCaller,
+              ),
+            }
           : {}),
         ...(sellerStripeSynchronizeCaller !== undefined
-          ? { sellerStripeSynchronizeCaller }
+          ? {
+              sellerStripeSynchronizeCaller: switchWorkTracker.track(
+                sellerStripeSynchronizeCaller,
+              ),
+            }
           : {}),
         ...(sellerAcknowledgeLlmGatewayPaidCaller !== undefined
-          ? { sellerAcknowledgeLlmGatewayPaidCaller }
+          ? {
+              sellerAcknowledgeLlmGatewayPaidCaller: switchWorkTracker.track(
+                sellerAcknowledgeLlmGatewayPaidCaller,
+              ),
+            }
           : {}),
         ...(updateCheckCaller !== undefined
           ? {
               updateCheckCaller,
               updatesStartPoll,
+              credentialRotationServerUpdateContinuity,
+              ...(credentialRotationTabConvergence !== null
+                ? {
+                    serverUpdateTabConvergence:
+                      credentialRotationTabConvergence,
+                  }
+                : {}),
+              serverConnectionStatus: connectionStatus,
+              ...(serverUpdateReceiptVerification !== null
+                ? {
+                    serverUpdateReceiptVerification,
+                    serverUpdateReceiptDiagnosticContext: {
+                      serverUrl: pair.serverUrl,
+                    },
+                    ...(serverUpdateDiagnosticWriter !== undefined
+                      ? { serverUpdateReceiptDiagnosticWriter:
+                          serverUpdateDiagnosticWriter }
+                      : {}),
+                  }
+                : {}),
+              onReturnToCredentialRotationRetry: (target) => {
+                navigateHash(
+                  serializeConnectionsCredentialRotationRetry(target),
+                );
+              },
               ...(updateModeGetCaller !== undefined ? { updateModeGetCaller } : {}),
-              ...(updateModeSetCaller !== undefined ? { updateModeSetCaller } : {}),
-              ...(updateApplyCaller !== undefined ? { updateApplyCaller } : {}),
-              ...(updateRollbackCaller !== undefined ? { updateRollbackCaller } : {}),
+              ...(updateModeSetCaller !== undefined
+                ? {
+                    updateModeSetCaller: switchWorkTracker.track(
+                      updateModeSetCaller,
+                    ),
+                  }
+                : {}),
+              ...(updateApplyCaller !== undefined
+                ? {
+                    updateApplyCaller: switchWorkTracker.track(
+                      updateApplyCaller,
+                    ),
+                  }
+                : {}),
+              ...(updateRollbackCaller !== undefined
+                ? {
+                    updateRollbackCaller: switchWorkTracker.track(
+                      updateRollbackCaller,
+                    ),
+                  }
+                : {}),
             }
           : {}),
         ...(housekeepingCacheStatsCaller !== undefined
           ? { housekeepingCacheStatsCaller }
           : {}),
         ...(housekeepingCacheClearCaller !== undefined
-          ? { housekeepingCacheClearCaller }
+          ? {
+              housekeepingCacheClearCaller: switchWorkTracker.track(
+                housekeepingCacheClearCaller,
+              ),
+            }
           : {}),
         ...(transparencyPrefsGetCaller !== undefined
           && transparencyPrefsSetCaller !== undefined
-          ? { transparencyPrefsGetCaller, transparencyPrefsSetCaller }
+          ? {
+              transparencyPrefsGetCaller,
+              transparencyPrefsSetCaller: switchWorkTracker.track(
+                transparencyPrefsSetCaller,
+              ),
+            }
+          : {}),
+        ...(learningPrefsGetCaller !== undefined
+          && learningPrefsSetCaller !== undefined
+          ? {
+              learningPrefsGetCaller,
+              learningPrefsSetCaller: switchWorkTracker.track(
+                learningPrefsSetCaller,
+              ),
+            }
+          : {}),
+        ...(learningCasesListCaller !== undefined
+          && learningCaseForgetCaller !== undefined
+          ? {
+              learningCasesListCaller,
+              learningCaseForgetCaller,
+            }
+          : {}),
+        ...(learningDraftRecipeCaller !== undefined
+          ? {
+              learningDraftRecipeCaller,
+              learningDraftConfirmation: RECIPE_DRAFT_CONFIRMATION,
+              // ⛔ The panel hands the draft back; the SHELL routes. Stash it
+              // and open the Kitchen on the key — the recipe itself is too big
+              // for a hash and cannot be rebuilt without paying for it again.
+              onLearningDraftReady: (draft: {
+                case_id: string;
+                recipe: unknown;
+                request_aliased: boolean;
+              }) => {
+                const draft_key = stashExecutionCaseDraft(draftStashStorage, {
+                  case_id: draft.case_id,
+                  recipe: draft.recipe,
+                  request_aliased: draft.request_aliased,
+                });
+                // ⚠ A stash that could not be written means no hand-off, and
+                // the panel must be TOLD: returning silently discarded a draft
+                // the owner had just paid for, with no error anywhere.
+                if (draft_key === null) return false;
+                if (hashSource?.setHash === undefined) return false;
+                // ⛔ STASHED ABOVE, UNCONDITIONALLY — the draft is saved whether
+                // or not we navigate. But only YANK the owner into the Kitchen
+                // if they are still where they started it: a 90-second call that
+                // lands after they have moved on must not steal the page from
+                // under them. The draft is on the slot either way, and pressing
+                // again re-opens it without paying twice.
+                const here = hashSource.getHash?.() ?? '';
+                if (!here.startsWith('#settings')) return true;
+                hashSource.setHash(serializeShellRoute(
+                  'kitchen', 'new', 'execution-case', draft_key,
+                ));
+                return true;
+              },
+            }
           : {}),
         ...(housekeepingPanelConfigReadCaller !== undefined
           ? { housekeepingPanelConfigReadCaller }
           : {}),
         ...(housekeepingPanelConfigWriteCaller !== undefined
-          ? { housekeepingPanelConfigWriteCaller }
+          ? {
+              housekeepingPanelConfigWriteCaller: switchWorkTracker.track(
+                housekeepingPanelConfigWriteCaller,
+              ),
+            }
           : {}),
         ...(housekeepingPanelStatusReadCaller !== undefined
           ? { housekeepingPanelStatusReadCaller }
           : {}),
         ...(housekeepingPanelRunNowCaller !== undefined
-          ? { housekeepingPanelRunNowCaller }
+          ? {
+              housekeepingPanelRunNowCaller: switchWorkTracker.track(
+                housekeepingPanelRunNowCaller,
+              ),
+            }
           : {}),
         ...(housekeepingPanelTrustReadCaller !== undefined
           ? { housekeepingPanelTrustReadCaller }
           : {}),
         ...(housekeepingPanelTrustWriteCaller !== undefined
-          ? { housekeepingPanelTrustWriteCaller }
+          ? {
+              housekeepingPanelTrustWriteCaller: switchWorkTracker.track(
+                housekeepingPanelTrustWriteCaller,
+              ),
+            }
           : {}),
         ...(housekeepingPanelDismissPromotionCaller !== undefined
-          ? { housekeepingPanelDismissPromotionCaller }
+          ? {
+              housekeepingPanelDismissPromotionCaller: switchWorkTracker.track(
+                housekeepingPanelDismissPromotionCaller,
+              ),
+            }
           : {}),
         ...(housekeepingPanelRegistryDescribeCaller !== undefined
           ? { housekeepingPanelRegistryDescribeCaller }
           : {}),
         ...(housekeepingPanelTopicResetCaller !== undefined
-          ? { housekeepingPanelTopicResetCaller }
+          ? {
+              housekeepingPanelTopicResetCaller: switchWorkTracker.track(
+                housekeepingPanelTopicResetCaller,
+              ),
+            }
           : {}),
         // D-145 PA11 — all-or-nothing (the panel has no read-only mode).
         ...(workEntitiesPanelSourceListCaller !== undefined
@@ -5234,10 +9300,18 @@ export const bootstrapWebclient = async (
           && workEntitiesPanelClearDefaultCaller !== undefined
           ? {
               workEntitiesPanelSourceListCaller,
-              workEntitiesPanelSetEnabledCaller,
-              workEntitiesPanelSetMcpExposedCaller,
-              workEntitiesPanelSetDefaultCaller,
-              workEntitiesPanelClearDefaultCaller,
+              workEntitiesPanelSetEnabledCaller: switchWorkTracker.track(
+                workEntitiesPanelSetEnabledCaller,
+              ),
+              workEntitiesPanelSetMcpExposedCaller: switchWorkTracker.track(
+                workEntitiesPanelSetMcpExposedCaller,
+              ),
+              workEntitiesPanelSetDefaultCaller: switchWorkTracker.track(
+                workEntitiesPanelSetDefaultCaller,
+              ),
+              workEntitiesPanelClearDefaultCaller: switchWorkTracker.track(
+                workEntitiesPanelClearDefaultCaller,
+              ),
             }
           : {}),
         ...(hostnamesListCaller !== undefined
@@ -5249,10 +9323,16 @@ export const bootstrapWebclient = async (
           ? {
               hostnamesListCaller,
               hostnamesGetCaller,
-              hostnamesAddCaller,
-              hostnamesUpdateCaller,
-              hostnamesRemoveCaller,
-              hostnamesVerifyOwnershipCaller,
+              hostnamesAddCaller: switchWorkTracker.track(hostnamesAddCaller),
+              hostnamesUpdateCaller: switchWorkTracker.track(
+                hostnamesUpdateCaller,
+              ),
+              hostnamesRemoveCaller: switchWorkTracker.track(
+                hostnamesRemoveCaller,
+              ),
+              hostnamesVerifyOwnershipCaller: switchWorkTracker.track(
+                hostnamesVerifyOwnershipCaller,
+              ),
             }
           : {}),
         // LAN-URL kickstart (slice 2) — forwarded independently of the CRUD
@@ -5264,7 +9344,7 @@ export const bootstrapWebclient = async (
         // route gates the section on pro-convenience-published + composes the
         // self-disconnect context).
         ddnsStatusCaller,
-        ddnsSetEnabledCaller,
+        ddnsSetEnabledCaller: switchWorkTracker.track(ddnsSetEnabledCaller),
         ...(options.enableReachabilityDoctor === true
           && (options.reachabilityReport !== undefined
             || reachabilityExternalProbeCaller !== undefined)
@@ -5273,7 +9353,11 @@ export const bootstrapWebclient = async (
                 ? { reachabilityReport: options.reachabilityReport }
                 : {}),
               ...(reachabilityExternalProbeCaller !== undefined
-                ? { reachabilityExternalProbeCaller }
+                ? {
+                    reachabilityExternalProbeCaller: switchWorkTracker.track(
+                      reachabilityExternalProbeCaller,
+                    ),
+                  }
                 : {}),
             }
           : {}),
@@ -5284,16 +9368,24 @@ export const bootstrapWebclient = async (
           && accountBindingTokenMintCaller !== undefined
           ? {
               accountBindingStatusCaller,
-              accountBindCaller,
-              accountUnbindCaller,
+              accountBindCaller: switchWorkTracker.track(accountBindCaller),
+              accountUnbindCaller: switchWorkTracker.track(
+                accountUnbindCaller,
+              ),
               accountProConvenienceStatusCaller,
-              accountBindingTokenMintCaller,
+              accountBindingTokenMintCaller: switchWorkTracker.track(
+                accountBindingTokenMintCaller,
+              ),
               accountDashboardUrl,
               ...(accountBindingSessionCaller !== undefined
                 ? { accountBindingSessionCaller }
                 : {}),
               ...(accountSignOutCaller !== undefined
-                ? { accountSignOutCaller }
+                ? {
+                    accountSignOutCaller: switchWorkTracker.track(
+                      accountSignOutCaller,
+                    ),
+                  }
                 : {}),
             }
           : {}),
@@ -5301,34 +9393,49 @@ export const bootstrapWebclient = async (
         // archive callers are the spine; the passport-export caller rides
         // alongside as the optional standalone "Export identity passport only"
         // action.
-        ...(archiveExportCaller !== undefined
-          && archiveStatusCaller !== undefined
+        ...(continuousArchiveExportCaller !== undefined
+          && continuousArchiveStatusCaller !== undefined
           && archiveImportCaller !== undefined
           ? {
-              archiveExportCaller,
-              archiveStatusCaller,
-              archiveImportCaller,
+              archiveExportCaller: continuousArchiveExportCaller,
+              archiveStatusCaller: continuousArchiveStatusCaller,
+              archiveResumeExportStart: () =>
+                activeArchiveExport?.start ?? null,
+              archiveExportSettled: settleActiveArchiveExport,
+              archiveImportCaller: switchWorkTracker.track(archiveImportCaller),
               ...(passportExportCaller !== undefined
-                ? { passportExportCaller }
+                ? {
+                    passportExportCaller: switchWorkTracker.track(
+                      passportExportCaller,
+                    ),
+                  }
                 : {}),
-              ...(archiveDownload !== undefined ? { archiveDownload } : {}),
-              ...(archiveUpload !== undefined ? { archiveUpload } : {}),
+              ...(trackedArchiveDownload !== undefined
+                ? { archiveDownload: trackedArchiveDownload }
+                : {}),
+              ...(trackedArchiveUpload !== undefined
+                ? { archiveUpload: trackedArchiveUpload }
+                : {}),
               ...(archiveRebindStash !== undefined
-                ? { archiveRebindStash }
+                ? {
+                    archiveRebindStash: switchWorkTracker.track(
+                      archiveRebindStash,
+                    ),
+                  }
                 : {}),
             }
           : {}),
-        // D-187 §6 follow-on — Local tools reachability callers no longer flow
-        // to Settings. They are forwarded to the top-level `#packs` route
-        // branch (alongside the packs.* callers the install→cli-grant-dialog
-        // flow binds them to).
+        // D-187 §6 follow-on — cli reachability callers no longer flow to
+        // Settings. They are forwarded to the top-level `#packs` route branch
+        // (alongside the packs.* callers the install→cli-grant-dialog flow
+        // binds them to).
         // D-145 PA11 follow-on — broadcast-subscriber seam, shared
         // across every Settings panel that wants a live refresh
         // (cache card's `housekeeping_cycle` filter, etc.).
         // Forwarded unconditionally; each consumer's own gate decides
         // whether to subscribe (e.g. cache card needs stats wired).
         subscribe: subscriber.on,
-      });
+      }));
       activeSettingsRoute = settings;
       return settings;
     }
@@ -5347,7 +9454,7 @@ export const bootstrapWebclient = async (
       // already degrades a callers-absent `#approvals` to the default
       // route.
       activeSettingsRoute = null;
-      return bootstrapApprovalsRoute({
+      return withTrackedServerSwitchWork(bootstrapApprovalsRoute({
         root: appShell.contentRoot,
         ...(options.document !== undefined ? { document: options.document } : {}),
         runApprovalList: approvalListCaller,
@@ -5376,7 +9483,7 @@ export const bootstrapWebclient = async (
           ? { initialFocusId: deepLinkSegment('approvals') }
           : {}),
         ...(options.now !== undefined ? { now: options.now } : {}),
-      });
+      }));
     }
     if (route === 'kitchen') {
       activeSettingsRoute = null;
@@ -5396,12 +9503,19 @@ export const bootstrapWebclient = async (
         kitchenRecipeId !== null || kitchenRecipeSeed !== null;
       const kitchenRecipeHref = kitchenRecipeSeed === null
         ? undefined
-        : serializeShellRoute(
-            'kitchen',
-            'new',
-            'form-response',
-            kitchenRecipeSeed.form_definition_id,
-          );
+        : kitchenRecipeSeed.kind === 'form_response'
+          ? serializeShellRoute(
+              'kitchen',
+              'new',
+              'form-response',
+              kitchenRecipeSeed.form_definition_id,
+            )
+          : serializeShellRoute(
+              'kitchen',
+              'new',
+              'execution-case',
+              kitchenRecipeSeed.draft_key,
+            );
       // Route chrome — the persistent `[ Recipe | Ingredient pack ]` tab bar.
       // Mounted FIRST so it survives the editor's loading / not-found / error
       // states; the active surface mounts into its content slot. The Recipe tab
@@ -5424,13 +9538,84 @@ export const bootstrapWebclient = async (
         kitchenChrome.setRecipeHref(nextHash);
       };
       let editor: ReturnType<typeof mountRecipeEditorRoute> | null = null;
-      if (kitchenRecipeSeed !== null) {
+      if (kitchenRecipeSeed?.kind === 'execution_case') {
+        // D-219 item 2b — an AI-written draft the Settings panel already
+        // generated. ⛔ This route does NOT regenerate: doing so on a refresh
+        // would spend the owner's model quota again without them asking, so an
+        // unmatched key is a not-found.
+        const stashed = readExecutionCaseDraft(
+          draftStashStorage,
+          kitchenRecipeSeed.draft_key,
+        );
+        editor = mountExecutionCaseDraftRoute({
+          root: kitchenChrome.contentRoot,
+          draft: stashed,
+          validateCaller: switchWorkTracker.track(
+            (args) => rpcConn.call('recipe.validate', args),
+          ),
+          saveCaller: switchWorkTracker.track(
+            (args) => rpcConn.call('recipe.save', args),
+          ),
+          onSaved: syncSavedRecipeRoute,
+          // D-219 — annotate the Learning list with "you already made one".
+          // ⚠ Fire-and-forget with a swallowed rejection: the save succeeded,
+          // and losing the annotation must not read as losing the recipe.
+          onAuthored: (input) => {
+            void rpcConn.call('chat.execution.authored', input).catch(() => {});
+          },
+          // D-219 — iterative refinement, wired as the same PAIR the panel uses.
+          // ⛔ Re-stash under a NEW key and reopen: the route reads its draft
+          // from the slot, so a revision becomes visible the same way the first
+          // draft did, and the old key stops resolving rather than lingering as
+          // a second openable draft.
+          ...(learningDraftRecipeCaller !== undefined
+            ? {
+                runDraftRecipe: (args) => rpcConn.call(
+                  'chat.execution.draft_recipe', args,
+                  { timeout: LEARNING_DRAFT_RPC_TIMEOUT_MS },
+                ),
+                // ⛔ The REFINE copy, not the draft copy: the owner is looking
+                // at a draft, so "will write a recipe from this turn" and
+                // "FIRST DRAFT" describe the wrong action, and the thing they
+                // actually need warning about is that it REPLACES their edits.
+                refineConfirmation: RECIPE_REFINE_CONFIRMATION,
+                onRefined: (draft: {
+                  case_id: string;
+                  recipe: unknown;
+                  request_aliased: boolean;
+                  silent?: boolean;
+                }) => {
+                  const draft_key = stashExecutionCaseDraft(draftStashStorage, {
+                    case_id: draft.case_id,
+                    recipe: draft.recipe,
+                    request_aliased: draft.request_aliased,
+                  });
+                  if (draft_key === null) return false;
+                  if (hashSource?.setHash === undefined) return false;
+                  // Stashed above either way; `silent` means the route is gone,
+                  // so reopening it would drag the owner back to a page they
+                  // deliberately left.
+                  if (draft.silent === true) return true;
+                  hashSource.setHash(serializeShellRoute(
+                    'kitchen', 'new', 'execution-case', draft_key,
+                  ));
+                  return true;
+                },
+              }
+            : {}),
+          ...(options.document !== undefined ? { document: options.document } : {}),
+        });
+      } else if (kitchenRecipeSeed !== null) {
         editor = mountFormResponseRecipeSeedRoute({
           root: kitchenChrome.contentRoot,
           formDefinitionId: kitchenRecipeSeed.form_definition_id,
           listCaller: recipesListCaller,
-          validateCaller: (args) => rpcConn.call('recipe.validate', args),
-          saveCaller: (args) => rpcConn.call('recipe.save', args),
+          validateCaller: switchWorkTracker.track(
+            (args) => rpcConn.call('recipe.validate', args),
+          ),
+          saveCaller: switchWorkTracker.track(
+            (args) => rpcConn.call('recipe.save', args),
+          ),
           onSaved: syncSavedRecipeRoute,
           ...(options.document !== undefined ? { document: options.document } : {}),
         });
@@ -5439,19 +9624,27 @@ export const bootstrapWebclient = async (
           root: kitchenChrome.contentRoot,
           recipeId: kitchenRecipeId,
           listCaller: recipesListCaller,
-          validateCaller: (args) => rpcConn.call('recipe.validate', args),
-          saveCaller: (args) => rpcConn.call('recipe.save', args),
+          validateCaller: switchWorkTracker.track(
+            (args) => rpcConn.call('recipe.validate', args),
+          ),
+          saveCaller: switchWorkTracker.track(
+            (args) => rpcConn.call('recipe.save', args),
+          ),
           webhookIngressListCaller: () => rpcConn.call('webhook.ingress.list', undefined),
           webhookStatusCaller: (args) => rpcConn.call('recipe.webhook.status', args),
-          webhookArmCaller: (args) => rpcConn.call('recipe.webhook.arm', args),
-          webhookDisarmCaller: (args) => rpcConn.call('recipe.webhook.disarm', args),
+          webhookArmCaller: switchWorkTracker.track(
+            (args) => rpcConn.call('recipe.webhook.arm', args),
+          ),
+          webhookDisarmCaller: switchWorkTracker.track(
+            (args) => rpcConn.call('recipe.webhook.disarm', args),
+          ),
           onSaved: syncSavedRecipeRoute,
           ...(options.document !== undefined ? { document: options.document } : {}),
         });
       }
       if (editor !== null) {
         const mountedEditor = editor;
-        return {
+        return withTrackedServerSwitchWork({
           // `finally` so the chrome host + its injected style are always torn
           // down even if the surface dispose throws — route disposal runs on
           // every flip, so a leak here would accumulate.
@@ -5463,7 +9656,8 @@ export const bootstrapWebclient = async (
             }
           },
           hasUnsavedChanges: () => mountedEditor.hasUnsavedChanges(),
-        };
+          hasInFlightWork: () => mountedEditor.hasInFlightWork(),
+        });
       }
       // Pack editor. A draft id in seg 1 (`#kitchen/pack/<draft_id>`) self-loads
       // that draft; in-page draft selection syncs the URL through onDraftChange
@@ -5485,14 +9679,21 @@ export const bootstrapWebclient = async (
       if (kitchenRoute !== null && kitchenRoute.segments[0] !== 'pack') {
         syncPackHash(packDraftId ?? undefined);
       }
+      const kitchenMutationMethods = new Set<string>([
+        'ingredient.draft.save',
+        'ingredient.compose.decompose',
+        'ingredient.install',
+      ]);
       const builder = bootstrapIngredientBuilderRoute({
         root: kitchenChrome.contentRoot,
-        conn: rpcConn.call as IngredientBuilderConn,
+        conn: trackSelectedRpcMethods<IngredientBuilderConn>(
+          kitchenMutationMethods,
+        ),
         ...(packDraftId !== null ? { initialDraftId: packDraftId } : {}),
         onDraftChange: syncPackHash,
         ...(options.document !== undefined ? { document: options.document } : {}),
       });
-      return {
+      return withTrackedServerSwitchWork({
         // See the recipe path — chrome teardown in `finally` so it can't leak.
         dispose: () => {
           try {
@@ -5502,13 +9703,25 @@ export const bootstrapWebclient = async (
           }
         },
         hasUnsavedChanges: () => builder.hasUnsavedChanges(),
-      };
+        hasInFlightWork: () => builder.hasInFlightWork(),
+      });
     }
     activeSettingsRoute = null;
-    return bootstrapReceptionRoute({
+    const receptionMutationMethods = new Set<string>([
+      'reception.compose.propose',
+      'reception.intake_recipe_pair.bind',
+      'reception.intake_recipe_pair.configure',
+      'reception.intake_recipe_pair.clear',
+      'reception.inbox.approve',
+      'reception.inbox.reject',
+      'execute',
+    ]);
+    return withTrackedServerSwitchWork(bootstrapReceptionRoute({
       root: appShell.contentRoot,
       shell: receptionShell,
-      conn: rpcConn.call,
+      conn: trackSelectedRpcMethods<BootstrapReceptionRouteOptions['conn']>(
+        receptionMutationMethods,
+      ),
       exposureProfile: options.exposureProfile,
       // R19 — `#reception/<section>` (inbox · abuse · endpoints); a section
       // switch changes the hash + re-mounts this route with the new
@@ -5534,16 +9747,561 @@ export const bootstrapWebclient = async (
       // unrelated Reception subscriptions.
       subscribe: subscriber.on,
       enablePendingAsks: options.enableApprovalsRoute !== false,
-    });
+    }));
   };
 
-  let activeHash = hashSource?.getHash() ?? serializeShellRoute(activeRoute);
-  let mountedRouteHandle: {
+  let mountedRouteHandle: RecoveryContextProbe & {
     update?: () => void;
     dispose: () => void;
     hasUnsavedChanges?: () => boolean;
+    unsavedChangesPrompt?: () => string | null;
+    hasInFlightWork?: () => boolean;
+    hasRouteInFlightWork?: () => boolean;
     navigateDeepLink?: (hash: string) => boolean;
+    getRecoveryDraft?: () => ChatRouteRecoveryDraft | null;
   } = mountRoute(activeRoute);
+
+  recoveryIntentLandingHash = deferredRecoveryReturnArrival?.landingHash
+    ?? recoveryIntentContinuationMarker?.landingHash
+    ?? null;
+  const recoveryIntentOrientation =
+    deferredRecoveryReturnArrival !== undefined
+      || recoveryIntentContinuationMarker !== null
+      ? mountRecoveryIntentOrientation({
+          root: appShell.contentRoot,
+          statusHost: appShell.connectionHost,
+          document: doc,
+          onResumeWindowExpired: ({ route, intent }) => {
+            const landingHash = recoveryIntentLandingHash;
+            const currentHash = hashSource?.getHash() ?? activeHash;
+            if (
+              approvalAttentionPopover === null
+              || bootProfileId === null
+              || landingHash === null
+              || route !== activeRoute
+              || currentHash !== landingHash
+              || parseRouteFromHash(landingHash) !== route
+            ) return;
+            const marker = recoveryIntentContinuationStore.arm({
+              profileId: bootProfileId,
+              landingHash,
+              intent,
+            });
+            if (marker !== null) setRecoveryIntentContinuation(marker);
+          },
+          onUserOwnership: () => {
+            recoveryIntentLandingHash = null;
+            if (recoveryIntentContinuationMarker !== null) {
+              retireRecoveryIntentContinuation();
+            }
+          },
+        })
+      : null;
+
+  const focusRecoveryReturnLanding = (
+    intent: RecoveryReturnReceipt['intent'],
+    options: { readonly focusBroadFallback?: boolean } = {},
+  ): boolean => {
+    if (intent === 'retry' || intent === 'return') return false;
+    const landingIntent: RecoveryLandingIntent = intent;
+    const target = focusRecoveryIntentLanding({
+      root: appShell.contentRoot,
+      route: activeRoute,
+      intent: landingIntent,
+    });
+    if (target === null) {
+      recoveryIntentOrientation?.clear();
+      // A partially mounted or legacy route can still lack its public hooks.
+      // Preserve the old safe fallback without making it the normal landing.
+      if (options.focusBroadFallback !== false) {
+        focusShellElement(appShell.contentRoot);
+      }
+      return false;
+    }
+    recoveryIntentOrientation?.orient({
+      target,
+      intent: landingIntent,
+      route: activeRoute,
+    });
+    return true;
+  };
+
+  if (
+    deferredRecoveryReturnArrival !== undefined
+    && connectionIndicator !== null
+  ) {
+    const arrival = deferredRecoveryReturnArrival;
+    const arrivalHandle = mountedRouteHandle;
+    const runRecoveryReturnIntent = (
+      intent: RecoveryReturnReceipt['intent'],
+      handle: RecoveryContextProbe,
+      routeJustMounted = false,
+    ): void => {
+      if (intent === 'review' && !routeJustMounted) {
+        focusRecoveryReturnLanding('review');
+        return;
+      }
+      const performRetry = intent === 'retry' && !routeJustMounted;
+      const needsFreshArrivalRead = routeJustMounted || intent === 'return';
+      if (
+        !performRetry
+        && !needsFreshArrivalRead
+      ) {
+        focusRecoveryReturnLanding(intent);
+        return;
+      }
+      if (performRetry && handle.retryRecoveryContext === undefined) {
+        focusRecoveryReturnLanding('review');
+        return;
+      }
+      if (intent === 'retry' || intent === 'return') {
+        showRecoveryReturnProgress();
+      }
+      void (async (): Promise<void> => {
+        let freshness: Awaited<ReturnType<typeof reconcileRecoveryContext>>;
+        try {
+          if (performRetry) await handle.retryRecoveryContext?.();
+          freshness = await reconcileRecoveryContext(handle);
+        } catch {
+          freshness = 'unavailable';
+        }
+        if (disposed || connectionIndicator === null) return;
+        const currentHash = hashSource?.getHash() ?? activeHash;
+        const routeStillActive =
+          mountedRouteHandle === handle
+          && currentHash === arrival.landingHash
+          && parseRouteFromHash(currentHash) === activeRoute;
+        const nextReceipt = recoveryReturnReceipt({
+          profileLabel: arrival.profileLabel,
+          areaLabel: arrival.areaLabel,
+          ...(arrival.returnContext !== undefined
+            ? { returnContext: arrival.returnContext }
+            : {}),
+          freshness,
+          routeStillActive,
+          canRetry:
+            routeStillActive && handle.retryRecoveryContext !== undefined,
+        });
+        if (routeStillActive && routeJustMounted && intent === 'review') {
+          // A routed Review must land after the destination's initial read.
+          // Otherwise its loading render can replace the focused node. Review
+          // still makes no freshness claim and does not replay its receipt.
+          focusRecoveryReturnLanding('review');
+          return;
+        }
+        if (
+          routeStillActive
+          && freshness === 'current'
+          && routeJustMounted
+          && intent !== 'retry'
+          && intent !== 'return'
+        ) {
+          // Continue/choose-again actions complete only after the newly
+          // mounted route proves current; they do not replay another receipt.
+          focusRecoveryReturnLanding(intent);
+          return;
+        }
+        if (
+          routeStillActive
+          && intent === 'return'
+          && (
+            nextReceipt.intent === 'continue'
+            || nextReceipt.intent === 'choose_again'
+            || nextReceipt.intent === 'review'
+          )
+        ) {
+          focusRecoveryReturnLanding(nextReceipt.intent);
+        }
+        showRecoveryReturnReceipt(nextReceipt);
+      })();
+    };
+    const recoveryReturnAction = (
+      receipt: RecoveryReturnReceipt,
+    ): { label: string; onSelect: () => void } => ({
+      label: receipt.actionLabel,
+      onSelect: () => {
+        const selectedHash = hashSource?.getHash() ?? activeHash;
+        if (selectedHash !== arrival.landingHash) {
+          // The pending closure holds only the scrubbed broad landing and the
+          // closed-list intent. The newly mounted route supplies every read.
+          pendingRecoveryReturnAction = {
+            landingHash: arrival.landingHash,
+            onArrival: (handle) => {
+              // Mounting the safe route already starts its authoritative read.
+              // Treat that read as the requested retry instead of issuing a
+              // duplicate request immediately after mount.
+              runRecoveryReturnIntent(receipt.intent, handle, true);
+            },
+            // The banner action dismisses itself before navigation asks the
+            // route leave guard. Restore the exact privacy-safe handoff when
+            // the person keeps an unsaved draft instead of making it vanish.
+            onDeclined: () => showRecoveryReturnReceipt(receipt),
+          };
+          navigateHash(arrival.landingHash);
+          return;
+        }
+        runRecoveryReturnIntent(receipt.intent, mountedRouteHandle);
+      },
+    });
+    const showRecoveryReturnReceipt = (
+      receipt: RecoveryReturnReceipt,
+    ): void => {
+      if (disposed || connectionIndicator === null) return;
+      const afterReconnect = recoveryReturnAfterReconnectReceipt({
+        profileLabel: arrival.profileLabel,
+        areaLabel: arrival.areaLabel,
+      });
+      connectionIndicator.showConnectedReceipt({
+        copy: receipt.copy,
+        tone: receipt.tone,
+        action: recoveryReturnAction(receipt),
+        afterReconnect: {
+          copy: afterReconnect.copy,
+          tone: afterReconnect.tone,
+          // A connection gap invalidates a route-qualified retry result. The
+          // deferred action therefore reviews instead of replaying the retry.
+          action: recoveryReturnAction(afterReconnect),
+        },
+      });
+    };
+    const showRecoveryReturnProgress = (): void => {
+      if (disposed || connectionIndicator === null) return;
+      const afterReconnect = recoveryReturnAfterReconnectReceipt({
+        profileLabel: arrival.profileLabel,
+        areaLabel: arrival.areaLabel,
+      });
+      connectionIndicator.showConnectedReceipt({
+        copy: `Checking ${arrival.areaLabel} on ${arrival.profileLabel} for the latest information…`,
+        tone: 'attention',
+        afterReconnect: {
+          copy: afterReconnect.copy,
+          tone: afterReconnect.tone,
+          action: recoveryReturnAction(afterReconnect),
+        },
+      });
+    };
+    const routeDeparture = new Promise<void>((resolve) => {
+      resolveRecoveryReturnDeparture = resolve;
+    });
+    void Promise.race([
+      reconcileRecoveryContext(arrivalHandle).then((freshness) => ({
+        freshness,
+        routeDeparted: false as const,
+      })),
+      routeDeparture.then(() => ({
+        freshness: 'mounted_only' as const,
+        routeDeparted: true as const,
+      })),
+    ]).then(({ freshness, routeDeparted }) => {
+      resolveRecoveryReturnDeparture = null;
+      if (disposed || connectionIndicator === null) return;
+      const currentHash = hashSource?.getHash() ?? activeHash;
+      const routeStillActive =
+        !routeDeparted
+        && mountedRouteHandle === arrivalHandle
+        && currentHash === arrival.landingHash
+        && parseRouteFromHash(currentHash) === activeRoute;
+      const receipt = recoveryReturnReceipt({
+        profileLabel: arrival.profileLabel,
+        areaLabel: arrival.areaLabel,
+        ...(arrival.returnContext !== undefined
+          ? { returnContext: arrival.returnContext }
+          : {}),
+        freshness,
+        routeStillActive,
+        canRetry:
+          routeStillActive
+          && arrivalHandle.retryRecoveryContext !== undefined,
+      });
+      showRecoveryReturnReceipt(receipt);
+    });
+  }
+
+  const recoveryIntentRemediationFor = (
+    handle: RecoveryContextProbe,
+  ): AttentionRecoveryIntentRemediation => {
+    if (connectionStatus.status() !== 'connected') {
+      return accountMenu === null ? 'review' : 'connection';
+    }
+    return handle.retryRecoveryContext === undefined ? 'review' : 'retry';
+  };
+
+  resumeRecoveryIntentContinuation = (requested, source = 'attention') => {
+    const marker = recoveryIntentContinuationMarker;
+    if (
+      marker === null
+      || bootProfileId === null
+      || marker.profileId !== bootProfileId
+      || requested.serverProfileId !== marker.profileId
+      || requested.landingHash !== marker.landingHash
+      || requested.intent !== marker.intent
+    ) {
+      retireRecoveryIntentContinuation();
+      return 'missing';
+    }
+    if (
+      recoveryIntentContinuationRunInFlight
+      || recoveryIntentContinuationPhase === 'checking'
+    ) return 'started';
+    if (
+      requested.phase !== recoveryIntentContinuationPhase
+      || requested.remediation !== recoveryIntentContinuationRemediation
+    ) {
+      return 'unavailable';
+    }
+    const resumable = (
+      requested.phase === 'ready'
+      && requested.remediation === null
+    ) || (
+      requested.phase === 'failed'
+      && requested.remediation === 'retry'
+    ) || (
+      source === 'connection_repaired'
+      && requested.remediation === 'connection'
+      && (
+        requested.phase === 'failed'
+        || requested.phase === 'waiting_for_connection'
+      )
+    );
+    if (!resumable) return 'unavailable';
+    if (pendingRecoveryReturnAction !== null) return 'unavailable';
+    recoveryIntentLandingHash = marker.landingHash;
+    const generation = ++recoveryIntentContinuationRunGeneration;
+    recoveryIntentContinuationRunInFlight = true;
+    recoveryIntentRetryOnReconnect = false;
+    setRecoveryIntentContinuationState('checking');
+    const run = (
+      handle: RecoveryContextProbe,
+      routeJustMounted: boolean,
+    ): void => {
+      void (async (): Promise<void> => {
+        let freshness: Awaited<ReturnType<typeof reconcileRecoveryContext>>;
+        if (
+          !routeJustMounted
+          && handle.retryRecoveryContext === undefined
+        ) {
+          // An already-mounted route must prove it dispatched a new read. Its
+          // previously settled `whenLoaded` promise is never fresh evidence.
+          // Yield once so the Attention action can close before the route's
+          // Review target takes focus below.
+          await Promise.resolve();
+          freshness = 'unavailable';
+        } else {
+          try {
+            // A newly mounted route already began its authoritative load. On
+            // an existing mount, require its explicit retry seam instead of
+            // treating an older successful read as a fresh re-entry check.
+            if (!routeJustMounted) await handle.retryRecoveryContext?.();
+            freshness = await reconcileRecoveryContext(handle);
+          } catch {
+            freshness = 'unavailable';
+          }
+        }
+        if (
+          disposed
+          || generation !== recoveryIntentContinuationRunGeneration
+          || recoveryIntentContinuationMarker?.pausedAt !== marker.pausedAt
+        ) return;
+        const currentHash = hashSource?.getHash() ?? activeHash;
+        const routeStillActive =
+          mountedRouteHandle === handle
+          && currentHash === marker.landingHash
+          && parseRouteFromHash(currentHash) === activeRoute;
+        if (!routeStillActive) {
+          recoveryIntentContinuationRunInFlight = false;
+          setRecoveryIntentContinuationState('ready');
+          return;
+        }
+        if (freshness !== 'current') {
+          // The owner explicitly asked to re-enter, so orient to the route's
+          // current Review condition without inventing another banner receipt.
+          recoveryIntentContinuationRunInFlight = false;
+          const attentionOpen = approvalAttentionPopover?.isOpen() === true;
+          setRecoveryIntentContinuationState(
+            'failed',
+            recoveryIntentRemediationFor(handle),
+          );
+          if (!attentionOpen) focusRecoveryReturnLanding('review');
+          return;
+        }
+        const attentionOpen = approvalAttentionPopover?.isOpen() === true;
+        if (focusRecoveryReturnLanding(marker.intent, {
+          focusBroadFallback: !attentionOpen,
+        })) {
+          retireRecoveryIntentContinuation(true);
+          return;
+        }
+        // A current legacy/partial route with no useful action remains
+        // discoverable in Attention. A closed popover gets the broad content
+        // fallback; a reopened popover keeps its dialog focus.
+        recoveryIntentContinuationRunInFlight = false;
+        setRecoveryIntentContinuationState('failed', 'review');
+      })();
+    };
+    const selectedHash = hashSource?.getHash() ?? activeHash;
+    if (selectedHash !== marker.landingHash) {
+      pendingRecoveryReturnAction = {
+        landingHash: marker.landingHash,
+        onArrival: (handle) => run(handle, true),
+        // A declined unsaved-work guard leaves the quiet Attention item intact.
+        onDeclined: () => {
+          if (generation === recoveryIntentContinuationRunGeneration) {
+            recoveryIntentContinuationRunInFlight = false;
+            setRecoveryIntentContinuationState('ready');
+          }
+        },
+      };
+      navigateHash(marker.landingHash);
+      return 'started';
+    }
+    run(mountedRouteHandle, false);
+    return 'started';
+  };
+
+  reviewRecoveryIntentContinuation = (requested) => {
+    const marker = recoveryIntentContinuationMarker;
+    if (
+      marker === null
+      || bootProfileId === null
+      || marker.profileId !== bootProfileId
+      || requested.serverProfileId !== marker.profileId
+      || requested.landingHash !== marker.landingHash
+      || requested.intent !== marker.intent
+    ) {
+      retireRecoveryIntentContinuation();
+      return 'missing';
+    }
+    if (
+      requested.phase !== 'failed'
+      || recoveryIntentContinuationPhase !== 'failed'
+      || requested.remediation !== recoveryIntentContinuationRemediation
+      || recoveryIntentContinuationRunInFlight
+      || pendingRecoveryReturnAction !== null
+    ) return 'unavailable';
+
+    const failedRemediation = recoveryIntentContinuationRemediation
+      ?? 'review';
+    recoveryIntentLandingHash = marker.landingHash;
+    const generation = ++recoveryIntentContinuationRunGeneration;
+    recoveryIntentContinuationRunInFlight = true;
+    setRecoveryIntentContinuationState('checking');
+    const landForReview = (
+      handle: RecoveryContextProbe,
+      routeJustMounted: boolean,
+    ): void => {
+      void (async (): Promise<void> => {
+        if (routeJustMounted) {
+          // A newly mounted route owns the read. Review waits for it to settle
+          // so loading DOM cannot replace the focused error/status target.
+          await reconcileRecoveryContext(handle);
+        } else {
+          // Let the Attention click finish closing and restore its trigger
+          // before the route deliberately takes focus.
+          await Promise.resolve();
+        }
+        if (
+          disposed
+          || generation !== recoveryIntentContinuationRunGeneration
+          || recoveryIntentContinuationMarker?.pausedAt !== marker.pausedAt
+        ) return;
+        const currentHash = hashSource?.getHash() ?? activeHash;
+        const routeStillActive =
+          mountedRouteHandle === handle
+          && currentHash === marker.landingHash
+          && parseRouteFromHash(currentHash) === activeRoute;
+        if (!routeStillActive) {
+          recoveryIntentContinuationRunInFlight = false;
+          setRecoveryIntentContinuationState('failed', failedRemediation);
+          return;
+        }
+        if (focusRecoveryReturnLanding('review')) {
+          retireRecoveryIntentContinuation(true);
+          return;
+        }
+        recoveryIntentContinuationRunInFlight = false;
+        setRecoveryIntentContinuationState('failed', 'review');
+      })();
+    };
+
+    const selectedHash = hashSource?.getHash() ?? activeHash;
+    if (selectedHash !== marker.landingHash) {
+      pendingRecoveryReturnAction = {
+        landingHash: marker.landingHash,
+        onArrival: (handle) => landForReview(handle, true),
+        onDeclined: () => {
+          if (generation === recoveryIntentContinuationRunGeneration) {
+            recoveryIntentContinuationRunInFlight = false;
+            setRecoveryIntentContinuationState('failed', failedRemediation);
+          }
+        },
+      };
+      navigateHash(marker.landingHash);
+      return 'started';
+    }
+    landForReview(mountedRouteHandle, false);
+    return 'started';
+  };
+
+  remediateRecoveryIntentConnection = (requested) => {
+    const marker = recoveryIntentContinuationMarker;
+    if (
+      marker === null
+      || bootProfileId === null
+      || marker.profileId !== bootProfileId
+      || requested.serverProfileId !== marker.profileId
+      || requested.landingHash !== marker.landingHash
+      || requested.intent !== marker.intent
+    ) {
+      retireRecoveryIntentContinuation();
+      return 'missing';
+    }
+    if (
+      requested.remediation !== 'connection'
+      || recoveryIntentContinuationRemediation !== 'connection'
+      || (
+        requested.phase !== 'failed'
+        && requested.phase !== 'waiting_for_connection'
+      )
+      || requested.phase !== recoveryIntentContinuationPhase
+      || recoveryIntentContinuationRunInFlight
+      || pendingRecoveryReturnAction !== null
+      || accountMenu === null
+    ) return 'unavailable';
+
+    // A reconnect may win the race with the owner's click. In that case skip
+    // the detour and immediately run the same exact continuation.
+    if (connectionStatus.status() === 'connected') {
+      return resumeRecoveryIntentContinuation(
+        requested,
+        'connection_repaired',
+      );
+    }
+
+    recoveryIntentRetryOnReconnect = true;
+    setRecoveryIntentContinuationState(
+      'waiting_for_connection',
+      'connection',
+    );
+    const pausedAt = marker.pausedAt;
+    void Promise.resolve().then(() => {
+      if (
+        recoveryIntentContinuationMarker?.pausedAt !== pausedAt
+        || recoveryIntentContinuationPhase !== 'waiting_for_connection'
+        || recoveryIntentContinuationRemediation !== 'connection'
+        || connectionStatus.status() === 'connected'
+        || accountMenu === null
+      ) return;
+      accountMenu.open();
+    });
+    return 'started';
+  };
+
+  const finishPendingRecoveryReturnAction = (hash: string): void => {
+    const pending = pendingRecoveryReturnAction;
+    if (pending === null || pending.landingHash !== hash) return;
+    pendingRecoveryReturnAction = null;
+    pending.onArrival(mountedRouteHandle);
+  };
 
   // 5.5. § A.6.5 + § A.9 / slice 116 — passport-fetch verify pipeline.
   //      Subscribed BEFORE `ws.connect()` (DD#7) so the initial
@@ -5603,6 +10361,10 @@ export const bootstrapWebclient = async (
   // (a MITM signal usually leads to a server-side reject too).
   let reauthFired = false;
   const fireOnReauthRequired = (): void => {
+    if (intentionalProfileRetirement) {
+      suppressedRetirementReauth = true;
+      return;
+    }
     if (reauthFired) return;
     reauthFired = true;
     if (options.onReauthRequired) {
@@ -5612,6 +10374,11 @@ export const bootstrapWebclient = async (
         /* caller sink isolation — see runPassportFetchVerify */
       }
     }
+  };
+  replaySuppressedRetirementReauth = (): void => {
+    if (!suppressedRetirementReauth || intentionalProfileRetirement) return;
+    suppressedRetirementReauth = false;
+    fireOnReauthRequired();
   };
 
   const onPassportFetchPairRequiredHandler = (
@@ -5737,16 +10504,23 @@ export const bootstrapWebclient = async (
   // case real: `#reception` ↔ `#settings` flips the route through the helper.
   const detachHash = hashSource
     ? hashSource.onChange((hash) => {
+        if (hash !== activeHash) recoveryIntentOrientation?.clear();
         const next = resolveRoute(hash);
         const remountForDeepLink =
           next === activeRoute
           && shouldRemountForSameRoute(next, activeHash, hash);
-        if (next === activeRoute && !remountForDeepLink) return;
+        if (next === activeRoute && !remountForDeepLink) {
+          if (hash !== activeHash) markRecoveryReturnDeparted();
+          finishPendingRecoveryReturnAction(hash);
+          return;
+        }
         if (
           remountForDeepLink
           && mountedRouteHandle.navigateDeepLink?.(hash) === true
         ) {
+          markRecoveryReturnDeparted();
           activeHash = hash;
+          finishPendingRecoveryReturnAction(hash);
           return;
         }
         // Leave guard — a route with unsaved work (Kitchen editors or a Chat
@@ -5758,11 +10532,20 @@ export const bootstrapWebclient = async (
         // proceed.
         if (mountedRouteHandle.hasUnsavedChanges?.() === true) {
           const view = doc?.defaultView;
+          const routePrompt =
+            mountedRouteHandle.unsavedChangesPrompt?.()?.trim();
           const proceed =
             typeof view?.confirm === 'function'
-              ? view.confirm('Discard unsaved changes?')
+              ? view.confirm(
+                  routePrompt && routePrompt.length > 0
+                    ? routePrompt
+                    : 'Discard unsaved changes?',
+                )
               : true;
           if (!proceed) {
+            const declinedRecoveryReturn = pendingRecoveryReturnAction;
+            pendingRecoveryReturnAction = null;
+            declinedRecoveryReturn?.onDeclined();
             if (view?.location !== undefined) {
               view.location.hash = activeHash;
             } else if (view?.history?.replaceState !== undefined) {
@@ -5771,11 +10554,13 @@ export const bootstrapWebclient = async (
             return;
           }
         }
+        markRecoveryReturnDeparted();
         mountedRouteHandle.dispose();
         activeRoute = next;
         activeHash = hash;
         appShell.setActiveRoute(next);
         mountedRouteHandle = mountRoute(next);
+        finishPendingRecoveryReturnAction(hash);
       })
     : (): void => undefined;
 
@@ -5783,7 +10568,10 @@ export const bootstrapWebclient = async (
   // work, closing/reloading the tab asks first. One shell-level listener over
   // the current route handle (routes never register their own).
   const onBeforeUnload = (event: BeforeUnloadEvent): void => {
-    if (mountedRouteHandle.hasUnsavedChanges?.() === true) {
+    if (
+      !intentionalServerSwitchReload
+      && mountedRouteHandle.hasUnsavedChanges?.() === true
+    ) {
       event.preventDefault();
       // Chrome requires a set returnValue for the native prompt.
       event.returnValue = '';
@@ -5794,16 +10582,35 @@ export const bootstrapWebclient = async (
     beforeUnloadView.addEventListener('beforeunload', onBeforeUnload);
   }
 
-  let disposed = false;
   return {
     activeRoute: () => activeRoute,
     receptionShell: () => receptionShell,
     conn: () => rpcConn.call,
     settingsRoute: () => activeSettingsRoute,
     certPinStateWatcher: () => certPinWatcher,
+    serverProfileId: () => bootProfileId,
+    requestServerProfileConvergence,
+    refreshServerProfiles: () => requestServerProfileRefresh(),
+    captureRecoverySnapshot: () => {
+      const chatDraft = mountedRouteHandle.getRecoveryDraft?.() ?? null;
+      return {
+        returnHash: activeHash,
+        ...(chatDraft !== null ? { chatDraft } : {}),
+      };
+    },
     dispose: async () => {
       if (disposed) return;
       disposed = true;
+      pendingRecoveryReturnAction = null;
+      markRecoveryReturnDeparted();
+      detachPendingServerSwitchSignal();
+      if (options.onSessionDispose) {
+        try {
+          options.onSessionDispose();
+        } catch {
+          // Host lifecycle cleanup is best-effort; shell teardown must finish.
+        }
+      }
       // DD#6 — reverse construction order. Token-rotation handler is
       // disposed AFTER the reception shell so any in-flight
       // `token.rotated` broadcast still reaches the shell's pending-
@@ -5823,6 +10630,8 @@ export const bootstrapWebclient = async (
       // to a no-op when `enablePassportFetchVerify: false`.
       detachPassportFetchOnConnect();
       detachReauthListener();
+      profileRecencyObserverDisposed = true;
+      detachProfileRecency();
       // Detach the reconnect-driven `events.subscribe` re-fire BEFORE
       // `ws.disconnect()` so the dispose-fired `'closed'` transition
       // can't re-enter a torn-down rpcConn.
@@ -5831,7 +10640,36 @@ export const bootstrapWebclient = async (
       if (typeof beforeUnloadView?.removeEventListener === 'function') {
         beforeUnloadView.removeEventListener('beforeunload', onBeforeUnload);
       }
+      detachChatTurnCompleteWork();
+      detachChatTurnFailedWork();
+      for (const lease of [...chatTurnLeases]) releaseChatTurnLease(lease);
+      settledChatTurnIds.clear();
+      recoveryIntentContinuationRunInFlight = false;
+      detachRecoveryIntentContinuationReconnect();
+      detachRecoveryIntentOwnershipListeners();
+      cancelRecoveryIntentContinuationExpiry();
+      recoveryIntentOrientation?.dispose();
       mountedRouteHandle.dispose();
+      foundationalOAuthContinuity.dispose();
+      detachCredentialRotationServerUpdateGuide();
+      detachCredentialRotationServerUpdateGuide = () => undefined;
+      detachCredentialRotationCapabilityResolution();
+      detachCredentialRotationCapabilityResolution = () => undefined;
+      detachCredentialRotationCapabilityLineage();
+      detachCredentialRotationCapabilityLineage = () => undefined;
+      detachCredentialRotationCapabilityReconnect();
+      detachCredentialRotationCapabilityReconnect = () => undefined;
+      detachServerUpdateReceiptVerification();
+      detachServerUpdateReceiptVerification = () => undefined;
+      serverUpdateReceiptVerification?.dispose();
+      serverUpdateReceiptVerification = null;
+      credentialRotationCapabilityCheckGeneration += 1;
+      credentialRotationCapabilityCheck = null;
+      credentialRotationServerUpdateContinuity.dispose();
+      credentialRotationTabConvergence?.close();
+      detachInactiveProfileRecoveryDiscovery();
+      detachInactiveProfileRecoveryDiscovery = () => undefined;
+      inactiveProfileRecoveryDiscovery.close();
       if (approvalAttentionPopover !== null) {
         approvalAttentionPopover.dispose();
       }
@@ -5844,14 +10682,30 @@ export const bootstrapWebclient = async (
         liveControlBubble.dispose();
       }
       // Dispose the connection indicator BEFORE the shell tears down its root
-      // (the chip mounts into `appShell.connectionHost`; the banner into
+      // (the announcer mounts into `appShell.connectionHost`; the banner into
       // `options.root`).
       if (connectionIndicator !== null) {
         connectionIndicator.dispose();
       }
-      // Same — the server-status pill mounts into `appShell.serverPillHost`.
+      // Same — Account owns the theme and server-control hosts, so both child
+      // mounts dispose before their parent removes the dialog subtree.
+      if (unsubscribeAccountStatus !== null) {
+        unsubscribeAccountStatus();
+        unsubscribeAccountStatus = null;
+      }
+      detachServerSwitchWork();
+      detachServerSwitchWork = (): void => undefined;
+      if (themeToggle !== null) {
+        themeToggle.dispose();
+        themeToggle = null;
+      }
       if (serverPill !== null) {
         serverPill.dispose();
+        serverPill = null;
+      }
+      if (accountMenu !== null) {
+        accountMenu.dispose();
+        accountMenu = null;
       }
       // Tear down a drawer-opened Create overlay — it portals to document.body
       // (OUTSIDE the shell root), so `appShell.dispose()` won't reach it; left
@@ -5862,6 +10716,9 @@ export const bootstrapWebclient = async (
         drawerCreateOverlay.close();
         drawerCreateOverlay = null;
       }
+      // The convergence overlay portals beside the shell and marks the shell
+      // inert, so retire it before removing either subtree.
+      closeServerSwitchConvergence();
       appShell.dispose();
       detachExposureChanged();
       receptionShell.dispose();

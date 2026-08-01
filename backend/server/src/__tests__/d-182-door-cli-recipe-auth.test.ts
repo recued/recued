@@ -287,7 +287,20 @@ describe('D-182 §8 — buildMcpContractSnapshot cli union (the door-cli auth pa
     expect(snapshot.allowed_tools).toEqual(['allowed-http']);
   });
 
-  it('the unbound owner (no inboundTokenAuthorize) still admits every slug', () => {
+  /** ⛔⛔ RENAMED AND FLIPPED BY DECISION — D-228 slice 1. This read "the unbound
+   *  owner (no inboundTokenAuthorize) still admits every slug" and PASSED,
+   *  because `buildMcpContractSnapshot` fell back to the full slug list when no
+   *  authorizer was supplied. That fallback was the defect: proximity is not
+   *  identity, and a local process that can reach a stdio server is not the
+   *  owner. Slice 1 made the no-authorizer case yield `[]`.
+   *
+   *  ⚠⚠ THIS PINS THE SNAPSHOT ONLY, and must not be read as proof that the
+   *  stdio surface is closed. `handleToolsList` and `handleToolCall` still treat
+   *  an ABSENT authorizer as ungated — `handleToolCall`'s gate is
+   *  `deps.inboundTokenAuthorize && !deps.inboundTokenAuthorize(name)`, which
+   *  short-circuits when the callback is undefined. Slice 1 is INCOMPLETE at
+   *  those two seams; see the fence comment in `mcp-server.ts`. */
+  it('the unbound caller (no inboundTokenAuthorize) is admitted NOTHING', () => {
     const deps = doorDeps({
       boundContractId: undefined,
       boundContractActive: undefined,
@@ -295,9 +308,7 @@ describe('D-182 §8 — buildMcpContractSnapshot cli union (the door-cli auth pa
       cliReachableSlugsForPrincipal: granting('ct_door', []),
     });
     const { snapshot } = snapshotFor(deps);
-    expect(snapshot.allowed_tools).toEqual(
-      expect.arrayContaining(['allowed-http', 'whisper-catalog', 'indexer-service']),
-    );
+    expect(snapshot.allowed_tools).toEqual([]);
   });
 });
 

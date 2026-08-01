@@ -20,16 +20,26 @@ import {
   mountConnectionsEnrollPanel,
   type ConnectionsEnrollListCaller,
   type ConnectionsEnrollCaller,
+  type ConnectionsRotateCredentialsCaller,
   type ConnectionsUpdateCaller,
   type ConnectionsDeleteCaller,
   type ConnectionsProbeCaller,
   type ConnectionsGetMatchPatternsCaller,
   type ConnectionsSetMatchPatternsCaller,
 } from '../settings/connections-enroll-panel.js';
+import { createCredentialRotationContinuityStore } from '../connections/credential-rotation-continuity.js';
 
 const SUBMIT_SELECTOR = '[data-action="connections-submit-form"]';
 const tick = async (n = 10): Promise<void> => {
   for (let i = 0; i < n; i += 1) await Promise.resolve();
+};
+
+const deferred = <T>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
 };
 
 const slackView: ConnectionView = {
@@ -107,6 +117,7 @@ const mountPanel = (opts: {
   patterns?: MessageMatchPattern[];
   getRejects?: boolean;
   getPending?: boolean;
+  getMatchPatterns?: ConnectionsGetMatchPatternsCaller;
   enrollName?: string; // the CANONICAL name the enroll "server" returns
   view?: ConnectionView; // the enrolled row under edit (defaults to slack)
 } = {}) => {
@@ -117,11 +128,20 @@ const mountPanel = (opts: {
     connection: { ...view, name: opts.enrollName ?? args.name },
   }));
   const runUpdate = vi.fn<ConnectionsUpdateCaller>(async () => ({ connection: view }));
+  const runRotateCredentials = vi.fn<ConnectionsRotateCredentialsCaller>(async (args) => ({
+    connection: view,
+    verification: {
+      status: 'verified',
+      verified_at: 1_700_000_000_000,
+      auth_type: args.patch.auth.type,
+    },
+  }));
   const runDelete = vi.fn<ConnectionsDeleteCaller>(async () => ({ deleted: true }));
   const runProbe = vi.fn<ConnectionsProbeCaller>(async () => ({
     health: { status: 'ok' } as ConnectionHealth,
   }));
-  const runGetMatchPatterns = vi.fn<ConnectionsGetMatchPatternsCaller>(async () => {
+  const runGetMatchPatterns = vi.fn<ConnectionsGetMatchPatternsCaller>(async (args) => {
+    if (opts.getMatchPatterns) return opts.getMatchPatterns(args);
     if (opts.getPending) return NEVER;
     if (opts.getRejects) throw new Error('read failed');
     return { match_patterns: opts.patterns ?? [] };
@@ -129,18 +149,40 @@ const mountPanel = (opts: {
   const runSetMatchPatterns = vi.fn<ConnectionsSetMatchPatternsCaller>(
     async ({ match_patterns }) => ({ match_patterns }),
   );
+  const rotationContinuityValues = new Map<string, string>();
+  const credentialRotationContinuity = createCredentialRotationContinuityStore({
+    storage: {
+      getItem: (key) => rotationContinuityValues.get(key) ?? null,
+      setItem: (key, value) => { rotationContinuityValues.set(key, value); },
+      removeItem: (key) => { rotationContinuityValues.delete(key); },
+    },
+    scopeId: 'm4c-host-test',
+  });
   const mount = mountConnectionsEnrollPanel({
     host: fake.host,
     document: {} as unknown as Document,
     runList,
     runEnroll,
     runUpdate,
+    runRotateCredentials,
+    credentialRotationContinuity,
+    credentialRotationAttemptId: () => 'rotation-m4c-host-test-0001',
     runDelete,
     runProbe,
     runGetMatchPatterns,
     runSetMatchPatterns,
   });
-  return { ...fake, mount, calls: { runEnroll, runUpdate, runGetMatchPatterns, runSetMatchPatterns } };
+  return {
+    ...fake,
+    mount,
+    calls: {
+      runEnroll,
+      runUpdate,
+      runRotateCredentials,
+      runGetMatchPatterns,
+      runSetMatchPatterns,
+    },
+  };
 };
 
 let active: { mount: { dispose: () => void } } | null = null;
@@ -166,6 +208,68 @@ describe('D-192 M4c-UI — trigger editor host wiring', () => {
     expect(values['config.match_patterns.0.value']).toBe('commit');
     expect(values['config.match_patterns.1.kind']).toBe('content');
     expect(values['config.match_patterns.1.mode']).toBe('word');
+    expect(h.mount.hasUnsavedChanges()).toBe(false);
+  });
+
+  it('merges a late trigger read without erasing or cleaning owner edits', async () => {
+    const pending = deferred<{ match_patterns: MessageMatchPattern[] }>();
+    const h = mountPanel({
+      getMatchPatterns: () => pending.promise,
+    });
+    active = h;
+    await tick();
+    h.click({ action: 'connections-edit', kind: 'notification', name: 'slack' });
+
+    h.field('config.match_patterns.0.kind', 'tag', 'SELECT');
+    h.field('config.match_patterns.0.value', 'owner-draft');
+    expect(h.mount.hasUnsavedChanges()).toBe(true);
+
+    pending.resolve({
+      match_patterns: [{ kind: 'tag', value: 'stored-trigger' }],
+    });
+    await tick();
+
+    const { values } = h.mount.getState().dialog;
+    expect(values['config.match_patterns.0.kind']).toBe('tag');
+    expect(values['config.match_patterns.0.value']).toBe('owner-draft');
+    expect(h.mount.hasUnsavedChanges()).toBe(true);
+
+    // Reverting the surviving override to the hydrated server value proves the
+    // server projection—not the late owner draft—became the clean baseline.
+    h.field('config.match_patterns.0.value', 'stored-trigger');
+    expect(h.mount.hasUnsavedChanges()).toBe(false);
+  });
+
+  it('drops a late trigger read from an earlier open of the same editor', async () => {
+    const first = deferred<{ match_patterns: MessageMatchPattern[] }>();
+    let read = 0;
+    const h = mountPanel({
+      getMatchPatterns: () => {
+        read += 1;
+        return read === 1
+          ? first.promise
+          : Promise.resolve({
+              match_patterns: [{ kind: 'tag', value: 'current-open' }],
+            });
+      },
+    });
+    active = h;
+    await tick();
+    h.click({ action: 'connections-edit', kind: 'notification', name: 'slack' });
+    h.click({ action: 'connections-cancel-dialog' });
+    h.click({ action: 'connections-edit', kind: 'notification', name: 'slack' });
+    await tick();
+
+    expect(h.mount.getState().dialog.values['config.match_patterns.0.value'])
+      .toBe('current-open');
+    first.resolve({
+      match_patterns: [{ kind: 'tag', value: 'stale-first-open' }],
+    });
+    await tick();
+
+    expect(h.mount.getState().dialog.values['config.match_patterns.0.value'])
+      .toBe('current-open');
+    expect(h.mount.hasUnsavedChanges()).toBe(false);
   });
 
   it('add-pattern appends a blank row; remove-pattern drops it', async () => {
@@ -177,11 +281,15 @@ describe('D-192 M4c-UI — trigger editor host wiring', () => {
     // Row 0 (the synthetic default) is materialized + row 1 appended.
     expect(values['config.match_patterns.1.kind']).toBe('');
     expect('config.match_patterns.1.value' in values).toBe(true);
+    // Empty structural controls carry no owner-authored value and should not
+    // add a leave warning by themselves.
+    expect(h.mount.hasUnsavedChanges()).toBe(false);
 
     h.click({ action: 'connections-remove-pattern', baseKey: 'config.match_patterns', patternIndex: '1' });
     values = h.mount.getState().dialog.values;
     expect('config.match_patterns.1.kind' in values).toBe(false);
     expect('config.match_patterns.1.value' in values).toBe(false);
+    expect(h.mount.hasUnsavedChanges()).toBe(false);
   });
 
   it('submit saves the compiled triggers via setMatchPatterns alongside the update', async () => {
@@ -191,6 +299,7 @@ describe('D-192 M4c-UI — trigger editor host wiring', () => {
     // Author one trigger: a kind select (change) + a value input (silent).
     h.field('config.match_patterns.0.kind', 'tag', 'SELECT');
     h.field('config.match_patterns.0.value', 'commit', 'INPUT');
+    expect(h.mount.hasUnsavedChanges()).toBe(true);
     h.click({ action: 'connections-submit-form' });
     await tick();
     expect(h.calls.runUpdate).toHaveBeenCalledTimes(1);
@@ -199,6 +308,27 @@ describe('D-192 M4c-UI — trigger editor host wiring', () => {
       name: 'slack',
       match_patterns: [{ kind: 'tag', value: 'commit' }],
     });
+  });
+
+  it('commits trigger edits inside credential verification instead of as a second write', async () => {
+    const h = mountPanel({ patterns: [{ kind: 'tag', value: 'old' }] });
+    active = h;
+    await openSlackEdit(h);
+    h.field('config.match_patterns.0.value', 'replacement');
+    h.field('auth.token', 'replacement-token');
+    h.click({ action: 'connections-submit-form' });
+    await tick();
+
+    expect(h.calls.runUpdate).not.toHaveBeenCalled();
+    expect(h.calls.runRotateCredentials).toHaveBeenCalledWith(expect.objectContaining({
+      name: 'slack',
+      kind: 'notification',
+      match_patterns: [{ kind: 'tag', value: 'replacement' }],
+      patch: expect.objectContaining({
+        auth: { type: 'bearer', token: 'replacement-token' },
+      }),
+    }));
+    expect(h.calls.runSetMatchPatterns).not.toHaveBeenCalled();
   });
 
   it('submit sends an empty list when the triggers were cleared', async () => {
@@ -226,6 +356,7 @@ describe('D-192 M4c-UI — trigger editor host wiring', () => {
     h.click({ action: 'connections-submit-form' });
     await tick();
     expect(h.calls.runUpdate).toHaveBeenCalledTimes(1); // the connection still saves
+    expect(h.calls.runRotateCredentials).not.toHaveBeenCalled();
     expect(h.calls.runSetMatchPatterns).not.toHaveBeenCalled(); // but the triggers are LEFT ALONE
   });
 
@@ -277,7 +408,8 @@ describe('D-192 M4c-UI — trigger editor host wiring', () => {
     // `[]` because the WhatsApp edit never set `matchPatternsHydrated = false`.
     h.click({ action: 'connections-submit-form' });
     await tick();
-    expect(h.calls.runUpdate).toHaveBeenCalledTimes(1); // the connection still saves
+    expect(h.calls.runRotateCredentials).toHaveBeenCalledTimes(1); // the replacement still verifies + saves
+    expect(h.calls.runUpdate).not.toHaveBeenCalled();
     expect(h.calls.runSetMatchPatterns).not.toHaveBeenCalled(); // triggers LEFT ALONE
   });
 

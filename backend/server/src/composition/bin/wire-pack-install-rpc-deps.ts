@@ -18,6 +18,7 @@ import type { ChatInboundTokenStore } from '../../storage/chat-inbound-token-sto
 import type { McpBodyVisibilityStore } from '../../storage/mcp-body-visibility-store.js';
 import type { WebhookConsumerStore } from '../../storage/webhook-consumer-store.js';
 import type { SellerInstallAudienceStore } from '../../ingredient-authoring/install-composition.js';
+import type { RecordsStore } from '../../records/index.js';
 
 type RecipeTrustWriter = NonNullable<PackInstallRpcDeps['recipeTrustStore']>;
 
@@ -25,6 +26,7 @@ export interface ComposePackInstallRpcDepsInput {
   /** Per-pair recipe store. Absent → composer returns the
    *  undefined-bundle + caller drops the `packInstallDeps` spread. */
   recipeStore: RecipeStore | undefined;
+  recordsStore?: RecordsStore;
   /** D-201 Slice 4 — exact ingress binding and trigger materialization store. */
   webhookConsumerStore?: WebhookConsumerStore;
   /** D-139 P6.B — MCP body-content visibility grant store. Optional —
@@ -82,6 +84,7 @@ export const composePackInstallRpcDeps = (
 ): PackInstallRpcBundle => {
   const {
     recipeStore,
+    recordsStore,
     webhookConsumerStore,
     mcpBodyVisibilityStore,
     contractStore,
@@ -99,6 +102,7 @@ export const composePackInstallRpcDeps = (
 
   const packInstallDeps: PackInstallRpcDeps = {
     recipeStore,
+    ...(recordsStore ? { recordsStore } : {}),
     ...(webhookConsumerStore ? { webhookConsumerStore } : {}),
     ...(mcpBodyVisibilityStore ? { mcpBodyVisibilityStore } : {}),
     ...(contractStore ? { contractStore } : {}),

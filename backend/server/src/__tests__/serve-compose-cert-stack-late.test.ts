@@ -49,7 +49,7 @@ const makeOptions = (
 ): ComposeCertStackLateOptions => ({
   certStack: makeCertStack(),
   tlsDomainStore: { tag: 'tls-domain-store' } as unknown as CertStackLateDeps['tlsDomainStore'],
-  lanBindAddress: '127.0.0.1',
+  lanAdvertisedAddress: '127.0.0.1',
   actualPort: 3939,
   ...overrides,
 });
@@ -84,7 +84,7 @@ describe('composeCertStackLate', () => {
       makeOptions({
         certStack,
         tlsDomainStore,
-        lanBindAddress: '0.0.0.0',
+        lanAdvertisedAddress: '0.0.0.0',
         actualPort: 4444,
       }),
     );
@@ -92,7 +92,7 @@ describe('composeCertStackLate', () => {
     expect(composeLate).toHaveBeenCalledTimes(1);
     expect(composeLate).toHaveBeenCalledWith({
       tlsDomainStore,
-      lanBindAddress: '0.0.0.0',
+      lanAdvertisedAddress: '0.0.0.0',
       actualPort: 4444,
     });
     expect(result).toEqual({
@@ -119,7 +119,7 @@ describe('composeCertStackLate', () => {
 
     expect(composeLate).toHaveBeenCalledWith({
       tlsDomainStore: undefined,
-      lanBindAddress: '127.0.0.1',
+      lanAdvertisedAddress: '127.0.0.1',
       actualPort: 3939,
     });
     expect(result).toEqual({

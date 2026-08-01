@@ -94,7 +94,7 @@ public_port = 70000
     ).toThrow(/runtime\.public_port must be <= 65535/);
   });
 
-  it('env vars override file-provided values', () => {
+  it('BOOTSTRAP env beats the file; RUNTIME env is ignored so the FILE wins', () => {
     const cfgPath = join(dir, 'config.toml');
     writeFileSync(cfgPath, `
 [bootstrap]
@@ -112,8 +112,14 @@ bind_port = 9999
       },
       argv: [],
     });
+    // Bootstrap: env still wins over the file — these fields are needed before
+    // any store can be read, so env is the only channel that can carry them.
     expect(out.bootstrap.bind_port).toBe(12345);
-    expect(out.runtime['log.level']).toBe('error');
+    // Runtime: INVERTED 2026-07-28. This used to assert `'error'` (env beating
+    // the file). Runtime env is no longer ingested, so the file — which stands
+    // in for what the owner saved through Settings — is what survives. That
+    // inversion is the whole point of removing the runtime intake.
+    expect(out.runtime['log.level']).toBe('warn');
   });
 
   it('CLI flags beat env vars', () => {
@@ -194,10 +200,11 @@ bind_port = 9999
       },
       argv: [],
     });
-    expect(out.envApplied.sort()).toEqual([
-      'RECUED_BOOTSTRAP_BIND_PORT',
-      'RECUED_RUNTIME_LLM_BUDGET',
-    ]);
+    // `RECUED_RUNTIME_LLM_BUDGET` is deliberately absent: it was not applied,
+    // and a diagnostic that names an inert variable is worse than one that
+    // omits it — it would send someone hunting for an override that never
+    // happened.
+    expect(out.envApplied.sort()).toEqual(['RECUED_BOOTSTRAP_BIND_PORT']);
   });
 
   it('Phase D: collection defaults land in the runtime schema', () => {

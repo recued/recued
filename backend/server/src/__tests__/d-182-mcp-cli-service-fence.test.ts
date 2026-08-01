@@ -105,10 +105,12 @@ const fileSetScanStatus: IngredientManifest = {
   output: {},
 };
 
-/** D-173 P5 — the ONE whitelisted kernel ingredient (in
- *  `MCP_EXPOSED_KERNEL_INGREDIENTS`). It must PASS the backstop (stay callable). */
+/** D-173 P5 — the ONE kernel ingredient authored `mcp_exposed: true` (D-228
+ *  slice 2 replaced the `MCP_EXPOSED_KERNEL_INGREDIENTS` hand-list with the
+ *  field). It must PASS the backstop (stay callable). */
 const dataFileRead: IngredientManifest = {
   slug: 'data-file-read',
+  mcp_exposed: true,
   name: 'Read a file',
   description: 'Read content bytes from data.file.received.',
   author: 'recued',
@@ -139,6 +141,15 @@ const registryWithKernel = () => {
 
 const depsFor = (manifests: ReturnType<typeof registryWithFenced>) =>
   ({
+    // ⛔⛔ D-228 slice 6 — REQUIRED, and NOT a weakening of this file's subject.
+    // An absent checklist now denies at both `handleToolsList` and
+    // `handleToolCall`, so without this every test here would go green for the
+    // WRONG REASON: the token gate would refuse first and the KIND fence
+    // (`isExternallyExposableIngredient`) — the actual subject — would never
+    // run. A permissive checklist is also the production-faithful shape: a real
+    // caller on this path presents a token, and the KIND fence is what must
+    // still refuse a cli/service catalog AFTER the gate admits it.
+    inboundTokenAuthorize: () => true,
     recipeStore: createRecipeStore('/nonexistent'),
     executorConfig: { manifests },
     baseVault: {},

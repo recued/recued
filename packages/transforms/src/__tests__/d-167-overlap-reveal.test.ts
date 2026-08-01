@@ -134,7 +134,7 @@ describe('decorateOverlapReveal — recall overlap suffix', () => {
     expectRestoredClean(ledger, twice, recalled);
   });
 
-  it('leaves phone, address, and email composite aliases untouched', () => {
+  it('leaves phone + address untouched, and tails the email composite', () => {
     const ledger = createLedger('s');
     const recalled = 'call +1 415 555 0199 or email alice@acme.com';
     const { text } = aliasKnownValuesInContent(
@@ -161,10 +161,19 @@ describe('decorateOverlapReveal — recall overlap suffix', () => {
     expect(text).toContain('pii.Phone1.us');
     expect(text).toContain('m1@d1.invalid');
     expect(addressAlias).toBe('pii.Address1.san-francisco.ca.usa');
-    expect(decorated).toBe(aliased);
+    // ⚠ PHONE + ADDRESS stay untouched — that is this test's surviving intent,
+    // and the reason is unchanged: their suffix slot is already spent on geo/iso,
+    // and a partial phone is not a coreference key.
     expect(decorated).toContain('pii.Phone1.us');
-    expect(decorated).toContain('m1@d1.invalid');
     expect(decorated).toContain('pii.Address1.san-francisco.ca.usa');
+    // ⚠ EMAIL NO LONGER BELONGS IN THAT LIST (2026-07-30). It was bundled here
+    // only because the composite was excluded at the time; the exclusion is what
+    // severed the one coreference that mattered — a model holding the owner's own
+    // org name and a bare `m<N>@d<M>.invalid` could not join them and gave up.
+    // The tail rides the LOCAL part so `.invalid` stays terminal (RFC 2606
+    // non-resolving) and restore needs no new machinery.
+    expect(decorated).toContain('m1.alice.acme@d1.invalid');
+    expect(decorated).not.toContain('m1@d1.invalid');
     expectRestoredClean(
       ledger,
       decorated,

@@ -75,6 +75,7 @@ import {
   type RotationResult,
   type ServerSystemStatus,
 } from '@recued/contracts';
+import { formatClientDateTime } from '@recued/ui-shared';
 
 import {
   describeKeyfilePosture,
@@ -314,7 +315,7 @@ const dePairs = (req: KeyRotateRequest): boolean =>
 
 const formatRotatedAt = (rotated_at: number): string => {
   if (!Number.isFinite(rotated_at)) return 'unknown';
-  return new Date(rotated_at).toISOString();
+  return formatClientDateTime(rotated_at, { invalidText: 'unknown' });
 };
 
 /** Short label for a dependent/cascade key class in the done summary. */

@@ -91,8 +91,8 @@ export const ensureChatInboundTokenSchema = (
 };
 
 /** Codex review P1 fold — error code surfaced by `issueToken` when the
- *  partial unique index would be violated. Callers (future rpc handler)
- *  map this to a domain-specific RpcError code; tests assert the prefix
+ *  partial unique index would be violated. The rpc handler maps this
+ *  to a domain-specific RpcError code; tests assert the prefix
  *  on the error message. */
 export const PEER_HANDLE_CONFLICT_PREFIX = 'chat_inbound_token: peer_handle_conflict';
 
@@ -111,9 +111,8 @@ interface Row {
   updated_at: number;
 }
 
-/** Derive the stable 16-hex `token_id` from the bearer plaintext. Same
- *  sha256-16 derivation pattern as `createMcpHttpDispatch`'s
- *  `http_<sha256-16>` interim id. */
+/** Derive the stable 16-hex `token_id` from the bearer plaintext. The
+ *  full digest below remains the possession proof. */
 export const deriveMcpInboundTokenId = (bearer: string): string =>
   createHash('sha256').update(bearer, 'utf8').digest('hex').slice(0, 16);
 

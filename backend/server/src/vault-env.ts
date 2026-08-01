@@ -18,7 +18,12 @@ export const resolveVaultFromEnv = (
   return vault;
 };
 
-/** Merge vault sources: file -> env -> request overrides (last wins). */
+/** Merge vault sources: stored -> env -> request overrides (last wins).
+ *
+ *  `fileVault` is vestigial naming from a `--vault-file` source that was never
+ *  implemented; both production call sites pass the VaultStore-loaded
+ *  credentials in that slot. Note those are publisher-nested while env entries
+ *  are flat, so the spread only overrides on an exact top-level key collision. */
 export const mergeVault = (
   fileVault: Record<string, unknown>,
   envVault: Record<string, unknown>,

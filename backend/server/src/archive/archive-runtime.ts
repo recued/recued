@@ -74,6 +74,7 @@ import type {
   ArchiveRpcDeps,
   ArchiveRuntime,
 } from './archive-handler.js';
+import { assertRecordsRestoreCoherence } from '../records/store.js';
 
 /** Attribution stamped onto an archive-embedded passport's
  *  `exported_by_client_id`. The archive rpc is operator-only, so this is
@@ -447,6 +448,13 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
       ...(databaseKey !== undefined ? { databaseKey } : {}),
     });
     try {
+      // D-221 — a whole-db archive naturally carries Records tables, but the
+      // runnable unit also includes their namespace snapshots, catalog,
+      // inventory, migration receipts, accounting, and exact event generation.
+      // Validate that unit on the staged, still-discardable file before either
+      // preview or swap can accept it. Pre-Records archives contain no Records
+      // table and pass unchanged.
+      assertRecordsRestoreCoherence(probe);
       return countTablesFromProbe(probe as unknown as RowCountProbe);
     } finally {
       try { probe.close(); } catch { /* best effort */ }

@@ -56,6 +56,9 @@ export const PACKS_DIALOG_BODY_GRANT_ATTR = 'data-recued-packs-dialog-body-grant
 export const PACKS_DIALOG_INSTALL_BTN_ATTR = 'data-recued-packs-dialog-install';
 export const PACKS_DIALOG_CANCEL_BTN_ATTR = 'data-recued-packs-dialog-cancel';
 export const PACKS_DIALOG_ERROR_ATTR = 'data-recued-packs-dialog-error';
+/** D-223 — marks the hint-only pack's connection disclosure, carrying the
+ *  connection slug as its value. */
+export const PACKS_DIALOG_CONNECT_HINT_ATTR = 'data-pack-connect-hint';
 // D-145 PA10 follow-on Slice C — dialog-level callout listing per-other-pack
 // collision groups; per-group value = the OTHER pack's slug; per-recipe
 // inline marker value = the colliding recipe slug.
@@ -76,6 +79,12 @@ export const PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR =
   'data-recued-packs-dialog-owner-operation-review';
 export const PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR =
   'data-recued-packs-dialog-owner-operation-review-item';
+export const PACKS_DIALOG_RECORDS_REVIEW_ATTR =
+  'data-recued-packs-dialog-records-review';
+export const PACKS_DIALOG_RECORDS_REVIEW_CHANGE_ATTR =
+  'data-recued-packs-dialog-records-review-change';
+export const PACKS_DIALOG_RECORDS_REVIEW_DESTRUCTIVE_ATTR =
+  'data-recued-packs-dialog-records-review-destructive';
 
 /** Permission slug that is always required for any bulk-pack install.
  *  Mirrors `BULK_PACK_INSTALL_PERMISSION` in `@recued/contracts`; inlined so
@@ -126,6 +135,7 @@ const DIALOG_COPY = {
     'This update changes pack operations with owner-wide Risk or Approval values. Those owner values remain global after the update.',
   owner_operation_review_removed:
     'Removed operations keep their ruling stored but inactive unless the operation returns.',
+  records_review_heading: 'Records data transition to review',
 } as const;
 
 /** Failure-code → copy mapping for the engine's `BulkPackInstallResult.
@@ -211,6 +221,16 @@ export interface PacksInstallDialogProps {
   /** D-194 2b-2 — the (single, v1) connection this pack needs, or undefined when
    *  the pack declares none (then no Connect section renders). */
   connectionRequirement: ConnectionRequirement | undefined;
+  /** D-223 — the connection slug this pack pre-fills, when it declares
+   *  `connection_hints` but NO descriptor. Drives a one-line disclosure so the
+   *  owner learns which connection the pack wants before granting anything.
+   *
+   *  ⚠ DISCLOSURE ONLY — not a route. An earlier revision claimed this prop was
+   *  what made a third-party pack's hints reachable "at all"; that premise was
+   *  wrong. The pack detail's Connections row already deep-links to the same
+   *  enroll form, and unlike a link from here it fires when the pack is
+   *  installed, which is the condition the pre-fill actually depends on. */
+  connectionHintSetup: string | undefined;
   /** Endpoint-match candidates for the requirement (empty ⇒ enroll-only). */
   connectionCandidates: readonly EndpointCandidate[];
   /** The owner's picked connection name, or undefined = install without
@@ -236,6 +256,42 @@ export interface PacksInstallDialogProps {
   onSubmit(): void;
   onCancel(): void;
 }
+
+/** D-223 — the one-line disclosure a pack gets when it HINTS but declares no
+ *  `connection_requirements`: it names the connection the pack wants, so the
+ *  owner learns that before granting anything. Never the picker above — the
+ *  picker offers adoption of an EXISTING connection, which is a capability a
+ *  hint deliberately does not carry: filling a box the owner confirms is not the
+ *  same act as proposing they reuse a credential enrolled for something else.
+ *
+ *  ⛔ AND NO SET-UP LINK FROM HERE — the reason this is its own function rather
+ *  than four lines inline. An earlier revision put a link in, worded "setting it
+ *  up now fills in what the publisher told us". Live-server run 2026-07-30: it
+ *  does not, and cannot. `connections-enroll-panel` sources hints from INSTALLED
+ *  packs (`ensurePacksLoaded` keeps only `p.installed`), and while THIS dialog
+ *  is open the pack is by definition not installed yet — the linked form came up
+ *  blank with no attribution, so the copy promised the one thing that route
+ *  could not deliver. The pack DETAIL's "Set up →" row
+ *  (`connections-readiness-controls`, which pre-dates D-223 and renders for a
+ *  hint-only pack too) is the route that works, because by then the pack IS
+ *  installed. So this discloses the connection and names that order instead of
+ *  racing it. `d-223-connection-hint-disclosure.test.ts` pins both halves. */
+export const renderConnectionHintDisclosure = (
+  doc: Document,
+  connection: string,
+): HTMLElement => {
+  const section = doc.createElement('section');
+  section.className = 'packs-dialog-connect';
+  section.setAttribute(PACKS_DIALOG_CONNECT_HINT_ATTR, connection);
+  const line = doc.createElement('p');
+  line.className = 'packs-dialog-summary';
+  line.textContent =
+    `This pack connects to ${connection}. Install it first — the pack's Connections `
+    + 'row then opens a form already filled in with what the publisher suggested, '
+    + 'and you can change anything before saving.';
+  section.appendChild(line);
+  return section;
+};
 
 /** Build the inline install/consent dialog for one pack. Pure DOM
  *  construction over the props — all state reads and every mutation flow
@@ -359,6 +415,105 @@ export const renderPacksInstallDialog = (
     container.appendChild(review);
   }
 
+  const recordsReview = pack.records_review;
+  if (recordsReview !== undefined) {
+    const review = doc.createElement('section');
+    review.setAttribute(PACKS_DIALOG_RECORDS_REVIEW_ATTR, '');
+    review.className = 'packs-dialog-records-review';
+    review.setAttribute('role', 'region');
+    const reviewHeadingId = `packs-dialog-records-review-${pack.slug}`;
+    review.setAttribute('aria-labelledby', reviewHeadingId);
+    const reviewHeading = doc.createElement('p');
+    reviewHeading.id = reviewHeadingId;
+    reviewHeading.className = 'packs-dialog-summary packs-dialog-records-review-heading';
+    reviewHeading.textContent = DIALOG_COPY.records_review_heading;
+    review.appendChild(reviewHeading);
+
+    const transition = doc.createElement('p');
+    transition.className = 'packs-dialog-records-review-summary';
+    transition.textContent =
+      `Version ${recordsReview.current_version} → ${recordsReview.target_version} · `
+      + `${recordsReview.estimated_rows} rows · `
+      + `${recordsReview.current_storage_schema_hash === recordsReview.target_storage_schema_hash
+        ? 'storage schema unchanged'
+        : 'storage schema changes'}`;
+    review.appendChild(transition);
+
+    const kinds = doc.createElement('ul');
+    kinds.className = 'packs-dialog-records-review-kinds';
+    for (const kind of recordsReview.row_counts) {
+      const row = doc.createElement('li');
+      row.textContent = `${kind.kind}: ${kind.rows} rows, ${kind.payload_bytes} logical bytes`;
+      kinds.appendChild(row);
+    }
+    review.appendChild(kinds);
+
+    if (recordsReview.schema_changes.length > 0) {
+      const changes = doc.createElement('ul');
+      changes.className = 'packs-dialog-records-review-changes';
+      for (const change of recordsReview.schema_changes) {
+        const row = doc.createElement('li');
+        row.setAttribute(
+          PACKS_DIALOG_RECORDS_REVIEW_CHANGE_ATTR,
+          `${change.entity}${change.field === undefined ? '' : `.${change.field}`}`,
+        );
+        row.setAttribute('data-change', change.change);
+        row.setAttribute('data-destructive', String(change.destructive));
+        row.textContent = `${change.entity}${change.field === undefined ? '' : `.${change.field}`} — `
+          + `${change.change.replaceAll('_', ' ')}`
+          + `${change.current === undefined ? '' : ` · from ${change.current}`}`
+          + `${change.target === undefined ? '' : ` · to ${change.target}`}`;
+        changes.appendChild(row);
+      }
+      review.appendChild(changes);
+    }
+
+    if (recordsReview.destructive_changes.length > 0) {
+      const destructiveHeading = doc.createElement('p');
+      destructiveHeading.className = 'packs-dialog-records-review-destructive-heading';
+      destructiveHeading.textContent = 'Potentially destructive migration mappings:';
+      review.appendChild(destructiveHeading);
+      const destructive = doc.createElement('ul');
+      for (const mapping of recordsReview.destructive_changes) {
+        const row = doc.createElement('li');
+        row.setAttribute(PACKS_DIALOG_RECORDS_REVIEW_DESTRUCTIVE_ATTR, mapping.step_id);
+        row.textContent = `${mapping.edge} · ${mapping.kind} · ${mapping.operation} ${mapping.from}`
+          + `${mapping.to === undefined ? '' : ` → ${mapping.to}`}`;
+        destructive.appendChild(row);
+      }
+      review.appendChild(destructive);
+    }
+
+    const policy = doc.createElement('p');
+    policy.className = 'packs-dialog-records-review-policy';
+    const retention = Object.entries(recordsReview.retention)
+      .map(([kind, value]) => `${kind}: ${value.legal_hold ? 'legal hold' : value.mode === 'keep'
+        ? 'keep'
+        : `expire after ${value.days} days`}`)
+      .join(', ') || 'keep (default)';
+    policy.textContent =
+      `Usage ${recordsReview.quota.row_count}/${recordsReview.quota.row_limit} rows, `
+      + `${recordsReview.quota.payload_bytes}/${recordsReview.quota.byte_limit} bytes · `
+      + `Global ${recordsReview.global_quota.row_count}/${recordsReview.global_quota.row_limit} rows, `
+      + `${recordsReview.global_quota.payload_bytes}/${recordsReview.global_quota.byte_limit} bytes`
+      + `${recordsReview.global_quota.reserved_payload_bytes === 0
+        ? ''
+        : ` (+${recordsReview.global_quota.reserved_payload_bytes} reserved)`} · `
+      + `Retention: ${retention}`;
+    review.appendChild(policy);
+
+    const lifecycle = doc.createElement('p');
+    lifecycle.className = 'packs-dialog-records-review-lifecycle';
+    lifecycle.textContent =
+      `${recordsReview.active_executions} active executions; `
+      + `${recordsReview.unacknowledged_events} unacknowledged events will be drained or explicitly retired. `
+      + `${recordsReview.export_checkpoint_available ? 'Export is available' : 'Export unavailable'}${recordsReview.export_recommended ? ' and recommended' : ''}. `
+      + `The pack is temporarily unavailable during the resumable transition. `
+      + `Reverse route: ${recordsReview.reverse_route_exists ? 'available' : 'not available'}.`;
+    review.appendChild(lifecycle);
+    container.appendChild(review);
+  }
+
   // Recipe count summary
   const recipesP = doc.createElement('p');
   recipesP.className = 'packs-dialog-summary';
@@ -479,6 +634,12 @@ export const renderPacksInstallDialog = (
         onPick: (name) => props.onPickConnection(name),
         onToggleExpanded: () => props.onToggleConnectExpanded(),
       }),
+    );
+  }
+
+  if (props.connectionRequirement === undefined && props.connectionHintSetup !== undefined) {
+    container.appendChild(
+      renderConnectionHintDisclosure(doc, props.connectionHintSetup),
     );
   }
 

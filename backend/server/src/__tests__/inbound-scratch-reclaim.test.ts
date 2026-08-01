@@ -103,10 +103,19 @@ describe('inbound scratch — owner-only creation', () => {
     // The scratch is unlinked as soon as the CAS write lands, so sample its
     // mode from inside the stream rather than after the call returns.
     const source = Readable.from(
-      (function* () {
+      (async function* () {
         yield Buffer.from('%PDF-1.4 visitor upload');
-        const names = readdirSync(tmpDir);
-        observed = names.length > 0 ? modeOf(join(tmpDir, names[0]!)) : undefined;
+        // Hold EOF until createWriteStream's asynchronous open has materialised
+        // the file. Sampling immediately after `yield` races that open under a
+        // busy full-suite worker and observes an empty directory even though the
+        // eventual file is correctly owner-only.
+        for (let attempt = 0; attempt < 100 && observed === undefined; attempt++) {
+          const names = readdirSync(tmpDir);
+          if (names.length > 0) observed = modeOf(join(tmpDir, names[0]!));
+          if (observed === undefined) {
+            await new Promise<void>((resolve) => setImmediate(resolve));
+          }
+        }
       })(),
     );
 

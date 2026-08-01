@@ -56,6 +56,7 @@ import {
   MAIL_RECONCILIATION_ID_HEADER,
 } from '@recued/contracts';
 import {
+  createMailSyncOutcomeReporter,
   assertMailSentReconciliationQuery,
   evaluateMailSentReconciliationCandidates,
   MAIL_SENT_RECONCILIATION_MAX_SCAN,
@@ -64,6 +65,8 @@ import {
   mailSentReconciliationAttachmentPartFromBytes,
   type CanonicalMessage,
   type InitialScanOptions,
+  type MailSyncFailureKind,
+  type MailSyncOutcomeListener,
   type InboundMailAttachmentPart,
   type MailProvider,
   type MailSentReconciliationCandidate,
@@ -176,20 +179,24 @@ export type SmtpTransportFactory = (config: {
  *  without bundled types in the repo's tree, so we structural-type
  *  through `SmtpTransport` rather than reaching for `@types/nodemailer`
  *  (kept as a 1-line fix later if/when we ever need richer types). */
+/** The PRODUCTION transport. Nothing else — no env branch.
+ *
+ *  ⛔ This used to consult `RECUED_BENCH_SMTP_OUTBOX` and, when set, divert the
+ *  send to a no-network outbox recorder so the substrate-bench could execute an
+ *  APPROVED `mail-send` offline. The lazy `require` meant production never
+ *  LOADED the dev module, but the branch itself shipped: esbuild statically
+ *  bundled it, so `dist/bin.js` carried the diversion. One env var on a real
+ *  server therefore made every outbound mail silently not-send while the mock
+ *  returned a synthetic `250 2.0.0 OK` — a delivery failure reported as
+ *  `success: true`.
+ *
+ *  Callers that need a different transport now INJECT one:
+ *  `MailAdapterBundle.smtpFactory` → `createImapProvider({ smtpFactory })`
+ *  (`compose.ts`). The bench supplies it through its own source-patch step
+ *  (internal benchmarks), the same mechanism it already
+ *  uses for `wire-chat-orchestrator.ts` — so the diversion exists only in the
+ *  bench's own bundle and cannot reach a release artifact. */
 export const defaultSmtpTransportFactory: SmtpTransportFactory = (config) => {
-  // Bench/dev seam — when `RECUED_BENCH_SMTP_OUTBOX` is set, route the send to
-  // a no-network outbox-recording transport instead of nodemailer, so the
-  // internal benchmarks can execute an APPROVED `mail-send` step offline
-  // (the D-157 gate → approve → execute → audit round-trip). Lazy require so
-  // production (env unset) never loads the dev module — a no-op there.
-  if (process.env.RECUED_BENCH_SMTP_OUTBOX) {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { benchSmtpFactoryFromEnv } = require('../../dev/bench-smtp-mock.js') as {
-      benchSmtpFactoryFromEnv: () => SmtpTransportFactory | undefined;
-    };
-    const benchFactory = benchSmtpFactoryFromEnv();
-    if (benchFactory) return benchFactory(config);
-  }
   // eslint-disable-next-line @typescript-eslint/no-var-requires
   const nodemailer = require('nodemailer') as {
     createTransport: (cfg: unknown) => unknown;
@@ -610,6 +617,71 @@ export const createImapProvider = (
     opts.log?.('warn', msg, { err: err instanceof Error ? err.message : String(err) });
   };
 
+  /** Is this an IMAP AUTHENTICATION failure (wrong password, app-password
+   *  revoked) rather than a transport one?
+   *
+   *  `imapflow` throws an `AuthenticationFailure` subclass carrying
+   *  `authenticationFailed = true`, and tags enhanced errors with
+   *  `serverResponseCode` (`imapflow/lib/tools.js`) — both STRUCTURAL fields, so
+   *  this is not a message-text match. Anything unrecognized is `'transient'` ON
+   *  PURPOSE: telling users to re-enter working credentials because a socket
+   *  dropped teaches them to re-auth reflexively, which is a worse failure than
+   *  a slow "degraded". */
+  const isImapAuthFailure = (err: unknown): boolean => {
+    if (typeof err !== 'object' || err === null) return false;
+    const e = err as {
+      authenticationFailed?: unknown;
+      serverResponseCode?: unknown;
+      code?: unknown;
+    };
+    if (e.authenticationFailed === true) return true;
+    if (e.serverResponseCode === 'AUTHENTICATIONFAILED') return true;
+    // `EAUTH` is nodemailer's SMTP-side code — an SMTP-shaped error can reach
+    // here when a credential is shared with the send path.
+    return e.code === 'EAUTH';
+  };
+
+  /** Per-attempt outcome reporting — see `MailSyncOutcome` in provider.ts.
+   *
+   *  IMAP reports `initial_scan` and `reconnect` only. It is IDLE-driven, so
+   *  there is no periodic poll attempt to report and inventing one would be a
+   *  fabricated signal: its liveness IS the open connection, and losing that
+   *  surfaces here as a `reconnect` outcome. */
+  const outcomes = createMailSyncOutcomeReporter({
+    now: nowOf,
+    classifyError: (err): MailSyncFailureKind =>
+      isImapAuthFailure(err) ? 'auth' : 'transient',
+  });
+
+  /** Folders currently known to be DISCONNECTED, with why.
+   *
+   *  ⚠ A `MailSyncOutcome` carries no folder identity, and the consumer treats
+   *  any `ok` as proof the mailbox is working. One client per folder means Inbox
+   *  can reconnect while Archive is still down — and reporting Inbox's success
+   *  provider-wide would clear a state that is still true, then flap as the
+   *  Archive retry loop re-reports it. So reconnect success is reported only when
+   *  NO folder is left down. */
+  const downFolders = new Map<string, MailSyncFailureKind>();
+
+  /** Report a folder's reconnect result, aggregated across folders. A failure is
+   *  always reported (it is true the moment it happens, and `auth` outranks
+   *  `transient` so a bad credential is never masked by a flaky socket). */
+  const reportReconnect = (
+    folder: string,
+    ok: boolean,
+    failure?: MailSyncFailureKind,
+  ): void => {
+    if (ok) {
+      downFolders.delete(folder);
+      if (downFolders.size > 0) return; // another folder is still offline
+      outcomes.report('reconnect', true);
+      return;
+    }
+    downFolders.set(folder, failure ?? 'transient');
+    const worst = [...downFolders.values()].includes('auth') ? 'auth' : 'transient';
+    outcomes.report('reconnect', false, worst);
+  };
+
   const fetchAndEmit = async (
     state: FolderState,
     uid: number,
@@ -640,6 +712,9 @@ export const createImapProvider = (
         lastSuccessfulSyncAt = nowOf();
       }
     } catch (err) {
+      // Swallowed so one bad message can't kill the batch — but NOTED, so the
+      // enclosing `poll` attempt reports a failure rather than a clean fetch.
+      outcomes.noteFailure(isImapAuthFailure(err) ? 'auth' : 'transient');
       markError(`imap fetch failed uid=${uid} folder=${state.folder}`, err);
     } finally {
       pendingQueueSize = Math.max(0, pendingQueueSize - 1);
@@ -653,19 +728,35 @@ export const createImapProvider = (
     const client = state.client;
     if (!client) return () => { /* nothing to detach */ };
 
+    // Each IDLE notification is one `poll` attempt. Without this the live path
+    // reported NOTHING: `fetchAndEmit` swallows into `markError` and the
+    // listeners launch it with `void`, so an established connection could fail
+    // every FETCH indefinitely while the collection stayed 'healthy'. An EXISTS
+    // covering N messages is ONE attempt, not N — the user experiences "did my
+    // mail arrive", and N outcomes would also defeat the consumer's throttle.
+    const pollBatch = (run: () => Promise<void>): void => {
+      void outcomes.run('poll', run).catch((err) => {
+        // `run` rethrows; nothing above this is listening, and the outcome has
+        // already been emitted, so this only keeps the rejection unhandled-safe.
+        markError(`imap idle batch failed folder=${state.folder}`, err);
+      });
+    };
+
     const onExists = (data: { count: number; prevCount: number }): void => {
       // New messages arrived. UIDs numbered prevCount+1..count.
-      for (let seq = data.prevCount + 1; seq <= data.count; seq++) {
-        void fetchAndEmit(state, seq, 'created', cb);
-      }
+      pollBatch(async () => {
+        for (let seq = data.prevCount + 1; seq <= data.count; seq++) {
+          await fetchAndEmit(state, seq, 'created', cb);
+        }
+      });
     };
     const onExpunge = (data: { uid?: number; seq: number }): void => {
       const uid = data.uid ?? data.seq;
-      void fetchAndEmit(state, uid, 'deleted', cb);
+      pollBatch(() => fetchAndEmit(state, uid, 'deleted', cb));
     };
     const onFlags = (data: { uid?: number; seq: number }): void => {
       const uid = data.uid ?? data.seq;
-      void fetchAndEmit(state, uid, 'updated', cb);
+      pollBatch(() => fetchAndEmit(state, uid, 'updated', cb));
     };
     const onClose = (): void => {
       if (stopped) return;
@@ -719,8 +810,15 @@ export const createImapProvider = (
       state.stopIdle = attachListeners(state, cb);
       state.attempts = 0;
       lastSuccessfulSyncAt = nowOf();
+      // This folder is back — reported as provider-wide success only if it was
+      // the last one down.
+      reportReconnect(state.folder, true);
     } catch (err) {
       markError(`imap reconnect failed folder=${state.folder}`, err);
+      // Reported per ATTEMPT, not once per outage: the backoff loop re-enters
+      // itself below, so a permanently-bad credential keeps re-asserting `auth`
+      // rather than reporting once and going quiet.
+      reportReconnect(state.folder, false, isImapAuthFailure(err) ? 'auth' : 'transient');
       if (!stopped) void reconnect(state, cb);
     } finally {
       state.reconnecting = false;
@@ -1033,6 +1131,49 @@ export const createImapProvider = (
     ?? opts.config().username
     ?? '';
 
+  /** The backfill body, lifted out of the public `initialScan` so the outcome
+   *  reporter can wrap the whole sweep as one attempt. Behaviour is unchanged:
+   *  per-folder failures are still swallowed so one bad mailbox cannot abort the
+   *  rest — they are merely NOTED now, so the sweep reports honestly. */
+  const scanAllFolders = async (scanOpts: InitialScanOptions): Promise<void> => {
+    const since = new Date(Date.now() - scanOpts.backfill_days * 86400_000);
+    for (const state of folders.values()) {
+      if (!state.client) continue;
+      pendingQueueSize++;
+      try {
+        const uids = await state.client.search({ since }, { uid: true });
+        if (uids === false || !Array.isArray(uids) || uids.length === 0) {
+          continue;
+        }
+        const iter = state.client.fetch(
+          uids,
+          { uid: true, flags: true, envelope: true, internalDate: true, source: true },
+          { uid: true },
+        );
+        for await (const msg of iter) {
+          if (!msg.source) continue;
+          const canonical = await canonicalizeImap(msg.source, {
+            uid: msg.uid,
+            folder: state.folder,
+            flags: msg.flags,
+            internalDate: msg.internalDate,
+          });
+          const cont = await scanOpts.onMessage(canonical);
+          lastSuccessfulSyncAt = nowOf();
+          if (!cont) return;
+        }
+      } catch (err) {
+        // Swallowed per folder so one bad mailbox can't abort the others — but
+        // NOTED, so the attempt as a whole still reports a failure instead of
+        // looking like a clean scan that simply found nothing.
+        outcomes.noteFailure(isImapAuthFailure(err) ? 'auth' : 'transient');
+        markError(`imap initialScan failed folder=${state.folder}`, err);
+      } finally {
+        pendingQueueSize = Math.max(0, pendingQueueSize - 1);
+      }
+    }
+  };
+
   const provider: MailProvider = {
     kind: 'imap',
     slug: opts.slug,
@@ -1068,38 +1209,14 @@ export const createImapProvider = (
       if (!connected) {
         throw new Error('imap provider: initialScan called before connect');
       }
-      const since = new Date(Date.now() - scanOpts.backfill_days * 86400_000);
-      for (const state of folders.values()) {
-        if (!state.client) continue;
-        pendingQueueSize++;
-        try {
-          const uids = await state.client.search({ since }, { uid: true });
-          if (uids === false || !Array.isArray(uids) || uids.length === 0) {
-            continue;
-          }
-          const iter = state.client.fetch(
-            uids,
-            { uid: true, flags: true, envelope: true, internalDate: true, source: true },
-            { uid: true },
-          );
-          for await (const msg of iter) {
-            if (!msg.source) continue;
-            const canonical = await canonicalizeImap(msg.source, {
-              uid: msg.uid,
-              folder: state.folder,
-              flags: msg.flags,
-              internalDate: msg.internalDate,
-            });
-            const cont = await scanOpts.onMessage(canonical);
-            lastSuccessfulSyncAt = nowOf();
-            if (!cont) return;
-          }
-        } catch (err) {
-          markError(`imap initialScan failed folder=${state.folder}`, err);
-        } finally {
-          pendingQueueSize = Math.max(0, pendingQueueSize - 1);
-        }
-      }
+      // The guard above stays OUTSIDE the wrapper: calling initialScan before
+      // connect is a wiring bug in the caller, not a sync attempt, and reporting
+      // it as a failed scan would blame the mailbox for our own mistake.
+      return outcomes.run('initial_scan', () => scanAllFolders(scanOpts));
+    },
+
+    onSyncOutcome(listener: MailSyncOutcomeListener) {
+      return outcomes.subscribe(listener);
     },
 
     async startSync(cb: ProviderSyncCallback): Promise<() => Promise<void>> {

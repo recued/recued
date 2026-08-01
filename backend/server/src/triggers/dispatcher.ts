@@ -37,6 +37,7 @@ import { emitAutomationRule } from '../events/emit-sites.js';
 import type { EventTriggersStore } from './store.js';
 import type { BackfillStateLookup } from './backfill-state.js';
 import { createTriggerDispatchQueue } from './queue.js';
+import { presentAutomationFailure } from '../automation-failure.js';
 
 /** Callback the dispatcher invokes when a trigger matches. Wired to
  *  `serverExecutor.executeRecipe` by the composition root; tests
@@ -223,10 +224,15 @@ export const createEventTriggerDispatcher = (
         target: `${trigger.trigger_id}|${event.record_id}`,
       }).catch(() => { /* best-effort */ });
     } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
+      const failure = presentAutomationFailure(err);
+      if (failure.redacted) {
+        console.error(
+          `[event-triggers] trigger ${trigger.trigger_id} internal failure: ${failure.internalMessage}`,
+        );
+      }
       deps.store.update(trigger.trigger_id, {
         last_fired_at: now(),
-        last_error: msg,
+        last_error: failure.userMessage,
       });
       const errorCount = recordError(trigger.trigger_id);
       if (errorCount >= errorCap) {

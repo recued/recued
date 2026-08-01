@@ -123,6 +123,7 @@ import {
   isChatCatalogDeliveryMode,
   validateExtractionEvent,
   type ChatPickerTarget,
+  type ExecutionSource,
   type ExtractionEvent,
   type ScopeSearchResult,
 } from '@recued/contracts';
@@ -155,11 +156,17 @@ import {
   type RequestAugmentationDeps,
 } from './execution-case-retrieval.js';
 import {
+  type ExecutionCasePrecedentDeps,
+} from './execution-case-precedent.js';
+import {
   createExecutionCaseFinalizerSource,
 } from './chat-execution-case-finalizer.js';
 import type {
   ExecutionCaseLifecycle,
 } from './chat-execution-case-tools.js';
+import type {
+  ExecutionCaseOfferLifecycle,
+} from './execution-case-offer-lifecycle.js';
 import type { ContactStore } from './storage/contact-store.js';
 import type { CorrectionEventsStore } from './storage/correction-events-store.js';
 
@@ -210,6 +217,14 @@ export interface ChatCatalogInputs {
 export type ChatCatalogBuilder = (
   picker_target: ChatPickerTarget,
   projection: ChatCatalogProjectionConfig,
+  /** D-225 § 9.8.1 — the TURN's execution source, so the catalog can be derived
+   *  from the caller's contract rather than assembled and filtered later.
+   *
+   *  ⛔ Optional because `TurnContext.source` is ("only for bare test
+   *  harnesses"), and an ABSENT one must DENY. `isOpGranted` returns true when
+   *  no contract governs, so a filter handed no source would admit everything
+   *  while looking identical to a working one. */
+  source?: ExecutionSource,
 ) => ReadonlyArray<ChatMainTurnTool>;
 
 /** D-160 A.8 step 5 — the per-turn scope-search fan-out input the shell's
@@ -388,9 +403,22 @@ export interface ChatStreamMiddlewareDeps {
   /** D-214 S4 — optional, experiment-gated request augmentation. */
   readonly getExecutionCaseAugmentationDeps?:
     () => RequestAugmentationDeps | undefined;
+  /** D-219 — the ordinary-path shape-only precedent surface: the first reader
+   *  the corpus has that needs no pre-registration. Mutually exclusive with the
+   *  experiment surfaces by composition, not by a runtime check. */
+  readonly getExecutionCasePrecedentDeps?:
+    () => ExecutionCasePrecedentDeps | undefined;
   /** D-214 S0/S2 — closes pending reports and harvests strong signals. */
   readonly getExecutionCaseLifecycle?:
     () => ExecutionCaseLifecycle | undefined;
+  /** D-219 slice 9c — the owner-facing offer's lifecycle: raised after the turn
+   *  that earned it, retired at the owner's next request. Rides on the SAME
+   *  middleware as the finalizer rather than a second registration, because it
+   *  is the same concern (what happens at the turn boundary) and it must run
+   *  AFTER finalization — the offer is decided from the observation the
+   *  finalizer just recorded. Absent → both halves are a faithful no-op. */
+  readonly getExecutionCaseOfferLifecycle?:
+    () => ExecutionCaseOfferLifecycle | undefined;
   /** Engine clock — the recency window for `correction-learning`. */
   readonly now: () => number;
 }
@@ -541,7 +569,7 @@ const createCatalogSource = (build: ChatCatalogBuilder): Middleware => ({
     if (inputs === undefined) return; // shell seeded no picker → no-op
     ctx.state.set(
       CHAT_CATALOG_RESULT_STATE_KEY,
-      build(inputs.picker_target, inputs.projection),
+      build(inputs.picker_target, inputs.projection, ctx.source),
     );
   },
 });
@@ -638,6 +666,16 @@ export const createChatStreamMiddlewares = (
       ),
     );
   }
+  // ⛔⛔ D-219's ordinary-path precedent card is GONE from this surface, and the
+  // registration is deleted rather than left gated on deps nobody supplies. A
+  // dormant `if` reads as a live seam: it typechecks, it survives review, and it
+  // re-enables a measured regression the moment someone wires the deps back.
+  // The card multiplied invented arguments at ~5.5x odds across two
+  // pre-registered rounds (p = 0.016, then p = 0.00006) because it hands a model
+  // SHAPE WITHOUT VALUES, and a model given a route runs it in one batch and
+  // invents the joins. See `wire-execution-cases.ts` for the full evidence and
+  // for what deliberately survives (the offer, the Learning panel, the draft —
+  // every one of them owner-reviewed).
   // The first-party source adapters — only when the registry is wired.
   // Registration order = the framework's per-hook iteration order, mirroring
   // `@recued/middleware-recued`'s `FIRST_PARTY_MIDDLEWARES`, then the D-164
@@ -661,7 +699,10 @@ export const createChatStreamMiddlewares = (
   }
   if (deps.getExecutionCaseLifecycle) {
     middlewares.push(
-      createExecutionCaseFinalizerSource(deps.getExecutionCaseLifecycle),
+      createExecutionCaseFinalizerSource(
+        deps.getExecutionCaseLifecycle,
+        deps.getExecutionCaseOfferLifecycle,
+      ),
     );
   }
   // pii-restore — LAST (ratchet-pinned), always-on.

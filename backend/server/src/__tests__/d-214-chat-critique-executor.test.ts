@@ -8,7 +8,6 @@ import type {
 
 import {
   composeChatMainTurnPromptParts,
-  EXECUTION_CASE_COMPLETION_NUDGE,
   runChatTurn,
 } from '../chat-turn-executor.js';
 import {
@@ -45,7 +44,12 @@ const input = {
   }],
   content: {
     chat_tail: [],
-    user_message: 'send the report',
+    // ⚠ Names the recipient the proposals below use. The tool loop refuses a
+    // dispatch whose identifier no completed step returned, and this fixture's
+    // `alice@example.com` was sourced by nothing — which is the fabrication
+    // class, not a quirk. These tests are about the CRITIQUE flow, so the
+    // fixture is grounded and their subject is unchanged.
+    user_message: 'send the report to alice@example.com',
   },
   correction_context: [] as string[],
   model_layer: 'byok' as const,
@@ -150,7 +154,7 @@ describe('D-214 proposal critique in the real cooperative executor', () => {
     expect(dispatchTool).toHaveBeenCalledTimes(1);
   });
 
-  it('puts the completion nudge on the model-facing plan result without changing the plan id detail', async () => {
+  it('⛔ D-219 9b-ii: the approval-pending result carries NO self-report errand', async () => {
     const prompts: Record<string, unknown>[] = [];
     let round = 0;
     await runChatTurn(input, {
@@ -176,8 +180,17 @@ describe('D-214 proposal critique in the real cooperative executor', () => {
     const prior = (prompts[1]!.prior_tool_calls as Array<{
       detail: string;
     }>)[0]!;
-    expect(prior.detail).toContain('plan_id=p1');
-    expect(prior.detail).toContain(EXECUTION_CASE_COMPLETION_NUDGE);
+    // WAS: "puts the completion nudge on the model-facing plan result". The
+    // nudge told the model to call `outcome.report` once the approved work
+    // finished — the one moment it was asked to self-report. Slice 9b removed
+    // the last counter that read what it said, and slice 9a removed the reason
+    // to want it (every governed turn is recorded without asking). The
+    // instruction is deleted, and the plan-id detail it rode on is untouched.
+    expect(prior.detail).toBe('plan_id=p1');
+    expect(prior.detail).not.toContain('outcome.report');
+    // ⚠ No trailing separator either: an empty-string tombstone would have left
+    // `plan_id=p1\n` here and read as "still appending something".
+    expect(prior.detail.endsWith('\n')).toBe(false);
   });
 });
 

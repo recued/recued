@@ -9,7 +9,7 @@
  *  preserves stored args (omits `args`), and a pack only shows the daemon ops
  *  its manifest ships.
  *
- *  Uses the same hand-rolled fake DOM as `d-182-local-tools-panel.test.ts`. */
+ *  Uses the same hand-rolled fake DOM as `d-182-cli-grant-dialog.test.ts`. */
 
 import { describe, expect, it, vi } from 'vitest';
 
@@ -35,7 +35,7 @@ import type {
   SupervisionSetRequest,
 } from '@recued/contracts';
 
-// ── fake DOM (trimmed copy of the local-tools-panel test harness) ────
+// ── fake DOM (trimmed copy of the cli-grant-dialog test harness) ────
 interface FakeEl {
   tagName: string;
   className: string;

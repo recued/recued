@@ -494,11 +494,33 @@ export const createExecutionCaseLifecycle = (
         );
         return;
       }
-      // Weak negatives need a durable source envelope too: without one,
-      // independent cancelled/superseded/expired roots can never accumulate to
-      // the recurrence floor. This still does not admit them early; the pure
-      // compiler retains the three-root gate.
-      if (existing.length > 0 || !span.has_compilable_signal) return;
+      // ⛔ D-219 slice 9a — RECORD EVERY TURN THAT DID GOVERNED WORK.
+      //
+      // This gate used to read `!span.has_compilable_signal`: record only when
+      // evidence ALREADY EXISTS (an error, a denial, typed feedback, a
+      // verification, a cancelled plan, a supersession, an approval expiry) or
+      // the model happened to call `outcome.report`. After slices 2–4 that is
+      // CIRCULAR. The only evidence D-219 admits is owner-attested or verified,
+      // the owner is asked about a recorded OBSERVATION, and an ordinary
+      // successful turn carries neither — so no observation formed, nothing was
+      // offered, no answer could be given, and the 6b-ii offer was unreachable on
+      // exactly the turns it exists for.
+      //
+      // ⚠ THE OLD RULE'S ARGUMENT SURVIVES ITS GATE. It was: "weak negatives need
+      // a durable source envelope too, or independent cancelled / superseded /
+      // expired roots can never accumulate to the recurrence floor." Still true,
+      // and still satisfied — those turns are a SUBSET of the turns recorded now.
+      // The gate is weakened, never inverted, and the pure compiler still holds
+      // the three-root floor.
+      //
+      // ⛔ WHAT REMAINS IS STRUCTURAL, NOT A HEURISTIC. `has_substantive_flow` is
+      // "this span holds at least one governed activity or plan". A span with
+      // neither yields ZERO observations BY CONSTRUCTION — `compileReport`
+      // derives observations only from cancelled plans and from activity groups —
+      // so the report row would be dead weight, not a lost case. It is also not
+      // the forbidden kind of filter: §4.2 rules out deriving a span from
+      // TIMESTAMP PROXIMITY, and this reads the span's own durable contents.
+      if (existing.length > 0 || !span.has_substantive_flow) return;
       const root = deps.anchorStore.getRoot(rootRequestId);
       const rootRequest = await deps.anchorStore.readRootRequest(rootRequestId);
       if (!root || rootRequest === undefined) return;
@@ -540,13 +562,42 @@ export const createExecutionCaseLifecycle = (
   };
 };
 
+/** D-219 — CAPTURE-ONLY hand-off for a governed dispatch's arguments.
+ *
+ *  ⛔ Fire-and-forget by contract: the wrapper never awaits it and never lets it
+ *  fail a dispatch. Nothing reads what it stores; see
+ *  `storage/execution-case-argument-store.ts` for why it is written at all. */
+export type CaptureDispatchArguments = (input: {
+  tool_name: string;
+  args: unknown;
+  session_id: string;
+  turn_id: string;
+}) => void;
+
 export const wrapRegistryWithExecutionCaseTools = (
   inner: InternalToolRegistry,
   lifecycle: ExecutionCaseLifecycle,
+  captureArguments?: CaptureDispatchArguments,
 ): InternalToolRegistry => {
+  // ⛔ D-219 slice 9b-ii — `outcome.report` IS NO LONGER PRESENTED.
+  //
+  // The entry is gone from the catalog and its nudge is gone from the
+  // approval-pending tool result, so nothing tells the model to call it. What it
+  // reported is read by NOTHING: slice 9b removed the last counter over
+  // `model_claim`, `HistoricalExecutionOutcome` excludes it by construction,
+  // `outcomeStrengthForObservations` filters it out of `evidence_families`, the
+  // superseded-case digest omits it, and `open_items` was never on the card.
+  // Slice 9a removed the other reason to call it — recording no longer waits for
+  // a model report, because every turn that did governed work is recorded.
+  //
+  // ⚠ THE DISPATCH ROUTE BELOW STAYS, deliberately. A prompt prefix cached
+  // before this change still names the tool (D-164 keeps the catalog in the
+  // cacheable prefix), and a model calling it should get the old no-op success
+  // rather than an unknown-tool error mid-turn. It records a report exactly as
+  // before; `finalizeTurn` still closes a pending one, which is what keeps
+  // reports written before this upgrade from being stranded.
   const entries = [
     REQUEST_DISSECTION_TOOL_ENTRY,
-    OUTCOME_REPORT_TOOL_ENTRY,
   ];
   const list = (): ToolEntry[] => entries.reduce(
     (current, entry) => insertToolEntryAfterTier1(current, entry),
@@ -558,12 +609,39 @@ export const wrapRegistryWithExecutionCaseTools = (
       tier === 1 ? [...inner.listByTier(1), ...entries] : inner.listByTier(tier),
     getByName: (name) =>
       entries.find((entry) => entry.name === name) ?? inner.getByName(name),
-    dispatch: (name, args, context) =>
-      name === OUTCOME_REPORT_TOOL_NAME
-        ? lifecycle.dispatchOutcome(args, context)
-        : name === REQUEST_DISSECTION_TOOL_NAME
-          ? lifecycle.dispatchDissection(args, context)
-          : inner.dispatch(name, args, context),
+    dispatch: (name, args, context) => {
+      if (name === OUTCOME_REPORT_TOOL_NAME) {
+        return lifecycle.dispatchOutcome(args, context);
+      }
+      if (name === REQUEST_DISSECTION_TOOL_NAME) {
+        return lifecycle.dispatchDissection(args, context);
+      }
+      // D-219 — capture-only, and deliberately AFTER the two instrumentation
+      // branches: their arguments are the model's own metadata, not the work,
+      // and `D214_INTERNAL_TOOL_NAMES` already keeps them out of every flow.
+      //
+      // ⚠ Chat-only by construction: a dispatch without a session/turn is a
+      // messenger / scheduled / MCP-wire call, which forms no case, so a capture
+      // for it would be PII with no possible consumer.
+      if (context.session_id && context.turn_id) {
+        try {
+          captureArguments?.({
+            tool_name: name,
+            args,
+            session_id: context.session_id,
+            turn_id: context.turn_id,
+          });
+        } catch {
+          // ⛔ THE CONTRACT IS ENFORCED HERE, not asserted in a comment. The
+          // hook is documented as unable to fail a dispatch, and production's
+          // hook is a `void store.capture(...).catch(...)` that cannot — but a
+          // SYNCHRONOUS throw from any future hook would otherwise propagate
+          // straight to the caller and cost the user their tool call. A missed
+          // capture costs a future lesson; that is the whole trade.
+        }
+      }
+      return inner.dispatch(name, args, context);
+    },
     subscribeRefresh: (callback) => inner.subscribeRefresh(callback),
   };
 };

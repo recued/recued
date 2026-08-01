@@ -96,7 +96,10 @@ import type {
 } from '../settings/archive-backup-panel.js';
 import { createArchiveRebindStash } from '../settings/archive-rebind-stash.js';
 import { createArchiveUpload } from '../settings/archive-upload.js';
-import type { WebclientLocalStore } from '../storage/local-store.js';
+import type {
+  WebclientLocalStore,
+  WebclientProfileStore,
+} from '../storage/local-store.js';
 import type {
   WebclientTokenAad,
   WebclientTokenStore,
@@ -707,6 +710,10 @@ export const createRestoreOnboarding = (
 
 export interface BrowserRestoreOpsEnv {
   localStore: WebclientLocalStore;
+  /** Roster selector paired with `localStore`. The boot restore path forwards
+   *  it into pair finalization so a restored server becomes an explicit
+   *  profile selection rather than relying on a `server_url` write hook. */
+  profileStore?: Pick<WebclientProfileStore, 'ensureProfile'>;
   tokenStore: WebclientTokenStore;
   /** The paired instance id sent to `/auth/pair` (so the bearer carries
    *  `metadata.instance_id` — required by the WS socket gate) + persisted into
@@ -751,6 +758,9 @@ export const createBrowserRestoreOps = (
       serverUrl: args.serverUrl,
       bearer: args.token,
       localStore: env.localStore,
+      ...(env.profileStore !== undefined
+        ? { profileStore: env.profileStore }
+        : {}),
       tokenStore: env.tokenStore,
       invokePassportFetch,
       instanceId: env.instanceId,

@@ -70,6 +70,7 @@ import {
   type PiiAliasableData,
   type PiiFieldTag,
   type RedactionSummary,
+  PII_ALIAS_NOTICE,
 } from '@recued/contracts';
 
 import type {
@@ -563,10 +564,36 @@ const stripEntityMarkers = (root: unknown): boolean => {
  *  — reaches the model. An inactive plan (external-egress surface) or empty
  *  payload returns the input unchanged, so the caller renders the raw payload
  *  (behaviour-preserving). */
+/** D-224 — attach {@link PII_ALIAS_NOTICE} when this packet actually carries an
+ *  alias. Returns whether the packet changed, so the caller re-serializes.
+ *
+ *  ⚠ A separate top-level field, NOT prose folded into an existing block: the
+ *  aliases it explains appear in `prefetch_context`, in tool results and in the
+ *  user's own message, so it belongs to none of them. A named field is also what
+ *  lets an egress-history replay show the owner exactly what the model was told.
+ */
+const injectPiiAliasNotice = (
+  packet: unknown,
+  plan: PiiEgressPlan,
+): boolean => {
+  if (!plan.active || plan.ledger.byKindRealValue.size === 0) return false;
+  if (packet === null || typeof packet !== 'object' || Array.isArray(packet)) {
+    return false;
+  }
+  const target = packet as Record<string, unknown>;
+  if (target['pii_notice'] === PII_ALIAS_NOTICE) return false;  // idempotent
+  target['pii_notice'] = PII_ALIAS_NOTICE;
+  return true;
+};
+
 export const aliasEntityPayloadForEgress = (
   payload: readonly Record<string, unknown>[],
   entity: string,
   plan: PiiEgressPlan,
+  /** D-224 — raw USER-authored strings this turn, for overlap-reveal. Optional
+   *  with an empty default so every existing caller stays byte-identical: with
+   *  no disclosures there is no overlap and the decoration is a no-op. */
+  disclosedTexts: readonly string[] = [],
 ): readonly Record<string, unknown>[] => {
   if (!plan.active || payload.length === 0) return payload;
   const marked = payload.map((record) => ({
@@ -580,9 +607,27 @@ export const aliasEntityPayloadForEgress = (
     mode: 'alias',
   });
   plan.summary.value = mergeRedactionSummary(plan.summary.value, summary);
-  return Array.isArray(aliased)
-    ? (aliased as readonly Record<string, unknown>[])
-    : payload;
+  if (!Array.isArray(aliased)) return payload;
+  // ⛔⛔ THE PREFETCH BLOCK IS NOT OVERLAP-DECORATED. D-224 wired it and that was
+  // WRONG, for a reason its own justification hid: overlap-reveal argues it
+  // "leaks nothing new — the user typed it", and that holds only while the
+  // user's text is still RAW in the packet. On this path it is NOT — the content
+  // pass aliases `user_message` too, so "Sarah Chen" is already `pii.Person1`
+  // by the time this renders, and a `pii.Person1.sarah.chen` tail was the ONLY
+  // place the name appeared. Verified in a live packet: raw name absent, tail
+  // present, and the model read the name off the tail and printed it.
+  //
+  // ⚠ The join the tail was meant to restore does NOT need it here: the
+  // `user_message` and this block both carry the SAME `pii.Person1` token, so
+  // the coreference is already intact. The recall path keeps decoration — there
+  // the recalled value is aliased against text the user really did send raw,
+  // which is the case D-167 was written for.
+  //
+  // `disclosedTexts` stays on the signature: the recall path needs it, and a
+  // future caller that CAN honour the raw-text premise should not have to
+  // re-thread it.
+  void disclosedTexts;
+  return aliased as readonly Record<string, unknown>[];
 };
 
 /** D-167 N.10.2 — gather the SPECULATIVE prompt-cache prefetch's `entity` parts
@@ -604,12 +649,17 @@ export const aliasEntityPayloadForEgress = (
 export const renderEntityPartsForEgress = (
   parts: readonly EntityPromptPart[],
   plan: PiiEgressPlan | undefined,
+  /** D-224 — threaded to overlap-reveal the prefetch block. MUST be the RAW
+   *  owner-authored text, captured before any alias pass rewrites the packet. */
+  disclosedTexts: readonly string[] = [],
 ): readonly string[] => {
   if (plan?.active !== true || plan.resolver === piiEgress.noopFieldPrivacyResolver) {
     return [];
   }
   return parts
-    .map((part) => part.render(aliasEntityPayloadForEgress(part.payload, part.entity, plan)))
+    .map((part) => part.render(
+      aliasEntityPayloadForEgress(part.payload, part.entity, plan, disclosedTexts),
+    ))
     .filter((block) => block.length > 0);
 };
 
@@ -1087,6 +1137,21 @@ const uniformContentScanDataFields = (
   )) {
     changed = true;
   }
+  // ⛔ D-219's ordinary-path precedent block rides the SAME boundary, and it is
+  // named here because this scan is an ENUMERATION: a new model-bound field is
+  // silently absent from it and reaches the provider unaliased, with nothing
+  // failing. Its `request` facets are normalized derivatives of the owner's own
+  // prompt — the same class of value as the D-214 card's request shape — so it
+  // gets the same treatment rather than an argument about whether facets can
+  // carry a name.
+  if (aliasExecutionCaseDerivedFieldInPlace(
+    record,
+    'execution_precedent',
+    plan,
+    normalizedAliases,
+  )) {
+    changed = true;
+  }
   return changed;
 };
 
@@ -1279,7 +1344,9 @@ const aliasChatAiInput = async (
   // plan (wrapper returns `real`, never reaching here) can't ship them raw.
   let prefetchInjected = false;
   if (protectedEntityParts && protectedEntityParts.length > 0) {
-    const blocks = renderEntityPartsForEgress(protectedEntityParts, plan);
+    const blocks = renderEntityPartsForEgress(
+      protectedEntityParts, plan, rawDisclosedTexts,
+    );
     if (blocks.length > 0) {
       (packet as Record<string, unknown>).prefetch_context = blocks;
       prefetchInjected = true;
@@ -1428,6 +1495,15 @@ const aliasChatAiInput = async (
     // self-gate to no-ops → `scanned` false).
     const scanned = applyDataScans(packet);
     const removed = stripEntityMarkers(packet);
+    // D-224 — tell the model what an alias IS, on turns that carry one.
+    //
+    // ⛔ GATED ON `byKindRealValue`, the same predicate the content scan uses:
+    // it means a REAL value was aliased, so the model will actually meet a token.
+    // A pre-scan RESERVATION lives in `byKindBaseAlias` only and produces no
+    // model-visible alias, so gating on that would emit the notice into packets
+    // with nothing to explain — and, being turn-varying, cost the D-164 cacheable
+    // prefix for nothing.
+    const noticeAdded = injectPiiAliasNotice(packet, plan);
     // `preScanEscaped` ⇒ a user-typed `pii.*` literal was rewritten in `packet`,
     // so it must be re-serialized even on the no-tagged-field path (a reserve
     // leaves the text identical and stays on the `input` fast path).
@@ -1437,6 +1513,7 @@ const aliasChatAiInput = async (
     return withSystem(
       removed
         || scanned
+        || noticeAdded
         || preScanEscaped
         || prefetchInjected
         || directlyProtected
@@ -1465,6 +1542,12 @@ const aliasChatAiInput = async (
   // clone we own, so the in-place strip is safe; the path always re-serializes
   // regardless, so a no-marker packet stays byte-identical to before.
   stripEntityMarkers(aliased);
+  // ⛔ THE SECOND RETURN PATH NEEDS IT TOO. The notice was first added only to
+  // the no-tagged-field branch above, and a packet WITH tagged fields — the
+  // common case, and the one that aliases most — silently never got it. A
+  // control placed inside one branch is exempt from every sibling; this path
+  // re-serializes unconditionally, so the return value is discarded.
+  injectPiiAliasNotice(aliased, plan);
   return withSystem({ ...input, 'llm.prompt': JSON.stringify(aliased) });
 };
 

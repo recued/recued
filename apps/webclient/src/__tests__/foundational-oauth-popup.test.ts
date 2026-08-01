@@ -156,6 +156,26 @@ describe('runOAuthPopup', () => {
     await expect(promise).resolves.toEqual({ ok: false, reason: 'closed' });
   });
 
+  it('cancels explicitly, closes the popup, and detaches the relay listener', async () => {
+    const { env, hasListener } = makeEnv();
+    const popup = makePopup();
+    const abort = new AbortController();
+    const promise = runOAuthPopup(env, {
+      popup,
+      expectedSenderOrigin: ORIGIN,
+      buildAuthorizeUrl: () => 'u',
+      signal: abort.signal,
+    });
+    await tick();
+    expect(hasListener()).toBe(true);
+
+    abort.abort();
+
+    await expect(promise).resolves.toEqual({ ok: false, reason: 'cancelled' });
+    expect(popup.close).toHaveBeenCalledTimes(1);
+    expect(hasListener()).toBe(false);
+  });
+
   it('returns error (and closes the popup) when the URL build throws', async () => {
     const { env } = makeEnv();
     const popup = makePopup();

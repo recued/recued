@@ -110,4 +110,47 @@ describe('parseManifest', () => {
     m.channels.stable.artifacts.webclient = { url: 'https://x/wc', sha256: 'ww' }; // no sig
     expect(() => parseManifest(JSON.stringify(m))).toThrow(/webclient.*sig|"sig"/);
   });
+
+  // ── D-178 S1 rev 2 — the per-triple native `lib/` sidecar ────────────────
+  describe('lib-<triple> sidecar artifact', () => {
+    it('parses a sidecar keyed off the triple', () => {
+      const m = JSON.parse(valid());
+      m.channels.stable.artifacts['lib-linux-x64'] = { url: 'https://x/lib', sha256: 'll', sig: 'lsig' };
+      const parsed = parseManifest(JSON.stringify(m));
+      expect(parsed.channels.stable?.artifacts['lib-linux-x64']).toEqual({
+        url: 'https://x/lib', sha256: 'll', sig: 'lsig',
+      });
+    });
+
+    it('⛔ REJECTS a sidecar missing its sig, rather than ignoring it as an unknown key', () => {
+      // The case that motivated validating `lib-*` instead of letting it fall
+      // through the forward-compat `continue`. Silently skipped, a sig-less
+      // sidecar reaches a consumer as an UNVERIFIABLE download — the one thing
+      // I-2 exists to prevent.
+      const m = JSON.parse(valid());
+      m.channels.stable.artifacts['lib-linux-x64'] = { url: 'https://x/lib', sha256: 'll' }; // no sig
+      expect(() => parseManifest(JSON.stringify(m))).toThrow(/lib-linux-x64.*sig|"sig"/);
+    });
+
+    it('still ignores a genuinely unknown artifact kind (forward-compat, I-9)', () => {
+      // Proves the case above bites because `lib-*` is RECOGNISED, not because
+      // validation got stricter across the board.
+      const m = JSON.parse(valid());
+      m.channels.stable.artifacts['flatpak-x64'] = { url: 'https://x/f' }; // no sha256, no sig
+      expect(() => parseManifest(JSON.stringify(m))).not.toThrow();
+    });
+
+    it('does not mistake a lib-shaped key for a real triple', () => {
+      // `lib-nonsense` is not `lib-<Platform>`, so it must fall through to the
+      // unknown-key path rather than be validated as a sidecar.
+      const m = JSON.parse(valid());
+      m.channels.stable.artifacts['lib-nonsense'] = { url: 'https://x/n' };
+      expect(() => parseManifest(JSON.stringify(m))).not.toThrow();
+    });
+
+    it('accepts a manifest with no sidecar (docker-only / pre-sidecar release)', () => {
+      const parsed = parseManifest(valid());
+      expect(parsed.channels.stable?.artifacts['lib-linux-x64']).toBeUndefined();
+    });
+  });
 });

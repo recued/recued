@@ -58,6 +58,7 @@ export interface ComposeRpcContextOptions {
     StorageContext,
     | 'db'
     | 'recipeStore'
+    | 'recordsStore'
     | 'approvalStore'
     | 'eventBus'
     | 'serverInstanceId'
@@ -267,6 +268,7 @@ export const composeRpcContext = (
   // D-145 PA10 follow-on — `packs.install` rpc.
   const packInstallBundle = composePackInstallRpcDeps({
     recipeStore: storage.recipeStore,
+    recordsStore: storage.recordsStore,
     webhookConsumerStore: app.webhookConsumerStoreRef,
     // D-139 P6.B — the body-content visibility grant store (created in
     // compose-storage-context over `storage.db`, shared with the foundation
@@ -297,6 +299,7 @@ export const composeRpcContext = (
   // transaction writes against.
   const packListBundle = composePackListRpcDeps({
     recipeStore: storage.recipeStore,
+    recordsStore: storage.recordsStore,
     // Packs-route delta 1 — same contract-store handle threaded into
     // `packs.install` / `packs.uninstall` (above/below) so the `installed`
     // join reads the `installed_pack` rows install writes (the canonical
@@ -309,6 +312,7 @@ export const composeRpcContext = (
   // deletes target the same per-pair rows the install transaction wrote.
   const packUninstallBundle = composePackUninstallRpcDeps({
     recipeStore: storage.recipeStore,
+    recordsStore: storage.recordsStore,
     webhookConsumerStore: app.webhookConsumerStoreRef,
     // D-139 P6.B — same body-visibility store as install above so an
     // uninstall revokes the pack's body grants.

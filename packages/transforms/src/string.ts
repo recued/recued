@@ -5,6 +5,11 @@ const str = (v: unknown): string => (v == null ? '' : String(v));
 export const lowercase: TransformFn = (p) => str(p.input).toLowerCase();
 export const uppercase: TransformFn = (p) => str(p.input).toUpperCase();
 export const trim: TransformFn = (p) => str(p.input).trim();
+/** UTF-16 code-unit length, matching JavaScript string limits and the prior
+ * split("") + count recipe idiom without materializing one array entry per
+ * character. Non-strings fail closed instead of being coerced. */
+export const string_length: TransformFn = (p) =>
+  typeof p.input === 'string' ? p.input.length : null;
 
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 
