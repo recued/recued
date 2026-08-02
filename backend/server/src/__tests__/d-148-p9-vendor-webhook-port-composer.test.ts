@@ -33,10 +33,12 @@ const buildRow = (overrides: {
   name: string;
   config: Record<string, unknown>;
   kind?: ConnectionKind;
+  subtype?: string;
 }): ConnectionRow => ({
   pk: `${overrides.kind ?? 'notification'}:${overrides.name}`,
   kind: overrides.kind ?? 'notification',
   name: overrides.name,
+  ...(overrides.subtype !== undefined ? { subtype: overrides.subtype } : {}),
   display_name: overrides.name,
   config_json: JSON.stringify(overrides.config),
   auth_ciphertext: '',
@@ -111,6 +113,7 @@ describe('composeVendorWebhookPort — gates', () => {
 describe('composeVendorWebhookPort — D-188 master pause', () => {
   const slackRow = buildRow({
     name: 'slack-prod',
+    subtype: 'slack',
     config: { signing_secret: SLACK_SECRET, channel_id: 'C123' },
   });
 
@@ -154,6 +157,7 @@ describe('composeVendorWebhookPort — D-188 master pause', () => {
 describe('composeVendorWebhookPort — Slack routing', () => {
   const slackRow = buildRow({
     name: 'slack-prod',
+    subtype: 'slack',
     config: { signing_secret: SLACK_SECRET, channel_id: 'C123' },
   });
 
@@ -242,6 +246,7 @@ describe('composeVendorWebhookPort — Slack routing', () => {
   it('returns 404 when Slack row config_json is missing signing_secret', async () => {
     const malformedRow = buildRow({
       name: 'slack-prod',
+      subtype: 'slack',
       config: { channel_id: 'C123' }, // signing_secret missing
     });
     const handler = composeVendorWebhookPort({
@@ -265,6 +270,71 @@ describe('composeVendorWebhookPort — Slack routing', () => {
     );
 
     expect(res.statusCode).toBe(404);
+  });
+
+  it('does not let a same-named row of another subtype authorize the Slack route', async () => {
+    const wrongVendorRow = buildRow({
+      name: 'shared-name',
+      subtype: 'telegram',
+      config: { signing_secret: SLACK_SECRET, ingress_mode: 'webhook' },
+    });
+    const dispatch = vi.fn(async () => undefined);
+    const handler = composeVendorWebhookPort({
+      webhookPort: 8443,
+      connectionStore: stubConnectionStore([wrongVendorRow]),
+      messengerDispatchers: { slack: dispatch },
+      now: () => NOW_MS,
+    })!;
+    const body = JSON.stringify({ type: 'event_callback', event_id: 'Ev-cross-vendor' });
+    const res = new FakeRes();
+    await handler(
+      buildReq({
+        url: '/webhooks/slack/shared-name',
+        headers: {
+          'x-slack-request-timestamp': String(NOW_SEC),
+          'x-slack-signature': signSlack(body, NOW_SEC, SLACK_SECRET),
+        },
+        body,
+      }),
+      res as unknown as ServerResponse,
+    );
+
+    expect(res.statusCode).toBe(404);
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it('fails closed when the connection explicitly selected local Socket Mode', async () => {
+    const localRow = buildRow({
+      name: 'slack-prod',
+      subtype: 'slack',
+      config: {
+        channel_id: 'C123',
+        signing_secret: SLACK_SECRET,
+        ingress_mode: 'socket',
+      },
+    });
+    const dispatch = vi.fn(async () => undefined);
+    const handler = composeVendorWebhookPort({
+      webhookPort: 8443,
+      connectionStore: stubConnectionStore([localRow]),
+      messengerDispatchers: { slack: dispatch },
+      now: () => NOW_MS,
+    })!;
+    const body = JSON.stringify({ type: 'event_callback', event_id: 'Ev-local' });
+    const res = new FakeRes();
+    await handler(
+      buildReq({
+        url: '/webhooks/slack/slack-prod',
+        headers: {
+          'x-slack-request-timestamp': String(NOW_SEC),
+          'x-slack-signature': signSlack(body, NOW_SEC, SLACK_SECRET),
+        },
+        body,
+      }),
+      res as unknown as ServerResponse,
+    );
+    expect(res.statusCode).toBe(404);
+    expect(dispatch).not.toHaveBeenCalled();
   });
 
   it('default dispatchSlackEvent stub log+drops (no override)', async () => {
@@ -304,6 +374,7 @@ describe('composeVendorWebhookPort — Slack routing', () => {
 describe('composeVendorWebhookPort — Telegram routing', () => {
   const tgRow = buildRow({
     name: 'tg-prod',
+    subtype: 'telegram',
     config: { webhook_secret: TG_SECRET, chat_id: '@my_channel' },
   });
 
@@ -365,6 +436,7 @@ describe('composeVendorWebhookPort — Telegram routing', () => {
   it('returns 404 when Telegram row config_json is missing webhook_secret', async () => {
     const malformedRow = buildRow({
       name: 'tg-prod',
+      subtype: 'telegram',
       config: { chat_id: '@my_channel' }, // webhook_secret missing
     });
     const handler = composeVendorWebhookPort({
@@ -443,6 +515,7 @@ describe('composeVendorWebhookPort — vendor-agnostic 404', () => {
   it('rejects a malformed config_json on Slack row with 404 (vendor-agnostic)', async () => {
     const row = buildRow({
       name: 'slack-prod',
+      subtype: 'slack',
       config: { signing_secret: SLACK_SECRET },
     });
     (row as { config_json: string }).config_json = '{ not valid json';

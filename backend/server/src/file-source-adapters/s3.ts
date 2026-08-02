@@ -193,6 +193,7 @@ export const buildS3FileSourceLeaf = (deps: FileSourceLeafDeps): FileSourceListF
       method: init.method,
       headers: init.headers,
       ...(init.body !== undefined ? { body: init.body as string | Uint8Array } : {}),
+      ...(init.signal !== undefined ? { signal: init.signal } : {}),
     });
 
   return async (request) => {

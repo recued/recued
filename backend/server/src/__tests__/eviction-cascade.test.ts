@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   createRuntimeConfigStore,
@@ -90,8 +90,8 @@ describe('EvictionCascade', () => {
     });
   });
 
-  afterEach(() => {
-    cascade.close();
+  afterEach(async () => {
+    await cascade.close();
     db.close();
   });
 
@@ -115,9 +115,6 @@ describe('EvictionCascade', () => {
       expires_at: now + 60_000, recipe_id: 'r', ingredient_slug: 's',
       size_bytes: 1000, created_at: now, last_accessed_at: now,
     });
-    // Push gate into pressure_managed.
-    registry.cache.setUsed(registry.cache.info().pressureAt + 1);
-
     const r = await cascade.reclaim('cache');
     expect(r.ran).toBe(true);
     expect(r.steps_run).toContain('cache_lru');
@@ -141,7 +138,6 @@ describe('EvictionCascade', () => {
   });
 
   it('debounces repeated calls within the cooldown window', async () => {
-    registry.cache.setUsed(registry.cache.info().pressureAt + 1);
     const first = await cascade.reclaim('cache');
     const second = await cascade.reclaim('cache');
     expect(first.ran).toBe(true);
@@ -154,6 +150,73 @@ describe('EvictionCascade', () => {
     await cascade.reclaim('cache');
     const forced = await cascade.reclaim('cache', { force: true });
     expect(forced.ran).toBe(true);
+  });
+
+  it('force: true still coalesces with an active pass on the same surface', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const evict = vi.spyOn(cache, 'evictLRU').mockImplementation(async () => {
+      await held;
+    });
+
+    const first = cascade.reclaim('cache', { force: true });
+    expect(evict).toHaveBeenCalledTimes(1);
+
+    const second = cascade.reclaim('cache', { force: true });
+    expect(evict).toHaveBeenCalledTimes(1);
+
+    release();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+    expect(firstResult.reason_if_skipped).toBeUndefined();
+    expect(secondResult.ran).toBe(false);
+    expect(secondResult.reason_if_skipped).toBe('coalesced');
+    expect(evict).toHaveBeenCalledTimes(1);
+  });
+
+  it('close() rejects new work and drains a reclaim already in flight', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const evict = vi.spyOn(cache, 'evictLRU').mockImplementation(async () => {
+      await held;
+    });
+
+    const reclaim = cascade.reclaim('cache', { force: true });
+    expect(evict).toHaveBeenCalledTimes(1);
+
+    let closeSettled = false;
+    const closing = cascade.close().then(() => { closeSettled = true; });
+    await Promise.resolve();
+    expect(closeSettled).toBe(false);
+
+    await expect(cascade.reclaim('cache', { force: true })).resolves.toMatchObject({
+      ran: false,
+      reason_if_skipped: 'closed',
+    });
+    expect(evict).toHaveBeenCalledTimes(1);
+
+    release();
+    await expect(Promise.all([reclaim, closing])).resolves.toBeDefined();
+    expect(closeSettled).toBe(true);
+  });
+
+  it('close() drains reclaim persistence and audit finalization too', async () => {
+    let releaseAudit!: () => void;
+    const auditHeld = new Promise<void>((resolve) => { releaseAudit = resolve; });
+    const logActivity = vi.spyOn(auditLog, 'logActivity').mockImplementation(async () => {
+      await auditHeld;
+    });
+
+    const reclaim = cascade.reclaim('cache', { force: true });
+    await vi.waitFor(() => { expect(logActivity).toHaveBeenCalledTimes(1); });
+
+    let closeSettled = false;
+    const closing = cascade.close().then(() => { closeSettled = true; });
+    await Promise.resolve();
+    expect(closeSettled).toBe(false);
+
+    releaseAudit();
+    await expect(Promise.all([reclaim, closing])).resolves.toBeDefined();
+    expect(closeSettled).toBe(true);
   });
 
   it('writes a pressure_eviction_run activity with reserve=true', async () => {
@@ -199,7 +262,7 @@ describe('EvictionCascade', () => {
   });
 
   it('close() removes listeners', async () => {
-    cascade.close();
+    await cascade.close();
     // After close, a state-change should NOT trigger a reclaim activity.
     const before = (await auditLog.listActivities()).length;
     registry.cache.setUsed(registry.cache.info().pressureAt + 1);

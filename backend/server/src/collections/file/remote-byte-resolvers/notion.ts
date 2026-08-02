@@ -27,6 +27,7 @@ import { RpcError } from '@recued/contracts';
 import type { RemoteFileByteResolver } from '../remote-file-byte-resolver.js';
 import type { FileFetch } from '../../../file-source-adapters/index.js';
 import { NOTION_API, NOTION_VERSION } from '../../../file-source-adapters/notion.js';
+import { fetchFileSourceApi } from '../../../file-source-adapters/http-json.js';
 import { bearerTokenOrThrow, fetchRemoteBytes } from './http-bytes.js';
 
 /** Block types that carry a file payload — mirrors the list leaf's
@@ -73,10 +74,14 @@ export const buildNotionRemoteByteResolver = (
   // id; Notion urls rotate hourly, so a stored url is never trusted).
   let body: unknown;
   try {
-    const res = await deps.fetchImpl(`${NOTION_API}/blocks/${encodeURIComponent(req.remote_id)}`, {
-      method: 'GET',
-      headers: { Authorization: `Bearer ${token}`, 'Notion-Version': NOTION_VERSION },
-    });
+    const res = await fetchFileSourceApi(
+      deps.fetchImpl,
+      `${NOTION_API}/blocks/${encodeURIComponent(req.remote_id)}`,
+      {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}`, 'Notion-Version': NOTION_VERSION },
+      },
+    );
     if (!res.ok) {
       const text = await res.text().catch(() => '');
       throw new RpcError(

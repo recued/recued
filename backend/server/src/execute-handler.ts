@@ -145,6 +145,7 @@ import {
   type CommitStore,
 } from '@recued/storage';
 import { stampExecuteResponseAuditRun } from './types.js';
+import type { McpActionStore } from './mcp-action-store.js';
 import type {
   ExecuteRequest,
   ExecuteResponse,
@@ -422,12 +423,13 @@ const buildRpcUserExecutionSource = (
  *  gate switching on — and since the gate did not run AT ALL before, adding a
  *  channel here is neutral-or-stricter by construction, never looser.
  *
- *  Still deferred: `chat` / `messenger` / `user` with `contracted_*` actors —
- *  their producer sites do not resolve `ContractSnapshot`s yet. As with the
- *  messenger slice, membership MUST land in the same change as the producer
- *  flip: a contract-bearing source outside this set skips the gate entirely
- *  (audited-but-ungated — the D-177 P2b failure shape), while one inside it
- *  with no snapshot THROWS at `evaluatePreflightAdmission`.
+ *  `chat` / `messenger` / `user` are deliberately absent from THIS set because
+ *  `POLICY_GATED_USER_CHANNELS` gates them. A source on any of those channels
+ *  that carries a contract id is still required to carry a matching snapshot:
+ *  `executionSourceHasContract` forwards it to `evaluatePreflightAdmission`,
+ *  which throws when it is absent. Keep producer identity and channel-set
+ *  membership aligned in the same change so a newly introduced channel cannot
+ *  become audited-but-ungated.
  *
  *  ⏭ `bridge` needs nothing: it has NO producer minting a `bridge`-channel
  *  `ExecutionSource`. `housekeeping` is handled by its own source-less branch
@@ -526,6 +528,10 @@ type CommitSubstrateFields = {
 
 export interface ExecuteHandlerDeps {
   recipeStore: RecipeStore;
+  /** Durable continuation state for MCP calls paused at an out-of-band
+   * approval gate. The execution engine never reads this store; the MCP wire
+   * creates the action and the host resumer settles it after re-instantiation. */
+  mcpActionStore?: McpActionStore;
   /** D-221 — namespaced Records storage and execution authority. Optional for
    * old/dbless harnesses; a Records catalog call fails closed when absent. */
   recordsStore?: RecordsStore;
@@ -2013,15 +2019,16 @@ export const handleExecute = async (
   //  - `POLICY_GATED_SYSTEM_CHANNELS` (schedule + reactive): no
   //    contract snapshot needed; coarse `allowed_kinds ×
   //    allowed_risk_tiers` cell admits.
-  //  - `POLICY_GATED_USER_CHANNELS` (chat + user): no contract
-  //    snapshot needed (`actor: 'user_self'` per spec line 408); the
-  //    same coarse cell admits. The (chat, user_self) cell tightens
-  //    further than (user, user_self) — `destructive` is hard-denied
-  //    on chat, allowed-with-approval on user.
-  //  - `POLICY_GATED_CONTRACT_CHANNELS` (mcp): the producer-resolved
-  //    `request.contract_snapshot` is authoritative via
-  //    `allowed_tools` per-tool allowlist (spec line 425: "the
-  //    contract IS the gate").
+  //  - `POLICY_GATED_USER_CHANNELS` (chat + user + messenger): the
+  //    coarse cell always applies. Unrestricted `user_self` needs no
+  //    snapshot; any source carrying a contract id must also supply the
+  //    producer-resolved snapshot, whose `allowed_tools` tightens the
+  //    decision. The (chat, user_self) cell further hard-denies
+  //    `destructive`, while user allows it only with approval.
+  //  - `POLICY_GATED_CONTRACT_CHANNELS` (mcp + reception + webhook):
+  //    ensures those door/contract-capable producers enter the gate.
+  //    Whenever the source carries a contract id, its snapshot is
+  //    authoritative via the per-tool allowlist ("the contract IS the gate").
   // Other channels still rely on per-channel handlers or are
   // unrestricted at the recipe-runner layer. When the gate denies any
   // ingredient step, the recipe never enters `executeRecipe`: we emit

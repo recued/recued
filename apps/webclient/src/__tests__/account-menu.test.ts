@@ -17,6 +17,13 @@ import {
   ACCOUNT_MENU_ATTR,
   ACCOUNT_MENU_BADGE_ATTR,
   ACCOUNT_MENU_CLOSE_ATTR,
+  ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR,
+  ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR,
+  ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR,
+  ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR,
+  ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR,
+  ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS_ATTR,
+  ACCOUNT_MENU_CONNECTION_DIAGNOSIS_TITLE_ATTR,
   ACCOUNT_MENU_POPOVER_ATTR,
   ACCOUNT_MENU_QUICK_ROW_ATTR,
   ACCOUNT_MENU_RECOVERY_ATTR,
@@ -24,6 +31,8 @@ import {
   ACCOUNT_MENU_SERVERS_ROW_ATTR,
   ACCOUNT_MENU_SERVERS_DETAIL_ATTR,
   ACCOUNT_MENU_SETTINGS_ATTR,
+  ACCOUNT_MENU_SERVER_SLOT_ATTR,
+  ACCOUNT_MENU_SERVER_SLOT_DIAGNOSIS_TARGET_ATTR,
   ACCOUNT_MENU_SERVER_UPDATE_ATTR,
   ACCOUNT_MENU_SERVER_UPDATE_DISMISS_ATTR,
   ACCOUNT_MENU_SERVER_UPDATE_DIAGNOSTIC_ATTR,
@@ -40,6 +49,7 @@ import {
   ACCOUNT_MENU_TRIGGER_ATTR,
   buildAccountServerUpdateDiagnostic,
   mountAccountMenu,
+  type AccountConnectionDiagnosis,
 } from '../shell/account-menu.js';
 import {
   SERVER_SWITCHER_ATTR,
@@ -52,6 +62,7 @@ import {
   SERVER_SWITCHER_REMOVE_LOCAL_ATTR,
   SERVER_SWITCHER_REMOVE_REVOKE_ATTR,
 } from '../shell/server-switcher.js';
+import { SERVER_CONTROL_POPOVER_ATTR } from '../shell/server-pill-host.js';
 
 interface FakeEvent {
   type: string;
@@ -79,6 +90,7 @@ interface FakeEl {
   click(): void;
   focus(): void;
   contains(node: FakeEl): boolean;
+  closest(selector: string): FakeEl | null;
 }
 
 const buildFakeDocument = () => {
@@ -121,6 +133,15 @@ const buildFakeDocument = () => {
       contains(node) {
         if (node === el) return true;
         return el.children.some((c) => c.contains(node));
+      },
+      closest(selector) {
+        const attr = /^\[([^\]]+)\]$/.exec(selector)?.[1] ?? null;
+        let current: FakeEl | null = el;
+        while (current !== null) {
+          if (attr !== null && current.hasAttribute(attr)) return current;
+          current = current.parent;
+        }
+        return null;
       },
     };
     return el;
@@ -358,6 +379,712 @@ describe('mountAccountMenu', () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
+  it('lands on one exact live connection diagnosis and returns deliberately', () => {
+    const onConnectionDiagnosisClosed = vi.fn();
+    const { dom, host, mount } = setup({
+      onConnectionDiagnosisClosed,
+    });
+    const diagnosis = {
+      id: 'recovery-verification:1700000000000:1',
+      profileId: 'p1',
+      profileLabel: 'Home server',
+      areaLabel: 'Contracts',
+      interruptionReason: 'connection' as const,
+    };
+
+    expect(mount.canOpenConnectionDiagnosis('p1')).toBe(true);
+    expect(mount.openConnectionDiagnosis(diagnosis)).toBe('opened');
+    const section = findByAttr(
+      host,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR,
+    )!;
+    const title = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_TITLE_ATTR,
+    )!;
+    const status = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS_ATTR,
+    )!;
+    expect(mount.isOpen()).toBe(true);
+    expect(section.hasAttribute('hidden')).toBe(false);
+    expect(section.getAttribute('data-interruption-reason')).toBe(
+      'connection',
+    );
+    expect(title.textContent).toBe('Check connection to home.example:8443');
+    expect(dom.activeElement()).toBe(title);
+    expect(title.getAttribute('aria-describedby')).toBe(
+      'recued-account-menu-connection-diagnosis-detail recued-account-menu-connection-diagnosis-status',
+    );
+    expect(subtreeText(section)).toContain(
+      'The latest check ended when the server connection changed.',
+    );
+    expect(subtreeText(section)).toContain(
+      'Opening Account does not retry verification or mark it resolved.',
+    );
+    expect(status.getAttribute('aria-live')).toBe('polite');
+    expect(status.textContent).toContain(
+      'home.example:8443 is connected now',
+    );
+    expect(status.textContent).toContain(
+      'Connection alone does not verify Contracts',
+    );
+
+    // Live connection renders update only the status copy; the stable
+    // diagnosis heading keeps keyboard and assistive-technology focus.
+    mount.setActiveConnected(false);
+    expect(status.textContent).toContain(
+      'home.example:8443 is reconnecting or still being checked',
+    );
+    expect(dom.activeElement()).toBe(title);
+    mount.setUnreachable(true);
+    expect(status.textContent).toContain(
+      'home.example:8443 is not reachable',
+    );
+    expect(dom.activeElement()).toBe(title);
+    mount.refresh(
+      [{ ...HOME, label: 'Renamed home' }, OFFICE],
+      'p1',
+      false,
+      true,
+    );
+    expect(title.textContent).toBe('Check connection to Renamed home');
+    expect(status.textContent).toContain('Renamed home is connected now');
+    expect(dom.activeElement()).toBe(title);
+
+    const returnButton = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR,
+    )!;
+    expect(returnButton.textContent).toBe('Report review outcome');
+    returnButton.click();
+    expect(mount.isOpen()).toBe(false);
+    expect(dom.activeElement()).toBe(
+      findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR),
+    );
+    expect(onConnectionDiagnosisClosed).toHaveBeenCalledWith(
+      diagnosis,
+      'return',
+    );
+
+    // The cue is one-shot. A normal Account reopen cannot replay it.
+    findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    expect(section.hasAttribute('hidden')).toBe(true);
+    expect(title.textContent).toBe('');
+  });
+
+  it('opens the exact active-server controls and returns to the outcome step', () => {
+    let returnFromControls = (): void => undefined;
+    const onConnectionDiagnosisClosed = vi.fn();
+    let publishControlReceipt: Parameters<NonNullable<
+      Parameters<typeof mountAccountMenu>[0][
+        'onReviewConnectionDiagnosisServerControls'
+      ]
+    >>[1]['onReceipt'] = () => undefined;
+    const diagnosis: AccountConnectionDiagnosis = {
+      id: 'recovery-verification:1700000000000:controls',
+      profileId: 'p1',
+      profileLabel: 'Home server',
+      areaLabel: 'Contracts',
+      interruptionReason: 'connection',
+    };
+    const onReviewConnectionDiagnosisServerControls = vi.fn(
+      (
+        received: AccountConnectionDiagnosis,
+        handoff: Parameters<NonNullable<
+          Parameters<typeof mountAccountMenu>[0][
+            'onReviewConnectionDiagnosisServerControls'
+          ]
+        >>[1],
+      ): 'opened' => {
+        expect(received).toEqual(diagnosis);
+        returnFromControls = handoff.onReturn;
+        publishControlReceipt = handoff.onReceipt;
+        return 'opened';
+      },
+    );
+    const { dom, host, mount } = setup({
+      onConnectionDiagnosisClosed,
+      onReviewConnectionDiagnosisServerControls,
+    });
+    mount.setConnectionDiagnosisControlAvailability('p1', true);
+    expect(mount.openConnectionDiagnosis(diagnosis)).toBe('opened');
+
+    const section = findByAttr(
+      host,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR,
+    )!;
+    const controls = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR,
+    )!;
+    const outcome = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR,
+    )!;
+    const receipt = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR,
+    )!;
+    const status = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS_ATTR,
+    )!;
+    const serverSlot = findByAttr(host, ACCOUNT_MENU_SERVER_SLOT_ATTR)!;
+    expect(controls.textContent).toBe('Review active server controls');
+    expect(controls.hasAttribute('disabled')).toBe(false);
+    expect(section.getAttribute('data-control-review')).toBe('ready');
+
+    controls.click();
+    expect(onReviewConnectionDiagnosisServerControls).toHaveBeenCalledOnce();
+    expect(section.getAttribute('data-control-review')).toBe('active');
+    expect(serverSlot.hasAttribute(
+      ACCOUNT_MENU_SERVER_SLOT_DIAGNOSIS_TARGET_ATTR,
+    )).toBe(true);
+    expect(controls.textContent).toBe('Viewing server controls');
+    expect(controls.hasAttribute('disabled')).toBe(true);
+    expect(status.textContent).toContain('controls are open');
+
+    publishControlReceipt({ action: 'pause', phase: 'pending' });
+    expect(receipt.hasAttribute('hidden')).toBe(false);
+    expect(receipt.getAttribute('data-action')).toBe('pause');
+    expect(receipt.getAttribute('data-phase')).toBe('pending');
+    expect(receipt.textContent).toContain('Pause requested');
+    expect(receipt.textContent).toContain('does not verify Contracts');
+    publishControlReceipt({
+      action: 'pause',
+      phase: 'confirmed',
+      currentState: 'paused',
+    });
+    expect(receipt.getAttribute('data-phase')).toBe('confirmed');
+    expect(receipt.textContent).toContain('Pause completed');
+    expect(receipt.textContent).toContain('execution is paused');
+
+    returnFromControls();
+    expect(section.getAttribute('data-control-review')).toBe('returned');
+    expect(serverSlot.hasAttribute(
+      ACCOUNT_MENU_SERVER_SLOT_DIAGNOSIS_TARGET_ATTR,
+    )).toBe(false);
+    expect(controls.textContent).toBe(
+      'Review active server controls again',
+    );
+    expect(status.textContent).toContain(
+      'home.example:8443 is connected now. Back from its controls',
+    );
+    expect(receipt.hasAttribute('hidden')).toBe(false);
+    expect(receipt.textContent).toContain('Pause completed');
+    expect(dom.activeElement()).toBe(outcome);
+
+    publishControlReceipt({
+      action: 'restart',
+      phase: 'accepted',
+      currentState: 'restarting',
+    });
+    expect(receipt.getAttribute('data-phase')).toBe('accepted');
+    expect(receipt.textContent).toContain('Restart accepted');
+    expect(receipt.textContent).toContain('fresh server status');
+    publishControlReceipt({
+      action: 'restart',
+      phase: 'reconnected',
+      currentState: 'running',
+    });
+    expect(receipt.getAttribute('data-phase')).toBe('reconnected');
+    expect(receipt.textContent).toContain('does not prove a fresh process');
+    expect(receipt.textContent).toContain('execution is running');
+    expect(receipt.textContent).toContain('does not verify Contracts');
+    publishControlReceipt({
+      action: 'restart',
+      phase: 'confirmed',
+      currentState: 'running',
+    });
+    expect(receipt.textContent).toContain('process uptime reset');
+    expect(receipt.textContent).toContain('execution is running');
+    publishControlReceipt({
+      action: 'restart',
+      phase: 'failed',
+      currentState: 'running',
+      detail: 'A restart is already in progress.',
+    });
+    expect(receipt.textContent).toContain(
+      'Restart was not started by this request',
+    );
+    expect(receipt.textContent).toContain('execution is running');
+    publishControlReceipt({
+      action: 'pause',
+      phase: 'failed',
+      currentState: 'running',
+      detail: `${'x'.repeat(319)}…`,
+    });
+    expect(receipt.textContent).toContain('… Latest known state');
+    expect(receipt.textContent).not.toContain('….');
+
+    controls.focus();
+    mount.setConnectionDiagnosisControlAvailability(null, false);
+    expect(controls.hasAttribute('disabled')).toBe(true);
+    expect(dom.activeElement()).toBe(outcome);
+    mount.setConnectionDiagnosisControlAvailability('p1', true);
+
+    // A connection loss while a repeated review is active returns to the same
+    // outcome step instead of leaving focus in a hidden server-control tree.
+    controls.click();
+    expect(section.getAttribute('data-control-review')).toBe('active');
+    mount.setConnectionDiagnosisControlAvailability(null, false);
+    expect(section.getAttribute('data-control-review')).toBe('returned');
+    expect(controls.hasAttribute('disabled')).toBe(true);
+    expect(dom.activeElement()).toBe(outcome);
+
+    // Only the closed-list outcome crosses the explicit return. RPC detail is
+    // Account-owned receipt copy and cannot leak into recovery continuity.
+    publishControlReceipt({
+      action: 'pause',
+      phase: 'superseded',
+      currentState: 'running',
+      detail: 'private transport detail',
+    });
+    outcome.click();
+    expect(onConnectionDiagnosisClosed).toHaveBeenCalledWith(
+      diagnosis,
+      'return',
+      {
+        action: 'pause',
+        phase: 'superseded',
+        currentState: 'running',
+      },
+    );
+    expect(onConnectionDiagnosisClosed.mock.calls[0]?.[2]).not.toHaveProperty(
+      'detail',
+    );
+  });
+
+  it('reopens an unresolved receipt on the exact live controls without replaying it', () => {
+    let returnFromControls = (): void => undefined;
+    const onConnectionDiagnosisClosed = vi.fn();
+    const onReviewConnectionDiagnosisServerControls = vi.fn(
+      (
+        _diagnosis: AccountConnectionDiagnosis,
+        handoff: Parameters<NonNullable<
+          Parameters<typeof mountAccountMenu>[0][
+            'onReviewConnectionDiagnosisServerControls'
+          ]
+        >>[1],
+      ): 'opened' => {
+        returnFromControls = handoff.onReturn;
+        return 'opened';
+      },
+    );
+    const { dom, host, mount } = setup({
+      onConnectionDiagnosisClosed,
+      onReviewConnectionDiagnosisServerControls,
+      onReadConnectionDiagnosisServerCurrentState: () => ({
+        state: 'running',
+      }),
+    });
+    mount.setConnectionDiagnosisControlAvailability('p1', true);
+    mount.setConnectionDiagnosisCurrentStateAvailability('p1', true);
+
+    const diagnosis: AccountConnectionDiagnosis = {
+      id: 'recovery-server-re-review:1700000000000:1',
+      profileId: 'p1',
+      profileLabel: 'Home server',
+      areaLabel: 'Contracts',
+    };
+    expect(mount.openConnectionDiagnosis(diagnosis, {
+      initialServerOutcome: {
+        action: 'restart',
+        phase: 'reconnected',
+        currentState: 'running',
+      },
+      reviewServerControls: true,
+    })).toBe('opened');
+
+    const section = findByAttr(
+      host,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR,
+    )!;
+    const receipt = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR,
+    )!;
+    const title = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_TITLE_ATTR,
+    )!;
+    const outcome = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR,
+    )!;
+    const reconcile = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR,
+    )!;
+
+    expect(title.textContent).toBe('Review home.example:8443 again');
+    expect(subtreeText(section)).toContain(
+      'The last server-control receipt did not settle the result.',
+    );
+    expect(subtreeText(section)).toContain('Nothing runs automatically');
+    expect(section.getAttribute('data-control-review')).toBe('active');
+    expect(onReviewConnectionDiagnosisServerControls).toHaveBeenCalledOnce();
+    expect(receipt.getAttribute('data-action')).toBe('restart');
+    expect(receipt.getAttribute('data-phase')).toBe('reconnected');
+    expect(receipt.textContent).toContain(
+      'does not prove a fresh process started',
+    );
+
+    // Inspecting the controls does not synthesize a fresh action receipt. The
+    // prior unresolved projection remains the exact return context.
+    returnFromControls();
+    expect(dom.activeElement()).toBe(reconcile);
+    outcome.click();
+    expect(onConnectionDiagnosisClosed).toHaveBeenCalledWith(
+      diagnosis,
+      'return',
+      {
+        action: 'restart',
+        phase: 'reconnected',
+        currentState: 'running',
+      },
+    );
+  });
+
+  it('closes an unresolved receipt against a separate stable current-state observation', () => {
+    const onConnectionDiagnosisClosed = vi.fn();
+    const onReadConnectionDiagnosisServerCurrentState = vi.fn(() => ({
+      state: 'paused' as const,
+    }));
+    const onReviewConnectionDiagnosisServerControls = vi.fn(
+      (): 'opened' => 'opened',
+    );
+    const { dom, host, mount } = setup({
+      onConnectionDiagnosisClosed,
+      onReadConnectionDiagnosisServerCurrentState,
+      onReviewConnectionDiagnosisServerControls,
+    });
+    mount.setConnectionDiagnosisControlAvailability('p1', true);
+    const diagnosis: AccountConnectionDiagnosis = {
+      id: 'recovery-server-re-review:1700000000000:reconcile',
+      profileId: 'p1',
+      profileLabel: 'Home server',
+      areaLabel: 'Contracts',
+    };
+
+    expect(mount.openConnectionDiagnosis(diagnosis, {
+      initialServerOutcome: {
+        action: 'pause',
+        phase: 'unconfirmed',
+        currentState: 'running',
+      },
+      reviewServerControls: true,
+    })).toBe('opened');
+    const section = findByAttr(
+      host,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR,
+    )!;
+    const reconcile = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR,
+    )!;
+    const status = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS_ATTR,
+    )!;
+    const receipt = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR,
+    )!;
+    const keepUnresolved = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR,
+    )!;
+    expect(reconcile.hasAttribute('hidden')).toBe(false);
+    expect(reconcile.hasAttribute('disabled')).toBe(true);
+    expect(reconcile.textContent).toBe('Waiting for current server state…');
+    expect(status.textContent).toContain('controls are open');
+
+    mount.setConnectionDiagnosisCurrentStateAvailability('p1', true);
+    expect(reconcile.hasAttribute('disabled')).toBe(false);
+    expect(reconcile.textContent).toBe('Use current server state');
+    expect(status.textContent).toContain(
+      'stable current state ready to reconcile with the last receipt',
+    );
+    expect(receipt.textContent).toMatch(/^Last receipt — /);
+    expect(keepUnresolved.getAttribute('aria-label')).toBe(
+      'Keep the historical server receipt from home.example:8443 unresolved in Attention for Contracts',
+    );
+    expect(subtreeText(section)).toContain(
+      'does not claim the earlier request succeeded',
+    );
+
+    reconcile.click();
+    expect(onReadConnectionDiagnosisServerCurrentState).toHaveBeenCalledWith(
+      diagnosis,
+    );
+    expect(mount.isOpen()).toBe(false);
+    expect(dom.activeElement()).toBe(
+      findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR),
+    );
+    expect(onConnectionDiagnosisClosed).toHaveBeenCalledWith(
+      diagnosis,
+      'return',
+      {
+        action: 'pause',
+        phase: 'unconfirmed',
+        currentState: 'running',
+      },
+      { state: 'paused' },
+    );
+  });
+
+  it('keeps the receipt unresolved when current state changes at click time', () => {
+    const onConnectionDiagnosisClosed = vi.fn();
+    const { dom, host, mount } = setup({
+      onConnectionDiagnosisClosed,
+      onReadConnectionDiagnosisServerCurrentState: () => null,
+      onReviewConnectionDiagnosisServerControls: () => 'opened',
+    });
+    mount.setConnectionDiagnosisControlAvailability('p1', true);
+    mount.setConnectionDiagnosisCurrentStateAvailability('p1', true);
+    expect(mount.openConnectionDiagnosis({
+      id: 'recovery-server-re-review:1700000000000:changed',
+      profileId: 'p1',
+      profileLabel: 'Home server',
+      areaLabel: 'Contracts',
+    }, {
+      initialServerOutcome: { action: 'restart', phase: 'reconnected' },
+      reviewServerControls: true,
+    })).toBe('opened');
+    const section = findByAttr(
+      host,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR,
+    )!;
+    const reconcile = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR,
+    )!;
+    const outcome = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR,
+    )!;
+
+    reconcile.click();
+    expect(mount.isOpen()).toBe(true);
+    expect(reconcile.hasAttribute('disabled')).toBe(true);
+    expect(subtreeText(section)).toContain(
+      'changed or is still settling',
+    );
+    expect(dom.activeElement()).toBe(outcome);
+    expect(onConnectionDiagnosisClosed).not.toHaveBeenCalled();
+  });
+
+  it('opens a queued receipt re-review once when fresh controls arrive later', () => {
+    const onReviewConnectionDiagnosisServerControls = vi.fn(
+      (): 'opened' => 'opened',
+    );
+    const { host, mount } = setup({
+      onReviewConnectionDiagnosisServerControls,
+    });
+    const diagnosis: AccountConnectionDiagnosis = {
+      id: 'recovery-server-re-review:1700000000000:deferred',
+      profileId: 'p1',
+      profileLabel: 'Home server',
+      areaLabel: 'Contracts',
+    };
+
+    expect(mount.openConnectionDiagnosis(diagnosis, {
+      initialServerOutcome: {
+        action: 'pause',
+        phase: 'unconfirmed',
+        currentState: 'running',
+      },
+      reviewServerControls: true,
+    })).toBe('opened');
+    const section = findByAttr(
+      host,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR,
+    )!;
+    const receipt = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR,
+    )!;
+    expect(section.getAttribute('data-control-review')).toBe('waiting');
+    expect(receipt.getAttribute('data-phase')).toBe('unconfirmed');
+    expect(onReviewConnectionDiagnosisServerControls).not.toHaveBeenCalled();
+
+    mount.setConnectionDiagnosisControlAvailability('p1', true);
+    expect(section.getAttribute('data-control-review')).toBe('active');
+    expect(onReviewConnectionDiagnosisServerControls).toHaveBeenCalledOnce();
+    expect(onReviewConnectionDiagnosisServerControls).toHaveBeenCalledWith(
+      diagnosis,
+      expect.objectContaining({ ownerId: diagnosis.id }),
+    );
+
+    // Repeated heartbeat-backed availability cannot replay the one-shot open.
+    mount.setConnectionDiagnosisControlAvailability('p1', true);
+    expect(onReviewConnectionDiagnosisServerControls).toHaveBeenCalledOnce();
+  });
+
+  it('binds live controls to this tab server without dropping an early heartbeat', () => {
+    const onReviewConnectionDiagnosisServerControls = vi.fn(
+      (): 'opened' => 'opened',
+    );
+    const { host, mount } = setup({
+      activeConnected: false,
+      onReviewConnectionDiagnosisServerControls,
+    });
+    expect(mount.openConnectionDiagnosis({
+      id: 'recovery-verification:1700000000000:profile-bound',
+      profileId: 'p1',
+      profileLabel: 'Home server',
+      areaLabel: 'Contracts',
+      interruptionReason: 'connection',
+    })).toBe('opened');
+    const controls = findByAttr(
+      host,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR,
+    )!;
+
+    // The live owner can report before Account receives its parallel status
+    // projection. Keep that fresh signal, but do not expose it prematurely.
+    mount.setConnectionDiagnosisControlAvailability('p1', true);
+    expect(controls.hasAttribute('disabled')).toBe(true);
+    mount.setActiveConnected(true);
+    expect(controls.hasAttribute('disabled')).toBe(false);
+
+    // A sibling can move the saved active pointer before this source tab
+    // reloads. Never relabel the source socket as controls for that profile.
+    mount.refresh([HOME, OFFICE], 'p2', false, true);
+    expect(mount.openConnectionDiagnosis({
+      id: 'recovery-verification:1700000000000:sibling-profile',
+      profileId: 'p2',
+      profileLabel: 'Office server',
+      areaLabel: 'Contracts',
+      interruptionReason: 'ownership',
+    })).toBe('opened');
+    expect(controls.hasAttribute('disabled')).toBe(true);
+    controls.click();
+    expect(onReviewConnectionDiagnosisServerControls).not.toHaveBeenCalled();
+  });
+
+  it('lets nested server controls consume Escape before Account closes', () => {
+    const { dom, host, mount } = setup();
+    findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    const serverSlot = findByAttr(host, ACCOUNT_MENU_SERVER_SLOT_ATTR)!;
+    const nestedSurface = dom.create('div');
+    nestedSurface.setAttribute(SERVER_CONTROL_POPOVER_ATTR, '');
+    const nestedControl = dom.create('button');
+    nestedSurface.appendChild(nestedControl);
+    serverSlot.appendChild(nestedSurface);
+    nestedControl.focus();
+
+    dom.fire('keydown', { key: 'Escape', target: nestedControl });
+
+    expect(mount.isOpen()).toBe(true);
+    expect(dom.activeElement()).toBe(nestedControl);
+  });
+
+  it('keeps a dismissed diagnosis quiet and rejects or retires another active profile', () => {
+    const onConnectionDiagnosisClosed = vi.fn();
+    const { host, mount } = setup({ onConnectionDiagnosisClosed });
+    const diagnosis = {
+      id: 'recovery-verification:1700000000000:2',
+      profileId: 'p1',
+      profileLabel: 'Home server',
+      areaLabel: 'Contracts',
+      interruptionReason: 'reload' as const,
+    };
+
+    expect(mount.openConnectionDiagnosis(diagnosis)).toBe('opened');
+    findByAttr(host, ACCOUNT_MENU_CLOSE_ATTR)!.click();
+    expect(onConnectionDiagnosisClosed).toHaveBeenCalledWith(
+      diagnosis,
+      'dismissed',
+    );
+    expect(mount.isOpen()).toBe(false);
+
+    expect(mount.openConnectionDiagnosis({
+      ...diagnosis,
+      id: 'recovery-verification:1700000000000:3',
+      profileId: 'p2',
+    })).toBe('unavailable');
+    expect(mount.isOpen()).toBe(false);
+    expect(onConnectionDiagnosisClosed).toHaveBeenCalledTimes(1);
+
+    const displacedDiagnosis = {
+      ...diagnosis,
+      id: 'recovery-verification:1700000000000:4',
+    };
+    expect(mount.openConnectionDiagnosis(displacedDiagnosis)).toBe('opened');
+    mount.refresh([HOME, OFFICE], 'p2', false, true);
+    expect(findByAttr(
+      host,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR,
+    )!.hasAttribute('hidden')).toBe(true);
+    expect(mount.isOpen()).toBe(true);
+    expect(onConnectionDiagnosisClosed).toHaveBeenLastCalledWith(
+      displacedDiagnosis,
+      'dismissed',
+    );
+
+    mount.refresh([HOME, OFFICE], 'p1', false, true);
+    const lostDiagnosis = {
+      ...diagnosis,
+      id: 'recovery-verification:1700000000000:5',
+    };
+    expect(mount.openConnectionDiagnosis(lostDiagnosis)).toBe('opened');
+    mount.refresh([], null, true, false);
+    expect(findByAttr(
+      host,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR,
+    )!.hasAttribute('hidden')).toBe(true);
+    expect(mount.canOpenConnectionDiagnosis('p1')).toBe(false);
+    expect(onConnectionDiagnosisClosed).toHaveBeenLastCalledWith(
+      lostDiagnosis,
+      'dismissed',
+    );
+  });
+
+  it('does not report a diagnosis outcome through a profile change in flight', async () => {
+    let finishSwitch = (): void => undefined;
+    const switchInFlight = new Promise<void>((resolve) => {
+      finishSwitch = resolve;
+    });
+    const onConnectionDiagnosisClosed = vi.fn();
+    const { host, mount } = setup({
+      onConnectionDiagnosisClosed,
+      onSwitch: vi.fn(() => switchInFlight),
+    });
+    const diagnosis = {
+      id: 'recovery-verification:1700000000000:5',
+      profileId: 'p1',
+      profileLabel: 'Home server',
+      areaLabel: 'Contracts',
+      interruptionReason: 'connection' as const,
+    };
+    expect(mount.openConnectionDiagnosis(diagnosis)).toBe('opened');
+    findAllByAttr(host, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
+    findByAttr(host, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+
+    expect(mount.canOpenConnectionDiagnosis('p1')).toBe(false);
+    findByAttr(
+      host,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR,
+    )!.click();
+    expect(mount.isOpen()).toBe(true);
+    expect(onConnectionDiagnosisClosed).not.toHaveBeenCalled();
+    expect(findByAttr(
+      host,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS_ATTR,
+    )!.textContent).toContain('Finish the server profile change');
+
+    finishSwitch();
+    await flush();
+    expect(mount.isOpen()).toBe(false);
+    expect(onConnectionDiagnosisClosed).toHaveBeenCalledWith(
+      diagnosis,
+      'dismissed',
+    );
+  });
+
   it('does not leave Account open when an exact profile is missing or temporarily unavailable', async () => {
     const onClose = vi.fn();
     let finishSwitch = (): void => undefined;
@@ -374,6 +1101,14 @@ describe('mountAccountMenu', () => {
     findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
     findAllByAttr(host, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
     findByAttr(host, SERVER_SWITCHER_SWITCH_COMMIT_ATTR)!.click();
+    expect(mount.canOpenConnectionDiagnosis('p1')).toBe(false);
+    expect(mount.openConnectionDiagnosis({
+      id: 'recovery-verification:1700000000000:6',
+      profileId: 'p1',
+      profileLabel: 'Home server',
+      areaLabel: 'Contracts',
+      interruptionReason: 'ownership',
+    })).toBe('unavailable');
     expect(mount.openServerProfile('p2')).toBe('unavailable');
     expect(mount.isOpen()).toBe(false);
     expect(onClose).toHaveBeenCalledOnce();
@@ -1385,6 +2120,56 @@ describe('mountAccountMenu', () => {
       ACCOUNT_MENU_SERVER_UPDATE_DIAGNOSTIC_STATUS_ATTR,
     )?.textContent).toMatch(/copy was unavailable/i);
     expect(dom.activeElement()).toBe(summary);
+  });
+
+  it('does not let an older diagnostic copy receipt steal exact diagnosis focus', async () => {
+    let finishCopy: () => void = () => undefined;
+    const serverUpdateDiagnosticWriter = vi.fn(() => new Promise<void>(
+      (resolve) => {
+        finishCopy = resolve;
+      },
+    ));
+    const { dom, host, mount } = setup({
+      onReturnToWork: vi.fn(),
+      serverUpdateDiagnosticWriter,
+    });
+    mount.openServerUpdateGuide({
+      connectionIdentity: 'api/github-main',
+      updateHref: '#settings/updates',
+      returnHref:
+        '#connections/others/retry-credential-rotation/api/github-main',
+      phase: 'triage',
+      serverUpdateTriage: {
+        reason: 'current_build_missing_capability',
+        checkStatus: 'up-to-date',
+        currentVersion: '26.8.0',
+        channel: 'stable',
+      },
+    });
+    findByAttr(
+      host,
+      ACCOUNT_MENU_SERVER_UPDATE_DIAGNOSTIC_COPY_ATTR,
+    )!.click();
+    expect(mount.openConnectionDiagnosis({
+      id: 'recovery-verification:1700000000000:7',
+      profileId: 'p1',
+      profileLabel: 'Home server',
+      areaLabel: 'Contracts',
+      interruptionReason: 'connection',
+    })).toBe('opened');
+    const diagnosisTitle = findByAttr(
+      host,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_TITLE_ATTR,
+    )!;
+    expect(dom.activeElement()).toBe(diagnosisTitle);
+
+    finishCopy();
+    await flush();
+    expect(findByAttr(
+      host,
+      ACCOUNT_MENU_SERVER_UPDATE_DIAGNOSTIC_STATUS_ATTR,
+    )!.textContent).toMatch(/safe diagnostic copied/i);
+    expect(dom.activeElement()).toBe(diagnosisTitle);
   });
 
   it('does not report an old diagnostic as copied after profile hydration changes it', async () => {

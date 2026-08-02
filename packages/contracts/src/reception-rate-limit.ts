@@ -7,8 +7,10 @@
  *      reception endpoint. Default 60 req / 60s window. Prevents a
  *      bot-net from hammering many endpoints without each one triggering
  *      its per-kind cap.
- *    - **per_endpoint_kind** — per-kind window. `intake_form` /
- *      `drop_link` / `approval_link` are tighter (10 / 5 / 5 per hour);
+ *    - **per_endpoint_kind** — per-kind window. `intake_form` uses a
+ *      60/hour pre-verification envelope so the form-local 1..60/hour
+ *      per-IP setting remains authoritative; `drop_link` / `approval_link`
+ *      are tighter (5 / 5 per hour);
  *      `reception_page` / `scheduling_link` / `status_link` are looser
  *      (60 / 30 / 60 per minute) since the surfaces are read-mostly +
  *      `status_link` accommodates 60s auto-refresh.
@@ -83,7 +85,7 @@ export const RECEPTION_RATE_LIMIT_DEFAULTS: ReceptionRateLimitConfig = {
   per_endpoint_kind: {
     reception_page: { window_ms: 60_000, max_requests: 60 },
     scheduling_link: { window_ms: 60_000, max_requests: 30 },
-    intake_form: { window_ms: 3_600_000, max_requests: 10 },
+    intake_form: { window_ms: 3_600_000, max_requests: 60 },
     drop_link: { window_ms: 3_600_000, max_requests: 5 },
     approval_link: { window_ms: 3_600_000, max_requests: 5 },
     status_link: { window_ms: 60_000, max_requests: 60 },

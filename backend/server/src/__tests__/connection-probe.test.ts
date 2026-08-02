@@ -7,10 +7,11 @@ import {
   listMessengerVendors,
 } from '@recued/contracts';
 import type { ConnectionAuth, ConnectionHealth, ConnectionKind } from '@recued/contracts';
-import type {
-  McpStreamHandle,
-  StdioSpawn,
-  WsConnect,
+import {
+  DEFAULT_RESPONSE_BODY_MAX_BYTES,
+  type McpStreamHandle,
+  type StdioSpawn,
+  type WsConnect,
 } from '@recued/ingredients';
 
 import {
@@ -149,6 +150,34 @@ const makeMcpStream = (
 };
 
 describe('handleConnectionProbe real health probes', () => {
+  it('bounds the production default fetch response before classifying it healthy', async () => {
+    const name = await enroll('api');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response('{}', {
+        status: 200,
+        headers: {
+          'content-length': String(DEFAULT_RESPONSE_BODY_MAX_BYTES + 1),
+        },
+      }),
+    );
+    try {
+      const result = await handleConnectionProbe(
+        { store, now: () => NOW + 1_000, getEncryptionKey },
+        { kind: 'api', name },
+      );
+
+      expect(result.health.status).toBe('unreachable');
+      expect(result.health.last_error).toContain('response body declared');
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy.mock.calls[0]?.[1]).toMatchObject({
+        method: 'HEAD',
+        redirect: 'manual',
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it('classifies an authed api HEAD response as ok and preserves row fields', async () => {
     const name = await enroll('api', {
       publisher_id: 'pub.api',
@@ -311,6 +340,132 @@ describe('handleConnectionProbe real health probes', () => {
     expect(result.health.status).toBe('ok');
     expect(tokenFetch).toHaveBeenCalledTimes(1);
     expect(apiFetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('probes and persists a validated provider origin returned with a rotated OAuth credential', async () => {
+    const name = await enroll('api', {
+      name: 'pipedrive-moving-tenant',
+      config: {
+        vendor: 'pipedrive',
+        base_url: 'https://old-company.pipedrive.com',
+        cadence: 'daily',
+      },
+      auth: {
+        type: 'oauth2_refresh',
+        refresh_token: 'refresh-old',
+        client_id: 'pipedrive-client',
+        client_secret: 'pipedrive-secret',
+        token_endpoint: 'https://oauth.pipedrive.com/oauth/token',
+      },
+    });
+    const tokenFetch = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({
+      access_token: 'access-new',
+      refresh_token: 'refresh-new',
+      token_type: 'Bearer',
+      expires_in: 300,
+      api_domain: 'https://new-company.pipedrive.com/',
+    }), { status: 200, headers: { 'content-type': 'application/json' } }));
+    const apiFetch = vi.fn<HttpFetcher>(async (url, init) => {
+      expect(url).toBe('https://new-company.pipedrive.com/');
+      expect(init?.headers?.Authorization).toBe('Bearer access-new');
+      return jsonResponse(204);
+    });
+
+    const result = await handleConnectionProbe(
+      {
+        store,
+        now: () => NOW + 1_000,
+        getEncryptionKey,
+        fetcher: apiFetch,
+        resolveFetch: tokenFetch,
+      },
+      { kind: 'api', name },
+    );
+
+    expect(result.health.status).toBe('ok');
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+    expect(JSON.parse(store.get('api', name)!.config_json)).toEqual({
+      vendor: 'pipedrive',
+      base_url: 'https://new-company.pipedrive.com',
+      cadence: 'daily',
+    });
+    expect(await decodeAuthFromStorage(
+      store.get('api', name)!.auth_ciphertext,
+      { kind: 'api', name },
+      getEncryptionKey,
+    )).toMatchObject({
+      type: 'oauth2_refresh',
+      refresh_token: 'refresh-new',
+      current_access_token: 'access-new',
+    });
+  });
+
+  it('ignores and audits an off-provider refresh origin while preserving the rotated credential', async () => {
+    const name = await enroll('api', {
+      name: 'pipedrive-hostile-origin',
+      config: {
+        vendor: 'pipedrive',
+        base_url: 'https://known-company.pipedrive.com',
+      },
+      auth: {
+        type: 'oauth2_refresh',
+        refresh_token: 'refresh-old',
+        client_id: 'pipedrive-client',
+        client_secret: 'pipedrive-secret',
+        token_endpoint: 'https://oauth.pipedrive.com/oauth/token',
+      },
+    });
+    const logActivity = vi.fn(async () => undefined);
+    const apiFetch = vi.fn<HttpFetcher>(async (url, init) => {
+      expect(url).toBe('https://known-company.pipedrive.com/');
+      expect(init?.headers?.Authorization).toBe('Bearer access-new');
+      return jsonResponse(204);
+    });
+
+    const result = await handleConnectionProbe(
+      {
+        store,
+        now: () => NOW + 1_000,
+        getEncryptionKey,
+        fetcher: apiFetch,
+        resolveFetch: vi.fn(async () => new Response(JSON.stringify({
+          access_token: 'access-new',
+          refresh_token: 'refresh-new',
+          token_type: 'Bearer',
+          expires_in: 300,
+          api_domain: 'https://attacker.example',
+        }), { status: 200, headers: { 'content-type': 'application/json' } })),
+        auditLog: { logActivity },
+      },
+      { kind: 'api', name },
+    );
+
+    expect(result.health.status).toBe('ok');
+    expect(JSON.parse(store.get('api', name)!.config_json).base_url)
+      .toBe('https://known-company.pipedrive.com');
+    expect(await decodeAuthFromStorage(
+      store.get('api', name)!.auth_ciphertext,
+      { kind: 'api', name },
+      getEncryptionKey,
+    )).toMatchObject({
+      refresh_token: 'refresh-new',
+      current_access_token: 'access-new',
+    });
+    expect(logActivity).toHaveBeenCalledWith(expect.objectContaining({
+      timestamp: NOW + 1_000,
+      action: 'connection_runtime_base_refresh_ignored',
+      target: name,
+      detail: JSON.stringify({
+        kind: 'api',
+        vendor: 'pipedrive',
+        status: 'invalid',
+        field: 'api_domain',
+        reason: 'host is outside the provider allowlist',
+      }),
+    }));
+    expect(JSON.stringify(logActivity.mock.calls)).not.toContain('attacker.example');
+    expect(JSON.stringify(logActivity.mock.calls)).not.toContain('access-new');
+    expect(JSON.stringify(logActivity.mock.calls)).not.toContain('refresh-new');
   });
 
   it('maps an OAuth2 client-credentials exchange failure to auth_failed without probing', async () => {
@@ -1071,6 +1226,65 @@ describe('handleConnectionRotateCredentials', () => {
       { store },
       { attempt_id, kind: 'api', name },
     )).resolves.toEqual({ outcome: { status: 'not_found' } });
+  });
+
+  it('refuses a Slack Socket Mode rotation that would drop the app-level token', async () => {
+    const name = await enroll('notification', {
+      name: 'slack',
+      subtype: 'slack',
+      config: { channel_id: 'C1', ingress_mode: 'socket' },
+      auth: {
+        type: 'bearer',
+        token: 'synthetic-bot-original',
+        app_token: 'synthetic-app-original',
+      },
+    });
+    const before = store.get('notification', name)!;
+    const fetcher = vi.fn<HttpFetcher>();
+
+    // The bot token alone is exactly what a rotation form (or any non-UI
+    // caller) sends when it treats `auth.token` as the whole credential.
+    // Committing it would erase `app_token`, and the supervisor would stop
+    // Socket Mode with nothing left to restart it.
+    await expect(handleConnectionRotateCredentials(
+      { store, now: () => NOW + 500, getEncryptionKey, fetcher },
+      {
+        attempt_id,
+        name,
+        kind: 'notification',
+        patch: { auth: { type: 'bearer', token: 'fake-bot-next' } },
+      },
+    )).rejects.toMatchObject({ code: 'bad_request' });
+    // Refused BEFORE the attempt is claimed or the provider is contacted.
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(store.get('notification', name)).toEqual(before);
+    await expect(handleConnectionCredentialRotationStatus(
+      { store },
+      { attempt_id, kind: 'notification', name },
+    )).resolves.toEqual({ outcome: { status: 'not_found' } });
+  });
+
+  it('allows a webhook-mode Slack rotation to carry only the bot token', async () => {
+    const name = await enroll('notification', {
+      name: 'slack-webhook',
+      subtype: 'slack',
+      config: { channel_id: 'C1', ingress_mode: 'webhook', signing_secret: 's3cret' },
+      auth: { type: 'bearer', token: 'synthetic-bot-original' },
+    });
+    const fetcher = vi.fn<HttpFetcher>(async () => jsonResponse(200, { ok: true }));
+
+    // The guard is Socket Mode's, not Slack's — webhook mode never needed an
+    // app-level token, so requiring one here would block a valid rotation.
+    await expect(handleConnectionRotateCredentials(
+      { store, now: () => NOW + 500, getEncryptionKey, fetcher },
+      {
+        attempt_id,
+        name,
+        kind: 'notification',
+        patch: { auth: { type: 'bearer', token: 'fake-bot-next' } },
+      },
+    )).resolves.toBeDefined();
+    expect(fetcher).toHaveBeenCalled();
   });
 
   it('keeps the exact durable row when the provider rejects a replacement', async () => {
@@ -1914,6 +2128,64 @@ describe('handleConnectionRotateCredentials', () => {
       getEncryptionKey,
     )).toEqual({ type: 'bearer', token: 'verified-new-secret' });
     unsubscribe();
+  });
+
+  it('rotates and verifies both Slack Socket Mode credentials as one candidate', async () => {
+    const name = await enroll('notification', {
+      name: 'slack',
+      subtype: 'slack',
+      config: { channel_id: 'C-1', ingress_mode: 'socket' },
+      auth: {
+        type: 'bearer',
+        token: 'old-bot-token',
+        app_token: 'old-app-token',
+      },
+    });
+    const before = store.get('notification', name)!;
+    const fetcher = vi.fn<HttpFetcher>(async (url, init) => {
+      if (url === 'https://slack.com/api/auth.test') {
+        expect(init?.headers?.Authorization).toBe('Bearer new-bot-token');
+        return jsonResponse(200, { ok: true });
+      }
+      expect(url).toBe('https://slack.com/api/apps.connections.open');
+      expect(init?.headers?.Authorization).toBe('Bearer new-app-token');
+      return jsonResponse(200, { ok: true, url: 'wss://wss-primary.slack.com/link' });
+    });
+
+    const result = await handleConnectionRotateCredentials(
+      { store, now: () => NOW + 2_500, getEncryptionKey, fetcher },
+      {
+        attempt_id,
+        name,
+        kind: 'notification',
+        expected_updated_at: before.updated_at,
+        patch: {
+          auth: {
+            type: 'bearer',
+            token: 'new-bot-token',
+            app_token: 'new-app-token',
+          },
+        },
+      },
+    );
+
+    expect(result.verification).toMatchObject({
+      status: 'verified',
+      auth_type: 'bearer',
+      verified_at: NOW + 2_500,
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(await decodeAuthFromStorage(
+      store.get('notification', name)!.auth_ciphertext,
+      { kind: 'notification', name },
+      getEncryptionKey,
+    )).toEqual({
+      type: 'bearer',
+      token: 'new-bot-token',
+      app_token: 'new-app-token',
+    });
+    expect(JSON.stringify(result)).not.toContain('new-bot-token');
+    expect(JSON.stringify(result)).not.toContain('new-app-token');
   });
 
   it('exchanges an OAuth refresh credential before the provider probe and persists its rotation metadata', async () => {

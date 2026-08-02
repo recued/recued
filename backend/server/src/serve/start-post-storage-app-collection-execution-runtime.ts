@@ -410,6 +410,19 @@ export const startPostStorageAppCollectionExecutionRuntime = async (
     ...options.app,
     chatLateBound: lateBound,
   });
+  options.postApp.postExecution.maintenance.backgroundServices.register({
+    name: 'warehouse-event-bridges',
+    kind: 'emitter',
+    stop: app.stopWarehouseEventBridges,
+  });
+  const contactBackfillDone = app.contactBackfillDone;
+  if (contactBackfillDone !== undefined) {
+    options.postApp.postExecution.maintenance.backgroundServices.register({
+      name: 'contact-boot-backfill',
+      kind: 'emitter',
+      stop: () => contactBackfillDone,
+    });
+  }
   // Slice 3b — publish the KeyManager up to the boot runtime so the
   // post-boot signing-identity step can auto-unlock the server vault from
   // the keyfile before listeners accept work.

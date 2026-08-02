@@ -99,6 +99,29 @@ describe('createIdempotencyLedger', () => {
     expect(ledger.record('hubspot', 'e0').fresh).toBe(true); // oldest evicted
   });
 
+  it('seen() reports a replay without consuming the key', () => {
+    const ledger = createIdempotencyLedger({ now: () => 0 });
+    // The local-ingress ordering: ask first, dispatch, record on success. If
+    // `seen` recorded, the very next `record` would report a false replay and
+    // the caller would drop a delivery it had never actually handled.
+    expect(ledger.seen('telegram', 'u1')).toBe(false);
+    expect(ledger.seen('telegram', 'u1')).toBe(false);
+    expect(ledger.size()).toBe(0);
+    expect(ledger.record('telegram', 'u1').fresh).toBe(true);
+    expect(ledger.seen('telegram', 'u1')).toBe(true);
+    // Scoped like `record` — one connection's cursor never fences another's.
+    expect(ledger.seen('telegram:second-bot', 'u1')).toBe(false);
+  });
+
+  it('seen() forgets a key once the replay window has passed', () => {
+    let clock = 0;
+    const ledger = createIdempotencyLedger({ now: () => clock, window_ms: 60_000 });
+    ledger.record('slack', 'Ev1');
+    expect(ledger.seen('slack', 'Ev1')).toBe(true);
+    clock = 120_000;
+    expect(ledger.seen('slack', 'Ev1')).toBe(false);
+  });
+
   it('default cap constant is a sane positive ceiling', () => {
     expect(WEBHOOK_LEDGER_MAX_ENTRIES).toBeGreaterThan(1000);
   });

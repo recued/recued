@@ -62,7 +62,7 @@ interface CapturedInterval {
   name: string;
   intervalMs: number;
   fireImmediate?: boolean;
-  tick: () => void;
+  tick: () => Promise<void> | void;
 }
 
 const mkRegistry = () => {
@@ -150,9 +150,12 @@ describe('D-175 startProConvenienceProvisioning — the registered tick', () => 
       getSigningIdentity: () => mkIdentity(binding),
     });
 
-    // Fire the captured tick + let the fire-and-forget async settle.
-    registry.intervals[0]!.tick();
-    await vi.waitFor(() => expect(reserveInitial).toHaveBeenCalledTimes(1));
+    // The promise is returned to the lifecycle registry so shutdown can
+    // drain a reservation already in flight.
+    const run = registry.intervals[0]!.tick();
+    expect(run).toBeInstanceOf(Promise);
+    await run;
+    expect(reserveInitial).toHaveBeenCalledTimes(1);
     expect(
       (reserveInitial.mock.calls[0]![0] as ReserveHandleArgs).publisher_id,
     ).toBe(FINGERPRINT);

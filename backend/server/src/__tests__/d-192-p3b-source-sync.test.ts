@@ -232,7 +232,7 @@ const seedSyncState = (
     degraded: false,
     field_health_blob: null,
     list_complete: true,
-    stale_after_ms: declaration.sync.stale_after_ms,
+    stale_after_ms: declaration.sync.stale_after_ms!,
   });
 };
 
@@ -301,6 +301,65 @@ const upsertHubspotConnection = (): void => {
 };
 
 describe('runWorkEntitySourceSync', () => {
+  it('refuses a read-through declaration before fetch or sync-state mutation', async () => {
+    const mirrored = taskDeclaration();
+    const declaration = taskDeclaration({
+      sync: { posture: 'read_through', mode: 'read_write', depth: 'meta' },
+      read_resolution: {
+        default: 'source',
+        wild_query: mirrored.read_resolution.wild_query,
+      },
+    });
+    let invoked = false;
+
+    const result = expectSyncFailure(await runSync(declaration, {
+      runFetch: async () => {
+        invoked = true;
+        return okFetch([]);
+      },
+    }));
+
+    expect(result).toMatchObject({ ok: false, kind: 'config' });
+    expect(result.reason).toContain('read_through');
+    expect(invoked).toBe(false);
+    expect(syncState.get(SOURCE)).toBeNull();
+  });
+
+  it('cannot rematerialize rows when a records cycle is superseded during provider I/O', async () => {
+    const declaration = taskDeclaration();
+    prepareSource(SOURCE, declaration);
+    let releaseFetch!: (outcome: SourceMirrorFetchOutcome) => void;
+    let markFetchStarted!: () => void;
+    const fetchStarted = new Promise<void>((resolve) => { markFetchStarted = resolve; });
+    const fetchOutcome = new Promise<SourceMirrorFetchOutcome>((resolve) => {
+      releaseFetch = resolve;
+    });
+
+    const running = runSync(declaration, {
+      runFetch: async () => {
+        markFetchStarted();
+        return fetchOutcome;
+      },
+    });
+    await fetchStarted;
+
+    const registered = store.getSource(SOURCE);
+    if (registered === null) throw new Error('expected registered records source');
+    store.registerSource({ ...registered, sync_posture: 'read_through' });
+    syncState.deleteForSource(SOURCE);
+    releaseFetch(okFetch([rawTask('late-row', 'Must not return after the purge', {
+      label: 'late',
+      updatedAt: '2026-07-02T00:00:00.000Z',
+    })]));
+
+    const result = expectSyncFailure(await running);
+    expect(result).toMatchObject({ ok: false, kind: 'config' });
+    expect(result.reason).toContain("now has 'read_through' posture");
+    expect(result.reason).toContain('made no further writes');
+    expect(store.countRecordsForSource(SOURCE)).toBe(0);
+    expect(syncState.get(SOURCE)).toBeNull();
+  });
+
   it('upserts fetched rows, records a healthy sync-state, and passes the raw fetch request shape', async () => {
     const declaration = taskDeclaration();
     prepareSource(SOURCE, declaration);

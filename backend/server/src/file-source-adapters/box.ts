@@ -45,6 +45,7 @@ import type {
   FileSourceListFn,
   FileSourceListOutcome,
 } from '../file-source-sync.js';
+import { readProviderStringContinuation } from '../provider-pagination-guard.js';
 import {
   drainIdKeyedDelta,
   shapeDeltaOutcome,
@@ -57,6 +58,7 @@ import type {
   FileFetch,
   FileSourceLeafDeps,
 } from './index.js';
+import { fetchFileSourceApi } from './http-json.js';
 import { drainPagedList, type PagedListPage } from './paged-list.js';
 
 const BOX_API = 'https://api.box.com/2.0';
@@ -112,7 +114,7 @@ const boxErrorMessage = (text: string): string => {
 };
 
 const boxGet = async (fetchImpl: FileFetch, url: string, token: string): Promise<unknown> => {
-  const res = await fetchImpl(url, {
+  const res = await fetchFileSourceApi(fetchImpl, url, {
     method: 'GET',
     headers: { authorization: `Bearer ${token}` },
   });
@@ -131,10 +133,10 @@ const boxGet = async (fetchImpl: FileFetch, url: string, token: string): Promise
  *  deletes up to the full-walk cadence). We parse the entries from the text but
  *  read the position out as a digit STRING (`extractStreamPosition`). */
 const boxGetText = async (fetchImpl: FileFetch, url: string, token: string): Promise<string> => {
-  const res = await fetchImpl(url, {
+  const res = await fetchFileSourceApi(fetchImpl, url, {
     method: 'GET',
     headers: { authorization: `Bearer ${token}` },
-  });
+  }, { responseMode: 'text' });
   const text = await res.text().catch(() => '');
   if (!res.ok) {
     throw new BoxError(res.status, `box GET failed: ${res.status} ${boxErrorMessage(text)}`);
@@ -277,8 +279,13 @@ const parseFolderItemsPage = (res: unknown): FolderItemsPage => {
   const obj = asRecord(res);
   if (obj === undefined) throw new BoxError(0, 'box folder items response is not an object');
   if (!Array.isArray(obj.entries)) throw new BoxError(0, 'box folder items response has no entries array');
-  const nm = obj.next_marker;
-  return { entries: obj.entries, nextMarker: typeof nm === 'string' && nm.length > 0 ? nm : undefined };
+  return {
+    entries: obj.entries,
+    nextMarker: readProviderStringContinuation(
+      obj.next_marker,
+      'Box folder items',
+    ),
+  };
 };
 
 /** Map one `/2.0/folders/{id}/items` page into the shared paged-list page shape,

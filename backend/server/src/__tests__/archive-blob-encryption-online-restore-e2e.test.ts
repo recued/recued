@@ -20,6 +20,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { DRAIN_STEP_NAMES } from '@recued/contracts';
 import { createBundle, createServerBundle, generateRecoveryKey, generateServerKey } from '@recued/crypto';
 
 import { createKeyManager, type KeyManager } from '../key-manager.js';
@@ -387,13 +388,63 @@ describe('cross-realm restore does not corrupt the live realm on abort', () => {
     expect(readdirSync(objectsDir).filter((f) => f.includes('.pre-restore-'))).toEqual([]);
   });
 
+  /** A resolved drain is not necessarily a safe drain: every source must have
+   *  quiesced before the live database can be replaced. */
+  it('an aborted collection drain refuses the database swap', async () => {
+    const source = await newEncryptedServer();
+    const target = await newEncryptedServer();
+
+    const shared = Buffer.from('the same bytes live in both realms');
+    const hash = await createEncryptedBlobStore(join(source.dir, 'blobs'), () => source.blobKey).put(shared);
+    await createEncryptedBlobStore(join(target.dir, 'blobs'), () => target.blobKey).put(shared);
+    source.db.prepare('INSERT INTO shared_store (key, blob_hash) VALUES (?, ?)').run('collide', hash);
+    target.db.prepare('INSERT INTO shared_store (key, blob_hash) VALUES (?, ?)').run('collide', hash);
+
+    const { path } = await source.runtime.runExport({
+      includeBlobs: true, includePassport: false, recoveryKey: source.mnemonic,
+    });
+
+    let exitCode: number | undefined;
+    let markExited!: () => void;
+    const exited = new Promise<void>((resolve) => { markExited = resolve; });
+    const deps = composeArchiveRpcDeps({
+      db: target.db,
+      dbPath: target.dbPath,
+      configPath: null,
+      serverVersion: SERVER_VERSION,
+      now: () => FIXED_NOW,
+      getKeys: () => target.km,
+      lifecycle: {
+        requestDrain: () => Promise.resolve({
+          intent: 'restart',
+          reason: 'archive_import',
+          completed: DRAIN_STEP_NAMES.filter((step) => step !== 'pause_collections'),
+          aborted: ['pause_collections'],
+          duration_ms: 1,
+        }),
+        supervisor: { handoff: () => 0 },
+      } as unknown as Lifecycle,
+      exit: (code) => { exitCode = code; markExited(); },
+    });
+    if (!deps) throw new Error('archive deps did not compose');
+
+    await deps.runtime.runImport({ path, force: false, recoveryKey: source.mnemonic });
+    await exited;
+
+    // pause_collections failed even though await_inflight + close_db completed.
+    // The original database therefore stays live and its colliding blob must be
+    // restored under the target realm key rather than stranded as source cipher.
+    expect(exitCode).toBe(0);
+    const live = createEncryptedBlobStore(join(target.dir, 'blobs'), () => target.blobKey);
+    expect((await live.get(hash))!.equals(shared)).toBe(true);
+    const objectsDir = join(target.dir, 'blobs', 'objects', hash.slice(0, 2));
+    expect(readdirSync(objectsDir).filter((f) => f.includes('.pre-restore-'))).toEqual([]);
+    expect(stagedFiles(target.dir)).toHaveLength(0);
+  });
+
   /** The same corruption, reached by the other door. `composeArchiveRpcDeps`
-   *  wires the drain, and the abandon path hangs off the drain RESOLVING with
-   *  a bad result — so a drain that REJECTS skipped it entirely and exited
-   *  straight to the supervisor, which then rebooted on the original database
-   *  over the archive realm's ciphertext. Not hypothetical: `requestDrain`
-   *  writes its clean-shutdown marker around the drain, and doing that after
-   *  `close_db` threw on the closed connection and aborted a restore commit. */
+   *  wires the drain, and a rejection must take the same abandon path as a
+   *  resolved-but-incomplete drain before the supervisor restarts. */
   it('a REJECTED drain still rolls the displaced blob back', async () => {
     const source = await newEncryptedServer();
     const target = await newEncryptedServer();

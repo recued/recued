@@ -228,6 +228,42 @@ describe('grant catalog raw-op projection', () => {
     expect(entry?.arg_schema).toMatchObject({ properties: { connection: { type: 'string' } } });
   });
 
+  it('advertises a closed operation request schema beside the required connection selector', () => {
+    const closedCatalog = {
+      ...crmCatalog,
+      operations: {
+        ...crmCatalog.operations,
+        'deal.search': {
+          ...crmCatalog.operations?.['deal.search'],
+          request_schema: {
+            type: 'object',
+            additionalProperties: false,
+            required: ['query'],
+            properties: {
+              query: { type: 'string', minLength: 1 },
+              limit: { type: 'integer', minimum: 1, maximum: 100 },
+            },
+          },
+        },
+      },
+    } as IngredientManifest;
+    const descriptor = buildRawOpToolDescriptors(
+      scanInstalledPacks,
+      (slug) => slug === closedCatalog.slug ? closedCatalog : registry().get(slug),
+    ).find((entry) => entry.wireName === READ_OP);
+
+    expect(descriptor?.inputSchema).toEqual({
+      type: 'object',
+      additionalProperties: false,
+      required: ['connection', 'query'],
+      properties: {
+        connection: expect.objectContaining({ type: 'string' }),
+        query: { type: 'string', minLength: 1 },
+        limit: { type: 'integer', minimum: 1, maximum: 100 },
+      },
+    });
+  });
+
   it('emits NO raw ops without the installed-pack scan (back-compatible)', () => {
     const names = buildMcpGrantCatalogLegacyEntries(registry()).map((e) => e.name);
     expect(names.some((n) => n.startsWith('recued_op_'))).toBe(false);
@@ -470,9 +506,9 @@ describe('D-225 § 9.5.1 step 2b — the chat raw-op DISPATCH', () => {
   it('refuses a non-raw-op tool name', async () => {
     const d = createChatRawOpDispatch({ getRawOpDispatchDeps: () => dispatchDeps } as never);
     const r = await d('work.search', {}, ctx);
-    expect(r).toMatchObject({ ok: false });
+    expect(r).toMatchObject({ ok: false, reason: 'invalid_args' });
     if (r.ok) throw new Error('unreachable');
-    expect(r.error).toMatch(/not a raw catalog op/);
+    expect(r.detail).toMatch(/not a raw catalog op/);
   });
 
   it('⚠ reports unavailable rather than throwing when no dispatch deps are wired', async () => {
@@ -480,9 +516,9 @@ describe('D-225 § 9.5.1 step 2b — the chat raw-op DISPATCH', () => {
     // it cannot make. Degrading honestly beats a stack trace at call time.
     const d = createChatRawOpDispatch({} as never);
     const r = await d('recued_op_pub.pack.op', {}, ctx);
-    expect(r).toMatchObject({ ok: false });
+    expect(r).toMatchObject({ ok: false, reason: 'execution_error' });
     if (r.ok) throw new Error('unreachable');
-    expect(r.error).toMatch(/unavailable/);
+    expect(r.detail).toMatch(/unavailable/);
   });
 
   // ── the projection — the one-ask property ──────────────────────────────
@@ -497,10 +533,14 @@ describe('D-225 § 9.5.1 step 2b — the chat raw-op DISPATCH', () => {
     const r = projectRawOpOutcome({ kind: 'held', op_id: 'pub.pack.op', run_id: 'r1' });
     expect(r.ok).toBe(true);
     if (!r.ok) throw new Error('unreachable');
-    expect(r.result).toMatchObject({
-      status: 'awaiting_approval',
-      awaiting_approval: true,
-      op: 'pub.pack.op',
+    expect(r).toMatchObject({
+      run_held: { kind: 'approval' },
+      run_id: 'r1',
+      result: {
+        status: 'awaiting_approval',
+        awaiting_approval: true,
+        op: 'pub.pack.op',
+      },
     });
   });
 
@@ -529,7 +569,7 @@ describe('D-225 § 9.5.1 step 2b — the chat raw-op DISPATCH', () => {
     const r = projectRawOpOutcome({ kind: 'refused', message: 'not granted' });
     expect(r.ok).toBe(false);
     if (r.ok) throw new Error('unreachable');
-    expect(r.error).toBe('not granted');
+    expect(r).toMatchObject({ reason: 'execution_error', detail: 'not granted' });
   });
 
   it('a plain result passes through untouched', () => {

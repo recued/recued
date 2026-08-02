@@ -13,9 +13,10 @@
  *       setTimeout per entry.
  *    2. Each timer fires → `fireEntry(recipe_id)` → scheduler.tick →
  *       handleExecute → markFinished → persistCircuit →
- *       scheduleNext. Every step wraps try/catch so a single
- *       failure can't leak into the timer loop.
- *    3. `stop()` clears all timers + waits for in-flight executions
+ *       scheduleNext. Scheduler-owned promises are tracked and reported so a
+ *       single store/runtime failure cannot reach the process-wide fatal
+ *       rejection handler.
+ *    3. `stop()` clears all timers + waits for every scheduler-owned task
  *       to settle so callers can safely close the database.
  *
  *  Spec: D-115 §3.1 (Server implementation).
@@ -242,6 +243,10 @@ export interface ServerAutoRunConfig {
   setTimer?: (handler: () => void, delayMs: number) => unknown;
   /** `clearTimeout` override matching `setTimer`. */
   clearTimer?: (token: unknown) => void;
+  /** Reports failures from scheduler-owned background work. Direct `tick()`
+   *  and `start()` initialization failures still reject to their callers. The
+   *  hook is guarded so diagnostics cannot create an unhandled rejection. */
+  onBackgroundError?: (message: string, error: unknown) => void;
   /** Vault-unlocked gate. When provided and `false`, `tick` + `fireEntry`
    *  are no-ops — they skip BEFORE advancing the scheduler clock, so
    *  due entries stay due for catch-up on unlock, and they do NOT re-arm
@@ -256,8 +261,8 @@ export interface ServerAutoRunHandle {
    *  arms per-entry timers. Fires an immediate tick for anything
    *  already due. */
   start(): Promise<void>;
-  /** Clear all pending timers + await in-flight executions so the
-   *  caller can close the database safely. */
+  /** Clear all pending timers + await scheduler-owned background work and
+   *  in-flight executions so the caller can close the database safely. */
   stop(): Promise<void>;
   /** Run a single synchronous tick — for tests and for the
    *  server-boot "catch up anything due now" path. */
@@ -269,8 +274,9 @@ export interface ServerAutoRunHandle {
   resetCircuit(recipe_id: string): void;
   /** Read-only roster view — used by status CLI + tests. */
   readonly roster: ReadonlyMap<string, AutoRunEntry>;
-  /** True while any `handleExecute` promise is still pending. Used
-   *  by the drain orchestrator to wait for a clean shutdown. */
+  /** True while scheduler-owned work is running, including a fire executing
+   *  or persisting its final state. Used by the drain orchestrator to wait for
+   *  a clean shutdown. */
   inFlight(): boolean;
 }
 
@@ -296,6 +302,36 @@ export const createServerAutoRunScheduler = (
   const timers = new Map<string, unknown>();
   let running = false;
   let inflightCount = 0;
+  const backgroundTasks = new Set<Promise<void>>();
+
+  const reportBackgroundError = (message: string, error: unknown): void => {
+    try {
+      if (config.onBackgroundError) {
+        config.onBackgroundError(message, error);
+      } else {
+        console.error(`[auto-run] ${message}`, error);
+      }
+    } catch {
+      // A diagnostics hook must never promote a contained scheduler failure
+      // back into the process-wide fatal `unhandledRejection` path.
+    }
+  };
+
+  /** Attach the rejection handler immediately and retain the raw task through
+   *  settlement. Using both branches of `then` avoids creating a detached
+   *  rejected promise from `finally`, while stop() can still await the task. */
+  const launchBackground = (message: string, task: Promise<void>): void => {
+    backgroundTasks.add(task);
+    void task.then(
+      () => {
+        backgroundTasks.delete(task);
+      },
+      (error) => {
+        backgroundTasks.delete(task);
+        reportBackgroundError(message, error);
+      },
+    );
+  };
 
   const listInstallInputs = (): AutoRunInstallInput[] => {
     const stored = config.recipeStore.listStored();
@@ -340,7 +376,10 @@ export const createServerAutoRunScheduler = (
     const delay = Math.max(AUTO_RUN_SERVER_FLOOR_MS, entry.next_run_at - now());
     const token = setTimer(() => {
       timers.delete(entry.recipe_id);
-      void fireEntry(entry.recipe_id);
+      launchBackground(
+        `timer fire failed for recipe ${entry.recipe_id}`,
+        fireEntry(entry.recipe_id),
+      );
     }, delay);
     timers.set(entry.recipe_id, token);
   };
@@ -387,68 +426,74 @@ export const createServerAutoRunScheduler = (
       return presented.userMessage;
     };
     try {
-      // D-153 P2.C — pass typed `ExecutionSource` so the execute-handler's
-      // policy gate evaluates this run against the
-      // `(channel: 'reactive', actor: 'system')` matrix cell. Every
-      // auto-run fire is a periodic timer tick — the recipe's
-      // `trigger_steps` decide whether the sequential phase actually
-      // runs. There's no per-fire synthetic event payload at this
-      // dispatch site (D-115 trigger source registry is a later
-      // phase), so `event_kind` carries the generic `'auto_run_tick'`
-      // placeholder. When the trigger-source registry lands (spec
-      // line 587), this widens to the registered event kind.
-      // D-179 — dispatch as the recipe's current managed auto-run config
-      // dish when one is set, so the headless fire honours the user's
-      // configured overlay (the executor merges dish.config_overlay over
-      // recipe defaults). Null ⇒ a dishless fire on recipe defaults,
-      // exactly as before.
-      const configDishId = config.settingsStore?.getDishId(recipe_id) ?? null;
-      const result = await execute({
-        recipe_id,
-        trigger_source: 'auto_run',
-        execution_source: {
-          channel: 'reactive',
-          actor: 'system',
-          event_kind: 'auto_run_tick',
-          source_recipe: recipe_id,
-          // ⛔ D-215 slice 1a — NO `contract_id` here, deliberately. Same
-          // finding as `scheduler.ts` (see the long note there): D-209 §1.4's
-          // stamp changed neither the ceiling (a contract-free `system`
-          // non-housekeeping source already resolves to the same `read` HOLD)
-          // nor the grant axis (the owner sentinel is rejected as a bound door
-          // id), but made every source contract-bearing — so
-          // `gateRecipeAgainstPolicy` threw "requires a ContractSnapshot" and
-          // every auto-run tick failed at the gate.
-        },
-        process_id,
-        ...(configDishId !== null ? { dish_id: configDishId } : {}),
-      });
-      nextRunHint = result.next_run_at;
-      // D-115 outcome classification mirrors the extension controller:
-      // trigger_skipped takes precedence (silent-skip), then
-      // success/failure. Skipped keeps the failure counter unchanged;
-      // a failed run increments toward the circuit breaker.
-      if (result.trigger_skipped) {
-        outcome = 'skipped';
-      } else if (result.success) {
-        outcome = 'success';
-      } else {
+      try {
+        // D-153 P2.C — pass typed `ExecutionSource` so the execute-handler's
+        // policy gate evaluates this run against the
+        // `(channel: 'reactive', actor: 'system')` matrix cell. Every
+        // auto-run fire is a periodic timer tick — the recipe's
+        // `trigger_steps` decide whether the sequential phase actually
+        // runs. There's no per-fire synthetic event payload at this
+        // dispatch site (D-115 trigger source registry is a later
+        // phase), so `event_kind` carries the generic `'auto_run_tick'`
+        // placeholder. When the trigger-source registry lands (spec
+        // line 587), this widens to the registered event kind.
+        // D-179 — dispatch as the recipe's current managed auto-run config
+        // dish when one is set, so the headless fire honours the user's
+        // configured overlay (the executor merges dish.config_overlay over
+        // recipe defaults). Null ⇒ a dishless fire on recipe defaults,
+        // exactly as before.
+        const configDishId = config.settingsStore?.getDishId(recipe_id) ?? null;
+        const result = await execute({
+          recipe_id,
+          trigger_source: 'auto_run',
+          execution_source: {
+            channel: 'reactive',
+            actor: 'system',
+            event_kind: 'auto_run_tick',
+            source_recipe: recipe_id,
+            // ⛔ D-215 slice 1a — NO `contract_id` here, deliberately. Same
+            // finding as `scheduler.ts` (see the long note there): D-209 §1.4's
+            // stamp changed neither the ceiling (a contract-free `system`
+            // non-housekeeping source already resolves to the same `read` HOLD)
+            // nor the grant axis (the owner sentinel is rejected as a bound door
+            // id), but made every source contract-bearing — so
+            // `gateRecipeAgainstPolicy` threw "requires a ContractSnapshot" and
+            // every auto-run tick failed at the gate.
+          },
+          process_id,
+          ...(configDishId !== null ? { dish_id: configDishId } : {}),
+        });
+        nextRunHint = result.next_run_at;
+        // D-115 outcome classification mirrors the extension controller:
+        // trigger_skipped takes precedence (silent-skip), then
+        // success/failure. Skipped keeps the failure counter unchanged;
+        // a failed run increments toward the circuit breaker.
+        if (result.trigger_skipped) {
+          outcome = 'skipped';
+        } else if (result.success) {
+          outcome = 'success';
+        } else {
+          outcome = 'failed';
+          const first = result.errors[0] as { message?: string } | undefined;
+          failureReason = visibleFailure(first?.message ?? 'execution failed');
+        }
+      } catch (e) {
         outcome = 'failed';
-        const first = result.errors[0] as { message?: string } | undefined;
-        failureReason = visibleFailure(first?.message ?? 'execution failed');
+        failureReason = visibleFailure(e);
       }
-    } catch (e) {
-      outcome = 'failed';
-      failureReason = visibleFailure(e);
+
+      // Finalization is part of the in-flight unit. In particular, keep the
+      // shutdown gate raised through the SQLite circuit write; releasing it
+      // after `execute` but before this write lets close_db race the store.
+      scheduler.markFinished(recipe_id, outcome, nextRunHint, now());
+      persistCircuitState(recipe_id, now(), failureReason);
+      try {
+        config.onFired?.(recipe_id);
+      } catch {
+        // A broken listener is a UI bug, not a scheduler bug.
+      }
     } finally {
       inflightCount--;
-    }
-    scheduler.markFinished(recipe_id, outcome, nextRunHint, now());
-    persistCircuitState(recipe_id, now(), failureReason);
-    try {
-      config.onFired?.(recipe_id);
-    } catch {
-      // A broken listener is a UI bug, not a scheduler bug.
     }
   };
 
@@ -514,20 +559,33 @@ export const createServerAutoRunScheduler = (
     async start() {
       if (running) return;
       running = true;
-      await refreshRoster();
+      try {
+        await refreshRoster();
+      } catch (error) {
+        // A failed roster hydration must not leave the handle looking started:
+        // callers can fix the dependency and retry the same handle.
+        running = false;
+        clearAllTimers();
+        throw error;
+      }
       // Immediate catch-up tick for anything due at boot. setTimeout
       // would otherwise wait the full AUTO_RUN_SERVER_FLOOR_MS
       // before firing the first round.
-      void tick();
+      launchBackground('initial background tick failed', tick().then(() => undefined));
     },
     async stop() {
       running = false;
       clearAllTimers();
-      // Await in-flight executions so the caller can close the DB
-      // without racing an updateCircuit write.
+      // Preserve the established drain ordering for direct/manual tick()
+      // calls: a stop requested during persistence does not settle in the
+      // same microtask turn as that persistence callback.
       while (inflightCount > 0) {
         await new Promise<void>((r) => setImmediate(r));
       }
+      // Then await the whole scheduler-owned task. scheduler.tick(), roster
+      // lookup, circuit persistence, and timer re-arm can fail outside the
+      // narrower executeFired counter window.
+      await Promise.allSettled([...backgroundTasks]);
     },
     tick,
     refreshRoster,
@@ -541,7 +599,7 @@ export const createServerAutoRunScheduler = (
       return scheduler.roster;
     },
     inFlight() {
-      return inflightCount > 0;
+      return backgroundTasks.size > 0 || inflightCount > 0;
     },
   };
 };

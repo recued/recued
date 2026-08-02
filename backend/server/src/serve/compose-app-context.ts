@@ -54,6 +54,7 @@ import {
   type ServerBundleStore,
 } from '../server-bundle-store.js';
 import { createKeyManager, type KeyManager } from '../key-manager.js';
+import { makeConnectionCredentialPersistFailureSink } from '../connection-credential-persist-failure.js';
 import { createVaultStateBus, type VaultStateBus } from '../vault-state-bus.js';
 import type { PairedInstancesStore } from '../paired-instances-store.js';
 import {
@@ -220,6 +221,7 @@ import { buildRemoteFileByteResolvers } from '../collections/file/remote-byte-re
 import type { GateRegistry } from '../storage-gates.js';
 import type { ServerExecutorConfig } from '../server-executor.js';
 import type { SourceMirrorFetchDeps } from '../source-mirror/fetch.js';
+import { purgeSourceData } from '../source-mirror/purge.js';
 import {
   desiredWorkEntitySourcesFor,
   sourceIdConnectionName,
@@ -343,6 +345,10 @@ export interface AppContext extends LlmSubstrate {
    *  chat-less path ⇒ scoped grants never match (fail closed). */
   chatForwardedSenderIndexRef: SessionForwardedSenderIndex | undefined;
   warehouseBus: WarehouseEventBus;
+  /** Close warehouse-bus bridge admission and drain every async capture that
+   *  was admitted before shutdown. Registered as an emitter lifecycle by the
+   *  post-storage runtime. */
+  stopWarehouseEventBridges: () => Promise<void>;
   housekeepingConfigRef: HousekeepingConfigStore | undefined;
   housekeepingStateRef: HousekeepingStateStore | undefined;
   housekeepingTrustRef: TrustStore | undefined;
@@ -418,8 +424,8 @@ export interface AppContext extends LlmSubstrate {
    *  `work_entity_sources` declarations. The boot wire + write executor
    *  consume it in-context; the post-listener sync wire
    *  (`composeWorkEntitySourceSync`) threads it so registration, write, and
-   *  sync enumerate ONE declaration set (kernel ∪ pack). Undefined without a
-   *  work-entity store. */
+   *  sync enumerate ONE declaration set (pack declarations first, then legacy
+   *  compatibility fallbacks). Undefined without a work-entity store. */
   resolveWorkEntityCatalogManifestRef:
     | ((row: ConnectionRow) => IngredientManifest | null)
     | undefined;
@@ -522,6 +528,7 @@ export interface AppContext extends LlmSubstrate {
   remergePromptStoreRef: ContactStoreBundle['remergePromptStore'];
   contactMergeCycleObserverRef: ContactStoreBundle['contactMergeCycleObserver'];
   upstreamMergeStoreRef: ContactStoreBundle['upstreamMergeStore'];
+  contactBackfillDone: ContactStoreBundle['backfillDone'];
 }
 
 export const composeAppContext = (
@@ -602,8 +609,9 @@ export const composeAppContext = (
   // Built ONCE (below) over the local manifest table + the catalog binding
   // store; the boot wire, the write executor's declaration resolver, and the
   // post-listener sync wire all consume this SAME closure so registration,
-  // write, and sync enumerate one declaration set (kernel ∪ pack) and can't
-  // drift. Undefined without a work-entity store.
+  // write, and sync enumerate one declaration set (pack declarations first,
+  // then legacy compatibility fallbacks) and can't drift. Undefined without a
+  // work-entity store.
   let resolveWorkEntityCatalogManifestRef:
     | ((row: ConnectionRow) => IngredientManifest | null)
     | undefined;
@@ -1046,10 +1054,10 @@ export const composeAppContext = (
       ensureSourceDependencyEntitySchema(db);
       workEntitySourceDependencyStoreRef = createSourceDependencyEntityStore(db);
       // D-192 — resolve a connection row → its bound catalog manifest so
-      // pack-declared `work_entity_sources` register + sync alongside the
-      // kernel registry. Reads the PERSISTED `local_manifest` table directly (a
-      // fresh, stateless store over the same `db`), so it works at the boot
-      // scan below — before the post-listener `executeDeps` exist. The
+      // authoritative pack-declared `work_entity_sources` register + sync before
+      // legacy compatibility fallbacks. Reads the PERSISTED `local_manifest`
+      // table directly (a fresh, stateless store over the same `db`), so it
+      // works at the boot scan below — before the post-listener `executeDeps` exist. The
       // connection→catalog key mirrors `connection-operation-profile-boot`: a
       // registered vendor resolves via `catalogSlugForConnection`, a local
       // composition catalog via the D-170 gap-#2 binding store (registered
@@ -1079,6 +1087,39 @@ export const composeAppContext = (
         syncState: workEntitySourceSyncStateRef,
         edges: workEntityEdgeStoreRef,
         dependencyEntities: workEntitySourceDependencyStoreRef,
+        ...(annotationStoreRef && enrichmentStoreRef && fileMetaStoreRef
+          ? {
+              purgeMirroredData: (source) => {
+                const purged = purgeSourceData(source, {
+                  db,
+                  fileMetaStore: fileMetaStoreRef!,
+                  workEntityStore,
+                  annotationStore: annotationStoreRef!,
+                  enrichmentStore: enrichmentStoreRef!,
+                  edges: workEntityEdgeStoreRef!,
+                });
+                // The declaration changed a durable retention boundary and the
+                // purge really happened. Keep the same immutable provenance
+                // action as an owner-requested connection teardown, with an
+                // explicit posture-migration reason. Best-effort: a ledger
+                // failure cannot put already-removed sensitive rows back.
+                if (auditLog) {
+                  void auditLog.logActivity({
+                    activity_id: '',
+                    timestamp: Date.now(),
+                    action: 'source_data_purged',
+                    target: source.id,
+                    detail: JSON.stringify({
+                      reason: 'source_posture_migration',
+                      from: 'records',
+                      to: 'read_through',
+                      ...purged,
+                    }),
+                  }).catch(() => undefined);
+                }
+              },
+            }
+          : {}),
       });
       // The install/uninstall deps drive ONE reconcile hook, but two wires derive
       // connection state from a bound catalog: the boot wire (Source registration)
@@ -1098,10 +1139,10 @@ export const composeAppContext = (
       // D-192 P4b — the write-executor factory: closes over this
       // context's store/mirror/connection-store; the post-listener
       // wire supplies the gateway fetch deps once they exist. The
-      // declaration resolver walks the SAME `desiredWorkEntitySourcesFor`
-      // set (kernel ∪ pack, via `resolveWorkEntityCatalogManifest`)
-      // registration + sync enumerate, so write, sync, and registration
-      // can never drift.
+      // declaration resolver walks the SAME `desiredWorkEntitySourcesFor` set
+      // that registration + sync enumerate (pack first, then compatibility
+      // fallbacks, via `resolveWorkEntityCatalogManifest`), so write, sync, and
+      // registration can never drift.
       const mirror = workEntitySourceMirrorRef;
       const connections = connectionStoreRef;
       // D-192 read resolution — the chat tools' resolver reads the same
@@ -1162,19 +1203,24 @@ export const composeAppContext = (
           // deps fetch their choice list live). The SYNC wire now receives the
           // store too (D-192 #8b fold — `composeWorkEntitySourceSync`), so persist
           // selections ARE populated in production (lone-option auto-select) and
-          // scope the list walk + hydration reads. The chat/MCP TARGETED-READ deps
-          // (`workEntityTargetedReadDepsRef` below) still deliberately omit it: an
-          // existing persist read-binding Source (Google Tasks `tasklist`) keeps
-          // its current read behavior rather than flipping to selection-merged
-          // args in the same change — revisit once the sync-populated selections
-          // have soaked.
+          // scope the list walk + hydration reads. The chat/MCP read deps below
+          // receive the same selected-id view: read-through Sources have no sync
+          // cycle to rediscover scope, so an existing Settings pick is their only
+          // safe, deterministic container authority.
           ...(workEntitySourceDependencyStoreRef !== undefined
             ? { dependencyStore: workEntitySourceDependencyStoreRef }
             : {}),
         });
-        // The read tools' escalation spine — the SAME fetch deps + declaration
-        // resolver, so read, write, sync, and registration can never drift.
-        workEntityTargetedReadDepsRef.current = { fetchDeps, resolveDeclaration };
+        // The read tools' escalation + read-through spine — the SAME fetch deps,
+        // declaration resolver, and persisted container picks as write/sync, so
+        // a source-backed list/read cannot drift on scope arguments.
+        workEntityTargetedReadDepsRef.current = {
+          fetchDeps,
+          resolveDeclaration,
+          ...(workEntitySourceDependencyStoreRef !== undefined
+            ? { dependencyStore: workEntitySourceDependencyStoreRef }
+            : {}),
+        };
       };
     }
     // D-192 file SOURCE family (slice 4/5) — wire one housekeeping reconcile
@@ -1223,6 +1269,12 @@ export const composeAppContext = (
             decodeAuthFromStorage,
             encodeAuthForStorage,
             keyProvider: fileConnKeyProvider,
+            ...(auditLog
+              ? {
+                  onPersistFailure:
+                    makeConnectionCredentialPersistFailureSink(auditLog),
+                }
+              : {}),
           });
         }
         return fileConnResolver(connection_name);
@@ -1330,11 +1382,9 @@ export const composeAppContext = (
   }
 
   const detachWarehouseBridge = bridgeWarehouseEvents(eventBus, warehouseBus);
-  void detachWarehouseBridge;
   const detachEnrichmentCascadeBridge = enrichmentCascadeRef
     ? bridgeEnrichmentCascade(warehouseBus, enrichmentCascadeRef)
     : (() => {});
-  void detachEnrichmentCascadeBridge;
   // D-192 F1 — the commitment-evidence capture producer rides the same
   // bus the CRM folds emit on. Subscribed at compose time; inert until
   // the post-listener wire populates `commitmentEvidenceRuntimeRef`
@@ -1344,7 +1394,6 @@ export const composeAppContext = (
     getLedger: () => commitmentEvidenceLedgerRef,
     getRuntime: () => commitmentEvidenceRuntimeRef.current ?? undefined,
   });
-  void detachCommitmentEvidenceCapture;
 
   // D-192 M4 — the messenger message→commitment funnel rides the same bus:
   // an inbound messenger message that matches the connection's declared
@@ -1365,7 +1414,42 @@ export const composeAppContext = (
     // first-seen matched sender.
     ...(keys ? { keys } : {}),
   });
-  void detachMessengerCommitmentFunnel;
+  let stopWarehouseEventBridgesPromise: Promise<void> | undefined;
+  const stopWarehouseEventBridges = (): Promise<void> => {
+    if (stopWarehouseEventBridgesPromise) {
+      return stopWarehouseEventBridgesPromise;
+    }
+    // Invoke every detach before awaiting any drain so no bridge can admit new
+    // work while a sibling capture is still settling.
+    const begin = (stop: () => void | Promise<void>): Promise<void> => {
+      try {
+        return Promise.resolve(stop());
+      } catch (error) {
+        return Promise.reject(error);
+      }
+    };
+    const drains = [
+      begin(detachWarehouseBridge),
+      begin(detachEnrichmentCascadeBridge),
+      begin(detachCommitmentEvidenceCapture),
+      begin(detachMessengerCommitmentFunnel),
+    ];
+    stopWarehouseEventBridgesPromise = Promise.allSettled(drains).then(
+      (results) => {
+        const errors = results
+          .filter((result): result is PromiseRejectedResult =>
+            result.status === 'rejected')
+          .map((result) => result.reason);
+        if (errors.length > 0) {
+          throw new AggregateError(
+            errors,
+            'one or more warehouse event bridges failed to stop',
+          );
+        }
+      },
+    );
+    return stopWarehouseEventBridgesPromise;
+  };
 
   // D-192 F1 — the `record_contact_edges` counterparty resolver. Reads
   // the (late-assigned) engagement + contact store refs at call time, so
@@ -1457,6 +1541,7 @@ export const composeAppContext = (
     internalRegistryRef: chatBundle?.internalRegistry,
     chatForwardedSenderIndexRef: chatBundle?.forwardedSenderIndex,
     warehouseBus,
+    stopWarehouseEventBridges,
     housekeepingConfigRef,
     housekeepingStateRef,
     housekeepingTrustRef,
@@ -1503,5 +1588,6 @@ export const composeAppContext = (
     remergePromptStoreRef: contactBundle.remergePromptStore,
     contactMergeCycleObserverRef: contactBundle.contactMergeCycleObserver,
     upstreamMergeStoreRef: contactBundle.upstreamMergeStore,
+    contactBackfillDone: contactBundle.backfillDone,
   };
 };

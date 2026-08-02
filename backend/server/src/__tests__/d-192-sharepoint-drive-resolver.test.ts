@@ -5,15 +5,15 @@
  *  `typeof fetch` stub — no network. The enroll wiring (token refresh + persist)
  *  is covered in `d-192-sharepoint-enroll-resolve.test.ts`. */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   parseSharePointSiteUrl,
   resolveSharePointDriveId,
 } from '../sharepoint-drive-resolver.js';
 
-/** A `typeof fetch` stub: record the URL, return a scripted status + JSON body
- *  (or throw a transport error). Only `status`/`ok`/`json()` are consumed. */
+/** A `typeof fetch` stub: record the URL, return a scripted native response
+ *  (or throw a transport error) so body-stream lifecycle checks stay active. */
 const fetchStub = (
   script: (url: string) => { status: number; body?: unknown; malformed?: boolean; throwErr?: Error },
 ): { fetchImpl: typeof fetch; urls: string[] } => {
@@ -23,14 +23,13 @@ const fetchStub = (
     urls.push(url);
     const r = script(url);
     if (r.throwErr) throw r.throwErr;
-    return {
-      status: r.status,
-      ok: r.status >= 200 && r.status < 300,
-      json: async () => {
-        if (r.malformed) throw new Error('Unexpected token < in JSON');
-        return r.body ?? {};
+    return new Response(
+      r.malformed ? '<not-json' : JSON.stringify(r.body ?? {}),
+      {
+        status: r.status,
+        headers: { 'content-type': 'application/json' },
       },
-    } as unknown as Response;
+    );
   }) as typeof fetch;
   return { fetchImpl, urls };
 };
@@ -85,6 +84,23 @@ describe('parseSharePointSiteUrl', () => {
 
 describe('resolveSharePointDriveId', () => {
   const token = 'ACCESS_TOKEN';
+
+  it('refuses a cross-origin redirect before forwarding the Graph bearer token', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(null, {
+      status: 307,
+      headers: { location: 'https://collector.invalid/steal' },
+    }));
+    const out = await resolveSharePointDriveId({
+      siteUrl: 'https://contoso.sharepoint.com/sites/TeamDocs',
+      token,
+      fetchImpl,
+    });
+
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.reason).toMatch(/couldn't reach Microsoft Graph/);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ redirect: 'manual' });
+  });
 
   it('resolves the default library drive id via the colon-addressed Graph URL + bearer auth', async () => {
     const { fetchImpl, urls } = fetchStub(() => ({ status: 200, body: { id: 'b!AbCdEf', name: 'Documents' } }));

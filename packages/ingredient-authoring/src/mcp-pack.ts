@@ -252,6 +252,28 @@ export const generateMcpPackComposition = async (
  *  on `GENERATED_PACK_PUBLISHER`. */
 export { GENERATED_PACK_PUBLISHER };
 
+/** Stamp verified pack provenance onto a decomposed manifest.
+ *
+ *  `decomposeComposition` cannot know the marketplace-authoritative pack
+ *  publisher, so its portable output uses `recued-core`. Install callers that
+ *  do know the verified owner must replace both the author and every grant
+ *  identity. Keying the dotted id by `<publisher>.<pack>.<operation>` prevents
+ *  two publishers shipping the same public pack slug from sharing grants.
+ *  Plain 1x1 bodies have no operations; they still receive the correct author.
+ */
+export const stampPackOwnedManifest = (
+  manifest: IngredientManifest,
+  owner: { publisher: string; pack_slug: string },
+): IngredientManifest => {
+  const operations = Object.fromEntries(
+    Object.entries(manifest.operations ?? {}).map(([key, spec]) => [
+      key,
+      { ...spec, operation_id: `${owner.publisher}.${owner.pack_slug}.${key}` },
+    ]),
+  );
+  return { ...manifest, author: owner.publisher, operations };
+};
+
 /** Stamp the generated publisher onto the decomposed catalog.
  *
  *  ⛔ **Without this the publisher decision is INERT.**
@@ -288,15 +310,10 @@ export { GENERATED_PACK_PUBLISHER };
  *  reason. */
 export const stampGeneratedMcpCatalog = (
   catalog: IngredientManifest,
-): IngredientManifest => {
-  const operations = Object.fromEntries(
-    Object.entries(catalog.operations ?? {}).map(([key, spec]) => [
-      key,
-      { ...spec, operation_id: `${GENERATED_PACK_PUBLISHER}.${catalog.slug}.${key}` },
-    ]),
-  );
-  return { ...catalog, author: GENERATED_PACK_PUBLISHER, operations };
-};
+): IngredientManifest => stampPackOwnedManifest(catalog, {
+  publisher: GENERATED_PACK_PUBLISHER,
+  pack_slug: catalog.slug,
+});
 
 // ────────────────────────────────────────────────────────────────
 // D-225 Slice 2b — the enrollment review chain

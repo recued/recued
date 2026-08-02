@@ -669,10 +669,24 @@ export const composeReceptionSubstrate = async (
     // derivations that can drift — pass the identical reference to both. (D-209 #1 W2b:
     // the construction itself now lives in `recipe-capability-wiring.ts`, shared with the
     // webhook door's save/install wiring for the same reason.)
-    const { composeInstallConfigResolver } = await import(
+    const {
+      composeInstallConfigResolver,
+      composeDoorRecipeResolver,
+      composeRecipeIngredientKindResolver,
+      composeRecipeOpKindsResolver,
+    } = await import(
       '../../recipe-capability-wiring.js'
     );
     const resolveInstallConfig = composeInstallConfigResolver(dishStore);
+    const resolveDoorRecipe = deps.executeDeps === undefined
+      ? undefined
+      : composeDoorRecipeResolver(deps.executeDeps);
+    const resolveIngredientKind = deps.executeDeps === undefined
+      ? undefined
+      : composeRecipeIngredientKindResolver(deps.executeDeps);
+    const resolveOpKinds = deps.executeDeps === undefined
+      ? undefined
+      : composeRecipeOpKindsResolver(deps.executeDeps);
 
     doorBindDeps = {
       pairStore,
@@ -680,8 +694,11 @@ export const composeReceptionSubstrate = async (
       grantEntryStore,
       now: () => Date.now(),
       resolveConfig: resolveInstallConfig,
+      ...(resolveDoorRecipe ? { resolveDoorRecipe } : {}),
       ...(resolveOp ? { resolveOp } : {}),
       ...(resolveOpRisk ? { resolveOpRisk } : {}),
+      ...(resolveIngredientKind ? { resolveIngredientKind } : {}),
+      ...(resolveOpKinds ? { resolveOpKinds } : {}),
     };
 
     if (deps.executeDeps) {
@@ -699,6 +716,11 @@ export const composeReceptionSubstrate = async (
         // for any run carrying a `run_id`, and the runner always carries one (idempotency).
         // Without this the door's recipe runs with an EMPTY config.
         resolveConfig: resolveInstallConfig,
+        resolveRecipe: (recipeId) => deps.recipeStore?.get(recipeId) ?? null,
+        ...(resolveDoorRecipe ? { resolveDoorRecipe } : {}),
+        ...(resolveOp ? { resolveOp } : {}),
+        ...(resolveIngredientKind ? { resolveIngredientKind } : {}),
+        ...(resolveOpKinds ? { resolveOpKinds } : {}),
         // D-207 slice 3c. Absent ⇒ a recipe naming an offer REFUSES rather than silently
         // degrading to plain intake, which would thank a visitor who came to buy.
         ...(sellerOfferStore && sellerOrderStore

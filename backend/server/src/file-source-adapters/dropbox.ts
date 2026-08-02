@@ -54,6 +54,7 @@ import type {
   FileFetch,
   FileSourceLeafDeps,
 } from './index.js';
+import { fetchFileSourceApi } from './http-json.js';
 import { drainPagedList, type PagedListDrain, type PagedListPage } from './paged-list.js';
 
 const DROPBOX_API = 'https://api.dropboxapi.com';
@@ -121,7 +122,7 @@ const dropboxPost = async (
   token: string,
   body: Record<string, unknown>,
 ): Promise<unknown> => {
-  const res = await fetchImpl(url, {
+  const res = await fetchFileSourceApi(fetchImpl, url, {
     method: 'POST',
     headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
     body: JSON.stringify(body),

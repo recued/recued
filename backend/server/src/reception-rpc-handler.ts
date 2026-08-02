@@ -2134,12 +2134,20 @@ function pairView(
  *  first ungranted op, with the visitor eating the failure. */
 const describeDoorRefusal = (refusal: ReceptionDoorRefusal): string => {
   switch (refusal.reason) {
+    case 'dispatch_unresolvable':
+      return `this recipe cannot be lowered to the exact operations and account bindings the public form would run: ${refusal.detail}`;
     case 'dynamic_dispatch':
       return `step '${refusal.step_id}' chooses what to run at runtime (${refusal.field}), so what this form could do is not knowable in advance. A public form must be statically analyzable.`;
     case 'dynamic_connection':
       return `step '${refusal.step_id}' resolves its connection at runtime (${refusal.ref}), so which account it would use is not knowable in advance.`;
     case 'literal_connection':
       return `step '${refusal.step_id}' names a connection directly ('${refusal.ref}'). A connection is a slot filled by the pack's enrollment, never hard-coded in a recipe.`;
+    case 'cost_step_limit':
+      return `this recipe has ${refusal.steps} steps, above the public-form limit of ${refusal.max_steps}. Split the workflow or keep it owner-run so one anonymous submission cannot spend unbounded work.`;
+    case 'cost_dynamic_fanout':
+      return `step '${refusal.step_id}' uses foreach. A public form cannot bind a step whose dispatch count expands with runtime data; replace the fan-out with a bounded server operation or keep this recipe owner-run.`;
+    case 'cost_unknown_dispatch_kind':
+      return `step '${refusal.step_id}' runs '${refusal.target}', but this server cannot classify its execution kind. The public-form cost gate cannot prove it is non-AI, so binding fails closed.`;
     // D-207 slice 3c. Say the whole causal chain, because the owner's instinct will be that
     // an approval queue is a fine place for this write to sit — and it is, on a form that
     // owes the visitor nothing. The point they need is that a HELD run produces NO OUTPUT,

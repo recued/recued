@@ -386,7 +386,7 @@ export const buildDynamicsEngagementLeaf = (
         // non-reset path errors the step, retried next idle window once auth is fixed).
         throw new Error(`dynamics connection '${connection.name}' has no usable access token`);
       }
-      return buildDataverseDeltaDeps(deps.fetch, token);
+      return buildDataverseDeltaDeps(deps.fetch, token, baseUrl(connection));
     },
     coldStartRef: (connection: ConnectionRecord): string =>
       `${baseUrl(connection)}/${config.set}?$select=${config.select}`,

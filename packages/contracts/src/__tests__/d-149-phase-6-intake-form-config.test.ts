@@ -750,6 +750,20 @@ describe('D-149 P6 § A.5.3 — anti_spam', () => {
     ).toBe(true);
   });
 
+  it('rejects enabled proof-of-work / CAPTCHA flags while runtime enforcement is unavailable', () => {
+    for (const field of ['require_proof_of_work', 'require_captcha'] as const) {
+      const config = {
+        ...goodConfig,
+        anti_spam: { ...goodConfig.anti_spam, [field]: true },
+      };
+      const failures = validateIntakeFormConfig(config);
+      expect(failures).toContainEqual(expect.objectContaining({
+        code: 'anti_spam_invalid',
+        detail: expect.stringContaining('must be false'),
+      }));
+    }
+  });
+
   it('rejects known_domain_allowlist over the entry-count cap', () => {
     const entries = Array.from(
       { length: INTAKE_FORM_DOMAIN_ALLOWLIST_MAX + 1 },

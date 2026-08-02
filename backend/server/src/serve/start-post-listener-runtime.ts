@@ -10,6 +10,7 @@ import {
 import type { SchedulersBundle } from '../composition/bin/wire-schedulers.js';
 import type { EventTriggerDispatcher } from '../triggers/dispatcher.js';
 import type { PollManagerHandle } from '../watch/poll-manager.js';
+import type { MessengerIngressSupervisor } from '../messenger-ingress/supervisor.js';
 import type { UpstreamMergeRegistry } from '../data/vendor-boot-registry.js';
 import type { EvictionCascade } from '../eviction-cascade.js';
 import type { BootedServerIdentity } from '../identity/boot.js';
@@ -141,6 +142,9 @@ export interface StartPostListenerRuntimeOptions {
    *  polls; maintenance exit re-arms via the maintenance context's
    *  late-bound recompute hook. */
   readonly watchManager: PollManagerHandle | undefined;
+  /** Outbound-established messenger connections stay live during scheduler-only
+   * maintenance and stop during whole-process shutdown. */
+  readonly messengerIngressSupervisor?: MessengerIngressSupervisor;
   readonly publishSchedulersBundle: (bundle: SchedulersBundle) => void;
   readonly publishVendorRefs: (refs: VendorSubstratePublishedRefs) => void;
   readonly rotationEngine: StartHousekeepingStartupOptions['rotationEngine'];
@@ -332,6 +336,17 @@ export const startPostListenerRuntime = async (
     });
   }
 
+  if (options.messengerIngressSupervisor) {
+    const supervisor = options.messengerIngressSupervisor;
+    options.backgroundServices.register({
+      name: 'messenger-local-ingress',
+      kind: 'emitter',
+      stop: async () => {
+        await supervisor.stop();
+      },
+    });
+  }
+
   // R21.1 — vault-gated-executors coordinator. Each executor PAUSES
   // itself while the vault is sealed (its tick/dispatch gates on the
   // live `isVaultUnlocked` predicate); this owns the RESUME edge —
@@ -365,7 +380,7 @@ export const startPostListenerRuntime = async (
       name: 'vault-gated-executors',
       kind: 'emitter',
       stop: async () => {
-        coordinator.dispose();
+        await coordinator.dispose();
       },
     });
   }
@@ -476,6 +491,7 @@ export const startPostListenerRuntime = async (
       vendorRefs = refs;
       options.publishVendorRefs(refs);
     },
+    backgroundServices: options.backgroundServices,
     rotationEngine: options.rotationEngine,
     tlsCertSource,
     tlsRenewerConfigured,

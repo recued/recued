@@ -49,6 +49,7 @@ import {
   reconcileWebhookAwaitingApprovalDispatches,
 } from '../webhook-recipe-runner.js';
 import {
+  composeDoorRecipeResolver,
   composeInstallConfigResolver,
   composeRecipeOpResolver,
 } from '../recipe-capability-wiring.js';
@@ -69,6 +70,11 @@ import {
 import { deriveReceptionPepperFromSubDek } from '../ports/reception/server-secret-pepper.js';
 import { createReceptionAttachFileSeam } from '../ports/reception/projection/reception-attach-file.js';
 import { composeTelegramCallbackAck } from '../composition/bin/wire-telegram-callback-ack.js';
+import { createMessengerIngressStateStore } from '../storage/messenger-ingress-state-store.js';
+import {
+  createMessengerIngressSupervisor,
+  type MessengerIngressSupervisor,
+} from '../messenger-ingress/supervisor.js';
 import {
   createProductionPathListenerCoordinator,
   type ProductionPathListenerCoordinator,
@@ -145,7 +151,7 @@ import {
 // D-225 Slice 2 — the generated-pack install closure handed to connectionDeps.
 import { handlePacksInstall } from '../pack-install-handler.js';
 import { handlePacksUninstall } from '../pack-uninstall-handler.js';
-import { handleConnectionDelete } from '../connection-handler.js';
+import { decodeAuthFromStorage, handleConnectionDelete } from '../connection-handler.js';
 import { removePackOwnerRulings } from '../pack-inventory.js';
 import { mcpConnectionForPackSlug } from '@recued/ingredient-authoring';
 import { executeLLM } from '@recued/llm';
@@ -199,6 +205,9 @@ export interface ComposeListenersResult {
    *  post-listener runtime registers its stop closure; maintenance
    *  exit recomputes via the late-bound getter. */
   watchManager: PollManagerHandle | undefined;
+  /** Local-first Slack/Telegram/Discord ingress. Starts after the shared
+   * inbound dispatcher is composed and stops with the listener lifecycle. */
+  messengerIngressSupervisor?: MessengerIngressSupervisor;
   /** D-178 slice 4b — on-boot update reconcile (commit / auto-revert +
    *  ledger→audit replay). Undefined on a delegated channel / dbless boot.
    *  The post-housekeeping tail invokes it AFTER markBooted so a healthy
@@ -322,6 +331,7 @@ export interface ComposeListenersOptions {
     // R21.1 — gates the event-trigger dispatcher + watch poll-manager on
     // vault-unlocked (drop fan-out / disarm loops while sealed).
     | 'isVaultUnlocked'
+    | 'vaultStateBus'
     // Reactive-substrate slice 1 — the event-trigger dispatcher
     // subscribes enabled trigger patterns on the warehouse bus.
     | 'warehouseBus'
@@ -668,6 +678,43 @@ export const composeListeners = async (
     markSourceEvent: (source_key, at) => watchSourceRegistry.markEvent(source_key, at),
   });
 
+  // Several embedders compose a deliberately narrow, read-only connection
+  // lookup. Local ingress needs the full live store contract so it can follow
+  // enroll, rotation, and delete events; do not mistake a lookup-only adapter
+  // for that lifecycle-capable store at runtime.
+  const messengerIngressStore = app.connectionStoreRef;
+  const canSuperviseMessengerIngress = messengerIngressStore
+    && typeof messengerIngressStore.list === 'function'
+    && typeof messengerIngressStore.addOnUpsert === 'function'
+    && typeof messengerIngressStore.addOnDelete === 'function';
+  const messengerIngressSupervisor = canSuperviseMessengerIngress && storage.db
+    ? createMessengerIngressSupervisor({
+        connectionStore: messengerIngressStore,
+        stateStore: createMessengerIngressStateStore(storage.db),
+        dispatchers: messengerDispatchers,
+        decodeAuth: (row) => {
+          const keyProvider = app.keys && app.keys.state() !== 'uninitialized'
+            ? app.keys.keyProvider('connection')
+            : undefined;
+          return decodeAuthFromStorage(
+            row.auth_ciphertext,
+            { kind: row.kind, name: row.name },
+            keyProvider,
+          );
+        },
+        ...(app.serverState
+          ? { isPaused: (): boolean => app.serverState!.isPaused() }
+          : {}),
+        isVaultUnlocked: app.isVaultUnlocked,
+        ...(app.vaultStateBus
+          ? { subscribeVault: (listener) => app.vaultStateBus.subscribe(listener) }
+          : {}),
+        log: (level, message, data) => {
+          const fn = level === 'warn' ? console.warn : console.log;
+          fn(`[messenger-ingress] ${message}`, data ?? '');
+        },
+      })
+    : undefined;
   // D-158 P2b — the inbound reply-by-email funnel: the watcher-driven peer
   // of the Slack / Telegram webhook dispatcher above. Email has no webhook —
   // a reply lands in the notification account's own mirrored mailbox — so
@@ -744,22 +791,33 @@ export const composeListeners = async (
   // plumbing the operator owns.
   if (app.connectionStoreRef) {
     const messengerConnectionStore = app.connectionStoreRef;
-    const messengerPortLive = vendorWebhookListener !== undefined;
     watchSourceRegistry.register('messenger', {
       list() {
         const rows: WatchSourceStatusEntry[] = [];
         // D-192 seam 12 — every declared chat transport, so a new one appears in
         // the watch-source list with no edit here.
         for (const vendor of listMessengerVendors()) {
-          if (messengerConnectionStore.get('notification', vendor) === null) continue;
+          const connection = messengerConnectionStore.get('notification', vendor);
+          if (connection === null) continue;
+          const status = messengerIngressSupervisor?.status(vendor, vendor) ?? null;
+          const webhookActive = status?.state === 'webhook' && vendorWebhookListener !== undefined;
+          const localActive = status?.state === 'active';
+          const active = webhookActive || localActive;
           rows.push({
             source_key: messengerSourceKey(vendor),
             mechanism: 'messenger',
             // The declaration already carries the string a human should read.
             label: `${getMessengerVendorDeclaration(vendor)?.display_name ?? vendor} inbound messages`,
             emits: [`data.messenger.${vendor}.message.created`],
-            active: messengerPortLive,
-            inactive_reason: messengerPortLive ? null : 'inbound webhook port not configured',
+            active,
+            inactive_reason: active
+              ? null
+              : status?.detail
+                ?? (status?.state === 'webhook'
+                  ? 'inbound webhook port not configured'
+                  : status === null
+                    ? 'messenger ingress is not configured'
+                    : `messenger ingress is ${status.state}`),
             last_event_at: null,
           });
         }
@@ -1548,6 +1606,8 @@ export const composeListeners = async (
   const resolveWebhookInstallConfig = composeInstallConfigResolver(
     execution.executeDeps.dishStore,
   );
+  const resolveWebhookDoorRecipe = composeDoorRecipeResolver(execution.executeDeps);
+  const resolveWebhookRecipeOp = composeRecipeOpResolver(execution.executeDeps);
 
   // D-209 #1 W2b — the webhook DOOR substrate: what `recipe.save` /
   // `packs.install` mint a webhook-declaring recipe's derived door with, and
@@ -1566,6 +1626,7 @@ export const composeListeners = async (
           consumerStore: app.webhookConsumerStoreRef,
           now: () => Date.now(),
           resolveConfig: resolveWebhookInstallConfig,
+          resolveDoorRecipe: resolveWebhookDoorRecipe,
           preflightNonOwnerRecipeExposure: (recipe) =>
             assertRecordsNonOwnerRecipeExposure(
               recipe,
@@ -1577,10 +1638,7 @@ export const composeListeners = async (
                   storage.recordsStore.isInstalledCatalogOperation(catalogSlug, operationKey),
               },
             ),
-          ...((): Pick<WebhookDoorEnrollDeps, 'resolveOp'> => {
-            const resolveOp = composeRecipeOpResolver(execution.executeDeps);
-            return resolveOp ? { resolveOp } : {};
-          })(),
+          ...(resolveWebhookRecipeOp ? { resolveOp: resolveWebhookRecipeOp } : {}),
         }
       : undefined;
 
@@ -1600,6 +1658,8 @@ export const composeListeners = async (
             // because its idempotency `run_id` suppresses `handleExecute`'s
             // dish merge (see `ExecuteWebhookRecipeRunnerDeps.resolveConfig`).
             resolveConfig: resolveWebhookInstallConfig,
+            resolveDoorRecipe: resolveWebhookDoorRecipe,
+            ...(resolveWebhookRecipeOp ? { resolveOp: resolveWebhookRecipeOp } : {}),
             // D-209 #1 W3 — the door snapshot resolves from the SAME store the
             // Gateway reads (a grant the mint wrote must be a grant the gate can
             // see). A partial harness without one resolves every stamped door
@@ -3093,7 +3153,40 @@ export const composeListeners = async (
 
   // Start only after every handler and listener dependency has composed. If a
   // later constructor above throws, no polling timer survives failed startup.
+  await messengerIngressSupervisor?.start();
   webhookOutboxRuntime?.start();
+
+  let closePromise: Promise<void> | undefined;
+  const closeServer = (): Promise<void> => {
+    if (closePromise) return closePromise;
+    const begin = (stop: () => void | Promise<void>): Promise<void> => {
+      try { return Promise.resolve(stop()); }
+      catch (err) { return Promise.reject(err); }
+    };
+    // Close every independent admission door before waiting for a potentially
+    // slow or failed sibling. Database teardown happens later in lifecycle;
+    // report failures only after every network/background branch has drained.
+    const drains = [
+      ...(webhookOutboxRuntime ? [begin(() => webhookOutboxRuntime.stop())] : []),
+      ...(messengerIngressSupervisor
+        ? [begin(() => messengerIngressSupervisor.stop())]
+        : []),
+      begin(() => inboundEmailAnswer.dispose()),
+      begin(() => serverHandlerSet.close()),
+      begin(() => listenerCoordinator.stop()),
+    ];
+    closePromise = Promise.allSettled(drains).then((results) => {
+      const errors = results
+        .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+        .flatMap((result) => result.reason instanceof AggregateError
+          ? result.reason.errors
+          : [result.reason]);
+      if (errors.length > 0) {
+        throw new AggregateError(errors, 'listener runtime teardown failed');
+      }
+    });
+    return closePromise;
+  };
 
   // Surface a `RunningServer`-shaped facade so the remaining serve
   // orchestration keeps reading `server.wsServer` / `server.port` /
@@ -3107,14 +3200,7 @@ export const composeListeners = async (
         .find((s) => s.listener === 'lan');
       return lanStatus?.port ?? port;
     },
-    close: async (): Promise<void> => {
-      await webhookOutboxRuntime?.stop();
-      // Drop the warehouse-bus subscription behind the inbound reply-by-email
-      // funnel before tearing the HTTP surface down.
-      inboundEmailAnswer.dispose();
-      serverHandlerSet.close();
-      await listenerCoordinator.stop();
-    },
+    close: closeServer,
   };
 
   return {
@@ -3126,6 +3212,7 @@ export const composeListeners = async (
     server,
     eventTriggerDispatcher: eventTriggersBundle?.dispatcher,
     watchManager: watchBundle?.manager,
+    messengerIngressSupervisor,
     runUpdateBootReconcile,
   };
 };

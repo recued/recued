@@ -24,6 +24,8 @@
  *  product intentionally talks to local LLMs + self-hosted APIs); only a
  *  redirect that CHANGES origin is refused. */
 
+import { discardResponseBody } from './bounded-response-body.js';
+
 /** Thrown when an enrolled endpoint redirects to a different origin, or
  *  loops past the same-origin hop cap. The caller maps it to its own
  *  ingredient error code (api → `URL_REF_INVALID`; refresh →
@@ -96,8 +98,13 @@ export const fetchOriginPinned = async (
     }
 
     if (next.origin !== pinnedOrigin) {
+      discardResponseBody(response);
       throw new CrossOriginRedirectError(pinnedOrigin, next.origin);
     }
+    // The redirect response itself is not returned to a caller. Release its
+    // body before opening the next hop so a 3xx with an endless payload cannot
+    // retain one socket per hop until garbage collection.
+    discardResponseBody(response);
     currentUrl = next.toString();
     // RFC 9110 §15.4.4 — a 303 See Other turns the next request into a
     // GET with no body. 301/302/307/308 keep method + body (safe here:

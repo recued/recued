@@ -122,7 +122,7 @@ describe('D-215 § 9e (e) — link 2: pressure never evicts a file surface', () 
       r.reason_if_skipped,
       'if a file surface becomes evictable, every dish-held file_ref becomes reclaimable — see D-215 § 9e item (e)',
     ).toBe('not_evictable');
-    cascade.close();
+    await cascade.close();
   });
 });
 

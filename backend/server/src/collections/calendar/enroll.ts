@@ -411,14 +411,11 @@ export const handleCalendarEnrollOAuth = async (
  *       A row whose grant cannot serve it would be a lie the account list tells
  *       forever.
  *
- *  ⚠ KNOWN RESIDUAL — the shared grant has no IDENTITY. Mail and calendar slugs
- *  are independent user-chosen names, and nothing compares the Microsoft
- *  tenant/subject behind them, so enrolling a DIFFERENT Microsoft account as mail
- *  `work` overwrites the grant a calendar `work` was using. That aliasing
- *  predates this path (the shared prefix is the D-117 design) but this path makes
- *  same-slug the normal case, so it deserves naming: the durable fix is storing
- *  tenant+subject at enroll and refusing a mismatch. Since the sync-outcome work,
- *  such a mismatch at least degrades VISIBLY rather than silently.
+ *  Shared-grant identity is enforced at the overwrite boundary. Every Graph
+ *  enroll records the authenticated `/me` object id (plus tenant when available),
+ *  and mail re-enrollment refuses a mismatch or an unprovable replacement while
+ *  this calendar row depends on the same prefix. This attach path does not replace
+ *  the credential, so its successful live probe remains the account/scope proof.
  *
  *  There is deliberately no `gcal` twin — Google's `gmail` and `gcal` prefixes
  *  differ, so there is nothing shared to adopt. */

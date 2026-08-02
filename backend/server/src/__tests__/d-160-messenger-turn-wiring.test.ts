@@ -932,6 +932,56 @@ describe('D-160 messenger turn composer - queueing and run-stage robustness', ()
     );
   });
 
+  it('runs a Discord turn on the Gateway and refuses the same message on the webhook', async () => {
+    // The NEGATIVE CONTROL for the per-mode role narrowing. Discord is the one
+    // vendor whose conversational capability moves with the ingress mode, and
+    // the declaration alone proves nothing about whether the GATE reads it — so
+    // drive the identical payload through both modes on the real ingest.
+    const discordRow = (ingress_mode: string): ConnectionRow => {
+      const auth = bearerAuth('discord-bot-token');
+      return {
+        ...buildConnectionRow({
+          name: 'discord',
+          auth,
+          // A real Discord snowflake — the recipient resolver refuses a
+          // non-numeric id, so a Slack-shaped fixture would fail for the
+          // wrong reason and prove nothing about the role gate.
+          config: { channel_id: '123456789012345678', ingress_mode },
+        }),
+        auth_ciphertext: encodePlaintextAuth(auth),
+      };
+    };
+    const payload = {
+      id: 'M-1',
+      channel_id: '123456789012345678',
+      content: 'what is on my calendar',
+      author: { id: 'U-1' },
+    };
+
+    const gateway = captureLogs();
+    const { ingest: gatewayIngest } = composeIngest({
+      store: stubConnectionStore(discordRow('socket')),
+      fetchImpl: jsonFetch({ id: 'posted' }),
+      log: gateway.log,
+    });
+    await expect(gatewayIngest('discord', 'discord', payload)).resolves.toBe(true);
+
+    const webhook = captureLogs();
+    const { ingest: webhookIngest, runMessengerTurn } = composeIngest({
+      store: stubConnectionStore(discordRow('webhook')),
+      fetchImpl: jsonFetch({ id: 'posted' }),
+      log: webhook.log,
+    });
+    await expect(webhookIngest('discord', 'discord', payload)).resolves.toBe(false);
+    expect(runMessengerTurn).not.toHaveBeenCalled();
+    expect(webhook.entries).toContainEqual(
+      expect.objectContaining({
+        level: 'info',
+        msg: expect.stringContaining('declares no messenger role'),
+      }),
+    );
+  });
+
   it('drops queued Slack turns when the canonical row is removed before run-stage re-resolution', async () => {
     const logs = captureLogs();
     const row = slackRow({ channel_id: 'C123' });

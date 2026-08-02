@@ -81,11 +81,9 @@ describe('D-158 P1 / D-163 P0 NotificationSettings surface', () => {
         approval_togglable: true,
         ready: false,
       },
-      // D-192 — Discord is a notify + approve channel (`roles.messenger:false`,
-      // so it is NOT in the messenger/converse surface, but it DOES appear here
-      // because it can be toggled on the notify + approval axes). WhatsApp is
-      // deliberately ABSENT: its only role is `messenger`, so there is nothing to
-      // toggle in this panel.
+      // D-192 — Discord supports notify + approve here and conversation through
+      // Gateway. WhatsApp is deliberately absent: its only role is `messenger`,
+      // so there is nothing to toggle in this panel.
       {
         channel: 'discord',
         capability: 'inline',

@@ -2,6 +2,11 @@ import { walkPath } from '@recued/contracts';
 import { IngredientError, type ResolvedCall } from './types.js';
 import { resolveTimeoutMs, isWriteRiskTier } from './timeout.js';
 import { CrossOriginRedirectError, fetchOriginPinned } from './origin-pinned-fetch.js';
+import {
+  discardResponseBody,
+  readBoundedResponseText,
+  ResponseBodyTooLargeError,
+} from './bounded-response-body.js';
 
 const PROTOTYPE_SENSITIVE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -147,6 +152,7 @@ const postJsonRpc = async (
     }, requestOrigin);
 
     if (!response.ok) {
+      discardResponseBody(response);
       if (isWrite && response.status >= 500) {
         throw new IngredientError(
           'ACTION_DELIVERY_UNCERTAIN',
@@ -160,12 +166,27 @@ const postJsonRpc = async (
       );
     }
 
-    const json = await response.json() as JsonRpcResponse;
+    const { text } = await readBoundedResponseText(response);
+    const json = JSON.parse(text) as JsonRpcResponse;
     if (json.jsonrpc !== '2.0') {
       throw new IngredientError('NETWORK_ERROR', `MCP server ${slug} returned non-JSON-RPC response`);
     }
     return json;
   } catch (e) {
+    if (e instanceof ResponseBodyTooLargeError) {
+      if (isWrite) {
+        throw new IngredientError(
+          'ACTION_DELIVERY_UNCERTAIN',
+          `MCP write to ${slug} returned an oversized response after invocation — outcome cannot be confirmed, please verify state in the target system before retrying`,
+          { cause: 'response_too_large', max_bytes: e.maxBytes },
+        );
+      }
+      throw new IngredientError(
+        'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+        `MCP server ${slug} response exceeded the ${e.maxBytes}-byte body limit`,
+        { max_bytes: e.maxBytes },
+      );
+    }
     if (e instanceof IngredientError) throw e;
     if (e instanceof CrossOriginRedirectError) {
       throw new IngredientError(

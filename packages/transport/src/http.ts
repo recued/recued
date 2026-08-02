@@ -17,6 +17,8 @@ import { pipeline } from 'node:stream/promises';
 
 /** Default per-request timeout. Overridable per transport. */
 export const DEFAULT_TIMEOUT_MS = 15_000;
+/** Vendor control envelopes are tiny; this is intentionally generous. */
+export const DEFAULT_JSON_RESPONSE_MAX_BYTES = 1024 * 1024;
 
 /** Head bytes captured from a streamed download for server-side magic-byte
  *  detection (D-172 N.1 — the stored mime is detected, not vendor-reported). */
@@ -27,6 +29,7 @@ export interface HttpPostOptions {
   body: string;
   timeoutMs: number;
   fetchImpl: typeof fetch;
+  maxResponseBytes?: number;
 }
 
 export interface HttpGetBytesOptions {
@@ -56,6 +59,7 @@ export interface HttpGetJsonOptions {
   headers?: Record<string, string>;
   timeoutMs: number;
   fetchImpl: typeof fetch;
+  maxResponseBytes?: number;
 }
 
 /** Discriminated HTTP-layer outcome for binary downloads. */
@@ -63,6 +67,98 @@ export type HttpBytesOutcome =
   | { ok: true; status: number; bytes: Buffer; contentType?: string }
   | { ok: false; kind: 'timeout' | 'network'; detail: string }
   | { ok: false; kind: 'http_error'; status: number; detail: string };
+
+class TransportResponseBodyTooLargeError extends Error {
+  constructor(readonly maxBytes: number) {
+    super(`response body exceeded ${maxBytes} bytes`);
+    this.name = 'TransportResponseBodyTooLargeError';
+  }
+}
+
+const discardResponseBody = (response: Response): void => {
+  try {
+    void response.body?.cancel().catch(() => undefined);
+  } catch {
+    // Best-effort socket release only.
+  }
+};
+
+/** Read a response incrementally so a forged/missing Content-Length cannot turn
+ *  one vendor envelope into an unbounded process allocation. */
+const readBoundedResponseText = async (
+  response: Response,
+  maxBytes: number,
+): Promise<string> => {
+  const shaped = response as Response & {
+    body?: ReadableStream<Uint8Array> | null;
+    headers?: Headers;
+    text?: () => Promise<string>;
+    json?: () => Promise<unknown>;
+  };
+  const declaredRaw = typeof shaped.headers?.get === 'function'
+    ? shaped.headers.get('content-length')
+    : null;
+  const declared = declaredRaw === null ? null : Number(declaredRaw);
+  if (declared !== null && Number.isSafeInteger(declared) && declared > maxBytes) {
+    discardResponseBody(response);
+    throw new TransportResponseBodyTooLargeError(maxBytes);
+  }
+
+  // Tests and embedding callers may provide the package's documented fetch
+  // seam with a minimal Response-like object. Preserve that seam while still
+  // measuring the serialized result before it can reach a caller.
+  if (shaped.body === undefined) {
+    let text: string;
+    if (typeof shaped.text === 'function') {
+      text = await shaped.text();
+    } else if (typeof shaped.json === 'function') {
+      const serialized = JSON.stringify(await shaped.json());
+      if (serialized === undefined) {
+        throw new TypeError('response JSON is not serializable');
+      }
+      text = serialized;
+    } else {
+      throw new TypeError('response body is not readable');
+    }
+    if (Buffer.byteLength(text, 'utf8') > maxBytes) {
+      throw new TransportResponseBodyTooLargeError(maxBytes);
+    }
+    return text;
+  }
+
+  if (shaped.body === null) {
+    const text = await response.text();
+    if (Buffer.byteLength(text, 'utf8') > maxBytes) {
+      throw new TransportResponseBodyTooLargeError(maxBytes);
+    }
+    return text;
+  }
+
+  const reader = shaped.body.getReader();
+  const chunks: Buffer[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        throw new TransportResponseBodyTooLargeError(maxBytes);
+      }
+      chunks.push(Buffer.from(value));
+    }
+  } finally {
+    reader.releaseLock();
+  }
+  return Buffer.concat(chunks, total).toString('utf8');
+};
+
+const readBoundedJson = async (
+  response: Response,
+  maxBytes: number,
+): Promise<unknown> =>
+  JSON.parse(await readBoundedResponseText(response, maxBytes)) as unknown;
 
 /** ONE JSON round-trip, method-parameterised. Never throws — every failure mode
  *  resolves as a discriminated `{ ok: false }`.
@@ -85,8 +181,17 @@ const requestJson = async (
     body?: string;
     timeoutMs: number;
     fetchImpl: typeof fetch;
+    maxResponseBytes?: number;
   },
 ): Promise<HttpPostOutcome> => {
+  const maxResponseBytes = opts.maxResponseBytes ?? DEFAULT_JSON_RESPONSE_MAX_BYTES;
+  if (!Number.isSafeInteger(maxResponseBytes) || maxResponseBytes < 1) {
+    return {
+      ok: false,
+      kind: 'network',
+      detail: 'response body limit must be a positive safe integer',
+    };
+  }
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), opts.timeoutMs);
   try {
@@ -97,6 +202,9 @@ const requestJson = async (
         ...(opts.headers ? { headers: opts.headers } : {}),
         ...(opts.body !== undefined ? { body: opts.body } : {}),
         signal: controller.signal,
+        // Control endpoints are fixed vendor URLs. Refuse redirects rather
+        // than replay bot tokens, bearer credentials, or request bodies.
+        redirect: 'error',
       });
     } catch (e) {
       const err = e as { name?: string; message?: string };
@@ -117,7 +225,7 @@ const requestJson = async (
       // is exactly what it was before: the status and nothing more.
       let errJson: unknown;
       try {
-        errJson = await response.json();
+        errJson = await readBoundedJson(response, maxResponseBytes);
       } catch {
         errJson = undefined;
       }
@@ -130,18 +238,11 @@ const requestJson = async (
       };
     }
 
-    // ⚠ `response.json()`, deliberately — NOT a `.text()` + `JSON.parse` with an
-    // empty-body fallback, which is what this briefly was. That version was written
-    // to tolerate a 204, tolerated far more than it meant to, and broke a live path:
-    // it swallowed ANY failure of the body read into `{ ok: true, json: null }`, so a
-    // caller reading a field off the envelope got `null` and NO error — the Slack
-    // profile-email writer quietly stopped linking senders. A silent null in the one
-    // shared HTTP helper, introduced during an arc about silent nulls. It bought
-    // nothing either: no endpoint any transport calls returns a 204 (Discord's message
-    // edit answers 200 with the message). Tolerate less; fail louder.
+    // No endpoint this transport calls returns 204. Empty or malformed JSON is
+    // therefore a real transport failure, never a silent `null` success.
     let json: unknown;
     try {
-      json = await response.json();
+      json = await readBoundedJson(response, maxResponseBytes);
     } catch (e) {
       const err = e as { name?: string; message?: string };
       if (err?.name === 'AbortError') {
@@ -154,7 +255,9 @@ const requestJson = async (
       return {
         ok: false,
         kind: 'network',
-        detail: `malformed JSON response: ${err?.message ?? 'parse error'}`,
+        detail: e instanceof TransportResponseBodyTooLargeError
+          ? e.message
+          : `malformed JSON response: ${err?.message ?? 'parse error'}`,
       };
     }
     return { ok: true, status: response.status, json };
@@ -174,6 +277,9 @@ export const postJson = (
     body: opts.body,
     timeoutMs: opts.timeoutMs,
     fetchImpl: opts.fetchImpl,
+    ...(opts.maxResponseBytes !== undefined
+      ? { maxResponseBytes: opts.maxResponseBytes }
+      : {}),
   });
 
 /** GET a JSON body — the read-side twin. Added for WhatsApp's two-step media fetch
@@ -189,6 +295,9 @@ export const getJson = (
     ...(opts.headers ? { headers: opts.headers } : {}),
     timeoutMs: opts.timeoutMs,
     fetchImpl: opts.fetchImpl,
+    ...(opts.maxResponseBytes !== undefined
+      ? { maxResponseBytes: opts.maxResponseBytes }
+      : {}),
   });
 
 /** PATCH a JSON body. D-192 Discord — editing a sent message is how a prompt's
@@ -205,6 +314,9 @@ export const patchJson = (
     body: opts.body,
     timeoutMs: opts.timeoutMs,
     fetchImpl: opts.fetchImpl,
+    ...(opts.maxResponseBytes !== undefined
+      ? { maxResponseBytes: opts.maxResponseBytes }
+      : {}),
   });
 
 /** GET bytes with an abort-backed timeout. Never throws — every failure

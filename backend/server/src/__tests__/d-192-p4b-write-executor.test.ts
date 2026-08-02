@@ -245,6 +245,8 @@ const registerTaskSource = (): void => {
 const makeExecutor = (
   opts: {
     declaration?: KernelWorkEntitySourceDeclaration | null;
+    /** Override the live declaration resolver for migration-race coverage. */
+    resolveDeclaration?: WorkEntityWriteExecutorDeps['resolveDeclaration'];
     deps?: SourceMirrorFetchDeps;
     runOperation?: RunGatedCatalogOperationFn;
     now?: () => number;
@@ -272,14 +274,14 @@ const makeExecutor = (
         return store.clearPendingWrite(kind, id);
       },
     },
-    resolveDeclaration: (source_id) =>
+    resolveDeclaration: opts.resolveDeclaration ?? ((source_id) =>
       declaration !== null && source_id === SOURCE_ID
         ? {
             declaration,
             connection_name: CONNECTION,
             ...(opts.connection_config !== undefined ? { connection_config: opts.connection_config } : {}),
           }
-        : null,
+        : null),
     now: opts.now ?? (() => NOW),
     ...(opts.dependencyStore !== undefined
       ? { dependencyStore: opts.dependencyStore as never }
@@ -462,7 +464,7 @@ const seedSyncState = (
     degraded: false,
     field_health_blob: null,
     list_complete: true,
-    stale_after_ms: declaration.sync.stale_after_ms,
+    stale_after_ms: declaration.sync.stale_after_ms!,
   });
 };
 
@@ -694,6 +696,24 @@ describe('prepare', () => {
       operation: 'update',
       patch: { title: 'x' },
     })).toMatchObject({ ok: false, kind: 'config', reason: expect.stringContaining('read_only') });
+
+    const readThrough = taskDeclaration({
+      sync: { posture: 'read_through', mode: 'read_write', depth: 'meta' },
+      read_resolution: {
+        default: 'source',
+        wild_query: taskDeclaration().read_resolution.wild_query,
+      },
+    });
+    expect(makeExecutor({ declaration: readThrough }).executor.prepare({
+      source_id: SOURCE_ID,
+      kind: 'task',
+      operation: 'create',
+      patch: { title: 'Must stay provider-specific' },
+    })).toMatchObject({
+      ok: false,
+      kind: 'config',
+      reason: expect.stringMatching(/read_through.*matching provider operation/),
+    });
 
     const missingUpdateBinding = taskDeclaration({
       op_bindings: { read: { id_arg: 'taskId' } },
@@ -1304,6 +1324,91 @@ describe('dispatch update', () => {
       detail_fidelity: { body: 'preview' },
     });
     expect(refreshed.pending_write).toBeUndefined();
+  });
+
+  it('does not rematerialize a row when a records write finishes after migration to read_through', async () => {
+    const recordsDeclaration = taskDeclaration();
+    const readThroughDeclaration = taskDeclaration({
+      sync: { posture: 'read_through', mode: 'read_write', depth: 'meta' },
+      read_resolution: {
+        default: 'source',
+        wild_query: taskDeclaration().read_resolution.wild_query,
+      },
+    });
+    let liveDeclaration = recordsDeclaration;
+    const invocations: GatedCatalogOperationRequest[] = [];
+    let releaseWrite!: (outcome: GatedCatalogOperationOutcome) => void;
+    const deferredWrite = new Promise<GatedCatalogOperationOutcome>((resolve) => {
+      releaseWrite = resolve;
+    });
+    let markWriteStarted!: () => void;
+    const writeStarted = new Promise<void>((resolve) => {
+      markWriteStarted = resolve;
+    });
+    const runOperation: RunGatedCatalogOperationFn = async (_deps, request) => {
+      invocations.push(request);
+      if (invocations.length === 1) {
+        return opOk(vendorTask('rid-migrating', {
+          title: 'Base title',
+          updatedAt: VERSION_1,
+        }));
+      }
+      if (invocations.length === 2) {
+        markWriteStarted();
+        return deferredWrite;
+      }
+      return opError('error', 'unexpected provider call after declaration migration');
+    };
+    const harness = makeExecutor({
+      runOperation,
+      resolveDeclaration: (source_id) => source_id === SOURCE_ID
+        ? { declaration: liveDeclaration, connection_name: CONNECTION }
+        : null,
+    });
+    const prior = seedTask({
+      id: 'task-migrating',
+      source_record_id: 'rid-migrating',
+      title: 'Base title',
+      source_version_token: VERSION_1,
+    });
+    const current = rewriteTask(prior, { title: 'Local title' });
+    const prepared = prepareUpdate(harness.executor, { title: 'Local title' });
+
+    const pendingDispatch = harness.executor.dispatch(prepared, {
+      local_id: prior.id,
+      prior,
+      current,
+    });
+    await writeStarted;
+
+    liveDeclaration = readThroughDeclaration;
+    store.registerSource({
+      id: SOURCE_ID,
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      sync_posture: 'read_through',
+      source_label: 'HubSpot tasks (acme)',
+      write_capable: false,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    expect(store.deleteRecordsForSource(SOURCE_ID)).toBe(1);
+    releaseWrite(opOk(vendorTask('rid-migrating', {
+      title: 'Local title',
+      updatedAt: VERSION_2,
+    })));
+
+    const failure = requireDispatchFailure(await pendingDispatch);
+    expect(failure).toMatchObject({
+      kind: 'config',
+      staged: false,
+      reason: expect.stringMatching(/read_through.*Do not retry unchanged/),
+    });
+    expect(invocations.map((request) => request.operationKey)).toEqual([
+      'task.read',
+      'task.update',
+    ]);
+    expect(store.readTask(prior.id)).toBeNull();
   });
 
   it('keeps pending staged and does not write when preflight returns a different record id', async () => {

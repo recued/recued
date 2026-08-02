@@ -34,7 +34,7 @@ export interface ComposeServeLifecycleOptions {
    *  `composeServeLifecycle` itself never calls it. Absent on a keyless /
    *  db-less boot. */
   readonly getKeys?: () => KeyManager | undefined;
-  readonly storage: Pick<StorageContext, 'fileStack'>;
+  readonly storage: Pick<StorageContext, 'fileStack' | 'drainAuditWrites'>;
   readonly collection: Pick<
     CollectionContext,
     'collectionRegistry' | 'calendarStack' | 'mailStack' | 'serviceStack' | 'supervisionStack'
@@ -112,29 +112,49 @@ export const composeServeLifecycle = async (
       },
       drainSteps: {
         pause_collections: async () => {
-          await collection.collectionRegistry.dispose();
-          if (storage.fileStack) {
-            await storage.fileStack.disposeAll();
-          }
-          if (collection.calendarStack) {
-            await collection.calendarStack.disposeAll();
-          }
-          if (collection.mailStack) {
-            await collection.mailStack.disposeAll();
-          }
-          if (collection.serviceStack) {
-            await collection.serviceStack.disposeAll();
-          }
-          if (collection.supervisionStack) {
-            // Cancel the daemon supervisor's poll / restart timers so a
-            // crash mid-drain can't trigger a relaunch as the server exits.
-            // The daemons themselves are detached and survive (re-adopted on
-            // the next boot).
-            await collection.supervisionStack.disposeAll();
+          const begin = (stop: () => Promise<void>): Promise<void> => {
+            try { return Promise.resolve(stop()); }
+            catch (err) { return Promise.reject(err); }
+          };
+          // Begin every stop before awaiting any one of them. A failed file
+          // watcher must not prevent calendar, mail, service, or daemon
+          // admission from closing during the same drain.
+          const drains = [
+            begin(() => collection.collectionRegistry.dispose()),
+            ...(storage.fileStack
+              ? [begin(() => storage.fileStack!.disposeAll())]
+              : []),
+            ...(collection.calendarStack
+              ? [begin(() => collection.calendarStack!.disposeAll())]
+              : []),
+            ...(collection.mailStack
+              ? [begin(() => collection.mailStack!.disposeAll())]
+              : []),
+            ...(collection.serviceStack
+              ? [begin(() => collection.serviceStack!.disposeAll())]
+              : []),
+            // Cancel daemon supervisor poll/restart timers. Detached daemons
+            // survive and are re-adopted on the next boot.
+            ...(collection.supervisionStack
+              ? [begin(() => collection.supervisionStack!.disposeAll())]
+              : []),
+          ];
+          const results = await Promise.allSettled(drains);
+          const errors = results
+            .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+            .map((result) => result.reason);
+          if (errors.length > 0) {
+            throw new AggregateError(errors, 'one or more collection stacks failed to stop');
           }
         },
         pause_scheduler: async () => {
-          getSchedulersBundle()?.cron?.getHandle()?.pause();
+          // Stop the complete autonomous-execution family, not only cron. The
+          // registry owns cron, auto-run, housekeeping, trigger subscriptions,
+          // and watch loops under the scheduler kind; each stop closes its own
+          // admission and drains admitted work before await_inflight observes a
+          // stable zero. A cron-only pause left every sibling able to enqueue
+          // database work after that fence.
+          await backgroundServices.stopAll({ kind: 'scheduler' });
         },
         close_ws: async () => {
           const httpServer = getHttpServer();
@@ -147,18 +167,32 @@ export const composeServeLifecycle = async (
           }
         },
         stop_timers: async () => {
-          await backgroundServices.stopAll({ kind: 'timer' });
-          await backgroundServices.stopAll({ kind: 'emitter' });
+          // Close both admissions before waiting for either class. A slow timer
+          // drain must not leave an emitter able to enqueue fresh DB work.
+          const results = await Promise.allSettled([
+            backgroundServices.stopAll({ kind: 'timer' }),
+            backgroundServices.stopAll({ kind: 'emitter' }),
+          ]);
+          const errors = results
+            .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+            .flatMap((result) => result.reason instanceof AggregateError
+              ? result.reason.errors
+              : [result.reason]);
+          if (errors.length > 0) {
+            throw new AggregateError(errors, 'one or more background services failed to stop');
+          }
         },
         close_cascade: async () => {
-          cascade?.close();
+          await cascade?.close();
+        },
+        flush_audit: async () => {
+          await storage.drainAuditWrites?.();
         },
         close_db: async () => {
-          try {
-            db.close();
-          } catch {
-            /* best effort */
-          }
+          // Do not disguise a failed close as a completed drain step. Normal
+          // shutdown still proceeds best-effort, while online archive restore
+          // uses the aborted result to refuse an unsafe database swap.
+          db.close();
         },
       },
       // D-178 P1 restart-drain follow-up — the `await_inflight` drain step
@@ -172,6 +206,7 @@ export const composeServeLifecycle = async (
         const active = getActiveRunCount?.() ?? 0;
         return cron + active;
       },
+      exit,
       // D-178 slice 5 — the legacy D-108 crash-loop → npm-rollback flag is
       // retired (the whole `upgrade/` subsystem is deleted). Crash-loop
       // DETECTION stays in the supervisor (it still emits the

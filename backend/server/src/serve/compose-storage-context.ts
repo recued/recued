@@ -16,6 +16,13 @@ import {
   type VaultStore,
 } from '@recued/storage';
 import type Database from 'better-sqlite3';
+import {
+  MCP_ACTION_TABLE,
+  createMcpActionStore,
+  createSqliteMcpActionCompareAndSet,
+  type McpActionRecord,
+  type McpActionStore,
+} from '../mcp-action-store.js';
 
 import type { ServerAccountStore } from '../account-store.js';
 import { createServerAccountStore } from '../account-store.js';
@@ -26,6 +33,7 @@ import {
   type AuditRetentionConfig,
 } from '../audit-retention.js';
 import { createSigningAuditLog } from '../audit/signing.js';
+import { createDrainableAuditLog } from '../audit/drainable.js';
 import { createApprovalStore, type ApprovalStore } from '../approval-handler.js';
 import { composeRecuedPlanStore } from '../composition/bin/wire-recued-plan-store.js';
 import type { FileStack } from '../collections/file/compose.js';
@@ -157,6 +165,9 @@ export interface StorageContext {
   pairedInstances: PairedInstancesStore | undefined;
   recoveryKeyCheck: RecoveryKeyCheckStore | undefined;
   auditLog: AuditLogStore | undefined;
+  /** Terminal lifecycle flush for every admitted audit append, including
+   * intentionally detached activity telemetry. */
+  drainAuditWrites?: (() => Promise<void>) | undefined;
   readonly signingIdentity: BootedServerIdentity | undefined;
   bootSigningIdentity: () => Promise<void>;
   /** D-175 P5 — recued.com account-binding manager. Always constructed
@@ -197,6 +208,8 @@ export interface StorageContext {
   executeRecuedRequestPersist: (plan: RecuedPlan) => Promise<void>;
   commitStore: CommitStore | undefined;
   checkpointStore: CheckpointStore | undefined;
+  /** One generic JSON table carrying token-bound deferred MCP results. */
+  mcpActionStore: McpActionStore;
   workEntityStoreRef: PerPairStore<'workEntityStore'>;
   s2sPreviewStoreRef: PerPairStore<'s2sPreviewStore'>;
   correctionEventsStoreRef: PerPairStore<'correctionEventsStore'>;
@@ -374,7 +387,7 @@ export const composeStorageContext = async (
     },
   );
   let signingIdentityRef: BootedServerIdentity | undefined;
-  const auditLog: AuditLogStore | undefined = createSigningAuditLog(baseAuditLog, {
+  const signingAuditLog = createSigningAuditLog(baseAuditLog, {
     getServerIdentity: () => {
       if (!signingIdentityRef) {
         throw new Error(
@@ -389,6 +402,9 @@ export const composeStorageContext = async (
       return signingIdentityRef.identity.serverIdentityKey();
     },
   });
+  const drainableAuditLog = createDrainableAuditLog(signingAuditLog);
+  const auditLog: AuditLogStore = drainableAuditLog.auditLog;
+  const drainAuditWrites = drainableAuditLog.closeAndDrain;
   const bootSigningIdentity = async (): Promise<void> => {
     if (signingIdentityRef) return;
     // D-212 slice 5 — the server's own boot is where binding this realm to
@@ -552,6 +568,10 @@ export const composeStorageContext = async (
     createSQLiteCollection<Checkpoint>(db, 'checkpoints'),
   );
   ensureCheckpointSchema(db);
+  const mcpActionStore = createMcpActionStore(
+    createSQLiteCollection<McpActionRecord>(db, MCP_ACTION_TABLE),
+    { compareAndSet: createSqliteMcpActionCompareAndSet(db) },
+  );
 
   const perPairStores = await composePerPairStores({ db });
   const workEntityStoreRef = perPairStores?.workEntityStore;
@@ -699,6 +719,7 @@ export const composeStorageContext = async (
     pairedInstances,
     recoveryKeyCheck,
     auditLog,
+    drainAuditWrites,
     get signingIdentity() { return signingIdentityRef; },
     bootSigningIdentity,
     accountBindingManager,
@@ -708,6 +729,7 @@ export const composeStorageContext = async (
     executeRecuedRequestPersist,
     commitStore,
     checkpointStore,
+    mcpActionStore,
     workEntityStoreRef,
     s2sPreviewStoreRef,
     correctionEventsStoreRef,

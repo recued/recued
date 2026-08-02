@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   createConfigWatcher,
@@ -292,15 +292,86 @@ describe('ConfigWatcher.start / stop (fs.watch)', () => {
     expect(reloadCalls).toEqual(['fs.watch']);
   });
 
-  it('stop() releases the watcher handle + clears pending debounce', () => {
+  it('stop() releases the watcher handle + clears pending debounce', async () => {
     let closed = false;
     const watcher = h.createWatcher({
       watchFile: true,
       watchImpl: () => ({ close: () => { closed = true; } }),
     });
     watcher.start();
-    watcher.stop();
+    await watcher.stop();
     expect(closed).toBe(true);
     expect(watcher.watching).toBe(false);
+  });
+
+  it('serializes overlapping reloads so an older load cannot win last', async () => {
+    let releaseFirst!: () => void;
+    const firstHeld = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    let calls = 0;
+    const watcher = h.createWatcher({
+      load: async () => {
+        calls += 1;
+        if (calls === 1) {
+          await firstHeld;
+          return {
+            bootstrap: { ...BASELINE_BOOTSTRAP },
+            runtime: { ...BASELINE_RUNTIME, 'cache.max_bytes': 300_000_000 },
+            source: '/etc/recued/config.toml',
+            distribution: 'server',
+          };
+        }
+        return {
+          bootstrap: { ...BASELINE_BOOTSTRAP },
+          runtime: { ...BASELINE_RUNTIME, 'cache.max_bytes': 400_000_000 },
+          source: '/etc/recued/config.toml',
+          distribution: 'server',
+        };
+      },
+    });
+
+    const first = watcher.reload('first');
+    await vi.waitFor(() => { expect(calls).toBe(1); });
+    const second = watcher.reload('second');
+    await Promise.resolve();
+    expect(calls).toBe(1);
+
+    releaseFirst();
+    await Promise.all([first, second]);
+    expect(calls).toBe(2);
+    expect(h.runtimeStore.get('cache.max_bytes')).toBe(400_000_000);
+  });
+
+  it('stop() drains an admitted load and prevents it from applying afterward', async () => {
+    let releaseLoad!: () => void;
+    const loadHeld = new Promise<void>((resolve) => { releaseLoad = resolve; });
+    const load = vi.fn(async () => {
+      await loadHeld;
+      return {
+        bootstrap: { ...BASELINE_BOOTSTRAP, bind_port: 8080 },
+        runtime: { ...BASELINE_RUNTIME, 'cache.max_bytes': 500_000_000 },
+        source: '/etc/recued/config.toml',
+        distribution: 'server' as const,
+      };
+    });
+    const watcher = h.createWatcher({ load });
+    const reloading = watcher.reload('fs.watch');
+    await vi.waitFor(() => { expect(load).toHaveBeenCalledTimes(1); });
+
+    let stopped = false;
+    const stopping = watcher.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    await expect(watcher.reload('after-stop')).resolves.toMatchObject({
+      runtime_changed: [],
+      bootstrap_changed: [],
+    });
+    expect(load).toHaveBeenCalledTimes(1);
+
+    releaseLoad();
+    await Promise.all([reloading, stopping]);
+    expect(stopped).toBe(true);
+    expect(h.runtimeStore.get('cache.max_bytes')).toBe(BASELINE_RUNTIME['cache.max_bytes']);
+    expect(h.lifecycleStore.getRestartPending()).toBe(false);
+    expect(h.reloadInfos).toEqual([]);
   });
 });

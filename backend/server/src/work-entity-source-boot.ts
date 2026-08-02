@@ -14,20 +14,16 @@
  *     retired: a connection's Sources now come from
  *     `work_entity_sources` declarations —
  *
- *       - the KERNEL declarations below for the first-party vendors
- *         (HubSpot / Salesforce), bundled like the CRM vendor-entity
- *         registry so an hb/sf connection registers its task Source
- *         with no pack install (existing-behavior preservation; the
- *         kernel is the trust root, so these constants do not carry a
- *         publish-time `contract_source` proof — Salesforce could not
- *         anyway: its OpenAPI is org-generated, not a static public
- *         URL);
  *       - any bound catalog manifest's `work_entity_sources`
- *         declarations, resolved through the OPTIONAL
+ *         declarations are authoritative, resolved through the OPTIONAL
  *         `resolveCatalogManifest` dep (the D-192 P1 contract — packs
  *         declare, the fail-closed validator gates at publish/install;
  *         activates per-site as the composition→catalog decomposer
- *         pass-through lands).
+ *         pass-through lands);
+ *       - the KERNEL declarations below remain a compatibility fallback
+ *         for legacy first-party connections whose bound catalog predates
+ *         pack-owned declarations or is unavailable during boot. A matching
+ *         pack declaration wins by Source id.
  *
  *     Registration preserves the D-192 P2 invariants BY the store's
  *     own semantics: `registerSource` never overwrites `enabled`
@@ -44,8 +40,10 @@ import {
   WORK_ENTITY_KINDS,
   isWorkEntitySourceKind,
   type IngredientManifest,
+  type SourceRegistration,
   type WorkEntityKind,
   type WorkEntitySourceDeclaration,
+  type WorkEntitySourcePosture,
 } from '@recued/contracts';
 
 import type { ConnectionRow } from '@recued/contracts';
@@ -76,8 +74,8 @@ import type {
  *  no *documentary* op proof. It has never meant less capability. */
 export type KernelWorkEntitySourceDeclaration = WorkEntitySourceDeclaration;
 
-/** First-party kernel declarations, keyed by connection vendor. These
- *  mirror the vendors' own catalog compositions
+/** Legacy first-party compatibility declarations, keyed by connection vendor.
+ *  These mirror the vendors' own catalog compositions
  *  (`community/packs/hubspot.json` / `salesforce.json` task op names)
  *  so the declared ops resolve once those catalogs are bound; the
  *  registration half (id/label/kind) is what P2 consumes — the
@@ -92,7 +90,10 @@ export const KERNEL_WORK_ENTITY_SOURCE_DECLARATIONS: Record<
       source_id_template: 'hubspot.${connection_id}.task',
       source_label_template: 'HubSpot tasks (${connection_name})',
       source_kind: 'connection',
-      // The real release-pinned HubSpot Tasks OpenAPI (P1b pin ledger).
+      // The real release-pinned HubSpot Tasks OpenAPI (P1b pin ledger). This
+      // compatibility-only copy may retain the task-scoped evidence pin: unlike
+      // the multi-family pack catalog, it does not claim that document proves
+      // every HubSpot REST operation.
       contract_source: {
         kind: 'openapi',
         surface: 'surfaces.api.openapi_source',
@@ -190,8 +191,8 @@ export const KERNEL_WORK_ENTITY_SOURCE_DECLARATIONS: Record<
       // No contract_source: the HubSpot Notes OpenAPI is a SEPARATE document
       // from the Tasks pin the task Source above carries — a note Source pins
       // ONE doc, and adding the Notes spec pin is a marketplace-publish
-      // concern; as a curated kernel declaration (top of the code-trust
-      // ladder) it needs none — the Salesforce kernel posture.
+      // concern. The pack-owned declaration intentionally carries the same
+      // no-pin posture; this copy exists only for legacy compatibility.
       remote: {
         entity: 'note',
         id: 'id',
@@ -243,8 +244,9 @@ export const KERNEL_WORK_ENTITY_SOURCE_DECLARATIONS: Record<
       source_kind: 'connection',
       // No contract_source: Salesforce's OpenAPI is ORG-GENERATED
       // (`/services/data/vXX/async/specifications`), not a static
-      // public URL — the P1b finding. The kernel trust root carries the
-      // declaration; a future per-org pin model is the P3+ answer.
+      // public URL — the P1b finding. The pack owns this no-pin declaration;
+      // this compatibility copy preserves older bindings. A future per-org pin
+      // model is the P3+ answer.
       remote: {
         entity: 'Task',
         id: 'Id',
@@ -363,9 +365,9 @@ export const KERNEL_WORK_ENTITY_SOURCE_DECLARATIONS: Record<
       source_label_template: 'Microsoft To Do tasks (${connection_name})',
       source_kind: 'connection',
       // No contract_source: the To Do Graph surface has no static public
-      // OpenAPI/Discovery doc the marketplace publish gate could pin+equal; as a
-      // curated kernel declaration (top of the code-trust ladder) it carries none —
-      // the Salesforce / HubSpot-note posture. Vendor-key nuance: `microsoft` spans
+      // OpenAPI/Discovery doc the marketplace publish gate could pin+equal. The
+      // pack-owned declaration carries none, and this compatibility copy matches
+      // that Salesforce / HubSpot-note posture. Vendor-key nuance: `microsoft` spans
       // packs (todo / defender / entra / intune). A kernel `microsoft` task Source
       // attaches to ANY `microsoft` connection and gracefully config-fails on a
       // non-To-Do catalog (its `task.*` ops resolve to nothing) — the same posture
@@ -570,15 +572,19 @@ export interface DesiredWorkEntitySource {
   id: string;
   top_tier_kind: WorkEntityKind;
   source_label: string;
+  /** Declaration-selected materialization posture. Omitted declarations are
+   *  normalized to the backward-compatible `records` value here so every
+   *  runtime consumer sees one explicit policy. */
+  sync_posture: WorkEntitySourcePosture;
   /** The driving declaration — the P3b sync wire consumes the
    *  sync/projection halves; registration consumes id/label/kind. */
   declaration: KernelWorkEntitySourceDeclaration;
 }
 
-/** Resolve the declarations that apply to one connection row: the
- *  kernel registry for its vendor ∪ its bound catalog manifest's
- *  `work_entity_sources` (when the caller wires the resolver), deduped
- *  by substituted Source id (kernel first). Exported since P3b — the
+/** Resolve the declarations that apply to one connection row: its bound catalog
+ *  manifest's `work_entity_sources` (when the caller wires the resolver), then
+ *  the legacy kernel compatibility registry for its vendor, deduped by
+ *  substituted Source id (pack first). Exported since P3b — the
  *  sync wire enumerates the SAME declaration set, so registration and
  *  sync can never drift. */
 export const desiredWorkEntitySourcesFor = (
@@ -587,12 +593,12 @@ export const desiredWorkEntitySourcesFor = (
 ): DesiredWorkEntitySource[] => {
   const vendor = connectionVendorOf(row);
   const declarations: KernelWorkEntitySourceDeclaration[] = [];
-  if (vendor !== null) {
-    declarations.push(...(KERNEL_WORK_ENTITY_SOURCE_DECLARATIONS[vendor] ?? []));
-  }
   const manifest = resolveCatalogManifest?.(row);
   if (manifest?.work_entity_sources !== undefined) {
     declarations.push(...manifest.work_entity_sources);
+  }
+  if (vendor !== null) {
+    declarations.push(...(KERNEL_WORK_ENTITY_SOURCE_DECLARATIONS[vendor] ?? []));
   }
   const out: DesiredWorkEntitySource[] = [];
   const seen = new Set<string>();
@@ -606,6 +612,7 @@ export const desiredWorkEntitySourcesFor = (
       source_label: decl.source_label_template !== undefined
         ? substituteTemplate(decl.source_label_template, row.name)
         : id,
+      sync_posture: decl.sync.posture ?? 'records',
       declaration: decl,
     });
   }
@@ -622,6 +629,13 @@ const seedSyncState = (
   source_id: string,
   declaration: KernelWorkEntitySourceDeclaration,
 ): void => {
+  if (declaration.sync.posture === 'read_through') {
+    throw new Error(`read-through source '${source_id}' must not receive mirror sync state`);
+  }
+  const stale_after_ms = declaration.sync.stale_after_ms;
+  if (stale_after_ms === undefined) {
+    throw new Error(`records source '${source_id}' declares no sync.stale_after_ms`);
+  }
   const contract_hash = workEntitySourceContractHash(declaration);
   const existing = syncState.get(source_id);
   if (existing !== null && existing.contract_hash === contract_hash) return;
@@ -641,7 +655,7 @@ const seedSyncState = (
     last_error_message: existing?.last_error_message ?? null,
     degraded: existing?.degraded ?? false,
     list_complete: existing?.list_complete ?? true,
-    stale_after_ms: declaration.sync.stale_after_ms,
+    stale_after_ms,
   };
   syncState.upsert(seeded);
 };
@@ -676,6 +690,9 @@ const reconcileConnectionSources = (
   syncState?: Pick<WorkEntitySourceSyncStateStore, 'get' | 'upsert' | 'deleteForSource'>,
   edges?: { deleteForSource(source_id: string): number },
   dependencyEntities?: { deleteForSource(source_id: string): number },
+  purgeMirroredData?: (
+    source: Pick<SourceRegistration, 'id' | 'top_tier_kind'>,
+  ) => void,
 ): void => {
   const desiredIds = new Set(desired.map((d) => d.id));
   for (const existing of store.listSources()) {
@@ -701,12 +718,46 @@ const reconcileConnectionSources = (
     }
   }
   for (const d of desired) {
-    if (syncState !== undefined) seedSyncState(syncState, d.id, d.declaration);
-    if (store.getSource(d.id) !== null) continue;
+    const existing = store.getSource(d.id);
+    if (d.sync_posture === 'read_through') {
+      // A pack-declaration migration from records to read-through is a
+      // DATA-RETENTION
+      // boundary, not just a scheduler toggle. Never leave the old canonical
+      // rows or their source-scoped derived state behind (even hidden) while
+      // claiming the Source is non-materialized. Purge on every posture
+      // migration even when the canonical count is already zero: work-graph
+      // edges are keyed by source_id and can outlive the last visible row.
+      const migratesFromMirror =
+        existing !== null && (existing.sync_posture ?? 'records') !== 'read_through';
+      if (migratesFromMirror || store.countRecordsForSource(d.id) > 0) {
+        if (purgeMirroredData === undefined) {
+          throw new Error(
+            `source '${d.id}' has a read_through declaration migration or mirrored records; `
+            + 'a full source-data purge callback is required before registration can continue',
+          );
+        }
+        purgeMirroredData(existing ?? { id: d.id, top_tier_kind: d.top_tier_kind });
+      }
+      syncState?.deleteForSource(d.id);
+    } else if (syncState !== undefined) {
+      seedSyncState(syncState, d.id, d.declaration);
+    }
+    if (existing !== null) {
+      if ((existing.sync_posture ?? 'records') === d.sync_posture) continue;
+      // Preserve owner-controlled exposure/enabled state and the runtime write
+      // capability probe while changing only the declaration-owned posture.
+      store.registerSource({
+        ...existing,
+        source_label: d.source_label,
+        sync_posture: d.sync_posture,
+      });
+      continue;
+    }
     store.registerSource({
       id: d.id,
       top_tier_kind: d.top_tier_kind,
       source_kind: 'connection',
+      sync_posture: d.sync_posture,
       source_label: d.source_label,
       write_capable: false,
       mcp_exposed: false,
@@ -719,9 +770,9 @@ export interface WireWorkEntitySourceBootInput {
   connectionStore: ConnectionStoreSqlite;
   store: WorkEntityStore;
   /** D-192 P2 — resolve the row's bound catalog manifest so
-   *  pack-declared `work_entity_sources` register alongside the kernel
-   *  registry. Optional: a composition site without manifest access
-   *  wires kernel declarations only. */
+   *  pack-declared `work_entity_sources` register authoritatively before the
+   *  compatibility registry. Optional: a composition site without manifest
+   *  access wires compatibility declarations only. */
   resolveCatalogManifest?: (row: ConnectionRow) => IngredientManifest | null | undefined;
   /** D-192 P3b — sync cursor/health rows, seeded at registration +
    *  deleted on unregister. Optional: harnesses without the sync
@@ -735,6 +786,13 @@ export interface WireWorkEntitySourceBootInput {
    *  (`source_dependency_entity`), hard-deleted on Source unregister (derived,
    *  re-fetchable). Optional like `edges`. */
   dependencyEntities?: { deleteForSource(source_id: string): number };
+  /** Full work-entity source-data purge. Required only when an existing
+   *  mirrored Source changes to `read_through`; production wires the shared
+   *  purge orchestrator so canonical rows and their derived data leave
+   *  together. */
+  purgeMirroredData?: (
+    source: Pick<SourceRegistration, 'id' | 'top_tier_kind'>,
+  ) => void;
   now?: () => number;
 }
 
@@ -764,7 +822,15 @@ export interface WorkEntitySourceBootWiring {
 export const wireWorkEntitySourceBoot = (
   input: WireWorkEntitySourceBootInput,
 ): WorkEntitySourceBootWiring => {
-  const { connectionStore, store, resolveCatalogManifest, syncState, edges, dependencyEntities } = input;
+  const {
+    connectionStore,
+    store,
+    resolveCatalogManifest,
+    syncState,
+    edges,
+    dependencyEntities,
+    purgeMirroredData,
+  } = input;
   const now = input.now ?? ((): number => Date.now());
 
   // Reconcile ONE connection name against its current declarations — a null row
@@ -775,7 +841,7 @@ export const wireWorkEntitySourceBoot = (
     reconcileConnectionSources(
       store,
       row === null ? [] : desiredWorkEntitySourcesFor(row, resolveCatalogManifest),
-      name, now(), syncState, edges, dependencyEntities,
+      name, now(), syncState, edges, dependencyEntities, purgeMirroredData,
     );
   };
 

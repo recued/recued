@@ -114,6 +114,7 @@ export interface ComposeExecutionContextOptions {
     | 'auditLog'
     | 'commitStore'
     | 'checkpointStore'
+    | 'mcpActionStore'
     | 'fileStack'
     | 'workEntityStoreRef'
     // Accepted intake responses are promoted in the shared preflight-resume
@@ -604,6 +605,7 @@ export const composeExecutionContext = async (
     enrichmentStore: app.enrichmentStoreRef,
     commitStore: storage.commitStore,
     checkpointStore: storage.checkpointStore,
+    mcpActionStore: storage.mcpActionStore,
     annotationStore: app.annotationStoreRef,
     // D-182 §10 step 8 / R1 (Fix 2) — installed-manifest store so the run-path R1
     // pre-pass builds the merged convention-family vendor registry (built-ins +

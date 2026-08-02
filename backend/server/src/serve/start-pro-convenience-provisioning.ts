@@ -99,11 +99,9 @@ export const startProConvenienceProvisioning = (
   options.backgroundServices.registerInterval({
     name: 'pro-convenience-provision',
     intervalMs: options.intervalMs ?? DDNS_UPDATE_INTERVAL_MS,
-    tick: () => {
-      // Fire-and-forget — `tick` is synchronous-typed; the async body
-      // swallows its own failures (above).
-      void tick();
-    },
+    // Return the work so shutdown cannot close the binding/handle stores
+    // underneath an in-progress reservation.
+    tick,
     fireImmediate: true,
   });
 };

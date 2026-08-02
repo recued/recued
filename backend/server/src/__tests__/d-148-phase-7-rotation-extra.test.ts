@@ -36,6 +36,14 @@ const makeEffects = () => {
 };
 
 describe('D-148 P7 + D-169 P0 Slice 2B — rotation engine concurrency + idempotency', () => {
+  // ⚠ Explicit budget, not a default. This case hashes three bearers with
+  // argon2id, which is deliberately expensive — and vitest's default 5s is NOT an
+  // assertion here: the claim is that concurrent rotations do not interfere, never
+  // that they finish quickly. Under a loaded machine the KDF alone exceeds it, and
+  // it did: the 26.8.2 release gate (clean npm ci + build + ~2,500 files, docker
+  // running alongside) failed on this and nothing else, while the file passes 9/9
+  // in isolation. A gate that goes red for a reason unrelated to what it checks is
+  // a gate people learn to re-run until green.
   it('per-client paired-client rotations are independent (different clients can rotate concurrently)', async () => {
     const { effects } = makeEffects();
     const tokens = createInMemoryClientTokenStore();
@@ -60,7 +68,7 @@ describe('D-148 P7 + D-169 P0 Slice 2B — rotation engine concurrency + idempot
     ]);
     expect(a.ok).toBe(true);
     expect(b.ok).toBe(true);
-  });
+  }, 30_000);
 
   it('per-vendor webhook rotations are independent', async () => {
     const { effects } = makeEffects();

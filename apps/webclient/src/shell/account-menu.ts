@@ -43,6 +43,14 @@ import {
   type ServerSwitchWorkState,
 } from './server-switcher.js';
 import type { ServerSwitchActiveWork } from './server-switch-work-tracker.js';
+import {
+  isUnresolvedServerControlActionOutcome,
+  SERVER_CONTROL_POPOVER_ATTR,
+  type ServerControlActionOutcome,
+  type ServerControlActionReceipt,
+  type ServerControlCurrentStateObservation,
+  type ServerControlDiagnosisHandoff,
+} from './server-pill-host.js';
 
 export const ACCOUNT_MENU_ATTR = 'data-recued-account-menu';
 export const ACCOUNT_MENU_TRIGGER_ATTR = 'data-recued-account-menu-trigger';
@@ -60,6 +68,22 @@ export const ACCOUNT_MENU_ADD_SERVER_ATTR = 'data-recued-account-menu-add-server
 export const ACCOUNT_MENU_SERVER_SLOT_ATTR = 'data-recued-account-menu-server-slot';
 export const ACCOUNT_MENU_RECOVERY_ATTR = 'data-recued-account-menu-recovery';
 export const ACCOUNT_MENU_RECOVERY_STEPS_ATTR = 'data-recued-account-menu-recovery-steps';
+export const ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR =
+  'data-recued-account-menu-connection-diagnosis';
+export const ACCOUNT_MENU_CONNECTION_DIAGNOSIS_TITLE_ATTR =
+  'data-recued-account-menu-connection-diagnosis-title';
+export const ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS_ATTR =
+  'data-recued-account-menu-connection-diagnosis-status';
+export const ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR =
+  'data-recued-account-menu-connection-diagnosis-receipt';
+export const ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR =
+  'data-recued-account-menu-connection-diagnosis-controls';
+export const ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR =
+  'data-recued-account-menu-connection-diagnosis-reconcile';
+export const ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR =
+  'data-recued-account-menu-connection-diagnosis-return';
+export const ACCOUNT_MENU_SERVER_SLOT_DIAGNOSIS_TARGET_ATTR =
+  'data-recued-account-menu-server-slot-diagnosis-target';
 export const ACCOUNT_MENU_ACTIVE_WORK_ATTR = 'data-recued-account-menu-active-work';
 export const ACCOUNT_MENU_ACTIVE_WORK_ITEM_ATTR =
   'data-recued-account-menu-active-work-item';
@@ -92,6 +116,12 @@ export const ACCOUNT_MENU_STYLES_MARKER = 'data-recued-account-menu-styles';
 const ACCOUNT_MENU_POPOVER_ID = 'recued-account-menu-popover';
 const ACCOUNT_MENU_TITLE_ID = 'recued-account-menu-title';
 const ACCOUNT_MENU_RECOVERY_TITLE_ID = 'recued-account-menu-recovery-title';
+const ACCOUNT_MENU_CONNECTION_DIAGNOSIS_TITLE_ID =
+  'recued-account-menu-connection-diagnosis-title';
+const ACCOUNT_MENU_CONNECTION_DIAGNOSIS_DETAIL_ID =
+  'recued-account-menu-connection-diagnosis-detail';
+const ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS_ID =
+  'recued-account-menu-connection-diagnosis-status';
 const ACCOUNT_MENU_SERVER_UPDATE_TITLE_ID =
   'recued-account-menu-server-update-title';
 
@@ -112,6 +142,99 @@ const recoveryDetailCopy = (hasAlternateServer: boolean): string =>
     ? 'Recued keeps retrying this server. You can wait for it to return or switch to another saved profile below.'
     : 'Recued keeps retrying this server. Check the steps below, or add another server only if you intentionally use more than one.';
 const ACCOUNT_MENU_SERVERS_TITLE_ID = 'recued-account-menu-servers-title';
+
+export type AccountConnectionDiagnosisInterruption =
+  | 'connection'
+  | 'navigation'
+  | 'ownership'
+  | 'reload';
+
+/** Ephemeral, privacy-safe orientation for a bounded verification handoff.
+ * It is never stored and carries no error, credential, URL, or record detail. */
+export interface AccountConnectionDiagnosis {
+  readonly id: string;
+  readonly profileId: string;
+  readonly profileLabel: string;
+  readonly areaLabel: string;
+  /** Required for the bounded-verification landing. An unresolved-receipt
+   * re-review uses its receipt as the orientation instead. */
+  readonly interruptionReason?: AccountConnectionDiagnosisInterruption;
+}
+
+export type AccountConnectionDiagnosisDisposition = 'return' | 'dismissed';
+
+export interface AccountConnectionDiagnosisOpenOptions {
+  /** Privacy-safe receipt projection to keep visible while the person compares
+   * it with the exact active server. Raw RPC detail never enters this API. */
+  readonly initialServerOutcome?: ServerControlActionOutcome;
+  /** One-shot intent to open the live controls as soon as their fresh
+   * heartbeat-backed owner is available. This only inspects; it never starts
+   * or replays an action. */
+  readonly reviewServerControls?: boolean;
+}
+
+const serverControlReceiptCopy = (
+  receipt: ServerControlActionReceipt,
+  areaLabel: string,
+): string => {
+  const boundary = `This server result does not verify ${areaLabel}.`;
+  const state = receipt.currentState === 'paused'
+    ? 'execution is paused'
+    : receipt.currentState === 'running'
+      ? 'execution is running'
+      : receipt.currentState === 'restarting'
+        ? 'the server is restarting'
+        : null;
+  const stateSuffix = state === null ? '' : ` Latest known state: ${state}.`;
+  if (receipt.phase === 'pending') {
+    const action = receipt.action === 'pause'
+      ? 'Pause'
+      : receipt.action === 'resume'
+        ? 'Resume'
+        : 'Restart';
+    return `${action} requested. Waiting for the server response. ${boundary}`;
+  }
+  if (receipt.action === 'restart' && receipt.phase === 'accepted') {
+    return `Restart accepted. Waiting for the old connection to close and a fresh server status to arrive. ${boundary}`;
+  }
+  if (receipt.action === 'restart' && receipt.phase === 'reconnected') {
+    return `The server is responding after accepting Restart, but the latest status does not prove a fresh process started.${stateSuffix} Review its current state before reporting the outcome. ${boundary}`;
+  }
+  if (receipt.phase === 'confirmed') {
+    const result = receipt.action === 'pause'
+      ? 'Pause completed. The server confirmed execution is paused.'
+      : receipt.action === 'resume'
+        ? 'Resume completed. The server confirmed execution is running.'
+        : 'Restart completed. A fresh status confirms the process uptime reset.';
+    return `${result}${receipt.action === 'restart' ? stateSuffix : ''} ${boundary}`;
+  }
+  if (receipt.phase === 'superseded') {
+    const action = receipt.action === 'pause' ? 'Pause' : 'Resume';
+    return `${action} completed, but a newer server status now reports that ${state ?? 'its state changed'}. ${boundary}`;
+  }
+  const detail = receipt.detail?.trim();
+  const detailSuffix = detail === undefined || detail.length === 0
+    ? '.'
+    : `: ${/[.!?…]$/.test(detail) ? detail : `${detail}.`}`;
+  if (receipt.phase === 'unconfirmed') {
+    const action = receipt.action === 'pause'
+      ? 'Pause'
+      : receipt.action === 'resume'
+        ? 'Resume'
+        : 'Restart';
+    return `${action} result is not confirmed${detailSuffix}${stateSuffix} Review the live state before retrying. ${boundary}`;
+  }
+  const action = receipt.action === 'pause'
+    ? 'Pause'
+    : receipt.action === 'resume'
+      ? 'Resume'
+      : 'Restart';
+  const failure = receipt.action === 'restart'
+    && detail?.toLowerCase().includes('already in progress')
+    ? 'Restart was not started by this request'
+    : `${action} was not completed`;
+  return `${failure}${detailSuffix}${stateSuffix} ${boundary}`;
+};
 
 /** Inline user glyph, inherited from the link this control replaced so the
  *  topbar's silhouette does not shift. */
@@ -331,6 +454,25 @@ export interface MountAccountMenuOptions {
   /** Called only when an open Account dialog is intentionally closed. Shell
    * disposal is not a dismissal. */
   onClose?: () => void;
+  /** Reports whether an ephemeral bounded-verification diagnosis was merely
+   * closed or deliberately returned to its explicit Attention outcome. */
+  onConnectionDiagnosisClosed?: (
+    diagnosis: AccountConnectionDiagnosis,
+    disposition: AccountConnectionDiagnosisDisposition,
+    serverOutcome?: ServerControlActionOutcome,
+    currentState?: ServerControlCurrentStateObservation,
+  ) => void;
+  /** Open the real active-server status/control surface. The callback returns
+   * focus to the diagnosis after Escape, outside click, or a connection drop. */
+  onReviewConnectionDiagnosisServerControls?: (
+    diagnosis: AccountConnectionDiagnosis,
+    handoff: ServerControlDiagnosisHandoff,
+  ) => 'opened' | 'unavailable';
+  /** Atomically read the exact active profile's stable heartbeat state. This
+   * is a separate observation from the historical action receipt. */
+  onReadConnectionDiagnosisServerCurrentState?: (
+    diagnosis: AccountConnectionDiagnosis,
+  ) => ServerControlCurrentStateObservation | null;
 }
 
 export interface AccountMenuMount {
@@ -347,6 +489,32 @@ export interface AccountMenuMount {
   openServerProfile(
     profileId: string,
   ): 'opened' | 'missing' | 'unavailable';
+  /** Whether the exact diagnosis can take Account ownership now. A committed
+   * profile mutation keeps its current controls and focus until it settles. */
+  canOpenConnectionDiagnosis(profileId: string): boolean;
+  /** Open an exact, non-durable connection-diagnosis landing. Merely closing
+   * it never claims resolution or releases the caller's persisted bound. */
+  openConnectionDiagnosis(
+    diagnosis: AccountConnectionDiagnosis,
+    options?: AccountConnectionDiagnosisOpenOptions,
+  ): 'opened' | 'unavailable';
+  /** Remove a stale diagnosis without closing Account. Focus falls back to the
+   * dialog if the removed cue currently owns it. */
+  clearConnectionDiagnosis(): void;
+  /** Heartbeat-backed availability from the mounted server control owner.
+   * The profile id binds that live socket to the diagnosis: a sibling-written
+   * active pointer must never relabel this tab's still-mounted controls. */
+  setConnectionDiagnosisControlAvailability(
+    profileId: string | null,
+    available: boolean,
+  ): void;
+  /** Stronger availability for closing an unresolved receipt against current
+   * server state. Kept separate so an in-flight action can leave controls
+   * visible while reconciliation remains disabled. */
+  setConnectionDiagnosisCurrentStateAvailability(
+    profileId: string | null,
+    available: boolean,
+  ): void;
   /** Open the persistent server-update guide and focus its heading. Closing
    * Account keeps it discoverable until a stable retry landing or dismissal. */
   openServerUpdateGuide(guide: AccountServerUpdateGuide): void;
@@ -506,11 +674,108 @@ export const ACCOUNT_MENU_STYLES = `
 [${ACCOUNT_MENU_SETTINGS_ATTR}]:hover { background: var(--recued-surface-hover, rgba(127,127,127,0.12)); }
 [${ACCOUNT_MENU_SERVER_SLOT_ATTR}]:not(:empty) {
   padding: 8px 6px;
-  display: flex;
-  align-items: center;
+  display: block;
   border-bottom: 1px solid var(--recued-border, rgba(127,127,127,0.2));
+  scroll-margin-block: 12px;
 }
 [${ACCOUNT_MENU_SERVER_SLOT_ATTR}][hidden] { display: none; }
+[${ACCOUNT_MENU_SERVER_SLOT_ATTR}][${ACCOUNT_MENU_SERVER_SLOT_DIAGNOSIS_TARGET_ATTR}] {
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--recued-accent, #147d9e) 8%, transparent);
+  outline: 2px solid color-mix(in srgb, var(--recued-accent, #147d9e) 52%, transparent);
+  outline-offset: -2px;
+}
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR}] {
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border-left: 3px solid var(--warning, #9a6700);
+  border-radius: 8px;
+  background: var(--recued-surface-muted, #f6f7f9);
+  background: color-mix(in srgb, var(--warning, #9a6700) 7%, var(--recued-surface, #fff));
+  overflow-wrap: anywhere;
+}
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR}][hidden] { display: none; }
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR}] h3,
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR}] p { margin: 0; }
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR}] h3 {
+  color: var(--warning, #8a5a00);
+  font-size: 13px;
+}
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR}] p {
+  margin-top: 6px;
+  font-size: 12px;
+  line-height: 1.45;
+}
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS_ATTR}] { font-weight: 600; }
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR}] {
+  padding: 8px 9px;
+  border: 1px solid var(--recued-border, rgba(127,127,127,.24));
+  border-radius: 7px;
+  background: var(--recued-surface, #fff);
+}
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR}][hidden] { display: none; }
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR}][data-phase="confirmed"] {
+  border-color: color-mix(in srgb, var(--recued-accent, #147d9e) 45%, transparent);
+}
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR}][data-phase="failed"],
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR}][data-phase="unconfirmed"],
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR}][data-phase="reconnected"],
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR}][data-phase="superseded"] {
+  border-color: color-mix(in srgb, var(--warning, #9a6700) 48%, transparent);
+}
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR}] .recued-account-connection-diagnosis-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-top: 9px;
+}
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR}],
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR}],
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR}] {
+  flex: 1 1 140px;
+  min-height: 44px;
+  border: 1px solid var(--recued-accent-border, rgba(63, 99, 255, .4));
+  border-radius: 7px;
+  padding: 6px 10px;
+  font: inherit;
+  font-weight: 650;
+  cursor: pointer;
+}
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR}] {
+  background: transparent;
+  color: var(--recued-accent, #147d9e);
+}
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR}],
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR}] {
+  background: var(--recued-accent, #3f63ff);
+  color: #fff;
+}
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR}]:not([hidden])
+  + [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR}] {
+  background: transparent;
+  color: var(--recued-fg-muted, #52525b);
+}
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR}][disabled],
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR}][disabled] {
+  cursor: not-allowed;
+  opacity: .7;
+}
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR}][data-control-review="active"]
+  [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR}][disabled] {
+  opacity: 1;
+  color: var(--recued-fg-muted, #52525b);
+}
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR}]:not([disabled]):hover {
+  background: var(--recued-surface-hover, rgba(127,127,127,.12));
+}
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR}]:not([disabled]):hover,
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR}]:hover { filter: brightness(.96); }
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR}]:focus-visible,
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR}]:focus-visible,
+[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR}]:focus-visible {
+  outline: 2px solid var(--recued-focus, #4c8dff);
+  outline-offset: 2px;
+}
 [${ACCOUNT_MENU_RECOVERY_ATTR}] {
   padding: 8px 6px 0;
   border-bottom: 1px solid var(--recued-border, rgba(127,127,127,0.2));
@@ -698,6 +963,12 @@ export const ACCOUNT_MENU_STYLES = `
 @media (prefers-color-scheme: dark) {
   [${ACCOUNT_MENU_POPOVER_ATTR}] { background: var(--recued-surface, #1b1b1f); }
   [${ACCOUNT_MENU_BADGE_ATTR}] { box-shadow: 0 0 0 2px var(--recued-surface, #1b1b1f); }
+  [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR}] {
+    background: color-mix(in srgb, var(--warning, #9a6700) 10%, var(--recued-surface, #1b1b1f));
+  }
+  [${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR}] h3 {
+    color: var(--recued-warning-on-dark, #f2c15c);
+  }
 }
 `;
 
@@ -927,6 +1198,95 @@ export const mountAccountMenu = (
   serverUpdateSection.appendChild(serverUpdateDiagnostic);
   popover.appendChild(serverUpdateSection);
 
+  // One-shot orientation from a bounded post-review verification. The stable
+  // heading owns focus while the live status below changes, so reconnects do
+  // not strand focus in reconstructed server-pill content.
+  const connectionDiagnosis = doc.createElement('section');
+  connectionDiagnosis.setAttribute(ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR, '');
+  connectionDiagnosis.setAttribute(
+    'aria-labelledby',
+    ACCOUNT_MENU_CONNECTION_DIAGNOSIS_TITLE_ID,
+  );
+  connectionDiagnosis.setAttribute('hidden', '');
+  const connectionDiagnosisTitle = doc.createElement('h3');
+  connectionDiagnosisTitle.setAttribute(
+    'id',
+    ACCOUNT_MENU_CONNECTION_DIAGNOSIS_TITLE_ID,
+  );
+  connectionDiagnosisTitle.setAttribute(
+    ACCOUNT_MENU_CONNECTION_DIAGNOSIS_TITLE_ATTR,
+    '',
+  );
+  connectionDiagnosisTitle.setAttribute('tabindex', '-1');
+  connectionDiagnosisTitle.setAttribute(
+    'aria-describedby',
+    `${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_DETAIL_ID} ${
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS_ID
+    }`,
+  );
+  connectionDiagnosis.appendChild(connectionDiagnosisTitle);
+  const connectionDiagnosisDetail = doc.createElement('p');
+  connectionDiagnosisDetail.setAttribute(
+    'id',
+    ACCOUNT_MENU_CONNECTION_DIAGNOSIS_DETAIL_ID,
+  );
+  connectionDiagnosis.appendChild(connectionDiagnosisDetail);
+  const connectionDiagnosisStatus = doc.createElement('p');
+  connectionDiagnosisStatus.setAttribute(
+    'id',
+    ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS_ID,
+  );
+  connectionDiagnosisStatus.setAttribute(
+    ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS_ATTR,
+    '',
+  );
+  connectionDiagnosisStatus.setAttribute('role', 'status');
+  connectionDiagnosisStatus.setAttribute('aria-live', 'polite');
+  connectionDiagnosisStatus.setAttribute('aria-atomic', 'true');
+  connectionDiagnosis.appendChild(connectionDiagnosisStatus);
+  const connectionDiagnosisReceipt = doc.createElement('p');
+  connectionDiagnosisReceipt.setAttribute(
+    ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR,
+    '',
+  );
+  connectionDiagnosisReceipt.setAttribute('role', 'status');
+  connectionDiagnosisReceipt.setAttribute('aria-live', 'polite');
+  connectionDiagnosisReceipt.setAttribute('aria-atomic', 'true');
+  connectionDiagnosisReceipt.setAttribute('hidden', '');
+  connectionDiagnosis.appendChild(connectionDiagnosisReceipt);
+  const connectionDiagnosisActions = doc.createElement('div');
+  connectionDiagnosisActions.className =
+    'recued-account-connection-diagnosis-actions';
+  const connectionDiagnosisControls = doc.createElement('button');
+  connectionDiagnosisControls.setAttribute('type', 'button');
+  connectionDiagnosisControls.setAttribute(
+    ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR,
+    '',
+  );
+  connectionDiagnosisControls.textContent = 'Waiting for live server controls…';
+  connectionDiagnosisControls.setAttribute('disabled', '');
+  connectionDiagnosisActions.appendChild(connectionDiagnosisControls);
+  const connectionDiagnosisReconcile = doc.createElement('button');
+  connectionDiagnosisReconcile.setAttribute('type', 'button');
+  connectionDiagnosisReconcile.setAttribute(
+    ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR,
+    '',
+  );
+  connectionDiagnosisReconcile.textContent = 'Waiting for current server state…';
+  connectionDiagnosisReconcile.setAttribute('disabled', '');
+  connectionDiagnosisReconcile.setAttribute('hidden', '');
+  connectionDiagnosisActions.appendChild(connectionDiagnosisReconcile);
+  const connectionDiagnosisReturn = doc.createElement('button');
+  connectionDiagnosisReturn.setAttribute('type', 'button');
+  connectionDiagnosisReturn.setAttribute(
+    ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR,
+    '',
+  );
+  connectionDiagnosisReturn.textContent = 'Report review outcome';
+  connectionDiagnosisActions.appendChild(connectionDiagnosisReturn);
+  connectionDiagnosis.appendChild(connectionDiagnosisActions);
+  popover.appendChild(connectionDiagnosis);
+
   // Row 2a — the outage explainer. Present only while unreachable; the badge
   // says SOMETHING is wrong, and this is where it says what.
   const recovery = doc.createElement('section');
@@ -981,6 +1341,24 @@ export const mountAccountMenu = (
 
   let open = false;
   let disposed = false;
+  let activeConnectionDiagnosis: AccountConnectionDiagnosis | null = null;
+  let connectionDiagnosisControlsAvailable = false;
+  let connectionDiagnosisControlsProfileId: string | null = null;
+  let connectionDiagnosisCurrentStateAvailable = false;
+  let connectionDiagnosisCurrentStateProfileId: string | null = null;
+  let connectionDiagnosisControlReview: {
+    readonly diagnosisId: string;
+    readonly phase: 'active' | 'returned';
+  } | null = null;
+  let connectionDiagnosisReviewMode:
+    | 'bounded_verification'
+    | 'unresolved_receipt' = 'bounded_verification';
+  let connectionDiagnosisAutoOpenControlsId: string | null = null;
+  let connectionDiagnosisControlReceipt: {
+    readonly diagnosisId: string;
+    readonly receipt: ServerControlActionReceipt;
+  } | null = null;
+  let reviewConnectionDiagnosisServerControls: () => boolean = () => false;
   let serverUpdateDiagnosticCopyInFlight = false;
   let serverUpdateDiagnosticGeneration = 0;
 
@@ -1032,6 +1410,321 @@ export const mountAccountMenu = (
       activeWorkList.appendChild(item);
     }
     if (focusedWorkId !== null) focusElement(replacementFocus ?? popover);
+  };
+
+  const renderConnectionDiagnosis = (): void => {
+    const diagnosis = activeConnectionDiagnosis;
+    if (diagnosis === null) {
+      connectionDiagnosis.setAttribute('hidden', '');
+      connectionDiagnosis.removeAttribute('data-interruption-reason');
+      connectionDiagnosis.removeAttribute('data-control-review');
+      serverSlot.removeAttribute(
+        ACCOUNT_MENU_SERVER_SLOT_DIAGNOSIS_TARGET_ATTR,
+      );
+      connectionDiagnosisTitle.textContent = '';
+      connectionDiagnosisDetail.textContent = '';
+      connectionDiagnosisStatus.textContent = '';
+      connectionDiagnosisReceipt.textContent = '';
+      connectionDiagnosisReceipt.setAttribute('hidden', '');
+      connectionDiagnosisReceipt.removeAttribute('data-action');
+      connectionDiagnosisReceipt.removeAttribute('data-phase');
+      connectionDiagnosisControls.textContent =
+        'Waiting for live server controls…';
+      connectionDiagnosisControls.setAttribute('disabled', '');
+      connectionDiagnosisControls.removeAttribute('aria-label');
+      connectionDiagnosisReconcile.textContent =
+        'Waiting for current server state…';
+      connectionDiagnosisReconcile.setAttribute('disabled', '');
+      connectionDiagnosisReconcile.setAttribute('hidden', '');
+      connectionDiagnosisReconcile.removeAttribute('aria-label');
+      connectionDiagnosisReturn.textContent = 'Report review outcome';
+      connectionDiagnosisReturn.removeAttribute('aria-label');
+      return;
+    }
+    const hydratedLabel = profiles.find(
+      (profile) => profile.id === diagnosis.profileId,
+    )?.label.trim();
+    const profileLabel = hydratedLabel !== undefined && hydratedLabel.length > 0
+      ? hydratedLabel
+      : diagnosis.profileLabel;
+    const unresolvedReceiptReview =
+      connectionDiagnosisReviewMode === 'unresolved_receipt';
+    const latestInterruption = diagnosis.interruptionReason === 'connection'
+      ? 'The latest check ended when the server connection changed.'
+      : diagnosis.interruptionReason === 'navigation'
+        ? 'The latest check ended when this tab left the saved work area.'
+        : diagnosis.interruptionReason === 'ownership'
+          ? 'The latest check ended when the work area took focus.'
+          : 'The latest check ended during a reload.';
+    connectionDiagnosis.removeAttribute('hidden');
+    if (diagnosis.interruptionReason === undefined) {
+      connectionDiagnosis.removeAttribute('data-interruption-reason');
+    } else {
+      connectionDiagnosis.setAttribute(
+        'data-interruption-reason',
+        diagnosis.interruptionReason,
+      );
+    }
+    const controlReviewPhase =
+      connectionDiagnosisControlReview?.diagnosisId === diagnosis.id
+        ? connectionDiagnosisControlReview.phase
+        : null;
+    const controlsReady = connectionDiagnosisControlsAvailable
+      && connectionDiagnosisControlsProfileId === diagnosis.profileId
+      && activeConnected
+      && !unreachable;
+    const currentStateReady = unresolvedReceiptReview
+      && connectionDiagnosisCurrentStateAvailable
+      && connectionDiagnosisCurrentStateProfileId === diagnosis.profileId
+      && activeConnected
+      && !unreachable
+      && !profileList.hasInFlightAction()
+      && opts.onReadConnectionDiagnosisServerCurrentState !== undefined;
+    const controlReceipt =
+      connectionDiagnosisControlReceipt?.diagnosisId === diagnosis.id
+        ? connectionDiagnosisControlReceipt.receipt
+        : null;
+    connectionDiagnosis.setAttribute(
+      'data-control-review',
+      controlReviewPhase ?? (controlsReady ? 'ready' : 'waiting'),
+    );
+    if (controlReviewPhase === 'active') {
+      serverSlot.setAttribute(
+        ACCOUNT_MENU_SERVER_SLOT_DIAGNOSIS_TARGET_ATTR,
+        '',
+      );
+    } else {
+      serverSlot.removeAttribute(
+        ACCOUNT_MENU_SERVER_SLOT_DIAGNOSIS_TARGET_ATTR,
+      );
+    }
+    const reviewInstruction = unreachable
+      ? 'Use the recovery steps and current profile below.'
+      : controlReviewPhase === 'active'
+        ? `The exact active-server controls for ${profileLabel} are open below.`
+        : controlReviewPhase === 'returned'
+          ? `You are back from the active-server controls for ${profileLabel}.`
+          : controlsReady
+            ? 'Use Review active server controls to inspect the exact live state without starting an action.'
+            : activeConnected
+              ? 'The connection is up; Recued is waiting for one fresh server status before opening its controls.'
+              : 'Watch the live status here; server controls will become available after the server responds.';
+    connectionDiagnosisTitle.textContent = unresolvedReceiptReview
+      ? `Review ${profileLabel} again`
+      : `Check connection to ${profileLabel}`;
+    connectionDiagnosisDetail.textContent = unresolvedReceiptReview
+      ? `The last server-control receipt did not settle the result. ${reviewInstruction} Compare that receipt with the current live state, or deliberately choose a corrective action. When the state is stable, “Use current server state” closes only this receipt uncertainty; it does not claim the earlier request succeeded or verify ${diagnosis.areaLabel}. Nothing runs automatically.`
+      : `Verification stopped after two interruptions. ${latestInterruption} ${reviewInstruction} Opening Account does not retry verification or mark it resolved.`;
+    connectionDiagnosisStatus.textContent = controlReviewPhase === 'active'
+      ? unresolvedReceiptReview
+        ? currentStateReady
+          ? `${profileLabel} has a stable current state ready to reconcile with the last receipt. Use it below; no server action is required. ${diagnosis.areaLabel} still needs its own check.`
+          : `${profileLabel} controls are open. Compare the live state with the last receipt; no server action is required.`
+        : `${profileLabel} controls are open. Review the live state; no server action is required.`
+      : unreachable
+        ? `${profileLabel} is not reachable. Use the recovery steps below before reporting the outcome.`
+        : !activeConnected
+          ? `${profileLabel} is reconnecting or still being checked. Keep this dialog open if you want to watch the status settle.`
+          : controlReviewPhase === 'returned'
+            ? unresolvedReceiptReview
+              ? currentStateReady
+                ? `${profileLabel} has a stable current state. Use it to reconcile the historical receipt, or return the receipt unchanged. ${diagnosis.areaLabel} still needs its own check.`
+                : `${profileLabel} is connected now. Back from its controls; the current state is still settling, so the receipt remains unresolved. Connection alone does not verify ${diagnosis.areaLabel}.`
+              : `${profileLabel} is connected now. Back from its controls; review any result, then report what happened. Connection alone does not verify ${diagnosis.areaLabel}.`
+            : controlsReady
+              ? unresolvedReceiptReview
+                ? currentStateReady
+                  ? `${profileLabel} has a stable current state ready to reconcile with the last receipt. This does not verify ${diagnosis.areaLabel}.`
+                  : `${profileLabel} is connected now. Review its exact active-server controls against the last receipt; wait for any server action and a fresh status to settle. Connection alone does not verify ${diagnosis.areaLabel}.`
+                : `${profileLabel} is connected now. Review its exact active-server controls, then report what happened. Connection alone does not verify ${diagnosis.areaLabel}.`
+              : `${profileLabel} is connected now. Waiting for a fresh server status before its controls can open. Connection alone does not verify ${diagnosis.areaLabel}.`;
+    connectionDiagnosisControls.textContent = controlReviewPhase === 'active'
+      ? 'Viewing server controls'
+      : controlReviewPhase === 'returned'
+        ? 'Review active server controls again'
+        : controlsReady
+          ? 'Review active server controls'
+          : 'Waiting for live server controls…';
+    if (controlsReady && controlReviewPhase !== 'active') {
+      connectionDiagnosisControls.removeAttribute('disabled');
+    } else {
+      connectionDiagnosisControls.setAttribute('disabled', '');
+    }
+    connectionDiagnosisControls.setAttribute(
+      'aria-label',
+      controlsReady
+        ? `Review the active server controls for ${profileLabel}`
+        : `Live server controls for ${profileLabel} are not available yet`,
+    );
+    if (unresolvedReceiptReview) {
+      connectionDiagnosisReconcile.removeAttribute('hidden');
+      connectionDiagnosisReconcile.textContent = currentStateReady
+        ? 'Use current server state'
+        : 'Waiting for current server state…';
+      if (currentStateReady) {
+        connectionDiagnosisReconcile.removeAttribute('disabled');
+      } else {
+        connectionDiagnosisReconcile.setAttribute('disabled', '');
+      }
+      connectionDiagnosisReconcile.setAttribute(
+        'aria-label',
+        currentStateReady
+          ? `Use the current stable server state from ${profileLabel} to reconcile the historical receipt; the earlier action is not attributed or replayed`
+          : `Current stable server state from ${profileLabel} is not available yet`,
+      );
+    } else {
+      connectionDiagnosisReconcile.setAttribute('hidden', '');
+      connectionDiagnosisReconcile.setAttribute('disabled', '');
+      connectionDiagnosisReconcile.removeAttribute('aria-label');
+    }
+    connectionDiagnosisReturn.setAttribute(
+      'aria-label',
+      unresolvedReceiptReview
+        ? `Keep the historical server receipt from ${profileLabel} unresolved in Attention for ${diagnosis.areaLabel}`
+        : `Return to Attention and report the connection review outcome for ${diagnosis.areaLabel}`,
+    );
+    connectionDiagnosisReturn.textContent = unresolvedReceiptReview
+      ? 'Keep receipt unresolved'
+      : 'Report review outcome';
+    if (controlReceipt === null) {
+      connectionDiagnosisReceipt.textContent = '';
+      connectionDiagnosisReceipt.setAttribute('hidden', '');
+      connectionDiagnosisReceipt.removeAttribute('data-action');
+      connectionDiagnosisReceipt.removeAttribute('data-phase');
+    } else {
+      const receiptCopy = serverControlReceiptCopy(
+        controlReceipt,
+        diagnosis.areaLabel,
+      );
+      connectionDiagnosisReceipt.textContent = unresolvedReceiptReview
+        ? `Last receipt — ${receiptCopy}`
+        : receiptCopy;
+      connectionDiagnosisReceipt.setAttribute(
+        'data-action',
+        controlReceipt.action,
+      );
+      connectionDiagnosisReceipt.setAttribute(
+        'data-phase',
+        controlReceipt.phase,
+      );
+      connectionDiagnosisReceipt.removeAttribute('hidden');
+    }
+  };
+
+  const clearConnectionDiagnosis = (): void => {
+    const diagnosisHadFocus = open
+      && activeConnectionDiagnosis !== null
+      && nodeIsInside(
+        connectionDiagnosis,
+        (doc as unknown as { activeElement?: EventTarget | null })
+          .activeElement ?? null,
+    );
+    activeConnectionDiagnosis = null;
+    connectionDiagnosisControlReview = null;
+    connectionDiagnosisReviewMode = 'bounded_verification';
+    connectionDiagnosisAutoOpenControlsId = null;
+    connectionDiagnosisControlReceipt = null;
+    renderConnectionDiagnosis();
+    if (diagnosisHadFocus) focusElement(popover);
+  };
+
+  const setConnectionDiagnosisControlAvailability = (
+    profileId: string | null,
+    available: boolean,
+  ): void => {
+    if (disposed) return;
+    const controlsHadFocus = open
+      && (doc as unknown as { activeElement?: EventTarget | null })
+        .activeElement === connectionDiagnosisControls;
+    const normalizedProfileId = profileId?.trim() ?? '';
+    // Store the control owner's heartbeat signal independently of Account's
+    // connection projection. If the heartbeat lands first, a later
+    // `setActiveConnected(true)` can reveal it instead of waiting for another
+    // frame that the server-pill owner correctly deduplicates.
+    const next = available
+      && normalizedProfileId.length > 0
+      && normalizedProfileId.length <= 256
+      && opts.onReviewConnectionDiagnosisServerControls !== undefined;
+    const nextProfileId = next ? normalizedProfileId : null;
+    const activeReview =
+      activeConnectionDiagnosis !== null
+      && connectionDiagnosisControlReview?.diagnosisId
+        === activeConnectionDiagnosis.id
+      && connectionDiagnosisControlReview.phase === 'active';
+    const activeDiagnosisControlsReady =
+      activeConnectionDiagnosis !== null
+      && next
+      && nextProfileId === activeConnectionDiagnosis.profileId
+      && activeConnected
+      && !unreachable;
+    if (
+      next === connectionDiagnosisControlsAvailable
+      && nextProfileId === connectionDiagnosisControlsProfileId
+      && !activeReview
+    ) return;
+    connectionDiagnosisControlsAvailable = next;
+    connectionDiagnosisControlsProfileId = nextProfileId;
+    if (
+      !activeDiagnosisControlsReady
+      && activeReview
+      && activeConnectionDiagnosis !== null
+    ) {
+      connectionDiagnosisControlReview = {
+        diagnosisId: activeConnectionDiagnosis.id,
+        phase: 'returned',
+      };
+    }
+    renderConnectionDiagnosis();
+    if (
+      activeDiagnosisControlsReady
+      && activeConnectionDiagnosis !== null
+      && connectionDiagnosisAutoOpenControlsId
+        === activeConnectionDiagnosis.id
+      && !activeReview
+    ) {
+      reviewConnectionDiagnosisServerControls();
+      return;
+    }
+    if (
+      !activeDiagnosisControlsReady
+      && open
+      && (activeReview || controlsHadFocus)
+    ) {
+      focusElement(connectionDiagnosisReturn);
+    }
+  };
+
+  const setConnectionDiagnosisCurrentStateAvailability = (
+    profileId: string | null,
+    available: boolean,
+  ): void => {
+    if (disposed) return;
+    const reconcileHadFocus = open
+      && (doc as unknown as { activeElement?: EventTarget | null })
+        .activeElement === connectionDiagnosisReconcile;
+    const normalizedProfileId = profileId?.trim() ?? '';
+    const next = available
+      && normalizedProfileId.length > 0
+      && normalizedProfileId.length <= 256
+      && opts.onReadConnectionDiagnosisServerCurrentState !== undefined;
+    const nextProfileId = next ? normalizedProfileId : null;
+    if (
+      next === connectionDiagnosisCurrentStateAvailable
+      && nextProfileId === connectionDiagnosisCurrentStateProfileId
+    ) return;
+    connectionDiagnosisCurrentStateAvailable = next;
+    connectionDiagnosisCurrentStateProfileId = nextProfileId;
+    renderConnectionDiagnosis();
+    if (
+      reconcileHadFocus
+      && activeConnectionDiagnosis !== null
+      && (
+        !next
+        || nextProfileId !== activeConnectionDiagnosis.profileId
+        || !activeConnected
+        || unreachable
+      )
+    ) focusElement(connectionDiagnosisReturn);
   };
 
   const renderServerUpdateGuide = (): void => {
@@ -1645,6 +2338,7 @@ export const mountAccountMenu = (
                 ? { ...profile, label: committedLabel }
                 : profile,
             );
+            renderConnectionDiagnosis();
             return committedLabel;
           },
         }
@@ -1664,6 +2358,16 @@ export const mountAccountMenu = (
   });
   // Keep the primary destinations before the roster-management action.
   if (opts.onAddServer !== undefined) serversRow.appendChild(addServer);
+
+  const canOpenConnectionDiagnosis = (profileId: string): boolean => {
+    const normalizedProfileId = profileId.trim();
+    return !disposed
+      && normalizedProfileId.length > 0
+      && normalizedProfileId.length <= 256
+      && !profileList.hasInFlightAction()
+      && activeId === normalizedProfileId
+      && profiles.some((profile) => profile.id === normalizedProfileId);
+  };
 
   const renderBadge = (): void => {
     const recoveryHadFocus = !unreachable
@@ -1777,11 +2481,17 @@ export const mountAccountMenu = (
         && profile.server_url.length > 0,
     );
     recoveryDetail.textContent = recoveryDetailCopy(hasAlternateServer);
+    renderConnectionDiagnosis();
   };
 
   function setOpen(
     next: boolean,
-    behavior?: { returnFocus?: boolean; focusContent?: boolean },
+    behavior?: {
+      returnFocus?: boolean;
+      focusContent?: boolean;
+      connectionDiagnosisDisposition?: AccountConnectionDiagnosisDisposition;
+      connectionDiagnosisCurrentState?: ServerControlCurrentStateObservation;
+    },
   ): void {
     if (disposed) return;
     const wasOpen = open;
@@ -1796,7 +2506,9 @@ export const mountAccountMenu = (
     } else popover.setAttribute('hidden', '');
     if (next && behavior?.focusContent === true) {
       focusElement(
-        serverUpdateGuide !== null
+        activeConnectionDiagnosis !== null
+          ? connectionDiagnosisTitle
+          : serverUpdateGuide !== null
           ? serverUpdateTitle
           : unreachable
             ? recoveryTitle
@@ -1804,10 +2516,58 @@ export const mountAccountMenu = (
       );
     }
     if (!next) {
+      const closedDiagnosis = activeConnectionDiagnosis;
+      const closedDisposition =
+        behavior?.connectionDiagnosisDisposition ?? 'dismissed';
+      const closedReceipt = closedDiagnosis !== null
+        && closedDisposition === 'return'
+        && connectionDiagnosisControlReceipt?.diagnosisId
+          === closedDiagnosis.id
+          ? connectionDiagnosisControlReceipt.receipt
+          : null;
+      // Deliberately omit `detail`: even presentation-safe RPC copy is owned
+      // by the Account receipt and must not become recovery continuity state.
+      const closedServerOutcome: ServerControlActionOutcome | undefined =
+        closedReceipt === null
+          ? undefined
+          : {
+              action: closedReceipt.action,
+              phase: closedReceipt.phase,
+              ...(closedReceipt.currentState === undefined
+                ? {}
+                : { currentState: closedReceipt.currentState }),
+            };
+      activeConnectionDiagnosis = null;
+      connectionDiagnosisControlReview = null;
+      connectionDiagnosisReviewMode = 'bounded_verification';
+      connectionDiagnosisAutoOpenControlsId = null;
+      connectionDiagnosisControlReceipt = null;
+      renderConnectionDiagnosis();
       // A live "Remove?" must not survive a close and greet the next open.
       profileList.disarm();
       if (behavior?.returnFocus === true) focusElement(trigger);
       if (wasOpen) opts.onClose?.();
+      if (wasOpen && closedDiagnosis !== null) {
+        if (behavior?.connectionDiagnosisCurrentState !== undefined) {
+          opts.onConnectionDiagnosisClosed?.(
+            closedDiagnosis,
+            closedDisposition,
+            closedServerOutcome,
+            { ...behavior.connectionDiagnosisCurrentState },
+          );
+        } else if (closedServerOutcome === undefined) {
+          opts.onConnectionDiagnosisClosed?.(
+            closedDiagnosis,
+            closedDisposition,
+          );
+        } else {
+          opts.onConnectionDiagnosisClosed?.(
+            closedDiagnosis,
+            closedDisposition,
+            closedServerOutcome,
+          );
+        }
+      }
     }
   }
 
@@ -1821,6 +2581,144 @@ export const mountAccountMenu = (
 
   closeButton.addEventListener('click', () => {
     setOpen(false, { returnFocus: true });
+  });
+
+  reviewConnectionDiagnosisServerControls = (): boolean => {
+    const diagnosis = activeConnectionDiagnosis;
+    if (
+      diagnosis === null
+      || !connectionDiagnosisControlsAvailable
+      || connectionDiagnosisControlsProfileId !== diagnosis.profileId
+      || !activeConnected
+      || unreachable
+      || profileList.hasInFlightAction()
+      || opts.onReviewConnectionDiagnosisServerControls === undefined
+    ) return false;
+    const diagnosisId = diagnosis.id;
+    // An automatic exact landing is one-shot. If the live owner rejects this
+    // attempt, the visible button remains the deliberate retry boundary.
+    connectionDiagnosisAutoOpenControlsId = null;
+    connectionDiagnosisControlReview = {
+      diagnosisId,
+      phase: 'active',
+    };
+    renderConnectionDiagnosis();
+    try {
+      const scroll = (serverSlot as {
+        scrollIntoView?: (options?: ScrollIntoViewOptions) => void;
+      }).scrollIntoView;
+      scroll?.call(serverSlot, { block: 'nearest' });
+    } catch {
+      // Focus inside the real control surface remains the authoritative handoff.
+    }
+    let result: 'opened' | 'unavailable' = 'unavailable';
+    try {
+      result = opts.onReviewConnectionDiagnosisServerControls(
+        diagnosis,
+        {
+          ownerId: diagnosisId,
+          onReceipt: (receipt) => {
+            if (
+              disposed
+              || activeConnectionDiagnosis?.id !== diagnosisId
+              || connectionDiagnosisControlReview?.diagnosisId !== diagnosisId
+            ) return;
+            connectionDiagnosisControlReceipt = {
+              diagnosisId,
+              receipt: { ...receipt },
+            };
+            renderConnectionDiagnosis();
+          },
+          onReturn: () => {
+            if (
+              disposed
+              || activeConnectionDiagnosis?.id !== diagnosisId
+              || connectionDiagnosisControlReview?.diagnosisId !== diagnosisId
+            ) return;
+            connectionDiagnosisControlReview = {
+              diagnosisId,
+              phase: 'returned',
+            };
+            renderConnectionDiagnosis();
+            if (open) {
+              focusElement(
+                !connectionDiagnosisReconcile.hasAttribute('hidden')
+                  && !connectionDiagnosisReconcile.hasAttribute('disabled')
+                  ? connectionDiagnosisReconcile
+                  : connectionDiagnosisReturn,
+              );
+            }
+          },
+        },
+      );
+    } catch {
+      result = 'unavailable';
+    }
+    if (result === 'opened') return true;
+    if (activeConnectionDiagnosis?.id !== diagnosisId) return false;
+    connectionDiagnosisControlsAvailable = false;
+    connectionDiagnosisControlsProfileId = null;
+    connectionDiagnosisControlReview = null;
+    renderConnectionDiagnosis();
+    focusElement(connectionDiagnosisTitle);
+    return false;
+  };
+
+  connectionDiagnosisControls.addEventListener('click', () => {
+    reviewConnectionDiagnosisServerControls();
+  });
+
+  connectionDiagnosisReconcile.addEventListener('click', () => {
+    const diagnosis = activeConnectionDiagnosis;
+    if (
+      diagnosis === null
+      || connectionDiagnosisReviewMode !== 'unresolved_receipt'
+      || !connectionDiagnosisCurrentStateAvailable
+      || connectionDiagnosisCurrentStateProfileId !== diagnosis.profileId
+      || !activeConnected
+      || unreachable
+      || profileList.hasInFlightAction()
+      || opts.onReadConnectionDiagnosisServerCurrentState === undefined
+    ) return;
+    let observation: ServerControlCurrentStateObservation | null = null;
+    try {
+      observation = opts.onReadConnectionDiagnosisServerCurrentState(
+        diagnosis,
+      );
+    } catch {
+      observation = null;
+    }
+    if (
+      observation === null
+      || (
+        observation.state !== 'running'
+        && observation.state !== 'paused'
+      )
+    ) {
+      setConnectionDiagnosisCurrentStateAvailability(null, false);
+      connectionDiagnosisStatus.textContent =
+        `The current state for ${diagnosis.profileLabel} changed or is still settling. Review the live server again; the historical receipt remains unresolved.`;
+      focusElement(connectionDiagnosisReturn);
+      return;
+    }
+    setOpen(false, {
+      returnFocus: true,
+      connectionDiagnosisDisposition: 'return',
+      connectionDiagnosisCurrentState: { ...observation },
+    });
+  });
+
+  connectionDiagnosisReturn.addEventListener('click', () => {
+    if (activeConnectionDiagnosis === null) return;
+    if (profileList.hasInFlightAction()) {
+      connectionDiagnosisStatus.textContent =
+        'Finish the server profile change already in progress before reporting this review outcome.';
+      return;
+    }
+    setOpen(false, {
+      returnFocus: true,
+      connectionDiagnosisDisposition: 'return',
+    });
   });
 
   settingsLink.addEventListener('click', () => {
@@ -1927,7 +2825,9 @@ export const mountAccountMenu = (
       serverUpdateDiagnosticStatus.textContent =
         'Copy was unavailable. The summary is focused so you can select and copy it manually.';
       renderServerUpdateGuide();
-      focusElement(serverUpdateDiagnosticSummary);
+      if (open && activeConnectionDiagnosis === null) {
+        focusElement(serverUpdateDiagnosticSummary);
+      }
     };
     let write: Promise<void>;
     try {
@@ -1946,7 +2846,9 @@ export const mountAccountMenu = (
         serverUpdateDiagnosticStatus.textContent =
           'Safe diagnostic copied. Paste it into your support conversation when ready; nothing was sent automatically.';
         renderServerUpdateGuide();
-        focusElement(serverUpdateDiagnosticStatus);
+        if (open && activeConnectionDiagnosis === null) {
+          focusElement(serverUpdateDiagnosticStatus);
+        }
       },
       showCopyFailure,
     );
@@ -1976,6 +2878,19 @@ export const mountAccountMenu = (
   const onKeydown = (event: KeyboardEvent): void => {
     if (!open) return;
     if (event.key !== 'Escape') return;
+    // The heartbeat-backed server controls are a nested, explicitly opened
+    // surface. Let their Escape handler close back to the diagnosis outcome;
+    // closing Account here in capture phase would skip that round-trip.
+    const closest = (event.target as {
+      closest?: (selector: string) => Element | null;
+    } | null)?.closest;
+    if (
+      typeof closest === 'function'
+      && closest.call(
+        event.target,
+        `[${SERVER_CONTROL_POPOVER_ATTR}]`,
+      ) !== null
+    ) return;
     setOpen(false, { returnFocus: true });
   };
   const docEvents = doc as unknown as {
@@ -2017,6 +2932,68 @@ export const mountAccountMenu = (
       setOpen(false);
       return 'unavailable';
     },
+    canOpenConnectionDiagnosis,
+    openConnectionDiagnosis(diagnosis, options) {
+      if (disposed) return 'unavailable';
+      const id = diagnosis.id.trim();
+      const profileId = diagnosis.profileId.trim();
+      const profileLabel = diagnosis.profileLabel.trim();
+      const areaLabel = diagnosis.areaLabel.trim();
+      const initialServerOutcome = options?.initialServerOutcome;
+      const unresolvedReceiptReview = initialServerOutcome !== undefined
+        && isUnresolvedServerControlActionOutcome(initialServerOutcome);
+      const hasValidInterruptionReason =
+        diagnosis.interruptionReason === 'connection'
+        || diagnosis.interruptionReason === 'navigation'
+        || diagnosis.interruptionReason === 'ownership'
+        || diagnosis.interruptionReason === 'reload';
+      if (
+        id.length === 0
+        || id.length > 512
+        || profileId.length === 0
+        || profileId.length > 256
+        || profileLabel.length === 0
+        || profileLabel.length > 256
+        || areaLabel.length === 0
+        || areaLabel.length > 256
+        || (!unresolvedReceiptReview && !hasValidInterruptionReason)
+        || (initialServerOutcome !== undefined && !unresolvedReceiptReview)
+        || !canOpenConnectionDiagnosis(profileId)
+      ) return 'unavailable';
+      activeConnectionDiagnosis = {
+        id,
+        profileId,
+        profileLabel,
+        areaLabel,
+        ...(diagnosis.interruptionReason === undefined
+          ? {}
+          : { interruptionReason: diagnosis.interruptionReason }),
+      };
+      connectionDiagnosisReviewMode = unresolvedReceiptReview
+        ? 'unresolved_receipt'
+        : 'bounded_verification';
+      connectionDiagnosisControlReview = null;
+      connectionDiagnosisControlReceipt = initialServerOutcome === undefined
+        ? null
+        : {
+            diagnosisId: id,
+            receipt: { ...initialServerOutcome },
+          };
+      connectionDiagnosisAutoOpenControlsId =
+        unresolvedReceiptReview && options?.reviewServerControls === true
+          ? id
+          : null;
+      renderConnectionDiagnosis();
+      setOpen(true);
+      focusElement(connectionDiagnosisTitle);
+      if (connectionDiagnosisAutoOpenControlsId === id) {
+        reviewConnectionDiagnosisServerControls();
+      }
+      return 'opened';
+    },
+    clearConnectionDiagnosis,
+    setConnectionDiagnosisControlAvailability,
+    setConnectionDiagnosisCurrentStateAvailability,
     openServerUpdateGuide(guide) {
       if (disposed) return;
       serverUpdateDiagnosticGeneration += 1;
@@ -2084,6 +3061,11 @@ export const mountAccountMenu = (
     serverSlot: () => serverSlot as unknown as HTMLElement,
     refresh(nextProfiles, nextActiveId, nextUnreachable, nextActiveConnected) {
       if (disposed) return;
+      const displacedDiagnosis =
+        activeConnectionDiagnosis !== null
+        && activeConnectionDiagnosis.profileId !== nextActiveId
+          ? activeConnectionDiagnosis
+          : null;
       const previousDiagnosticProfile = profiles.find(
         (profile) => profile.id === activeId,
       );
@@ -2109,6 +3091,17 @@ export const mountAccountMenu = (
       }
       profiles = nextProfiles;
       activeId = nextActiveId;
+      if (unreachable || !activeConnected) {
+        setConnectionDiagnosisControlAvailability(null, false);
+        setConnectionDiagnosisCurrentStateAvailability(null, false);
+      }
+      if (displacedDiagnosis !== null) {
+        clearConnectionDiagnosis();
+        opts.onConnectionDiagnosisClosed?.(
+          displacedDiagnosis,
+          'dismissed',
+        );
+      }
       profileList.refresh(profiles, activeId, unreachable, activeConnected);
       renderServerUpdateGuide();
       renderBadge();
@@ -2116,6 +3109,10 @@ export const mountAccountMenu = (
     setUnreachable(next) {
       if (disposed || next === unreachable) return;
       unreachable = next;
+      if (next) {
+        setConnectionDiagnosisControlAvailability(null, false);
+        setConnectionDiagnosisCurrentStateAvailability(null, false);
+      }
       renderServerUpdateGuide();
       renderBadge();
       // The open menu's active row carries the same state; refreshing only the
@@ -2125,8 +3122,21 @@ export const mountAccountMenu = (
     setActiveConnected(next) {
       if (disposed || next === activeConnected) return;
       activeConnected = next;
+      if (!next) {
+        setConnectionDiagnosisControlAvailability(null, false);
+        setConnectionDiagnosisCurrentStateAvailability(null, false);
+      }
       profileList.refresh(profiles, activeId, unreachable, activeConnected);
       renderServerUpdateGuide();
+      renderConnectionDiagnosis();
+      if (
+        next
+        && activeConnectionDiagnosis !== null
+        && connectionDiagnosisAutoOpenControlsId
+          === activeConnectionDiagnosis.id
+      ) {
+        reviewConnectionDiagnosisServerControls();
+      }
     },
     setActiveWork(next) {
       if (disposed) return;

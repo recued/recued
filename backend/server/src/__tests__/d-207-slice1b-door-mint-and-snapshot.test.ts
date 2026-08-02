@@ -85,6 +85,10 @@ describe('D-207 — the MINT writes both the pin and the actual authority', () =
         door: 'reception', recipeId: 'r', capability: cap([]), mintedBy: 'o' }, { ...s, now: NOW },
     );
     expect(s.defs.get(contract_id)?.door_types).toEqual(['reception']);
+    expect(s.defs.get(contract_id)?.door_execution_policy).toEqual({
+      max_steps: 64,
+      allow_ai: false,
+    });
   });
 
   it('OMITS grant_kind — omission IS standing; anything else and the door stops governing', () => {
@@ -112,8 +116,13 @@ describe('D-207 — the MINT writes both the pin and the actual authority', () =
 });
 
 describe('D-207 — the upgrade diff re-prompts on CAPABILITY, never on content', () => {
-  const stored = (ops: string[]) =>
-    ({ scope: { operation_ids: ops } } as unknown as ContractDefinition);
+  const stored = (
+    ops: string[],
+    tools: string[] = [],
+    conns: string[] = [],
+  ) => ({
+    scope: { operation_ids: ops, ingredient_ids: tools, connection_names: conns },
+  } as unknown as ContractDefinition);
 
   it('same ops => NO re-prompt (a reworded subject or a version bump is silent)', () => {
     expect(doorCapabilityChanged(stored(['a', 'b']), cap(['b', 'a'])).changed).toBe(false);
@@ -135,6 +144,64 @@ describe('D-207 — the upgrade diff re-prompts on CAPABILITY, never on content'
     const d = doorCapabilityChanged(null, cap(['a', 'b']));
     expect(d.changed).toBe(true);
     expect(d.added).toEqual(['a', 'b']);
+  });
+
+  it('an ingredient change re-prompts even when the canonical op is unchanged', () => {
+    const d = doorCapabilityChanged(
+      stored(['a'], ['old-catalog']),
+      cap(['a'], ['new-catalog']),
+    );
+    expect(d).toEqual({
+      changed: true,
+      added: ['ingredient:new-catalog'],
+      removed: ['ingredient:old-catalog'],
+    });
+  });
+
+  it('a connection change re-prompts instead of reusing a stale account pin', () => {
+    const d = doorCapabilityChanged(
+      stored(['a'], ['catalog'], ['primary']),
+      cap(['a'], ['catalog'], ['secondary']),
+    );
+    expect(d).toEqual({
+      changed: true,
+      added: ['connection:secondary'],
+      removed: ['connection:primary'],
+    });
+  });
+
+  it('ingredient and connection removals are narrowing-only changes', () => {
+    const d = doorCapabilityChanged(
+      stored(['a'], ['old-catalog'], ['primary']),
+      cap(['a']),
+    );
+    expect(d).toEqual({
+      changed: true,
+      added: [],
+      removed: ['connection:primary', 'ingredient:old-catalog'],
+    });
+  });
+
+  it('a legacy door is re-minted under a bounded policy without a widening prompt', () => {
+    const d = doorCapabilityChanged(
+      stored(['a']),
+      cap(['a']),
+      { max_steps: 64, allow_ai: false },
+    );
+    expect(d).toEqual({ changed: true, added: [], removed: [] });
+  });
+
+  it('AI policy is an explicit widening even when the op/tool scope is unchanged', () => {
+    const prior = {
+      ...stored(['core.ai.generate'], ['core-ai-generate']),
+      door_execution_policy: { max_steps: 64, allow_ai: false },
+    } as ContractDefinition;
+    const d = doorCapabilityChanged(
+      prior,
+      cap(['core.ai.generate'], ['core-ai-generate']),
+      { max_steps: 64, allow_ai: true },
+    );
+    expect(d).toEqual({ changed: true, added: ['cost:ai'], removed: [] });
   });
 });
 
@@ -176,6 +243,18 @@ describe('D-207 — the SNAPSHOT is the tool axis, and a dead door is a kill-swi
   it('an UNKNOWN / deleted door authorizes NOTHING', () => {
     const s = fakeStores();
     const snap = buildReceptionContractSnapshot(anonSource('gone'), deps(s, ['stripe']));
+    expect(snap.allowed_tools).toEqual([]);
+  });
+
+  it('a LIVE webhook contract cannot lend its tools to a reception source', () => {
+    const s = fakeStores();
+    const { contract_id } = mintDoorContract(
+      {
+        door: 'webhook', recipeId: 'r', capability: cap(['a.op'], ['stripe']), mintedBy: 'o',
+      },
+      { ...s, now: NOW },
+    );
+    const snap = buildReceptionContractSnapshot(anonSource(contract_id), deps(s, ['stripe']));
     expect(snap.allowed_tools).toEqual([]);
   });
 

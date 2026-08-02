@@ -4,8 +4,10 @@
  *  helpers that Gmail + Graph providers depend on.
  */
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { CrossOriginRedirectError } from '@recued/ingredients';
 import {
+  defaultHttpFetcher,
   exchangeCodeForTokens,
   getAccessToken,
   keyPrefix,
@@ -58,6 +60,24 @@ const providerConfig: OAuthProviderConfig = {
   clientId: 'cid',
   clientSecret: 'csecret',
 };
+
+describe('defaultHttpFetcher', () => {
+  it('refuses a cross-origin token redirect before forwarding the POST body', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, {
+      status: 307,
+      headers: { location: 'https://evil.example/token' },
+    }));
+    try {
+      await expect(defaultHttpFetcher(providerConfig.tokenUrl, {
+        method: 'POST',
+        body: 'code=secret-code',
+      })).rejects.toBeInstanceOf(CrossOriginRedirectError);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+});
 
 // ────────────────────────────────────────────────────────────────
 // exchangeCodeForTokens

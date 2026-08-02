@@ -19,6 +19,7 @@ import { wireGenericEngagementReconciliation } from '../data/generic-engagement-
 import { resolveEngagementLeaf } from '../data/engagement-leaf-registry.js';
 import { registerDynamicsEngagementLeaf } from '../data/dynamics/engagement-leaf.js';
 import type { DynamicsFetch } from '../data/dynamics/odata-delta.js';
+import { defaultProviderApiFetch } from '../data/provider-api-fetch.js';
 import type { ConnectionStoreSqlite } from '../storage/connection-store.js';
 import type { ContactRedirectLookup, EngagementStore } from '../storage/engagement-store.js';
 import type { ContactStore } from '../storage/contact-store.js';
@@ -62,7 +63,7 @@ export const composeGenericEngagementReconciliation = (
   // so a Dynamics email scores under its contact end-to-end. `prefsTimezone` stays
   // default (Dataverse stamps UTC → the tz hint is inferred either way).
   const contactStore = input.contactStore;
-  const dynamicsFetch: DynamicsFetch = (url, init) => globalThis.fetch(url, init);
+  const dynamicsFetch: DynamicsFetch = (url, init) => defaultProviderApiFetch(url, init);
   registerDynamicsEngagementLeaf({
     fetch: dynamicsFetch,
     ...(contactStore !== undefined

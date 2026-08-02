@@ -10,11 +10,13 @@ import { promises as fsp } from 'node:fs';
 import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SERVICE_CWD_SUBDIR } from '@recued/contracts';
 
 import {
+  DOWNLOAD_INSTALLER_MAX_BYTES,
+  DOWNLOAD_INSTALLER_TIMEOUT_MS,
   downloadInstaller,
   resolveDownloadTarget,
   validateDownloadParams,
@@ -86,6 +88,19 @@ describe('validateDownloadParams', () => {
     ).toThrow(InstallerParamError);
   });
 
+  it('rejects malformed URLs and embedded credentials', () => {
+    expect(() => validateDownloadParams({
+      url: 'https://',
+      sha256: 'a'.repeat(64),
+      target: 'bin',
+    })).toThrow(/valid absolute URL/);
+    expect(() => validateDownloadParams({
+      url: 'https://user:secret@example.com/bin',
+      sha256: 'a'.repeat(64),
+      target: 'bin',
+    })).toThrow(/embedded credentials/);
+  });
+
   it('rejects malformed sha (non-hex)', () => {
     expect(() =>
       validateDownloadParams({
@@ -151,6 +166,27 @@ describe('resolveDownloadTarget', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('downloadInstaller.install — happy path', () => {
+  it('streams the payload without calling arrayBuffer()', async () => {
+    const body = Buffer.from('stream me');
+    const response = new Response(new Uint8Array(body), { status: 200 });
+    const arrayBuffer = vi.spyOn(response, 'arrayBuffer').mockRejectedValue(
+      new Error('must not buffer the complete installer payload'),
+    );
+    const fetch = (async () => response) as unknown as FetchFn;
+
+    const out = await downloadInstaller.install(
+      {
+        url: 'https://example.com/streamed',
+        sha256: sha256Hex(body),
+        target: 'tools/streamed',
+      },
+      makeCtx(fetch),
+    );
+
+    expect(out.exit_code).toBe(0);
+    expect(arrayBuffer).not.toHaveBeenCalled();
+  });
+
   it('writes verified payload at the resolved target path', async () => {
     const body = Buffer.from('hello world');
     const sha = sha256Hex(body);
@@ -218,6 +254,128 @@ describe('downloadInstaller.install — sha mismatch', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('downloadInstaller.install — network failure', () => {
+  it('allows bounded cross-origin HTTPS redirects used by release CDNs', async () => {
+    const body = Buffer.from('cdn payload');
+    const calls: Array<{ url: string; redirect: RequestRedirect | undefined }> = [];
+    const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      calls.push({ url, redirect: init?.redirect });
+      if (calls.length === 1) {
+        return new Response(null, {
+          status: 302,
+          headers: { location: 'https://cdn.example.net/release.bin' },
+        });
+      }
+      return new Response(new Uint8Array(body), { status: 200 });
+    }) as unknown as FetchFn;
+
+    const out = await downloadInstaller.install(
+      {
+        url: 'https://releases.example.com/latest',
+        sha256: sha256Hex(body),
+        target: 'tools/cdn',
+      },
+      makeCtx(fetch),
+    );
+
+    expect(out.exit_code).toBe(0);
+    expect(calls).toEqual([
+      { url: 'https://releases.example.com/latest', redirect: 'manual' },
+      { url: 'https://cdn.example.net/release.bin', redirect: 'manual' },
+    ]);
+  });
+
+  it.each([
+    ['non-HTTPS', 'http://cdn.example.net/release.bin'],
+    ['private/local', 'https://127.0.0.1/internal'],
+  ])('refuses a %s redirect before requesting its target', async (_label, location) => {
+    const fetch = vi.fn(async () => new Response(null, {
+      status: 302,
+      headers: { location },
+    })) as unknown as FetchFn;
+
+    const out = await downloadInstaller.install(
+      {
+        url: 'https://releases.example.com/latest',
+        sha256: 'a'.repeat(64),
+        target: 'tools/refused',
+      },
+      makeCtx(fetch),
+    );
+
+    expect(out.exit_code).toBe(-1);
+    expect(out.log_lines.join(' ')).toContain(`refused a ${_label} target`);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an oversized declared payload before reading its body', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetch = (async () => new Response(body, {
+      status: 200,
+      headers: {
+        'content-length': String(DOWNLOAD_INSTALLER_MAX_BYTES + 1),
+      },
+    })) as unknown as FetchFn;
+
+    const out = await downloadInstaller.install(
+      {
+        url: 'https://example.com/huge',
+        sha256: 'a'.repeat(64),
+        target: 'tools/huge',
+      },
+      makeCtx(fetch),
+    );
+
+    expect(out.exit_code).toBe(-1);
+    expect(out.log_lines.join(' ')).toContain(
+      `limit ${DOWNLOAD_INSTALLER_MAX_BYTES}`,
+    );
+    expect(cancelled).toBe(true);
+  });
+
+  it('aborts a response body that stalls past the installer deadline', async () => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      const fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+        signal = init?.signal ?? undefined;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            const abort = (): void => {
+              const error = new Error('aborted');
+              error.name = 'AbortError';
+              controller.error(error);
+            };
+            if (signal?.aborted) abort();
+            else signal?.addEventListener('abort', abort, { once: true });
+          },
+        });
+        return new Response(body, { status: 200 });
+      }) as unknown as FetchFn;
+      const pending = downloadInstaller.install(
+        {
+          url: 'https://example.com/stalled',
+          sha256: 'a'.repeat(64),
+          target: 'tools/stalled',
+        },
+        makeCtx(fetch),
+      );
+
+      await vi.advanceTimersByTimeAsync(DOWNLOAD_INSTALLER_TIMEOUT_MS);
+      const out = await pending;
+      expect(signal?.aborted).toBe(true);
+      expect(out.exit_code).toBe(-1);
+      expect(out.log_lines.join(' ')).toContain('download timed out');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('returns exit -1 with the response status in log_lines', async () => {
     const out = await downloadInstaller.install(
       {
@@ -309,6 +467,7 @@ describe('downloadInstaller.uninstall', () => {
     await writeFile(join(cwd, 'payload'), 'X');
     await writeFile(join(cwd, 'payload.bak'), 'X');
     await writeFile(join(cwd, 'payload.download.tmp'), 'X');
+    await writeFile(join(cwd, 'payload.download.crash-leftover.tmp'), 'X');
 
     const out = await downloadInstaller.uninstall(
       {
@@ -322,6 +481,7 @@ describe('downloadInstaller.uninstall', () => {
     expect(await exists(join(cwd, 'payload'))).toBe(false);
     expect(await exists(join(cwd, 'payload.bak'))).toBe(false);
     expect(await exists(join(cwd, 'payload.download.tmp'))).toBe(false);
+    expect(await exists(join(cwd, 'payload.download.crash-leftover.tmp'))).toBe(false);
   });
 
   it('idempotent — succeeds even when target was never installed', async () => {

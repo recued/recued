@@ -46,6 +46,11 @@ import {
 } from '@recued/contracts';
 import { IngredientError } from '@recued/ingredients';
 import {
+  assertProviderPageUrl,
+  ProviderPaginationGuard,
+  readProviderStringContinuation,
+} from '../../provider-pagination-guard.js';
+import {
   classifyMailApiStatus,
   classifyOAuthFailure,
   createMailSyncOutcomeReporter,
@@ -73,6 +78,7 @@ import {
   type SentMessageMeta,
 } from './provider.js';
 import {
+  defaultHttpFetcher,
   getAccessToken,
   grantedScopesInclude,
   keyPrefix,
@@ -82,6 +88,11 @@ import {
   type OAuthAccountStore,
   type OAuthProviderConfigSource,
 } from './oauth.js';
+import {
+  startDrainingInterval,
+  type ProviderPollScheduler,
+  type ProviderPollStop,
+} from '../draining-interval.js';
 
 // ────────────────────────────────────────────────────────────────
 // Graph-specific config + constants
@@ -116,7 +127,7 @@ export interface CreateGraphProviderOptions {
   fetcher?: HttpFetcher;
   now?: () => number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
-  scheduler?: (cb: () => Promise<void>, intervalMs: number) => () => void;
+  scheduler?: ProviderPollScheduler;
 }
 
 const GRAPH_API_BASE = 'https://graph.microsoft.com/v1.0';
@@ -340,15 +351,16 @@ export const buildGraphMessage = (msg: OutgoingMessage): GraphSendMessage => {
 
 interface GraphListResponse<T> {
   value?: T[];
-  '@odata.nextLink'?: string;
-  '@odata.deltaLink'?: string;
+  '@odata.nextLink'?: unknown;
+  '@odata.deltaLink'?: unknown;
 }
 
 const graphGet = async <T>(
   url: string,
   opts: { accessToken: string; fetcher: HttpFetcher },
 ): Promise<{ ok: true; data: T } | { ok: false; status: number; text: string }> => {
-  const res = await opts.fetcher(url, {
+  const safeUrl = assertProviderPageUrl(url, GRAPH_API_BASE, 'graph mail');
+  const res = await opts.fetcher(safeUrl, {
     method: 'GET',
     headers: { Authorization: `Bearer ${opts.accessToken}` },
   });
@@ -367,18 +379,10 @@ const graphGet = async <T>(
 export const createGraphProvider = (
   opts: CreateGraphProviderOptions,
 ): MailProvider => {
-  const fetcher = opts.fetcher ?? (async (url, init) => {
-    const res = await fetch(url, init);
-    return {
-      status: res.status,
-      ok: res.ok,
-      json: () => res.json(),
-      text: () => res.text(),
-    };
-  });
+  const fetcher = opts.fetcher ?? defaultHttpFetcher;
   const nowOf = (): number => opts.now?.() ?? Date.now();
 
-  let pollStop: (() => void) | null = null;
+  let pollStop: ProviderPollStop | null = null;
   let lastSuccessfulSyncAt = 0;
   let errorCount24h = 0;
   let pendingQueueSize = 0;
@@ -522,8 +526,12 @@ export const createGraphProvider = (
     const parts: InboundMailAttachmentPart[] = [];
     let url: string | undefined =
       `${GRAPH_API_BASE}/me/messages/${encodeURIComponent(msg.id)}/attachments`;
+    const pagination = new ProviderPaginationGuard('graph mail attachment', {
+      trustedBaseUrl: GRAPH_API_BASE,
+    });
     while (url) {
-      const page: GraphListResponse<GraphAttachmentPayload> | null = await getWithRetry(url);
+      const page: GraphListResponse<GraphAttachmentPayload> | null =
+        await getWithRetry(pagination.claim(url));
       if (!page) {
         throw new Error(`graph attachments fetch failed id=${msg.id}`);
       }
@@ -537,7 +545,10 @@ export const createGraphProvider = (
           });
         }
       }
-      url = page['@odata.nextLink'];
+      url = readProviderStringContinuation(
+        page['@odata.nextLink'],
+        'graph mail attachment',
+      );
     }
     return parts;
   };
@@ -552,8 +563,12 @@ export const createGraphProvider = (
         + '&$top=50'
         + `&$select=${encodeURIComponent(GRAPH_MESSAGE_SELECT)}`;
       let aborted = false;
+      const pagination = new ProviderPaginationGuard('graph mail initial scan', {
+        trustedBaseUrl: GRAPH_API_BASE,
+      });
       while (url && !aborted) {
-        const page: GraphListResponse<GraphMessagePayload> | null = await getWithRetry(url);
+        const page: GraphListResponse<GraphMessagePayload> | null =
+          await getWithRetry(pagination.claim(url));
         if (!page) break;
         for (const msg of page.value ?? []) {
           if (msg['@removed']) continue;
@@ -566,7 +581,10 @@ export const createGraphProvider = (
             markError(`graph canonicalize failed id=${msg.id}`, err);
           }
         }
-        url = page['@odata.nextLink'];
+        url = readProviderStringContinuation(
+          page['@odata.nextLink'],
+          'graph mail initial scan',
+        );
       }
     }
   };
@@ -579,14 +597,30 @@ export const createGraphProvider = (
     let url: string | undefined =
       `${GRAPH_API_BASE}/me/mailFolders/${folder}/messages/delta`
       + `?$select=${encodeURIComponent(GRAPH_MESSAGE_SELECT)}`;
+    const pagination = new ProviderPaginationGuard('graph mail delta seed', {
+      trustedBaseUrl: GRAPH_API_BASE,
+    });
     while (url) {
-      const page: GraphListResponse<GraphMessagePayload> | null = await getWithRetry(url);
+      const page: GraphListResponse<GraphMessagePayload> | null =
+        await getWithRetry(pagination.claim(url));
       if (!page) return null;
-      if (page['@odata.deltaLink']) {
-        await opts.accountStore.set(deltaLinkKey(folder), page['@odata.deltaLink']);
-        return page['@odata.deltaLink'];
+      const rawDeltaLink = readProviderStringContinuation(
+        page['@odata.deltaLink'],
+        'graph mail delta watermark',
+      );
+      if (rawDeltaLink !== undefined) {
+        const deltaLink = assertProviderPageUrl(
+          rawDeltaLink,
+          GRAPH_API_BASE,
+          'graph mail delta watermark',
+        );
+        await opts.accountStore.set(deltaLinkKey(folder), deltaLink);
+        return deltaLink;
       }
-      url = page['@odata.nextLink'];
+      url = readProviderStringContinuation(
+        page['@odata.nextLink'],
+        'graph mail delta seed',
+      );
     }
     return null;
   };
@@ -602,8 +636,12 @@ export const createGraphProvider = (
       return; // First seed — no changes to emit yet.
     }
     let url: string | undefined = link;
+    const pagination = new ProviderPaginationGuard('graph mail delta', {
+      trustedBaseUrl: GRAPH_API_BASE,
+    });
     while (url) {
-      const page: GraphListResponse<GraphMessagePayload> | null = await getWithRetry(url);
+      const page: GraphListResponse<GraphMessagePayload> | null =
+        await getWithRetry(pagination.claim(url));
       if (!page) return;
       for (const msg of page.value ?? []) {
         pendingQueueSize++;
@@ -625,20 +663,31 @@ export const createGraphProvider = (
           pendingQueueSize = Math.max(0, pendingQueueSize - 1);
         }
       }
-      if (page['@odata.deltaLink']) {
-        await opts.accountStore.set(deltaLinkKey(folder), page['@odata.deltaLink']);
+      const rawDeltaLink = readProviderStringContinuation(
+        page['@odata.deltaLink'],
+        'graph mail delta watermark',
+      );
+      if (rawDeltaLink !== undefined) {
+        const deltaLink = assertProviderPageUrl(
+          rawDeltaLink,
+          GRAPH_API_BASE,
+          'graph mail delta watermark',
+        );
+        await opts.accountStore.set(deltaLinkKey(folder), deltaLink);
       }
-      url = page['@odata.nextLink'];
+      url = readProviderStringContinuation(
+        page['@odata.nextLink'],
+        'graph mail delta',
+      );
     }
   };
 
-  const defaultScheduler = (cb: () => Promise<void>, intervalMs: number): (() => void) => {
-    const handle = setInterval(() => {
-      void cb().catch((err) => markError('graph poll tick failed', err));
-    }, intervalMs);
-    handle.unref?.();
-    return () => clearInterval(handle);
-  };
+  const defaultScheduler: ProviderPollScheduler = (cb, intervalMs) =>
+    startDrainingInterval({
+      tick: cb,
+      intervalMs,
+      onError: (err) => markError('graph poll tick failed', err),
+    });
 
   // ── outbound send (D-127 P1.4) ──────────────────────────────
   //
@@ -767,9 +816,14 @@ export const createGraphProvider = (
     );
     firstUrl.searchParams.set('$select', 'id,name,contentType,size,isInline');
     let url: string | undefined = firstUrl.toString();
+    const pagination = new ProviderPaginationGuard('graph mail reconciliation attachment', {
+      trustedBaseUrl: GRAPH_API_BASE,
+    });
     while (url) {
       const page: GraphListResponse<GraphAttachmentPayload> =
-        await getReconciliationSource<GraphListResponse<GraphAttachmentPayload>>(url);
+        await getReconciliationSource<GraphListResponse<GraphAttachmentPayload>>(
+          pagination.claim(url),
+        );
       for (const attachment of page.value ?? []) {
         if (metadata.length >= 10) {
           complete = false;
@@ -782,7 +836,10 @@ export const createGraphProvider = (
         metadata.push(attachment);
       }
       if (!complete) break;
-      url = page['@odata.nextLink'];
+      url = readProviderStringContinuation(
+        page['@odata.nextLink'],
+        'graph mail reconciliation attachment',
+      );
     }
     if (!complete) return { parts: [], complete: false };
     if (metadata.length !== 1) {
@@ -903,9 +960,14 @@ export const createGraphProvider = (
         `${GRAPH_API_BASE}/me/mailFolders/sentitems/messages`
         + `?$filter=${encodeURIComponent(filter)}`
         + '&$top=50&$select=id';
+      const pagination = new ProviderPaginationGuard('graph mail reconciliation', {
+        trustedBaseUrl: GRAPH_API_BASE,
+      });
       while (url) {
         const page: GraphListResponse<GraphMessagePayload> =
-          await getReconciliationSource<GraphListResponse<GraphMessagePayload>>(url);
+          await getReconciliationSource<GraphListResponse<GraphMessagePayload>>(
+            pagination.claim(url),
+          );
         for (const ref of page.value ?? []) {
           if (candidates.length >= MAIL_SENT_RECONCILIATION_MAX_SCAN) {
             return evaluateMailSentReconciliationCandidates(query, candidates, false);
@@ -920,7 +982,10 @@ export const createGraphProvider = (
           const detail = await getReconciliationSource<GraphMessagePayload>(detailUrl.toString());
           candidates.push(await graphReconciliationCandidate(detail, query));
         }
-        url = page['@odata.nextLink'];
+        url = readProviderStringContinuation(
+          page['@odata.nextLink'],
+          'graph mail reconciliation',
+        );
         if (url && candidates.length >= MAIL_SENT_RECONCILIATION_MAX_SCAN) {
           return evaluateMailSentReconciliationCandidates(query, candidates, false);
         }
@@ -994,12 +1059,16 @@ export const createGraphProvider = (
       await tick();
       pollStop = scheduler(tick, intervalMs);
       return async () => {
-        if (pollStop) { pollStop(); pollStop = null; }
+        const stop = pollStop;
+        pollStop = null;
+        await stop?.();
       };
     },
 
     async close() {
-      if (pollStop) { pollStop(); pollStop = null; }
+      const stop = pollStop;
+      pollStop = null;
+      await stop?.();
     },
 
     onSyncOutcome(listener: MailSyncOutcomeListener) {

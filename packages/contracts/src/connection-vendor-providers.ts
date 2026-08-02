@@ -748,6 +748,33 @@ export interface RealmBaseConfig {
   path_template: string;
 }
 
+/** A tenant-specific API origin carried by a vendor's OAuth token response.
+ *
+ * This is deliberately opt-in per registered vendor. OAuth responses are
+ * otherwise untrusted JSON, and an unexpected `instance_url` / `api_domain`
+ * must never become the destination for the bearer token minted beside it.
+ * Host suffixes are registry authority (not response data), and the resolved
+ * value is an HTTPS origin only: no path, query, fragment, credentials, or
+ * non-default port. */
+export interface VendorOAuthRuntimeBaseConfig {
+  token_response_field: 'instance_url' | 'api_domain';
+  allowed_hostname_suffixes: ReadonlyArray<string>;
+}
+
+export type VendorOAuthRuntimeBaseResolution =
+  | { status: 'not_expected' }
+  | { status: 'missing'; field: 'instance_url' | 'api_domain' }
+  | {
+      status: 'invalid';
+      field: 'instance_url' | 'api_domain';
+      reason: string;
+    }
+  | {
+      status: 'valid';
+      field: 'instance_url' | 'api_domain';
+      base_url: string;
+    };
+
 /** OAuth metadata for a vendor that uses the standard OAuth 2.0
  *  authorization-code + refresh-token flow. Fields map directly into
  *  the `auth: { type: 'oauth2_refresh', ... }` connection-record auth
@@ -828,6 +855,10 @@ export interface VendorOAuthConfig {
    *  When unset (falsy) the flow stays exactly as before (no challenge, no
    *  verifier). */
   supports_pkce?: boolean;
+  /** Optional tenant API origin returned by the token endpoint. When present,
+   * initial exchange requires the declared field and refresh may atomically
+   * update `config.base_url`. Unregistered response fields stay inert. */
+  runtime_base?: VendorOAuthRuntimeBaseConfig;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -866,6 +897,63 @@ export const resolveVendorOAuthEndpoints = (
     authorize_url: provider.oauth.authorize_url,
     token_endpoint: provider.oauth.token_endpoint,
   };
+};
+
+const hasOwn = (value: object, key: PropertyKey): boolean =>
+  Object.prototype.hasOwnProperty.call(value, key);
+
+/** Resolve and validate a provider-declared tenant API origin from a token
+ * response. This function never guesses from arbitrary response fields: only a
+ * registry entry carrying `oauth.runtime_base` can produce a URL. */
+export const resolveVendorOAuthRuntimeBase = (
+  provider: ConnectionVendorProvider,
+  tokenResponse: Readonly<Record<string, unknown>>,
+): VendorOAuthRuntimeBaseResolution => {
+  const rule = provider.oauth.runtime_base;
+  if (rule === undefined) return { status: 'not_expected' };
+
+  const field = rule.token_response_field;
+  if (!hasOwn(tokenResponse, field)) return { status: 'missing', field };
+  const raw = tokenResponse[field];
+  if (typeof raw !== 'string' || raw.length === 0) {
+    return {
+      status: 'invalid',
+      field,
+      reason: 'must be a non-empty string',
+    };
+  }
+  if (raw.trim() !== raw) {
+    return { status: 'invalid', field, reason: 'must not contain surrounding whitespace' };
+  }
+
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return { status: 'invalid', field, reason: 'must be a complete URL' };
+  }
+  if (url.protocol !== 'https:') {
+    return { status: 'invalid', field, reason: 'must use HTTPS' };
+  }
+  if (url.username !== '' || url.password !== '') {
+    return { status: 'invalid', field, reason: 'must not contain credentials' };
+  }
+  if (url.port !== '') {
+    return { status: 'invalid', field, reason: 'must not use a non-default port' };
+  }
+  if (url.pathname !== '/' || url.search !== '' || url.hash !== '') {
+    return { status: 'invalid', field, reason: 'must be an origin with no path, query, or fragment' };
+  }
+
+  const hostname = url.hostname.toLowerCase();
+  const allowed = rule.allowed_hostname_suffixes.some((rawSuffix) => {
+    const suffix = rawSuffix.toLowerCase();
+    return hostname === suffix || hostname.endsWith(`.${suffix}`);
+  });
+  if (!allowed) {
+    return { status: 'invalid', field, reason: 'host is outside the provider allowlist' };
+  }
+  return { status: 'valid', field, base_url: url.origin };
 };
 
 /** D-129 P1 — vendor provider entry. One per first-party vendor.
@@ -999,6 +1087,10 @@ const SALESFORCE_PROVIDER: ConnectionVendorProvider = {
     client_secret_required: true,
     // Salesforce supports PKCE (web server flow). Binds the code to the flow.
     supports_pkce: true,
+    runtime_base: {
+      token_response_field: 'instance_url',
+      allowed_hostname_suffixes: ['salesforce.com'],
+    },
     // Salesforce is RFC 6749 § 3.3-compliant — the token-exchange
     // response echoes `scope` so the granted-scope set is read
     // there, no introspection round-trip needed. (The
@@ -1026,6 +1118,10 @@ const PIPEDRIVE_PROVIDER: ConnectionVendorProvider = {
     scopes: PIPEDRIVE_OAUTH_SCOPES,
     client_secret_required: true,
     token_auth_style: 'basic',
+    runtime_base: {
+      token_response_field: 'api_domain',
+      allowed_hostname_suffixes: ['pipedrive.com'],
+    },
   },
   webhook_signature_header: PIPEDRIVE_WEBHOOK_SIGNATURE_HEADER,
   default_cadence: PIPEDRIVE_DEFAULT_RECONCILIATION_CADENCE,
@@ -1311,6 +1407,39 @@ export const assertConnectionVendorProviderShape = (
     !isValidOAuthEndpointUrl(entry.oauth.sandbox_token_endpoint)
   ) {
     issues.push('oauth.sandbox_token_endpoint must be a complete HTTPS URL with no embedded username or password and no URL fragment');
+  }
+  if (entry.oauth.runtime_base !== undefined) {
+    const runtimeBase = entry.oauth.runtime_base;
+    if (
+      runtimeBase.token_response_field !== 'instance_url'
+      && runtimeBase.token_response_field !== 'api_domain'
+    ) {
+      issues.push("oauth.runtime_base.token_response_field must be 'instance_url' | 'api_domain'");
+    }
+    if (
+      !Array.isArray(runtimeBase.allowed_hostname_suffixes)
+      || runtimeBase.allowed_hostname_suffixes.length === 0
+    ) {
+      issues.push('oauth.runtime_base.allowed_hostname_suffixes must be a non-empty array');
+    } else {
+      const seen = new Set<string>();
+      for (const suffix of runtimeBase.allowed_hostname_suffixes) {
+        if (
+          typeof suffix !== 'string'
+          || suffix !== suffix.toLowerCase()
+          || !/^[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?$/.test(suffix)
+          || suffix.includes('..')
+        ) {
+          issues.push('oauth.runtime_base.allowed_hostname_suffixes entries must be lowercase DNS suffixes');
+          break;
+        }
+        if (seen.has(suffix)) {
+          issues.push('oauth.runtime_base.allowed_hostname_suffixes entries must be unique');
+          break;
+        }
+        seen.add(suffix);
+      }
+    }
   }
   if (entry.webhook_signature_header.length === 0) {
     issues.push(`webhook_signature_header must be non-empty`);

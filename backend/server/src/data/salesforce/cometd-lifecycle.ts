@@ -98,7 +98,7 @@ export interface WireSalesforceCometDLifecycleInput {
   replayIdTracker: SalesforceReplayIdTracker;
   /** Per-event delivery — boot wire bridges into the webhook funnel. */
   onEvent: CometDEventBridge;
-  /** HTTP fetcher. Defaults to `globalThis.fetch`. */
+  /** HTTP fetcher. Defaults to the subscriber's bounded provider fetches. */
   fetcher?: typeof fetch;
   /** Sleep — passed through to subscribers for reconnect-backoff
    *  math. Defaults to a setTimeout-promise. */
@@ -151,152 +151,229 @@ export const wireSalesforceCometDLifecycle = (
 ): SalesforceCometDLifecycle => {
   const log = input.log ?? noopLog;
   const subscribers = new Map<string, SalesforceCometDSubscriber>();
+  /** Connections that should currently have a subscriber. Keeping desired
+   *  state separate from the active map lets a delete/upsert race converge on
+   *  the latest store event instead of leaving the connection permanently
+   *  stopped. */
+  const desired = new Set<string>();
   /** Per-connection in-flight provisioning promise. Prevents a fast
    *  upsert→upsert→upsert from racing through `ensurePushTopics`
    *  multiple times before the first call settles. */
   const inflight = new Map<string, Promise<void>>();
+  /** Per-connection stop single-flight. A replacement start waits for this
+   *  drain to finish before publishing another subscriber. */
+  const stopping = new Map<string, Promise<void>>();
+  let closed = false;
+  let stopAllPromise: Promise<void> | undefined;
 
   const pushTopicDeps: SalesforcePushTopicDeps = {
     refreshAuth: input.refreshAuth,
     ...(input.fetcher !== undefined ? { fetcher: input.fetcher } : {}),
   };
 
+  const shouldRun = (connection_name: string): boolean =>
+    !closed && desired.has(connection_name);
+
+  const logFailure = (
+    action: string,
+    connection_name: string,
+    error: unknown,
+  ): void => {
+    log('error', `cometd-lifecycle: ${action} failed`, {
+      connection: connection_name,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  };
+
+  const observe = (
+    promise: Promise<void>,
+    action: string,
+    connection_name: string,
+  ): void => {
+    void promise.catch((error) => {
+      logFailure(action, connection_name, error);
+    });
+  };
+
   const startForConnection = (connection_name: string): Promise<void> => {
+    if (!shouldRun(connection_name)) return Promise.resolve();
     if (subscribers.has(connection_name)) return Promise.resolve();
+    const activeStop = stopping.get(connection_name);
+    if (activeStop) return activeStop;
     const existing = inflight.get(connection_name);
     if (existing) return existing;
 
     const provisioning = (async () => {
-      // Step 1 — ensure PushTopics. Idempotent — re-enrollment short-
-      // circuits via the SOQL existence check in the SOAP module.
-      const record = await input.lookupConnection(connection_name);
-      if (!record) {
-        log('warn', 'cometd-lifecycle: connection not found at start', {
-          connection: connection_name,
-        });
-        return;
-      }
       try {
-        const result = await ensurePushTopics(record, pushTopicDeps);
-        if (result.created.length > 0) {
-          log('info', 'cometd-lifecycle: created PushTopics', {
+        // Step 1 — ensure PushTopics. Idempotent — re-enrollment short-
+        // circuits via the SOQL existence check in the SOAP module.
+        const record = await input.lookupConnection(connection_name);
+        if (!record) {
+          log('warn', 'cometd-lifecycle: connection not found at start', {
             connection: connection_name,
-            created: result.created,
-            existed: result.existed,
           });
+          return;
         }
-      } catch (e) {
-        log('error', 'cometd-lifecycle: ensurePushTopics failed', {
-          connection: connection_name,
-          error: e instanceof Error ? e.message : String(e),
-        });
-        return; // Don't start the subscriber if PushTopics aren't in place.
-      }
-
-      // D-139 P1b Codex review fold #2 — engagement-entity provisioning.
-      // When the boot wire supplies `resolveEngagementEntities`, look
-      // up the per-connection capability list + SOAP-create the
-      // engagement PushTopics + thread the same list into the
-      // subscriber so `/meta/subscribe` widens. Failure here logs but
-      // does NOT abort subscriber start — the CRM trio is still useful
-      // and degraded engagement coverage is the documented
-      // `coverage.sources_unavailable` substrate path.
-      let engagementEntities:
-        | ReadonlyArray<
-            SalesforceEngagementEntityName | SalesforceRelationshipEntityName
-          >
-        | undefined;
-      if (input.resolveEngagementEntities !== undefined) {
+        if (!shouldRun(connection_name)) return;
         try {
-          const list = await Promise.resolve(
-            input.resolveEngagementEntities(connection_name),
-          );
-          engagementEntities = list;
-          if (list.length > 0) {
-            const result = await ensureEngagementPushTopics(
-              record,
-              list,
-              pushTopicDeps,
-            );
-            if (result.created.length > 0) {
-              log('info', 'cometd-lifecycle: created engagement PushTopics', {
-                connection: connection_name,
-                created: result.created,
-                existed: result.existed,
-              });
-            }
+          const result = await ensurePushTopics(record, pushTopicDeps);
+          if (result.created.length > 0) {
+            log('info', 'cometd-lifecycle: created PushTopics', {
+              connection: connection_name,
+              created: result.created,
+              existed: result.existed,
+            });
           }
         } catch (e) {
-          log('warn', 'cometd-lifecycle: ensureEngagementPushTopics failed (continuing)', {
-            connection: connection_name,
-            error: e instanceof Error ? e.message : String(e),
-          });
-          // Don't widen subscriber's channel set when engagement
-          // PushTopics didn't land — substrate falls back to
-          // reconciler-only for those entities.
-          engagementEntities = undefined;
+          logFailure('ensurePushTopics', connection_name, e);
+          return; // Don't start the subscriber if PushTopics aren't in place.
         }
-      }
+        if (!shouldRun(connection_name)) return;
 
-      // Step 2 — build + start the subscriber.
-      const subscriber = buildSalesforceCometDSubscriber({
-        connection_name,
-        lookupConnection: input.lookupConnection,
-        refreshAuth: input.refreshAuth,
-        replayIdTracker: input.replayIdTracker,
-        onEvent: (event) => input.onEvent(event, connection_name),
-        ...(input.fetcher !== undefined ? { fetcher: input.fetcher } : {}),
-        ...(input.sleep !== undefined ? { sleep: input.sleep } : {}),
-        ...(engagementEntities !== undefined
-          ? { engagementEntities }
-          : {}),
-        log,
-      });
-      try {
-        await subscriber.start();
+        // D-139 P1b Codex review fold #2 — engagement-entity provisioning.
+        // When the boot wire supplies `resolveEngagementEntities`, look
+        // up the per-connection capability list + SOAP-create the
+        // engagement PushTopics + thread the same list into the
+        // subscriber so `/meta/subscribe` widens. Failure here logs but
+        // does NOT abort subscriber start — the CRM trio is still useful
+        // and degraded engagement coverage is the documented
+        // `coverage.sources_unavailable` substrate path.
+        let engagementEntities:
+          | ReadonlyArray<
+              SalesforceEngagementEntityName | SalesforceRelationshipEntityName
+            >
+          | undefined;
+        if (input.resolveEngagementEntities !== undefined) {
+          try {
+            const list = await Promise.resolve(
+              input.resolveEngagementEntities(connection_name),
+            );
+            engagementEntities = list;
+            if (list.length > 0) {
+              const result = await ensureEngagementPushTopics(
+                record,
+                list,
+                pushTopicDeps,
+              );
+              if (result.created.length > 0) {
+                log('info', 'cometd-lifecycle: created engagement PushTopics', {
+                  connection: connection_name,
+                  created: result.created,
+                  existed: result.existed,
+                });
+              }
+            }
+          } catch (e) {
+            log('warn', 'cometd-lifecycle: ensureEngagementPushTopics failed (continuing)', {
+              connection: connection_name,
+              error: e instanceof Error ? e.message : String(e),
+            });
+            // Don't widen subscriber's channel set when engagement
+            // PushTopics didn't land — substrate falls back to
+            // reconciler-only for those entities.
+            engagementEntities = undefined;
+          }
+        }
+        if (!shouldRun(connection_name)) return;
+
+        // Step 2 — build + start the subscriber.
+        const subscriber = buildSalesforceCometDSubscriber({
+          connection_name,
+          lookupConnection: input.lookupConnection,
+          refreshAuth: input.refreshAuth,
+          replayIdTracker: input.replayIdTracker,
+          onEvent: (event) => input.onEvent(event, connection_name),
+          ...(input.fetcher !== undefined ? { fetcher: input.fetcher } : {}),
+          ...(input.sleep !== undefined ? { sleep: input.sleep } : {}),
+          ...(engagementEntities !== undefined
+            ? { engagementEntities }
+            : {}),
+          log,
+        });
+        try {
+          await subscriber.start();
+        } catch (e) {
+          logFailure('subscriber start', connection_name, e);
+          try {
+            await subscriber.stop();
+          } catch (stopError) {
+            logFailure('failed-start cleanup', connection_name, stopError);
+          }
+          return;
+        }
+        if (!shouldRun(connection_name)) {
+          await subscriber.stop();
+          return;
+        }
         subscribers.set(connection_name, subscriber);
         log('info', 'cometd-lifecycle: subscriber started', {
           connection: connection_name,
         });
       } catch (e) {
-        log('error', 'cometd-lifecycle: subscriber start failed', {
-          connection: connection_name,
-          error: e instanceof Error ? e.message : String(e),
-        });
+        logFailure('provisioning', connection_name, e);
       }
     })();
 
-    inflight.set(connection_name, provisioning);
-    provisioning.finally(() => {
-      inflight.delete(connection_name);
+    let tracked!: Promise<void>;
+    tracked = provisioning.finally(() => {
+      if (inflight.get(connection_name) === tracked) {
+        inflight.delete(connection_name);
+      }
     });
-    return provisioning;
+    inflight.set(connection_name, tracked);
+    return tracked;
   };
 
-  const stopForConnection = async (connection_name: string): Promise<void> => {
-    const subscriber = subscribers.get(connection_name);
-    if (!subscriber) {
-      // The provisioning may still be in flight — wait for it to settle
-      // so we don't race start-vs-stop. After it settles, recheck the
-      // map (it may have populated).
+  const stopForConnection = (connection_name: string): Promise<void> => {
+    const existing = stopping.get(connection_name);
+    if (existing) return existing;
+    // Capture an already-active subscriber. If an upsert arrives while this
+    // stop is draining, that old instance must still stop; the finally branch
+    // below will then start a fresh replacement.
+    const activeAtRequest = subscribers.get(connection_name);
+    const work = (async () => {
       const pending = inflight.get(connection_name);
-      if (pending) {
-        try { await pending; } catch { /* ignore */ }
+      if (pending) await pending;
+
+      const subscriber = activeAtRequest
+        ?? (!shouldRun(connection_name)
+          ? subscribers.get(connection_name)
+          : undefined);
+      if (!subscriber) return;
+      try {
+        await subscriber.stop();
+      } finally {
+        if (subscribers.get(connection_name) === subscriber) {
+          subscribers.delete(connection_name);
+        }
       }
-      const settled = subscribers.get(connection_name);
-      if (!settled) return;
-      try { await settled.stop(); } catch { /* best-effort */ }
-      subscribers.delete(connection_name);
-      log('info', 'cometd-lifecycle: subscriber stopped (post-provision)', {
+      log('info', 'cometd-lifecycle: subscriber stopped', {
         connection: connection_name,
       });
-      return;
-    }
-    try { await subscriber.stop(); } catch { /* best-effort */ }
-    subscribers.delete(connection_name);
-    log('info', 'cometd-lifecycle: subscriber stopped', {
-      connection: connection_name,
+    })();
+
+    let tracked!: Promise<void>;
+    tracked = work.finally(() => {
+      if (stopping.get(connection_name) === tracked) {
+        stopping.delete(connection_name);
+      }
+      if (shouldRun(connection_name)) {
+        observe(startForConnection(connection_name), 'replacement start', connection_name);
+      }
     });
+    stopping.set(connection_name, tracked);
+    return tracked;
+  };
+
+  const activate = (connection_name: string): void => {
+    if (closed) return;
+    desired.add(connection_name);
+    observe(startForConnection(connection_name), 'start', connection_name);
+  };
+
+  const deactivate = (connection_name: string): void => {
+    desired.delete(connection_name);
+    observe(stopForConnection(connection_name), 'stop', connection_name);
   };
 
   // Boot scan — start every existing Salesforce connection's
@@ -304,25 +381,50 @@ export const wireSalesforceCometDLifecycle = (
   // errors land in the log via the per-step catches above.
   for (const row of input.connectionStore.list({ kind: 'api' })) {
     if (!isSalesforceApiConnection(row)) continue;
-    void startForConnection(row.name);
+    activate(row.name);
   }
 
   // Future enrollments — trigger provisioning + subscriber start.
   input.connectionStore.addOnUpsert((row) => {
     if (!isSalesforceApiConnection(row)) return;
-    void startForConnection(row.name);
+    activate(row.name);
   });
 
   // Future deletions — stop the subscriber + drop from the map.
   input.connectionStore.addOnDelete((kind, name) => {
     if (kind !== 'api') return;
-    void stopForConnection(name);
+    deactivate(name);
   });
 
   return {
-    async stopAll() {
-      const names = Array.from(subscribers.keys());
-      await Promise.all(names.map((name) => stopForConnection(name)));
+    stopAll() {
+      if (stopAllPromise) return stopAllPromise;
+      // Close admission synchronously before taking the drain snapshot. Store
+      // observers may still fire because ConnectionStore hooks are process-
+      // lifetime, but activate() becomes inert after this point.
+      closed = true;
+      desired.clear();
+      stopAllPromise = (async () => {
+        const names = new Set([
+          ...subscribers.keys(),
+          ...inflight.keys(),
+          ...stopping.keys(),
+        ]);
+        const results = await Promise.allSettled(
+          [...names].map((name) => stopForConnection(name)),
+        );
+        const errors = results
+          .filter((result): result is PromiseRejectedResult =>
+            result.status === 'rejected')
+          .map((result) => result.reason);
+        if (errors.length > 0) {
+          throw new AggregateError(
+            errors,
+            'one or more Salesforce CometD subscribers failed to stop',
+          );
+        }
+      })();
+      return stopAllPromise;
     },
     listActive() {
       return Array.from(subscribers.keys());

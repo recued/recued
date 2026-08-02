@@ -159,6 +159,7 @@ describe('composeAppContext', () => {
       expect(app.remergePromptStoreRef).toBeDefined();
       expect(app.contactMergeCycleObserverRef).toBeDefined();
       expect(app.upstreamMergeStoreRef).toBeDefined();
+      await expect(app.contactBackfillDone).resolves.toBeUndefined();
 
       // D-192 remote byte-fetch — the ONE shared `remote` bundle builder every
       // file-read channel spreads. With a real db the file-source mirror + its
@@ -195,6 +196,19 @@ describe('composeAppContext', () => {
           id: 'msg-1',
         },
       ]);
+
+      const stoppingBridges = app.stopWarehouseEventBridges();
+      expect(app.stopWarehouseEventBridges()).toBe(stoppingBridges);
+      await stoppingBridges;
+      app.warehouseBus.emit({
+        platform: 'mail',
+        slug: 'work',
+        entity_type: 'message',
+        event_kind: 'updated',
+        record_id: 'msg-after-stop',
+        at: 2,
+      });
+      expect(warehouseEvents).toHaveLength(1);
     } finally {
       storageContext.db.close();
     }
@@ -210,6 +224,9 @@ describe('composeAppContext', () => {
     expect(source).toMatch(/createEnrichmentStore/);
     expect(source).toMatch(/createEnrichmentCascade/);
     expect(source).toMatch(/createConnectionStore/);
+    expect(source).toMatch(
+      /onPersistFailure:\s*makeConnectionCredentialPersistFailureSink\(auditLog\)/,
+    );
     expect(source).toMatch(
       /profileDeduplicationRequirements:\s*Object\.values\(WEBHOOK_PROFILE_REGISTRY\)/,
     );

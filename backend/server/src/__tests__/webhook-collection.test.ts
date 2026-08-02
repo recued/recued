@@ -41,14 +41,18 @@ interface Harness {
   close(): void;
 }
 
-const newHarness = (overrides: Partial<WebhookCollectionConfig> = {}): Harness => {
+const newHarness = (
+  overrides: Partial<WebhookCollectionConfig> = {},
+  options: { wrapBlobs?: (blobs: BlobStore) => BlobStore } = {},
+): Harness => {
   const dir = mkdtempSync(join(tmpdir(), 'webhook-collection-'));
   const dataDir = join(dir, 'data');
   mkdirSync(dataDir, { recursive: true });
   const db = new Database(join(dataDir, 'test.db'));
   db.pragma('journal_mode = WAL');
   const gate = createStorageGate({ quota: BIG_QUOTA, reservePct: 10, surface: 'collection:webhook:github' });
-  const blobs = createBlobStore(join(dataDir, 'blobs'));
+  const baseBlobs = createBlobStore(join(dataDir, 'blobs'));
+  const blobs = options.wrapBlobs?.(baseBlobs) ?? baseBlobs;
   const bus = createWarehouseEventBus();
   const auditLog = createAuditLogStore(
     createSQLiteCollection<AuditEntry>(db, 'audit_entries'),
@@ -140,6 +144,55 @@ describe('sync lifecycle', () => {
       headersSubset: {}, query: {}, remoteIp: '127.0.0.1',
     });
     expect(res2.ok).toBe(false);
+  });
+
+  it('closes admission immediately and waits for an accepted ingest', async () => {
+    let putStarted!: () => void;
+    const started = new Promise<void>((resolve) => { putStarted = resolve; });
+    let releasePut!: () => void;
+    const putGate = new Promise<void>((resolve) => { releasePut = resolve; });
+    h = newHarness(
+      { max_body_bytes: 200 * 1024 },
+      {
+        wrapBlobs: (blobs) => ({
+          ...blobs,
+          async put(data) {
+            putStarted();
+            await putGate;
+            return blobs.put(data);
+          },
+        }),
+      },
+    );
+    await h.collection.sync.start();
+    const ingesting = h.collection.ingest({
+      method: 'POST',
+      body: Buffer.alloc(64 * 1024 + 1, 0x41),
+      contentType: 'application/octet-stream',
+      headersSubset: {},
+      query: {},
+      remoteIp: '127.0.0.1',
+    });
+    await started;
+
+    let closeSettled = false;
+    const closing = h.collection.close().then(() => { closeSettled = true; });
+    expect(h.collection.accepting()).toBe(false);
+    await Promise.resolve();
+    expect(closeSettled).toBe(false);
+    await expect(h.collection.ingest({
+      method: 'POST',
+      body: Buffer.from('late'),
+      contentType: 'text/plain',
+      headersSubset: {},
+      query: {},
+      remoteIp: '127.0.0.1',
+    })).resolves.toMatchObject({ ok: false, status: 503 });
+
+    releasePut();
+    await expect(ingesting).resolves.toMatchObject({ ok: true });
+    await closing;
+    expect(closeSettled).toBe(true);
   });
 });
 

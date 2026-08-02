@@ -31,6 +31,12 @@ import {
   type ConnectionRecord,
 } from '@recued/contracts';
 
+import { defaultProviderApiFetch } from '../provider-api-fetch.js';
+import {
+  ProviderPaginationGuard,
+  readProviderStringContinuation,
+} from '../../provider-pagination-guard.js';
+
 // ────────────────────────────────────────────────────────────────
 // Public types
 // ────────────────────────────────────────────────────────────────
@@ -84,7 +90,7 @@ export interface SearchHubSpotObjectsOptions {
  *  real fetcher + a refresh hook bound to the connection adapter's
  *  single-flight refresh path. */
 export interface HubSpotSearchDeps {
-  /** HTTP fetcher. Defaults to `globalThis.fetch` when omitted. */
+  /** HTTP fetcher. Defaults to the server's bounded provider fetch. */
   fetcher?: typeof fetch;
   /** OAuth2 refresh hook — fired on 401. Returns the new
    *  `ConnectionAuth` carrying a fresh `current_access_token`. The
@@ -153,7 +159,7 @@ export async function* searchHubSpotObjects(
   options: SearchHubSpotObjectsOptions,
   deps: HubSpotSearchDeps,
 ): AsyncGenerator<RawHubSpotRecord, void, unknown> {
-  const fetcher = deps.fetcher ?? globalThis.fetch.bind(globalThis);
+  const fetcher = deps.fetcher ?? defaultProviderApiFetch;
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? defaultSleep;
   const rateLimitMaxRetries = deps.rateLimitMaxRetries ?? 3;
@@ -161,8 +167,10 @@ export async function* searchHubSpotObjects(
   let auth = connection.auth;
   let cursor: string | undefined;
   let authRefreshed = false;
+  const pagination = new ProviderPaginationGuard('HubSpot search');
 
   for (;;) {
+    pagination.claim(cursor ?? '');
     const body = buildSearchBody(options, cursor);
     let attempt = 0;
     let page: HubSpotSearchPage | null = null;
@@ -212,8 +220,11 @@ export async function* searchHubSpotObjects(
       yield record;
     }
 
-    const next = page.paging?.next?.after;
-    if (next === undefined || next === null || next === '') return;
+    const next = readProviderStringContinuation(
+      page.paging?.next?.after,
+      'HubSpot search',
+    );
+    if (next === undefined) return;
     cursor = next;
   }
 }
@@ -226,7 +237,7 @@ interface HubSpotSearchPage {
   results?: ReadonlyArray<RawHubSpotRecord>;
   paging?: {
     next?: {
-      after?: string;
+      after?: unknown;
     };
   };
 }
@@ -331,7 +342,7 @@ export const getHubSpotObject = async (
   properties: ReadonlyArray<string>,
   deps: HubSpotSearchDeps,
 ): Promise<RawHubSpotRecord | null> => {
-  const fetcher = deps.fetcher ?? globalThis.fetch.bind(globalThis);
+  const fetcher = deps.fetcher ?? defaultProviderApiFetch;
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? defaultSleep;
   const rateLimitMaxRetries = deps.rateLimitMaxRetries ?? 3;
@@ -439,7 +450,7 @@ export const listHubSpotAssociations = async (
   deps: HubSpotSearchDeps,
   options: { page_cap?: number; cursor?: string } = {},
 ): Promise<ListHubSpotAssociationsResult | null> => {
-  const fetcher = deps.fetcher ?? globalThis.fetch.bind(globalThis);
+  const fetcher = deps.fetcher ?? defaultProviderApiFetch;
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? defaultSleep;
   const rateLimitMaxRetries = deps.rateLimitMaxRetries ?? 3;
@@ -450,8 +461,10 @@ export const listHubSpotAssociations = async (
   const pageCap = options.page_cap ?? Infinity;
   const ids: string[] = [];
   let pages_fetched = 0;
+  const pagination = new ProviderPaginationGuard('HubSpot associations');
 
   for (;;) {
+    pagination.claim(cursor ?? '');
     let attempt = 0;
     let page: HubSpotAssociationsPage | null = null;
 
@@ -509,8 +522,11 @@ export const listHubSpotAssociations = async (
       ids.push(String(raw));
     }
 
-    const next = page.paging?.next?.after;
-    if (next === undefined || next === null || next === '') {
+    const next = readProviderStringContinuation(
+      page.paging?.next?.after,
+      'HubSpot associations',
+    );
+    if (next === undefined) {
       return { ids, pages_fetched, next_cursor: null };
     }
     if (pages_fetched >= pageCap) {
@@ -529,7 +545,7 @@ interface HubSpotAssociationsPage {
   }>;
   paging?: {
     next?: {
-      after?: string;
+      after?: unknown;
     };
   };
 }

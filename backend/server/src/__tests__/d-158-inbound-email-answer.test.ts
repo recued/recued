@@ -372,4 +372,41 @@ describe('composeInboundEmailAnswer', () => {
 
     expect(h.submitAnswer).not.toHaveBeenCalled();
   });
+
+  it('dispose waits for a handler admitted before the subscription closes', async () => {
+    const bus = createWarehouseEventBus();
+    const h = makeHarness();
+    let releaseRead!: (record: InboundMailRecord | null) => void;
+    const readInboundMail = vi.fn(() =>
+      new Promise<InboundMailRecord | null>((resolve) => {
+        releaseRead = resolve;
+      }));
+    const funnel = composeInboundEmailAnswer({
+      block: h.block,
+      bus,
+      resolveEmailAccountSlug: () => ACCOUNT_SLUG,
+      readInboundMail,
+    });
+    funnel.start();
+    bus.emit(mailCreated());
+    await Promise.resolve();
+
+    let disposed = false;
+    const firstDispose = funnel.dispose();
+    expect(funnel.dispose()).toBe(firstDispose);
+    const observed = firstDispose.then(() => {
+      disposed = true;
+    });
+    await Promise.resolve();
+    expect(disposed).toBe(false);
+
+    releaseRead({
+      subject: `Re: approve [#ask-${ASK_ID}]`,
+      folder: 'INBOX',
+      from: 'owner@example.test',
+      body_text: 'approve',
+    });
+    await observed;
+    expect(h.submitAnswer).toHaveBeenCalledTimes(1);
+  });
 });

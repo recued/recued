@@ -34,6 +34,10 @@ import {
   GOOGLE_TOKEN_URL,
   type CanonicalEvent,
 } from '@recued/contracts';
+import {
+  ProviderPaginationGuard,
+  readProviderStringContinuation,
+} from '../../provider-pagination-guard.js';
 
 import type {
   CalendarProvider,
@@ -53,6 +57,7 @@ import type {
   CalendarAdapterFactory,
 } from './adapter-registry.js';
 import {
+  defaultHttpFetcher,
   getAccessToken,
   keyPrefix,
   OAuthError,
@@ -61,6 +66,11 @@ import {
   type OAuthAccountStore,
   type OAuthProviderConfigSource,
 } from '../mail/oauth.js';
+import {
+  startDrainingInterval,
+  type ProviderPollScheduler,
+  type ProviderPollStop,
+} from '../draining-interval.js';
 
 // ────────────────────────────────────────────────────────────────
 // Config
@@ -92,7 +102,7 @@ export interface CreateGcalProviderOptions {
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
   /** Test hook — override the poll scheduler so suites don't wait
    *  for real timers. Production uses `setInterval`. */
-  scheduler?: (cb: () => Promise<void>, intervalMs: number) => () => void;
+  scheduler?: ProviderPollScheduler;
 }
 
 const GCAL_API_BASE = 'https://www.googleapis.com/calendar/v3';
@@ -161,13 +171,13 @@ export interface GcalCalendarListEntry {
 
 interface GcalCalendarListResponse {
   items?: GcalCalendarListEntry[];
-  nextPageToken?: string;
+  nextPageToken?: unknown;
 }
 
 interface GcalEventsResponse {
   items?: GcalEvent[];
-  nextPageToken?: string;
-  nextSyncToken?: string;
+  nextPageToken?: unknown;
+  nextSyncToken?: unknown;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -397,23 +407,14 @@ export const createGcalProvider = (
   opts: CreateGcalProviderOptions,
 ): CalendarProvider => {
   const fetcher: HttpFetcher =
-    opts.fetcher ??
-    (async (url, init) => {
-      const res = await fetch(url, init);
-      return {
-        status: res.status,
-        ok: res.ok,
-        json: () => res.json(),
-        text: () => res.text(),
-      };
-    });
+    opts.fetcher ?? defaultHttpFetcher;
   const nowOf = (): number => opts.now?.() ?? Date.now();
 
   let lastSuccessfulSyncAt = 0;
   let errorCount24h = 0;
   let pendingQueueSize = 0;
   let accessToken = '';
-  let pollStop: (() => void) | null = null;
+  let pollStop: ProviderPollStop | null = null;
 
   const syncTokenKey = (calendarId: string): string =>
     `${keyPrefix('gcal', opts.config.account_slug)}.sync_token.${calendarIdKeySuffix(calendarId)}`;
@@ -498,7 +499,9 @@ export const createGcalProvider = (
   const listCalendars = async (): Promise<GcalCalendarListEntry[]> => {
     const out: GcalCalendarListEntry[] = [];
     let pageToken: string | undefined;
+    const pagination = new ProviderPaginationGuard('Google calendar list');
     do {
+      pagination.claim(pageToken ?? '');
       const url = new URL(`${GCAL_API_BASE}/users/me/calendarList`);
       url.searchParams.set('maxResults', '250');
       if (pageToken) url.searchParams.set('pageToken', pageToken);
@@ -509,7 +512,10 @@ export const createGcalProvider = (
       for (const entry of page.items ?? []) {
         out.push(entry);
       }
-      pageToken = page.nextPageToken;
+      pageToken = readProviderStringContinuation(
+        page.nextPageToken,
+        'Google calendar list',
+      );
     } while (pageToken);
     return out;
   };
@@ -550,7 +556,9 @@ export const createGcalProvider = (
       if (aborted) break;
       let pageToken: string | undefined;
       let lastSyncToken: string | undefined;
+      const pagination = new ProviderPaginationGuard('Google calendar initial scan');
       do {
+        pagination.claim(pageToken ?? '');
         const params: Record<string, string> = {
           singleEvents: 'true',
           timeMin,
@@ -574,8 +582,16 @@ export const createGcalProvider = (
             markError(`gcal canonicalize failed id=${event.id}`, err);
           }
         }
-        pageToken = page.nextPageToken;
-        if (!pageToken && page.nextSyncToken) lastSyncToken = page.nextSyncToken;
+        pageToken = readProviderStringContinuation(
+          page.nextPageToken,
+          'Google calendar initial scan',
+        );
+        if (!pageToken) {
+          lastSyncToken = readProviderStringContinuation(
+            page.nextSyncToken,
+            'Google calendar sync watermark',
+          );
+        }
       } while (pageToken && !aborted);
       // Persist the sync token only when the full page chain completed
       // — a mid-page abort leaves the token unset so the next tick
@@ -607,7 +623,9 @@ export const createGcalProvider = (
         let pageToken: string | undefined;
         let lastSyncToken: string | undefined;
         let retry = false;
+        const pagination = new ProviderPaginationGuard('Google calendar sync');
         do {
+          pagination.claim(pageToken ?? '');
           const params: Record<string, string> = {
             singleEvents: 'true',
             maxResults: '250',
@@ -667,8 +685,16 @@ export const createGcalProvider = (
             }
           }
 
-          pageToken = page.nextPageToken;
-          if (!pageToken && page.nextSyncToken) lastSyncToken = page.nextSyncToken;
+          pageToken = readProviderStringContinuation(
+            page.nextPageToken,
+            'Google calendar sync',
+          );
+          if (!pageToken) {
+            lastSyncToken = readProviderStringContinuation(
+              page.nextSyncToken,
+              'Google calendar sync watermark',
+            );
+          }
         } while (pageToken);
 
         if (retry) continue;
@@ -680,16 +706,12 @@ export const createGcalProvider = (
     }
   };
 
-  const defaultScheduler = (
-    cb: () => Promise<void>,
-    intervalMs: number,
-  ): (() => void) => {
-    const handle = setInterval(() => {
-      void cb().catch((err) => markError('gcal poll tick failed', err));
-    }, intervalMs);
-    handle.unref?.();
-    return () => clearInterval(handle);
-  };
+  const defaultScheduler: ProviderPollScheduler = (cb, intervalMs) =>
+    startDrainingInterval({
+      tick: cb,
+      intervalMs,
+      onError: (err) => markError('gcal poll tick failed', err),
+    });
 
   // ── write-back ──────────────────────────────────────────────
   const requireCalendarId = (
@@ -847,18 +869,16 @@ export const createGcalProvider = (
       await runSyncTick(cb);
       pollStop = scheduler(() => runSyncTick(cb), intervalMs);
       return async () => {
-        if (pollStop) {
-          pollStop();
-          pollStop = null;
-        }
+        const stop = pollStop;
+        pollStop = null;
+        await stop?.();
       };
     },
 
     async close() {
-      if (pollStop) {
-        pollStop();
-        pollStop = null;
-      }
+      const stop = pollStop;
+      pollStop = null;
+      await stop?.();
     },
 
     health(): CalendarProviderHealth {
@@ -994,7 +1014,7 @@ export interface CreateGcalAdapterFactoryOptions {
   fetcher?: HttpFetcher;
   now?: () => number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
-  scheduler?: (cb: () => Promise<void>, intervalMs: number) => () => void;
+  scheduler?: ProviderPollScheduler;
 }
 
 const parseGcalConfig = (
@@ -1036,16 +1056,7 @@ const probeGcalCaps = async (
   opts: CreateGcalAdapterFactoryOptions,
 ): Promise<ProbedCalendarCaps> => {
   const fetcher: HttpFetcher =
-    opts.fetcher ??
-    (async (url, init) => {
-      const res = await fetch(url, init);
-      return {
-        status: res.status,
-        ok: res.ok,
-        json: () => res.json(),
-        text: () => res.text(),
-      };
-    });
+    opts.fetcher ?? defaultHttpFetcher;
   // Resolve a usable access token (refreshing if needed) so auth bugs
   // surface at enroll time, not on the first sync tick. Cache hits are
   // fine — the subsequent calendarList.list call validates the token

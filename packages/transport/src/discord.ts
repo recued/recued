@@ -4,21 +4,10 @@
  *            (`send`) or an interactive prompt with message components
  *            (`sendPrompt`). `closePrompt` strips a prompt's buttons by PATCHing
  *            the message, exactly as Slack does with `chat.update`.
- *  Inbound:  decodes an already-verified INTERACTION payload into a button press
- *            (`parseInboundChoice`). The D-148 P9 webhook port has already done the
- *            Ed25519 verification.
- *
- *  ⚠ **`parseInbound` ALWAYS returns null, and that is the honest shape of this
- *  vendor, not a stub.** Discord's Interactions endpoint delivers button presses and
- *  slash commands — it does NOT deliver plain user messages. Those exist only on the
- *  Gateway, a persistent WebSocket (`MESSENGER_INGRESS_MODES.socket`, declared and
- *  unimplemented). So Discord ships as a **notify + approve** channel: Recued can
- *  message you and you can press its buttons, but you cannot talk back in free text.
- *
- *  The nice part is that this needs no special case anywhere. The messenger turn and
- *  the commitment funnel both gate on `parseInbound`, so returning null simply means
- *  they never fire — no shared-code branch, no capability flag, no pretending. What a
- *  vendor CANNOT do is expressed by the same seam that says what it CAN.
+ *  Inbound: decodes Gateway `MESSAGE_CREATE` dispatches into user messages and
+ *           already-authenticated INTERACTION payloads into button presses. The
+ *           webhook path verifies Ed25519; the Gateway path is authenticated by
+ *           the outbound bot session.
  *
  *  Two smaller differences from Slack, both leaf-local:
  *   - `Authorization: Bot <token>`, not `Bearer` — Discord reads `Bearer` as an
@@ -40,6 +29,7 @@ import {
 import type {
   ClosePrompt,
   InteractiveTransport,
+  MediaRef,
   OutboundMessage,
   OutboundPrompt,
   ParsedInbound,
@@ -160,6 +150,31 @@ const interactionChannelId = (payload: unknown): string | null => {
   if (payload === null || typeof payload !== 'object') return null;
   const id = (payload as Record<string, unknown>).channel_id;
   return typeof id === 'string' && id.length > 0 ? id : null;
+};
+
+const extractDiscordMedia = (env: Record<string, unknown>): MediaRef[] => {
+  if (!Array.isArray(env.attachments)) return [];
+  const media: MediaRef[] = [];
+  for (const candidate of env.attachments) {
+    if (candidate === null || typeof candidate !== 'object') continue;
+    const attachment = candidate as Record<string, unknown>;
+    const url = attachment.url;
+    if (typeof url !== 'string' || url.length === 0) continue;
+    const mime = typeof attachment.content_type === 'string'
+      ? attachment.content_type
+      : 'application/octet-stream';
+    const size = typeof attachment.size === 'number' && Number.isFinite(attachment.size)
+      ? Math.max(0, attachment.size)
+      : 0;
+    media.push({
+      type: mime.split('/', 1)[0] || 'file',
+      mime,
+      size,
+      remote_url: url,
+      ...(typeof attachment.id === 'string' ? { remote_id: attachment.id } : {}),
+    });
+  }
+  return media;
 };
 
 /** The interaction's own snowflake — unique per interaction, so it is the port's
@@ -311,13 +326,25 @@ export const createDiscordTransport = (
     return handleDiscordOutcome(outcome);
   };
 
-  /** ⚠ ALWAYS null — see the file header. Discord's Interactions endpoint carries no
-   *  plain user messages; those live on the Gateway (`socket` ingress,
-   *  unimplemented). The messenger turn and the commitment funnel both gate on this,
-   *  so they correctly never fire, and Discord is a notify + approve channel. This is
-   *  the vendor's honest shape expressed through the ordinary seam — not a stub to be
-   *  "finished" without first building the Gateway. */
-  const parseInbound = (_payload: unknown): ParsedInbound | null => null;
+  const parseInbound = (payload: unknown): ParsedInbound | null => {
+    // Gateway MESSAGE_CREATE data is the message object itself. Bot/system
+    // messages are not owner turns. Content may be empty when attachments exist.
+    if (payload === null || typeof payload !== 'object') return null;
+    const env = payload as Record<string, unknown>;
+    const author = env.author;
+    if (author === null || typeof author !== 'object') return null;
+    const a = author as Record<string, unknown>;
+    if (a.bot === true || typeof a.id !== 'string' || a.id.length === 0) return null;
+    const text = typeof env.content === 'string' ? env.content : '';
+    const media = extractDiscordMedia(env);
+    if (text.length === 0 && media.length === 0) return null;
+    const result: ParsedInbound = { from: a.id, text };
+    if (typeof env.id === 'string' && env.id.length > 0) {
+      result.vendor_message_id = env.id;
+    }
+    if (media.length > 0) result.media = media;
+    return result;
+  };
 
   const parseInboundChoice = (payload: unknown): ParsedInboundChoice | null => {
     // MESSAGE_COMPONENT: { id, type: 3, channel_id, data: { custom_id, component_type },
@@ -351,9 +378,7 @@ export const createDiscordTransport = (
     vendor: 'discord',
     send,
     parseInbound,
-    // Both extractors read the same flat `channel_id`: an interaction is the ONLY
-    // inbound shape this vendor has, so a "message" and a "callback" are the same
-    // envelope. That identity is Discord's, not a shortcut.
+    // Gateway messages and interaction callbacks both carry flat `channel_id`.
     parseConversationId: interactionChannelId,
     parseCallbackConversationId: interactionChannelId,
     sendPrompt,

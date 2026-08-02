@@ -3013,23 +3013,25 @@ export const createChatRawOpDispatch = (
   deps: ChatToolHandlerDeps,
 ): ChatRawOpDispatch => async (toolName, args, ctx) => {
   const getDispatchDeps = deps.getRawOpDispatchDeps;
-  if (!getDispatchDeps) return { ok: false, error: 'raw op dispatch unavailable' };
+  if (!getDispatchDeps) return executionError('raw op dispatch unavailable');
   const dispatchDeps = getDispatchDeps();
-  if (!dispatchDeps) return { ok: false, error: 'raw op dispatch unavailable' };
+  if (!dispatchDeps) return executionError('raw op dispatch unavailable');
   if (!toolName.startsWith(OP_TOOL_PREFIX)) {
-    return { ok: false, error: `not a raw catalog op: ${toolName}` };
+    return invalidArgs(`not a raw catalog op: ${toolName}`);
   }
+  const opArgs = asObject(args);
+  if (opArgs === null) return invalidArgs('raw catalog-op arguments must be an object');
   const opId = toolName.slice(OP_TOOL_PREFIX.length);
   try {
     const outcome = await dispatchRawOp(dispatchDeps, {
       opId,
-      args,
+      args: opArgs,
       ...(ctx.execution_source ? { executionSource: ctx.execution_source } : {}),
       ...(ctx.contract_snapshot ? { contractSnapshot: ctx.contract_snapshot } : {}),
     } as Parameters<typeof dispatchRawOp>[1]);
     return projectRawOpOutcome(outcome);
   } catch (e) {
-    return { ok: false, error: errMessage(e) };
+    return executionError(errMessage(e));
   }
 };
 
@@ -3050,13 +3052,15 @@ export const createChatRawOpDispatch = (
  *  already surface, so chat adds no second consent of its own. */
 export const projectRawOpOutcome = (
   outcome: RawOpDispatchOutcome,
-): { ok: true; result: unknown } | { ok: false; error: string } => {
+): ChatDispatchResult => {
   switch (outcome.kind) {
     case 'result':
       return { ok: true, result: outcome.result };
     case 'held':
       return {
         ok: true,
+        run_held: { kind: 'approval' },
+        run_id: outcome.run_id,
         result: {
           status: 'awaiting_approval',
           awaiting_approval: true,
@@ -3070,7 +3074,11 @@ export const projectRawOpOutcome = (
         result: { status: 'requires_approval', op: outcome.op_id, message: outcome.message },
       };
     case 'refused':
-      return { ok: false, error: outcome.message };
+      return {
+        ok: false,
+        reason: outcome.code !== undefined ? 'invalid_args' : 'execution_error',
+        detail: outcome.message,
+      };
   }
 };
 
@@ -3078,9 +3086,9 @@ export const projectRawOpOutcome = (
  *  other chat dispatches use. */
 export type ChatRawOpDispatch = (
   toolName: string,
-  args: Record<string, unknown>,
+  args: unknown,
   ctx: ChatDispatchContext,
-) => Promise<{ ok: true; result: unknown } | { ok: false; error: string }>;
+) => Promise<ChatDispatchResult>;
 
 /** The held-run message. Expected-outcome framing + do-NOT-resend + tell-the-
  *  user, so a weak/local model never loops on an approval it cannot resolve. */

@@ -22,7 +22,12 @@
  *      fs-style event stream. */
 
 import { createHash } from 'node:crypto';
+import { discardResponseBody } from '@recued/ingredients';
 import { encodeRfc3986, signRequest, type SignedRequest } from './sig.js';
+
+export const S3_REQUEST_TIMEOUT_MS = 2 * 60 * 1000;
+export const S3_CONTROL_RESPONSE_MAX_BYTES = 16 * 1024 * 1024;
+const S3_ERROR_RESPONSE_MAX_BYTES = 4 * 1024;
 
 export interface S3ClientConfig {
   access_key: string;
@@ -47,6 +52,7 @@ export type S3Fetch = (
     // what `fetch`'s `BodyInit` accepts; bare `Uint8Array` resolves to
     // `Uint8Array<ArrayBuffer>` which is narrower than what callers pass.
     body?: Uint8Array<ArrayBufferLike> | string;
+    signal?: AbortSignal;
   },
 ) => Promise<{
   ok: boolean;
@@ -54,6 +60,7 @@ export type S3Fetch = (
   headers: Headers;
   arrayBuffer(): Promise<ArrayBuffer>;
   text(): Promise<string>;
+  body?: ReadableStream<Uint8Array> | null;
 }>;
 
 export class S3Error extends Error {
@@ -75,6 +82,7 @@ const defaultFetch: S3Fetch = async (url, init) => {
     // union under lib.dom's stricter generics, but Node 20+ + the
     // browser runtime both accept it. String variant passes through as-is.
     body: init.body as BodyInit | undefined,
+    ...(init.signal !== undefined ? { signal: init.signal } : {}),
   });
   return res;
 };
@@ -109,10 +117,8 @@ const sha256Buf = (buf: Uint8Array): string =>
 export interface S3Client {
   headBucket(): Promise<{ ok: true }>;
   putObject(key: string, body: Uint8Array, mime?: string): Promise<void>;
-  /** GET an object's bytes + mime. `maxBytes`, when given, is a Content-Length
-   *  PREFLIGHT: S3 GetObject always declares the object size, so an oversize object
-   *  is rejected (`S3Error('EntityTooLarge')`) BEFORE its body is buffered into
-   *  memory. Omitted (probe / stat callers) → no cap, current behavior. */
+  /** GET an object's bytes + mime. `maxBytes`, when given, is enforced against
+   *  both Content-Length and the live response stream. */
   getObject(key: string, maxBytes?: number): Promise<{ body: Uint8Array; mime?: string }>;
   deleteObject(key: string): Promise<void>;
   listObjects(prefix?: string): Promise<{ keys: string[] }>;
@@ -270,12 +276,146 @@ export const parseListObjectsV2 = (
 export const createS3Client = (opts: CreateS3ClientOptions): S3Client => {
   const { config, fetcher = defaultFetch, now = () => new Date() } = opts;
 
+  type S3Response = Awaited<ReturnType<S3Fetch>>;
+
+  const contentLength = (res: S3Response): number | undefined => {
+    const raw = res.headers.get('content-length');
+    if (raw === null || !/^\d+$/.test(raw.trim())) return undefined;
+    const parsed = Number(raw);
+    return Number.isSafeInteger(parsed) ? parsed : undefined;
+  };
+
+  const streamBytes = async (
+    res: S3Response,
+    maxBytes: number,
+    label: string,
+  ): Promise<Uint8Array | undefined> => {
+    const declared = contentLength(res);
+    if (declared !== undefined && declared > maxBytes) {
+      throw new S3Error(
+        'EntityTooLarge',
+        `${label}: ${declared} bytes exceeds the ${maxBytes} ceiling`,
+        413,
+      );
+    }
+    const reader = res.body?.getReader();
+    if (reader === undefined) return undefined;
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    let complete = false;
+    try {
+      for (;;) {
+        const next = await reader.read();
+        if (next.done) {
+          complete = true;
+          break;
+        }
+        total += next.value.byteLength;
+        if (total > maxBytes) {
+          throw new S3Error(
+            'EntityTooLarge',
+            `${label}: response exceeded the ${maxBytes}-byte ceiling`,
+            413,
+          );
+        }
+        chunks.push(next.value);
+      }
+    } finally {
+      if (!complete) void reader.cancel().catch(() => undefined);
+      try {
+        reader.releaseLock();
+      } catch {
+        // Abort/cancellation already owns stream cleanup.
+      }
+    }
+    const bytes = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return bytes;
+  };
+
+  const objectBytes = async (
+    res: S3Response,
+    maxBytes: number | undefined,
+    label: string,
+  ): Promise<Uint8Array> => {
+    if (maxBytes !== undefined) {
+      const streamed = await streamBytes(res, maxBytes, label);
+      if (streamed !== undefined) return streamed;
+    }
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (maxBytes !== undefined && bytes.byteLength > maxBytes) {
+      throw new S3Error(
+        'EntityTooLarge',
+        `${label}: ${bytes.byteLength} bytes exceeds the ${maxBytes} ceiling`,
+        413,
+      );
+    }
+    return bytes;
+  };
+
+  const controlText = async (
+    res: S3Response,
+    maxBytes: number,
+    label: string,
+  ): Promise<string> => {
+    const streamed = await streamBytes(res, maxBytes, label);
+    if (streamed !== undefined) return new TextDecoder().decode(streamed);
+    const text = await res.text();
+    const bytes = new TextEncoder().encode(text);
+    if (bytes.byteLength > maxBytes) {
+      throw new S3Error(
+        'EntityTooLarge',
+        `${label}: response exceeded the ${maxBytes}-byte ceiling`,
+        413,
+      );
+    }
+    return text;
+  };
+
+  const request = async <T>(
+    url: string,
+    init: Omit<Parameters<S3Fetch>[1], 'signal'>,
+    consume: (res: S3Response) => Promise<T>,
+  ): Promise<T> => {
+    const controller = new AbortController();
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, S3_REQUEST_TIMEOUT_MS);
+    let res: S3Response | undefined;
+    try {
+      res = await fetcher(url, { ...init, signal: controller.signal });
+      return await consume(res);
+    } catch (err) {
+      if (timedOut && !(err instanceof S3Error)) {
+        throw new S3Error(
+          'RequestTimeout',
+          `S3 request timed out after ${S3_REQUEST_TIMEOUT_MS}ms`,
+          504,
+        );
+      }
+      throw err;
+    } finally {
+      if (res !== undefined) discardResponseBody(res as Response);
+      clearTimeout(timer);
+    }
+  };
+
   const expectOk = async (
-    res: Awaited<ReturnType<S3Fetch>>,
+    res: S3Response,
     label: string,
   ): Promise<void> => {
     if (res.ok) return;
-    const body = await res.text().catch(() => '');
+    const body = await controlText(
+      res,
+      S3_ERROR_RESPONSE_MAX_BYTES,
+      `${label} error`,
+    ).catch(() => '');
     const codeMatch = body.match(/<Code>([^<]+)<\/Code>/);
     throw new S3Error(
       codeMatch?.[1] ?? 'unknown',
@@ -288,12 +428,13 @@ export const createS3Client = (opts: CreateS3ClientOptions): S3Client => {
     async headBucket() {
       const url = buildUrl(config);
       const signed = signWithNow(config, url, 'HEAD', '', now());
-      const res = await fetcher(signed.url, {
+      return request(signed.url, {
         method: 'HEAD',
         headers: signed.headers,
+      }, async (res) => {
+        await expectOk(res, 'HeadBucket');
+        return { ok: true as const };
       });
-      await expectOk(res, 'HeadBucket');
-      return { ok: true as const };
     },
     async putObject(key, body, mime) {
       const url = buildUrl(config, key);
@@ -306,70 +447,56 @@ export const createS3Client = (opts: CreateS3ClientOptions): S3Client => {
         now(),
         mime ? { 'content-type': mime } : undefined,
       );
-      const res = await fetcher(signed.url, {
+      await request(signed.url, {
         method: 'PUT',
         headers: signed.headers,
         body,
+      }, async (res) => {
+        await expectOk(res, `PutObject ${key}`);
       });
-      await expectOk(res, `PutObject ${key}`);
     },
     async getObject(key, maxBytes) {
       const url = buildUrl(config, key);
       const signed = signWithNow(config, url, 'GET', '', now());
-      const res = await fetcher(signed.url, {
+      return request(signed.url, {
         method: 'GET',
         headers: signed.headers,
+      }, async (res) => {
+        await expectOk(res, `GetObject ${key}`);
+        const body = await objectBytes(res, maxBytes, `GetObject ${key}`);
+        const mime = res.headers.get('content-type') ?? undefined;
+        return { body, mime };
       });
-      await expectOk(res, `GetObject ${key}`);
-      // Content-Length PREFLIGHT — reject an oversize object BEFORE `arrayBuffer`
-      // buffers it. S3 GetObject always declares the size, so this fresh header is
-      // the authoritative guard; the caller's mirror-stored size can be stale
-      // (S3 overwrites in place under a stable key), and its post-buffer check
-      // fires too late — a multi-GB object would already have OOM'd the server.
-      if (maxBytes !== undefined) {
-        const lenRaw = res.headers.get('content-length');
-        if (lenRaw !== null) {
-          const len = Number(lenRaw);
-          if (Number.isFinite(len) && len > maxBytes) {
-            throw new S3Error(
-              'EntityTooLarge',
-              `GetObject ${key}: ${len} bytes exceeds the ${maxBytes} ceiling`,
-              413,
-            );
-          }
-        }
-      }
-      const buf = new Uint8Array(await res.arrayBuffer());
-      const mime = res.headers.get('content-type') ?? undefined;
-      return { body: buf, mime };
     },
     async deleteObject(key) {
       const url = buildUrl(config, key);
       const signed = signWithNow(config, url, 'DELETE', '', now());
-      const res = await fetcher(signed.url, {
+      await request(signed.url, {
         method: 'DELETE',
         headers: signed.headers,
+      }, async (res) => {
+        await expectOk(res, `DeleteObject ${key}`);
       });
-      await expectOk(res, `DeleteObject ${key}`);
     },
     async headObject(key) {
       const url = buildUrl(config, key);
       const signed = signWithNow(config, url, 'HEAD', '', now());
-      const res = await fetcher(signed.url, {
+      return request(signed.url, {
         method: 'HEAD',
         headers: signed.headers,
+      }, async (res) => {
+        await expectOk(res, `HeadObject ${key}`);
+        const sizeHeader = res.headers.get('content-length');
+        const size = sizeHeader != null ? Number(sizeHeader) : 0;
+        const lastMod = res.headers.get('last-modified');
+        const modified = lastMod ? Date.parse(lastMod) : NaN;
+        const mime = res.headers.get('content-type') ?? undefined;
+        return {
+          size_bytes: Number.isFinite(size) ? size : 0,
+          modified_at_ms: Number.isFinite(modified) ? modified : null,
+          mime,
+        };
       });
-      await expectOk(res, `HeadObject ${key}`);
-      const sizeHeader = res.headers.get('content-length');
-      const size = sizeHeader != null ? Number(sizeHeader) : 0;
-      const lastMod = res.headers.get('last-modified');
-      const modified = lastMod ? Date.parse(lastMod) : NaN;
-      const mime = res.headers.get('content-type') ?? undefined;
-      return {
-        size_bytes: Number.isFinite(size) ? size : 0,
-        modified_at_ms: Number.isFinite(modified) ? modified : null,
-        mime,
-      };
     },
     async listObjects(prefix) {
       const url = buildUrl(config, undefined, {
@@ -377,13 +504,18 @@ export const createS3Client = (opts: CreateS3ClientOptions): S3Client => {
         ...(prefix ? { prefix } : {}),
       });
       const signed = signWithNow(config, url, 'GET', '', now());
-      const res = await fetcher(signed.url, {
+      return request(signed.url, {
         method: 'GET',
         headers: signed.headers,
+      }, async (res) => {
+        await expectOk(res, 'ListObjectsV2');
+        const xml = await controlText(
+          res,
+          S3_CONTROL_RESPONSE_MAX_BYTES,
+          'ListObjectsV2',
+        );
+        return { keys: parseListKeys(xml) };
       });
-      await expectOk(res, 'ListObjectsV2');
-      const xml = await res.text();
-      return { keys: parseListKeys(xml) };
     },
     async listObjectsV2Page(opts) {
       const url = buildUrl(config, undefined, {
@@ -395,13 +527,18 @@ export const createS3Client = (opts: CreateS3ClientOptions): S3Client => {
           : {}),
       });
       const signed = signWithNow(config, url, 'GET', '', now());
-      const res = await fetcher(signed.url, {
+      return request(signed.url, {
         method: 'GET',
         headers: signed.headers,
+      }, async (res) => {
+        await expectOk(res, 'ListObjectsV2');
+        const xml = await controlText(
+          res,
+          S3_CONTROL_RESPONSE_MAX_BYTES,
+          'ListObjectsV2',
+        );
+        return parseListObjectsV2(xml);
       });
-      await expectOk(res, 'ListObjectsV2');
-      const xml = await res.text();
-      return parseListObjectsV2(xml);
     },
   };
 };

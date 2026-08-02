@@ -7,6 +7,11 @@ import type {
 } from '../types.js';
 import { LLMError } from '../types.js';
 import {
+  LLMProviderResponseTooLargeError,
+  readBoundedProviderJson,
+  readBoundedProviderText,
+} from '../provider-http.js';
+import {
   hasCacheBreakpoint,
   hasNonTextPart,
   joinTextParts,
@@ -195,6 +200,9 @@ export const callProvider = async (
       headers,
       body: JSON.stringify(body),
       signal: controller.signal,
+      // Provider URLs are fully authored by the selected slot. Refuse rather
+      // than replay BYOK credentials or prompt content to a redirect target.
+      redirect: 'error',
     });
 
     if (!response.ok) {
@@ -204,13 +212,18 @@ export const callProvider = async (
     }
 
     try {
-      return await response.json();
+      return await readBoundedProviderJson(response);
     } catch (e) {
       // AbortError during body read must propagate so the outer handler
       // can surface it as AI_TIMEOUT — do NOT rewrite it as a parse error
       // (the actual cause is a dropped connection, not malformed JSON).
       if ((e as Error).name === 'AbortError') throw e;
-      throw new LLMError('AI_RESPONSE_PARSE_FAILED', 'Provider returned malformed JSON');
+      throw new LLMError(
+        'AI_RESPONSE_PARSE_FAILED',
+        e instanceof LLMProviderResponseTooLargeError
+          ? e.message
+          : 'Provider returned malformed JSON',
+      );
     }
   } catch (e) {
     if (e instanceof LLMError) throw e;
@@ -230,8 +243,9 @@ export const callProvider = async (
 
 const safeReadText = async (response: Response): Promise<string> => {
   try {
-    return await response.text();
-  } catch {
+    return await readBoundedProviderText(response);
+  } catch (e) {
+    if ((e as Error).name === 'AbortError') throw e;
     return '';
   }
 };

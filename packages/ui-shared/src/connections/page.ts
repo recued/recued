@@ -25,6 +25,7 @@
 import {
   getVendorProvider,
   vendorHasEngagement,
+  CONNECTION_INBOUND_SECRET_FIELDS,
   OAUTH_CLOUD_CALLBACK_URL,
   MAX_HEADER_AUTH_ENTRIES,
   MESSAGE_MATCH_MAX_PATTERNS,
@@ -1566,7 +1567,7 @@ const renderField = (
             : []),
           ...optList.map((opt) => ({
             value: opt,
-            label: opt,
+            label: field.optionLabels?.[opt] ?? opt,
             selected: opt === (value || (!isDynamic ? optList[0] || '' : '')),
           })),
         ];
@@ -1826,8 +1827,18 @@ export const connectionFormValidationIssue = (
       }
       continue;
     }
-    if (field.optional) continue;
     const raw = values[field.key] ?? '';
+    // Inbound verification material is deliberately absent from
+    // ConnectionView. An edit may leave it blank because the server merge keeps
+    // the saved value; create mode still requires it, and switching to webhook
+    // without a preserved value is rejected authoritatively by the server.
+    if (
+      mode === 'edit'
+      && raw.trim().length === 0
+      && field.key.startsWith('config.')
+      && CONNECTION_INBOUND_SECRET_FIELDS.includes(field.key.slice('config.'.length))
+    ) continue;
+    if (field.optional) continue;
     if (raw.trim().length === 0) {
       return formValidationIssue(
         field.key,
@@ -2969,6 +2980,70 @@ const renderCredentialRotationOwnership = (
   `;
 };
 
+/** Render one schema-owned provider checklist for the active create-mode path.
+ * The form remains the authority for values and validation; this card only
+ * sequences the provider-side work and states the exact post-save check. */
+const renderConnectionOnboarding = (
+  dialog: ConnectionsDialogState,
+  schema: ConnectionSchema,
+): string => {
+  if (dialog.mode !== 'create' || schema.onboarding === undefined) return '';
+  const guide = schema.onboarding.guides.find(
+    (candidate) => candidate.showWhen?.(dialog.values) ?? true,
+  );
+  if (guide === undefined) return '';
+
+  const steps = guide.steps.map((step) => `
+    <li>
+      <strong>${e(step.title)}</strong>
+      <span>${e(step.detail)}</span>
+    </li>
+  `).join('');
+  let portal = '';
+  if (guide.portal !== undefined) {
+    try {
+      const parsed = new URL(guide.portal.url);
+      if (
+        parsed.protocol === 'https:'
+        && parsed.username === ''
+        && parsed.password === ''
+        && parsed.hostname !== ''
+      ) {
+        portal = `
+          <a class="connections-onboarding-portal" href="${e(guide.portal.url)}"
+             target="_blank" rel="noopener noreferrer">
+            ${e(guide.portal.label)} (new tab) <span aria-hidden="true">↗</span>
+          </a>
+        `;
+      }
+    } catch {
+      // Schema-owned links fail closed. A malformed future URL must not turn a
+      // provider checklist into an unsafe or broken navigation affordance.
+    }
+  }
+
+  return `
+    <section class="connections-onboarding" data-connection-onboarding="${e(guide.key)}"
+             data-tone="${e(guide.tone)}" aria-labelledby="connection-onboarding-title">
+      <div class="connections-onboarding-heading">
+        <div>
+          <p class="connections-onboarding-badge">${e(guide.badge)}</p>
+          <h4 id="connection-onboarding-title">${e(guide.title)}</h4>
+        </div>
+        ${portal}
+      </div>
+      <p class="connections-onboarding-description">${e(guide.description)}</p>
+      <ol class="connections-onboarding-steps">${steps}</ol>
+      ${guide.note === undefined
+        ? ''
+        : `<p class="connections-onboarding-note" role="note"><strong>Before you continue:</strong> ${e(guide.note)}</p>`}
+      <p class="connections-onboarding-verification">
+        <strong>What Save and probe checks:</strong> ${e(guide.verification)}
+      </p>
+    </section>
+  `;
+};
+
 const renderForm = (
   dialog: ConnectionsDialogState,
   dynamicOptions: Record<string, readonly string[]> | undefined,
@@ -3002,7 +3077,8 @@ const renderForm = (
     )
     ? renderRecentProbe(dialog)
     : '';
-  const probeNote = schema.probe
+  const onboarding = renderConnectionOnboarding(dialog, schema);
+  const probeNote = schema.probe && onboarding === ''
     ? fieldHint(
         schema.probe.description ??
           (schema.probe.kind && schema.probe.op
@@ -3024,6 +3100,22 @@ const renderForm = (
     dialog,
     validationIssue,
   );
+  const renderSchemaField = (field: ConnectionField): string => renderField(
+    field,
+    dialog.values,
+    dynamicOptions,
+    dialog.mode,
+    dialog.saving || (dialog.oauthInFlight && isConnectionOAuthLockedField(field.key)),
+    dialog.oauthErrorFieldKey,
+    dialog.credentialCorrection?.fieldKeys ?? [],
+    dialog.hintedFields,
+  );
+  const onboardingSelectorKey = dialog.mode === 'create'
+    ? schema.onboarding?.selectorKey
+    : undefined;
+  const onboardingSelector = onboardingSelectorKey === undefined
+    ? undefined
+    : schema.fields.find((field) => field.key === onboardingSelectorKey);
   return `
     <div class="connections-form" data-stage="form"${dialog.vendor ? ` data-vendor="${e(dialog.vendor)}"` : ''}>
       <h3 class="connections-form-title">
@@ -3035,6 +3127,12 @@ const renderForm = (
         Credential fields are not saved in your browser, so they cannot be
         restored after discard or reload.
       </p>
+      ${onboardingSelector === undefined
+        ? ''
+        : `<div class="connections-onboarding-selector" data-connection-onboarding-selector>
+            ${renderSchemaField(onboardingSelector)}
+          </div>`}
+      ${onboarding}
       ${probeNote}
       ${matchingRecoveredReceipt}
       ${renderExternalEditorChange(dialog)}
@@ -3048,16 +3146,10 @@ const renderForm = (
         ? renderConnectionFormValidation(validationIssue, validationShouldAnnounce)
         : ''}
       <div class="connections-form-fields">
-        ${schema.fields.map((f) => renderField(
-          f,
-          dialog.values,
-          dynamicOptions,
-          dialog.mode,
-          dialog.saving || (dialog.oauthInFlight && isConnectionOAuthLockedField(f.key)),
-          dialog.oauthErrorFieldKey,
-          dialog.credentialCorrection?.fieldKeys ?? [],
-          dialog.hintedFields,
-        )).join('')}
+        ${schema.fields
+          .filter((field) => field.key !== onboardingSelectorKey)
+          .map(renderSchemaField)
+          .join('')}
       </div>
       ${renderVendorOAuth(dialog)}
       ${dialog.error && dialog.credentialCorrection === null && dialog.error !== validationIssue?.message
@@ -3438,6 +3530,130 @@ export const CONNECTIONS_PAGE_STYLES = `
   color: var(--fg-muted);
   margin: -4px 0 12px;
 }
+.connections-onboarding-selector {
+  margin: 0 0 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface-sunk, var(--bg));
+}
+.connections-onboarding-selector .connections-field-row { gap: 6px; }
+.connections-onboarding {
+  display: grid;
+  gap: 10px;
+  margin: 0 0 12px;
+  padding: 13px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: 8px;
+  background: var(--bg);
+}
+.connections-onboarding[data-tone="advanced"] {
+  border-left-color: var(--warn, #c98500);
+}
+.connections-onboarding-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+.connections-onboarding-heading > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.connections-onboarding-badge {
+  margin: 0;
+  color: var(--accent);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+.connections-onboarding[data-tone="advanced"] .connections-onboarding-badge {
+  color: var(--warn, #8a5a00);
+}
+.connections-onboarding h4 {
+  margin: 0;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 650;
+}
+.connections-onboarding-portal {
+  flex: 0 0 auto;
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.connections-onboarding-description,
+.connections-onboarding-note,
+.connections-onboarding-verification {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.connections-onboarding-description { color: var(--fg-muted); }
+.connections-onboarding-steps {
+  display: grid;
+  gap: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  counter-reset: messenger-onboarding;
+}
+.connections-onboarding-steps > li {
+  position: relative;
+  display: grid;
+  gap: 2px;
+  min-height: 28px;
+  padding: 8px 0 8px 36px;
+  border-top: 1px solid var(--border);
+  counter-increment: messenger-onboarding;
+}
+.connections-onboarding-steps > li::before {
+  content: counter(messenger-onboarding);
+  position: absolute;
+  top: 8px;
+  left: 3px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--surface-sunk, var(--bg));
+  color: var(--fg);
+  font-size: 10px;
+  font-weight: 700;
+}
+.connections-onboarding-steps strong {
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 650;
+}
+.connections-onboarding-steps span {
+  color: var(--fg-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.connections-onboarding-note,
+.connections-onboarding-verification {
+  padding: 9px 10px;
+  border-radius: 5px;
+}
+.connections-onboarding-note {
+  border-left: 3px solid var(--warn, #c98500);
+  background: var(--surface-sunk, var(--bg));
+  color: var(--fg-muted);
+}
+.connections-onboarding-verification {
+  border-left: 3px solid var(--accent);
+  background: var(--surface-sunk, var(--bg));
+  color: var(--fg-muted);
+}
+.connections-onboarding-note strong,
+.connections-onboarding-verification strong { color: var(--fg); }
 .connections-form-validation {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -3548,6 +3764,11 @@ export const CONNECTIONS_PAGE_STYLES = `
   padding-left: 9px;
 }
 @media (max-width: 560px) {
+  .connections-onboarding-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+  .connections-onboarding-portal { white-space: normal; }
   .connections-form-validation,
   .connections-credential-correction {
     grid-template-columns: minmax(0, 1fr);

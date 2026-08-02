@@ -129,6 +129,13 @@ import {
   ACCOUNT_MENU_ACTIVE_WORK_RETURN_ATTR,
   ACCOUNT_MENU_BADGE_ATTR,
   ACCOUNT_MENU_CLOSE_ATTR,
+  ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR,
+  ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR,
+  ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR,
+  ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR,
+  ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR,
+  ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS_ATTR,
+  ACCOUNT_MENU_CONNECTION_DIAGNOSIS_TITLE_ATTR,
   ACCOUNT_MENU_POPOVER_ATTR,
   ACCOUNT_MENU_SERVER_UPDATE_ATTR,
   ACCOUNT_MENU_SERVER_UPDATE_RETURN_ATTR,
@@ -167,12 +174,15 @@ import {
 } from '../shell/recovery-intent-landing.js';
 import {
   RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+  RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
 } from '../shell/recovery-intent-continuation.js';
 import {
   ATTENTION_CONNECTION_RECOVERY_REVIEW_ATTR,
   ATTENTION_INACTIVE_PROFILE_RECOVERY_ATTR,
   ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR,
   ATTENTION_RECOVERY_INTENT_CONTINUATION_ATTR,
+  ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME_ATTR,
+  ATTENTION_RECOVERY_INTENT_SERVER_STATE_ATTR,
   ATTENTION_TOPBAR_HOST_ATTR,
 } from '../attention/approval-attention-popover.js';
 import {
@@ -8235,6 +8245,1079 @@ describe('bootstrapWebclient: Account server profiles', () => {
     );
     expect(topbar.innerHTML).not.toContain('attention-popover');
     expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
+    await handle.dispose();
+  });
+
+  it('bounds repeated failures and requires an explicit outcome after direct review', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+      JSON.stringify({
+        v: 1,
+        profile_id: 'p1',
+        landing_hash: '#contracts',
+        intent: 'choose_again',
+        paused_at: 1_700_000_000_000,
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#contracts');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const ordinarySwitchProfile = profiles.store.switchProfile.bind(
+      profiles.store,
+    );
+    let blockProfileSwitch = false;
+    let finishBlockedProfileSwitch = (): void => undefined;
+    const blockedProfileSwitch = new Promise<void>((resolve) => {
+      finishBlockedProfileSwitch = resolve;
+    });
+    profiles.store.switchProfile = async (id) => {
+      if (!blockProfileSwitch) {
+        await ordinarySwitchProfile(id);
+        return;
+      }
+      await blockedProfileSwitch;
+      throw new Error('simulated profile switch interruption');
+    };
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      enablePermissionsPanel: false,
+      profileStore: profiles.store,
+      recoveryIntentContinuationStorage: storage,
+    });
+    await flush();
+    const initialList = findRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: initialList.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+
+    const topbar = findByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    const banner = findByAttr(fixture.root, CONNECTION_BANNER_ATTR)!;
+    topbar.fireClick({ action: 'open-attention' });
+    topbar.fireClick({ action: 'resume-recovery-intent-continuation' });
+    await flush();
+    const firstFailure = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    topbar.fireClick({ action: 'open-attention' });
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: firstFailure.request_id,
+      error: { code: 'unavailable', message: 'private first diagnostic' },
+    });
+    await flush();
+    expect(topbar.innerHTML).toContain('data-remediation="retry"');
+    expect(topbar.innerHTML).toContain('Try again');
+
+    topbar.fireClick({ action: 'resume-recovery-intent-continuation' });
+    await flush();
+    const secondFailure = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    expect(secondFailure.request_id).not.toBe(firstFailure.request_id);
+    topbar.fireClick({ action: 'open-attention' });
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: secondFailure.request_id,
+      error: { code: 'unavailable', message: 'private second diagnostic' },
+    });
+    await flush();
+
+    const readsAtLimit = countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    );
+    expect(topbar.innerHTML).toContain('data-phase="failed"');
+    expect(topbar.innerHTML).toContain('data-remediation="escalated"');
+    expect(topbar.innerHTML).toContain('Still can’t verify Contracts');
+    expect(topbar.innerHTML).toContain('stopped the retry loop');
+    expect(topbar.innerHTML).toContain('Review Contracts');
+    expect(topbar.innerHTML).toContain('Review server');
+    expect(topbar.innerHTML).toContain('Stop recovery');
+    expect(topbar.innerHTML).not.toContain('Try again');
+    expect(topbar.innerHTML).not.toContain('private first diagnostic');
+    expect(topbar.innerHTML).not.toContain('private second diagnostic');
+    const stored = storage.data.get(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+    )!;
+    expect(JSON.parse(stored)).toEqual({
+      v: 1,
+      profile_id: 'p1',
+      landing_hash: '#contracts',
+      intent: 'choose_again',
+      paused_at: 1_700_000_000_000,
+    });
+    expect(stored).not.toContain('escalated');
+    expect(stored).not.toContain('failure');
+    expect(stored).not.toContain('diagnostic');
+
+    // A cold reconstruction receives only the neutral durable marker. The
+    // failure count, escalation, diagnostics, and one-tab announcement do not
+    // cross reloads or sibling tabs.
+    const coldStorage = memorySessionStorage();
+    coldStorage.setItem(RECOVERY_INTENT_CONTINUATION_SESSION_KEY, stored);
+    const coldFixture = buildOpts();
+    coldFixture.hashSource.setHash('#chat');
+    const coldHandle = await bootstrapWebclient({
+      ...coldFixture.opts,
+      profileStore: profiles.store,
+      recoveryIntentContinuationStorage: coldStorage,
+    });
+    await flush();
+    const coldTopbar = findByAttr(
+      coldFixture.root,
+      ATTENTION_TOPBAR_HOST_ATTR,
+    )!;
+    coldTopbar.fireClick({ action: 'open-attention' });
+    expect(coldTopbar.innerHTML).toContain('data-phase="ready"');
+    expect(coldTopbar.innerHTML).toContain('Recheck area');
+    expect(coldTopbar.innerHTML).not.toContain('escalated');
+    expect(coldTopbar.innerHTML).not.toContain('stopped the retry loop');
+    await coldHandle.dispose();
+
+    // Neither a reconnect nor a stale synthetic action escapes the cap.
+    fixture.transportControls.fireState('reconnecting');
+    fixture.transportControls.fireState('connected');
+    topbar.fireClick({ action: 'resume-recovery-intent-continuation' });
+    await flush();
+    expect(topbar.innerHTML).toContain('data-remediation="escalated"');
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsAtLimit);
+
+    // Direct server review is inspection only. It keeps the exact saved route,
+    // never arms another reconnect retry, then asks for an explicit outcome.
+    topbar.fireClick({ action: 'close-attention' });
+    fixture.hashSource.setHash('#chat');
+    await flush();
+    topbar.fireClick({ action: 'open-attention' });
+    topbar.fireClick({ action: 'review-recovery-intent-server' });
+    await flush();
+    const account = findByAttr(fixture.root, ACCOUNT_MENU_POPOVER_ATTR)!;
+    expect(account.hasAttribute('hidden')).toBe(false);
+    expect(account.focusCallCount).toBe(1);
+    expect(fixture.hashSource.getHash()).toBe('#chat');
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsAtLimit);
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      true,
+    );
+
+    findByAttr(fixture.root, ACCOUNT_MENU_CLOSE_ATTR)!.click();
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      'data-phase="awaiting_review_outcome"',
+    );
+    expect(topbar.innerHTML).toContain('data-remediation="escalated"');
+    expect(topbar.innerHTML).toContain('data-review-target="server"');
+    expect(topbar.innerHTML).toContain(
+      'What happened after reviewing home?',
+    );
+    expect(topbar.innerHTML).toContain(
+      'Looks resolved &mdash; verify &amp; choose again',
+    );
+    expect(topbar.innerHTML).toContain(
+      'Still blocked &mdash; keep reminder',
+    );
+    expect(topbar.innerHTML).not.toContain('Try again');
+    expect(storage.data.get(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+    )).toBe(stored);
+
+    // Keeping a still-blocked outcome is a complete, quiet action: the item
+    // remains discoverable and no background read is dispatched.
+    topbar.fireClick({ action: 'keep-recovery-intent-review-blocked' });
+    expect(topbar.innerHTML).not.toContain('attention-popover');
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      true,
+    );
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsAtLimit);
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      'data-phase="awaiting_review_outcome"',
+    );
+
+    // A claimed resolution gets exactly one fresh authoritative route check.
+    // Failure returns to the bounded direct-review posture, rather than
+    // silently looping or treating the review itself as proof.
+    topbar.fireClick({ action: 'resolve-recovery-intent-review' });
+    expect(fixture.hashSource.getHash()).toBe('#contracts');
+    await flush();
+    const resolvedServerCheck = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    expect(resolvedServerCheck.request_id).not.toBe(secondFailure.request_id);
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: resolvedServerCheck.request_id,
+      error: {
+        code: 'unavailable',
+        message: 'private post-server-review detail',
+      },
+    });
+    await flush();
+
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="failed"');
+    expect(topbar.innerHTML).toContain('data-remediation="escalated"');
+    expect(topbar.innerHTML).not.toContain(
+      'private post-server-review detail',
+    );
+    topbar.fireClick({ action: 'review-recovery-intent-continuation' });
+    await flush();
+
+    const reviewError = findByAttr(
+      fixture.root,
+      CONTRACTS_ROUTE_ERROR_ATTR,
+    )!;
+    expect(reviewError.focusCallCount).toBe(2);
+    expect(reviewError.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe('review');
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsAtLimit + 1);
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      true,
+    );
+
+    // Interacting with the reviewed route no longer discards the explicit
+    // outcome question. The person can inspect or repair it before answering.
+    fixture.fakeDoc.fireDocumentEvent('pointerdown', reviewError);
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      true,
+    );
+    expect(topbar.innerHTML).toContain('top-bar-attention-badge');
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      'data-phase="awaiting_review_outcome"',
+    );
+    expect(topbar.innerHTML).toContain('data-review-target="area"');
+    expect(topbar.innerHTML).toContain(
+      'What happened after reviewing Contracts?',
+    );
+
+    topbar.fireClick({ action: 'resolve-recovery-intent-review' });
+    await flush();
+    const resolvedAreaCheck = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    expect(resolvedAreaCheck.request_id).not.toBe(
+      resolvedServerCheck.request_id,
+    );
+
+    // Losing the transport makes the pending answer indeterminate. The old
+    // response is disowned, reconnect stays quiet, and only a closed-list,
+    // continuation-bound verifier crosses a reload boundary.
+    const verificationRaw = storage.data.get(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    )!;
+    expect(JSON.parse(verificationRaw)).toEqual({
+      v: 2,
+      profile_id: 'p1',
+      landing_hash: '#contracts',
+      intent: 'choose_again',
+      paused_at: 1_700_000_000_000,
+      review_target: 'area',
+      state: 'checking',
+      interruption_count: 0,
+      last_interruption: null,
+    });
+    expect(verificationRaw).not.toMatch(
+      /credential|error|receipt|record|provider|field|draft|label/i,
+    );
+    fixture.transportControls.fireState('reconnecting');
+    await flush();
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      'data-phase="verification_interrupted"',
+    );
+    expect(topbar.innerHTML).toContain('Verification was interrupted');
+    expect(topbar.innerHTML).toContain('Retry verification');
+    expect(topbar.innerHTML).toContain('Review Contracts');
+    expect(topbar.innerHTML).not.toContain(
+      'Looks resolved &mdash; verify',
+    );
+    expect(JSON.parse(storage.data.get(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    )!)).toMatchObject({
+      v: 2,
+      state: 'interrupted',
+      interruption_count: 1,
+      last_interruption: 'connection',
+    });
+
+    const readsBeforeReconnect = countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    );
+    topbar.fireClick({ action: 'resolve-recovery-intent-review' });
+    await flush();
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsBeforeReconnect);
+    expect(topbar.innerHTML).toContain('data-phase="verification_handoff"');
+    expect(topbar.innerHTML).toContain(
+      'Review the connection before another check',
+    );
+    expect(topbar.innerHTML).toContain('Review connection');
+    expect(topbar.innerHTML).toContain('Review Contracts');
+    expect(topbar.innerHTML).not.toContain('Retry verification');
+    expect(topbar.innerHTML).toContain(
+      'That outcome can’t be verified right now',
+    );
+    expect(JSON.parse(storage.data.get(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    )!)).toMatchObject({
+      state: 'interrupted',
+      interruption_count: 2,
+      last_interruption: 'connection',
+    });
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: resolvedAreaCheck.request_id,
+      error: {
+        code: 'unavailable',
+        message: 'private stale verification detail',
+      },
+    });
+    await flush();
+    expect(topbar.innerHTML).toContain('data-phase="verification_handoff"');
+    expect(topbar.innerHTML).not.toContain(
+      'private stale verification detail',
+    );
+
+    // A committed Account profile mutation keeps ownership. The review stays
+    // in Attention with a clear alternative and cannot open a stale diagnosis
+    // or release the durable two-interruption cap underneath that mutation.
+    blockProfileSwitch = true;
+    topbar.fireClick({ action: 'close-attention' });
+    findByAttr(fixture.root, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(fixture.root, SERVER_SWITCHER_ITEM_ATTR)[1]!.click();
+    findByAttr(
+      fixture.root,
+      SERVER_SWITCHER_SWITCH_COMMIT_ATTR,
+    )!.click();
+    findByAttr(fixture.root, ACCOUNT_MENU_CLOSE_ATTR)!.click();
+    topbar.fireClick({ action: 'open-attention' });
+    topbar.fireClick({ action: 'review-recovery-intent-server' });
+    expect(topbar.innerHTML).toContain('attention-popover');
+    expect(topbar.innerHTML).toContain(
+      'That server can’t be opened from Account right now',
+    );
+    expect(account.hasAttribute('hidden')).toBe(true);
+    expect(JSON.parse(storage.data.get(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    )!)).toMatchObject({
+      state: 'interrupted',
+      interruption_count: 2,
+    });
+    finishBlockedProfileSwitch();
+    await flush();
+    blockProfileSwitch = false;
+
+    // After two interruptions, connection review is the primary bounded
+    // handoff. Account lands on the exact profile with stable diagnosis focus,
+    // but merely opening or closing it does not release the durable cap.
+    topbar.fireClick({ action: 'review-recovery-intent-server' });
+    await flush();
+    expect(account.hasAttribute('hidden')).toBe(false);
+    const diagnosis = findByAttr(
+      fixture.root,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR,
+    )!;
+    const diagnosisTitle = findByAttr(
+      diagnosis,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_TITLE_ATTR,
+    )!;
+    expect(diagnosis.hasAttribute('hidden')).toBe(false);
+    expect(diagnosis.getAttribute('data-interruption-reason')).toBe(
+      'connection',
+    );
+    expect(diagnosisTitle.textContent).toBe('Check connection to home');
+    expect(diagnosisTitle.focusCallCount).toBe(1);
+    expect(subtreeText(diagnosis)).toContain(
+      'Opening Account does not retry verification or mark it resolved',
+    );
+    expect(findByAttr(
+      diagnosis,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS_ATTR,
+    )!.textContent).toContain('home is reconnecting or still being checked');
+    expect(JSON.parse(storage.data.get(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    )!)).toMatchObject({
+      state: 'interrupted',
+      interruption_count: 2,
+      last_interruption: 'connection',
+    });
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsBeforeReconnect);
+
+    // A reload during diagnosis restores the same bounded Attention handoff;
+    // Account orientation is ephemeral and never weakens the durable cap.
+    const diagnosisReloadStorage = memorySessionStorage();
+    diagnosisReloadStorage.setItem(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+      storage.data.get(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)!,
+    );
+    diagnosisReloadStorage.setItem(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+      storage.data.get(RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY)!,
+    );
+    const diagnosisReloadFixture = buildOpts();
+    diagnosisReloadFixture.hashSource.setHash('#chat');
+    const diagnosisReloadHandle = await bootstrapWebclient({
+      ...diagnosisReloadFixture.opts,
+      enablePermissionsPanel: false,
+      profileStore: profiles.store,
+      recoveryIntentContinuationStorage: diagnosisReloadStorage,
+    });
+    await flush();
+    const diagnosisReloadTopbar = findByAttr(
+      diagnosisReloadFixture.root,
+      ATTENTION_TOPBAR_HOST_ATTR,
+    )!;
+    diagnosisReloadTopbar.fireClick({ action: 'open-attention' });
+    expect(diagnosisReloadTopbar.innerHTML).toContain(
+      'data-phase="verification_handoff"',
+    );
+    expect(findByAttr(
+      diagnosisReloadFixture.root,
+      ACCOUNT_MENU_POPOVER_ATTR,
+    )!.hasAttribute('hidden')).toBe(true);
+    await diagnosisReloadHandle.dispose();
+
+    findByAttr(fixture.root, ACCOUNT_MENU_CLOSE_ATTR)!.click();
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="verification_handoff"');
+    expect(storage.data.has(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    )).toBe(true);
+
+    // Only the diagnosis' explicit return releases the old verifier and opens
+    // the exact outcome question. No bell click or current-state read occurs.
+    topbar.fireClick({ action: 'review-recovery-intent-server' });
+    await flush();
+    expect(diagnosisTitle.focusCallCount).toBe(2);
+    findByAttr(
+      diagnosis,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR,
+    )!.click();
+    expect(account.hasAttribute('hidden')).toBe(true);
+    expect(topbar.innerHTML).toContain('attention-popover');
+    expect(topbar.innerHTML).toContain(
+      'data-phase="awaiting_review_outcome"',
+    );
+    expect(topbar.innerHTML).toContain('data-review-target="server"');
+    expect(storage.data.has(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    )).toBe(false);
+
+    topbar.fireClick({ action: 'resolve-recovery-intent-review' });
+    await flush();
+    expect(topbar.innerHTML).toContain(
+      'data-phase="verification_interrupted"',
+    );
+    expect(topbar.innerHTML).toContain('data-review-target="server"');
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsBeforeReconnect);
+    fixture.transportControls.fireState('connected');
+    await flush();
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsBeforeReconnect);
+
+    topbar.fireClick({ action: 'resolve-recovery-intent-review' });
+    await flush();
+    const retriedAreaCheck = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    expect(retriedAreaCheck.request_id).not.toBe(
+      resolvedAreaCheck.request_id,
+    );
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsBeforeReconnect + 1);
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: retriedAreaCheck.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+
+    const listTab = findChildrenByAttr(
+      fixture.root,
+      CONTRACTS_ROUTE_LIST_TAB_ATTR,
+    ).find((tab) => tab.getAttribute('aria-selected') === 'true')!;
+    expect(listTab.focusCallCount).toBe(1);
+    expect(listTab.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe(
+      'choose_again',
+    );
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      false,
+    );
+    expect(storage.data.has(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    )).toBe(false);
+    expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
+    expect(subtreeText(banner)).not.toContain('Back on');
+    expect(subtreeText(banner)).not.toContain('refreshed and ready');
+    await handle.dispose();
+  });
+
+  it('returns an unresolved server receipt to its exact profile controls without replaying the action', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+      JSON.stringify({
+        v: 1,
+        profile_id: 'p1',
+        landing_hash: '#contracts',
+        intent: 'choose_again',
+        paused_at: 1_700_000_000_000,
+      }),
+    );
+    storage.setItem(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+      JSON.stringify({
+        v: 2,
+        profile_id: 'p1',
+        landing_hash: '#contracts',
+        intent: 'choose_again',
+        paused_at: 1_700_000_000_000,
+        review_target: 'server',
+        state: 'interrupted',
+        interruption_count: 2,
+        last_interruption: 'connection',
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      enablePermissionsPanel: false,
+      profileStore: profiles.store,
+      recoveryIntentContinuationStorage: storage,
+    });
+    await flush();
+    fixture.transportControls.fireMessage({
+      type: 'server_heartbeat',
+      payload: {
+        server_id: 'srv-unresolved-re-review',
+        last_seen_at: 1_700_000_000_000,
+        lifecycle_state: 'running',
+        paused: false,
+        uptime_s: 120,
+        supervisor_mode: 'systemd',
+      },
+    });
+
+    const topbar = findByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="verification_handoff"');
+    topbar.fireClick({ action: 'review-recovery-intent-server' });
+    await flush();
+
+    const account = findByAttr(fixture.root, ACCOUNT_MENU_POPOVER_ATTR)!;
+    const diagnosis = findByAttr(
+      fixture.root,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR,
+    )!;
+    findByAttr(
+      diagnosis,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS_ATTR,
+    )!.click();
+    const serverPillHost = findByAttr(
+      fixture.root,
+      SERVER_PILL_HOST_ATTR,
+    )!;
+    const serverControls = serverPillHost.childList[0]!.childList[1]!;
+    serverControls.fireClick({ action: 'pause-request' });
+    serverControls.fireClick({ action: 'pause-confirm' });
+
+    const receipt = findByAttr(
+      diagnosis,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT_ATTR,
+    )!;
+    expect(receipt.getAttribute('data-action')).toBe('pause');
+    expect(receipt.getAttribute('data-phase')).toBe('pending');
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'server.setPaused',
+    )).toBe(1);
+    findByAttr(
+      diagnosis,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR,
+    )!.click();
+
+    expect(account.hasAttribute('hidden')).toBe(true);
+    expect(topbar.innerHTML).toContain(
+      `${ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME_ATTR}="pending"`,
+    );
+    expect(topbar.innerHTML).toContain('Pause was still pending');
+    expect(topbar.innerHTML).toContain('Review server again');
+    expect(topbar.innerHTML).toContain('Verify Contracts instead');
+    expect(topbar.innerHTML).not.toContain(
+      'Still blocked &mdash; keep reminder',
+    );
+
+    topbar.fireClick({ action: 'review-recovery-intent-server' });
+    await flush();
+    expect(account.hasAttribute('hidden')).toBe(false);
+    expect(diagnosis.getAttribute('data-interruption-reason')).toBeNull();
+    expect(findByAttr(
+      diagnosis,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_TITLE_ATTR,
+    )!.textContent).toBe('Review home again');
+    expect(subtreeText(diagnosis)).toContain(
+      'The last server-control receipt did not settle the result',
+    );
+    expect(diagnosis.getAttribute('data-control-review')).toBe('active');
+    expect(receipt.getAttribute('data-phase')).toBe('pending');
+    expect(serverControls.innerHTML).toContain('Active server controls');
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'server.setPaused',
+    )).toBe(1);
+
+    // A late response from the retired request may update global live state,
+    // but it cannot rewrite this re-review receipt or start another request.
+    const pendingPause = findLatestRpcCall(
+      fixture.transportControls,
+      'server.setPaused',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: pendingPause.request_id,
+      result: { ok: true, active_since: 1_700_000_000_000 },
+    });
+    await flush();
+    expect(receipt.getAttribute('data-phase')).toBe('pending');
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'server.setPaused',
+    )).toBe(1);
+    expect(storage.data.has(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    )).toBe(false);
+    const reconcile = findByAttr(
+      diagnosis,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE_ATTR,
+    )!;
+    expect(reconcile.textContent).toBe('Waiting for current server state…');
+    expect(reconcile.hasAttribute('disabled')).toBe(true);
+
+    // The action response is not a current-state baseline. Only a later fresh
+    // heartbeat unlocks the explicit reconciliation boundary.
+    fixture.transportControls.fireMessage({
+      type: 'server_heartbeat',
+      payload: {
+        server_id: 'srv-unresolved-re-review',
+        last_seen_at: 1_700_000_000_000,
+        lifecycle_state: 'running',
+        paused: true,
+        uptime_s: 121,
+        supervisor_mode: 'systemd',
+      },
+    });
+    expect(reconcile.textContent).toBe('Use current server state');
+    expect(reconcile.hasAttribute('disabled')).toBe(false);
+    expect(storage.data.has(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    )).toBe(false);
+    reconcile.click();
+
+    expect(account.hasAttribute('hidden')).toBe(true);
+    expect(topbar.innerHTML).toContain(
+      `${ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME_ATTR}="pending"`,
+    );
+    expect(topbar.innerHTML).toContain(
+      `${ATTENTION_RECOVERY_INTENT_SERVER_STATE_ATTR}="paused"`,
+    );
+    expect(topbar.innerHTML).toContain('Current server state: paused');
+    expect(topbar.innerHTML).toContain(
+      'without claiming the earlier Pause request caused it',
+    );
+    expect(topbar.innerHTML).toContain(
+      'Verify Contracts &amp; choose again',
+    );
+    expect(topbar.innerHTML).toContain(
+      'Still blocked &mdash; keep reminder',
+    );
+    expect(topbar.innerHTML).not.toContain('Review server again');
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'server.setPaused',
+    )).toBe(1);
+    expect(JSON.parse(storage.data.get(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    )!)).toEqual({
+      v: 2,
+      profile_id: 'p1',
+      landing_hash: '#contracts',
+      intent: 'choose_again',
+      paused_at: 1_700_000_000_000,
+      review_target: 'server',
+      state: 'ready',
+      interruption_count: 0,
+      last_interruption: null,
+    });
+    expect(storage.data.get(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+    )).toBe(JSON.stringify({
+      v: 1,
+      profile_id: 'p1',
+      landing_hash: '#contracts',
+      intent: 'choose_again',
+      paused_at: 1_700_000_000_000,
+    }));
+
+    const readsBeforeClosure = countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    );
+    topbar.fireClick({ action: 'resolve-recovery-intent-review' });
+    await flush();
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsBeforeClosure + 1);
+    const closureCheck = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: closureCheck.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+    expect(fixture.hashSource.getHash()).toBe('#contracts');
+    expect(storage.data.has(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+    )).toBe(false);
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'server.setPaused',
+    )).toBe(1);
+    await handle.dispose();
+  });
+
+  it('re-enters a reconciled exact-area check after reload without restoring or replaying server material', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+      JSON.stringify({
+        v: 1,
+        profile_id: 'p1',
+        landing_hash: '#contracts',
+        intent: 'choose_again',
+        paused_at: 1_700_000_000_000,
+      }),
+    );
+    storage.setItem(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+      JSON.stringify({
+        v: 2,
+        profile_id: 'p1',
+        landing_hash: '#contracts',
+        intent: 'choose_again',
+        paused_at: 1_700_000_000_000,
+        review_target: 'server',
+        state: 'ready',
+        interruption_count: 0,
+        last_interruption: null,
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat');
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      enablePermissionsPanel: false,
+      profileStore: profiles.store,
+      recoveryIntentContinuationStorage: storage,
+    });
+    await flush();
+
+    const topbar = findByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="verification_ready"');
+    expect(topbar.innerHTML).toContain('Finish checking Contracts');
+    expect(topbar.innerHTML).toContain('Check Contracts now');
+    expect(topbar.innerHTML).not.toContain(
+      ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME_ATTR,
+    );
+    expect(topbar.innerHTML).not.toContain(
+      ATTENTION_RECOVERY_INTENT_SERVER_STATE_ATTR,
+    );
+    expect(topbar.innerHTML).not.toContain('Current server state:');
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'server.setPaused',
+    )).toBe(0);
+    const readsBeforeReconnect = countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    );
+
+    // Reconnect convergence is observational. It neither turns the prepared
+    // check into an interruption nor dispatches it without a fresh click.
+    fixture.transportControls.fireState('reconnecting');
+    fixture.transportControls.fireState('connected');
+    await flush();
+    expect(topbar.innerHTML).toContain('data-phase="verification_ready"');
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsBeforeReconnect);
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'server.setPaused',
+    )).toBe(0);
+
+    topbar.fireClick({ action: 'resolve-recovery-intent-review' });
+    await flush();
+    expect(fixture.hashSource.getHash()).toBe('#contracts');
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(readsBeforeReconnect + 1);
+    const exactAreaCheck = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: exactAreaCheck.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+    expect(storage.data.has(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+    )).toBe(false);
+    expect(storage.data.has(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    )).toBe(false);
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'server.setPaused',
+    )).toBe(0);
+    await handle.dispose();
+  });
+
+  it('restores interrupted resolved verification and safely survives a declined dirty-route return', async () => {
+    const storage = memorySessionStorage();
+    storage.setItem(
+      RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+      JSON.stringify({
+        v: 1,
+        profile_id: 'p1',
+        landing_hash: '#contracts',
+        intent: 'choose_again',
+        paused_at: 1_700_000_000_000,
+      }),
+    );
+    storage.setItem(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+      JSON.stringify({
+        v: 2,
+        profile_id: 'p1',
+        landing_hash: '#contracts',
+        intent: 'choose_again',
+        paused_at: 1_700_000_000_000,
+        review_target: 'area',
+        state: 'checking',
+        interruption_count: 0,
+        last_interruption: null,
+      }),
+    );
+    const fixture = buildOpts();
+    fixture.hashSource.setHash('#chat');
+    const confirm = vi.fn(() => false);
+    const location: { hash: string } = {} as { hash: string };
+    Object.defineProperty(location, 'hash', {
+      configurable: true,
+      get: () => fixture.hashSource.getHash(),
+      set: (hash: string) => { fixture.hashSource.setHash(hash); },
+    });
+    (fixture.fakeDoc as { defaultView?: unknown }).defaultView = {
+      confirm,
+      location,
+      history: { replaceState: vi.fn(), pushState: vi.fn() },
+      addEventListener: vi.fn(),
+      removeEventListener: vi.fn(),
+    };
+    const profiles = buildProfileStore([HOME_PROFILE, OFFICE_PROFILE], 'p1');
+    const handle = await bootstrapWebclient({
+      ...fixture.opts,
+      enablePermissionsPanel: false,
+      profileStore: profiles.store,
+      recoveryIntentContinuationStorage: storage,
+    });
+    await flush();
+    const sessions = findLatestRpcCall(
+      fixture.transportControls,
+      'chat.sessions.list',
+    )!;
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: sessions.request_id,
+      result: { sessions: [] },
+    });
+    await flush();
+
+    const topbar = findByAttr(fixture.root, ATTENTION_TOPBAR_HOST_ATTR)!;
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      'data-phase="verification_interrupted"',
+    );
+    expect(topbar.innerHTML).toContain('Retry verification');
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(0);
+
+    const draft = findChildByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR)!;
+    draft.fireInput('Keep this private unfinished thought');
+    topbar.fireClick({ action: 'resolve-recovery-intent-review' });
+    await flush();
+
+    expect(confirm).toHaveBeenCalledOnce();
+    expect(handle.activeRoute()).toBe('chat');
+    expect(fixture.hashSource.getHash()).toBe('#chat');
+    expect(findChildByAttr(fixture.root, CHAT_ROUTE_INPUT_ATTR)?.value).toBe(
+      'Keep this private unfinished thought',
+    );
+    expect(countRpcCalls(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )).toBe(0);
+    expect(storage.data.has(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    )).toBe(true);
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="verification_handoff"');
+    expect(topbar.innerHTML).toContain(
+      'Verification keeps getting interrupted',
+    );
+    expect(topbar.innerHTML).toContain('Review connection');
+    expect(topbar.innerHTML).not.toContain('Retry verification');
+    expect(topbar.innerHTML).not.toContain('Keep this private');
+
+    topbar.fireClick({ action: 'review-recovery-intent-server' });
+    await flush();
+    const account = findByAttr(fixture.root, ACCOUNT_MENU_POPOVER_ATTR)!;
+    expect(account.hasAttribute('hidden')).toBe(false);
+    const diagnosis = findByAttr(
+      fixture.root,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR,
+    )!;
+    expect(diagnosis.hasAttribute('hidden')).toBe(false);
+    expect(diagnosis.getAttribute('data-interruption-reason')).toBe(
+      'navigation',
+    );
+    expect(subtreeText(diagnosis)).toContain(
+      'The latest check ended when this tab left the saved work area',
+    );
+    expect(storage.data.has(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    )).toBe(true);
+    findByAttr(
+      diagnosis,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR,
+    )!.click();
+    expect(account.hasAttribute('hidden')).toBe(true);
+    expect(topbar.innerHTML).toContain('attention-popover');
+    expect(topbar.innerHTML).toContain(
+      'data-phase="awaiting_review_outcome"',
+    );
+    expect(topbar.innerHTML).toContain('data-review-target="server"');
+    expect(storage.data.has(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    )).toBe(false);
+
+    confirm.mockReturnValue(true);
+    topbar.fireClick({ action: 'resolve-recovery-intent-review' });
+    await flush();
+    const retry = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    fixture.hashSource.setHash('#chat');
+    await flush();
+    topbar.fireClick({ action: 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      'data-phase="verification_interrupted"',
+    );
+    expect(topbar.innerHTML).toContain('data-review-target="server"');
+    expect(handle.activeRoute()).toBe('chat');
+
+    // A late answer from the route we left cannot complete the return.
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: retry.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+    expect(topbar.innerHTML).toContain(
+      'data-phase="verification_interrupted"',
+    );
+    expect(handle.activeRoute()).toBe('chat');
+
+    topbar.fireClick({ action: 'resolve-recovery-intent-review' });
+    await flush();
+    const finalRetry = findLatestRpcCall(
+      fixture.transportControls,
+      'collection.contract.listContracts',
+    )!;
+    expect(finalRetry.request_id).not.toBe(retry.request_id);
+    fixture.transportControls.fireMessage({
+      type: 'rpc_result',
+      request_id: finalRetry.request_id,
+      result: { contracts: [], next_cursor: null, total: 0 },
+    });
+    await flush();
+
+    expect(handle.activeRoute()).toBe('contracts');
+    const listTab = findChildrenByAttr(
+      fixture.root,
+      CONTRACTS_ROUTE_LIST_TAB_ATTR,
+    ).find((tab) => tab.getAttribute('aria-selected') === 'true')!;
+    expect(listTab.focusCallCount).toBe(1);
+    expect(listTab.getAttribute(RECOVERY_INTENT_CUE_ATTR)).toBe(
+      'choose_again',
+    );
+    expect(storage.data.has(RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toBe(
+      false,
+    );
+    expect(storage.data.has(
+      RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    )).toBe(false);
     await handle.dispose();
   });
 

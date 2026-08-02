@@ -288,6 +288,7 @@ describe('D-165 contract schema seed', () => {
       'override_policy',
       'owner_operation_policy',
       'contract_scope',
+      'door_execution_policy',
       // D-177 N.3 — session-grant nested shapes (bound recipe identity +
       // batch member), referenced by the extended contract_definition shape.
       'bound_recipe_ref',

@@ -1,14 +1,14 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import type { Schedule } from '@recued/scheduler';
 import { RpcError } from '@recued/contracts';
-import { createScheduleStore } from '../schedule-store.js';
+import { createScheduleStore, type ScheduleStore } from '../schedule-store.js';
 import { createScheduler } from '../scheduler.js';
 import {
   listSchedules, createSchedule, updateSchedule, deleteSchedule,
   type ScheduleHandlerDeps,
 } from '../schedule-handler.js';
-import type { ExecuteHandlerDeps } from '../execute-handler.js';
+import { handleExecute, type ExecuteHandlerDeps } from '../execute-handler.js';
 
 const mkDeps = (): { handler: ScheduleHandlerDeps; db: Database.Database } => {
   const db = new Database(':memory:');
@@ -201,6 +201,16 @@ describe('schedule-handler operations (used by ws rpc)', () => {
 });
 
 describe('scheduler loop', () => {
+  const successfulExecuteResponse = (recipeId: string) => ({
+    recipe_id: recipeId,
+    recipe_hash: 'test-hash',
+    success: true,
+    output: { render: [], sidebar: [] },
+    steps: [],
+    errors: [],
+    duration_ms: 0,
+  });
+
   const mkExecuteDeps = (fired: string[]): ExecuteHandlerDeps => ({
     recipeStore: {
       get: (id: string) => ({ recipe_id: id, steps: [], version: 1 }) as any,
@@ -399,6 +409,118 @@ describe('scheduler loop', () => {
     expect(recipeGetCalls).toBe(1);
   });
 
+  it('re-reads stale list snapshots before an overlapping tick fires a later schedule', async () => {
+    const db = new Database(':memory:');
+    const store = createScheduleStore(db);
+    const boundTime = new Date(2026, 3, 14, 9, 0, 0).getTime();
+    for (const [schedule_id, recipe_id] of [
+      ['a-slow', 'slow-recipe'],
+      ['b-fast', 'fast-recipe'],
+    ]) {
+      store.set({
+        schedule_id,
+        recipe_id,
+        publisher_id: 'me',
+        cron_expression: '0 9 * * *',
+        enabled: true,
+        created_at: 0,
+        last_run_at: null,
+        next_run_at: null,
+        last_status: null,
+        last_error: null,
+      });
+    }
+
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve; });
+    let observeSlow!: () => void;
+    const slowStarted = new Promise<void>((resolve) => { observeSlow = resolve; });
+    let fastCalls = 0;
+    const execute = (async (_deps, request) => {
+      const recipeId = request.recipe_id ?? '';
+      if (recipeId === 'slow-recipe') {
+        observeSlow();
+        await slowGate;
+      } else if (recipeId === 'fast-recipe') {
+        fastCalls += 1;
+      }
+      return successfulExecuteResponse(recipeId);
+    }) as typeof handleExecute;
+    const sched = createScheduler({
+      store,
+      executeDeps: mkExecuteDeps([]),
+      execute,
+      now: () => boundTime,
+    });
+
+    const olderTick = sched.tick();
+    await slowStarted;
+    const newerTick = sched.tick();
+    await newerTick;
+    expect(fastCalls).toBe(1);
+
+    releaseSlow();
+    await olderTick;
+    expect(fastCalls).toBe(1);
+    db.close();
+  });
+
+  it('stop() awaits an older tick after a newer overlapping tick settles', async () => {
+    vi.useFakeTimers();
+    const db = new Database(':memory:');
+    try {
+      const store = createScheduleStore(db);
+      const boundTime = new Date(2026, 3, 14, 9, 0, 0).getTime();
+      store.set({
+        schedule_id: 'a-slow',
+        recipe_id: 'slow-recipe',
+        publisher_id: 'me',
+        cron_expression: '0 9 * * *',
+        enabled: true,
+        created_at: 0,
+        last_run_at: null,
+        next_run_at: null,
+        last_status: null,
+        last_error: null,
+      });
+      let releaseSlow!: () => void;
+      const slowGate = new Promise<void>((resolve) => { releaseSlow = resolve; });
+      let observeSlow!: () => void;
+      const slowStarted = new Promise<void>((resolve) => { observeSlow = resolve; });
+      const execute = (async (_deps, request) => {
+        observeSlow();
+        await slowGate;
+        return successfulExecuteResponse(request.recipe_id ?? '');
+      }) as typeof handleExecute;
+      const sched = createScheduler({
+        store,
+        executeDeps: mkExecuteDeps([]),
+        execute,
+        now: () => boundTime,
+        tickIntervalMs: 100,
+      });
+
+      sched.start();
+      await slowStarted;
+      // The next interval tick sees `a-slow` in `firingNow`, finishes empty,
+      // and must not erase the older tick from the shutdown tracker.
+      await vi.advanceTimersByTimeAsync(100);
+      expect(sched.inFlight()).toBe(true);
+      let stopped = false;
+      const stopping = sched.stop().then(() => { stopped = true; });
+      await Promise.resolve();
+      expect(stopped).toBe(false);
+
+      releaseSlow();
+      await stopping;
+      expect(stopped).toBe(true);
+      expect(sched.inFlight()).toBe(false);
+    } finally {
+      vi.useRealTimers();
+      db.close();
+    }
+  });
+
   it('stop() awaits in-flight tick before resolving', async () => {
     const db = new Database(':memory:');
     const store = createScheduleStore(db);
@@ -438,5 +560,36 @@ describe('scheduler loop', () => {
     expect(firedObserved).toBe(true);
 
     db.close();
+  });
+
+  it('contains and reports a scheduler-owned tick failure while manual tick still rejects', async () => {
+    const failure = new Error('schedule store unavailable');
+    const onBackgroundError = vi.fn();
+    const store: ScheduleStore = {
+      list: () => { throw failure; },
+      listByRecipe: () => [],
+      get: () => null,
+      set: () => {},
+      delete: () => false,
+      updateRun: () => {},
+    };
+    const sched = createScheduler({
+      store,
+      executeDeps: mkExecuteDeps([]),
+      tickIntervalMs: 60_000,
+      onBackgroundError,
+    });
+
+    // Explicit callers retain failure ownership.
+    await expect(sched.tick()).rejects.toBe(failure);
+
+    // start() owns its immediate tick. The same store outage is observable but
+    // cannot escape to the server's process-fatal unhandledRejection listener.
+    sched.start();
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    expect(onBackgroundError).toHaveBeenCalledOnce();
+    expect(onBackgroundError).toHaveBeenCalledWith('background tick failed', failure);
+    await sched.stop();
+    expect(sched.inFlight()).toBe(false);
   });
 });

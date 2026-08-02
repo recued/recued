@@ -34,7 +34,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   SALESFORCE_API_VERSION,
@@ -831,5 +831,66 @@ describe('D-130 P5.2 — wireSalesforceCometDLifecycle store-observer pattern', 
     expect(handle.listActive()).toEqual(['acme']);
 
     await handle.stopAll();
+  });
+
+  it('stopAll closes admission and drains provisioning that has not published a subscriber', async () => {
+    connectionStore.upsert({
+      kind: 'api',
+      name: 'acme',
+      display_name: 'Acme',
+      config_json: JSON.stringify({
+        base_url: INSTANCE_URL,
+        vendor: 'salesforce',
+      }),
+      auth_ciphertext: 'opaque',
+      enrolled_at: 1,
+      updated_at: 1,
+    });
+
+    let releaseLookup!: (record: ConnectionRecord | null) => void;
+    const lookupConnection = vi.fn(() =>
+      new Promise<ConnectionRecord | null>((resolve) => {
+        releaseLookup = resolve;
+      }));
+    const fetcher = vi.fn<typeof fetch>();
+    const handle = wireSalesforceCometDLifecycle({
+      connectionStore,
+      lookupConnection,
+      refreshAuth: async (connection) => connection.auth,
+      replayIdTracker: createInMemoryReplayIdTracker(),
+      onEvent: async () => {},
+      fetcher,
+      sleep: async () => {},
+    });
+
+    let stopped = false;
+    const stopping = handle.stopAll().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    releaseLookup(buildConnection());
+    await stopping;
+    expect(handle.listActive()).toEqual([]);
+    expect(fetcher).not.toHaveBeenCalled();
+
+    // Store observers are process-lifetime. Once stopAll closes lifecycle
+    // admission, a late token refresh/upsert must not restart network work.
+    connectionStore.upsert({
+      kind: 'api',
+      name: 'acme',
+      display_name: 'Acme',
+      config_json: JSON.stringify({
+        base_url: INSTANCE_URL,
+        vendor: 'salesforce',
+      }),
+      auth_ciphertext: 'opaque',
+      enrolled_at: 1,
+      updated_at: 2,
+    });
+    await Promise.resolve();
+    expect(lookupConnection).toHaveBeenCalledTimes(1);
+    expect(handle.listActive()).toEqual([]);
   });
 });

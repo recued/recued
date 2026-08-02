@@ -48,6 +48,11 @@ const DEFAULT_DISPATCH_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_ATTEMPTS = 8;
 const DEFAULT_BASE_RETRY_MS = 1_000;
 const DEFAULT_MAX_RETRY_MS = 15 * 60 * 1_000;
+/** A dispatch can intentionally outlive its polling-pass timeout because the
+ *  underlying recipe/provider work is not safely cancellable. Bound those
+ *  residual promises across passes so a sequence of stuck webhook recipes
+ *  cannot grow retained server work forever. */
+export const WEBHOOK_OUTBOX_MAX_ACTIVE_DISPATCHES = 16;
 
 const withTimeout = async <T>(promise: Promise<T>, timeoutMs: number): Promise<T> => {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -159,8 +164,9 @@ export const dispatchWebhookOutboxOnce = async (
 
 export interface WebhookOutboxRuntime {
   start(): void;
-  /** Stop polling and wait for the active pass to settle before its stores are
-   * closed. Dispatch failures remain owned by the pass/caller. */
+  /** Permanently close admission, stop polling, and wait for the active pass
+   * plus any dispatch that outlived its per-pass timeout before stores close.
+   * Dispatch failures remain owned by the pass/caller. */
   stop(): Promise<void>;
   isStarted(): boolean;
   drainOnce(): Promise<WebhookOutboxDispatchResult>;
@@ -168,6 +174,9 @@ export interface WebhookOutboxRuntime {
 
 export interface WebhookOutboxRuntimeOptions extends WebhookOutboxDispatcherOptions {
   poll_interval_ms?: number;
+  /** Process-local ceiling for recipe dispatches that are still running,
+   *  including calls that outlived `dispatch_timeout_ms`. */
+  max_active_dispatches?: number;
   /** Reconcile already-handed-off owner approvals before considering whether
    * new autonomous work may be claimed. This maintenance pass must not mint or
    * resume runs; it only folds terminal run anchors into existing targets. */
@@ -189,9 +198,28 @@ export const createWebhookOutboxRuntime = (
     || pollIntervalMs > 60_000) {
     throw new Error('webhook outbox runtime: poll_interval_ms must be in 100..60000');
   }
+  const configuredBatchSize = options.batch_size ?? DEFAULT_BATCH_SIZE;
+  if (!Number.isSafeInteger(configuredBatchSize)
+    || configuredBatchSize < 1
+    || configuredBatchSize > 100) {
+    throw new Error('webhook outbox: batch_size must be in 1..100');
+  }
+  const maxActiveDispatches = options.max_active_dispatches
+    ?? WEBHOOK_OUTBOX_MAX_ACTIVE_DISPATCHES;
+  if (!Number.isSafeInteger(maxActiveDispatches)
+    || maxActiveDispatches < 1
+    || maxActiveDispatches > 100) {
+    throw new Error(
+      'webhook outbox runtime: max_active_dispatches must be in 1..100',
+    );
+  }
   let started = false;
+  let accepting = true;
   let timer: ReturnType<typeof setInterval> | null = null;
   let inFlight: Promise<WebhookOutboxDispatchResult> | null = null;
+  let stopPromise: Promise<void> | null = null;
+  const activeDispatches = new Set<Promise<void>>();
+  let saturationReported = false;
 
   const emptyResult = (): WebhookOutboxDispatchResult => ({
     claimed: 0,
@@ -210,10 +238,45 @@ export const createWebhookOutboxRuntime = (
       });
       return emptyResult();
     }
-    return dispatchWebhookOutboxOnce(store, sink, options);
+    const availableDispatches = maxActiveDispatches - activeDispatches.size;
+    if (availableDispatches <= 0) {
+      if (!saturationReported) {
+        saturationReported = true;
+        options.log?.('warn', 'webhook outbox active dispatch ceiling reached', {
+          code: 'active_dispatch_ceiling',
+          active_dispatches: activeDispatches.size,
+          max_active_dispatches: maxActiveDispatches,
+        });
+      }
+      // Do not claim a row merely to reject it locally: that would consume an
+      // attempt and can dead-letter healthy work during transient saturation.
+      return emptyResult();
+    }
+    saturationReported = false;
+    return dispatchWebhookOutboxOnce(store, {
+      dispatch(input) {
+        let task: Promise<void>;
+        try {
+          task = Promise.resolve(sink.dispatch(input));
+        } catch (err) {
+          task = Promise.reject(err);
+        }
+        activeDispatches.add(task);
+        const clear = (): void => { activeDispatches.delete(task); };
+        void task.then(clear, clear);
+        return task;
+      },
+    }, {
+      ...options,
+      // A pass is single-flight and dispatches sequentially. Claiming no more
+      // than the currently free capacity guarantees that every timed-out
+      // underlying task can remain live without exceeding the process cap.
+      batch_size: Math.min(configuredBatchSize, availableDispatches),
+    });
   };
 
   const drainOnce = (): Promise<WebhookOutboxDispatchResult> => {
+    if (!accepting) return Promise.resolve(emptyResult());
     if (inFlight) return inFlight;
     inFlight = runPass()
       .finally(() => {
@@ -224,7 +287,7 @@ export const createWebhookOutboxRuntime = (
 
   return {
     start() {
-      if (started) return;
+      if (started || !accepting) return;
       started = true;
       timer = setInterval(() => {
         void drainOnce().catch(() => {
@@ -235,19 +298,34 @@ export const createWebhookOutboxRuntime = (
       }, pollIntervalMs);
       timer.unref?.();
     },
-    async stop() {
+    stop() {
+      if (stopPromise) return stopPromise;
+      // Close explicit-drain admission synchronously, before awaiting the
+      // polling pass. Otherwise a route/test caller can start fresh SQLite
+      // work in the gap between the pass settling and server persistence close.
+      accepting = false;
       started = false;
       if (timer) clearInterval(timer);
       timer = null;
       const activePass = inFlight;
-      if (activePass) {
-        try {
-          await activePass;
-        } catch {
-          // The polling callback or explicit drain caller owns reporting the
-          // failed pass; shutdown only guarantees that it has settled.
+      stopPromise = (async () => {
+        if (activePass) {
+          try {
+            await activePass;
+          } catch {
+            // The polling callback or explicit drain caller owns reporting the
+            // failed pass; shutdown only guarantees that it has settled.
+          }
         }
-      }
+        // `withTimeout` deliberately releases a polling pass so one slow recipe
+        // does not stall the outbox. The underlying in-process execution is not
+        // cancellable, however, and may still write SQLite. Keep ownership here
+        // until every such residual dispatch settles.
+        while (activeDispatches.size > 0) {
+          await Promise.allSettled([...activeDispatches]);
+        }
+      })();
+      return stopPromise;
     },
     isStarted: () => started,
     drainOnce,

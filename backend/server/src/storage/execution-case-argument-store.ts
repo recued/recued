@@ -91,7 +91,8 @@ export interface CapturedToolArguments {
 
 export interface ExecutionCaseArgumentStore {
   /** Best-effort: returns false when the vault is locked or the row already
-   *  exists. A missed capture costs a future lesson, never a turn. */
+   *  exists, or when its turn/session has already entered the privacy cascade.
+   *  A missed capture costs a future lesson, never a turn. */
   capture(input: CapturedToolArguments): Promise<boolean>;
   /** The only reader, and it exists for tests + a future consumer. */
   listForTurn(
@@ -170,9 +171,27 @@ export const createExecutionCaseArgumentStore = (
   const countAll = db.prepare(
     'SELECT COUNT(*) AS count FROM execution_case_arguments',
   );
+  // Runtime privacy tombstones close the async seal -> sync insert race. They
+  // need not survive restart: an in-flight capture cannot survive the process
+  // that owned its Promise. Keeping them in memory also avoids retaining a new
+  // durable identifier set solely to remember already-forgotten identifiers.
+  const forgottenSessions = new Set<string>();
+  const forgottenTurns = new Map<string, Set<string>>();
+  const isForgotten = (session_id: string, turn_id: string): boolean =>
+    forgottenSessions.has(session_id)
+    || forgottenTurns.get(session_id)?.has(turn_id) === true;
+  const forgetTurn = (session_id: string, turn_id: string): void => {
+    let turns = forgottenTurns.get(session_id);
+    if (!turns) {
+      turns = new Set<string>();
+      forgottenTurns.set(session_id, turns);
+    }
+    turns.add(turn_id);
+  };
 
   return {
     async capture(input) {
+      if (isForgotten(input.session_id, input.turn_id)) return false;
       // ⚠ The ceiling is applied to the PLAINTEXT before sealing: the point is
       // to bound what is retained, and a ciphertext measurement would let an
       // arbitrarily large payload through whenever it compressed well.
@@ -196,6 +215,10 @@ export const createExecutionCaseArgumentStore = (
         // costs a future lesson; the same trade the span anchor already makes.
         return false;
       }
+      // `sealD214Json` yields. Forget can therefore commit while this capture
+      // is encrypting; re-check immediately before the synchronous insert so a
+      // pre-Forget dispatch cannot resurrect arguments afterward.
+      if (isForgotten(input.session_id, input.turn_id)) return false;
       return insert.run({
         capture_id: input.capture_id,
         session_id: input.session_id,
@@ -231,11 +254,19 @@ export const createExecutionCaseArgumentStore = (
         }
       });
       run();
+      // Mark only after the SQL transaction commits. JavaScript cannot
+      // interleave an async capture between this synchronous commit and the
+      // marks, while a failed delete must remain retryable rather than creating
+      // an in-memory-only false success.
+      for (const turn of turns) forgetTurn(turn.session_id, turn.turn_id);
       return removed;
     },
 
     deleteForSession(session_id) {
-      return removeForSession.run(session_id).changes;
+      const removed = removeForSession.run(session_id).changes;
+      forgottenSessions.add(session_id);
+      forgottenTurns.delete(session_id);
+      return removed;
     },
 
     pruneOlderThan(before) {

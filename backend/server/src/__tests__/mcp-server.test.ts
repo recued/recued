@@ -309,6 +309,7 @@ describe('D-196 MCP customer usage metering', () => {
   it('keeps the direct-MCP free classifier closed to setup/status/catalog affordances', () => {
     expect([..._testing.MCP_FREE_CUSTOMER_TOOL_NAMES].sort()).toEqual([
       'catalog.list',
+      'recued_actionStatus',
       'recued_customerStatus',
       'recued_getRecipe',
       'recued_listIngredients',

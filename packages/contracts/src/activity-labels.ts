@@ -96,6 +96,7 @@ type PhaseGActionLabels = {
   connection_mcp: string;
   connection_notification: string;
   connection_credential_persist_failed: string;
+  connection_runtime_base_refresh_ignored: string;
   // D-127 Phase 1.7 — one row per `MailCollection.send` call. Distinct
   // from `connection_notification` so the activity feed surfaces
   // recipe-driven deliverables separately from notification fan-outs.
@@ -179,6 +180,7 @@ export const ACTIVITY_LABELS = {
   connection_mcp: 'MCP connection called',
   connection_notification: 'Notification connection called',
   connection_credential_persist_failed: 'Connection credential not saved',
+  connection_runtime_base_refresh_ignored: 'Connection provider origin ignored',
   mail_send: 'Mail sent',
   'capacity_check.ok': 'Capacity check passed',
   'capacity_check.gap': 'Capacity gap detected',

@@ -306,6 +306,49 @@ describe('D-192 F1 commitment evidence approval lift', () => {
 });
 
 describe('D-192 F1 commitment evidence capture producer', () => {
+  it('unsubscribe closes admission and waits for an admitted proposal', async () => {
+    const { db, close } = tempDb('d192-f1-drain-');
+    const bus = createWarehouseEventBus();
+    const ledger = createCommitmentEvidenceLedger(db);
+    let releaseFire: (() => void) | undefined;
+    const fire = vi.fn<FireCommitmentEvidenceProposal>(() =>
+      new Promise<void>((resolve) => {
+        releaseFire = resolve;
+      }));
+    const off = wireCommitmentEvidenceCapture({
+      bus,
+      getLedger: () => ledger,
+      getRuntime: () => ({
+        fire,
+        resolveVendorRegistry: () => CONNECTION_VENDOR_ENTITIES,
+      }),
+      now: () => NOW,
+    });
+    try {
+      bus.emit(makeDealEvent());
+      expect(fire).toHaveBeenCalledTimes(1);
+
+      let stopped = false;
+      const firstStop = off();
+      expect(off()).toBe(firstStop);
+      const observed = firstStop.then(() => {
+        stopped = true;
+      });
+      await Promise.resolve();
+      expect(stopped).toBe(false);
+
+      bus.emit(makeDealEvent({ record_id: 'deal-after-stop' }));
+      expect(fire).toHaveBeenCalledTimes(1);
+      if (releaseFire === undefined) throw new Error('proposal did not start');
+      releaseFire();
+      await observed;
+    } finally {
+      releaseFire?.();
+      await off();
+      close();
+    }
+  });
+
   it('fires one held proposal for a HubSpot deal next_step value_changed event', () => {
     const h = captureHarness();
     try {

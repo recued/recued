@@ -209,6 +209,20 @@ export type FormSubmissionInsertResult =
   | { readonly row: FormSubmissionSummary }
   | { readonly conflict: 'day_cap' };
 
+/** Result of the atomic per-source rolling-window guard used by intake forms. */
+export type FormSubmissionSourceInsertResult =
+  | { readonly row: FormSubmissionSummary }
+  | {
+      readonly conflict: 'source_rate_limit';
+      /** First instant at which the oldest counted row leaves this window. */
+      readonly retry_after_at: number;
+    };
+
+export interface FormSubmissionSourceWindowUsage {
+  readonly count: number;
+  readonly oldest_submitted_at: number | null;
+}
+
 export interface FormSubmissionStore {
   insert(input: FormSubmissionInsertInput): FormSubmissionSummary;
 
@@ -239,6 +253,20 @@ export interface FormSubmissionStore {
     readonly day_window_start_at: number;
     readonly now: number;
   }): FormSubmissionInsertResult;
+
+  /** Atomically enforce an intake form's per-source rolling-window cap.
+   *
+   *  The submit handler performs a cheap read before encrypting PII, but that
+   *  read cannot be authoritative: encryption yields to the event loop, so two
+   *  requests from one source can both observe the same remaining slot. This
+   *  synchronous transaction re-checks the endpoint-scoped source hash and
+   *  inserts without an interleaving point. */
+  insertIfSourceAvailable(input: FormSubmissionInsertInput & {
+    readonly source_ip_hash: string;
+    readonly max_submissions_per_window: number;
+    readonly window_start_at: number;
+    readonly now: number;
+  }): FormSubmissionSourceInsertResult;
 
   findById(submission_id: string): FormSubmissionSummary | null;
   /** Stable pending page. `after` is an exclusive `(submitted_at,
@@ -290,6 +318,14 @@ export interface FormSubmissionStore {
     window_start_at: number;
     now: number;
   }): number;
+  /** Per-form, per-source rolling-window count. `source_ip_hash` is the
+   *  endpoint-scoped HMAC projection, never the visitor's raw address. */
+  readSourceWindowUsage(input: {
+    endpoint_id: string;
+    source_ip_hash: string;
+    window_start_at: number;
+    now: number;
+  }): FormSubmissionSourceWindowUsage;
   /** D-210 A.8 slice 4b — PARTIAL, and that is a fix, not a refinement.
    *
    *  🔴 This used to be a FULL SET: every caller passing only `outcome` nulled
@@ -625,6 +661,14 @@ export const createReceptionFormSubmissionStore = (
        AND submitted_at >= @window_start_at
   `);
 
+  const readSourceWindowStmt = db.prepare(`
+    SELECT COUNT(*) AS n, MIN(submitted_at) AS oldest_submitted_at
+      FROM reception_form_submission
+     WHERE endpoint_id = @endpoint_id
+       AND source_ip_hash = @source_ip_hash
+       AND submitted_at > @window_start_at
+  `);
+
   // D-210 A.8 slice 4b — PARTIAL. @set_resolved = 0 leaves both columns as they
   // are; = 1 writes them (to values, or to NULL for an explicit clear). See the
   // interface note: the full-set version silently wiped the booking mint's
@@ -735,6 +779,35 @@ export const createReceptionFormSubmissionStore = (
     },
   );
 
+  const insertIfSourceAvailableTxn = db.transaction(
+    (
+      input: FormSubmissionInsertInput & {
+        source_ip_hash: string;
+        max_submissions_per_window: number;
+        window_start_at: number;
+        now: number;
+      },
+    ): FormSubmissionSourceInsertResult => {
+      if (input.max_submissions_per_window > 0) {
+        const usage = readSourceWindowStmt.get({
+          endpoint_id: input.endpoint_id,
+          source_ip_hash: input.source_ip_hash,
+          window_start_at: input.window_start_at,
+        }) as { n: number; oldest_submitted_at: number | null };
+        if (usage.n >= input.max_submissions_per_window) {
+          // `n >= 1` here, so MIN cannot be null for a valid SQLite result.
+          // Keep the fallback fail-safe in case a corrupt adapter violates it.
+          const windowMs = Math.max(1, input.now - input.window_start_at);
+          return {
+            conflict: 'source_rate_limit',
+            retry_after_at: (usage.oldest_submitted_at ?? input.now) + windowMs,
+          };
+        }
+      }
+      return { row: runInsert(input) };
+    },
+  );
+
   return {
     insert(input) {
       return runInsert(input);
@@ -742,6 +815,10 @@ export const createReceptionFormSubmissionStore = (
 
     insertIfAvailable(input) {
       return insertIfAvailableTxn(input);
+    },
+
+    insertIfSourceAvailable(input) {
+      return insertIfSourceAvailableTxn(input);
     },
 
     findById(submission_id) {
@@ -785,6 +862,20 @@ export const createReceptionFormSubmissionStore = (
         window_start_at: input.window_start_at,
       }) as { n: number };
       return row.n;
+    },
+
+    readSourceWindowUsage(input) {
+      // As above, do not add a `submitted_at <= now` bound: an already-committed
+      // row must count even when this request captured an earlier clock.
+      const row = readSourceWindowStmt.get({
+        endpoint_id: input.endpoint_id,
+        source_ip_hash: input.source_ip_hash,
+        window_start_at: input.window_start_at,
+      }) as { n: number; oldest_submitted_at: number | null };
+      return {
+        count: row.n,
+        oldest_submitted_at: row.oldest_submitted_at,
+      };
     },
 
     markProcessed(input) {

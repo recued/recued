@@ -42,8 +42,7 @@ import {
 } from '../instance-store.js';
 import type { CollectionRegistry } from '../registry.js';
 import {
-  pauseCollectionSync,
-  resumeCollectionSync,
+  createCollectionSyncController,
   syncDeferredWhileLocked,
 } from '../vault-gated-sync.js';
 import type { FileReadDeps } from '../file/file-read-handler.js';
@@ -258,6 +257,18 @@ export const composeMailStack = (
   const log: MailStackLogger = options.log ?? (() => {});
   const instances = createInstanceStore({ db });
   const live = new Map<string, MailCollection>();
+  const starts = new Map<string, Promise<void>>();
+  let closed = false;
+  let disposePromise: Promise<void> | null = null;
+
+  const onSyncEdgeError = (message: string, err: unknown): void =>
+    log('warn', `mail-stack: ${message}`, {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  const syncController = createCollectionSyncController(
+    () => live.values(),
+    onSyncEdgeError,
+  );
 
   const oauthConfigFor = (
     provider: 'gmail' | 'graph',
@@ -384,7 +395,8 @@ export const composeMailStack = (
     return null;
   };
 
-  const startLive = async (row: CollectionInstanceRecord): Promise<void> => {
+  const runStartLive = async (row: CollectionInstanceRecord): Promise<void> => {
+    if (closed) return;
     if (live.has(row.slug)) return;
     let provider: MailProvider | null;
     try {
@@ -396,6 +408,10 @@ export const composeMailStack = (
       return;
     }
     if (!provider) return;
+    if (closed) {
+      try { await provider.close(); } catch { /* shutdown containment */ }
+      return;
+    }
 
     let collection: MailCollection;
     try {
@@ -463,7 +479,19 @@ export const composeMailStack = (
     }
   };
 
-  const stopLive = async (slug: string): Promise<void> => {
+  const startLive = (row: CollectionInstanceRecord): Promise<void> => {
+    if (closed) return Promise.resolve();
+    const existing = starts.get(row.slug);
+    if (existing) return existing;
+    let task: Promise<void>;
+    task = runStartLive(row).finally(() => {
+      if (starts.get(row.slug) === task) starts.delete(row.slug);
+    });
+    starts.set(row.slug, task);
+    return task;
+  };
+
+  const stopLive = async (slug: string, failOnError = false): Promise<void> => {
     const collection = live.get(slug);
     if (!collection) return;
     live.delete(slug);
@@ -478,6 +506,7 @@ export const composeMailStack = (
       log('warn', `mail-stack: close failed for '${slug}'`, {
         err: err instanceof Error ? err.message : String(err),
       });
+      if (failOnError) throw err;
     }
   };
 
@@ -497,6 +526,7 @@ export const composeMailStack = (
     ...(bundle.fetcher ? { fetcher: bundle.fetcher } : {}),
     ...(bundle.now ? { now: bundle.now } : {}),
     onEnrolled: async (row: CollectionInstanceRow) => {
+      if (closed) return;
       const full = instances.get('mail', row.slug);
       if (full) await startLive(full);
     },
@@ -504,6 +534,7 @@ export const composeMailStack = (
   };
 
   const startAll = async (): Promise<void> => {
+    if (closed) return;
     const rows = instances.list('mail');
     for (const row of rows) {
       try { await startLive(row); }
@@ -513,27 +544,45 @@ export const composeMailStack = (
     }
   };
 
-  const disposeAll = async (): Promise<void> => {
-    const slugs = [...live.keys()];
-    for (const slug of slugs) {
-      await stopLive(slug);
-    }
+  const disposeAll = (): Promise<void> => {
+    if (disposePromise) return disposePromise;
+    closed = true;
+    const activeStarts = [...starts.values()];
+    // Close vault-edge admission and let its serialized pass interrupt/drain an
+    // admitted provider start before `close()` tears down the live objects.
+    // Starting both concurrently reintroduced the start-vs-stop race this
+    // controller exists to remove.
+    disposePromise = Promise.allSettled([
+      syncController.dispose(),
+      ...activeStarts,
+    ]).then(async (preStopResults) => {
+      const stops = [...live.keys()].map((slug) => stopLive(slug, true));
+      const stopResults = await Promise.allSettled(stops);
+      const results = [...preStopResults, ...stopResults];
+      const failures = results
+        .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+        .map((result) => result.reason);
+      if (failures.length > 0) {
+        throw new AggregateError(failures, 'mail-stack: one or more collections failed to stop');
+      }
+    });
+    return disposePromise;
   };
 
   // R21.1 parity — the vault-gated pause/resume of the live poll loops, driven
   // by the vault-state edges (compose-collection-context). Shared with the
   // calendar stack via `vault-gated-sync`.
-  const onSyncEdgeError = (message: string, err: unknown): void =>
-    log('warn', `mail-stack: ${message}`, {
-      err: err instanceof Error ? err.message : String(err),
-    });
   const resumeSync = (): Promise<void> =>
-    resumeCollectionSync(live.values(), onSyncEdgeError);
+    syncController.resume();
   const pauseSync = (): Promise<void> =>
-    pauseCollectionSync(live.values(), onSyncEdgeError);
+    syncController.pause();
 
   if (options.autoStart) {
-    void startAll();
+    void startAll().catch((err) => {
+      log('error', 'mail-stack: autoStart failed', {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    });
   }
 
   return {

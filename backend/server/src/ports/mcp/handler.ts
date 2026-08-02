@@ -44,6 +44,19 @@ export const MCP_PER_IP_BURST = 20;
 export const MCP_PER_IP_REFILL_WINDOW_MS = 10 * 1000;
 export const MCP_PER_IP_LIMITER_MAX_KEYS = 100_000;
 
+/** Argon2id verification is intentionally memory-hard (~32 MiB per canonical
+ *  client-token attempt). The per-IP rate limiter bounds frequency but rotating
+ *  sources can still arrive simultaneously, so bound the expensive operation
+ *  independently of request rate. */
+export const MCP_MAX_CONCURRENT_VERIFICATIONS = 8;
+
+/** A rate limit cannot bound retained work when a tool call stalls across
+ *  several refill windows. These caps bound authenticated body readers and
+ *  dispatches globally, while keeping one bearer from occupying the whole
+ *  port. */
+export const MCP_MAX_IN_FLIGHT_GLOBAL = 64;
+export const MCP_MAX_IN_FLIGHT_PER_TOKEN = 16;
+
 /** Resolve the client IP for the pre-auth throttle. `X-Forwarded-For` is
  *  trusted ONLY when the operator opts in (`trust_forwarded_for`) — behind
  *  a trusted reverse proxy / Pro tunnel — because a direct listener lets any
@@ -70,6 +83,14 @@ const limiterTokenKey = (token: string): string =>
 /** Per-token verifier. Returns true iff the token is a currently-
  *  valid MCP token for this server. */
 export type McpBearerVerifier = (token: string) => boolean | Promise<boolean>;
+
+/** Resolve the authenticated token's authored concurrent-call ceiling. The
+ *  D-137 inbound-token store carries a 3 / 5 / 10 tier; canonical owner CLI
+ *  tokens have no authored tier and return `undefined`, retaining the port's
+ *  conservative fixed ceiling. This seam runs only after bearer verification. */
+export type McpConcurrencyLimitResolver = (
+  token: string,
+) => number | undefined;
 
 /** Dispatch a JSON-RPC envelope. The handler hands the validated bearer
  *  token to the closure so the dispatcher can derive a per-request
@@ -109,6 +130,14 @@ export interface McpPortHandlerOptions {
    *  proxy / Pro tunnel flip this on at boot so per-IP attribution
    *  survives the hop. */
   trust_forwarded_for?: boolean;
+  /** Concurrency overrides for tests / constrained embeddings. Invalid values
+   *  fall back to the exported defaults. */
+  max_concurrent_verifications?: number;
+  max_in_flight_global?: number;
+  max_in_flight_per_token?: number;
+  /** Late-bound authored limit for this verified bearer. The configured
+   *  `max_in_flight_per_token` remains a hard upper bound. */
+  resolve_concurrency_limit?: McpConcurrencyLimitResolver;
 }
 
 const DEFAULT_MAX_BODY_BYTES = 256 * 1024;
@@ -152,6 +181,72 @@ export const createMcpPortHandler = (
     refill_window_ms: MCP_PER_IP_REFILL_WINDOW_MS,
     max_keys: MCP_PER_IP_LIMITER_MAX_KEYS,
   });
+  const positiveInteger = (value: number | undefined, fallback: number): number => {
+    if (value === undefined || !Number.isFinite(value)) return fallback;
+    const integer = Math.floor(value);
+    return integer >= 1 ? integer : fallback;
+  };
+  const maxConcurrentVerifications = positiveInteger(
+    options.max_concurrent_verifications,
+    MCP_MAX_CONCURRENT_VERIFICATIONS,
+  );
+  const maxInFlightGlobal = positiveInteger(
+    options.max_in_flight_global,
+    MCP_MAX_IN_FLIGHT_GLOBAL,
+  );
+  const maxInFlightPerToken = Math.min(
+    maxInFlightGlobal,
+    positiveInteger(options.max_in_flight_per_token, MCP_MAX_IN_FLIGHT_PER_TOKEN),
+  );
+  let activeVerifications = 0;
+  let activeDispatches = 0;
+  const activeDispatchesByToken = new Map<string, number>();
+
+  const writeOverloaded = (res: ServerResponse, message: string): void => {
+    writeJson(
+      res,
+      503,
+      { error: { code: 'mcp_overloaded', message } },
+      { 'retry-after': '1' },
+    );
+  };
+
+  /** Reserve one authenticated request slot. The returned release is
+   *  idempotent so a future branch cannot underflow the counters. */
+  const admitDispatch = (token: string, res: ServerResponse): (() => void) | null => {
+    const tokenKey = limiterTokenKey(token);
+    const tokenActive = activeDispatchesByToken.get(tokenKey) ?? 0;
+    let tokenLimit = maxInFlightPerToken;
+    try {
+      const authoredLimit = options.resolve_concurrency_limit?.(token);
+      if (authoredLimit !== undefined) {
+        tokenLimit = Math.min(
+          tokenLimit,
+          positiveInteger(authoredLimit, 1),
+        );
+      }
+    } catch {
+      // A limit resolver reads security-relevant token state. A failed read
+      // must not silently widen the caller back to the transport default.
+      writeOverloaded(res, 'MCP concurrency policy is temporarily unavailable.');
+      return null;
+    }
+    if (activeDispatches >= maxInFlightGlobal || tokenActive >= tokenLimit) {
+      writeOverloaded(res, 'Too many MCP calls are already running; retry shortly.');
+      return null;
+    }
+    activeDispatches += 1;
+    activeDispatchesByToken.set(tokenKey, tokenActive + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      activeDispatches -= 1;
+      const remaining = (activeDispatchesByToken.get(tokenKey) ?? 1) - 1;
+      if (remaining > 0) activeDispatchesByToken.set(tokenKey, remaining);
+      else activeDispatchesByToken.delete(tokenKey);
+    };
+  };
 
   // Codex P2 #5 fold — bearer + rate-limit gate that both POST and
   // the catalog GET share. Returns the validated token, or null
@@ -181,7 +276,18 @@ export const createMcpPortHandler = (
       });
       return null;
     }
-    if (!(await verifier(token))) {
+    if (activeVerifications >= maxConcurrentVerifications) {
+      writeOverloaded(res, 'MCP authentication is busy; retry shortly.');
+      return null;
+    }
+    activeVerifications += 1;
+    let verified = false;
+    try {
+      verified = await verifier(token);
+    } finally {
+      activeVerifications -= 1;
+    }
+    if (!verified) {
       writeJson(res, 401, {
         error: { code: 'unauthorized', message: 'invalid token' },
       });
@@ -222,8 +328,14 @@ export const createMcpPortHandler = (
       }
       const token = await gate(req, res);
       if (token === null) return;
-      const result = await catalog(token);
-      writeJson(res, 200, result);
+      const release = admitDispatch(token, res);
+      if (!release) return;
+      try {
+        const result = await catalog(token);
+        writeJson(res, 200, result);
+      } finally {
+        release();
+      }
       return;
     }
 
@@ -248,27 +360,32 @@ export const createMcpPortHandler = (
 
     const token = await gate(req, res);
     if (token === null) return;
-
-    const body = await readBody(req, cap);
-    if (!body) {
-      writeJson(res, 413, { error: { code: 'payload_too_large' } });
-      return;
-    }
-    let envelope: unknown;
+    const release = admitDispatch(token, res);
+    if (!release) return;
     try {
-      envelope = JSON.parse(body.toString('utf-8'));
-    } catch {
-      writeJson(res, 400, { error: { code: 'invalid_json' } });
-      return;
-    }
+      const body = await readBody(req, cap);
+      if (!body) {
+        writeJson(res, 413, { error: { code: 'payload_too_large' } });
+        return;
+      }
+      let envelope: unknown;
+      try {
+        envelope = JSON.parse(body.toString('utf-8'));
+      } catch {
+        writeJson(res, 400, { error: { code: 'invalid_json' } });
+        return;
+      }
 
-    const response = await dispatch(envelope, token);
-    // JSON-RPC notifications (no `id`) return null — write 204.
-    if (response === null || typeof response === 'undefined') {
-      res.statusCode = 204;
-      res.end();
-      return;
+      const response = await dispatch(envelope, token);
+      // JSON-RPC notifications (no `id`) return null — write 204.
+      if (response === null || typeof response === 'undefined') {
+        res.statusCode = 204;
+        res.end();
+        return;
+      }
+      writeJson(res, 200, response);
+    } finally {
+      release();
     }
-    writeJson(res, 200, response);
   };
 };

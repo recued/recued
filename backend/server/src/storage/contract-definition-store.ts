@@ -56,6 +56,7 @@ import {
   scopedContainmentAdmits,
   type BoundRecipeRef,
   type ContractDefinition,
+  type DoorExecutionPolicy,
   type ContractScope,
   type DoorType,
   type RiskTier,
@@ -80,6 +81,8 @@ export interface MintContractInput {
   /** The `(channels × actors × ingredient_ids × operation_ids × connection_names)`
    *  surface the contract authorizes. An empty/absent axis is a wildcard. */
   scope: ContractScope;
+  /** Server-derived per-run limits for a door. Not exposed by the generic owner mint RPC. */
+  door_execution_policy?: DoorExecutionPolicy;
   /** D-187 §6 (step 7) — the level-1 door types this contract may back
    *  (`'mcp'` / `'mcp_chat'`). Omit or `[]` = wildcard (any door type — the
    *  behaviour-preserving default); a non-empty list restricts the contract to
@@ -712,6 +715,9 @@ export const createContractDefinitionStore = (
         minted_by: input.minted_by,
         display_name: input.display_name,
         scope: input.scope,
+        ...(input.door_execution_policy !== undefined
+          ? { door_execution_policy: input.door_execution_policy }
+          : {}),
         ...(input.grant_kind !== undefined
           ? { grant_kind: input.grant_kind }
           : {}),

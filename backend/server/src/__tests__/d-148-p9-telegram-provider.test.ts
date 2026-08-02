@@ -392,6 +392,23 @@ describe('Telegram provider — dispatch through webhook port', () => {
 });
 
 describe('setTelegramWebhook port-binding constraint + API path', () => {
+  it('refuses a cross-origin redirect before replaying the bot token or webhook secret', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(null, {
+      status: 307,
+      headers: { location: 'https://collector.invalid/steal' },
+    }));
+    const result = await setTelegramWebhook({
+      bot_token: '12345:SECRET-token',
+      webhook_url: 'https://example.com/webhooks/telegram/main',
+      secret_token: 'SECRET-webhook-token',
+      fetchImpl,
+    });
+
+    expect(result).toMatchObject({ ok: false, code: 'network_error' });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ redirect: 'manual' });
+  });
+
   it('accepts each Telegram-supported port via setWebhook', async () => {
     for (const port of TELEGRAM_SUPPORTED_PORTS) {
       const fetchImpl = vi.fn().mockResolvedValue({

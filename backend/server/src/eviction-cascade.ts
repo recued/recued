@@ -107,7 +107,7 @@ export interface ReclaimSummary {
   bytes_freed: number;
   steps_run: string[];
   success: boolean;
-  reason_if_skipped?: 'debounced' | 'coalesced' | 'no_such_surface' | 'not_evictable';
+  reason_if_skipped?: 'debounced' | 'coalesced' | 'no_such_surface' | 'not_evictable' | 'closed';
   duration_ms: number;
 }
 
@@ -115,9 +115,10 @@ export interface EvictionCascade {
   /** Run reclaim on a specific surface now. `force: true` bypasses the
    *  debounce but still respects in-flight coalescing. */
   reclaim(surface: string, opts?: { force?: boolean }): Promise<ReclaimSummary>;
-  /** Detach — removes the cascade's event listeners from every gate.
+  /** Detach and drain — removes the cascade's event listeners from every gate,
+   *  rejects new reclaim admission, and waits for active passes to finish.
    *  For tests + graceful shutdown. */
-  close(): void;
+  close(): Promise<void>;
 }
 
 const EVICTABLE_SURFACES = new Set(['cache', 'audit', 'shared_store']);
@@ -158,12 +159,32 @@ export const createEvictionCascade = (
   const inflight = new Map<string, Promise<ReclaimSummary>>();
   const lastRun = new Map<string, { at: number; usedAtRun: number }>();
   const unsubscribes: Array<() => void> = [];
+  let closed = false;
+  let closePromise: Promise<void> | undefined;
 
   const runReclaim = async (
     surface: string,
     opts: { force?: boolean } = {},
   ): Promise<ReclaimSummary> => {
     const start = now();
+
+    if (closed) {
+      return {
+        surface, ran: false, bytes_freed: 0, steps_run: [],
+        success: false, reason_if_skipped: 'closed',
+        duration_ms: 0,
+      };
+    }
+
+    // Coalescing is an admission rule, not a debounce exception. In
+    // particular, `force` may bypass the cooldown but must never start a
+    // second pass over the same rows / blobs while one is active.
+    const existing = inflight.get(surface);
+    if (existing) {
+      const result = await existing;
+      return { ...result, ran: false, reason_if_skipped: 'coalesced' };
+    }
+
     const cfg = deps.config();
 
     const gate = deps.registry.get(surface);
@@ -205,17 +226,11 @@ export const createEvictionCascade = (
       }
     }
 
-    // Coalesce.
-    const existing = inflight.get(surface);
-    if (existing && !opts.force) {
-      const result = await existing;
-      return { ...result, reason_if_skipped: 'coalesced' };
-    }
-
-    const run = runPipeline(surface, gate, cfg, start);
-    inflight.set(surface, run);
-    try {
-      const summary = await run;
+    // The tracked unit includes persistence + audit finalization, not merely
+    // the eviction pipeline. Shutdown must not close SQLite after the rows or
+    // blobs are done while a last_reclaim / activity write is still pending.
+    const run = (async (): Promise<ReclaimSummary> => {
+      const summary = await runPipeline(surface, gate, cfg, start);
       lastRun.set(surface, { at: start, usedAtRun: gate.info().used });
       // Persist last_reclaim + conditionally clear entered_at when
       // the gate is back to `running`.
@@ -238,8 +253,14 @@ export const createEvictionCascade = (
         detail: `bytes_freed=${summary.bytes_freed} steps=${summary.steps_run.join(',')} success=${summary.success}`,
       });
       return summary;
+    })();
+    inflight.set(surface, run);
+    try {
+      return await run;
     } finally {
-      inflight.delete(surface);
+      // Do not let an older pass erase newer tracking if this invariant is
+      // ever relaxed in the future.
+      if (inflight.get(surface) === run) inflight.delete(surface);
     }
   };
 
@@ -403,8 +424,19 @@ export const createEvictionCascade = (
       return runReclaim(surface, opts);
     },
     close() {
-      for (const un of unsubscribes) un();
+      if (closePromise) return closePromise;
+
+      // Set the admission latch synchronously, before detaching listeners or
+      // snapshotting work, so no reclaim can enter outside the drain set.
+      closed = true;
+      for (const un of unsubscribes) {
+        try { un(); } catch { /* best-effort listener cleanup */ }
+      }
       unsubscribes.length = 0;
+
+      const active = [...new Set(inflight.values())];
+      closePromise = Promise.allSettled(active).then(() => undefined);
+      return closePromise;
     },
   };
 };

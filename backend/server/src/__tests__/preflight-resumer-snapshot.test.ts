@@ -135,6 +135,8 @@ const executeDeps = (): ExecuteHandlerDeps => ({
 const expectResumeRefused = async (
   cp: Checkpoint,
   anchor: AuditEntry = pausedAnchor(),
+  reason: 'checkpoint_integrity_failed' | 'checkpoint_provenance_failed' =
+    'checkpoint_provenance_failed',
 ): Promise<void> => {
   const log = auditLog();
   const writtenAnchor = await append(log, anchor);
@@ -153,7 +155,19 @@ const expectResumeRefused = async (
   expect(getExecuteDepsCount).toBe(1);
   expect(getExecuteDeps).toHaveBeenCalledTimes(1);
   expect(handleExecuteMock).not.toHaveBeenCalled();
-  expect(await log.get('run-1')).toEqual(writtenAnchor);
+  const terminal = await log.get('run-1');
+  expect(terminal).toMatchObject({
+    run_id: writtenAnchor.run_id,
+    recipe_id: writtenAnchor.recipe_id,
+    recipe_hash: writtenAnchor.recipe_hash,
+    commit_status: 'failed',
+    errors: [{
+      code: 'RECIPE_VALIDATION_FAILED',
+      details: { reason },
+    }],
+  });
+  expect(terminal?.started_at).toBe(writtenAnchor.started_at);
+  expect(terminal?.checkpoint_id).toBeUndefined();
 };
 
 let warnSpy: ReturnType<typeof vi.spyOn> | undefined;
@@ -187,6 +201,7 @@ describe('PreflightResumer.resumeRun inline recipe_snapshot guards', () => {
         recipe_snapshot: snapshotRecord(snapshot),
       }),
       pausedAnchor({ recipe_hash: 'different-hash' }),
+      'checkpoint_integrity_failed',
     );
   });
 
@@ -215,15 +230,24 @@ describe('PreflightResumer.resumeRun inline recipe_snapshot guards', () => {
     const snapshot = recipeSnapshot({
       recipe_id: `${COMPENSATION_RECIPE_ID_PREFIX}other-commit`,
     });
+    let tickingNow = NOW;
+    const nowSpy = vi.spyOn(Date, 'now').mockImplementation(() => {
+      tickingNow += 1;
+      return tickingNow;
+    });
 
-    await expectResumeRefused(
-      checkpoint({
-        recipe_id: snapshot.recipe_id,
-        recipe_snapshot: snapshotRecord(snapshot),
-        predecessor_commit_id: 'commit-create-1',
-      }),
-      pausedAnchor({ recipe_hash: hashRecipe(snapshot) }),
-    );
+    try {
+      await expectResumeRefused(
+        checkpoint({
+          recipe_id: snapshot.recipe_id,
+          recipe_snapshot: snapshotRecord(snapshot),
+          predecessor_commit_id: 'commit-create-1',
+        }),
+        pausedAnchor({ recipe_hash: hashRecipe(snapshot) }),
+      );
+    } finally {
+      nowSpy.mockRestore();
+    }
   });
 
   it('reaches handleExecute when predecessor_commit_id and recipe_snapshot hash both match', async () => {

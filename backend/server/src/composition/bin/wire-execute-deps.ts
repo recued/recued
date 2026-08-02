@@ -56,6 +56,7 @@ import type {
 import type { PreflightAskContext, PreflightResumer } from '@recued/gateway';
 import type { ReceptionInboxFanoutMode } from '@recued/contracts';
 import type { ExecuteHandlerDeps } from '../../execute-handler.js';
+import type { McpActionStore } from '../../mcp-action-store.js';
 import type { WorkEntitySourceWriteExecutor } from '../../work-entity-write-executor.js';
 import type { EventBus } from '../../events/bus.js';
 import type { RecipeStore } from '../../recipe-store.js';
@@ -149,6 +150,7 @@ export interface ComposeExecuteDepsDeps {
   enrichmentStore: EnrichmentStore | undefined;
   commitStore: CommitStore | undefined;
   checkpointStore: CheckpointStore | undefined;
+  mcpActionStore?: McpActionStore;
   /** Notification-block prereq beyond the four executeDeps shares above
    *  (db / auditLog / checkpointStore). Helper composes the block only
    *  when all four are present together. ALSO forwarded onto
@@ -483,6 +485,7 @@ export const composeExecuteDeps = (
       db: deps.db,
       auditLog: deps.auditLog,
       checkpointStore: deps.checkpointStore,
+      ...(deps.mcpActionStore ? { mcpActionStore: deps.mcpActionStore } : {}),
       annotationStore: deps.annotationStore,
       eventBus: deps.eventBus,
       getExecuteDeps: deps.getExecuteDeps,
@@ -809,6 +812,7 @@ export const composeExecuteDeps = (
     // `awaiting_approval`. Absent (no db) ⇒ a paused run is reported in
     // the response but no checkpoint persists — the run cannot resume.
     ...(deps.checkpointStore ? { checkpointStore: deps.checkpointStore } : {}),
+    ...(deps.mcpActionStore ? { mcpActionStore: deps.mcpActionStore } : {}),
     // D-157 server-wiring — the D-158 notification block, threaded as
     // the preflight notifier. `execute-handler` calls `raisePreflightAsk`
     // on this dep when the engine pauses on a policy `ask`; the

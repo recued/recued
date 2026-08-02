@@ -1,6 +1,6 @@
 /** D-163 inbound-answer-dispatcher slice — replaces the log-and-drop
  *  stubs in `composeVendorWebhookPort` with handlers that route the
- *  Slack `block_actions` / Telegram `callback_query` callback payloads
+ *  registry-declared messenger callback payloads
  *  through the matching `RemoteChannel.parseInboundReply` into
  *  `block.submitAnswer`.
  *
@@ -17,7 +17,7 @@
  *  Routing path per event:
  *    1. `parseInboundReply(payload)` on the matching channel. Returns
  *       null for any payload that is not a recognizable option
- *       selection (Slack `event_callback`, Telegram message updates,
+ *       selection (plain message events, control events,
  *       malformed envelopes — all fall through to log-and-drop).
  *    2. On a non-null reply, `await block.submitAnswer(reply)`. The
  *       block dedups (first-answer-wins, I-6), validates the option
@@ -238,7 +238,7 @@ export const composeInboundAnswerDispatcher = (
         ? await messengerLiveControl.handleControlPress(vendor, connection_name, payload)
         : await messengerLiveControl.handleCommand(vendor, connection_name, payload);
     } catch (e) {
-      log?.('warn', `webhook inbound (${vendor}) — live-control ${kind} threw`, {
+      log?.('warn', `messenger inbound (${vendor}) — live-control ${kind} threw`, {
         connection_name,
         error: e instanceof Error ? e.message : String(e),
       });
@@ -259,7 +259,7 @@ export const composeInboundAnswerDispatcher = (
     try {
       return await messengerTurnIngest(vendor, connection_name, payload);
     } catch (e) {
-      log?.('warn', `webhook inbound (${vendor}) — messenger turn ingest threw`, {
+      log?.('warn', `messenger inbound (${vendor}) — messenger turn ingest threw`, {
         connection_name,
         error: e instanceof Error ? e.message : String(e),
       });
@@ -283,7 +283,7 @@ export const composeInboundAnswerDispatcher = (
     } catch (e) {
       // A parser throw on an exotic payload must never 502 the webhook
       // (the vendor would retry a payload that can never parse).
-      log?.('warn', `webhook inbound (${vendor}) — parseInboundMessage threw`, {
+      log?.('warn', `messenger inbound (${vendor}) — parseInboundMessage threw`, {
         connection_name,
         error: e instanceof Error ? e.message : String(e),
       });
@@ -348,13 +348,13 @@ export const composeInboundAnswerDispatcher = (
         try {
           await ack(payload, connection_name);
         } catch (e) {
-          log?.('warn', `webhook inbound (${vendor}) — live-control ack failed`, {
+          log?.('warn', `messenger inbound (${vendor}) — live-control ack failed`, {
             connection_name,
             error: e instanceof Error ? e.message : String(e),
           });
         }
       }
-      log?.('info', `webhook inbound (${vendor}) — live-control press handled`, {
+      log?.('info', `messenger inbound (${vendor}) — live-control press handled`, {
         connection_name,
         ...idLog,
       });
@@ -364,14 +364,14 @@ export const composeInboundAnswerDispatcher = (
     // is consumed BEFORE the messenger turn (the LLM never sees it). Self-
     // guarding: returns false for any non-command message / callback shape.
     if (await offerLiveControl('command', vendor, connection_name, payload)) {
-      log?.('info', `webhook inbound (${vendor}) — live-control command handled`, {
+      log?.('info', `messenger inbound (${vendor}) — live-control command handled`, {
         connection_name,
         ...idLog,
       });
       return;
     }
     if (!channel) {
-      log?.('info', `webhook inbound (${vendor}) — no channel adapter wired`, {
+      log?.('info', `messenger inbound (${vendor}) — no channel adapter wired`, {
         connection_name,
         ...idLog,
       });
@@ -386,7 +386,7 @@ export const composeInboundAnswerDispatcher = (
       // shape so trace continuity holds.
       const emitted = emitInboundMessage(vendor, connection_name, channel, payload);
       const turnQueued = await offerMessengerTurn(vendor, connection_name, payload);
-      log?.('info', emitted ? `webhook inbound (${vendor}) — message event emitted` : `webhook inbound (${vendor})`, {
+      log?.('info', emitted ? `messenger inbound (${vendor}) — message event emitted` : `messenger inbound (${vendor})`, {
         connection_name,
         ...idLog,
         ...(turnQueued ? { messenger_turn: 'queued' } : {}),
@@ -394,7 +394,7 @@ export const composeInboundAnswerDispatcher = (
       return;
     }
     if (!block) {
-      log?.('info', `webhook inbound (${vendor}) — ask callback dropped, no block wired`, {
+      log?.('info', `messenger inbound (${vendor}) — ask callback dropped, no block wired`, {
         ask_id: reply.ask_id,
         option: reply.option,
       });
@@ -412,7 +412,7 @@ export const composeInboundAnswerDispatcher = (
       try {
         await ack(payload, connection_name);
       } catch (e) {
-        log?.('warn', `webhook inbound (${vendor}) — answerCallbackQuery failed`, {
+        log?.('warn', `messenger inbound (${vendor}) — answerCallbackQuery failed`, {
           ask_id: reply.ask_id,
           connection_name,
           error: e instanceof Error ? e.message : String(e),
@@ -430,8 +430,6 @@ export const composeInboundAnswerDispatcher = (
   const messengerDispatchers: Record<string, MessengerWebhookDispatch> = {};
   for (const vendor of listMessengerVendors()) {
     const id_field = getMessengerVendorDeclaration(vendor)?.ingress.id_field;
-    // A non-webhook ingress (`socket` / `poll`) declares no id field and has no
-    // webhook dispatcher to build — it arrives by another path entirely.
     if (id_field === undefined) continue;
     messengerDispatchers[vendor] = (event) => {
       // The id rides on the provider event under its declared key; the read is

@@ -100,7 +100,7 @@ export const classifyS3Error = (err: unknown, path: string): FileAdapterError =>
   if (code === 'AccessDenied' || status === 403 || status === 401) {
     return new FileAdapterError('permission_denied', `s3 refused access to '${path}'`, err);
   }
-  if (code === 'TOO_LARGE') {
+  if (code === 'TOO_LARGE' || code === 'EntityTooLarge') {
     return new FileAdapterError('too_large', err.message, err);
   }
   return new FileAdapterError('io_error', `s3 op failed for '${path}': ${err.message}`, err);

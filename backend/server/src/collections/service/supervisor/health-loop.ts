@@ -31,8 +31,8 @@ export interface HealthLoop {
    *  `stop()` is called. Re-entrant — calling `start()` on an
    *  already-running loop is a no-op. */
   start(): void;
-  /** Cancel the pending tick (if any). In-flight ticks finish. */
-  stop(): void;
+  /** Cancel the pending tick and wait for an in-flight check + state write. */
+  stop(): Promise<void>;
   /** True iff a tick is scheduled or in flight. */
   isRunning(): boolean;
 }
@@ -68,7 +68,7 @@ export const createHealthLoop = (
   ctx: HealthLoopContext,
 ): HealthLoop => {
   let timer: NodeJS.Timeout | null = null;
-  let inFlight = false;
+  let inFlight: Promise<void> | null = null;
   let stopped = false;
   const interval = Math.max(
     instance.health_check_interval_ms,
@@ -84,9 +84,12 @@ export const createHealthLoop = (
       stopped = true;
       return;
     }
-    inFlight = true;
     try {
       const result = await ctx.runCheck(instance.health_check, instance.config);
+      // stop() closes persistence admission before waiting for an active
+      // provider check. The check may outlive the lifecycle step timeout, so a
+      // late result must not touch state or audit after close_db.
+      if (stopped) return;
       const newState: ServiceHealthState = result.passed ? 'healthy' : 'unhealthy';
       const prior = ctx.stateStore.get(instance.slug);
       const priorState: ServiceHealthState = prior?.last_health_state ?? 'unknown';
@@ -108,6 +111,7 @@ export const createHealthLoop = (
         );
       }
     } catch (err) {
+      if (stopped) return;
       // Check throwing is a loop-level bug, not a service fault —
       // treat as unhealthy for this tick and move on. The caller
       // sees the state flip in the state row + an audit event with
@@ -129,29 +133,46 @@ export const createHealthLoop = (
           ctx.now(),
         );
       }
-    } finally {
-      inFlight = false;
     }
     if (!stopped) {
-      timer = ctx.setTimeout(() => { void tick(); }, interval);
+      timer = ctx.setTimeout(runTick, interval);
     }
+  };
+
+  const runTick = (): void => {
+    timer = null;
+    if (stopped || inFlight) return;
+    let active: Promise<void>;
+    active = tick()
+      .catch((err) => {
+        // `tick` already maps checker failures to unhealthy. Reaching this
+        // catch means the state/audit substrate itself failed; contain the
+        // timer rejection while leaving an operator-visible diagnostic.
+        console.warn(`[service-health] tick failed for '${instance.slug}'`, err);
+      })
+      .finally(() => {
+        if (inFlight === active) inFlight = null;
+      });
+    inFlight = active;
   };
 
   return {
     start(): void {
-      if (timer !== null || inFlight) return;
+      if (timer !== null || inFlight !== null) return;
       stopped = false;
-      timer = ctx.setTimeout(() => { void tick(); }, interval);
+      timer = ctx.setTimeout(runTick, interval);
     },
-    stop(): void {
+    async stop(): Promise<void> {
       stopped = true;
       if (timer !== null) {
         ctx.clearTimeout(timer);
         timer = null;
       }
+      const active = inFlight;
+      if (active) await active;
     },
     isRunning(): boolean {
-      return timer !== null || inFlight;
+      return timer !== null || inFlight !== null;
     },
   };
 };
@@ -161,35 +182,41 @@ export const createHealthLoop = (
  *  so loops come up with the service and die with it. */
 export interface HealthLoopRegistry {
   add(instance: ServiceInstanceSpec): void;
-  remove(slug: string): void;
+  remove(slug: string): Promise<void>;
   has(slug: string): boolean;
-  stopAll(): void;
+  stopAll(): Promise<void>;
 }
 
 export const createHealthLoopRegistry = (
   ctx: HealthLoopContext,
 ): HealthLoopRegistry => {
   const loops = new Map<string, HealthLoop>();
+  let closed = false;
   return {
     add(instance): void {
-      if (!instance.health_check) return;
+      if (closed || !instance.health_check) return;
       if (loops.has(instance.slug)) return;
       const loop = createHealthLoop(instance, ctx);
       loops.set(instance.slug, loop);
       loop.start();
     },
-    remove(slug): void {
+    async remove(slug): Promise<void> {
       const loop = loops.get(slug);
       if (!loop) return;
-      loop.stop();
       loops.delete(slug);
+      await loop.stop();
     },
     has(slug): boolean {
       return loops.has(slug);
     },
-    stopAll(): void {
-      for (const loop of loops.values()) loop.stop();
+    async stopAll(): Promise<void> {
+      // Close admission before the first await. An already-admitted RPC can
+      // otherwise re-add a loop after this snapshot and leave a timer running
+      // beyond the lifecycle's pause_collections step.
+      closed = true;
+      const active = [...loops.values()];
       loops.clear();
+      await Promise.all(active.map((loop) => loop.stop()));
     },
   };
 };

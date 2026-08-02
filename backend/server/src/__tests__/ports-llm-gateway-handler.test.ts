@@ -24,6 +24,7 @@ import {
   createLlmGatewayDirectCompletionProvider,
   createLlmGatewayPortHandler,
   createLlmGatewaySharedChatCompletionProvider,
+  LLM_GATEWAY_MAX_IN_FLIGHT_GLOBAL,
   listLlmGatewayCallableRecipeNames,
   resolveLlmGatewayRoute,
   type LlmGatewayCompletionProvider,
@@ -174,6 +175,17 @@ const makeBody = (overrides: Record<string, unknown> = {}): string =>
     messages: [{ role: 'user', content: 'hi' }],
     ...overrides,
   });
+
+const deferred = <T>() => {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+};
+
+const flush = async (): Promise<void> => {
+  await new Promise<void>((resolve) => { setImmediate(resolve); });
+};
 
 const makeSellerSettings = (
   overrides: Partial<SellerSettings> = {},
@@ -413,6 +425,139 @@ describe('createLlmGatewayPortHandler', () => {
 
     expect(res.statusCode).toBe(200);
     expect(provider.complete).not.toHaveBeenCalled();
+  });
+
+  it('enforces the verified token authored concurrent-call tier and releases it', async () => {
+    const blocked = deferred<void>();
+    const threeStarted = deferred<void>();
+    let starts = 0;
+    const provider = makeProvider(async () => {
+      starts += 1;
+      if (starts === 3) threeStarted.resolve();
+      await blocked.promise;
+      return { content: 'bounded completion' };
+    });
+    const handler = createLlmGatewayPortHandler(makeDeps({
+      provider,
+      token: makeToken({ concurrency_tier: 3 }),
+    }));
+    const fire = () => {
+      const res = new FakeRes();
+      const pending = handler(
+        buildReq({ body: makeBody() }),
+        res as unknown as ServerResponse,
+      );
+      return { pending, res };
+    };
+
+    const admitted = [fire(), fire(), fire()];
+    await threeStarted.promise;
+    const overflow = fire();
+    await flush();
+    blocked.resolve();
+    await Promise.all([...admitted.map((call) => call.pending), overflow.pending]);
+
+    expect(overflow.res.statusCode).toBe(503);
+    expect(json<{ error: { code: string } }>(overflow.res).error.code)
+      .toBe('llm_gateway_overloaded');
+    expect(overflow.res.headers['retry-after']).toBe('1');
+    expect(provider.complete).toHaveBeenCalledTimes(3);
+
+    const afterRelease = fire();
+    await afterRelease.pending;
+    expect(afterRelease.res.statusCode).toBe(200);
+    expect(provider.complete).toHaveBeenCalledTimes(4);
+  });
+
+  it('bounds completions across tokens while leaving model discovery free', async () => {
+    const blocked = deferred<void>();
+    const twoStarted = deferred<void>();
+    let starts = 0;
+    const provider = makeProvider(async () => {
+      starts += 1;
+      if (starts === 2) twoStarted.resolve();
+      await blocked.promise;
+      return { content: 'globally bounded completion' };
+    });
+    const deps = makeDeps({
+      provider,
+      max_in_flight_global: 2,
+      inboundTokenStore: {
+        verifyBearer: vi.fn(({ bearer }: { bearer: string }) => makeToken({
+          token_id: `token-${bearer}`,
+          concurrency_tier: 10,
+        })),
+      },
+    });
+    const handler = createLlmGatewayPortHandler(deps);
+    const fire = (bearer: string) => {
+      const res = new FakeRes();
+      const pending = handler(
+        buildReq({
+          body: makeBody(),
+          headers: { authorization: `Bearer ${bearer}` },
+        }),
+        res as unknown as ServerResponse,
+      );
+      return { pending, res };
+    };
+
+    const first = fire('a');
+    const second = fire('b');
+    await twoStarted.promise;
+
+    const modelsRes = new FakeRes();
+    await handler(
+      buildReq({
+        url: '/v1/models',
+        method: 'GET',
+        headers: { authorization: 'Bearer c' },
+      }),
+      modelsRes as unknown as ServerResponse,
+    );
+    expect(modelsRes.statusCode).toBe(200);
+
+    const overflow = fire('c');
+    await flush();
+    blocked.resolve();
+    await Promise.all([first.pending, second.pending, overflow.pending]);
+    expect(overflow.res.statusCode).toBe(503);
+    expect(provider.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it('settles an aborted body and returns its completion slot', async () => {
+    const provider = makeProvider();
+    const handler = createLlmGatewayPortHandler(makeDeps({
+      provider,
+      max_in_flight_global: 1,
+    }));
+    const stream = new PassThrough() as unknown as IncomingMessage;
+    (stream as unknown as { url: string }).url = '/v1/chat/completions';
+    (stream as unknown as { method: string }).method = 'POST';
+    (stream as unknown as { headers: Record<string, string> }).headers = {
+      authorization: 'Bearer bearer-1',
+    };
+    const abortedRes = new FakeRes();
+    const aborted = handler(stream, abortedRes as unknown as ServerResponse);
+    await flush();
+    stream.emit('aborted');
+    await aborted;
+
+    expect(abortedRes.statusCode).toBe(400);
+    expect(json<{ error: { code: string } }>(abortedRes).error.code)
+      .toBe('request_aborted');
+    expect(provider.complete).not.toHaveBeenCalled();
+
+    const nextRes = new FakeRes();
+    await handler(
+      buildReq({ body: makeBody() }),
+      nextRes as unknown as ServerResponse,
+    );
+    expect(nextRes.statusCode).toBe(200);
+  });
+
+  it('publishes a conservative process-wide completion ceiling', () => {
+    expect(LLM_GATEWAY_MAX_IN_FLIGHT_GLOBAL).toBe(32);
   });
 
   it('returns an OpenAI chat completion and ignores request model for routing', async () => {

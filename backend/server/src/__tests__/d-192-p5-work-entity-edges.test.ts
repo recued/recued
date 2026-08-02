@@ -177,7 +177,7 @@ const seedSyncState = (
     last_error_message: null,
     degraded: false,
     list_complete: true,
-    stale_after_ms: declaration.sync.stale_after_ms,
+    stale_after_ms: declaration.sync.stale_after_ms!,
   });
 };
 

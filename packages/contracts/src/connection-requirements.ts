@@ -1,5 +1,5 @@
 /** D-194 — Pack-Driven Connection Enrollment: the `connection_requirements`
- *  manifest descriptor + its interim compile-time seed.
+ *  manifest descriptor + its legacy compile-time fallback.
  *
  *  A first-party pack that "claims" a capability (a file kind / app-pack ops)
  *  declares, per connection it needs, a small NON-SECRET descriptor: the API
@@ -9,16 +9,15 @@
  *  credential METHOD (`auth` — §5). The install screen reads it to offer an
  *  inline "Connect account" that fast-tracks the existing BYO enrollment.
  *
- *  This file ships the CONTRACT SURFACE (types + shape validator) plus the
- *  interim seed home. Until D-166's install planner lets a pack contribute its
- *  descriptor at install, the descriptor is seeded first-party at compile time
- *  exactly as `CONNECTION_VENDOR_PROVIDERS` / `VENDOR_CONNECTION_SCHEMAS` are
- *  today (`CONNECTION_REQUIREMENT_SEED` below). The descriptor's TRUST comes
- *  from the compiled-in vendor leaf it binds to by slug (Tier-3, §2), not from
- *  a review of the descriptor.
+ *  The install planner now reads the pack-carried descriptor directly. This
+ *  file also retains `CONNECTION_REQUIREMENT_SEED` as a compatibility fallback
+ *  for consumers loading an older manifest with the field absent; every shipped
+ *  first-party pack, including OneDrive, carries the field today. Descriptor
+ *  TRUST comes from the compiled-in vendor leaf it binds to by slug (Tier-3,
+ *  §2), not from a review of the descriptor.
  *
  *  Spec: D-194 §4 (the manifest block) / §5 (the auth union) /
- *  §11 (the interim seed). The manifest field + its first-party validator gate
+ *  §11 (the original seed). The manifest field + its first-party validator gate
  *  live on `BulkPackManifest` (`bulk-pack.ts`).
  */
 
@@ -421,7 +420,7 @@ export const findEndpointCandidates = (
 };
 
 // ────────────────────────────────────────────────────────────────
-// Interim compile-time seed (§11) — migrates to pack-contributed at D-166
+// Legacy compile-time fallback (§11) — pack-carried descriptors are authoritative
 // ────────────────────────────────────────────────────────────────
 
 /** OneDrive connection requirement — the SAME data the compiled-in file leaf's
@@ -442,11 +441,11 @@ const ONEDRIVE_CONNECTION_REQUIREMENT: ConnectionRequirement = {
   },
 };
 
-/** Interim compile-time seed: first-party pack SLUG → the connection
- *  requirements it needs. The home for pack connection descriptors until
- *  D-166's install planner lets a pack carry `connection_requirements[]` in its
- *  own manifest; mirrors how `CONNECTION_VENDOR_PROVIDERS` seeds vendor
- *  providers today (§4/§11). Append-only during pre-launch. */
+/** Legacy compile-time fallback: first-party pack SLUG → the connection
+ *  requirements it needs when an older manifest omits
+ *  `connection_requirements[]`. Shipped manifests now carry their descriptor
+ *  directly; keep this fallback synchronized until its remaining consumers can
+ *  drop pre-migration compatibility. */
 export const CONNECTION_REQUIREMENT_SEED: Readonly<
   Record<string, ReadonlyArray<ConnectionRequirement>>
 > = {
@@ -463,7 +462,7 @@ export const getSeededConnectionRequirements = (
 ): ReadonlyArray<ConnectionRequirement> =>
   Object.prototype.hasOwnProperty.call(seed, slug) ? seed[slug] : [];
 
-// Boot-time self-check — the interim seed must satisfy the SAME shape rules the
+// Boot-time self-check — the fallback must satisfy the SAME shape rules the
 // manifest validator enforces, so a first-party descriptor can never drift into
 // an invalid shape (mirrors `CONNECTION_VENDOR_PROVIDERS`' boot validation at
 // module load). Throws loudly at import if a seed entry is malformed.

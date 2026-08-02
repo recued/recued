@@ -22,7 +22,11 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
-import type { ContractDefinition, ReceptionOrderContext } from '@recued/contracts';
+import type {
+  ContractDefinition,
+  ReceptionOrderContext,
+  RecipeDefinition,
+} from '@recued/contracts';
 
 import { createSellerStore, type SellerStore } from '../storage/seller-store.js';
 import {
@@ -73,13 +77,19 @@ vi.mock('../execute-handler.js', async (orig) => {
   };
 });
 
-const runner = (config: Record<string, unknown> | undefined, withSeller = true) => {
+const runner = (
+  config: Record<string, unknown> | undefined,
+  withSeller = true,
+  revoked = false,
+) => {
   const def = {
     contract_id: 'door_1',
     status: 'active',
     minted_at: NOW,
     door_types: ['reception'],
     scope: { operation_ids: [], ingredient_ids: [] },
+    door_execution_policy: { max_steps: 64, allow_ai: false },
+    ...(revoked ? { revoked_at: NOW } : {}),
   } as unknown as ContractDefinition;
 
   return createReceptionRecipeRunner({
@@ -95,13 +105,22 @@ const runner = (config: Record<string, unknown> | undefined, withSeller = true) 
       get: (id: string) => (id === 'door_1' ? def : null),
     } as unknown as ContractDefinitionStore,
     resolveConfig: () => config,
+    resolveRecipe: () => ({
+      prefetch_steps: [],
+      steps: [{ id: 'render', transform: 'default' }],
+      trigger_steps: [],
+    } as unknown as RecipeDefinition),
+    resolveDoorRecipe: (recipe: RecipeDefinition) => ({ ok: true as const, recipe }),
     ...(withSeller ? { seller: { offers: seller, orders } } : {}),
     now: () => NOW,
   });
 };
 
-const submit = (config: Record<string, unknown> | undefined, withSeller = true) =>
-  runner(config, withSeller).run({
+const submit = (
+  config: Record<string, unknown> | undefined,
+  withSeller = true,
+  revoked = false,
+) => runner(config, withSeller, revoked).run({
     endpoint_id: 'ep1',
     submission_id: 'sub_1',
     submission: { email: 'v@example.com' },
@@ -211,6 +230,15 @@ describe('D-207 slice 3c — a re-drive must not mint a second order', () => {
  *  built a form to sell something; a visitor who filled it in came to buy. Thanking them
  *  and never asking for money is the exact bug this slice exists to keep dead. */
 describe('D-207 slice 3c — a form that cannot sell REFUSES; it never says thank-you', () => {
+  it('a revoked door cannot create an order before the engine kill-switch runs', async () => {
+    activeOffer();
+    const out = await submit({ seller_offer_id: OFFER }, true, true);
+
+    expect(out.kind).toBe('failed');
+    expect(orders.listOrders({})).toHaveLength(0);
+    expect(handleExecute).not.toHaveBeenCalled();
+  });
+
   it('an offer with no hosted-checkout link', async () => {
     activeOffer({ checkout_url: null });
     const out = await submit({ seller_offer_id: OFFER });

@@ -886,6 +886,16 @@ export interface ChatOrchestratorDeps {
     classification: 'read' | 'write' | 'unknown';
     concurrency_safe: boolean;
   }>;
+  /** D-225 § 9.5.1 — dispatch for a raw catalog op emitted by
+   *  `rawOpSource`. Kept beside (rather than inside) the ordinary registry
+   *  because raw visibility is derived from the turn's contract. The raw
+   *  dispatcher owns contract/catalog approval; the outer chat-plan gate must
+   *  not add a second approval. */
+  rawOpDispatch?: (
+    toolName: string,
+    args: unknown,
+    ctx: ChatDispatchContext,
+  ) => Promise<ChatDispatchResult>;
   /** Lever-2 (2026-07-02) — catalog delivery mode + index-desc cap. Absent
    *  → `DEFAULT_CHAT_CATALOG_PROJECTION` (`{ mode: 'full' }`, the launch
    *  baseline: full arg_schema per entry in the cacheable prefix).
@@ -2211,7 +2221,18 @@ export const createChatOrchestrator = (
     // audit row honest about the channel even when the catalog is
     // stale.
     let entry: ToolEntry | null;
+    let rawOpEntry: ToolEntry | null = null;
     let tier: ToolTier;
+    const internalDispatchCtx = peerName === null
+      ? buildInternalDispatchCtx(
+          session_id,
+          turn_id,
+          execution_source,
+          contract_snapshot,
+          dispatch_depth,
+          turn_state,
+        )
+      : undefined;
     if (peerName !== null) {
       entry = deps.peerDispatcher
         ? (deps.peerDispatcher.listToolEntries(peerName).find(
@@ -2220,8 +2241,15 @@ export const createChatOrchestrator = (
         : null;
       tier = entry?.tier ?? 3;
     } else {
-      entry = deps.registry.getByName(tool_name);
+      const registryEntry = deps.registry.getByName(tool_name);
+      if (registryEntry === null && deps.rawOpSource !== undefined) {
+        rawOpEntry = (deps.rawOpSource(internalDispatchCtx!.execution_source)
+          .find((candidate) => candidate.name === tool_name) as ToolEntry | undefined)
+          ?? null;
+      }
+      entry = registryEntry ?? rawOpEntry;
       tier = resolveTier(deps.registry, tool_name);
+      if (rawOpEntry !== null) tier = rawOpEntry.tier;
     }
 
     // Guided Data diagnosis is an explanation-only turn. Enforce that at the
@@ -2361,6 +2389,11 @@ export const createChatOrchestrator = (
     if (
       deps.planApprovalStore
       && entry
+      // Raw catalog ops already cross the catalog Gateway's durable approval
+      // boundary. Running the generic chat-plan gate too would ask twice and,
+      // worse, would ask before qualified-id SOURCE_MISMATCH validation. The
+      // raw dispatcher validates the Source first, then owns the one approval.
+      && rawOpEntry === null
       && (
         planApprovalModule.requiresPlanApproval(entry)
         // Classification may drift after the uncertain execution. The exact
@@ -2675,18 +2708,19 @@ export const createChatOrchestrator = (
     try {
       result = await runWithExecutionCaseVerificationContext(
         { session_id, turn_id },
-        () => deps.registry.dispatch(
-          tool_name,
-          arg_values,
-          buildInternalDispatchCtx(
-            session_id,
-            turn_id,
-            execution_source,
-            contract_snapshot,
-            dispatch_depth,
-            turn_state,
-          ),
-        ),
+        () => rawOpEntry !== null
+          ? deps.rawOpDispatch !== undefined
+            ? deps.rawOpDispatch(tool_name, arg_values, internalDispatchCtx!)
+            : Promise.resolve({
+                ok: false as const,
+                reason: 'execution_error' as const,
+                detail: 'raw op dispatch unavailable',
+              })
+          : deps.registry.dispatch(
+              tool_name,
+              arg_values,
+              internalDispatchCtx!,
+            ),
       );
     } catch (e) {
       await releaseLlmGatewayToolUsage();

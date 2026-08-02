@@ -27,6 +27,8 @@ export interface InstallShutdownOptions {
   supervisionStack?: Pick<SupervisionStack, 'disposeAll'> | undefined;
   cascade: Pick<EvictionCascade, 'close'> | undefined;
   server: Pick<ListenerServerFacade, 'close'>;
+  /** Shared audit append barrier used only by the no-lifecycle fallback. */
+  drainAuditWrites?: (() => Promise<void>) | undefined;
   db: ShutdownDatabase | undefined;
   processHandle?: ShutdownProcess;
   log?: (message?: unknown, ...optionalParams: unknown[]) => void;
@@ -49,6 +51,7 @@ export const installShutdown = (
     supervisionStack,
     cascade,
     server,
+    drainAuditWrites,
     db,
   } = options;
   const processHandle = options.processHandle ?? process;
@@ -70,13 +73,13 @@ export const installShutdown = (
     // Stop every registered lifecycle service in one pass:
     // schedulers (cron / auto-run / housekeeping), periodic timers
     // (audit / s2s-preview / correction-events / reception snapshot).
-    // The reverse-order walk + per-service try/catch in `stopAll`
-    // matches the pre-extraction sequencing (housekeeping awaits
-    // its in-flight cycle before db.close()). This path runs only
+    // `stopAll` closes admission in reverse registration order, drains every
+    // sibling, and aggregates failures; this fallback contains that aggregate
+    // so the remaining resources still close. This path runs only
     // for compositions without lifecycle (no db / no bootstrap
     // deps); the lifecycle-driven shutdown uses filtered
     // `stopAll({ kind })` calls per drain step.
-    await backgroundServices.stopAll();
+    try { await backgroundServices.stopAll(); } catch { /* continue best-effort fallback */ }
     if (fileStack) {
       try { await fileStack.disposeAll(); } catch { /* swallow */ }
     }
@@ -89,8 +92,9 @@ export const installShutdown = (
     if (supervisionStack) {
       try { await supervisionStack.disposeAll(); } catch { /* swallow */ }
     }
-    cascade?.close();
+    try { await cascade?.close(); } catch { /* swallow */ }
     try { await server.close(); } catch { /* swallow */ }
+    try { await drainAuditWrites?.(); } catch { /* swallow */ }
     if (db) db.close();
     log('  Bye.');
     processHandle.exit(0);

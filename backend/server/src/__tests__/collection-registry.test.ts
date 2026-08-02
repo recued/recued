@@ -160,6 +160,27 @@ describe('CollectionRegistry — dispose', () => {
     expect(closeCalls).toBe(1);
   });
 
+  it('coalesces disposal and starts every close before waiting', async () => {
+    const reg = createCollectionRegistry();
+    const started: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    reg.register(stubCollection('mail', 'slow', {
+      close: async () => { started.push('mail:slow'); await gate; },
+    }));
+    reg.register(stubCollection('webhook', 'intake', {
+      close: async () => { started.push('webhook:intake'); await gate; },
+    }));
+
+    const first = reg.dispose();
+    const second = reg.dispose();
+    expect(second).toBe(first);
+    expect(started).toEqual(['mail:slow', 'webhook:intake']);
+
+    release();
+    await first;
+  });
+
   it('rejects register() after dispose', async () => {
     const reg = createCollectionRegistry();
     await reg.dispose();

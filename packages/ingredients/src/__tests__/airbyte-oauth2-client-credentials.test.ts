@@ -1,5 +1,9 @@
-import { describe, expect, it } from 'vitest';
-import type { ConnectionAuth, ConnectionRow } from '@recued/contracts';
+import { describe, expect, it, vi } from 'vitest';
+import {
+  CONNECTION_API_TIMEOUT_MS,
+  type ConnectionAuth,
+  type ConnectionRow,
+} from '@recued/contracts';
 
 import {
   createConnectionApiHandler,
@@ -43,6 +47,42 @@ const auth = (
 });
 
 describe('OAuth2 client credentials — trusted connection adapter', () => {
+  it('times out a token endpoint that sends headers but stalls its body', async () => {
+    vi.useFakeTimers();
+    try {
+      const pending = exchangeOAuth2ClientCredentials(
+        auth(),
+        (async (_input, init) => {
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              const abort = (): void => {
+                const error = new Error('body aborted');
+                error.name = 'AbortError';
+                controller.error(error);
+              };
+              if (init?.signal?.aborted) abort();
+              else init?.signal?.addEventListener('abort', abort, { once: true });
+            },
+          });
+          return new Response(stream, {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          });
+        }) as typeof fetch,
+        () => NOW,
+      );
+      const rejected = expect(pending).rejects.toMatchObject({
+        code: 'TOKEN_REFRESH_FAILED',
+        details: { cause: 'timeout' },
+      });
+
+      await vi.advanceTimersByTimeAsync(CONNECTION_API_TIMEOUT_MS);
+      await rejected;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('mints, persists, and injects an Airbyte bearer token without exposing the secret to operation input', async () => {
     const requests: Array<{ url: string; init: RequestInit }> = [];
     const fetchImpl = (async (input: RequestInfo | URL, init: RequestInit = {}) => {

@@ -107,7 +107,14 @@ export interface HeaderAuthEntry {
  *  code path that decrypts and applies these. */
 export type ConnectionAuth =
   | { type: 'none' }
-  | { type: 'bearer'; token: string }
+  | {
+      type: 'bearer';
+      token: string;
+      /** Optional second bearer credential used only to establish a Slack
+       *  Socket Mode connection (`xapp-…`). It stays inside the encrypted auth
+       *  envelope; ordinary notification sends continue using `token`. */
+      app_token?: string;
+    }
   | { type: 'basic'; username: string; password: string }
   /** N custom headers applied to every call. One entry covers the common
    *  single-API-key case (`X-API-Key: …`); two+ covers vendors that split

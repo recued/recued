@@ -35,6 +35,13 @@ import {
   type ConnectionRecord,
 } from '@recued/contracts';
 
+import { defaultProviderApiFetch } from '../provider-api-fetch.js';
+import {
+  ProviderPaginationError,
+  ProviderPaginationGuard,
+  readProviderStringContinuation,
+} from '../../provider-pagination-guard.js';
+
 // ────────────────────────────────────────────────────────────────
 // Public types
 // ────────────────────────────────────────────────────────────────
@@ -68,7 +75,7 @@ export interface SearchSalesforceObjectsOptions {
  *  real fetcher + a refresh hook bound to the connection adapter's
  *  single-flight refresh path. */
 export interface SalesforceSearchDeps {
-  /** HTTP fetcher. Defaults to `globalThis.fetch` when omitted. */
+  /** HTTP fetcher. Defaults to the server's bounded provider fetch. */
   fetcher?: typeof fetch;
   /** OAuth2 refresh hook — fired on 401. Returns the new
    *  `ConnectionAuth` carrying a fresh `current_access_token`. The
@@ -151,7 +158,7 @@ export async function* searchSalesforceObjects(
   options: SearchSalesforceObjectsOptions,
   deps: SalesforceSearchDeps,
 ): AsyncGenerator<RawSalesforceRecord, void, unknown> {
-  const fetcher = deps.fetcher ?? globalThis.fetch.bind(globalThis);
+  const fetcher = deps.fetcher ?? defaultProviderApiFetch;
   const now = deps.now ?? (() => Date.now());
   const sleep = deps.sleep ?? defaultSleep;
   const rateLimitMaxRetries = deps.rateLimitMaxRetries ?? 3;
@@ -160,9 +167,10 @@ export async function* searchSalesforceObjects(
   let auth = connection.auth;
   let nextPath: string | null = buildInitialQueryPath(options.soql);
   let authRefreshed = false;
+  const pagination = new ProviderPaginationGuard('Salesforce query');
 
   while (nextPath !== null) {
-    const url = `${baseUrl}${nextPath}`;
+    const url = `${baseUrl}${pagination.claim(nextPath)}`;
     let attempt = 0;
     let page: SalesforceQueryPage | null = null;
 
@@ -213,9 +221,18 @@ export async function* searchSalesforceObjects(
     }
 
     if (page.done === true) return;
-    if (typeof page.nextRecordsUrl === 'string' && page.nextRecordsUrl.length > 0) {
-      nextPath = page.nextRecordsUrl;
+    const next = readProviderStringContinuation(
+      page.nextRecordsUrl,
+      'Salesforce query',
+    );
+    if (next !== undefined) {
+      nextPath = next;
       continue;
+    }
+    if (page.done === false) {
+      throw new ProviderPaginationError(
+        'Salesforce query pagination reported done=false without a continuation',
+      );
     }
     return;
   }
@@ -229,7 +246,7 @@ interface SalesforceQueryPage {
   totalSize?: number;
   done?: boolean;
   records?: ReadonlyArray<RawSalesforceRecord>;
-  nextRecordsUrl?: string;
+  nextRecordsUrl?: unknown;
 }
 
 const buildInitialQueryPath = (soql: string): string =>

@@ -17,6 +17,7 @@
 import {
   derivePerOpDependencyReads,
   isExternallyExposableIngredient,
+  isClosedRequestSchema,
   type DependencyReadAdmission,
   type IngredientManifest,
   type RiskTier,
@@ -27,17 +28,59 @@ import { buildPackOpResolution, type InstalledPackScan } from './pack-inventory.
 /** The wire-name prefix a raw catalog-op tool carries. */
 export const OP_TOOL_PREFIX = 'recued_op_';
 
+const RAW_OP_CONNECTION_PROPERTY = {
+  type: 'string',
+  description:
+    'Name of the enrolled connection to run this operation against (omit for ops that need none).',
+} as const;
+
 export const RAW_OP_TOOL_INPUT_SCHEMA = {
   type: 'object',
   properties: {
-    connection: {
-      type: 'string',
-      description:
-        'Name of the enrolled connection to run this operation against (omit for ops that need none).',
-    },
+    connection: RAW_OP_CONNECTION_PROPERTY,
   },
   additionalProperties: true,
 } as const;
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value);
+
+/** A closed operation request schema is both runtime-enforced and the best
+ * available AI contract for a raw op. Merge the framework-owned connection
+ * selector into that schema instead of advertising only `connection` and
+ * hiding every real operation argument behind `additionalProperties: true`.
+ *
+ * The raw-op dispatcher reserves and strips `connection` before the catalog
+ * gateway validates the operation args. A curated schema that itself declares
+ * `connection` cannot coexist with that reservation, so retain the legacy
+ * permissive descriptor for that malformed/unrepresentable edge rather than
+ * silently overwriting the operation's declaration. */
+const rawOpInputSchema = (
+  manifest: IngredientManifest,
+  requestSchema: unknown,
+): unknown => {
+  if (!isClosedRequestSchema(requestSchema)
+    || !isRecord(requestSchema)
+    || !isRecord(requestSchema.properties)
+    || Object.prototype.hasOwnProperty.call(requestSchema.properties, 'connection')) {
+    return RAW_OP_TOOL_INPUT_SCHEMA;
+  }
+  const declaredRequired = Array.isArray(requestSchema.required)
+    ? requestSchema.required.filter((value): value is string => typeof value === 'string')
+    : [];
+  const required = [
+    ...(manifest.kind === 'connection' ? ['connection'] : []),
+    ...declaredRequired,
+  ].filter((value, index, all) => all.indexOf(value) === index);
+  return {
+    ...requestSchema,
+    properties: {
+      connection: RAW_OP_CONNECTION_PROPERTY,
+      ...requestSchema.properties,
+    },
+    ...(required.length > 0 ? { required } : {}),
+  };
+};
 
 /** A raw catalog-op tool descriptor — the shape BOTH door surfaces (the grant
  *  catalog + `tools/list`) map into their own entry shape. */
@@ -95,7 +138,7 @@ export const buildRawOpToolDescriptors = (
         description:
           `[${opSpec.risk_tier}] ${opSpec.description ?? operation} (pack ${packRef}) `
           + '— raw catalog operation; pass "connection" to bind an enrolled connection.',
-        inputSchema: RAW_OP_TOOL_INPUT_SCHEMA,
+        inputSchema: rawOpInputSchema(manifest, opSpec.request_schema),
         classification,
         ...(also_reads !== undefined ? { also_reads } : {}),
       });

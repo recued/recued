@@ -33,6 +33,7 @@
  *   - `setHash(hash)`  — drive navigation (fires the hash listener → re-mount).
  *   - `activeRoute()`  — the bootstrap's tracked active route id.
  *   - `fireMessage(m)` — inject an inbound WS frame (e.g. a server_heartbeat).
+ *   - `releaseServerControlResponses()` — settle held pause/restart RPCs.
  */
 import {
   bootstrapWebclient,
@@ -91,6 +92,10 @@ import type {
   WebclientTokenStore,
   WebclientTokenAad,
 } from '../../src/storage/token-store.js';
+import {
+  RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+  RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+} from '../../src/shell/recovery-intent-continuation.js';
 import {
   WebclientReauthRequiredError,
   type WebclientWsState,
@@ -301,6 +306,7 @@ interface FakeTransportControls {
   setServerAvailable(available: boolean): void;
   forceReauth(): void;
   rpcCallCount(method: string): number;
+  releaseServerControlResponses(): number;
   fireState(state: WebclientWsState): void;
   fireMessage(message: unknown): void;
 }
@@ -315,10 +321,13 @@ const buildFakeTransport = (
   connectedSourceAnswerDemo = false,
   verificationJourneyDemo = false,
   attentionDemo = false,
+  holdServerControlResponse = false,
+  resolveContractsReads = false,
 ): FakeTransportControls => {
   const states = new Set<(s: WebclientWsState) => void>();
   const messages = new Set<(m: unknown) => void>();
   const rpcCallCounts = new Map<string, number>();
+  const heldServerControlResponses: Array<() => void> = [];
   let serverAvailable = true;
   let rejectNextOpenForReauth = false;
   const llmConfig: Record<string, unknown> = initialAiConfigured
@@ -333,6 +342,7 @@ const buildFakeTransport = (
   let defaultSourceId: 'slot_1' | 'slot_2' | 'free_pool' | null =
     initialAiConfigured ? 'slot_1' : null;
   let mailConnected = connectedSourceReadyDemo || connectedSourceAnswerDemo;
+  let serverPaused = false;
   let mailListReads = 0;
   let sourceAnswerSessionCreated = false;
   let sourceAnswerSendCount = 0;
@@ -832,6 +842,23 @@ const buildFakeTransport = (
             },
           };
         }
+        if (rpc.method === 'server.setPaused') {
+          const active = (rpc.args as { active?: unknown }).active === true;
+          serverPaused = active;
+          result = {
+            ok: true,
+            active_since: serverPaused ? FIXED_NOW : null,
+          };
+        }
+        if (rpc.method === 'server.requestRestart') {
+          result = { accepted: true };
+        }
+        if (
+          rpc.method === 'collection.contract.listContracts'
+          && resolveContractsReads
+        ) {
+          result = { contracts: [], next_cursor: null, total: 0 };
+        }
         if (rpc.method === 'server.setLLMSlot') {
           const args = rpc.args as {
             slot_key?: unknown;
@@ -881,6 +908,16 @@ const buildFakeTransport = (
             });
           }
         };
+        if (
+          holdServerControlResponse
+          && (
+            rpc.method === 'server.setPaused'
+            || rpc.method === 'server.requestRestart'
+          )
+        ) {
+          heldServerControlResponses.push(respond);
+          return;
+        }
         if (delayAiRead && rpc.method === 'server.getLLMConfig') {
           setTimeout(respond, 40);
         } else {
@@ -904,6 +941,11 @@ const buildFakeTransport = (
       for (const listener of [...states]) listener('closed');
     },
     rpcCallCount: (method) => rpcCallCounts.get(method) ?? 0,
+    releaseServerControlResponses: () => {
+      const pending = heldServerControlResponses.splice(0);
+      for (const respond of pending) respond();
+      return pending.length;
+    },
     fireState: (state) => {
       for (const listener of [...states]) listener(state);
     },
@@ -981,6 +1023,7 @@ interface FullAppHooks {
   setServerAvailable(available: boolean): void;
   forceReauth(): void;
   rpcCallCount(method: string): number;
+  releaseServerControlResponses?(): number;
   fireState(state: WebclientWsState): void;
   fireMessage(message: unknown): void;
   /** Multi-tab journey diagnostic: proves the passive sibling never POSTed. */
@@ -1008,6 +1051,8 @@ const root = document.getElementById('root');
 if (root === null) throw new Error('full-app harness: #root missing');
 
 const searchParams = new URLSearchParams(window.location.search);
+const boundedVerificationJourney =
+  searchParams.get('journey') === 'bounded-verification';
 const startupFailureJourney =
   searchParams.get('journey') === 'startup-failure';
 const startupReloadRecoveryRequested =
@@ -1180,6 +1225,8 @@ const transport = buildFakeTransport(
   searchParams.get('connection') === 'source-answer',
   searchParams.get('journey') === 'verification',
   searchParams.get('attention') === 'pending',
+  searchParams.get('server_control_response') === 'hold',
+  boundedVerificationJourney,
 );
 // Real `location.hash` bridge — the harness page loads with no fragment, so the
 // bootstrap resolves the default landing (chat); the spec drives every other
@@ -1410,6 +1457,46 @@ void (async (): Promise<void> => {
       await profileStore.set('cert_pin_state', null);
       await profileStore.renameProfile(officeId, 'Office server');
       if (originalId !== null) await profileStore.switchProfile(originalId);
+    }
+    if (boundedVerificationJourney && profileStore !== undefined) {
+      const profileId = await profileStore.activeProfileId();
+      if (profileId === null) {
+        throw new Error(
+          'full-app bounded-verification harness: active profile missing',
+        );
+      }
+      if (window.sessionStorage.getItem(
+        RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+      ) === null) {
+        window.sessionStorage.setItem(
+          RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+          JSON.stringify({
+            v: 1,
+            profile_id: profileId,
+            landing_hash: '#contracts',
+            intent: 'choose_again',
+            paused_at: FIXED_NOW,
+          }),
+        );
+      }
+      if (window.sessionStorage.getItem(
+        RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+      ) === null) {
+        window.sessionStorage.setItem(
+          RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+          JSON.stringify({
+            v: 2,
+            profile_id: profileId,
+            landing_hash: '#contracts',
+            intent: 'choose_again',
+            paused_at: FIXED_NOW,
+            review_target: 'area',
+            state: 'interrupted',
+            interruption_count: 2,
+            last_interruption: 'connection',
+          }),
+        );
+      }
     }
     if (multiTabJourney) {
       const journey = multiTabPairJourney
@@ -2094,6 +2181,8 @@ void (async (): Promise<void> => {
           transport.setServerAvailable(available),
         forceReauth: () => transport.forceReauth(),
         rpcCallCount: (method) => transport.rpcCallCount(method),
+        releaseServerControlResponses: () =>
+          transport.releaseServerControlResponses(),
         fireState: (state) => transport.fireState(state),
         fireMessage: (message) => transport.fireMessage(message),
       };
@@ -2131,6 +2220,8 @@ void (async (): Promise<void> => {
         transport.setServerAvailable(available),
       forceReauth: () => transport.forceReauth(),
       rpcCallCount: (method) => transport.rpcCallCount(method),
+      releaseServerControlResponses: () =>
+        transport.releaseServerControlResponses(),
       fireState: (state) => transport.fireState(state),
       fireMessage: (message) => transport.fireMessage(message),
     };

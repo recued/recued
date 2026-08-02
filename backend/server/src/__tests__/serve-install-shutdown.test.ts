@@ -106,11 +106,12 @@ describe('installShutdown', () => {
         disposeAll: vi.fn(async () => { order.push('service'); }),
       },
       cascade: {
-        close: vi.fn(() => { order.push('cascade'); }),
+        close: vi.fn(async () => { order.push('cascade'); }),
       },
       server: {
         close: vi.fn(async () => { order.push('server'); }),
       },
+      drainAuditWrites: vi.fn(async () => { order.push('audit'); }),
       db: {
         close: vi.fn(() => { order.push('db'); }),
       },
@@ -138,10 +139,53 @@ describe('installShutdown', () => {
       'service',
       'cascade',
       'server',
+      'audit',
       'db',
       'Bye.',
       'exit:0',
     ]);
+  });
+
+  it('drains the cascade before closing the listener and database', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const serverClose = vi.fn(async () => undefined);
+    const dbClose = vi.fn();
+    const result = installShutdown(makeOptions({
+      cascade: { close: vi.fn(() => held) },
+      server: { close: serverClose },
+      db: { close: dbClose },
+    }));
+
+    const shuttingDown = result.fallbackShutdown!();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(serverClose).not.toHaveBeenCalled();
+    expect(dbClose).not.toHaveBeenCalled();
+
+    release();
+    await shuttingDown;
+    expect(serverClose).toHaveBeenCalledTimes(1);
+    expect(dbClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('waits for detached audit writes before closing the fallback database', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const dbClose = vi.fn();
+    const result = installShutdown(makeOptions({
+      drainAuditWrites: vi.fn(() => held),
+      db: { close: dbClose },
+    }));
+
+    const shuttingDown = result.fallbackShutdown!();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(dbClose).not.toHaveBeenCalled();
+
+    release();
+    await shuttingDown;
+    expect(dbClose).toHaveBeenCalledOnce();
   });
 
   it('continues fallback shutdown through best-effort dispose failures', async () => {
@@ -149,7 +193,9 @@ describe('installShutdown', () => {
     const dbClose = vi.fn();
     const result = installShutdown(makeOptions({
       backgroundServices: {
-        stopAll: vi.fn(async () => undefined),
+        stopAll: vi.fn(async () => {
+          throw new AggregateError([new Error('timer stop failed')]);
+        }),
       },
       fileStack: {
         disposeAll: vi.fn(async () => {

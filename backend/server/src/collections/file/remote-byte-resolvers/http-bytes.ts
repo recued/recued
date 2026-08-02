@@ -14,6 +14,10 @@
  *  Design: D-192. */
 
 import { RpcError, resolveBearerAccessToken } from '@recued/contracts';
+import {
+  discardResponseBody,
+  readBoundedResponseText,
+} from '@recued/ingredients';
 
 import type {
   FileConnectionCredential,
@@ -26,6 +30,12 @@ import type {
  *  falls back to the mirror's (often more precise) `meta.mime_type` rather than
  *  clobbering it. Mirrors the S3 resolver's "omit when empty" posture. */
 const GENERIC_MIME = 'application/octet-stream';
+
+/** A 25 MiB interactive read should not hold an RPC open indefinitely. */
+export const REMOTE_BYTE_FETCH_TIMEOUT_MS = 2 * 60 * 1000;
+
+/** Diagnostics need only a short provider error code/message. */
+const REMOTE_ERROR_BODY_MAX_BYTES = 4 * 1024;
 
 /** Resolve the OAuth/bearer access token for a file connection, or throw
  *  `file_storage_missing` — the same fail-closed posture the S3 resolver takes on
@@ -111,7 +121,7 @@ const readBodyCapped = async (
   } finally {
     // Free the connection — a no-op on the normal (drained) path, and the early
     // abort that stops an oversize download on the throw path.
-    await reader.cancel().catch(() => {});
+    void reader.cancel().catch(() => undefined);
   }
   return Buffer.concat(chunks, total);
 };
@@ -130,41 +140,62 @@ export const fetchRemoteBytes = async (args: FetchRemoteBytesArgs): Promise<Fetc
   const { fetchImpl, url, headers, body, maxBytes, vendorLabel, ref } = args;
   const method = args.method ?? 'GET';
 
-  let res;
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, REMOTE_BYTE_FETCH_TIMEOUT_MS);
+  let res: FileFetchResponse | undefined;
   try {
-    res = await fetchImpl(url, { method, headers, ...(body !== undefined ? { body } : {}) });
-  } catch (err) {
-    throw new RpcError(
-      'remote_fetch_failed',
-      `${vendorLabel} download failed for '${ref}': ${err instanceof Error ? err.message : String(err)}`,
-      502,
-    );
-  }
-  if (!res.ok) {
-    const text = await res.text().catch(() => '');
-    throw new RpcError(
-      'remote_fetch_failed',
-      `${vendorLabel} download '${ref}' → HTTP ${res.status} ${text.slice(0, 200)}`,
-      502,
-    );
-  }
-  // Early ceiling guard — reject an oversized object off its declared
-  // `Content-Length` BEFORE buffering it (many vendor CDNs report one on the
-  // final redirected response). The post-buffer check below is the backstop for
-  // a chunked / length-less response.
-  const lenRaw = res.headers.get('content-length');
-  if (lenRaw !== null) {
-    const len = Number(lenRaw);
-    if (Number.isFinite(len) && len > maxBytes) {
+    res = await fetchImpl(url, {
+      method,
+      headers,
+      ...(body !== undefined ? { body } : {}),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const text = await readBoundedResponseText(
+        res as Response,
+        REMOTE_ERROR_BODY_MAX_BYTES,
+      ).then((value) => value.text, () => '');
       throw new RpcError(
-        'remote_too_large',
-        `${vendorLabel} object '${ref}' is ${len} bytes (> ${maxBytes} ceiling)`,
-        413,
+        'remote_fetch_failed',
+        `${vendorLabel} download '${ref}' → HTTP ${res.status} ${text.slice(0, 200)}`,
+        502,
       );
     }
+    // Early ceiling guard — reject an oversized object off its declared
+    // `Content-Length` BEFORE buffering it (many vendor CDNs report one on the
+    // final redirected response). The stream counter below is the backstop for
+    // a chunked / length-less response.
+    const lenRaw = res.headers.get('content-length');
+    if (lenRaw !== null) {
+      const len = Number(lenRaw);
+      if (Number.isFinite(len) && len > maxBytes) {
+        throw new RpcError(
+          'remote_too_large',
+          `${vendorLabel} object '${ref}' is ${len} bytes (> ${maxBytes} ceiling)`,
+          413,
+        );
+      }
+    }
+    const bytes = await readBodyCapped(res, maxBytes, vendorLabel, ref);
+    clearTimeout(timer);
+    const ct = res.headers.get('content-type');
+    const mime = ct !== null ? (ct.split(';')[0] ?? '').trim() : '';
+    return { bytes, ...(mime.length > 0 && mime !== GENERIC_MIME ? { mime_type: mime } : {}) };
+  } catch (err) {
+    if (err instanceof RpcError) throw err;
+    throw new RpcError(
+      'remote_fetch_failed',
+      timedOut
+        ? `${vendorLabel} download timed out for '${ref}' after ${REMOTE_BYTE_FETCH_TIMEOUT_MS}ms`
+        : `${vendorLabel} download failed for '${ref}': ${err instanceof Error ? err.message : String(err)}`,
+      timedOut ? 504 : 502,
+    );
+  } finally {
+    if (res !== undefined) discardResponseBody(res as Response);
+    clearTimeout(timer);
   }
-  const bytes = await readBodyCapped(res, maxBytes, vendorLabel, ref);
-  const ct = res.headers.get('content-type');
-  const mime = ct !== null ? (ct.split(';')[0] ?? '').trim() : '';
-  return { bytes, ...(mime.length > 0 && mime !== GENERIC_MIME ? { mime_type: mime } : {}) };
 };

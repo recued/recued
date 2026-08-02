@@ -12,7 +12,7 @@
  *    - Non-callback payloads (Slack `event_callback`, Telegram message
  *      updates, malformed envelopes) → `parseInboundReply` returns null
  *      → `block.submitAnswer` is never called; the substrate-slice
- *      "webhook inbound (<vendor>)" log line is emitted to preserve
+ *      "messenger inbound (<vendor>)" log line is emitted to preserve
  *      trace continuity.
  *    - A vendor absent from the `messengerChannels` registry ⇒ dispatcher
  *      logs + drops (substrate present but adapter not wired).
@@ -220,7 +220,7 @@ describe('D-163 — composeInboundAnswerDispatcher Slack routing', () => {
     expect(block.submitAnswer).not.toHaveBeenCalled();
     // Substrate-slice log shape: trace continuity for non-callback
     // deliveries.
-    expect(log).toHaveBeenCalledWith('info', 'webhook inbound (slack)', {
+    expect(log).toHaveBeenCalledWith('info', 'messenger inbound (slack)', {
       connection_name: 'slack',
       event_id: 'Ev123',
     });
@@ -241,7 +241,7 @@ describe('D-163 — composeInboundAnswerDispatcher Slack routing', () => {
     expect(block.submitAnswer).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith(
       'info',
-      'webhook inbound (slack) — no channel adapter wired',
+      'messenger inbound (slack) — no channel adapter wired',
       { connection_name: 'slack', event_id: 'Ev123' },
     );
   });
@@ -261,7 +261,7 @@ describe('D-163 — composeInboundAnswerDispatcher Slack routing', () => {
     expect(slackChannel.parseInboundReply).toHaveBeenCalledTimes(1);
     expect(log).toHaveBeenCalledWith(
       'info',
-      'webhook inbound (slack) — ask callback dropped, no block wired',
+      'messenger inbound (slack) — ask callback dropped, no block wired',
       { ask_id: 'ask-42', option: 'approve' },
     );
   });
@@ -301,7 +301,7 @@ describe('D-163 — composeInboundAnswerDispatcher Slack routing', () => {
     };
     await dispatchSlackEvent(event);
 
-    expect(log).toHaveBeenCalledWith('info', 'webhook inbound (slack)', {
+    expect(log).toHaveBeenCalledWith('info', 'messenger inbound (slack)', {
       connection_name: 'slack',
     });
   });
@@ -342,7 +342,7 @@ describe('D-163 — composeInboundAnswerDispatcher Telegram routing', () => {
 
     expect(telegramChannel.parseInboundReply).toHaveBeenCalledTimes(1);
     expect(block.submitAnswer).not.toHaveBeenCalled();
-    expect(log).toHaveBeenCalledWith('info', 'webhook inbound (telegram)', {
+    expect(log).toHaveBeenCalledWith('info', 'messenger inbound (telegram)', {
       connection_name: 'telegram',
       update_id: '42',
     });
@@ -363,7 +363,7 @@ describe('D-163 — composeInboundAnswerDispatcher Telegram routing', () => {
     expect(block.submitAnswer).not.toHaveBeenCalled();
     expect(log).toHaveBeenCalledWith(
       'info',
-      'webhook inbound (telegram) — no channel adapter wired',
+      'messenger inbound (telegram) — no channel adapter wired',
       { connection_name: 'telegram', update_id: '42' },
     );
   });
@@ -382,7 +382,7 @@ describe('D-163 — composeInboundAnswerDispatcher Telegram routing', () => {
 
     expect(log).toHaveBeenCalledWith(
       'info',
-      'webhook inbound (telegram) — ask callback dropped, no block wired',
+      'messenger inbound (telegram) — ask callback dropped, no block wired',
       { ask_id: 'ask-77', option: 'deny' },
     );
   });
@@ -420,7 +420,7 @@ describe('D-163 — composeInboundAnswerDispatcher Telegram routing', () => {
     };
     await dispatchTelegramEvent(update);
 
-    expect(log).toHaveBeenCalledWith('info', 'webhook inbound (telegram)', {
+    expect(log).toHaveBeenCalledWith('info', 'messenger inbound (telegram)', {
       connection_name: 'telegram',
     });
   });
@@ -550,7 +550,7 @@ describe('D-163 polish — composeInboundAnswerDispatcher telegramAck integratio
     expect(block.submitAnswer).toHaveBeenCalledTimes(1);
     expect(log).toHaveBeenCalledWith(
       'warn',
-      'webhook inbound (telegram) — answerCallbackQuery failed',
+      'messenger inbound (telegram) — answerCallbackQuery failed',
       {
         ask_id: 'ask-77',
         connection_name: 'telegram',
@@ -701,7 +701,7 @@ describe('WatchSource — messenger inbound message bus emits', () => {
 
     await dispatchSlackEvent(slackEvent(slackEventCallbackPayload()));
 
-    expect(logs).toContain('webhook inbound (slack)');
+    expect(logs).toContain('messenger inbound (slack)');
   });
 
   it('a Telegram message update without a vendor message id mints an OPAQUE fallback id', async () => {

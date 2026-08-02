@@ -69,11 +69,11 @@ import { stripHtmlText, STRIP_HTML_MAX_INPUT } from '@recued/transforms';
 
 import { getByDotPath } from './source-mirror/fetch.js';
 import { hashCanonical } from './source-mirror/hash.js';
-import type {
-  NoteWriteInput,
-  ProjectWriteInput,
-  TaskWriteInput,
-} from './storage/work-entity-store.js';
+import {
+  workEntitySourceRuntimeAdapter,
+  type ProjectedWorkEntityUpsert as RuntimeProjectedWorkEntityUpsert,
+  type WorkEntitySourceProjectedIdentity,
+} from './work-entity-source-runtime-adapters.js';
 
 // ────────────────────────────────────────────────────────────────
 // Types
@@ -97,10 +97,7 @@ export interface ProjectWorkEntitySourceRowInput {
   raw: Record<string, unknown>;
 }
 
-export type ProjectedWorkEntityUpsert =
-  | { kind: 'task'; write: TaskWriteInput & { source_record_id: string } }
-  | { kind: 'project'; write: ProjectWriteInput & { source_record_id: string } }
-  | { kind: 'note'; write: NoteWriteInput & { source_record_id: string } };
+export type ProjectedWorkEntityUpsert = RuntimeProjectedWorkEntityUpsert;
 
 export type ProjectWorkEntitySourceRowResult =
   | { ok: true; upsert: ProjectedWorkEntityUpsert }
@@ -735,7 +732,7 @@ export const projectWorkEntitySourceRow = (
   // bucket carries one.
   const source_record_hash = hashCanonical({ canonical, extension: blob });
 
-  const identity = {
+  const identity: WorkEntitySourceProjectedIdentity = {
     source_id: input.source_id,
     source_record_id: input.source_record_id,
     connection_id: input.connection_name,
@@ -745,46 +742,11 @@ export const projectWorkEntitySourceRow = (
     ...(Object.keys(blob).length > 0 ? { source_extension_blob: blob } : {}),
   };
 
-  if (declaration.kind === 'note') {
-    // D-192 P6 — the canonical long-body column NEVER receives remote
-    // text on a meta Source (the bounded excerpt rides the preview lane
-    // in the blob, fidelity-marked). `''` is the honest value: the
-    // read layer's `workEntityLongText` treats an empty canonical body
-    // as "no complete content" and falls through to the preview lane.
-    // `last_user_action_at` is deliberately NOT set here — a sync fold
-    // is not a user action (§ A.1.2); the mirror adapter preserves the
-    // existing row's value.
-    const write: NoteWriteInput & { source_record_id: string } = {
-      ...identity,
-      body: '',
-      ...(typeof canonical.title === 'string' && canonical.title.length > 0
-        ? { title: canonical.title }
-        : {}),
-    };
-    return { ok: true, upsert: { kind: 'note', write } };
-  }
-
-  if (declaration.kind === 'task') {
-    const write: TaskWriteInput & { source_record_id: string } = {
-      ...identity,
-      title: canonical.title as string,
-      ...(canonical.done !== undefined ? { done: canonical.done as boolean } : {}),
-      ...(canonical.state !== undefined ? { state: canonical.state as string } : {}),
-      ...(canonical.progress !== undefined ? { progress: canonical.progress as number } : {}),
-      ...(canonical.due_at !== undefined ? { due_at: canonical.due_at as number } : {}),
-      ...(canonical.priority !== undefined ? { priority: canonical.priority as TaskPriority } : {}),
-      ...(canonical.completed_at !== undefined ? { completed_at: canonical.completed_at as number } : {}),
-    };
-    return { ok: true, upsert: { kind: 'task', write } };
-  }
-
-  const write: ProjectWriteInput & { source_record_id: string } = {
-    ...identity,
-    title: canonical.title as string,
-    ...(canonical.state !== undefined ? { state: canonical.state as ProjectState } : {}),
-    ...(canonical.target_completion_at !== undefined
-      ? { target_completion_at: canonical.target_completion_at as number }
-      : {}),
+  // Final canonical construction is owned by the executable landing adapter.
+  // A new pack-declarable kind cannot fall through as an existing shape: the
+  // exact runtime registry must first supply its projection + storage behavior.
+  return {
+    ok: true,
+    upsert: workEntitySourceRuntimeAdapter(declaration.kind).project(identity, canonical),
   };
-  return { ok: true, upsert: { kind: 'project', write } };
 };

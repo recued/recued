@@ -74,8 +74,8 @@ beforeEach(() => {
   });
 });
 
-afterEach(() => {
-  cascade.close();
+afterEach(async () => {
+  await cascade.close();
   db.close();
 });
 
@@ -259,7 +259,7 @@ describe('EvictionCascade — collection:mail:* / collection:webhook:*', () => {
       expect(res.steps_run).toContain('collection_cas_delete');
       expect(deleted).toEqual(['h1', 'h2']);
     } finally {
-      localCascade.close();
+      await localCascade.close();
     }
   });
 

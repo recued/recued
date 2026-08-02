@@ -329,7 +329,10 @@ describe('buildServiceTemplateResolver', () => {
 describe('composeServiceStack', () => {
   let ctx: Ctx;
   beforeEach(() => { ctx = setup(); });
-  afterEach(() => { ctx.stack.disposeAll().then(() => ctx.db.close()); });
+  afterEach(async () => {
+    await ctx.stack.disposeAll();
+    ctx.db.close();
+  });
 
   it('healthSnapshot returns one row per enrolled instance', async () => {
     ctx.stack.instances.upsert({
@@ -420,6 +423,41 @@ describe('composeServiceStack', () => {
     await ctx.stack.disposeAll();
     // No throws — passing the test reaches here.
     expect(true).toBe(true);
+  });
+
+  it('disposeAll closes audit admission and drains admitted writes', async () => {
+    const db = new Database(':memory:');
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const logActivity = vi.fn(() => held);
+    const stack = composeServiceStack(db, {
+      dataPath: '/tmp/recued-test',
+      manifests: mkManifestRegistry([ollamaManifest]),
+      runtime: baseRuntime,
+      auditLog: { logActivity } as never,
+    });
+    const event = {
+      type: 'service_event' as const,
+      slug: 'ollama_home',
+      binary: 'ollama',
+      event_name: 'started' as const,
+      argv: ['ollama', 'serve'],
+      error: null,
+      timestamp: 1,
+    };
+    stack.enrollDeps.emitAudit(event);
+
+    let disposed = false;
+    const disposing = stack.disposeAll().then(() => { disposed = true; });
+    stack.enrollDeps.emitAudit({ ...event, event_name: 'stopped' });
+    await Promise.resolve();
+
+    expect(disposed).toBe(false);
+    expect(logActivity).toHaveBeenCalledTimes(1);
+
+    release();
+    await disposing;
+    db.close();
   });
 });
 

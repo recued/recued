@@ -225,6 +225,22 @@ export const createWatchPollManager = (deps: PollManagerDeps): PollManagerHandle
    *  boot-time first compute (null baseline). */
   let lastSignature: string | null = null;
 
+  const reportBackgroundFailure = (watch_key: string, error: unknown): void => {
+    const message = `watch '${watch_key}' background poll rejected: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    try {
+      if (deps.log) {
+        deps.log('warn', message);
+      } else {
+        console.warn(`[watch-poll] ${message}`);
+      }
+    } catch {
+      // A diagnostics failure must not recreate the unhandled rejection this
+      // background boundary is responsible for containing.
+    }
+  };
+
   const deriveDemand = (): Map<string, IndexedDemand> => {
     const triggers = deps.triggersStore.listEnabled();
     const out = new Map<string, IndexedDemand>();
@@ -263,7 +279,9 @@ export const createWatchPollManager = (deps: PollManagerDeps): PollManagerHandle
     const generation = loop.generation;
     loop.timer = setTimer(() => {
       loop.timer = undefined;
-      void tick(watch_key, generation);
+      void tick(watch_key, generation).catch((error) => {
+        reportBackgroundFailure(watch_key, error);
+      });
     }, Math.max(0, delayMs));
   };
 
@@ -479,7 +497,15 @@ export const createWatchPollManager = (deps: PollManagerDeps): PollManagerHandle
     })();
     loop.run = run;
     inFlightPolls.add(run);
-    void run.finally(() => inFlightPolls.delete(run));
+    const clear = (): void => {
+      inFlightPolls.delete(run);
+    };
+    // `finally()` creates a new promise that mirrors `run`'s rejection. Since
+    // nobody owns that derived promise, a double failure (poll + error-store)
+    // reached the process-wide fatal rejection listener even when pollNow's
+    // caller handled the original `run`. Both branches clear without creating
+    // another rejected chain.
+    void run.then(clear, clear);
     await run;
   };
 

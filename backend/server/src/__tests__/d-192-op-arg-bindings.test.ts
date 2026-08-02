@@ -36,7 +36,10 @@ import type {
   SourceMirrorFetchOutcome,
   SourceMirrorFetchRequest,
 } from '../source-mirror/fetch.js';
-import type { KernelWorkEntitySourceDeclaration } from '../work-entity-source-boot.js';
+import {
+  workEntitySourceContractHash,
+  type KernelWorkEntitySourceDeclaration,
+} from '../work-entity-source-boot.js';
 import { resolveConfigArgBindings } from '../work-entity-config-args.js';
 import {
   runWorkEntitySourceSync,
@@ -63,6 +66,11 @@ const validateOne = (decl: Record<string, unknown>): string[] => {
             'task.update': { kind: 'rest', method: 'PUT', path_template: '/tasks/{{task_id}}' },
           },
         },
+      },
+      operations: {
+        'task.search': { risk_tier: 'read' },
+        'task.read': { risk_tier: 'read' },
+        'task.update': { risk_tier: 'write' },
       },
     } as unknown as Record<string, unknown>,
     (severity, _code, path) => { if (severity === 'error') errors.push(path); },
@@ -276,7 +284,9 @@ beforeEach(() => {
   // Real boot seeds the sync-state row at registration (`seedSyncState`);
   // `markStarted`/`markCompleted` are UPDATEs that need it present.
   syncState.upsert({
-    source_id: SOURCE, contract_hash: 'seed', sync_depth: 'meta', sync_mode: 'read_only',
+    source_id: SOURCE,
+    contract_hash: workEntitySourceContractHash(asanaShapeDeclaration()),
+    sync_depth: 'meta', sync_mode: 'read_only',
     cursor_blob: null, last_sync_started_at: null, last_sync_completed_at: null,
     last_success_at: null, last_error_code: null, last_error_message: null,
     degraded: false, field_health_blob: null, list_complete: true,
@@ -379,6 +389,12 @@ describe('D-192 op_arg_bindings — sync-runner list dispatch', () => {
     const { runFetch, requests } = scriptedFetch(okFetch([{ id: 't1', title: 'A', updated: '2026-07-01' }]));
     const decl = asanaShapeDeclaration();
     delete decl.op_arg_bindings;
+    const state = syncState.get(SOURCE);
+    if (state === null) throw new Error('expected seeded sync state');
+    syncState.upsert({
+      ...state,
+      contract_hash: workEntitySourceContractHash(decl),
+    });
     const result = await runWorkEntitySourceSync(
       { fetchDeps: fetchDeps(), mirror, syncState, runFetch, now: () => NOW },
       { source_id: SOURCE, connection_name: CONNECTION, declaration: decl },

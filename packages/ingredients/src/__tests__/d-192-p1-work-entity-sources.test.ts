@@ -342,6 +342,60 @@ describe('D-192 P1 work_entity_sources section validation', () => {
     expect(collectWorkEntityIssues(validCatalog())).toEqual([]);
   });
 
+  it('accepts a read-through Source with no mirror lifecycle fields', () => {
+    const manifest = validCatalog();
+    const declaration = source(manifest);
+    declaration.sync = {
+      posture: 'read_through',
+      mode: 'read_write',
+      depth: 'meta',
+    };
+    declaration.read_resolution = {
+      default: 'source',
+      wild_query: {
+        remote_fanout: 'bounded_targeted',
+        max_sources: 3,
+        max_remote_records: 10,
+        on_exceeds_cap: 'ask_to_narrow',
+      },
+    };
+
+    expect(collectWorkEntityIssues(manifest)).toEqual([]);
+  });
+
+  it('rejects mirror lifecycle fields on a read-through Source', () => {
+    const manifest = validCatalog();
+    const declaration = source(manifest);
+    declaration.sync.posture = 'read_through';
+    declaration.read_resolution.default = 'source';
+    delete declaration.read_resolution.remote_when;
+
+    expectIssue(
+      collectWorkEntityIssues(manifest),
+      'WORK_ENTITY_SOURCES_SYNC_INVALID',
+      'work_entity_sources[0].sync.stale_after_ms',
+      'mirror-only',
+    );
+  });
+
+  it('rejects a read-through Source that claims a local read default', () => {
+    const manifest = validCatalog();
+    const declaration = source(manifest);
+    declaration.sync = {
+      posture: 'read_through',
+      mode: 'read_write',
+      depth: 'meta',
+    };
+    delete declaration.read_resolution.remote_when;
+
+    expectIssue(
+      collectWorkEntityIssues(manifest),
+      'WORK_ENTITY_SOURCES_READ_RESOLUTION_INVALID',
+      'work_entity_sources[0].read_resolution.default',
+      "must be 'source'",
+    );
+  });
+
   it('accepts write_paths overrides for writable fields (read≠write vendors)', () => {
     const manifest = validCatalog();
     (source(manifest) as { write_paths?: Record<string, string> }).write_paths = {
@@ -524,6 +578,13 @@ describe('D-192 P1 work_entity_sources section validation', () => {
       path: 'work_entity_sources[0].kind',
     },
     {
+      name: 'rejects a canonical kind until its external Source landing adapter exists',
+      mutate: (manifest) => { source(manifest).kind = 'booking'; },
+      code: 'WORK_ENTITY_SOURCES_LANDING_ADAPTER_REQUIRED',
+      path: 'work_entity_sources[0].kind',
+      messageIncludes: 'no runtime Source landing adapter',
+    },
+    {
       name: 'rejects a source_id_template without connection_id',
       mutate: (manifest) => { source(manifest).source_id_template = 'salesforce.task'; },
       code: 'WORK_ENTITY_SOURCES_SOURCE_ID_TEMPLATE_INVALID',
@@ -581,6 +642,20 @@ describe('D-192 P1 work_entity_sources section validation', () => {
       mutate: (manifest) => { delete executes(manifest)[TASK_READ_OP]; },
       code: 'WORK_ENTITY_SOURCES_OP_INVALID',
       path: 'work_entity_sources[0].ops.read',
+    },
+    {
+      name: 'rejects a list slot bound to a write-tier operation',
+      mutate: (manifest) => { manifest.operations[TASK_LIST_OP]!.risk_tier = 'write'; },
+      code: 'WORK_ENTITY_SOURCES_OP_INVALID',
+      path: 'work_entity_sources[0].ops.list',
+      messageIncludes: 'must be read-tier',
+    },
+    {
+      name: 'rejects a read slot bound to a write-tier operation',
+      mutate: (manifest) => { manifest.operations[TASK_READ_OP]!.risk_tier = 'write'; },
+      code: 'WORK_ENTITY_SOURCES_OP_INVALID',
+      path: 'work_entity_sources[0].ops.read',
+      messageIncludes: 'must be read-tier',
     },
     {
       name: 'rejects a Source op bound to graphql instead of rest',

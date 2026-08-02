@@ -34,6 +34,10 @@ import {
   type S3ClientConfig,
   type S3Fetch,
 } from './client.js';
+import {
+  startDrainingInterval,
+  type ProviderPollStop,
+} from '../../../draining-interval.js';
 
 const MAX_OBJECT_BYTES = 5 * 1024 * 1024;
 
@@ -134,7 +138,7 @@ export const createS3AdapterFactory = (
     let canDelete = true;
     try {
       await client.putObject(probeKey, body, 'text/plain');
-      await client.getObject(probeKey);
+      await client.getObject(probeKey, body.byteLength);
     } catch {
       canWrite = false;
     } finally {
@@ -164,7 +168,7 @@ export const createS3AdapterFactory = (
       now: overrides.now,
     });
 
-    let pollHandle: ReturnType<typeof setInterval> | undefined;
+    let pollStop: ProviderPollStop | undefined;
     let seenKeys = new Set<string>();
 
     const runPollTick = async (): Promise<void> => {
@@ -200,16 +204,19 @@ export const createS3AdapterFactory = (
           ctx.log?.('error', 's3 initial scan failed', { err });
         }
         if (!parsed.notifications_enabled) {
-          pollHandle = setInterval(() => {
-            void runPollTick();
-          }, parsed.poll_interval_ms);
+          pollStop = startDrainingInterval({
+            tick: runPollTick,
+            intervalMs: parsed.poll_interval_ms ?? 60_000,
+            onError: (err) => {
+              ctx.log?.('warn', `s3 poll loop failed for ${parsed.bucket}`, { err });
+            },
+          });
         }
       },
       async stop() {
-        if (pollHandle) {
-          clearInterval(pollHandle);
-          pollHandle = undefined;
-        }
+        const stop = pollStop;
+        pollStop = undefined;
+        await stop?.();
       },
       async writeRecord(path, body, mime) {
         if (body.length > MAX_OBJECT_BYTES) {
@@ -233,7 +240,7 @@ export const createS3AdapterFactory = (
       },
       async readRecord(path) {
         try {
-          const { body } = await client.getObject(path);
+          const { body } = await client.getObject(path, MAX_OBJECT_BYTES);
           return body;
         } catch (err) {
           throw classifyS3Error(err, path);

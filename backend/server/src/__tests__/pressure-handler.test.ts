@@ -79,15 +79,14 @@ describe('pressure rpc handlers', () => {
     deps = { registry, cascade };
   });
 
-  afterEach(() => {
-    cascade.close();
+  afterEach(async () => {
+    await cascade.close();
     db.close();
   });
 
   // ── handleRunPressureReclaim ──
 
   it('runs reclaim on a valid surface', async () => {
-    registry.cache.setUsed(registry.cache.info().pressureAt + 1);
     const result = await handleRunPressureReclaim(deps, { surface: 'cache' });
     expect(result.ran).toBe(true);
   });
@@ -111,6 +110,18 @@ describe('pressure rpc handlers', () => {
     const result = await handleRunPressureReclaim(deps, { surface: 'bogus' });
     expect(result.ran).toBe(false);
     expect(result.reason_if_skipped).toBe('no_such_surface');
+  });
+
+  it('returns reason_if_skipped=closed once the cascade drain begins', async () => {
+    await cascade.close();
+    const result = await handleRunPressureReclaim(deps, {
+      surface: 'cache',
+      force: true,
+    });
+    expect(result).toMatchObject({
+      ran: false,
+      reason_if_skipped: 'closed',
+    });
   });
 
   it('returns reason_if_skipped=not_evictable for vault / schedules / account', async () => {

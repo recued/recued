@@ -4,7 +4,12 @@ import { describe, expect, it } from 'vitest';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { Readable } from 'node:stream';
 import { createRateLimiter, type RateLimiter } from '../ports/common/rate-limit.js';
-import { createMcpPortHandler } from '../ports/mcp/handler.js';
+import {
+  createMcpPortHandler,
+  MCP_MAX_CONCURRENT_VERIFICATIONS,
+  MCP_MAX_IN_FLIGHT_GLOBAL,
+  MCP_MAX_IN_FLIGHT_PER_TOKEN,
+} from '../ports/mcp/handler.js';
 
 class FakeRes {
   statusCode = 0;
@@ -31,6 +36,17 @@ const buildReq = ({ url = '/mcp', method = 'POST', headers = {}, body = '' }: Bu
 };
 
 const json = (res: FakeRes): unknown => JSON.parse(res.body ?? 'null');
+
+const deferred = <T>() => {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+};
+
+const flush = async (): Promise<void> => {
+  await new Promise<void>((resolve) => { setImmediate(resolve); });
+};
 
 describe('createMcpPortHandler', () => {
   const buildHandler = (overrides: { capacity?: number } = {}) => {
@@ -205,6 +221,143 @@ describe('createMcpPortHandler', () => {
     expect(await fire()).toBe(401);
     expect(await fire()).toBe(429);
     expect(verifierCalls).toBe(2);
+  });
+
+  it('bounds concurrent memory-hard bearer verifications across source IPs', async () => {
+    const gates = [deferred<boolean>(), deferred<boolean>()];
+    let verifierCalls = 0;
+    const handler = createMcpPortHandler({
+      verifier: () => gates[verifierCalls++]!.promise,
+      limiter: createRateLimiter({ capacity: 100, refill_window_ms: 60_000 }),
+      per_ip_limiter: createRateLimiter({ capacity: 100, refill_window_ms: 60_000 }),
+      dispatch: async () => null,
+      max_concurrent_verifications: 2,
+    });
+    const fire = (token: string) => {
+      const res = new FakeRes();
+      const pending = handler(
+        buildReq({ body: '{}', headers: { authorization: `Bearer ${token}` } }),
+        res as unknown as ServerResponse,
+      );
+      return { pending, res };
+    };
+
+    const first = fire('one');
+    const second = fire('two');
+    await flush();
+    const refused = fire('three');
+    await refused.pending;
+    expect(refused.res.statusCode).toBe(503);
+    expect((json(refused.res) as { error: { code: string } }).error.code)
+      .toBe('mcp_overloaded');
+    expect(verifierCalls).toBe(2);
+
+    gates[0].resolve(false);
+    gates[1].resolve(false);
+    await Promise.all([first.pending, second.pending]);
+  });
+
+  it('bounds retained dispatches globally and per bearer, then releases slots', async () => {
+    const dispatchGates = [deferred<unknown>(), deferred<unknown>(), deferred<unknown>()];
+    let dispatchCalls = 0;
+    const handler = createMcpPortHandler({
+      verifier: () => true,
+      limiter: createRateLimiter({ capacity: 100, refill_window_ms: 60_000 }),
+      per_ip_limiter: createRateLimiter({ capacity: 100, refill_window_ms: 60_000 }),
+      dispatch: () => dispatchGates[dispatchCalls++]!.promise,
+      max_in_flight_global: 2,
+      max_in_flight_per_token: 1,
+    });
+    const fire = (token: string, id: number) => {
+      const res = new FakeRes();
+      const pending = handler(
+        buildReq({
+          body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call' }),
+          headers: { authorization: `Bearer ${token}` },
+        }),
+        res as unknown as ServerResponse,
+      );
+      return { pending, res };
+    };
+
+    const first = fire('token-a', 1);
+    await flush();
+    const sameToken = fire('token-a', 2);
+    await sameToken.pending;
+    expect(sameToken.res.statusCode).toBe(503);
+
+    const second = fire('token-b', 3);
+    await flush();
+    const globalOverflow = fire('token-c', 4);
+    await globalOverflow.pending;
+    expect(globalOverflow.res.statusCode).toBe(503);
+    expect(dispatchCalls).toBe(2);
+
+    dispatchGates[0].resolve({ jsonrpc: '2.0', id: 1, result: {} });
+    await first.pending;
+    const admittedAfterRelease = fire('token-c', 5);
+    await flush();
+    expect(dispatchCalls).toBe(3);
+    dispatchGates[1].resolve({ jsonrpc: '2.0', id: 3, result: {} });
+    dispatchGates[2].resolve({ jsonrpc: '2.0', id: 5, result: {} });
+    await Promise.all([second.pending, admittedAfterRelease.pending]);
+    expect(admittedAfterRelease.res.statusCode).toBe(200);
+  });
+
+  it('enforces a verified bearer authored tier below the transport ceiling', async () => {
+    const dispatchGates = [deferred<unknown>(), deferred<unknown>()];
+    let dispatchCalls = 0;
+    const resolvedTokens: string[] = [];
+    const handler = createMcpPortHandler({
+      verifier: () => true,
+      limiter: createRateLimiter({ capacity: 100, refill_window_ms: 60_000 }),
+      per_ip_limiter: createRateLimiter({ capacity: 100, refill_window_ms: 60_000 }),
+      dispatch: () => dispatchGates[dispatchCalls++]!.promise,
+      max_in_flight_per_token: 10,
+      resolve_concurrency_limit: (token) => {
+        resolvedTokens.push(token);
+        return 1;
+      },
+    });
+    const fire = (id: number) => {
+      const res = new FakeRes();
+      const pending = handler(
+        buildReq({
+          body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/call' }),
+          headers: { authorization: 'Bearer tiered-token' },
+        }),
+        res as unknown as ServerResponse,
+      );
+      return { pending, res };
+    };
+
+    const first = fire(1);
+    await flush();
+    const overflow = fire(2);
+    await flush();
+    // Settle both possible dispatch branches before asserting so reverting the
+    // authored-tier guard produces a prompt red, not an orphaned hung promise.
+    dispatchGates[0].resolve({ jsonrpc: '2.0', id: 1, result: {} });
+    dispatchGates[1].resolve({ jsonrpc: '2.0', id: 2, result: {} });
+    await Promise.all([first.pending, overflow.pending]);
+    expect(overflow.res.statusCode).toBe(503);
+    expect(dispatchCalls).toBe(1);
+
+    const afterRelease = fire(3);
+    await afterRelease.pending;
+    expect(dispatchCalls).toBe(2);
+    expect(afterRelease.res.statusCode).toBe(200);
+    expect(resolvedTokens).toEqual([
+      'tiered-token',
+      'tiered-token',
+      'tiered-token',
+    ]);
+  });
+
+  it('publishes conservative default concurrency ceilings', () => {
+    expect(MCP_MAX_CONCURRENT_VERIFICATIONS).toBe(8);
+    expect(MCP_MAX_IN_FLIGHT_GLOBAL).toBe(64);
+    expect(MCP_MAX_IN_FLIGHT_PER_TOKEN).toBe(16);
   });
 
   it('keys the per-token limiter on a hash, never the plaintext bearer', async () => {

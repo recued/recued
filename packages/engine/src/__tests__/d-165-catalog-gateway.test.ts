@@ -4,6 +4,7 @@ import {
   canonicalArgHash,
   isPreflightRequiredSignal,
   projectResolvedArgs,
+  qualifyWorkEntityId,
 } from '@recued/contracts';
 import type {
   ApiExecutionBinding,
@@ -202,6 +203,123 @@ const run = (
 );
 
 describe('D-165 catalog gateway', () => {
+  it('validates and unwraps a matching Source-qualified id before provider dispatch', async () => {
+    const taskRead = operation('read', { operation_id: 'pub/cat.task.read' });
+    const manifest = {
+      ...manifestFor(taskRead),
+      operations: { 'task.read': taskRead },
+      surfaces: {
+        api: {
+          transport: 'rest',
+          default_base_url: 'https://api.example.com',
+          auth: { kind: 'none' },
+          executes: {
+            'task.read': restBinding({ path_template: '/tasks/{{task_id}}' }),
+          },
+        },
+      },
+      work_entity_sources: [{
+        kind: 'task',
+        source_id_template: 'hubspot.${connection_id}.task',
+        remote: { entity: 'task' },
+        ops: { read: 'task.read' },
+        op_bindings: { read: { id_arg: 'task_id' } },
+      }],
+    } as unknown as IngredientManifest;
+    const qualified = qualifyWorkEntityId({
+      kind: 'task',
+      source_id: 'hubspot.primary-connection.task',
+      source_record_id: 'native-task-1',
+      local_id: 'mirror-task-1',
+    });
+    const { ctx, executorCalls } = makeHarness({
+      profile: {
+        allowed_operations: ['task.read'],
+        catalog_slug: 'pub/cat',
+      },
+    });
+
+    await runCatalogOperation(
+      ctx,
+      manifest,
+      'pub/cat',
+      { operation: 'task.read', args: { task_id: qualified } },
+      'primary-connection',
+      undefined,
+      undefined,
+      undefined,
+    );
+
+    expect(executorCalls).toHaveLength(1);
+    expect(executorCalls[0].input).toMatchObject({
+      path: '/tasks/{{task_id}}',
+      task_id: 'native-task-1',
+      connection: 'primary-connection',
+    });
+    expect(JSON.stringify(executorCalls[0])).not.toContain('we1:');
+  });
+
+  it('audits SOURCE_MISMATCH and fails before approval or provider dispatch', async () => {
+    const taskWrite = operation('write', { operation_id: 'pub/cat.task.update' });
+    const manifest = {
+      ...manifestFor(taskWrite),
+      operations: { 'task.update': taskWrite },
+      surfaces: {
+        api: {
+          transport: 'rest',
+          default_base_url: 'https://api.example.com',
+          auth: { kind: 'none' },
+          executes: {
+            'task.update': restBinding({
+              method: 'PATCH',
+              path_template: '/tasks/{{task_id}}',
+            }),
+          },
+        },
+      },
+      work_entity_sources: [{
+        kind: 'task',
+        source_id_template: 'hubspot.${connection_id}.task',
+        remote: { entity: 'task' },
+        ops: { update: 'task.update' },
+        op_bindings: { update: { id_arg: 'task_id' } },
+      }],
+    } as unknown as IngredientManifest;
+    const todoistId = qualifyWorkEntityId({
+      kind: 'task',
+      source_id: 'todoist.personal.task',
+      source_record_id: 'todoist-task-1',
+      local_id: 'mirror-task-1',
+    });
+    const { ctx, executorCalls, auditCalls } = makeHarness({
+      profile: {
+        allowed_operations: ['task.update'],
+        catalog_slug: 'pub/cat',
+      },
+    });
+
+    await expect(runCatalogOperation(
+      ctx,
+      manifest,
+      'pub/cat',
+      { operation: 'task.update', args: { task_id: todoistId } },
+      'primary-connection',
+      undefined,
+      undefined,
+      undefined,
+    )).rejects.toMatchObject({
+      code: 'SOURCE_MISMATCH',
+      retry_with: 'data.task.update',
+      expected_source: 'hubspot.primary-connection.task',
+      actual_source: 'todoist.personal.task',
+    });
+    expect(executorCalls).toHaveLength(0);
+    expect(auditCalls.at(-1)).toMatchObject({
+      outcome: 'failed',
+      failure_mode: 'source_mismatch',
+    });
+  });
+
   it('dispatches admitted read operations under the catalog slug with the resolved wire params + connection, and audits success', async () => {
     const manifest = manifestFor(operation('read'));
     const result = { value: 42 };

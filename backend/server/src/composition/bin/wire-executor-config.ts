@@ -86,6 +86,8 @@ import type { SellerOrderStore } from '../../storage/seller-order-store.js';
 import type { FormResponseStore } from '../../storage/form-response-store.js';
 import type { FormSubmissionStore } from '../../storage/reception-form-store.js';
 import type { ScopedWebhookEventReader } from '../../webhook-recipe-consumer.js';
+import { makeConnectionRuntimeBaseIssueSink } from '../../connection-runtime-base-issue.js';
+import { makeConnectionCredentialPersistFailureSink } from '../../connection-credential-persist-failure.js';
 
 /** Inline type alias matching the pre-extraction
  *  `ReturnType<typeof createWorkEntityDispatchers>` shape that bin.ts
@@ -318,54 +320,36 @@ export interface ComposeExecutorConfigDeps {
  *  sub-resource scope to NULL (a silent permission-boundary widening; D-165
  *  P3.path-picker). Single source so that invariant can't drift between kinds. */
 type EncodeAuthForStorage = (typeof import('../../connection-handler.js'))['encodeAuthForStorage'];
-/** D-218 § 7.5d — make a swallowed credential write AUDIBLE.
- *
- *  ⛔ The persist stays non-fatal: by the time it runs, the exchange has already
- *  invalidated the stored token, so failing the call would destroy a successful
- *  one and recover nothing. But for a SINGLE-USE rotating credential the swallow
- *  is not free — the durable row now holds a dead token, and the next call pays
- *  an extra round trip to find that out and log in again. Recoverable, and worth
- *  a row.
- *
- *  ⚠ Fire-and-forget, and it never carries the credential: the auth TYPE and the
- *  error text only. An audit sink that could break dispatch would be worse than
- *  the problem it reports. */
-const makeCredentialPersistFailureSink = (
-  auditLog: AuditLogStore,
-  now: () => number = Date.now,
-): NonNullable<ConnectionApiHandlerDeps['onPersistFailure']> =>
-  (row, error) => {
-    const ts = now();
-    void auditLog.logActivity({
-      activity_id: `cp-${ts}-${Math.random().toString(36).slice(2, 8)}`,
-      timestamp: ts,
-      action: 'connection_credential_persist_failed',
-      target: row.name,
-      detail: JSON.stringify({
-        kind: row.kind,
-        error: error instanceof Error ? error.message : String(error),
-      }),
-    }).catch(() => { /* an audit failure must never break dispatch */ });
-  };
 
 const makeRefreshPersistAuth = (
   connectionStore: ConnectionStoreSqlite,
   encodeAuthForStorage: EncodeAuthForStorage,
   keyProvider: Parameters<EncodeAuthForStorage>[2],
 ): ConnectionApiHandlerDeps['persistAuth'] =>
-  async (row, newAuth) => {
+  async (row, newAuth, configPatch) => {
     const auth_ciphertext = await encodeAuthForStorage(
       newAuth,
       { kind: row.kind, name: row.name },
       keyProvider,
     );
+    let config_json = row.config_json;
+    if (configPatch !== undefined) {
+      const parsed: unknown = JSON.parse(row.config_json);
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        throw new Error(`connection '${row.name}' has malformed config_json`);
+      }
+      config_json = JSON.stringify({
+        ...(parsed as Record<string, unknown>),
+        base_url: configPatch.base_url,
+      });
+    }
     connectionStore.upsert({
       kind: row.kind,
       name: row.name,
       ...(row.subtype !== undefined ? { subtype: row.subtype } : {}),
       display_name: row.display_name,
       ...(row.publisher_id !== undefined ? { publisher_id: row.publisher_id } : {}),
-      config_json: row.config_json,
+      config_json,
       auth_ciphertext,
       enrolled_at: row.enrolled_at,
       updated_at: Date.now(),
@@ -510,7 +494,10 @@ export const composeExecutorConfig = async (
               // which keeps the old silent behaviour there rather than
               // inventing a sink.
               ...(deps.auditLog
-                ? { onPersistFailure: makeCredentialPersistFailureSink(deps.auditLog) }
+                ? {
+                    onPersistFailure: makeConnectionCredentialPersistFailureSink(deps.auditLog),
+                    onRuntimeBaseIssue: makeConnectionRuntimeBaseIssueSink(deps.auditLog),
+                  }
                 : {}),
               // D-216 — the byte reader for `bind.upload` ops.
               ...(deps.readFileBytes ? { readFileBytes: deps.readFileBytes } : {}),
@@ -542,6 +529,9 @@ export const composeExecutorConfig = async (
                 encodeAuthForStorage,
                 keyProvider,
               ),
+              ...(deps.auditLog
+                ? { onPersistFailure: makeConnectionCredentialPersistFailureSink(deps.auditLog) }
+                : {}),
               // B3a — websocket transport (D-125 §920). The `ws`-backed
               // connector sets the bearer in the upgrade handshake +
               // refuses cross-origin redirects (SSRF). The watch-poll mcp

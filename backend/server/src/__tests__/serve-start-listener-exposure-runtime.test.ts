@@ -103,6 +103,12 @@ describe('startListenerExposureRuntime', () => {
       port: 4711,
       close: vi.fn(async () => undefined),
     };
+    const messengerIngressSupervisor = {
+      start: vi.fn(async () => undefined),
+      stop: vi.fn(async () => undefined),
+      reconcile: vi.fn(async () => undefined),
+      status: vi.fn(() => null),
+    };
     const listeners = {
       serverHandlerSet: { wsHandle },
       listenerCoordinator: { tag: 'listener-coordinator' },
@@ -114,6 +120,7 @@ describe('startListenerExposureRuntime', () => {
       lanBindAddress: '0.0.0.0',
       lanAdvertisedAddress: '192.168.1.44',
       server,
+      messengerIngressSupervisor,
     };
     const runtime = {
       schedulersBundle: { tag: 'schedulers-bundle' },
@@ -173,6 +180,7 @@ describe('startListenerExposureRuntime', () => {
       server,
       lanAdvertisedAddress: '192.168.1.44',
       actualPort: 4711,
+      messengerIngressSupervisor,
     });
 
     await httpRef?.close();

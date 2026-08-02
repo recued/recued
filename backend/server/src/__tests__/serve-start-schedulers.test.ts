@@ -374,7 +374,7 @@ describe('start-schedulers source boundary', () => {
       /getSchedulersBundle:\s*\(\) => schedulersBundle/,
     );
     expect(lifecycleSource).toMatch(
-      /getSchedulersBundle\(\)\?\.cron\?\.getHandle\(\)\?\.pause\(\)/,
+      /await backgroundServices\.stopAll\(\{ kind: 'scheduler' \}\)/,
     );
     expect(lifecycleSource).toMatch(
       /getSchedulersBundle\(\)\?\.cron\?\.getHandle\(\)\?\.inFlight\(\)/,

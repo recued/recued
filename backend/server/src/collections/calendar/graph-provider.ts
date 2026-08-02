@@ -39,6 +39,11 @@ import {
   MICROSOFT_TOKEN_URL,
   type CanonicalEvent,
 } from '@recued/contracts';
+import {
+  assertProviderPageUrl,
+  ProviderPaginationGuard,
+  readProviderStringContinuation,
+} from '../../provider-pagination-guard.js';
 
 import type {
   CalendarProvider,
@@ -57,6 +62,7 @@ import type {
   CalendarAdapterFactory,
 } from './adapter-registry.js';
 import {
+  defaultHttpFetcher,
   getAccessToken,
   keyPrefix,
   OAuthError,
@@ -65,6 +71,11 @@ import {
   type OAuthAccountStore,
   type OAuthProviderConfigSource,
 } from '../mail/oauth.js';
+import {
+  startDrainingInterval,
+  type ProviderPollScheduler,
+  type ProviderPollStop,
+} from '../draining-interval.js';
 
 // ────────────────────────────────────────────────────────────────
 // Config
@@ -89,7 +100,7 @@ export interface CreateGraphCalProviderOptions {
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
   /** Test hook — override the poll scheduler. Production uses
    *  `setInterval`. */
-  scheduler?: (cb: () => Promise<void>, intervalMs: number) => () => void;
+  scheduler?: ProviderPollScheduler;
 }
 
 const GRAPH_API_BASE = 'https://graph.microsoft.com/v1.0';
@@ -172,8 +183,8 @@ export interface GraphCalListEntry {
 
 interface GraphListResponse<T> {
   value?: T[];
-  '@odata.nextLink'?: string;
-  '@odata.deltaLink'?: string;
+  '@odata.nextLink'?: unknown;
+  '@odata.deltaLink'?: unknown;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -376,23 +387,14 @@ export const createGraphCalProvider = (
   opts: CreateGraphCalProviderOptions,
 ): CalendarProvider => {
   const fetcher: HttpFetcher =
-    opts.fetcher ??
-    (async (url, init) => {
-      const res = await fetch(url, init);
-      return {
-        status: res.status,
-        ok: res.ok,
-        json: () => res.json(),
-        text: () => res.text(),
-      };
-    });
+    opts.fetcher ?? defaultHttpFetcher;
   const nowOf = (): number => opts.now?.() ?? Date.now();
 
   let lastSuccessfulSyncAt = 0;
   let errorCount24h = 0;
   let pendingQueueSize = 0;
   let accessToken = '';
-  let pollStop: (() => void) | null = null;
+  let pollStop: ProviderPollStop | null = null;
 
   const deltaLinkKey = (calendarId: string): string =>
     `${keyPrefix('graph', opts.config.account_slug)}.cal_delta_link.${calendarIdKeySuffix(calendarId)}`;
@@ -425,11 +427,12 @@ export const createGraphCalProvider = (
   });
 
   const graphGet = async <T>(url: string, operation: string): Promise<T> => {
+    const safeUrl = assertProviderPageUrl(url, GRAPH_API_BASE, 'graph calendar');
     let token = await ensureToken(false);
-    let res = await fetcher(url, { method: 'GET', headers: graphHeaders(token) });
+    let res = await fetcher(safeUrl, { method: 'GET', headers: graphHeaders(token) });
     if (res.status === 401) {
       token = await ensureToken(true);
-      res = await fetcher(url, {
+      res = await fetcher(safeUrl, {
         method: 'GET',
         headers: graphHeaders(token),
       });
@@ -478,13 +481,19 @@ export const createGraphCalProvider = (
   const listCalendars = async (): Promise<GraphCalListEntry[]> => {
     const out: GraphCalListEntry[] = [];
     let url: string | undefined = `${GRAPH_API_BASE}/me/calendars?$top=250`;
+    const pagination = new ProviderPaginationGuard('graph calendar list', {
+      trustedBaseUrl: GRAPH_API_BASE,
+    });
     while (url) {
       const page: GraphListResponse<GraphCalListEntry> = await graphGet(
-        url,
+        pagination.claim(url),
         'calendars.list',
       );
       for (const entry of page.value ?? []) out.push(entry);
-      url = page['@odata.nextLink'];
+      url = readProviderStringContinuation(
+        page['@odata.nextLink'],
+        'graph calendar list',
+      );
     }
     return out;
   };
@@ -519,9 +528,12 @@ export const createGraphCalProvider = (
       base.searchParams.set('endDateTime', endDateTime);
       base.searchParams.set('$top', '250');
       let url: string | undefined = base.toString();
+      const pagination = new ProviderPaginationGuard('graph calendar initial scan', {
+        trustedBaseUrl: GRAPH_API_BASE,
+      });
       while (url && !aborted) {
         const page: GraphListResponse<GraphCalEvent> = await graphGet(
-          url,
+          pagination.claim(url),
           'calendarView',
         );
         for (const event of page.value ?? []) {
@@ -538,7 +550,10 @@ export const createGraphCalProvider = (
             markError(`graph canonicalize failed id=${event.id}`, err);
           }
         }
-        url = page['@odata.nextLink'];
+        url = readProviderStringContinuation(
+          page['@odata.nextLink'],
+          'graph calendar initial scan',
+        );
       }
     }
   };
@@ -555,16 +570,31 @@ export const createGraphCalProvider = (
     base.searchParams.set('startDateTime', startDateTime);
     base.searchParams.set('endDateTime', endDateTime);
     let url: string | undefined = base.toString();
+    const pagination = new ProviderPaginationGuard('graph calendar delta seed', {
+      trustedBaseUrl: GRAPH_API_BASE,
+    });
     while (url) {
       const page: GraphListResponse<GraphCalEvent> = await graphGet(
-        url,
+        pagination.claim(url),
         'calendarView.delta (seed)',
       );
-      if (page['@odata.deltaLink']) {
-        await opts.accountStore.set(deltaLinkKey(calendarId), page['@odata.deltaLink']);
-        return page['@odata.deltaLink'];
+      const rawDeltaLink = readProviderStringContinuation(
+        page['@odata.deltaLink'],
+        'graph calendar delta watermark',
+      );
+      if (rawDeltaLink !== undefined) {
+        const deltaLink = assertProviderPageUrl(
+          rawDeltaLink,
+          GRAPH_API_BASE,
+          'graph calendar delta watermark',
+        );
+        await opts.accountStore.set(deltaLinkKey(calendarId), deltaLink);
+        return deltaLink;
       }
-      url = page['@odata.nextLink'];
+      url = readProviderStringContinuation(
+        page['@odata.nextLink'],
+        'graph calendar delta seed',
+      );
     }
     return null;
   };
@@ -597,11 +627,14 @@ export const createGraphCalProvider = (
           break;
         }
 
+        const pagination = new ProviderPaginationGuard('graph calendar delta', {
+          trustedBaseUrl: GRAPH_API_BASE,
+        });
         while (url) {
           let page: GraphListResponse<GraphCalEvent>;
           try {
             page = await graphGet<GraphListResponse<GraphCalEvent>>(
-              url,
+              pagination.claim(url),
               'calendarView.delta',
             );
           } catch (err) {
@@ -650,11 +683,23 @@ export const createGraphCalProvider = (
               pendingQueueSize = Math.max(0, pendingQueueSize - 1);
             }
           }
-          if (page['@odata.deltaLink']) {
-            await opts.accountStore.set(deltaLinkKey(cal.id), page['@odata.deltaLink']);
-            link = page['@odata.deltaLink'];
+          const rawDeltaLink = readProviderStringContinuation(
+            page['@odata.deltaLink'],
+            'graph calendar delta watermark',
+          );
+          if (rawDeltaLink !== undefined) {
+            const deltaLink = assertProviderPageUrl(
+              rawDeltaLink,
+              GRAPH_API_BASE,
+              'graph calendar delta watermark',
+            );
+            await opts.accountStore.set(deltaLinkKey(cal.id), deltaLink);
+            link = deltaLink;
           }
-          url = page['@odata.nextLink'];
+          url = readProviderStringContinuation(
+            page['@odata.nextLink'],
+            'graph calendar delta',
+          );
         }
 
         if (retry) continue;
@@ -663,16 +708,12 @@ export const createGraphCalProvider = (
     }
   };
 
-  const defaultScheduler = (
-    cb: () => Promise<void>,
-    intervalMs: number,
-  ): (() => void) => {
-    const handle = setInterval(() => {
-      void cb().catch((err) => markError('graph poll tick failed', err));
-    }, intervalMs);
-    handle.unref?.();
-    return () => clearInterval(handle);
-  };
+  const defaultScheduler: ProviderPollScheduler = (cb, intervalMs) =>
+    startDrainingInterval({
+      tick: cb,
+      intervalMs,
+      onError: (err) => markError('graph poll tick failed', err),
+    });
 
   // ── write-back ──────────────────────────────────────────────
   const requireCalendarId = (calendarId: string, operation: string): void => {
@@ -788,18 +829,16 @@ export const createGraphCalProvider = (
       await runSyncTick(cb);
       pollStop = scheduler(() => runSyncTick(cb), intervalMs);
       return async () => {
-        if (pollStop) {
-          pollStop();
-          pollStop = null;
-        }
+        const stop = pollStop;
+        pollStop = null;
+        await stop?.();
       };
     },
 
     async close() {
-      if (pollStop) {
-        pollStop();
-        pollStop = null;
-      }
+      const stop = pollStop;
+      pollStop = null;
+      await stop?.();
     },
 
     health(): CalendarProviderHealth {
@@ -905,7 +944,7 @@ export interface CreateGraphCalAdapterFactoryOptions {
   fetcher?: HttpFetcher;
   now?: () => number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
-  scheduler?: (cb: () => Promise<void>, intervalMs: number) => () => void;
+  scheduler?: ProviderPollScheduler;
 }
 
 const parseGraphCalConfig = (
@@ -943,16 +982,7 @@ const probeGraphCalCaps = async (
   opts: CreateGraphCalAdapterFactoryOptions,
 ): Promise<ProbedCalendarCaps> => {
   const fetcher: HttpFetcher =
-    opts.fetcher ??
-    (async (url, init) => {
-      const res = await fetch(url, init);
-      return {
-        status: res.status,
-        ok: res.ok,
-        json: () => res.json(),
-        text: () => res.text(),
-      };
-    });
+    opts.fetcher ?? defaultHttpFetcher;
   const token = await getAccessToken({
     provider: 'graph',
     slug: cfg.account_slug,

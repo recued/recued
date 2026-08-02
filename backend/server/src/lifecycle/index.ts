@@ -224,6 +224,50 @@ export const createLifecycle = (
   const store = createLifecycleStateStore(opts.db);
   const machine = createLifecycleStateMachine('booting');
 
+  // Lifecycle audit writes are intentionally non-blocking at their call sites,
+  // but remain owned work: the drain's flush_audit step waits them before
+  // close_db and closes admission so a late signal cannot enqueue against a
+  // closed SQLite handle.
+  const pendingAuditWrites = new Set<Promise<void>>();
+  let auditAccepting = true;
+  const logAudit = (
+    action: import('@recued/storage').ActivityAction,
+    detail: Record<string, unknown>,
+  ): void => {
+    if (!opts.auditLog || !auditAccepting) return;
+    let write: Promise<void>;
+    try {
+      write = Promise.resolve(opts.auditLog.logActivity({
+        activity_id: `${action}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        timestamp: now(),
+        action,
+        target: 'server',
+        detail: JSON.stringify(detail),
+      })).catch((err) => {
+        log('warn', 'audit emit failed', {
+          action,
+          err: err instanceof Error ? err.message : err,
+        });
+      });
+    } catch (err) {
+      log('warn', 'audit emit failed', {
+        action,
+        err: err instanceof Error ? err.message : err,
+      });
+      return;
+    }
+    pendingAuditWrites.add(write);
+    const clear = (): void => { pendingAuditWrites.delete(write); };
+    void write.then(clear, clear);
+  };
+
+  const closeAndFlushAudit = async (): Promise<void> => {
+    auditAccepting = false;
+    while (pendingAuditWrites.size > 0) {
+      await Promise.allSettled([...pendingAuditWrites]);
+    }
+  };
+
   // Crash-loop.
   const crashLoopPersistence = createCrashLoopPersistence(opts.db);
   const crashLoop = createCrashLoopDetector({
@@ -271,11 +315,42 @@ export const createLifecycle = (
     } catch { /* fall through */ }
     return 30_000;
   })();
-  const drain = createDrainOrchestrator({
+  let stopConfigWatcher = (): Promise<void> => Promise.resolve();
+  const configuredStopAcceptingRpc = opts.drainSteps?.stop_accepting_rpc;
+  const configuredFlushAudit = opts.drainSteps?.flush_audit;
+  let drain!: DrainOrchestrator;
+  drain = createDrainOrchestrator({
     machine,
     lock,
     getInFlightCount: opts.getInFlightCount,
-    steps: opts.drainSteps,
+    steps: {
+      ...opts.drainSteps,
+      stop_accepting_rpc: async (signal) => {
+        // stop() closes reload admission synchronously, then drains a load that
+        // was already in progress. This hook lives on the orchestrator itself so
+        // signal, rpc, archive-restore, and direct lifecycle drains all use it.
+        await stopConfigWatcher();
+        await configuredStopAcceptingRpc?.(signal);
+      },
+      flush_audit: async (signal) => {
+        // At this point all mutable sources in earlier drain steps are stopped.
+        // Persist the terminal lifecycle breadcrumb while SQLite is still open;
+        // close_db/release_lock are synchronous best-effort tails.
+        const state = drain.state;
+        const action = state.aborted_steps.length > 0
+          ? 'drain_aborted'
+          : 'drain_completed';
+        logAudit(action, {
+          intent: state.intent,
+          reason: state.reason,
+          completed: [...state.completed_steps],
+          aborted: [...state.aborted_steps],
+          duration_ms: state.started_at === undefined ? 0 : Math.max(0, now() - state.started_at),
+        });
+        await closeAndFlushAudit();
+        await configuredFlushAudit?.(signal);
+      },
+    },
     defaultTimeoutMs: defaultDrainTimeoutMs,
     log: (lvl, msg, data) => log(lvl, msg, data),
     now,
@@ -306,6 +381,7 @@ export const createLifecycle = (
       });
     },
   });
+  stopConfigWatcher = () => configWatcher.stop();
 
   // Signal listener.
   const signals = createSignalListener({
@@ -336,26 +412,35 @@ export const createLifecycle = (
     processRef: opts.processRef,
   });
 
-  // Audit helper — best-effort; silent when auditLog isn't wired (tests).
-  const logAudit = (
-    action: import('@recued/storage').ActivityAction,
-    detail: Record<string, unknown>,
-  ): void => {
-    if (!opts.auditLog) return;
-    try {
-      void opts.auditLog.logActivity({
-        activity_id: `${action}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        timestamp: now(),
-        action,
-        target: 'server',
-        detail: JSON.stringify(detail),
-      });
-    } catch (err) {
-      log('warn', 'audit emit failed', {
-        action,
-        err: err instanceof Error ? err.message : err,
-      });
+  const requestLifecycleDrain: Lifecycle['requestDrain'] = async ({
+    intent,
+    reason,
+    timeoutMs,
+  }) => {
+    const isNew = !drain.state.active;
+    if (isNew) {
+      logAudit('drain_started', { intent, reason });
+      if (intent === 'restart') logAudit('server_restart', { reason });
+      else logAudit('server_shutdown', { reason });
     }
+    // Mark clean shutdown BEFORE the drain — the `close_db` drain task closes
+    // the warehouse db that backs this lifecycle-state store. Best-effort: the
+    // marker is a crash-detection hint and must never fail the drain itself.
+    try {
+      store.markCleanShutdown(now());
+    } catch {
+      /* db unexpectedly unavailable — the marker is a crash-detection hint */
+    }
+    const result = await drain.drain({ intent, reason, timeoutMs });
+    if (machine.state === 'draining') {
+      const target = intent === 'restart' ? 'restarting' : 'shutting_down';
+      try {
+        machine.transition(target);
+      } catch {
+        // A concurrent crash path may have flipped to 'crashed' already.
+      }
+    }
+    return result;
   };
 
   // Handler deps — assembled after the graph is complete.
@@ -374,12 +459,11 @@ export const createLifecycle = (
         now,
       }),
     drain,
-    onDrainComplete: (intent, reason) => {
-      // After a drain completes, the caller (signal or rpc) is
-      // responsible for invoking supervisor handoff. The rpc path
-      // also wires this — but the signal path is what actually exits.
-      // This callback is the audit-emission hook.
-      logAudit('drain_completed', { intent, reason });
+    requestDrain: requestLifecycleDrain,
+    onDrainComplete: (intent) => {
+      const code = supervisor.handoff(intent);
+      if (opts.exit) opts.exit(code);
+      else process.exit(code);
     },
     crashLoop,
   };
@@ -411,54 +495,7 @@ export const createLifecycle = (
       });
     },
 
-    async requestDrain({ intent, reason, timeoutMs }) {
-      const isNew = !drain.state.active;
-      if (isNew) {
-        logAudit('drain_started', { intent, reason });
-        if (intent === 'restart') logAudit('server_restart', { reason });
-        else logAudit('server_shutdown', { reason });
-      }
-      // Mark clean shutdown BEFORE the drain — the `close_db` drain task closes
-      // the warehouse db that backs this lifecycle-state store, so writing the
-      // marker AFTER `drain.drain()` hit a CLOSED connection. That threw, which
-      // rejected `requestDrain` and ABORTED the archive-restore commit that
-      // awaits this drain (`then(onDrained)` to swap the db). A normal restart
-      // never noticed — nothing awaits its drain — but it also meant the marker
-      // was never written, so `reconcileBoot` mis-counted every restart as an
-      // unclean exit. Recording it here (db still open) is correct: an orderly
-      // drain has been initiated. Best-effort — a marker write must NEVER fail a
-      // drain (the audit sink is console-based, so it's unaffected by close_db).
-      try {
-        store.markCleanShutdown(now());
-      } catch {
-        /* db unexpectedly unavailable — the marker is a crash-detection hint */
-      }
-      const result = await drain.drain({ intent, reason, timeoutMs });
-      // Emit drain_completed / drain_aborted only for the initiating
-      // call (avoid duplicate emissions from coalesced callers).
-      if (isNew) {
-        const action = result.aborted.length > 0
-          ? 'drain_aborted'
-          : 'drain_completed';
-        logAudit(action, {
-          intent: result.intent,
-          reason: result.reason,
-          completed: result.completed,
-          aborted: result.aborted,
-          duration_ms: result.duration_ms,
-        });
-      }
-      // Flip state machine into its terminal state.
-      if (machine.state === 'draining') {
-        const target = intent === 'restart' ? 'restarting' : 'shutting_down';
-        try {
-          machine.transition(target);
-        } catch {
-          // A concurrent crash path may have flipped to 'crashed' already.
-        }
-      }
-      return result;
-    },
+    requestDrain: requestLifecycleDrain,
 
     async handleCrash(err, origin) {
       const crash: LifecycleLastCrash = {
@@ -490,7 +527,7 @@ export const createLifecycle = (
 
     uninstall() {
       signals.uninstall();
-      configWatcher.stop();
+      void configWatcher.stop();
       crashLoopAutoResetTimer?.stop();
     },
   };

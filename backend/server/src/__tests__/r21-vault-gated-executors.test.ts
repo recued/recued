@@ -130,21 +130,54 @@ describe('vault-gated-executors coordinator', () => {
     expect(firstTick).toHaveBeenCalledTimes(1);
   });
 
-  it('a rejecting resume kick never throws out of the bus callback', () => {
+  it('reports every failed resume kick without throwing out of the bus callback', async () => {
     const bus = createVaultStateBus();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     wireVaultGatedExecutors({
       vaultStateBus: bus,
-      getAutoRunHandle: () => stubAutoRun(() => Promise.reject(new Error('kick failed'))),
-      getCronHandle: () => stubCron(() => Promise.reject(new Error('kick failed'))),
+      getAutoRunHandle: () => stubAutoRun(() => Promise.reject(new Error('auto failed'))),
+      getCronHandle: () => stubCron(() => Promise.reject(new Error('cron failed'))),
       watchManager: stubWatch(() => {
-        throw new Error('recompute failed');
+        throw new Error('watch failed');
       }),
-      recoverPendingApprovals: () => Promise.reject(new Error('recovery failed')),
+      recoverPendingApprovals: () => Promise.reject(new Error('approval failed')),
     });
 
-    // recompute() throws synchronously inside the callback; the bus
-    // isolates it, so emit() still returns cleanly.
     expect(() => bus.emit('unlocked', 'locked')).not.toThrow();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(warn).toHaveBeenCalledTimes(4);
+    expect(warn).toHaveBeenCalledWith('[vault-resume] auto-run resume failed: auto failed');
+    expect(warn).toHaveBeenCalledWith('[vault-resume] cron resume failed: cron failed');
+    expect(warn).toHaveBeenCalledWith(
+      '[vault-resume] pending approval recovery failed: approval failed',
+    );
+    expect(warn).toHaveBeenCalledWith('[vault-resume] watch resume failed: watch failed');
+    warn.mockRestore();
+  });
+
+  it('a broken logger cannot prevent sibling resume actions', async () => {
+    const bus = createVaultStateBus();
+    const autoTick = vi.fn(() => Promise.resolve());
+    const cronTick = vi.fn(() => Promise.resolve());
+    const recompute = vi.fn();
+    const recoverPendingApprovals = vi.fn(() => Promise.resolve());
+    wireVaultGatedExecutors({
+      vaultStateBus: bus,
+      getAutoRunHandle: () => stubAutoRun(autoTick),
+      getCronHandle: () => stubCron(cronTick),
+      watchManager: stubWatch(recompute),
+      recoverPendingApprovals,
+      log: () => { throw new Error('logger unavailable'); },
+    });
+
+    expect(() => bus.emit('unlocked', 'locked')).not.toThrow();
+    await new Promise((resolve) => setImmediate(resolve));
+
+    expect(autoTick).toHaveBeenCalledOnce();
+    expect(cronTick).toHaveBeenCalledOnce();
+    expect(recompute).toHaveBeenCalledOnce();
+    expect(recoverPendingApprovals).toHaveBeenCalledOnce();
   });
 
   it('dispose() detaches — a later unlock kicks nothing', async () => {
@@ -157,10 +190,42 @@ describe('vault-gated-executors coordinator', () => {
       watchManager: undefined,
     });
 
-    coordinator.dispose();
+    await coordinator.dispose();
     bus.emit('unlocked', 'locked');
     await new Promise((resolve) => setImmediate(resolve));
 
     expect(autoTick).not.toHaveBeenCalled();
+  });
+
+  it('dispose closes admission and waits for admitted approval recovery', async () => {
+    const bus = createVaultStateBus();
+    let releaseRecovery!: () => void;
+    const recoverPendingApprovals = vi.fn(() =>
+      new Promise<void>((resolve) => {
+        releaseRecovery = resolve;
+      }));
+    const coordinator = wireVaultGatedExecutors({
+      vaultStateBus: bus,
+      getAutoRunHandle: () => undefined,
+      getCronHandle: () => undefined,
+      watchManager: undefined,
+      recoverPendingApprovals,
+    });
+
+    bus.emit('unlocked', 'locked');
+    expect(recoverPendingApprovals).toHaveBeenCalledTimes(1);
+    let disposed = false;
+    const firstDispose = coordinator.dispose();
+    expect(coordinator.dispose()).toBe(firstDispose);
+    const observed = firstDispose.then(() => {
+      disposed = true;
+    });
+    await Promise.resolve();
+    expect(disposed).toBe(false);
+
+    bus.emit('unlocked', 'locked');
+    expect(recoverPendingApprovals).toHaveBeenCalledTimes(1);
+    releaseRecovery();
+    await observed;
   });
 });

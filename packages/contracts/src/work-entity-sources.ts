@@ -20,12 +20,56 @@
 // Closed enums
 // ────────────────────────────────────────────────────────────────
 
-/** Entity kinds admissible through `work_entity_sources`. `commitment`
- *  is deliberately absent (reserved — a declaration naming it fails
- *  with a pointer at the future `commitment_evidence` kind). */
-export const WORK_ENTITY_SOURCE_DECLARABLE_KINDS = ['task', 'note', 'project'] as const;
-export type WorkEntitySourceDeclarableKind = (typeof WORK_ENTITY_SOURCE_DECLARABLE_KINDS)[number];
+/** Kernel landing contracts for pack-declared work-entity Sources.
+ *
+ *  This is deliberately stronger than a naked kind allowlist. An entry says
+ *  where each posture lands at the generic entity boundary: mirrored rows in
+ *  the canonical `data.<kind>` collection, or transient rows returned through
+ *  `work.search` / `work.read`. The server's executable adapter registry is
+ *  typed as an exact `Record<WorkEntitySourceDeclarableKind, ...>` over these
+ *  keys, so adding a pack-declarable kind here makes the build fail until its
+ *  projector, store, tombstone, and qualified-id adapter exists.
+ *
+ *  `commitment` and `booking` are intentionally absent. They have canonical
+ *  local entities and `we1` identities, but no external Source landing
+ *  semantics; a pack must not be able to declare one merely because the base
+ *  entity type exists. */
+export const WORK_ENTITY_SOURCE_LANDING_CONTRACTS = {
+  task: {
+    canonical_collection: 'data.task',
+    qualified_id_namespace: 'we1',
+    postures: ['records', 'read_through'],
+  },
+  note: {
+    canonical_collection: 'data.note',
+    qualified_id_namespace: 'we1',
+    postures: ['records', 'read_through'],
+  },
+  project: {
+    canonical_collection: 'data.project',
+    qualified_id_namespace: 'we1',
+    postures: ['records', 'read_through'],
+  },
+} as const;
+
+export type WorkEntitySourceDeclarableKind = keyof typeof WORK_ENTITY_SOURCE_LANDING_CONTRACTS;
+export type WorkEntitySourceLandingContract =
+  (typeof WORK_ENTITY_SOURCE_LANDING_CONTRACTS)[WorkEntitySourceDeclarableKind];
+
+export const WORK_ENTITY_SOURCE_DECLARABLE_KINDS = Object.freeze(
+  Object.keys(WORK_ENTITY_SOURCE_LANDING_CONTRACTS) as WorkEntitySourceDeclarableKind[],
+);
 export const WORK_ENTITY_SOURCE_DECLARABLE_KIND_SET: ReadonlySet<string> = new Set(WORK_ENTITY_SOURCE_DECLARABLE_KINDS);
+
+/** Resolve the landing contract a pack declaration may target. Null means the
+ *  kernel has no complete runtime landing adapter and publish must fail. */
+export const getWorkEntitySourceLandingContract = (
+  kind: unknown,
+): WorkEntitySourceLandingContract | null =>
+  typeof kind === 'string'
+  && Object.prototype.hasOwnProperty.call(WORK_ENTITY_SOURCE_LANDING_CONTRACTS, kind)
+    ? WORK_ENTITY_SOURCE_LANDING_CONTRACTS[kind as WorkEntitySourceDeclarableKind]
+    : null;
 
 /** Narrowing guard — `WORK_ENTITY_SOURCE_DECLARABLE_KIND_SET.has()` is
  *  typed `ReadonlySet<string>` and does NOT narrow, so callers wanting
@@ -40,6 +84,13 @@ export const isWorkEntitySourceDeclarableKind = (
 
 export const WORK_ENTITY_SYNC_MODES = ['read_only', 'read_write'] as const;
 export type WorkEntitySyncMode = (typeof WORK_ENTITY_SYNC_MODES)[number];
+
+/** Whether a declared work-entity Source materializes canonical rows or is
+ *  read directly on demand. Omission is the backward-compatible `records`
+ *  posture. Kept narrower than the global Source posture enum: file/contact
+ *  families use their own declaration contracts. */
+export const WORK_ENTITY_SOURCE_POSTURES = ['records', 'read_through'] as const;
+export type WorkEntitySourcePosture = (typeof WORK_ENTITY_SOURCE_POSTURES)[number];
 
 /** Fork F3 (2026-07-01): `'meta'` is the ONLY sync depth — `full` was
  *  dropped, not deferred. The field stays declared so a future depth is
@@ -428,6 +479,11 @@ export interface WorkEntitySourceCursor {
 }
 
 export interface WorkEntitySourceSync {
+  /** Omitted = `records` (the existing mirrored behavior).
+   *  `read_through` schedules no poller and persists no `data_<kind>` row;
+   *  generic reads invoke `ops.list` / `ops.read` and return transient
+   *  Source-qualified entities. */
+  posture?: WorkEntitySourcePosture;
   mode: WorkEntitySyncMode;
   depth: WorkEntitySyncDepth;
   cursor?: WorkEntitySourceCursor;
@@ -439,7 +495,8 @@ export interface WorkEntitySourceSync {
    *  (validator-gated — hydration cannot name the vendor record
    *  without it). */
   list_rows?: WorkEntityListRowKind;
-  tombstones: WorkEntityTombstoneKind;
+  /** Mirror-only. Required for `records`; forbidden for `read_through`. */
+  tombstones?: WorkEntityTombstoneKind;
   /** Required with `tombstones: 'native'` (P3 fold): the remote field
    *  whose truthy value marks a vendor-side deletion/archival on a
    *  fetched row (Google Tasks `deleted`, HubSpot `archived`). Without
@@ -449,7 +506,8 @@ export interface WorkEntitySourceSync {
   /** Required with `tombstones: 'missing_means_deleted'` — must be
    *  `'complete_authoritative'` there. */
   list_scope?: WorkEntityListScope;
-  stale_after_ms: number;
+  /** Mirror-only. Required for `records`; forbidden for `read_through`. */
+  stale_after_ms?: number;
 }
 
 export interface WorkEntitySourceWildQueryPolicy {
@@ -477,7 +535,7 @@ export interface WorkEntitySourceWildQueryPolicy {
  *  - `never_synced` — no successful cycle yet (just enrolled, config
  *    failure, or the sync substrate predates the row). */
 export const WORK_ENTITY_SOURCE_FRESHNESS_STATES = [
-  'local', 'fresh', 'stale', 'degraded', 'never_synced',
+  'local', 'read_through', 'fresh', 'stale', 'degraded', 'never_synced',
 ] as const;
 export type WorkEntitySourceFreshnessState =
   (typeof WORK_ENTITY_SOURCE_FRESHNESS_STATES)[number];
@@ -508,8 +566,12 @@ export interface WorkEntitySourceFreshness {
 }
 
 export interface WorkEntitySourceReadResolution {
-  default: 'local_rich_meta';
-  remote_when: WorkEntityRemoteWhenReason[];
+  /** `local_rich_meta` pairs with mirrored `records`; `source` pairs with
+   *  `read_through` and means the declared operation is the read baseline. */
+  default: 'local_rich_meta' | 'source';
+  /** Mirror escalation policy. Omitted for `read_through`, whose baseline is
+   *  already the source. */
+  remote_when?: WorkEntityRemoteWhenReason[];
   wild_query: WorkEntitySourceWildQueryPolicy;
 }
 

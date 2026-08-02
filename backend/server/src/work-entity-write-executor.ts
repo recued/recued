@@ -102,7 +102,10 @@ import {
   workEntitySourceVersionToken,
   type ProjectedWorkEntityUpsert,
 } from './work-entity-source-projector.js';
-import type { KernelWorkEntitySourceDeclaration } from './work-entity-source-boot.js';
+import {
+  workEntitySourceContractHash,
+  type KernelWorkEntitySourceDeclaration,
+} from './work-entity-source-boot.js';
 import type { OpAdmissionGate } from './op-admission-gate.js';
 import { resolveConfigArgBindings } from './work-entity-config-args.js';
 import { composeWireArgs } from './work-entity-wire-body.js';
@@ -810,56 +813,66 @@ const composeVerifiedUpsert = (
   projected: ProjectedWorkEntityUpsert,
 ): ProjectedWorkEntityUpsert => {
   const declared = new Set(Object.keys(declaration.projection.canonical));
-  if (projected.kind === 'task') {
-    const cur = current as Task;
-    const write: TaskWriteInput & { source_record_id: string } = { ...projected.write };
-    if (cur.body !== undefined) write.body = cur.body;
-    if (!declared.has('done')) write.done = cur.done;
-    if (!declared.has('completed_at') && cur.completed_at !== undefined) write.completed_at = cur.completed_at;
-    if (!declared.has('state') && cur.state !== undefined) write.state = cur.state;
-    if (!declared.has('progress') && cur.progress !== undefined) write.progress = cur.progress;
-    if (!declared.has('due_at') && cur.due_at !== undefined) write.due_at = cur.due_at;
-    if (!declared.has('priority') && cur.priority !== undefined) write.priority = cur.priority;
-    if (cur.assigned_contact_id !== undefined) write.assigned_contact_id = cur.assigned_contact_id;
-    if (cur.parent_calendar_event_id !== undefined) write.parent_calendar_event_id = cur.parent_calendar_event_id;
-    if (cur.linked_mail_thread_id !== undefined) write.linked_mail_thread_id = cur.linked_mail_thread_id;
-    if (cur.parent_project_id !== undefined) write.parent_project_id = cur.parent_project_id;
-    if (cur.blocks_task_ids !== undefined) write.blocks_task_ids = cur.blocks_task_ids;
-    write.sync_state = cur.sync_state;
-    write.conflict_policy = cur.conflict_policy;
-    return { kind: 'task', write };
+  switch (projected.kind) {
+    case 'task': {
+      const cur = current as Task;
+      const write: TaskWriteInput & { source_record_id: string } = { ...projected.write };
+      if (cur.body !== undefined) write.body = cur.body;
+      if (!declared.has('done')) write.done = cur.done;
+      if (!declared.has('completed_at') && cur.completed_at !== undefined) write.completed_at = cur.completed_at;
+      if (!declared.has('state') && cur.state !== undefined) write.state = cur.state;
+      if (!declared.has('progress') && cur.progress !== undefined) write.progress = cur.progress;
+      if (!declared.has('due_at') && cur.due_at !== undefined) write.due_at = cur.due_at;
+      if (!declared.has('priority') && cur.priority !== undefined) write.priority = cur.priority;
+      if (cur.assigned_contact_id !== undefined) write.assigned_contact_id = cur.assigned_contact_id;
+      if (cur.parent_calendar_event_id !== undefined) write.parent_calendar_event_id = cur.parent_calendar_event_id;
+      if (cur.linked_mail_thread_id !== undefined) write.linked_mail_thread_id = cur.linked_mail_thread_id;
+      if (cur.parent_project_id !== undefined) write.parent_project_id = cur.parent_project_id;
+      if (cur.blocks_task_ids !== undefined) write.blocks_task_ids = cur.blocks_task_ids;
+      write.sync_state = cur.sync_state;
+      write.conflict_policy = cur.conflict_policy;
+      return { kind: 'task', write };
+    }
+    case 'note': {
+      const cur = current as Note;
+      const write: NoteWriteInput & { source_record_id: string } = { ...projected.write };
+      // The canonical long-body column is local-only on a meta Source
+      // (the projector writes `''`) — the just-written local body must
+      // survive its own write's verification.
+      write.body = cur.body;
+      if (!declared.has('title') && cur.title !== undefined) write.title = cur.title;
+      write.related_contact_ids = cur.related_contact_ids;
+      write.related_calendar_event_ids = cur.related_calendar_event_ids;
+      write.related_mail_thread_ids = cur.related_mail_thread_ids;
+      write.related_project_ids = cur.related_project_ids;
+      // A verify rewrite is not a user action (§ A.1.2).
+      write.last_user_action_at = cur.last_user_action_at;
+      write.sync_state = cur.sync_state;
+      write.conflict_policy = cur.conflict_policy;
+      return { kind: 'note', write };
+    }
+    case 'project': {
+      const cur = current as Project;
+      const write: ProjectWriteInput & { source_record_id: string } = { ...projected.write };
+      if (cur.description !== undefined) write.description = cur.description;
+      if (!declared.has('state') && cur.state !== undefined) write.state = cur.state;
+      if (!declared.has('target_completion_at') && cur.target_completion_at !== undefined) {
+        write.target_completion_at = cur.target_completion_at;
+      }
+      if (cur.related_contact_ids !== undefined) write.related_contact_ids = cur.related_contact_ids;
+      if (cur.parent_project_id !== undefined) write.parent_project_id = cur.parent_project_id;
+      if (cur.last_activity_at !== undefined) write.last_activity_at = cur.last_activity_at;
+      write.sync_state = cur.sync_state;
+      write.conflict_policy = cur.conflict_policy;
+      return { kind: 'project', write };
+    }
+    default: {
+      // Vendor verification is part of an external Source's write landing.
+      // A newly declarable kind must preserve its own local-only lanes.
+      const exhaustive: never = projected;
+      return exhaustive;
+    }
   }
-  if (projected.kind === 'note') {
-    const cur = current as Note;
-    const write: NoteWriteInput & { source_record_id: string } = { ...projected.write };
-    // The canonical long-body column is local-only on a meta Source
-    // (the projector writes `''`) — the just-written local body must
-    // survive its own write's verification.
-    write.body = cur.body;
-    if (!declared.has('title') && cur.title !== undefined) write.title = cur.title;
-    write.related_contact_ids = cur.related_contact_ids;
-    write.related_calendar_event_ids = cur.related_calendar_event_ids;
-    write.related_mail_thread_ids = cur.related_mail_thread_ids;
-    write.related_project_ids = cur.related_project_ids;
-    // A verify rewrite is not a user action (§ A.1.2).
-    write.last_user_action_at = cur.last_user_action_at;
-    write.sync_state = cur.sync_state;
-    write.conflict_policy = cur.conflict_policy;
-    return { kind: 'note', write };
-  }
-  const cur = current as Project;
-  const write: ProjectWriteInput & { source_record_id: string } = { ...projected.write };
-  if (cur.description !== undefined) write.description = cur.description;
-  if (!declared.has('state') && cur.state !== undefined) write.state = cur.state;
-  if (!declared.has('target_completion_at') && cur.target_completion_at !== undefined) {
-    write.target_completion_at = cur.target_completion_at;
-  }
-  if (cur.related_contact_ids !== undefined) write.related_contact_ids = cur.related_contact_ids;
-  if (cur.parent_project_id !== undefined) write.parent_project_id = cur.parent_project_id;
-  if (cur.last_activity_at !== undefined) write.last_activity_at = cur.last_activity_at;
-  write.sync_state = cur.sync_state;
-  write.conflict_policy = cur.conflict_policy;
-  return { kind: 'project', write };
 };
 
 // ────────────────────────────────────────────────────────────────
@@ -997,6 +1010,15 @@ const resolveOp = (
   if (opRow === undefined) {
     return { ok: false, reason: `catalog '${catalogSlug}' declares no '${opKey}' operation` };
   }
+  // Defense in depth for already-installed/legacy manifests: the publish gate
+  // enforces this too, but a targeted read must never dispatch a non-read op
+  // merely because a declaration placed it in the `read` slot.
+  if (effectiveSlot === 'read' && opRow.risk_tier !== 'read') {
+    return {
+      ok: false,
+      reason: `declaration read op '${opKey}' is '${opRow.risk_tier}', not read-tier`,
+    };
+  }
   const binding = effectiveSlot === 'create'
     ? undefined
     : declaration.op_bindings?.[effectiveSlot];
@@ -1092,6 +1114,7 @@ export const prepareWorkEntitySourceTargetedRead = (
   const { source_id } = input;
   const configFail = (reason: string): { ok: false; kind: 'config'; reason: string } =>
     ({ ok: false, kind: 'config', reason });
+
   const resolved = deps.resolveDeclaration(source_id);
   if (resolved === null) {
     return configFail(
@@ -1147,6 +1170,64 @@ export const createWorkEntitySourceWriteExecutor = (
   const configFail = (reason: string): { ok: false; kind: 'config'; reason: string } =>
     ({ ok: false, kind: 'config', reason });
 
+  /** A prepared route captures declaration + catalog state before the caller's
+   *  local mutation. Pack replacement / connection teardown can reconcile while
+   *  a provider call is awaited, so re-resolve the declaration at every await
+   *  boundary. The live registry posture is an additional materialization
+   *  authority in production; the fallback keeps prepare-only test harnesses
+   *  (whose mirror is deliberately an empty cast) source-compatible. */
+  const supersededReason = (
+    prepared: WorkEntityVendorWritePrepared,
+  ): string | null => {
+    const current = deps.resolveDeclaration(prepared.source_id);
+    if (current === null) {
+      return `source '${prepared.source_id}' no longer has a work-entity Source declaration`;
+    }
+    const declaredPosture = current.declaration.sync.posture ?? 'records';
+    const registryPosture = typeof deps.mirror.getSourceSyncPosture === 'function'
+      ? deps.mirror.getSourceSyncPosture(prepared.source_id)
+      : declaredPosture;
+    if (registryPosture !== 'records') {
+      return registryPosture === null
+        ? `source '${prepared.source_id}' is no longer registered for mirrored records`
+        : `source '${prepared.source_id}' now has '${registryPosture}' posture, not 'records'`;
+    }
+    if (declaredPosture !== 'records') {
+      return `source '${prepared.source_id}' now declares '${declaredPosture}' posture, not 'records'`;
+    }
+    if (current.connection_name !== prepared.connection_name) {
+      return `source '${prepared.source_id}' is now bound to connection '${current.connection_name}', not '${prepared.connection_name}'`;
+    }
+    if (current.declaration.kind !== prepared.kind) {
+      return `source '${prepared.source_id}' now declares kind '${current.declaration.kind}', not '${prepared.kind}'`;
+    }
+    if (
+      workEntitySourceContractHash(current.declaration)
+      !== workEntitySourceContractHash(prepared.declaration)
+    ) {
+      return `source '${prepared.source_id}' declaration changed while the generic write was in flight`;
+    }
+    return null;
+  };
+
+  const supersededOutcome = (
+    prepared: WorkEntityVendorWritePrepared,
+    reason: string,
+    providerInteractionMayHaveCompleted: boolean,
+  ): WorkEntityVendorWriteDispatchOutcome => ({
+    ok: false,
+    kind: 'config',
+    reason:
+      `${reason}; the prepared generic '${prepared.operation}' route is superseded. `
+      + (providerInteractionMayHaveCompleted
+        ? 'A provider interaction may already have completed, but no further canonical mirror result was accepted. '
+        : 'No provider mutation was sent after the declaration changed. ')
+      + 'Do not retry unchanged: read the current Source state and use the matching provider operation when it is read_through.',
+    // A declaration migration owns cleanup. Reporting this as staged would make
+    // WorkEntityVendorWriteError tell the caller to retry the obsolete route.
+    staged: false,
+  });
+
   /** Resolve the write context — declaration + bound catalog manifest + connection
    *  config — for a source. The config-fail SET shared by `prepare` and
    *  `resolveCreateDependencies` so create-assist resolution and the write itself
@@ -1171,6 +1252,14 @@ export const createWorkEntitySourceWriteExecutor = (
     const { declaration, connection_name, connection_config } = resolved;
     if (declaration.kind !== kind) {
       return { ok: false, reason: `source '${source_id}' declares kind '${declaration.kind}', not '${kind}'` };
+    }
+    if (declaration.sync.posture === 'read_through') {
+      return {
+        ok: false,
+        reason:
+          `source '${source_id}' is read_through and has no generic local mutation target — `
+          + 'pass its Source-qualified id to the matching provider operation instead',
+      };
     }
     if (declaration.sync.mode !== 'read_write') {
       return { ok: false, reason: `source '${source_id}' is declared read_only — vendor writes are not permitted` };
@@ -1634,6 +1723,10 @@ export const createWorkEntitySourceWriteExecutor = (
       // container). `ask`→admit only; a policy `deny` still blocks.
       ...(prepared.preflight_admitted === true ? { preflight_admitted: true } : {}),
     });
+    const createSuperseded = supersededReason(prepared);
+    if (createSuperseded !== null) {
+      return supersededOutcome(prepared, createSuperseded, true);
+    }
     if (!invoked.ok) {
       return { ok: false, kind: invoked.kind === 'unavailable' ? 'error' : invoked.kind, reason: invoked.reason, staged: false };
     }
@@ -1717,6 +1810,10 @@ export const createWorkEntitySourceWriteExecutor = (
       auditRecipe: SOURCE_WRITE_RECIPE,
       stepId: 'source_write',
     });
+    const deleteSuperseded = supersededReason(prepared);
+    if (deleteSuperseded !== null) {
+      return supersededOutcome(prepared, deleteSuperseded, true);
+    }
     if (!invoked.ok) {
       return { ok: false, kind: invoked.kind === 'unavailable' ? 'error' : invoked.kind, reason: invoked.reason, staged: false };
     }
@@ -1749,6 +1846,10 @@ export const createWorkEntitySourceWriteExecutor = (
         source_record_id: rid,
         stepId: 'write_verify',
       });
+      const verifySuperseded = supersededReason(prepared);
+      if (verifySuperseded !== null) {
+        return supersededOutcome(prepared, verifySuperseded, true);
+      }
       if (readBack.ok) {
         return {
           ok: false,
@@ -1789,6 +1890,10 @@ export const createWorkEntitySourceWriteExecutor = (
       prepared,
       source_record_id: rid,
     });
+    const preflightSuperseded = supersededReason(prepared);
+    if (preflightSuperseded !== null) {
+      return supersededOutcome(prepared, preflightSuperseded, false);
+    }
     if (!read.ok) {
       return {
         ok: false,
@@ -1893,6 +1998,10 @@ export const createWorkEntitySourceWriteExecutor = (
       auditRecipe: SOURCE_WRITE_RECIPE,
       stepId: 'source_write',
     });
+    const writeSuperseded = supersededReason(prepared);
+    if (writeSuperseded !== null) {
+      return supersededOutcome(prepared, writeSuperseded, true);
+    }
     if (!written.ok) {
       return { ok: false, kind: written.kind === 'unavailable' ? 'error' : written.kind, reason: written.reason, staged: true };
     }
@@ -1908,6 +2017,10 @@ export const createWorkEntitySourceWriteExecutor = (
         source_record_id: rid,
         stepId: 'write_verify',
       });
+      const verifySuperseded = supersededReason(prepared);
+      if (verifySuperseded !== null) {
+        return supersededOutcome(prepared, verifySuperseded, true);
+      }
       if (verifyRead.ok) projected = projectFor(prepared, rid, verifyRead.record);
     }
     // D-192 — ASSERT before folding. `composeVerifiedUpsert` lets the VENDOR's
@@ -1950,7 +2063,10 @@ export const createWorkEntitySourceWriteExecutor = (
     target,
   ) => {
     let outcome: WorkEntityVendorWriteDispatchOutcome;
-    if (prepared.operation === 'create') {
+    const dispatchSuperseded = supersededReason(prepared);
+    if (dispatchSuperseded !== null) {
+      outcome = supersededOutcome(prepared, dispatchSuperseded, false);
+    } else if (prepared.operation === 'create') {
       outcome = await dispatchCreate(prepared);
     } else if (target === undefined) {
       outcome = {
@@ -2003,6 +2119,20 @@ export const createWorkEntitySourceWriteExecutor = (
         console.error(
           '[d214] deterministic verification recording failed',
           error,
+        );
+      }
+    }
+    if (outcome.ok) {
+      const finalSuperseded = supersededReason(prepared);
+      if (finalSuperseded !== null) {
+        const providerInteractionMayHaveCompleted =
+          outcome.operation === 'create'
+          || outcome.operation === 'delete'
+          || outcome.applied === 'pushed';
+        return supersededOutcome(
+          prepared,
+          finalSuperseded,
+          providerInteractionMayHaveCompleted,
         );
       }
     }

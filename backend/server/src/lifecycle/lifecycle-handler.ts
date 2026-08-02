@@ -20,7 +20,11 @@ import type {
 } from '@recued/contracts';
 import type { WsClient } from '../ws-server.js';
 import type { DrainIntent } from '@recued/contracts';
-import type { DrainOrchestrator } from './drain-orchestrator.js';
+import type {
+  DrainOptions,
+  DrainOrchestrator,
+  DrainResult,
+} from './drain-orchestrator.js';
 import type { CrashLoopDetector, CrashLoopResetResult } from './crash-loop.js';
 
 export interface LifecycleHandlerDeps {
@@ -33,10 +37,13 @@ export interface LifecycleHandlerDeps {
    *  handler can report `accepted: false` when a drain is already
    *  in-flight. */
   drain: DrainOrchestrator;
+  /** Full lifecycle drain entry point. This must be
+   *  `Lifecycle.requestDrain` so clean-shutdown persistence and terminal state
+   *  transitions cannot be bypassed. */
+  requestDrain: (opts: DrainOptions) => Promise<DrainResult>;
   /** Supervisor handoff — called after drain resolves to exit with
-   *  the mode-appropriate code. Optional: tests that don't want a
-   *  real exit can omit it. */
-  onDrainComplete?: (intent: DrainIntent, reason: string) => void;
+   *  the mode-appropriate code. */
+  onDrainComplete: (intent: DrainIntent, reason: string) => void;
   /** Crash-loop detector — drives `resetCrashLoop`. */
   crashLoop: CrashLoopDetector;
 }
@@ -53,24 +60,27 @@ export const handleRequestShutdown = (
     : undefined;
   // Fire-and-forget. Caller's ws will close when the drain reaches
   // the close_ws step; they get `{ accepted: true }` first.
-  void deps.drain
-    .drain({
-      reason: args.reason || 'rpc',
-      intent: 'shutdown',
-      timeoutMs,
-    })
+  void deps.requestDrain({
+    reason: args.reason || 'rpc',
+    intent: 'shutdown',
+    timeoutMs,
+  })
     .then((result) => {
-      deps.onDrainComplete?.(result.intent, result.reason);
+      deps.onDrainComplete(result.intent, result.reason);
+    })
+    .catch(() => {
+      // Fire-and-forget RPC handoff: the lifecycle/drain implementation owns
+      // structured error logging. Never create an unhandled rejection here.
     });
   return { accepted: true };
 };
 
 export const handleGetLifecycleState = (
-  deps: LifecycleHandlerDeps,
+  deps: Pick<LifecycleHandlerDeps, 'getSnapshot'>,
 ): LifecycleStatus => deps.getSnapshot();
 
 export const handleResetCrashLoop = (
-  deps: LifecycleHandlerDeps,
+  deps: Pick<LifecycleHandlerDeps, 'crashLoop'>,
 ): {
   ok: true;
   cleared: {

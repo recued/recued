@@ -53,6 +53,11 @@ import {
   resolveSurfaceErrorDisplay,
   type SurfaceErrorEntry,
 } from '../shell/rpc-error-copy.js';
+import {
+  isUnresolvedServerControlActionOutcome,
+  type ServerControlActionOutcome,
+  type ServerControlCurrentStateObservation,
+} from '../shell/server-pill-host.js';
 
 export const ATTENTION_TOPBAR_HOST_ATTR = 'data-recued-attention-topbar';
 export const ATTENTION_TOPBAR_STYLES_MARKER =
@@ -82,6 +87,10 @@ export const ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR =
   'data-recued-attention-recovery-excursion-return-announcer';
 export const ATTENTION_RECOVERY_INTENT_CONTINUATION_ATTR =
   'data-recued-attention-recovery-intent-continuation';
+export const ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME_ATTR =
+  'data-recued-attention-recovery-intent-server-outcome';
+export const ATTENTION_RECOVERY_INTENT_SERVER_STATE_ATTR =
+  'data-recued-attention-recovery-intent-server-state';
 export const ATTENTION_CONNECTIONS_LINK_ATTR =
   'data-recued-attention-connections-link';
 export const ATTENTION_DIALOG_ATTR = 'data-recued-attention-dialog';
@@ -420,6 +429,30 @@ export const ATTENTION_TOPBAR_STYLES = `
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-continuation[data-phase="failed"][data-remediation="review"] .attention-plan-resolution-title {
   color: var(--fg, #27272a);
 }
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-continuation[data-phase="failed"][data-remediation="escalated"] {
+  border-left-color: var(--warning, #9a6700);
+  background: var(--surface-sunk, #f4f6f8);
+  background: color-mix(in srgb, var(--warning, #9a6700) 10%, var(--surface, #ffffff));
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-continuation[data-phase="failed"][data-remediation="escalated"] .attention-plan-resolution-title {
+  color: var(--warning, #8a5a00);
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-continuation[data-phase="verification_ready"] {
+  border-left-color: var(--accent, #0e7490);
+  background: var(--surface-sunk, #f4f6f8);
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-continuation[data-phase="awaiting_review_outcome"],
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-continuation[data-phase="verification_interrupted"],
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-continuation[data-phase="verification_handoff"] {
+  border-left-color: var(--warning, #9a6700);
+  background: var(--surface-sunk, #f4f6f8);
+  background: color-mix(in srgb, var(--warning, #9a6700) 7%, var(--surface, #ffffff));
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-continuation[data-phase="awaiting_review_outcome"] .attention-plan-resolution-title,
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-continuation[data-phase="verification_interrupted"] .attention-plan-resolution-title,
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-continuation[data-phase="verification_handoff"] .attention-plan-resolution-title {
+  color: var(--warning, #8a5a00);
+}
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-plan-resolution-copy {
   display: grid;
   gap: 3px;
@@ -611,6 +644,22 @@ export interface MountApprovalAttentionPopoverOptions {
   onRemediateRecoveryIntentConnection?: (
     continuation: AttentionRecoveryIntentContinuation,
   ) => 'started' | 'missing' | 'unavailable';
+  /** Opens Account for direct inspection after this tab reaches its retry
+   * limit or when its last server-control receipt remains unresolved. Unlike
+   * connection remediation, this never arms another retry or replays an
+   * action. */
+  onReviewRecoveryIntentServer?: (
+    continuation: AttentionRecoveryIntentContinuation,
+  ) => 'started' | 'missing' | 'unavailable';
+  /** A direct review looked useful to the person. Perform exactly one fresh
+   * route-owned check before restoring the saved intent. */
+  onResolveRecoveryIntentReview?: (
+    continuation: AttentionRecoveryIntentContinuation,
+  ) => 'started' | 'missing' | 'unavailable';
+  /** Close the explicit outcome handoff without discarding its saved return. */
+  onKeepRecoveryIntentReviewBlocked?: (
+    continuation: AttentionRecoveryIntentContinuation,
+  ) => 'started' | 'missing' | 'unavailable';
   /** Explicit dismissal retires the privacy-safe session marker. */
   onDismissRecoveryIntentContinuation?: () => void;
   /** Deterministic relative-time/request-lineage seam. */
@@ -641,7 +690,15 @@ export interface AttentionRecoveryExcursionReturn {
 export type AttentionRecoveryIntentRemediation =
   | 'retry'
   | 'connection'
-  | 'review';
+  | 'review'
+  | 'escalated';
+
+export type AttentionRecoveryIntentReviewTarget = 'area' | 'server';
+export type AttentionRecoveryIntentInterruption =
+  | 'connection'
+  | 'navigation'
+  | 'ownership'
+  | 'reload';
 
 export interface AttentionRecoveryIntentContinuation {
   readonly serverProfileId: string;
@@ -649,16 +706,32 @@ export interface AttentionRecoveryIntentContinuation {
   readonly landingHash: string;
   readonly areaLabel: string;
   readonly intent: 'continue' | 'choose_again';
-  /** Ephemeral UI state only. The session marker intentionally omits it so a
-   * reload always returns to a truthful, retryable `ready` posture. */
+  /** Closed-list UI state. Only an unfinished direct-review verification gets
+   * a separate privacy-safe continuity marker across reloads. */
   readonly phase:
     | 'ready'
     | 'checking'
     | 'failed'
-    | 'waiting_for_connection';
+    | 'waiting_for_connection'
+    | 'awaiting_review_outcome'
+    | 'verification_ready'
+    | 'verification_interrupted'
+    | 'verification_handoff';
   /** Closed-list recovery posture derived from live shell/route state. Raw
    * errors, credentials, and route-owned detail never enter this value. */
   readonly remediation: AttentionRecoveryIntentRemediation | null;
+  /** Direct-review context. An unfinished verification may persist only this
+   * closed-list target in a separate marker bound to the saved return. */
+  readonly reviewTarget?: AttentionRecoveryIntentReviewTarget;
+  /** Closed-list cause for an unfinished post-review verification. It never
+   * contains transport errors, route detail, or user-authored content. */
+  readonly interruptionReason?: AttentionRecoveryIntentInterruption;
+  /** Same-tab, privacy-safe result of an explicit Account server-control
+   * review. Never durable and never includes the receipt's raw detail. */
+  readonly serverControlOutcome?: ServerControlActionOutcome;
+  /** Same-tab current-state baseline from a stable fresh heartbeat. Kept
+   * separate so it cannot rewrite an old action receipt into success. */
+  readonly serverCurrentState?: ServerControlCurrentStateObservation;
 }
 
 export interface ApprovalAttentionPopoverMount {
@@ -669,6 +742,9 @@ export interface ApprovalAttentionPopoverMount {
     AttentionInactiveConnectionRecoveryHint
   >;
   isOpen(): boolean;
+  /** Open and focus Attention from another shell surface without synthesizing
+   * a click. Reuses the same freshness boundary as the bell. */
+  open(): void;
   refreshApprovals(): Promise<void>;
   refreshAsks(): Promise<void>;
   refreshConnectionRecoveries(): Promise<void>;
@@ -1313,24 +1389,222 @@ const renderRecoveryExcursionReturn = (
   </div>
 `;
 
-const renderRecoveryIntentContinuation = (
+const serverControlActionLabel = (
+  action: ServerControlActionOutcome['action'],
+): 'Pause' | 'Resume' | 'Restart' => action === 'pause'
+  ? 'Pause'
+  : action === 'resume'
+    ? 'Resume'
+    : 'Restart';
+
+const normalizeServerControlActionOutcome = (
+  value: ServerControlActionOutcome | null | undefined,
+): ServerControlActionOutcome | undefined => {
+  if (
+    value === null
+    || value === undefined
+    || (
+      value.action !== 'pause'
+      && value.action !== 'resume'
+      && value.action !== 'restart'
+    )
+    || (
+      value.phase !== 'pending'
+      && value.phase !== 'accepted'
+      && value.phase !== 'confirmed'
+      && value.phase !== 'reconnected'
+      && value.phase !== 'superseded'
+      && value.phase !== 'failed'
+      && value.phase !== 'unconfirmed'
+    )
+    || (
+      value.currentState !== undefined
+      && value.currentState !== 'running'
+      && value.currentState !== 'paused'
+      && value.currentState !== 'restarting'
+    )
+    || (
+      (value.phase === 'accepted' || value.phase === 'reconnected')
+      && value.action !== 'restart'
+    )
+    || (value.phase === 'superseded' && value.action === 'restart')
+  ) return undefined;
+  return {
+    action: value.action,
+    phase: value.phase,
+    ...(value.currentState === undefined
+      ? {}
+      : { currentState: value.currentState }),
+  };
+};
+
+const serverControlOutcomePresentation = (
   value: AttentionRecoveryIntentContinuation,
-  canReview: boolean,
-  canRemediateConnection: boolean,
-): string => {
-  const waitingForConnection = value.phase === 'waiting_for_connection';
+): {
+  readonly title: string;
+  readonly detail: string;
+  readonly summary: string;
+  readonly announcement: string;
+  readonly primaryLabel: string;
+  readonly primaryAriaLabel: string;
+  readonly unresolved: boolean;
+} | null => {
+  const outcome = value.serverControlOutcome;
+  if (outcome === undefined) return null;
+  const currentState = value.serverCurrentState;
+  const unresolved = currentState === undefined
+    && isUnresolvedServerControlActionOutcome(outcome);
+  const action = serverControlActionLabel(outcome.action);
   const landingAction = value.intent === 'choose_again'
     ? 'choose again'
     : 'continue';
   const landingActionGerund = value.intent === 'choose_again'
     ? 'choosing again'
     : 'continuing';
+  const title = currentState !== undefined
+    ? currentState.state === 'paused'
+      ? 'Current server state: paused'
+      : 'Current server state: running'
+    : outcome.phase === 'pending'
+    ? `${action} was still pending`
+    : outcome.phase === 'accepted'
+      ? 'Restart was accepted'
+      : outcome.phase === 'confirmed'
+        ? `${action} completed`
+        : outcome.phase === 'reconnected'
+          ? 'Restart was not fully confirmed'
+          : outcome.phase === 'superseded'
+            ? `Server state changed after ${action}`
+            : outcome.phase === 'failed'
+              ? `${action} did not complete`
+              : `${action} was not confirmed`;
+  const outcomeSentence = outcome.phase === 'pending'
+    ? `The last receipt from ${value.serverProfileLabel} had not confirmed the ${action} request.`
+    : outcome.phase === 'accepted'
+      ? `${value.serverProfileLabel} accepted Restart, but that receipt did not yet confirm a fresh process.`
+      : outcome.phase === 'confirmed'
+        ? outcome.action === 'restart'
+          ? `${value.serverProfileLabel} confirmed Restart with a fresh process status.`
+          : `${value.serverProfileLabel} confirmed ${action}.`
+        : outcome.phase === 'reconnected'
+          ? `${value.serverProfileLabel} responded after Restart was accepted, but that receipt did not confirm a fresh process.`
+          : outcome.phase === 'superseded'
+            ? `${action} completed, but a newer status from ${value.serverProfileLabel} reports a different execution state.`
+            : outcome.phase === 'failed'
+              ? `${value.serverProfileLabel} did not complete ${action}.`
+              : `The last receipt from ${value.serverProfileLabel} did not provide enough current state to confirm ${action}.`;
+  const latestState = outcome.currentState === 'paused'
+    ? 'execution is paused'
+    : outcome.currentState === 'running'
+      ? 'execution is running'
+      : outcome.currentState === 'restarting'
+        ? 'the server is restarting'
+        : null;
+  const stateSentence = latestState === null
+    ? ''
+    : ` Latest known state: ${latestState}.`;
+  const reconciledStateSentence = currentState === undefined
+    ? null
+    : `The exact review received a fresh status from ${value.serverProfileLabel} reporting that execution was ${currentState.state}.`;
+  const attributionBoundary = outcome.action === 'restart'
+    ? `This current state does not prove the earlier Restart request started a fresh process; that receipt remains historical.`
+    : `This establishes the current state without claiming the earlier ${action} request caused it.`;
+  const detail = currentState !== undefined
+    ? `${reconciledStateSentence} ${attributionBoundary} It does not verify ${value.areaLabel}. Check ${value.areaLabel} once against this current baseline before ${landingActionGerund}; ${action} will not replay.`
+    : unresolved
+      ? `${outcomeSentence}${stateSentence} Review ${value.serverProfileLabel} again to compare its current live state with this receipt or deliberately choose a corrective action. You can verify ${value.areaLabel} instead when ready; ${action} will not replay.`
+      : `${outcomeSentence}${stateSentence} This server result does not verify ${value.areaLabel}. Check ${value.areaLabel} once against the latest server state before ${landingActionGerund}; ${action} will not replay.`;
+  return {
+    title,
+    detail,
+    summary: currentState !== undefined
+      ? `Latest review of ${value.serverProfileLabel} found execution ${currentState.state}; the historical ${action} receipt is reconciled without attribution, and ${value.areaLabel} still needs a fresh check.`
+      : unresolved
+      ? `${title} on ${value.serverProfileLabel}; review that exact server again or verify ${value.areaLabel} instead.`
+      : `${title} on ${value.serverProfileLabel}; ${value.areaLabel} still needs a fresh check.`,
+    announcement: currentState !== undefined
+      ? `Latest review of ${value.serverProfileLabel} found execution ${currentState.state}. The earlier ${action} result remains historical. Run one fresh ${value.areaLabel} check before ${landingActionGerund}; ${action} will not replay.`
+      : unresolved
+      ? `${title} on ${value.serverProfileLabel}. Review that exact server again, or verify ${value.areaLabel} instead before ${landingActionGerund}. ${action} will not replay.`
+      : `${title} on ${value.serverProfileLabel}. This server result does not verify ${value.areaLabel}. Run one fresh ${value.areaLabel} check before ${landingActionGerund}; ${action} will not replay.`,
+    primaryLabel: `Verify ${value.areaLabel} & ${landingAction}`,
+    primaryAriaLabel: `Verify ${value.areaLabel} on ${value.serverProfileLabel}, then ${landingAction}; ${action} will not replay`,
+    unresolved,
+  };
+};
+
+const renderRecoveryIntentContinuation = (
+  value: AttentionRecoveryIntentContinuation,
+  canReview: boolean,
+  canRemediateConnection: boolean,
+  canReviewServer: boolean,
+): string => {
+  const waitingForConnection = value.phase === 'waiting_for_connection';
+  const awaitingReviewOutcome = value.phase === 'awaiting_review_outcome';
+  const verificationReady = value.phase === 'verification_ready';
+  const verificationInterrupted = value.phase === 'verification_interrupted';
+  const verificationHandoff = value.phase === 'verification_handoff';
+  const landingAction = value.intent === 'choose_again'
+    ? 'choose again'
+    : 'continue';
+  const landingActionGerund = value.intent === 'choose_again'
+    ? 'choosing again'
+    : 'continuing';
+  const serverOutcome = serverControlOutcomePresentation(value);
+  const serverOutcomeAttributes = value.serverControlOutcome === undefined
+    ? ''
+    : `${ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME_ATTR}="${value.serverControlOutcome.phase}"
+      data-server-control-action="${value.serverControlOutcome.action}"
+      ${value.serverControlOutcome.currentState === undefined
+        ? ''
+        : `data-server-control-state="${value.serverControlOutcome.currentState}"`}`;
+  const serverCurrentStateAttribute = value.serverCurrentState === undefined
+    ? ''
+    : `${ATTENTION_RECOVERY_INTENT_SERVER_STATE_ATTR}="${value.serverCurrentState.state}"`;
+  const escalationReviewTarget = canReview && canReviewServer
+    ? `${value.areaLabel} or ${value.serverProfileLabel}`
+    : canReview
+      ? value.areaLabel
+      : canReviewServer
+        ? value.serverProfileLabel
+        : null;
+  const reviewedTargetLabel = value.reviewTarget === 'server'
+    ? value.serverProfileLabel
+    : value.areaLabel;
+  const canReviewInterruptedTarget = value.reviewTarget === 'server'
+    ? canReviewServer
+    : canReview;
+  const boundedAreaReviewAvailable = value.reviewTarget === 'area' && canReview;
+  const boundedReviewTarget = canReviewServer
+    ? `the ${value.serverProfileLabel} connection${boundedAreaReviewAvailable
+      ? ` or ${value.areaLabel}`
+      : ''}`
+    : boundedAreaReviewAvailable
+      ? value.areaLabel
+      : null;
   const title = value.phase === 'checking'
     ? `Rechecking ${value.areaLabel}…`
     : waitingForConnection
       ? `Waiting to recheck ${value.areaLabel}`
+      : awaitingReviewOutcome
+        ? serverOutcome?.title
+          ?? `What happened after reviewing ${reviewedTargetLabel}?`
+      : verificationReady
+        ? `Finish checking ${value.areaLabel}`
+      : verificationInterrupted
+        ? 'Verification was interrupted'
+      : verificationHandoff
+        ? canReviewServer
+          ? value.interruptionReason === 'connection'
+            ? 'Review the connection before another check'
+            : 'Verification keeps getting interrupted'
+          : boundedAreaReviewAvailable
+              ? `Review ${value.areaLabel} before another check`
+              : 'Verification keeps getting interrupted'
       : value.phase === 'failed'
-        ? value.remediation === 'connection'
+        ? value.remediation === 'escalated'
+          ? `Still can’t verify ${value.areaLabel}`
+          : value.remediation === 'connection'
           ? `Reconnect before returning to ${value.areaLabel}`
           : value.remediation === 'review'
             ? `Review ${value.areaLabel} before ${landingActionGerund}`
@@ -1342,8 +1616,23 @@ const renderRecoveryIntentContinuation = (
     ? `Recued is checking ${value.areaLabel} on ${value.serverProfileLabel} against the latest server state. You can close Attention; this saved return stays available until the check finishes.`
     : waitingForConnection
       ? `Recued will retry the exact current-state check when ${value.serverProfileLabel} reconnects, then return you to the exact place to ${landingAction} in ${value.areaLabel}. No action or confirmation will replay.`
+      : awaitingReviewOutcome
+        ? serverOutcome?.detail
+          ?? `Recued won’t assume the direct review fixed the issue. If it looks resolved, run one fresh current-state check before returning to the exact place to ${landingAction} in ${value.areaLabel}. If it is still blocked, keep this reminder for later. No action or confirmation will replay.`
+      : verificationReady
+        ? `The server re-review finished, but the final ${value.areaLabel} check did not. For privacy, Recued restored only where to return and that you wanted to ${landingAction}—not the server action, receipt, current state, or credentials. Check ${value.areaLabel} once on ${value.serverProfileLabel} when you’re ready, or close Attention to keep it for later. Nothing will replay.`
+      : verificationInterrupted
+        ? `Recued did not finish checking ${value.areaLabel} after your review of ${reviewedTargetLabel}. Your “Looks resolved” outcome and exact return are still saved. Retry verification when ${value.serverProfileLabel} is available${canReviewInterruptedTarget ? `, or review ${reviewedTargetLabel} again` : ''}. It won’t retry on its own; no action or confirmation will replay.`
+      : verificationHandoff
+        ? boundedReviewTarget === null
+          ? `Two verification attempts did not finish safely on ${value.serverProfileLabel}, so Recued stopped the retry loop. This view cannot open a safe review target. Keep the saved return for later, or stop recovery if you no longer need it. No action or confirmation will replay.`
+          : `Two verification attempts did not finish safely on ${value.serverProfileLabel}, so Recued stopped the retry loop. Review ${boundedReviewTarget}, then explicitly confirm the outcome before another check. Your exact return stays saved; no action or confirmation will replay.`
       : value.phase === 'failed'
-        ? value.remediation === 'connection'
+        ? value.remediation === 'escalated'
+          ? escalationReviewTarget === null
+            ? 'Two recovery attempts couldn’t finish safely in this tab, so Recued stopped the retry loop. Close Attention to keep this saved return for later, or stop recovery if you no longer need it. No action or confirmation will replay.'
+            : `Two recovery attempts couldn’t finish safely in this tab, so Recued stopped the retry loop. Review ${escalationReviewTarget} directly before ${landingActionGerund}. Close Attention to keep this saved return for later; no action or confirmation will replay.`
+          : value.remediation === 'connection'
           ? `${value.serverProfileLabel} wasn’t connected when Recued checked ${value.areaLabel}. Review that connection so Recued can recheck and return you to the exact place to ${landingAction}.`
           : value.remediation === 'review'
             ? `${value.areaLabel} does not expose a safe background refresh from this view. Open its current status instead; your work wasn’t changed and the earlier confirmation won’t repeat.`
@@ -1373,6 +1662,84 @@ const renderRecoveryIntentContinuation = (
           Review connection
         </button>`
       : '';
+  const serverReviewAction = (primary: boolean): string =>
+    canReviewServer
+      ? `<button type="button"
+          class="attention-row-action${primary ? ' attention-row-action--approve' : ''}"
+          data-action="review-recovery-intent-server"
+          aria-label="${escapeHtml(`Review ${value.serverProfileLabel} before returning to ${value.areaLabel}`)}">
+          Review server
+        </button>`
+      : '';
+  const reviewOutcomeActions = (): string => {
+    if (serverOutcome?.unresolved === true && canReviewServer) {
+      const receiptAction = value.serverControlOutcome === undefined
+        ? 'Server action'
+        : serverControlActionLabel(value.serverControlOutcome.action);
+      return `
+        <button type="button"
+          class="attention-row-action attention-row-action--approve"
+          data-action="review-recovery-intent-server"
+          aria-label="${escapeHtml(`Review the exact active-server controls for ${value.serverProfileLabel} again; ${receiptAction} will not replay`)}">
+          Review server again
+        </button>
+        <button type="button"
+          class="attention-row-action"
+          data-action="resolve-recovery-intent-review"
+          aria-label="${escapeHtml(`Verify ${value.areaLabel} instead on ${value.serverProfileLabel}, then ${landingAction}; ${receiptAction} will not replay`)}">
+          Verify ${escapeHtml(value.areaLabel)} instead
+        </button>`;
+    }
+    return `
+      <button type="button"
+        class="attention-row-action attention-row-action--approve"
+        data-action="resolve-recovery-intent-review"
+        aria-label="${escapeHtml(serverOutcome?.primaryAriaLabel
+          ?? `Looks resolved; verify ${value.areaLabel} on ${value.serverProfileLabel}, then ${landingAction}`)}">
+        ${serverOutcome === null
+          ? `Looks resolved &mdash; verify &amp; ${escapeHtml(landingAction)}`
+          : escapeHtml(serverOutcome.primaryLabel)}
+      </button>
+      <button type="button"
+        class="attention-row-action"
+        data-action="keep-recovery-intent-review-blocked"
+        aria-label="${escapeHtml(`Still blocked; keep the saved return to ${value.areaLabel}`)}">
+        Still blocked &mdash; keep reminder
+      </button>`;
+  };
+  const interruptedVerificationActions = (): string => `
+    <button type="button"
+      class="attention-row-action attention-row-action--approve"
+      data-action="resolve-recovery-intent-review"
+      aria-label="${escapeHtml(`Retry verification of ${value.areaLabel} on ${value.serverProfileLabel}`)}">
+      Retry verification
+    </button>
+    ${value.reviewTarget === 'server'
+      ? serverReviewAction(false)
+      : reviewAction(false)}`;
+  const readyVerificationActions = (): string => `
+    <button type="button"
+      class="attention-row-action attention-row-action--approve"
+      data-action="resolve-recovery-intent-review"
+      aria-label="${escapeHtml(`Check ${value.areaLabel} now on ${value.serverProfileLabel}; no prior action or receipt will replay`)}">
+      Check ${escapeHtml(value.areaLabel)} now
+    </button>`;
+  const connectionReviewAction = (primary: boolean): string =>
+    canReviewServer
+      ? `<button type="button"
+          class="attention-row-action${primary ? ' attention-row-action--approve' : ''}"
+          data-action="review-recovery-intent-server"
+          aria-label="${escapeHtml(`Review the ${value.serverProfileLabel} connection before another verification of ${value.areaLabel}`)}">
+          Review connection
+        </button>`
+      : '';
+  const boundedVerificationActions = (): string => {
+    const connectionAction = connectionReviewAction(true);
+    const areaAction = value.reviewTarget === 'area'
+      ? reviewAction(connectionAction.length === 0)
+      : '';
+    return `${connectionAction}${areaAction}`;
+  };
   const phaseActions = value.phase === 'checking'
     ? `<button type="button"
         class="attention-row-action attention-row-action--approve"
@@ -1392,8 +1759,18 @@ const renderRecoveryIntentContinuation = (
           Waiting for connection&hellip;
         </button>
         ${connectionAction(false)}`
+      : awaitingReviewOutcome
+        ? reviewOutcomeActions()
+      : verificationReady
+        ? readyVerificationActions()
+      : verificationInterrupted
+        ? interruptedVerificationActions()
+      : verificationHandoff
+        ? boundedVerificationActions()
       : value.phase === 'failed'
-        ? value.remediation === 'connection'
+        ? value.remediation === 'escalated'
+          ? `${reviewAction(true)}${serverReviewAction(!canReview)}`
+          : value.remediation === 'connection'
           ? `${connectionAction(true)}${reviewAction(!canRemediateConnection)}`
           : value.remediation === 'review'
             ? reviewAction(true)
@@ -1408,6 +1785,11 @@ const renderRecoveryIntentContinuation = (
     <div class="attention-plan-resolution attention-recovery-intent-continuation"
       data-phase="${value.phase}"
       data-remediation="${value.remediation ?? 'none'}"
+      ${value.reviewTarget === undefined
+        ? ''
+        : `data-review-target="${value.reviewTarget}"`}
+      ${serverOutcomeAttributes}
+      ${serverCurrentStateAttribute}
       ${value.phase === 'checking' || waitingForConnection ? 'aria-busy="true"' : ''}
       ${ATTENTION_RECOVERY_INTENT_CONTINUATION_ATTR}>
       <div class="attention-plan-resolution-copy">
@@ -1419,7 +1801,11 @@ const renderRecoveryIntentContinuation = (
         <button type="button"
           class="attention-row-action"
           data-action="dismiss-recovery-intent-continuation">
-          ${waitingForConnection ? 'Stop waiting' : 'Dismiss'}
+          ${waitingForConnection
+            ? 'Stop waiting'
+            : value.remediation === 'escalated'
+              ? 'Stop recovery'
+              : 'Dismiss'}
         </button>
       </div>
     </div>
@@ -1446,6 +1832,7 @@ const renderUnifiedPopover = (state: {
   recoveryIntentContinuation: AttentionRecoveryIntentContinuation | null;
   canReviewRecoveryIntentContinuation: boolean;
   canRemediateRecoveryIntentConnection: boolean;
+  canReviewRecoveryIntentServer: boolean;
   now: number;
 }): string => {
   const renderAllClear = (): string => `
@@ -1550,6 +1937,10 @@ const renderUnifiedPopover = (state: {
             .join('')}
         </ul>
       `;
+  const recoveryIntentServerOutcome =
+    state.recoveryIntentContinuation === null
+      ? null
+      : serverControlOutcomePresentation(state.recoveryIntentContinuation);
   const summary = state.connectionRecoveryReview?.phase === 'checking'
     ? `Rechecking ${state.connectionRecoveryReview.serverProfileLabel} for connection recovery.`
     : state.connectionRecoveryReview?.phase === 'retryable'
@@ -1563,8 +1954,24 @@ const renderUnifiedPopover = (state: {
               ? `Rechecking ${state.recoveryIntentContinuation.areaLabel} on ${state.recoveryIntentContinuation.serverProfileLabel}.`
               : state.recoveryIntentContinuation.phase === 'waiting_for_connection'
                 ? `Waiting for ${state.recoveryIntentContinuation.serverProfileLabel} before rechecking ${state.recoveryIntentContinuation.areaLabel}.`
+              : state.recoveryIntentContinuation.phase === 'awaiting_review_outcome'
+                ? recoveryIntentServerOutcome?.summary
+                  ?? `Review outcome needed before returning to ${state.recoveryIntentContinuation.areaLabel}.`
+              : state.recoveryIntentContinuation.phase === 'verification_ready'
+                ? `One fresh ${state.recoveryIntentContinuation.areaLabel} check remains before the saved return can continue; only where to return was restored.`
+              : state.recoveryIntentContinuation.phase === 'verification_interrupted'
+                ? `Verification of ${state.recoveryIntentContinuation.areaLabel} was interrupted and will not retry on its own.`
+              : state.recoveryIntentContinuation.phase === 'verification_handoff'
+                ? state.canReviewRecoveryIntentServer
+                  ? `Recued stopped retrying verification of ${state.recoveryIntentContinuation.areaLabel}; review its server connection before another check.`
+                  : state.recoveryIntentContinuation.reviewTarget === 'area'
+                      && state.canReviewRecoveryIntentContinuation
+                    ? `Recued stopped retrying verification of ${state.recoveryIntentContinuation.areaLabel}; review that area before another check.`
+                    : `Recued stopped retrying verification of ${state.recoveryIntentContinuation.areaLabel}; keep the saved return for later or stop recovery.`
               : state.recoveryIntentContinuation.phase === 'failed'
-                ? state.recoveryIntentContinuation.remediation === 'connection'
+                ? state.recoveryIntentContinuation.remediation === 'escalated'
+                  ? `Recued stopped retrying ${state.recoveryIntentContinuation.areaLabel} in this tab.`
+                  : state.recoveryIntentContinuation.remediation === 'connection'
                   ? `${state.recoveryIntentContinuation.areaLabel} is waiting on its server connection.`
                   : state.recoveryIntentContinuation.remediation === 'review'
                     ? `${state.recoveryIntentContinuation.areaLabel} needs a current-area review.`
@@ -1618,6 +2025,7 @@ const renderUnifiedPopover = (state: {
               state.recoveryIntentContinuation,
               state.canReviewRecoveryIntentContinuation,
               state.canRemediateRecoveryIntentConnection,
+              state.canReviewRecoveryIntentServer,
             )}
         ${state.planResolution === null ? '' : renderPlanResolution(state.planResolution)}
         ${pendingBody}
@@ -1702,6 +2110,9 @@ export const mountApprovalAttentionPopover = (
 
   let disposed = false;
   let open = false;
+  let ignoreOutsideClickUntilNextTask = false;
+  let outsideClickEnableTimer: ReturnType<typeof globalThis.setTimeout> | null =
+    null;
   let approvalPhase: 'loading' | 'ready' | 'error' = 'loading';
   let askPhase: 'loading' | 'ready' | 'error' = 'loading';
   let connectionRecoveryPhase: 'loading' | 'ready' | 'error' =
@@ -1836,6 +2247,10 @@ export const mountApprovalAttentionPopover = (
         && value.phase !== 'checking'
         && value.phase !== 'failed'
         && value.phase !== 'waiting_for_connection'
+        && value.phase !== 'awaiting_review_outcome'
+        && value.phase !== 'verification_ready'
+        && value.phase !== 'verification_interrupted'
+        && value.phase !== 'verification_handoff'
       )
       || (
         (value.phase === 'ready' || value.phase === 'checking')
@@ -1846,15 +2261,73 @@ export const mountApprovalAttentionPopover = (
         && value.remediation !== 'retry'
         && value.remediation !== 'connection'
         && value.remediation !== 'review'
+        && value.remediation !== 'escalated'
       )
       || (
         value.phase === 'waiting_for_connection'
         && value.remediation !== 'connection'
       )
+      || (
+        (value.phase === 'awaiting_review_outcome'
+          || value.phase === 'verification_ready'
+          || value.phase === 'verification_interrupted'
+          || value.phase === 'verification_handoff')
+        && (
+          value.remediation !== 'escalated'
+          || (value.reviewTarget !== 'area' && value.reviewTarget !== 'server')
+          || (
+            value.phase === 'verification_ready'
+            && value.reviewTarget !== 'server'
+          )
+          || (
+            value.phase !== 'verification_handoff'
+            && opts.onResolveRecoveryIntentReview === undefined
+          )
+          || (
+            value.phase === 'awaiting_review_outcome'
+            && opts.onKeepRecoveryIntentReviewBlocked === undefined
+          )
+        )
+      )
+      || (
+        value.phase !== 'awaiting_review_outcome'
+        && value.phase !== 'verification_ready'
+        && value.phase !== 'verification_interrupted'
+        && value.phase !== 'verification_handoff'
+        && value.reviewTarget !== undefined
+      )
+      || (
+        (value.phase === 'verification_interrupted'
+          || value.phase === 'verification_handoff')
+        && value.interruptionReason !== 'connection'
+        && value.interruptionReason !== 'navigation'
+        && value.interruptionReason !== 'ownership'
+        && value.interruptionReason !== 'reload'
+      )
+      || (
+        value.phase !== 'verification_interrupted'
+        && value.phase !== 'verification_handoff'
+        && value.interruptionReason !== undefined
+      )
     ) return null;
     const profileLabel = value.serverProfileLabel.trim();
     const areaLabel = value.areaLabel.trim();
     if (profileLabel.length === 0 || areaLabel.length === 0) return null;
+    const serverControlOutcome =
+      value.phase === 'awaiting_review_outcome'
+      && value.reviewTarget === 'server'
+        ? normalizeServerControlActionOutcome(value.serverControlOutcome)
+        : undefined;
+    const serverCurrentState:
+      ServerControlCurrentStateObservation | undefined =
+      serverControlOutcome !== undefined
+      && isUnresolvedServerControlActionOutcome(serverControlOutcome)
+      && (
+        value.serverCurrentState?.state === 'running'
+        || value.serverCurrentState?.state === 'paused'
+      )
+        ? { state: value.serverCurrentState.state }
+        : undefined;
     return {
       serverProfileId: value.serverProfileId,
       serverProfileLabel: profileLabel,
@@ -1863,6 +2336,18 @@ export const mountApprovalAttentionPopover = (
       intent: value.intent,
       phase: value.phase,
       remediation: value.remediation,
+      ...(value.reviewTarget !== undefined
+        ? { reviewTarget: value.reviewTarget }
+        : {}),
+      ...(value.interruptionReason !== undefined
+        ? { interruptionReason: value.interruptionReason }
+        : {}),
+      ...(serverControlOutcome === undefined
+        ? {}
+        : { serverControlOutcome }),
+      ...(serverCurrentState === undefined
+        ? {}
+        : { serverCurrentState }),
     };
   };
   let recoveryIntentContinuation = normalizeRecoveryIntentContinuation(
@@ -2101,6 +2586,20 @@ export const mountApprovalAttentionPopover = (
         planResolutionAnnouncer.textContent = `${copy.title}. ${copy.detail}`;
       }
     }
+    const interruptedReviewAgain = recoveryIntentContinuation !== null
+      && recoveryIntentContinuation.phase === 'verification_interrupted'
+      && (
+        recoveryIntentContinuation.reviewTarget === 'server'
+          ? opts.onReviewRecoveryIntentServer !== undefined
+          : opts.onReviewRecoveryIntentContinuation !== undefined
+      )
+      ? `, review ${recoveryIntentContinuation.reviewTarget === 'server'
+        ? recoveryIntentContinuation.serverProfileLabel
+        : recoveryIntentContinuation.areaLabel} again`
+      : '';
+    const recoveryIntentServerOutcome = recoveryIntentContinuation === null
+      ? null
+      : serverControlOutcomePresentation(recoveryIntentContinuation);
     const recoveryAnnouncement = recoveryIntentContinuation !== null
       ? {
           key: JSON.stringify([
@@ -2110,13 +2609,36 @@ export const mountApprovalAttentionPopover = (
             recoveryIntentContinuation.intent,
             recoveryIntentContinuation.phase,
             recoveryIntentContinuation.remediation,
+            recoveryIntentContinuation.reviewTarget ?? null,
+            recoveryIntentContinuation.interruptionReason ?? null,
+            recoveryIntentContinuation.serverControlOutcome?.action ?? null,
+            recoveryIntentContinuation.serverControlOutcome?.phase ?? null,
+            recoveryIntentContinuation.serverControlOutcome?.currentState
+              ?? null,
+            recoveryIntentContinuation.serverCurrentState?.state ?? null,
           ]),
           copy: recoveryIntentContinuation.phase === 'checking'
             ? `Rechecking ${recoveryIntentContinuation.areaLabel} on ${recoveryIntentContinuation.serverProfileLabel}.`
             : recoveryIntentContinuation.phase === 'waiting_for_connection'
               ? `Waiting for ${recoveryIntentContinuation.serverProfileLabel}. ${recoveryIntentContinuation.areaLabel} will be rechecked after it reconnects.`
+            : recoveryIntentContinuation.phase === 'awaiting_review_outcome'
+              ? recoveryIntentServerOutcome?.announcement
+                ?? `Review outcome needed for ${recoveryIntentContinuation.areaLabel}. Choose the Looks resolved option to run one fresh check, or keep the reminder if it is still blocked.`
+            : recoveryIntentContinuation.phase === 'verification_ready'
+              ? `One fresh ${recoveryIntentContinuation.areaLabel} check remains. Only the saved return was restored—not the server action, receipt, current state, or credentials. Check the area when ready; nothing will replay.`
+            : recoveryIntentContinuation.phase === 'verification_interrupted'
+              ? `Verification of ${recoveryIntentContinuation.areaLabel} was interrupted. It won’t retry on its own. Retry verification${interruptedReviewAgain}, or stop recovery.`
+            : recoveryIntentContinuation.phase === 'verification_handoff'
+              ? opts.onReviewRecoveryIntentServer !== undefined
+                ? `Verification of ${recoveryIntentContinuation.areaLabel} was interrupted twice. Recued stopped the retry loop. Review the ${recoveryIntentContinuation.serverProfileLabel} connection${recoveryIntentContinuation.reviewTarget === 'area' && opts.onReviewRecoveryIntentContinuation !== undefined ? ` or ${recoveryIntentContinuation.areaLabel}` : ''}, or stop recovery.`
+                : recoveryIntentContinuation.reviewTarget === 'area'
+                    && opts.onReviewRecoveryIntentContinuation !== undefined
+                  ? `Verification of ${recoveryIntentContinuation.areaLabel} was interrupted twice. Recued stopped the retry loop. Review ${recoveryIntentContinuation.areaLabel}, or stop recovery.`
+                  : `Verification of ${recoveryIntentContinuation.areaLabel} was interrupted twice. Recued stopped the retry loop. Keep the saved return for later, or stop recovery.`
             : recoveryIntentContinuation.phase === 'failed'
-              ? recoveryIntentContinuation.remediation === 'connection'
+              ? recoveryIntentContinuation.remediation === 'escalated'
+                ? `Recued stopped retrying ${recoveryIntentContinuation.areaLabel} in this tab. It won’t retry on its own.`
+                : recoveryIntentContinuation.remediation === 'connection'
                 ? `${recoveryIntentContinuation.areaLabel} needs ${recoveryIntentContinuation.serverProfileLabel} connected. Review the connection to retry the exact return after reconnect.`
                 : recoveryIntentContinuation.remediation === 'review'
                   ? `${recoveryIntentContinuation.areaLabel} cannot be safely rechecked here. Review the current area before ${recoveryIntentContinuation.intent === 'choose_again' ? 'choosing again' : 'continuing'}.`
@@ -2215,6 +2737,8 @@ export const mountApprovalAttentionPopover = (
               opts.onReviewRecoveryIntentContinuation !== undefined,
             canRemediateRecoveryIntentConnection:
               opts.onRemediateRecoveryIntentConnection !== undefined,
+            canReviewRecoveryIntentServer:
+              opts.onReviewRecoveryIntentServer !== undefined,
             now: now(),
           })}
         </div>
@@ -2515,6 +3039,45 @@ export const mountApprovalAttentionPopover = (
     if (restoreTrigger) focusAttentionTrigger();
   };
 
+  const openAttention = (protectExternalOpeningClick = false): void => {
+    if (disposed) return;
+    if (open) {
+      focusAttentionDialog();
+      return;
+    }
+    open = true;
+    // The public handoff can open Attention from inside another shell
+    // surface's click handler. Protect only that path while the opening click
+    // finishes bubbling. A normal bell open must make the very next outside
+    // click eligible, even when it arrives before a zero-delay timer.
+    if (outsideClickEnableTimer !== null) {
+      globalThis.clearTimeout(outsideClickEnableTimer);
+      outsideClickEnableTimer = null;
+    }
+    ignoreOutsideClickUntilNextTask = protectExternalOpeningClick;
+    if (protectExternalOpeningClick) {
+      outsideClickEnableTimer = globalThis.setTimeout(() => {
+        outsideClickEnableTimer = null;
+        ignoreOutsideClickUntilNextTask = false;
+      }, 0);
+    }
+    inactiveRecoveryActionError = null;
+    if (approvalPhase !== 'ready') void refreshApprovals();
+    if (askPhase !== 'ready') void refreshAsks();
+    // The post-ack queue has no dedicated event stream. Opening Attention is
+    // an explicit, cheap freshness boundary over the existing list read.
+    if (connectionRecoveryPhase !== 'loading') {
+      void refreshConnectionRecoveries();
+    }
+    // The Chat inbox may have unlocked since the shell loaded, or a
+    // disconnect may have hidden its event. Refresh on every deliberate open.
+    if (opts.chatPlans?.state?.().phase !== 'loading') {
+      void opts.chatPlans?.refresh?.();
+    }
+    render();
+    focusAttentionDialog();
+  };
+
   const onClick = (event: Event): void => {
     const actionEl = actionElementFromEvent(event);
     if (actionEl === null) return;
@@ -2525,23 +3088,7 @@ export const mountApprovalAttentionPopover = (
         closeAttention(true);
         return;
       }
-      open = true;
-      inactiveRecoveryActionError = null;
-      if (approvalPhase !== 'ready') void refreshApprovals();
-      if (askPhase !== 'ready') void refreshAsks();
-      // The post-ack queue has no dedicated event stream. Opening Attention is
-      // an explicit, cheap freshness boundary over the existing list read.
-      if (connectionRecoveryPhase !== 'loading') {
-        void refreshConnectionRecoveries();
-      }
-      // Opening the inbox is a natural low-cost freshness boundary. Refresh
-      // even from `ready`: the Chat vault may have unlocked since a recovered
-      // shell was loaded, or a disconnect may have hidden an event.
-      if (opts.chatPlans?.state?.().phase !== 'loading') {
-        void opts.chatPlans?.refresh?.();
-      }
-      render();
-      focusAttentionDialog();
+      openAttention(false);
       return;
     }
     if (action === 'close-attention') {
@@ -2632,11 +3179,10 @@ export const mountApprovalAttentionPopover = (
       const continuation = recoveryIntentContinuation;
       if (continuation === null) return;
       if (
-        continuation.phase === 'checking'
-        || continuation.phase === 'waiting_for_connection'
-        || (
+        continuation.phase !== 'ready'
+        && !(
           continuation.phase === 'failed'
-          && continuation.remediation !== 'retry'
+          && continuation.remediation === 'retry'
         )
       ) {
         focusAttentionDialog();
@@ -2664,6 +3210,72 @@ export const mountApprovalAttentionPopover = (
       recoveryIntentActionError = result === 'missing'
         ? 'That paused return no longer matches this server or work area. The reminder was retired.'
         : 'That work area can’t be rechecked right now. Reconnect or finish the current navigation, then retry. Your current work was not changed.';
+      render();
+      focusAttentionDialog();
+      return;
+    }
+    if (action === 'resolve-recovery-intent-review') {
+      event.preventDefault();
+      const continuation = recoveryIntentContinuation;
+      if (
+        continuation === null
+        || (
+          continuation.phase !== 'awaiting_review_outcome'
+          && continuation.phase !== 'verification_ready'
+          && continuation.phase !== 'verification_interrupted'
+        )
+        || continuation.remediation !== 'escalated'
+        || continuation.reviewTarget === undefined
+      ) return;
+      let result: 'started' | 'missing' | 'unavailable' = 'unavailable';
+      try {
+        result = opts.onResolveRecoveryIntentReview?.(continuation)
+          ?? 'unavailable';
+      } catch {
+        result = 'unavailable';
+      }
+      if (result === 'started') {
+        recoveryIntentActionError = null;
+        open = false;
+        render();
+        focusAttentionTrigger();
+        return;
+      }
+      if (result === 'missing') recoveryIntentContinuation = null;
+      recoveryIntentActionError = result === 'missing'
+        ? 'That paused return no longer matches this server or work area. The reminder was retired.'
+        : 'That outcome can’t be verified right now. The saved return is unchanged; finish the current navigation, then try the resolved check again.';
+      render();
+      focusAttentionDialog();
+      return;
+    }
+    if (action === 'keep-recovery-intent-review-blocked') {
+      event.preventDefault();
+      const continuation = recoveryIntentContinuation;
+      if (
+        continuation === null
+        || continuation.phase !== 'awaiting_review_outcome'
+        || continuation.remediation !== 'escalated'
+        || continuation.reviewTarget === undefined
+      ) return;
+      let result: 'started' | 'missing' | 'unavailable' = 'unavailable';
+      try {
+        result = opts.onKeepRecoveryIntentReviewBlocked?.(continuation)
+          ?? 'unavailable';
+      } catch {
+        result = 'unavailable';
+      }
+      if (result === 'started') {
+        recoveryIntentActionError = null;
+        open = false;
+        render();
+        focusAttentionTrigger();
+        return;
+      }
+      if (result === 'missing') recoveryIntentContinuation = null;
+      recoveryIntentActionError = result === 'missing'
+        ? 'That paused return no longer matches this server or work area. The reminder was retired.'
+        : 'That reminder couldn’t be confirmed right now. It remains here and no work was changed; try again or stop recovery when you’re ready.';
       render();
       focusAttentionDialog();
       return;
@@ -2704,7 +3316,20 @@ export const mountApprovalAttentionPopover = (
     if (action === 'review-recovery-intent-continuation') {
       event.preventDefault();
       const continuation = recoveryIntentContinuation;
-      if (continuation === null || continuation.phase !== 'failed') return;
+      if (
+        continuation === null
+        || !(
+          continuation.phase === 'failed'
+          || (
+            (
+              continuation.phase === 'verification_interrupted'
+              || continuation.phase === 'verification_handoff'
+            )
+            && continuation.remediation === 'escalated'
+            && continuation.reviewTarget === 'area'
+          )
+        )
+      ) return;
       let result: 'started' | 'missing' | 'unavailable' = 'unavailable';
       try {
         result = opts.onReviewRecoveryIntentContinuation?.(continuation)
@@ -2722,7 +3347,61 @@ export const mountApprovalAttentionPopover = (
       if (result === 'missing') recoveryIntentContinuation = null;
       recoveryIntentActionError = result === 'missing'
         ? 'That paused return no longer matches this server or work area. The reminder was retired.'
-        : 'That work area can’t be opened for review right now. Finish the current navigation, then retry. Your current work was not changed.';
+        : 'That work area can’t be opened for review right now. Finish the current navigation, then review the area again. Your current work was not changed.';
+      render();
+      focusAttentionDialog();
+      return;
+    }
+    if (action === 'review-recovery-intent-server') {
+      event.preventDefault();
+      const continuation = recoveryIntentContinuation;
+      const unresolvedReceiptReview = continuation?.phase
+        === 'awaiting_review_outcome'
+        && continuation.reviewTarget === 'server'
+        && continuation.serverControlOutcome !== undefined
+        && isUnresolvedServerControlActionOutcome(
+          continuation.serverControlOutcome,
+        );
+      if (
+        continuation === null
+        || !(
+          continuation.phase === 'failed'
+          || (
+            continuation.phase === 'verification_interrupted'
+            && continuation.reviewTarget === 'server'
+          )
+          || continuation.phase === 'verification_handoff'
+          || unresolvedReceiptReview
+        )
+        || continuation.remediation !== 'escalated'
+      ) return;
+      let result: 'started' | 'missing' | 'unavailable' = 'unavailable';
+      try {
+        result = opts.onReviewRecoveryIntentServer?.(continuation)
+          ?? 'unavailable';
+      } catch {
+        result = 'unavailable';
+      }
+      if (result === 'started') {
+        recoveryIntentActionError = null;
+        open = false;
+        render();
+        focusAttentionTrigger();
+        return;
+      }
+      if (result === 'missing') recoveryIntentContinuation = null;
+      const canReviewAreaInstead =
+        (
+          continuation.phase === 'failed'
+          || continuation.reviewTarget === 'area'
+          || unresolvedReceiptReview
+        )
+        && opts.onReviewRecoveryIntentContinuation !== undefined;
+      recoveryIntentActionError = result === 'missing'
+        ? 'That paused return no longer matches this server or work area. The reminder was retired.'
+        : canReviewAreaInstead
+          ? `That server can’t be opened from Account right now. The saved return is unchanged; review ${continuation.areaLabel} instead, or stop recovery when you’re ready.`
+          : 'That server can’t be opened from Account right now. The saved return is unchanged; keep it for later, or stop recovery when you’re ready.';
       render();
       focusAttentionDialog();
       return;
@@ -2845,6 +3524,7 @@ export const mountApprovalAttentionPopover = (
 
   const onDocumentClick = (event: MouseEvent): void => {
     if (!open) return;
+    if (ignoreOutsideClickUntilNextTask) return;
     // Opening rebuilds the button before this same click finishes bubbling.
     // `event.target` is therefore detached by the time document sees it, but
     // the browser's original composed path still proves the click came from
@@ -2961,6 +3641,7 @@ export const mountApprovalAttentionPopover = (
     getInactiveConnectionRecoveryHints: () =>
       inactiveConnectionRecoveryHints,
     isOpen: () => open,
+    open: () => openAttention(true),
     refreshApprovals,
     refreshAsks,
     refreshConnectionRecoveries,
@@ -3031,6 +3712,21 @@ export const mountApprovalAttentionPopover = (
         && normalized?.phase === recoveryIntentContinuation?.phase
         && normalized?.remediation
           === recoveryIntentContinuation?.remediation
+        && (normalized?.reviewTarget ?? null)
+          === (recoveryIntentContinuation?.reviewTarget ?? null)
+        && (normalized?.interruptionReason ?? null)
+          === (recoveryIntentContinuation?.interruptionReason ?? null)
+        && (normalized?.serverControlOutcome?.action ?? null)
+          === (recoveryIntentContinuation?.serverControlOutcome?.action
+            ?? null)
+        && (normalized?.serverControlOutcome?.phase ?? null)
+          === (recoveryIntentContinuation?.serverControlOutcome?.phase
+            ?? null)
+        && (normalized?.serverControlOutcome?.currentState ?? null)
+          === (recoveryIntentContinuation?.serverControlOutcome?.currentState
+            ?? null)
+        && (normalized?.serverCurrentState?.state ?? null)
+          === (recoveryIntentContinuation?.serverCurrentState?.state ?? null)
       ) return;
       recoveryIntentContinuation = normalized;
       recoveryIntentActionError = null;
@@ -3055,6 +3751,11 @@ export const mountApprovalAttentionPopover = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      if (outsideClickEnableTimer !== null) {
+        globalThis.clearTimeout(outsideClickEnableTimer);
+        outsideClickEnableTimer = null;
+      }
+      ignoreOutsideClickUntilNextTask = false;
       topbar.removeEventListener('click', onClick);
       doc.removeEventListener('click', onDocumentClick);
       doc.removeEventListener('keydown', onDocumentKeydown);

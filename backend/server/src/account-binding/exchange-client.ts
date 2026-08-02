@@ -25,6 +25,7 @@ import type {
   AccountBindingExchangeOutcome,
   AccountBindingExchangeRequest,
 } from '@recued/contracts';
+import { makeBoundedOriginHttpFetcher } from '../bounded-origin-http-fetcher.js';
 
 /** The exchange boundary the binding manager depends on. One method;
  *  the manager builds the request (incl. the server-identity proof) and
@@ -61,6 +62,8 @@ export interface HttpAccountBindingExchangeClientOptions {
   fetchImpl?: FetchLike;
   /** Request timeout (ms). Default 10s. */
   timeoutMs?: number;
+  /** Response ceiling (bytes). Defaults to the shared provider API limit. */
+  maxResponseBytes?: number;
 }
 
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -133,6 +136,13 @@ export const createHttpAccountBindingExchangeClient = (
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const fetchImpl: FetchLike =
     options.fetchImpl ?? (globalThis.fetch as unknown as FetchLike);
+  const fetchExchange = makeBoundedOriginHttpFetcher({
+    fetchImpl: fetchImpl as unknown as typeof fetch,
+    timeoutMs,
+    ...(options.maxResponseBytes !== undefined
+      ? { maxResponseBytes: options.maxResponseBytes }
+      : {}),
+  });
 
   return {
     async exchange(request) {
@@ -152,16 +162,13 @@ export const createHttpAccountBindingExchangeClient = (
         };
       }
 
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
       let status: number;
       let body: unknown;
       try {
-        const res = await fetchImpl(url, {
+        const res = await fetchExchange(url, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
           body: JSON.stringify(request),
-          signal: controller.signal,
         });
         status = res.status;
         try {
@@ -180,8 +187,6 @@ export const createHttpAccountBindingExchangeClient = (
               ? `binding exchange timed out after ${timeoutMs}ms`
               : `binding exchange request failed: ${e?.message ?? 'network error'}`,
         };
-      } finally {
-        clearTimeout(timer);
       }
 
       const obj =

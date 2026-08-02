@@ -263,6 +263,8 @@ export const ensureReceptionSchema = (db: Database.Database): void => {
     );
     CREATE INDEX IF NOT EXISTS idx_form_submission_endpoint
       ON reception_form_submission (endpoint_id, submitted_at);
+    CREATE INDEX IF NOT EXISTS idx_form_submission_source_window
+      ON reception_form_submission (endpoint_id, source_ip_hash, submitted_at);
     CREATE INDEX IF NOT EXISTS idx_form_submission_processing
       ON reception_form_submission (processing_outcome)
       WHERE processing_outcome = 'pending';

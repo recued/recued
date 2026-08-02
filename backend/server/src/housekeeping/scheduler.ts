@@ -227,7 +227,8 @@ export const createHousekeepingScheduler = (
   const clearTimer = opts.clearTimer ?? ((t) => clearInterval(t as NodeJS.Timeout));
 
   let timerToken: unknown = null;
-  let inFlight = false;
+  let cycleTail: Promise<void> = Promise.resolve();
+  let queuedCycles = 0;
   let lastCycleAt: number | null = null;
 
   const runTaskStep = async (
@@ -273,7 +274,6 @@ export const createHousekeepingScheduler = (
     budget_ms: number,
     only_task_id?: string,
   ): Promise<HousekeepingCycleResult> => {
-    inFlight = true;
     const config = opts.config.read();
     const cycle_start = opts.ctx.now();
     if (opts.onCycleStart) {
@@ -322,7 +322,6 @@ export const createHousekeepingScheduler = (
 
     const cycle_finish = opts.ctx.now();
     lastCycleAt = cycle_finish;
-    inFlight = false;
 
     const cycle: HousekeepingCycleResult = {
       preset: config.preset,
@@ -358,35 +357,58 @@ export const createHousekeepingScheduler = (
       });
     } catch { /* best-effort */ }
 
-    opts.onCycleComplete?.(cycle);
+    if (opts.onCycleComplete) {
+      try { opts.onCycleComplete(cycle); } catch { /* best-effort */ }
+    }
     return cycle;
   };
 
+  const enqueueCycle = (
+    budgetMs: number,
+    onlyTaskId?: string,
+  ): Promise<HousekeepingCycleResult> => {
+    queuedCycles += 1;
+    const result = cycleTail.then(() => runCycleInner(budgetMs, onlyTaskId));
+    const tracked = result.finally(() => { queuedCycles -= 1; });
+    // Keep the queue live after a failed cycle while preserving that rejection
+    // for the caller that requested the individual pass.
+    cycleTail = tracked.then(() => undefined, () => undefined);
+    return tracked;
+  };
+
   const probeTick = (): void => {
-    if (inFlight) return;
-    // Vault-locked gate: skip autonomous idle cycles while sealed. The
-    // probe interval keeps ticking and re-checks, so cycles self-resume
-    // within one probe once unlocked. `runOnce` deliberately bypasses
-    // this — it's a user's explicit Run-now.
-    if (opts.isVaultUnlocked && !opts.isVaultUnlocked()) return;
-    const config = opts.config.read();
-    const now = opts.ctx.now();
-    opts.busy.poll(now);
-    const fire = shouldFireCycle({
-      preset: config.preset,
-      cycle_interval_minutes: config.cycle_interval_minutes,
-      ...(config.custom_window_start_hour !== undefined
-        ? { custom_window_start_hour: config.custom_window_start_hour }
-        : {}),
-      ...(config.custom_window_end_hour !== undefined
-        ? { custom_window_end_hour: config.custom_window_end_hour }
-        : {}),
-      last_run_at: lastCycleAt,
-      now,
-      busy: opts.busy,
-    });
-    if (!fire) return;
-    void runCycleInner(config.cycle_budget_ms);
+    if (queuedCycles > 0) return;
+    try {
+      // Vault-locked gate: skip autonomous idle cycles while sealed. The
+      // probe interval keeps ticking and re-checks, so cycles self-resume
+      // within one probe once unlocked. `runOnce` deliberately bypasses
+      // this — it's a user's explicit Run-now.
+      if (opts.isVaultUnlocked && !opts.isVaultUnlocked()) return;
+      const config = opts.config.read();
+      const now = opts.ctx.now();
+      opts.busy.poll(now);
+      const fire = shouldFireCycle({
+        preset: config.preset,
+        cycle_interval_minutes: config.cycle_interval_minutes,
+        ...(config.custom_window_start_hour !== undefined
+          ? { custom_window_start_hour: config.custom_window_start_hour }
+          : {}),
+        ...(config.custom_window_end_hour !== undefined
+          ? { custom_window_end_hour: config.custom_window_end_hour }
+          : {}),
+        last_run_at: lastCycleAt,
+        now,
+        busy: opts.busy,
+      });
+      if (!fire) return;
+      void enqueueCycle(config.cycle_budget_ms).catch((err) => {
+        console.warn('[housekeeping] idle cycle failed', err);
+      });
+    } catch (err) {
+      // A malformed live config or busy-signal implementation must not escape
+      // the interval callback as an uncaught exception.
+      console.warn('[housekeeping] idle probe failed', err);
+    }
   };
 
   return {
@@ -401,14 +423,13 @@ export const createHousekeepingScheduler = (
         clearTimer(timerToken);
         timerToken = null;
       }
-      while (inFlight) {
-        await new Promise<void>((r) => setImmediate(r));
-      }
+      const admittedCycles = cycleTail;
+      await admittedCycles;
     },
     async runOnce(callerOpts) {
       const config = opts.config.read();
       const budget = callerOpts?.budget_ms ?? config.cycle_budget_ms;
-      return runCycleInner(budget, callerOpts?.task_id);
+      return enqueueCycle(budget, callerOpts?.task_id);
     },
   };
 };

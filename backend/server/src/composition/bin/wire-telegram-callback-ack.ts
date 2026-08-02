@@ -50,6 +50,7 @@
 import { decodeAuthFromStorage } from '../../connection-handler.js';
 import type { KeyManager } from '../../key-manager.js';
 import type { ConnectionStoreSqlite } from '../../storage/connection-store.js';
+import { discardResponseBody, fetchOriginPinned } from '@recued/ingredients';
 
 /** Default ack timeout — Telegram callback acks should land within
  *  ~3-5s of the user press; longer than that and Telegram has already
@@ -120,21 +121,26 @@ export const composeTelegramCallbackAck = (
 
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let response: Response | undefined;
     try {
-      await fetchImpl(
-        `https://api.telegram.org/bot${encodeURIComponent(auth.token)}/answerCallbackQuery`,
+      const url = `https://api.telegram.org/bot${encodeURIComponent(auth.token)}/answerCallbackQuery`;
+      response = await fetchOriginPinned(
+        fetchImpl,
+        url,
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json; charset=utf-8' },
           body: JSON.stringify({ callback_query_id }),
           signal: controller.signal,
         },
+        new URL(url).origin,
       );
       // Response body intentionally unread — the ack is fire-and-forget
       // from our side. Telegram's `ok: false` (e.g. callback_query_id
       // already answered) just means the spinner cleared by other means
       // and is not actionable here.
     } finally {
+      if (response !== undefined) discardResponseBody(response);
       clearTimeout(timer);
     }
   };

@@ -576,6 +576,105 @@ describe('GraphCalProvider — initialScan', () => {
     });
     expect(got).toEqual(['p1', 'p2']);
   });
+
+  it('refuses an off-origin nextLink before forwarding the Graph bearer', async () => {
+    const store = seedStore();
+    const attackerUrl = 'https://attacker.invalid/collect?cursor=calendar';
+    const { fetcher, calls } = makeRouter([
+      calendarsListRoute([{ id: 'cal-1' }]),
+      {
+        match: (u) => u.includes('/me/calendars/cal-1/calendarView'),
+        response: {
+          status: 200,
+          body: { value: [], '@odata.nextLink': attackerUrl },
+        },
+      },
+    ]);
+    const provider = createGraphCalProvider({
+      slug: 'work',
+      config: mkConfig(),
+      accountStore: store,
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    await expect(provider.initialScan({
+      backfill_days: 7,
+      expansion_future_days: 30,
+      expansion_past_days: 7,
+      onEvent: async () => true,
+    })).rejects.toThrow('off-origin URL');
+    expect(calls.some((call) => call.url === attackerUrl)).toBe(false);
+  });
+
+  it('rejects a repeated nextLink before refetching the same page forever', async () => {
+    const store = seedStore();
+    const page2Url =
+      'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView?$skiptoken=repeat';
+    const { fetcher, calls } = makeRouter([
+      calendarsListRoute([{ id: 'cal-1' }]),
+      {
+        match: (u) => u === page2Url,
+        response: {
+          status: 200,
+          body: { value: [], '@odata.nextLink': page2Url },
+        },
+      },
+      {
+        match: (u) => u.includes('/me/calendars/cal-1/calendarView'),
+        response: {
+          status: 200,
+          body: { value: [], '@odata.nextLink': page2Url },
+        },
+      },
+    ]);
+    const provider = createGraphCalProvider({
+      slug: 'work',
+      config: mkConfig(),
+      accountStore: store,
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    await expect(provider.initialScan({
+      backfill_days: 7,
+      expansion_future_days: 30,
+      expansion_past_days: 7,
+      onEvent: async () => true,
+    })).rejects.toThrow('repeated a page reference');
+    expect(calls.filter((call) => call.url === page2Url)).toHaveLength(1);
+  });
+
+  it('rejects a non-string nextLink instead of treating a partial list as exhausted', async () => {
+    const store = seedStore();
+    const { fetcher } = makeRouter([
+      calendarsListRoute([{ id: 'cal-1' }]),
+      {
+        match: (u) => u.includes('/me/calendars/cal-1/calendarView'),
+        response: {
+          status: 200,
+          body: { value: [], '@odata.nextLink': 0 },
+        },
+      },
+    ]);
+    const provider = createGraphCalProvider({
+      slug: 'work',
+      config: mkConfig(),
+      accountStore: store,
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    await expect(provider.initialScan({
+      backfill_days: 7,
+      expansion_future_days: 30,
+      expansion_past_days: 7,
+      onEvent: async () => true,
+    })).rejects.toThrow('non-string continuation');
+  });
 });
 
 // ────────────────────────────────────────────────────────────────
@@ -618,6 +717,34 @@ describe('GraphCalProvider — startSync', () => {
     );
     expect(stored).toBe(seededLink);
     await stop();
+  });
+
+  it('refuses an off-origin deltaLink instead of persisting a poisoned watermark', async () => {
+    const store = seedStore();
+    const attackerUrl = 'https://attacker.invalid/collect?cursor=calendar-delta';
+    const { fetcher } = makeRouter([
+      calendarsListRoute([{ id: 'cal-1' }]),
+      {
+        match: (u) => u.includes('/me/calendars/cal-1/calendarView/delta'),
+        response: {
+          status: 200,
+          body: { value: [], '@odata.deltaLink': attackerUrl },
+        },
+      },
+    ]);
+    const provider = createGraphCalProvider({
+      slug: 'work',
+      config: mkConfig(),
+      accountStore: store,
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    await expect(provider.startSync(async () => undefined)).rejects.toThrow(
+      'off-origin URL',
+    );
+    expect(store.data.has(`graph.work.cal_delta_link.${hashId('cal-1')}`)).toBe(false);
   });
 
   it('uses stored deltaLink and emits updated + deleted', async () => {

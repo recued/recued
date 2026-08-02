@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createHash } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeypair, sign } from '@recued/release';
 import {
+  defaultDownload,
   discardStaged,
   preserveAndSwap,
   restoreSnapshot,
@@ -12,10 +13,89 @@ import {
   verifyArtifactFile,
   writeStagedSig,
   SIG_SIDECAR_SUFFIX,
+  UpdateArtifactTooLargeError,
 } from '../update/binary-apply-executor.js';
 
 const dir = (): string => mkdtempSync(join(tmpdir(), 'recued-apply-'));
 const sha256 = (b: Buffer): string => createHash('sha256').update(b).digest('hex');
+
+describe('defaultDownload transport boundaries', () => {
+  it('refuses a cross-origin redirect before downloading from the new origin', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(null, {
+      status: 307,
+      headers: { location: 'https://collector.invalid/artifact' },
+    }));
+    const staged = join(dir(), 'recued.staged');
+
+    await expect(defaultDownload(
+      'https://releases.recued.com/recued',
+      staged,
+      { fetchImpl },
+    )).rejects.toThrow(/redirect refused/);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ redirect: 'manual' });
+    expect(existsSync(staged)).toBe(false);
+  });
+
+  it('stops a lengthless response once it crosses the artifact byte ceiling', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.enqueue(new Uint8Array(3));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const staged = join(dir(), 'recued.staged');
+
+    await expect(defaultDownload(
+      'https://releases.recued.com/recued',
+      staged,
+      { fetchImpl: async () => new Response(body), maxBytes: 4 },
+    )).rejects.toBeInstanceOf(UpdateArtifactTooLargeError);
+    await vi.waitFor(() => expect(cancelled).toBe(true));
+    discardStaged(staged);
+  });
+
+  it('keeps the deadline active while the artifact body stalls', async () => {
+    vi.useFakeTimers();
+    try {
+      let observedSignal: AbortSignal | undefined;
+      const staged = join(dir(), 'recued.staged');
+      const pending = defaultDownload(
+        'https://releases.recued.com/recued',
+        staged,
+        {
+          timeoutMs: 20,
+          fetchImpl: async (_input, init) => {
+            observedSignal = init?.signal ?? undefined;
+            const body = new ReadableStream<Uint8Array>({
+              start(controller) {
+                const abort = (): void => {
+                  const error = new Error('aborted');
+                  error.name = 'AbortError';
+                  controller.error(error);
+                };
+                if (observedSignal?.aborted) abort();
+                else observedSignal?.addEventListener('abort', abort, { once: true });
+              },
+            });
+            return new Response(body);
+          },
+        },
+      );
+      const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+
+      await vi.advanceTimersByTimeAsync(20);
+      await rejected;
+      expect(observedSignal?.aborted).toBe(true);
+      discardStaged(staged);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
 
 describe('verifyArtifactFile (fail-closed, I-2)', () => {
   const setup = () => {

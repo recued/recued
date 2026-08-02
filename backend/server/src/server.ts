@@ -45,6 +45,7 @@ import {
   MCP_RATE_LIMIT_WINDOW_MS,
   type McpBearerVerifier,
   type McpCatalogDispatch,
+  type McpConcurrencyLimitResolver,
   type McpDispatch,
 } from './ports/mcp/handler.js';
 import {
@@ -666,6 +667,9 @@ export interface ServerConfig {
   mcpHttpDeps?: {
     verifier: McpBearerVerifier;
     dispatch: McpDispatch;
+    /** D-137 authored 3 / 5 / 10 concurrent-call tier for inbound door
+     *  bearers. Canonical owner CLI tokens return undefined. */
+    resolveConcurrencyLimit?: McpConcurrencyLimitResolver;
     rateLimiter?: RateLimiter;
     catalog?: McpCatalogDispatch;
   };
@@ -730,7 +734,7 @@ export interface ServerHandlerSet {
   wsHandle: WsServerHandle;
   /** Idempotent teardown. Closes the WS dispatcher; the path-listener-set
    *  itself is closed by its own `.stop()` (the caller owns the set). */
-  close(): void;
+  close(): Promise<void>;
 }
 
 /** Build the per-role handler decomposition over a `ServerConfig`. The
@@ -1021,6 +1025,12 @@ export const createServerHandlerSet = (config: ServerConfig = {}): ServerHandler
           refill_window_ms: MCP_RATE_LIMIT_WINDOW_MS,
         }),
         dispatch: config.mcpHttpDeps.dispatch,
+        ...(config.mcpHttpDeps.resolveConcurrencyLimit
+          ? {
+              resolve_concurrency_limit:
+                config.mcpHttpDeps.resolveConcurrencyLimit,
+            }
+          : {}),
         ...(config.mcpHttpDeps.catalog ? { catalog: config.mcpHttpDeps.catalog } : {}),
       })
     : (_req, res) => {
@@ -1587,10 +1597,32 @@ export const startServer = async (
     public_port: publicPort,
     public_bind_address: '127.0.0.1',
   });
+  let closePromise: Promise<void> | undefined;
+  const closeResources = (): Promise<void> => {
+    if (closePromise) return closePromise;
+    const begin = (stop: () => void | Promise<void>): Promise<void> => {
+      try { return Promise.resolve(stop()); }
+      catch (err) { return Promise.reject(err); }
+    };
+    // Both calls synchronously close admission before returning a drain
+    // promise. Start both before awaiting either so one failed drain cannot
+    // leave the sibling network surface accepting.
+    const drains = [
+      begin(() => handlerSet.close()),
+      begin(() => listenerSet.stop()),
+    ];
+    closePromise = Promise.allSettled(drains).then((results) => {
+      const errors = results
+        .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+        .map((result) => result.reason);
+      if (errors.length > 0) throw new AggregateError(errors, 'server teardown failed');
+    });
+    return closePromise;
+  };
   const statuses = await listenerSet.start();
   const lanStatus = statuses.find((s) => s.listener === 'lan');
   if (!lanStatus || !lanStatus.listening) {
-    handlerSet.close();
+    await closeResources();
     throw new Error(`startServer: LAN listener failed to bind (${lanStatus?.failure ?? 'unknown'})`);
   }
 
@@ -1600,7 +1632,7 @@ export const startServer = async (
   // was only used by the legacy single-listener flow.
   const serverFacade = {
     close: (cb?: (err?: Error) => void) => {
-      void listenerSet.stop().then(() => cb?.()).catch((e) => cb?.(e as Error));
+      void closeResources().then(() => cb?.()).catch((e) => cb?.(e as Error));
     },
   } as unknown as Server;
 
@@ -1608,10 +1640,7 @@ export const startServer = async (
     server: serverFacade,
     port: lanStatus.port,
     wsServer: handlerSet.wsHandle,
-    close: async () => {
-      handlerSet.close();
-      await listenerSet.stop();
-    },
+    close: closeResources,
   };
 };
 

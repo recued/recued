@@ -183,6 +183,7 @@ describe('"does this recipe render" is the ENGINE\'s rule, not a second one', ()
 
 const NOW = 1_700_000_000_000;
 const ENDPOINT_ID = 'ep-intake-render';
+const SOURCE_IP_HASH = 'endpoint-scoped-test-source';
 const FORM_DEFINITION_ID = 'lead-capture-v1';
 
 const formConfig = (honeypot: boolean): IntakeFormConfig => ({
@@ -342,6 +343,7 @@ const submit = async (input: {
     }).toString()),
     postRes,
     endpoint,
+    SOURCE_IP_HASH,
   );
 
   return {

@@ -12,10 +12,11 @@
  *  lives on the Collection implementations.
  *
  *  Errors during `dispose()`:
- *  - Each collection's close() is attempted in registration order.
- *  - A throwing close() does NOT abort the pipeline — later
- *    collections still get closed. Half-closed state is strictly
- *    worse than best-effort closed state (same reasoning as the
+ *  - Every collection's close() is started in registration order before any
+ *    one close is awaited, so a slow provider cannot leave later collection
+ *    admission open during drain.
+ *  - A throwing close() does NOT abort the pipeline. Half-closed state is
+ *    strictly worse than best-effort closed state (same reasoning as the
  *    Phase C drain orchestrator).
  *  - Collected errors surface as an `AggregateError`; the drain
  *    step that invokes dispose() records the step as `aborted`.
@@ -46,9 +47,9 @@ export interface CollectionRegistry {
    *  shallow copy so callers can iterate without risk of
    *  mid-iteration mutation. */
   list(): Collection[];
-  /** Close every registered collection and clear the registry.
-   *  Idempotent — a second dispose is a no-op. Called from the
-   *  `pause_collections` drain step. */
+  /** Close every registered collection and clear the registry. Concurrent
+   *  callers coalesce onto the same drain promise; later calls return that
+   *  settled result. Called from the `pause_collections` drain step. */
   dispose(): Promise<void>;
 }
 
@@ -61,6 +62,7 @@ export const createCollectionRegistry = (): CollectionRegistry => {
   const byKey = new Map<string, Collection>();
   const order: Collection[] = [];
   let disposed = false;
+  let disposePromise: Promise<void> | null = null;
 
   return {
     register(collection) {
@@ -99,26 +101,28 @@ export const createCollectionRegistry = (): CollectionRegistry => {
       return [...order];
     },
 
-    async dispose() {
-      if (disposed) return;
+    dispose() {
+      if (disposePromise) return disposePromise;
       disposed = true;
       const toClose = [...order];
       order.length = 0;
       byKey.clear();
-      const errors: unknown[] = [];
-      for (const c of toClose) {
-        try {
-          await c.close();
-        } catch (err) {
-          errors.push(err);
+      const closes = toClose.map((collection) => {
+        try { return Promise.resolve(collection.close()); }
+        catch (err) { return Promise.reject(err); }
+      });
+      disposePromise = Promise.allSettled(closes).then((results) => {
+        const errors = results
+          .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+          .map((result) => result.reason);
+        if (errors.length > 0) {
+          throw new AggregateError(
+            errors,
+            'CollectionRegistry.dispose: one or more close() calls failed',
+          );
         }
-      }
-      if (errors.length > 0) {
-        throw new AggregateError(
-          errors,
-          'CollectionRegistry.dispose: one or more close() calls failed',
-        );
-      }
+      });
+      return disposePromise;
     },
   };
 };

@@ -125,12 +125,14 @@ export interface HostnameReconciliationRunResult {
 export interface HostnameDailyReconciliationIntervalSpec {
   name: string;
   intervalMs: number;
-  tick: () => void;
+  tick: () => Promise<void> | void;
   fireImmediate?: boolean;
 }
 
 export interface HostnameDailyReconciliationBackgroundServices {
-  registerInterval(spec: HostnameDailyReconciliationIntervalSpec): () => void;
+  registerInterval(
+    spec: HostnameDailyReconciliationIntervalSpec,
+  ): () => Promise<void> | void;
 }
 
 export interface HostnameDailyReconciliationRunnerOptions {
@@ -458,15 +460,17 @@ export const runHostnameReconciliationJobs = async (
 
 export const registerDailyHostnameReconciliationRunner = (
   options: HostnameDailyReconciliationRunnerOptions,
-): (() => void) => {
-  const tick = (): void => {
-    void runHostnameReconciliationJobs(options.deps).catch((error: unknown) => {
+): (() => Promise<void> | void) => {
+  const tick = async (): Promise<void> => {
+    try {
+      await runHostnameReconciliationJobs(options.deps);
+    } catch (error: unknown) {
       try {
         options.onError?.(error);
       } catch {
         // Best-effort runner: interval ticks must never throw.
       }
-    });
+    }
   };
 
   return options.backgroundServices.registerInterval({

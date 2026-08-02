@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { executeMCP } from '../mcp.js';
 import { IngredientError, type ResolvedCall } from '../types.js';
 import type { IngredientManifest } from '@recued/contracts';
+import { DEFAULT_RESPONSE_BODY_MAX_BYTES } from '../bounded-response-body.js';
 
 const toResolved = (manifest: IngredientManifest, input: Record<string, unknown>): ResolvedCall => ({
   slug: manifest.slug,
@@ -189,6 +190,23 @@ describe('executeMCP', () => {
         'mcp.tool': 'tool',
       })),
     ).rejects.toThrow(/non-JSON-RPC/);
+  });
+
+  it('rejects an oversized JSON-RPC response before buffering it', async () => {
+    fetchMock.mockResolvedValue(new Response(
+      JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }),
+      {
+        headers: {
+          'content-type': 'application/json',
+          'content-length': String(DEFAULT_RESPONSE_BODY_MAX_BYTES + 1),
+        },
+      },
+    ));
+
+    await expect(executeMCP(toResolved(manifest, {
+      'mcp.server_url': 'https://x.com',
+      'mcp.tool': 'tool',
+    }))).rejects.toMatchObject({ code: 'INGREDIENT_OUTPUT_VALIDATION_FAILED' });
   });
 
   it('throws NETWORK_ERROR on fetch failure', async () => {

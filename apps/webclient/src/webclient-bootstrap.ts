@@ -233,6 +233,7 @@ import {
   createRecoveryIntentContinuationStore,
   type RecoveryIntentContinuation,
   type RecoveryIntentContinuationStorage,
+  type RecoveryIntentReviewVerification,
 } from './shell/recovery-intent-continuation.js';
 import {
   mountServerSwitchConvergence,
@@ -241,11 +242,14 @@ import {
   type ServerSwitchConvergenceState,
 } from './shell/server-switch-convergence.js';
 import {
+  isUnresolvedServerControlActionOutcome,
   mountWebclientServerPill,
   isServerHeartbeatSnapshot,
   SERVER_PILL_STYLES,
   SERVER_PILL_STYLES_MARKER,
   SERVER_PILL_HOST_ATTR,
+  type ServerControlActionOutcome,
+  type ServerControlCurrentStateObservation,
   type WebclientServerPillMount,
 } from './shell/server-pill-host.js';
 import { WEBCLIENT_WS_SUBPROTOCOL } from './realtime/browser-transport.js';
@@ -527,7 +531,9 @@ import {
   type AttentionInactiveConnectionRecoveryHint,
   type AttentionRecoveryExcursionReturn,
   type AttentionRecoveryIntentContinuation,
+  type AttentionRecoveryIntentInterruption,
   type AttentionRecoveryIntentRemediation,
+  type AttentionRecoveryIntentReviewTarget,
   type ApprovalAttentionPopoverMount,
 } from './attention/approval-attention-popover.js';
 import {
@@ -2878,14 +2884,67 @@ export const bootstrapWebclient = async (
     recoveryIntentContinuationStore.retire();
     recoveryIntentContinuationMarker = null;
   }
+  let bootRecoveryIntentReviewVerification:
+    RecoveryIntentReviewVerification | null =
+      recoveryIntentContinuationMarker === null
+        ? null
+        : recoveryIntentContinuationStore.readReviewVerification(
+            recoveryIntentContinuationMarker,
+          );
+  if (
+    recoveryIntentContinuationMarker !== null
+    && bootRecoveryIntentReviewVerification?.state === 'checking'
+  ) {
+    // A verifier still marked in flight can only reach a fresh bootstrap via
+    // reload/crash. Count that interruption once, then persist the bounded
+    // posture before any route read or reconnect observation can race it.
+    bootRecoveryIntentReviewVerification =
+      recoveryIntentContinuationStore.interruptReviewVerification(
+        recoveryIntentContinuationMarker,
+        bootRecoveryIntentReviewVerification.reviewTarget,
+        'reload',
+      );
+  }
+  const reviewVerificationPhase = (
+    verification: RecoveryIntentReviewVerification,
+  ): AttentionRecoveryIntentContinuation['phase'] =>
+    verification.state === 'ready'
+      ? 'verification_ready'
+      : verification.interruptionCount >= 2
+        ? 'verification_handoff'
+        : 'verification_interrupted';
   let recoveryIntentContinuationPhase:
-    AttentionRecoveryIntentContinuation['phase'] = 'ready';
+    AttentionRecoveryIntentContinuation['phase'] =
+      bootRecoveryIntentReviewVerification === null
+        ? 'ready'
+        : reviewVerificationPhase(bootRecoveryIntentReviewVerification);
   let recoveryIntentContinuationRemediation:
-    AttentionRecoveryIntentRemediation | null = null;
+    AttentionRecoveryIntentRemediation | null =
+      bootRecoveryIntentReviewVerification === null ? null : 'escalated';
+  let recoveryIntentContinuationReviewTarget:
+    AttentionRecoveryIntentReviewTarget | null =
+      bootRecoveryIntentReviewVerification?.reviewTarget ?? null;
+  let recoveryIntentReviewVerificationTarget:
+    AttentionRecoveryIntentReviewTarget | null =
+      bootRecoveryIntentReviewVerification?.reviewTarget ?? null;
+  let recoveryIntentContinuationInterruptionReason:
+    AttentionRecoveryIntentInterruption | null =
+      bootRecoveryIntentReviewVerification?.lastInterruption ?? null;
+  // Receipt outcomes are deliberately memory-only. Durable recovery markers
+  // restore the saved route and bounded verification posture, never a server
+  // action result from a previous page lifetime.
+  let recoveryIntentServerControlOutcome:
+    ServerControlActionOutcome | null = null;
+  let recoveryIntentServerCurrentState:
+    ServerControlCurrentStateObservation | null = null;
   const recoveryIntentContinuationPresentation = (
     marker: RecoveryIntentContinuation,
     phase = recoveryIntentContinuationPhase,
     remediation = recoveryIntentContinuationRemediation,
+    reviewTarget = recoveryIntentContinuationReviewTarget,
+    interruptionReason = recoveryIntentContinuationInterruptionReason,
+    serverControlOutcome = recoveryIntentServerControlOutcome,
+    serverCurrentState = recoveryIntentServerCurrentState,
   ): AttentionRecoveryIntentContinuation => ({
     serverProfileId: marker.profileId,
     serverProfileLabel: bootProfileLabel,
@@ -2894,6 +2953,19 @@ export const bootstrapWebclient = async (
     intent: marker.intent,
     phase,
     remediation,
+    ...(reviewTarget === null ? {} : { reviewTarget }),
+    ...(interruptionReason === null ? {} : { interruptionReason }),
+    ...(phase === 'awaiting_review_outcome'
+        && reviewTarget === 'server'
+        && serverControlOutcome !== null
+      ? { serverControlOutcome }
+      : {}),
+    ...(phase === 'awaiting_review_outcome'
+        && reviewTarget === 'server'
+        && serverControlOutcome !== null
+        && serverCurrentState !== null
+      ? { serverCurrentState }
+      : {}),
   });
   let recoveryIntentContinuation = recoveryIntentContinuationMarker === null
     ? null
@@ -2909,6 +2981,43 @@ export const bootstrapWebclient = async (
   let recoveryIntentContinuationRunGeneration = 0;
   let recoveryIntentContinuationRunInFlight = false;
   let recoveryIntentRetryOnReconnect = false;
+  let recoveryIntentConnectionDiagnosisSequence = 0;
+  const serverControlActionOutcomesMatch = (
+    left: ServerControlActionOutcome | null | undefined,
+    right: ServerControlActionOutcome | null | undefined,
+  ): boolean => left?.action === right?.action
+    && left?.phase === right?.phase
+    && left?.currentState === right?.currentState;
+  interface PendingRecoveryIntentConnectionDiagnosisBase {
+    readonly id: string;
+    readonly profileId: string;
+    readonly landingHash: string;
+    readonly intent: RecoveryIntentContinuation['intent'];
+    readonly pausedAt: number;
+  }
+  type PendingRecoveryIntentConnectionDiagnosis =
+    | (PendingRecoveryIntentConnectionDiagnosisBase & {
+        readonly source: 'bounded_handoff';
+        readonly reviewTarget: AttentionRecoveryIntentReviewTarget;
+        readonly interruptionReason: AttentionRecoveryIntentInterruption;
+      })
+    | (PendingRecoveryIntentConnectionDiagnosisBase & {
+        readonly source: 'unresolved_receipt';
+        readonly priorServerOutcome: ServerControlActionOutcome;
+      });
+  let pendingRecoveryIntentConnectionDiagnosis:
+    PendingRecoveryIntentConnectionDiagnosis | null = null;
+  const clearRecoveryIntentConnectionDiagnosis = (): void => {
+    pendingRecoveryIntentConnectionDiagnosis = null;
+    serverPill?.closeControls();
+    accountMenu?.clearConnectionDiagnosis();
+  };
+  const recoveryIntentFailureLimit = 2;
+  let recoveryIntentFailureCount =
+    bootRecoveryIntentReviewVerification === null
+      || bootRecoveryIntentReviewVerification.state === 'ready'
+      ? 0
+      : recoveryIntentFailureLimit;
   let recoveryIntentOwnershipListenersActive = false;
   const recoveryIntentOwnershipEvents = [
     'pointerdown',
@@ -2923,7 +3032,18 @@ export const bootstrapWebclient = async (
       marker === null
       || eventTarget === null
       || !appShell.contentRoot.contains(eventTarget)
+      || recoveryIntentContinuationPhase === 'awaiting_review_outcome'
+      || recoveryIntentContinuationPhase === 'verification_ready'
+      || recoveryIntentContinuationPhase === 'verification_interrupted'
+      || recoveryIntentContinuationPhase === 'verification_handoff'
     ) return;
+    if (
+      recoveryIntentContinuationPhase === 'checking'
+      && recoveryIntentReviewVerificationTarget !== null
+    ) {
+      interruptRecoveryIntentReviewVerification('ownership');
+      return;
+    }
     const currentHash = hashSource?.getHash() ?? activeHash;
     if (safeServerSwitchLandingHash(currentHash) !== marker.landingHash) return;
     recoveryIntentLandingHash = null;
@@ -2968,34 +3088,72 @@ export const bootstrapWebclient = async (
       recoveryIntentContinuationRunGeneration += 1;
       recoveryIntentContinuationRunInFlight = false;
       recoveryIntentLandingHash = null;
+      clearRecoveryIntentConnectionDiagnosis();
       detachRecoveryIntentOwnershipListeners();
       recoveryIntentContinuationStore.retire();
       recoveryIntentContinuationMarker = null;
       recoveryIntentContinuation = null;
       recoveryIntentContinuationPhase = 'ready';
       recoveryIntentContinuationRemediation = null;
+      recoveryIntentContinuationReviewTarget = null;
+      recoveryIntentReviewVerificationTarget = null;
+      recoveryIntentContinuationInterruptionReason = null;
+      recoveryIntentServerControlOutcome = null;
+      recoveryIntentServerCurrentState = null;
       recoveryIntentRetryOnReconnect = false;
+      recoveryIntentFailureCount = 0;
       approvalAttentionPopover?.setRecoveryIntentContinuation(null);
     }, delay);
   };
   const setRecoveryIntentContinuationState = (
     phase: AttentionRecoveryIntentContinuation['phase'],
     remediation: AttentionRecoveryIntentRemediation | null = null,
+    reviewTarget: AttentionRecoveryIntentReviewTarget | null = null,
+    interruptionReason: AttentionRecoveryIntentInterruption | null = null,
+    serverControlOutcome: ServerControlActionOutcome | null = null,
+    serverCurrentState: ServerControlCurrentStateObservation | null = null,
   ): void => {
     const marker = recoveryIntentContinuationMarker;
+    const nextServerControlOutcome =
+      phase === 'awaiting_review_outcome' && reviewTarget === 'server'
+        ? serverControlOutcome
+        : null;
+    const nextServerCurrentState = nextServerControlOutcome !== null
+      && phase === 'awaiting_review_outcome'
+      && reviewTarget === 'server'
+        ? serverCurrentState
+        : null;
     if (
       marker === null
       || (
         recoveryIntentContinuationPhase === phase
         && recoveryIntentContinuationRemediation === remediation
+        && recoveryIntentContinuationReviewTarget === reviewTarget
+        && recoveryIntentContinuationInterruptionReason === interruptionReason
+        && recoveryIntentServerControlOutcome?.action
+          === nextServerControlOutcome?.action
+        && recoveryIntentServerControlOutcome?.phase
+          === nextServerControlOutcome?.phase
+        && recoveryIntentServerControlOutcome?.currentState
+          === nextServerControlOutcome?.currentState
+        && recoveryIntentServerCurrentState?.state
+          === nextServerCurrentState?.state
       )
     ) return;
     recoveryIntentContinuationPhase = phase;
     recoveryIntentContinuationRemediation = remediation;
+    recoveryIntentContinuationReviewTarget = reviewTarget;
+    recoveryIntentContinuationInterruptionReason = interruptionReason;
+    recoveryIntentServerControlOutcome = nextServerControlOutcome;
+    recoveryIntentServerCurrentState = nextServerCurrentState;
     recoveryIntentContinuation = recoveryIntentContinuationPresentation(
       marker,
       phase,
       remediation,
+      reviewTarget,
+      interruptionReason,
+      nextServerControlOutcome,
+      nextServerCurrentState,
     );
     approvalAttentionPopover?.setRecoveryIntentContinuation(
       recoveryIntentContinuation,
@@ -3010,13 +3168,21 @@ export const bootstrapWebclient = async (
       || current.landingHash !== marker.landingHash
       || current.intent !== marker.intent
       || current.pausedAt !== marker.pausedAt;
-    if (changed) {
-      recoveryIntentContinuationRunGeneration += 1;
-      recoveryIntentContinuationRunInFlight = false;
-    }
+    // The orientation timer can surface the same durable marker again. It is
+    // not a new recovery attempt and must not erase an in-tab failure cap.
+    if (!changed) return;
+    clearRecoveryIntentConnectionDiagnosis();
+    recoveryIntentContinuationRunGeneration += 1;
+    recoveryIntentContinuationRunInFlight = false;
     recoveryIntentContinuationPhase = 'ready';
     recoveryIntentContinuationRemediation = null;
+    recoveryIntentContinuationReviewTarget = null;
+    recoveryIntentReviewVerificationTarget = null;
+    recoveryIntentContinuationInterruptionReason = null;
+    recoveryIntentServerControlOutcome = null;
+    recoveryIntentServerCurrentState = null;
     recoveryIntentRetryOnReconnect = false;
+    recoveryIntentFailureCount = 0;
     recoveryIntentContinuationMarker = marker;
     recoveryIntentContinuation = recoveryIntentContinuationPresentation(
       marker,
@@ -3032,6 +3198,7 @@ export const bootstrapWebclient = async (
   const retireRecoveryIntentContinuation = (
     completedRouteLanding = false,
   ): void => {
+    clearRecoveryIntentConnectionDiagnosis();
     recoveryIntentContinuationRunGeneration += 1;
     recoveryIntentContinuationRunInFlight = false;
     cancelRecoveryIntentContinuationExpiry();
@@ -3041,16 +3208,55 @@ export const bootstrapWebclient = async (
     recoveryIntentContinuation = null;
     recoveryIntentContinuationPhase = 'ready';
     recoveryIntentContinuationRemediation = null;
+    recoveryIntentContinuationReviewTarget = null;
+    recoveryIntentReviewVerificationTarget = null;
+    recoveryIntentContinuationInterruptionReason = null;
+    recoveryIntentServerControlOutcome = null;
+    recoveryIntentServerCurrentState = null;
     recoveryIntentRetryOnReconnect = false;
+    recoveryIntentFailureCount = 0;
     if (completedRouteLanding) {
       approvalAttentionPopover?.completeRecoveryIntentContinuation();
     } else {
       approvalAttentionPopover?.setRecoveryIntentContinuation(null);
     }
   };
+  const clearRecoveryIntentReviewVerification = (): void => {
+    recoveryIntentReviewVerificationTarget = null;
+    recoveryIntentContinuationInterruptionReason = null;
+    recoveryIntentContinuationStore.clearReviewVerification();
+  };
+  function interruptRecoveryIntentReviewVerification(
+    reason: AttentionRecoveryIntentInterruption,
+  ): boolean {
+    const marker = recoveryIntentContinuationMarker;
+    const reviewTarget = recoveryIntentReviewVerificationTarget;
+    if (marker === null || reviewTarget === null) return false;
+    const verification =
+      recoveryIntentContinuationStore.interruptReviewVerification(
+        marker,
+        reviewTarget,
+        reason,
+      );
+    if (verification === null) return false;
+    recoveryIntentReviewVerificationTarget = verification.reviewTarget;
+    recoveryIntentContinuationInterruptionReason =
+      verification.lastInterruption;
+    recoveryIntentContinuationRunGeneration += 1;
+    recoveryIntentContinuationRunInFlight = false;
+    pendingRecoveryReturnAction = null;
+    recoveryIntentRetryOnReconnect = false;
+    setRecoveryIntentContinuationState(
+      reviewVerificationPhase(verification),
+      'escalated',
+      verification.reviewTarget,
+      verification.lastInterruption,
+    );
+    return true;
+  }
   let resumeRecoveryIntentContinuation: (
     continuation: AttentionRecoveryIntentContinuation,
-    source?: 'attention' | 'connection_repaired',
+    source?: 'attention' | 'connection_repaired' | 'review_resolved',
   ) => 'started' | 'missing' | 'unavailable' = () => 'unavailable';
   let reviewRecoveryIntentContinuation: (
     continuation: AttentionRecoveryIntentContinuation,
@@ -3058,6 +3264,25 @@ export const bootstrapWebclient = async (
   let remediateRecoveryIntentConnection: (
     continuation: AttentionRecoveryIntentContinuation,
   ) => 'started' | 'missing' | 'unavailable' = () => 'unavailable';
+  let reviewRecoveryIntentServer: (
+    continuation: AttentionRecoveryIntentContinuation,
+  ) => 'started' | 'missing' | 'unavailable' = () => 'unavailable';
+  let keepRecoveryIntentReviewBlocked: (
+    continuation: AttentionRecoveryIntentContinuation,
+  ) => 'started' | 'missing' | 'unavailable' = () => 'unavailable';
+  const detachRecoveryIntentReviewVerificationStatus =
+    connectionStatus.onStatus((status) => {
+      if (
+        status !== 'connected'
+        && recoveryIntentContinuationPhase === 'checking'
+        && recoveryIntentReviewVerificationTarget !== null
+      ) {
+        // A transport transition makes the pending answer indeterminate. Stop
+        // owning that request immediately; reconnect only restores the manual
+        // Retry verification choice and never dispatches another read.
+        interruptRecoveryIntentReviewVerification('connection');
+      }
+    });
   const detachRecoveryIntentContinuationReconnect = reconnect(() => {
     const marker = recoveryIntentContinuationMarker;
     if (marker === null) return;
@@ -3114,6 +3339,7 @@ export const bootstrapWebclient = async (
     if (
       recoveryIntentContinuationPhase === 'failed'
       && recoveryIntentContinuationRemediation !== 'review'
+      && recoveryIntentContinuationRemediation !== 'escalated'
     ) {
       // A reconnect alone never navigates. It only makes a failed saved return
       // manually actionable again unless the owner armed the exact retry above.
@@ -4316,6 +4542,7 @@ export const bootstrapWebclient = async (
             : {}),
           settingsHref: serializeShellRoute('settings', 'account'),
           onClose: () => {
+            serverPill?.closeControls();
             if (pendingInactiveProfileRecoveryReviewId !== null) {
               inactiveProfileRecoveryReview.retire(
                 pendingInactiveProfileRecoveryReviewId,
@@ -4326,6 +4553,112 @@ export const bootstrapWebclient = async (
             // durable neutral Attention offer; only clear this Account-open
             // selection so a later unrelated switch cannot inherit its route.
             pendingRecoveryExcursionReturn = null;
+          },
+          onConnectionDiagnosisClosed: (
+            diagnosis,
+            disposition,
+            serverOutcome,
+            serverCurrentState,
+          ) => {
+            serverPill?.closeControls();
+            const pending = pendingRecoveryIntentConnectionDiagnosis;
+            if (pending === null || diagnosis.id !== pending.id) return;
+            pendingRecoveryIntentConnectionDiagnosis = null;
+            if (disposition !== 'return') return;
+            const marker = recoveryIntentContinuationMarker;
+            const markerStillMatches =
+              marker === null
+                ? false
+                : diagnosis.profileId === pending.profileId
+                  && marker.profileId === pending.profileId
+                  && marker.landingHash === pending.landingHash
+                  && marker.intent === pending.intent
+                  && marker.pausedAt === pending.pausedAt;
+            const reviewStateStillMatches = pending.source
+              === 'bounded_handoff'
+              ? recoveryIntentContinuationPhase === 'verification_handoff'
+                && recoveryIntentContinuationRemediation === 'escalated'
+                && recoveryIntentContinuationReviewTarget
+                  === pending.reviewTarget
+                && recoveryIntentReviewVerificationTarget
+                  === pending.reviewTarget
+                && recoveryIntentContinuationInterruptionReason
+                  === pending.interruptionReason
+              : recoveryIntentContinuationPhase === 'awaiting_review_outcome'
+                && recoveryIntentContinuationRemediation === 'escalated'
+                && recoveryIntentContinuationReviewTarget === 'server'
+                && isUnresolvedServerControlActionOutcome(
+                  pending.priorServerOutcome,
+                )
+                && serverControlActionOutcomesMatch(
+                  recoveryIntentServerControlOutcome,
+                  pending.priorServerOutcome,
+                );
+            if (
+              marker === null
+              || !markerStillMatches
+              || !reviewStateStillMatches
+            ) return;
+            // The explicit return, not merely opening or closing Account, is
+            // the reviewed boundary that releases an old two-interruption
+            // verifier. A receipt re-review instead keeps its last projection
+            // unless a deliberate new server action produced a fresher one.
+            if (pending.source === 'bounded_handoff') {
+              clearRecoveryIntentReviewVerification();
+            }
+            const nextServerOutcome = serverOutcome
+              ?? (pending.source === 'unresolved_receipt'
+                ? pending.priorServerOutcome
+                : null);
+            const nextServerCurrentState:
+              ServerControlCurrentStateObservation | null = pending.source
+              === 'unresolved_receipt'
+              && (
+                serverCurrentState?.state === 'running'
+                || serverCurrentState?.state === 'paused'
+              )
+                ? { state: serverCurrentState.state }
+                : null;
+            if (nextServerCurrentState !== null) {
+              // Crossing from an unresolved historical receipt to a fresh
+              // server-state baseline leaves exactly one route-owned area
+              // check. Persist only that closed-list obligation and its
+              // existing profile/route/intent binding; the action, receipt,
+              // and paused/running observation remain memory-only.
+              const verification =
+                recoveryIntentContinuationStore.prepareReviewVerification(
+                  marker,
+                );
+              if (verification !== null) {
+                recoveryIntentReviewVerificationTarget =
+                  verification.reviewTarget;
+              }
+            }
+            setRecoveryIntentContinuationState(
+              'awaiting_review_outcome',
+              'escalated',
+              'server',
+              null,
+              nextServerOutcome,
+              nextServerCurrentState,
+            );
+            approvalAttentionPopover?.open();
+          },
+          onReviewConnectionDiagnosisServerControls: (diagnosis, handoff) =>
+            diagnosis.profileId === bootProfileId
+              ? serverPill?.openControls(handoff) ?? 'unavailable'
+              : 'unavailable',
+          onReadConnectionDiagnosisServerCurrentState: (diagnosis) => {
+            const pending = pendingRecoveryIntentConnectionDiagnosis;
+            if (
+              diagnosis.profileId !== bootProfileId
+              || pending?.source !== 'unresolved_receipt'
+              || pending.id !== diagnosis.id
+              || pending.profileId !== diagnosis.profileId
+            ) return null;
+            const observation = serverPill?.readCurrentState() ?? null;
+            if (observation !== null) serverPill?.closeControls();
+            return observation;
           },
           ...(profileStore !== undefined && reloadForServerSwitch !== undefined
             ? {
@@ -4766,6 +5099,7 @@ export const bootstrapWebclient = async (
           host: pillHost,
           status: connectionStatus.status,
           onStatus: connectionStatus.onStatus,
+          ...(options.now !== undefined ? { now: options.now } : {}),
           // D-188 — the master pause control. Owner-only `server.setPaused`
           // rides the bearer-gated WS (never MCP-bridged); reachable while
           // paused since it never routes through the op-admission gate.
@@ -4777,6 +5111,18 @@ export const bootstrapWebclient = async (
           // as the crash-halt recovery action.
           runRequestRestart: () =>
             rpcConn.call('server.requestRestart', { reason: 'webclient' }),
+          onControlAvailabilityChange: (available) => {
+            accountMenu?.setConnectionDiagnosisControlAvailability(
+              bootProfileId,
+              available,
+            );
+          },
+          onCurrentStateAvailabilityChange: (available) => {
+            accountMenu?.setConnectionDiagnosisCurrentStateAvailability(
+              bootProfileId,
+              available,
+            );
+          },
         });
         // Badge follows the same controller as the banner, so the two can
         // never disagree about whether the current server is reachable.
@@ -5883,12 +6229,18 @@ export const bootstrapWebclient = async (
             : {}),
           onResumeRecoveryIntentContinuation: (continuation) =>
             resumeRecoveryIntentContinuation(continuation),
+          onResolveRecoveryIntentReview: (continuation) =>
+            resumeRecoveryIntentContinuation(continuation, 'review_resolved'),
+          onKeepRecoveryIntentReviewBlocked: (continuation) =>
+            keepRecoveryIntentReviewBlocked(continuation),
           onReviewRecoveryIntentContinuation: (continuation) =>
             reviewRecoveryIntentContinuation(continuation),
           ...(accountMenu !== null
             ? {
                 onRemediateRecoveryIntentConnection: (continuation) =>
                   remediateRecoveryIntentConnection(continuation),
+                onReviewRecoveryIntentServer: (continuation) =>
+                  reviewRecoveryIntentServer(continuation),
               }
             : {}),
           onDismissRecoveryIntentContinuation:
@@ -9790,6 +10142,22 @@ export const bootstrapWebclient = async (
             if (marker !== null) setRecoveryIntentContinuation(marker);
           },
           onUserOwnership: () => {
+            // Direct review deliberately hands ownership to the route before
+            // asking what happened. Route interaction may clear its temporary
+            // focus cue, but only the explicit outcome can retire the reminder.
+            if (
+              recoveryIntentContinuationPhase === 'awaiting_review_outcome'
+              || recoveryIntentContinuationPhase === 'verification_ready'
+              || recoveryIntentContinuationPhase === 'verification_interrupted'
+              || recoveryIntentContinuationPhase === 'verification_handoff'
+            ) return;
+            if (
+              recoveryIntentContinuationPhase === 'checking'
+              && recoveryIntentReviewVerificationTarget !== null
+            ) {
+              interruptRecoveryIntentReviewVerification('ownership');
+              return;
+            }
             recoveryIntentLandingHash = null;
             if (recoveryIntentContinuationMarker !== null) {
               retireRecoveryIntentContinuation();
@@ -10019,11 +10387,29 @@ export const bootstrapWebclient = async (
 
   const recoveryIntentRemediationFor = (
     handle: RecoveryContextProbe,
-  ): AttentionRecoveryIntentRemediation => {
+  ): Exclude<AttentionRecoveryIntentRemediation, 'escalated'> => {
     if (connectionStatus.status() !== 'connected') {
       return accountMenu === null ? 'review' : 'connection';
     }
     return handle.retryRecoveryContext === undefined ? 'review' : 'retry';
+  };
+
+  const recordRecoveryIntentFailure = (
+    remediation: Exclude<AttentionRecoveryIntentRemediation, 'escalated'>,
+  ): void => {
+    // A settled current-state check is no longer "unfinished", even when its
+    // authoritative answer is a failure that needs direct remediation.
+    clearRecoveryIntentReviewVerification();
+    recoveryIntentFailureCount = Math.min(
+      recoveryIntentFailureLimit,
+      recoveryIntentFailureCount + 1,
+    );
+    setRecoveryIntentContinuationState(
+      'failed',
+      recoveryIntentFailureCount >= recoveryIntentFailureLimit
+        ? 'escalated'
+        : remediation,
+    );
   };
 
   resumeRecoveryIntentContinuation = (requested, source = 'attention') => {
@@ -10046,6 +10432,10 @@ export const bootstrapWebclient = async (
     if (
       requested.phase !== recoveryIntentContinuationPhase
       || requested.remediation !== recoveryIntentContinuationRemediation
+      || (requested.reviewTarget ?? null)
+        !== recoveryIntentContinuationReviewTarget
+      || (requested.interruptionReason ?? null)
+        !== recoveryIntentContinuationInterruptionReason
     ) {
       return 'unavailable';
     }
@@ -10062,14 +10452,51 @@ export const bootstrapWebclient = async (
         requested.phase === 'failed'
         || requested.phase === 'waiting_for_connection'
       )
+    ) || (
+      source === 'review_resolved'
+      && (
+        requested.phase === 'awaiting_review_outcome'
+        || requested.phase === 'verification_ready'
+        || requested.phase === 'verification_interrupted'
+      )
+      && requested.remediation === 'escalated'
+      && requested.reviewTarget !== undefined
     );
     if (!resumable) return 'unavailable';
     if (pendingRecoveryReturnAction !== null) return 'unavailable';
     recoveryIntentLandingHash = marker.landingHash;
+    const reviewOutcomeTarget = requested.reviewTarget ?? null;
+    if (
+      source === 'review_resolved'
+      && reviewOutcomeTarget !== null
+    ) {
+      const verification =
+        recoveryIntentContinuationStore.armReviewVerification(
+          marker,
+          reviewOutcomeTarget,
+        );
+      if (verification === null) return 'unavailable';
+      recoveryIntentReviewVerificationTarget = verification.reviewTarget;
+      if (connectionStatus.status() !== 'connected') {
+        // The owner can ask while a reconnect banner is already present, in
+        // which case no new status edge would arrive to interrupt a hung read.
+        // Stay on the explicit re-entry choice and dispatch nothing.
+        interruptRecoveryIntentReviewVerification('connection');
+        return 'unavailable';
+      }
+    }
     const generation = ++recoveryIntentContinuationRunGeneration;
     recoveryIntentContinuationRunInFlight = true;
     recoveryIntentRetryOnReconnect = false;
     setRecoveryIntentContinuationState('checking');
+    const restoreInterruptedResume = (): void => {
+      recoveryIntentContinuationRunInFlight = false;
+      if (source === 'review_resolved' && reviewOutcomeTarget !== null) {
+        interruptRecoveryIntentReviewVerification('navigation');
+        return;
+      }
+      setRecoveryIntentContinuationState('ready');
+    };
     const run = (
       handle: RecoveryContextProbe,
       routeJustMounted: boolean,
@@ -10108,19 +10535,20 @@ export const bootstrapWebclient = async (
           && currentHash === marker.landingHash
           && parseRouteFromHash(currentHash) === activeRoute;
         if (!routeStillActive) {
-          recoveryIntentContinuationRunInFlight = false;
-          setRecoveryIntentContinuationState('ready');
+          restoreInterruptedResume();
           return;
         }
         if (freshness !== 'current') {
+          if (
+            source === 'review_resolved'
+            && connectionStatus.status() !== 'connected'
+            && interruptRecoveryIntentReviewVerification('connection')
+          ) return;
           // The owner explicitly asked to re-enter, so orient to the route's
           // current Review condition without inventing another banner receipt.
           recoveryIntentContinuationRunInFlight = false;
           const attentionOpen = approvalAttentionPopover?.isOpen() === true;
-          setRecoveryIntentContinuationState(
-            'failed',
-            recoveryIntentRemediationFor(handle),
-          );
+          recordRecoveryIntentFailure(recoveryIntentRemediationFor(handle));
           if (!attentionOpen) focusRecoveryReturnLanding('review');
           return;
         }
@@ -10135,7 +10563,7 @@ export const bootstrapWebclient = async (
         // discoverable in Attention. A closed popover gets the broad content
         // fallback; a reopened popover keeps its dialog focus.
         recoveryIntentContinuationRunInFlight = false;
-        setRecoveryIntentContinuationState('failed', 'review');
+        recordRecoveryIntentFailure('review');
       })();
     };
     const selectedHash = hashSource?.getHash() ?? activeHash;
@@ -10146,8 +10574,7 @@ export const bootstrapWebclient = async (
         // A declined unsaved-work guard leaves the quiet Attention item intact.
         onDeclined: () => {
           if (generation === recoveryIntentContinuationRunGeneration) {
-            recoveryIntentContinuationRunInFlight = false;
-            setRecoveryIntentContinuationState('ready');
+            restoreInterruptedResume();
           }
         },
       };
@@ -10171,16 +10598,35 @@ export const bootstrapWebclient = async (
       retireRecoveryIntentContinuation();
       return 'missing';
     }
+    const resumingInterruptedReview =
+      (
+        requested.phase === 'verification_interrupted'
+        || requested.phase === 'verification_handoff'
+      )
+      && requested.remediation === 'escalated'
+      && requested.reviewTarget === 'area'
+      && recoveryIntentContinuationPhase === requested.phase
+      && recoveryIntentContinuationRemediation === 'escalated'
+      && recoveryIntentContinuationReviewTarget === 'area'
+      && recoveryIntentReviewVerificationTarget === 'area'
+      && requested.interruptionReason
+        === recoveryIntentContinuationInterruptionReason;
     if (
-      requested.phase !== 'failed'
-      || recoveryIntentContinuationPhase !== 'failed'
-      || requested.remediation !== recoveryIntentContinuationRemediation
+      !(
+        (
+          requested.phase === 'failed'
+          && recoveryIntentContinuationPhase === 'failed'
+          && requested.remediation === recoveryIntentContinuationRemediation
+        )
+        || resumingInterruptedReview
+      )
       || recoveryIntentContinuationRunInFlight
       || pendingRecoveryReturnAction !== null
     ) return 'unavailable';
 
-    const failedRemediation = recoveryIntentContinuationRemediation
-      ?? 'review';
+    const failedRemediation = resumingInterruptedReview
+      ? 'escalated'
+      : recoveryIntentContinuationRemediation ?? 'review';
     recoveryIntentLandingHash = marker.landingHash;
     const generation = ++recoveryIntentContinuationRunGeneration;
     recoveryIntentContinuationRunInFlight = true;
@@ -10210,16 +10656,28 @@ export const bootstrapWebclient = async (
           && currentHash === marker.landingHash
           && parseRouteFromHash(currentHash) === activeRoute;
         if (!routeStillActive) {
-          recoveryIntentContinuationRunInFlight = false;
-          setRecoveryIntentContinuationState('failed', failedRemediation);
+          if (!interruptRecoveryIntentReviewVerification('navigation')) {
+            recoveryIntentContinuationRunInFlight = false;
+            setRecoveryIntentContinuationState('failed', failedRemediation);
+          }
           return;
         }
         if (focusRecoveryReturnLanding('review')) {
+          if (failedRemediation === 'escalated') {
+            clearRecoveryIntentReviewVerification();
+            recoveryIntentContinuationRunInFlight = false;
+            setRecoveryIntentContinuationState(
+              'awaiting_review_outcome',
+              'escalated',
+              'area',
+            );
+            return;
+          }
           retireRecoveryIntentContinuation(true);
           return;
         }
         recoveryIntentContinuationRunInFlight = false;
-        setRecoveryIntentContinuationState('failed', 'review');
+        recordRecoveryIntentFailure('review');
       })();
     };
 
@@ -10230,8 +10688,10 @@ export const bootstrapWebclient = async (
         onArrival: (handle) => landForReview(handle, true),
         onDeclined: () => {
           if (generation === recoveryIntentContinuationRunGeneration) {
-            recoveryIntentContinuationRunInFlight = false;
-            setRecoveryIntentContinuationState('failed', failedRemediation);
+            if (!interruptRecoveryIntentReviewVerification('navigation')) {
+              recoveryIntentContinuationRunInFlight = false;
+              setRecoveryIntentContinuationState('failed', failedRemediation);
+            }
           }
         },
       };
@@ -10293,6 +10753,206 @@ export const bootstrapWebclient = async (
       ) return;
       accountMenu.open();
     });
+    return 'started';
+  };
+
+  reviewRecoveryIntentServer = (requested) => {
+    const marker = recoveryIntentContinuationMarker;
+    if (
+      marker === null
+      || bootProfileId === null
+      || marker.profileId !== bootProfileId
+      || requested.serverProfileId !== marker.profileId
+      || requested.landingHash !== marker.landingHash
+      || requested.intent !== marker.intent
+    ) {
+      retireRecoveryIntentContinuation();
+      return 'missing';
+    }
+    const resumingInterruptedReview =
+      (
+        (
+          requested.phase === 'verification_interrupted'
+          && requested.reviewTarget === 'server'
+        )
+        || requested.phase === 'verification_handoff'
+      )
+      && requested.reviewTarget !== undefined
+      && recoveryIntentContinuationPhase === requested.phase
+      && recoveryIntentContinuationReviewTarget === requested.reviewTarget
+      && recoveryIntentReviewVerificationTarget === requested.reviewTarget
+      && requested.interruptionReason
+        === recoveryIntentContinuationInterruptionReason;
+    const unresolvedReceiptReview =
+      requested.phase === 'awaiting_review_outcome'
+      && requested.reviewTarget === 'server'
+      && requested.serverControlOutcome !== undefined
+      && isUnresolvedServerControlActionOutcome(
+        requested.serverControlOutcome,
+      )
+      && recoveryIntentContinuationPhase === 'awaiting_review_outcome'
+      && recoveryIntentContinuationReviewTarget === 'server'
+      && recoveryIntentServerControlOutcome !== null
+      && isUnresolvedServerControlActionOutcome(
+        recoveryIntentServerControlOutcome,
+      )
+      && serverControlActionOutcomesMatch(
+        requested.serverControlOutcome,
+        recoveryIntentServerControlOutcome,
+      );
+    if (
+      !(
+        (
+          requested.phase === 'failed'
+          && recoveryIntentContinuationPhase === 'failed'
+        )
+        || resumingInterruptedReview
+        || unresolvedReceiptReview
+      )
+      || requested.remediation !== 'escalated'
+      || recoveryIntentContinuationRemediation !== 'escalated'
+      || recoveryIntentContinuationRunInFlight
+      || pendingRecoveryReturnAction !== null
+      || accountMenu === null
+      || !accountMenu.canOpenConnectionDiagnosis(marker.profileId)
+    ) return 'unavailable';
+
+    let diagnosisId: string | null = null;
+    if (
+      requested.phase === 'verification_handoff'
+      && requested.reviewTarget !== undefined
+      && requested.interruptionReason !== undefined
+    ) {
+      diagnosisId = `recovery-verification:${marker.pausedAt}:${
+        ++recoveryIntentConnectionDiagnosisSequence
+      }`;
+      pendingRecoveryIntentConnectionDiagnosis = {
+        source: 'bounded_handoff',
+        id: diagnosisId,
+        profileId: marker.profileId,
+        landingHash: marker.landingHash,
+        intent: marker.intent,
+        pausedAt: marker.pausedAt,
+        reviewTarget: requested.reviewTarget,
+        interruptionReason: requested.interruptionReason,
+      };
+    } else if (
+      unresolvedReceiptReview
+      && requested.serverControlOutcome !== undefined
+    ) {
+      diagnosisId = `recovery-server-re-review:${marker.pausedAt}:${
+        ++recoveryIntentConnectionDiagnosisSequence
+      }`;
+      pendingRecoveryIntentConnectionDiagnosis = {
+        source: 'unresolved_receipt',
+        id: diagnosisId,
+        profileId: marker.profileId,
+        landingHash: marker.landingHash,
+        intent: marker.intent,
+        pausedAt: marker.pausedAt,
+        priorServerOutcome: { ...requested.serverControlOutcome },
+      };
+    }
+    // A bounded handoff remains durably bounded while Account owns the review.
+    // Only its explicit Return action releases the old verifier. An unresolved
+    // receipt stays memory-only and keeps its exact projection while Account
+    // reopens the current profile's controls; neither path replays an action.
+    const pausedAt = marker.pausedAt;
+    void Promise.resolve().then(() => {
+      if (
+        recoveryIntentContinuationMarker?.pausedAt !== pausedAt
+        || recoveryIntentContinuationPhase !== requested.phase
+        || recoveryIntentContinuationRemediation !== 'escalated'
+        || recoveryIntentContinuationReviewTarget
+          !== (requested.reviewTarget ?? null)
+        || recoveryIntentContinuationInterruptionReason
+          !== (requested.interruptionReason ?? null)
+        || (
+          unresolvedReceiptReview
+          && !serverControlActionOutcomesMatch(
+            requested.serverControlOutcome,
+            recoveryIntentServerControlOutcome,
+          )
+        )
+        || accountMenu === null
+      ) {
+        if (
+          diagnosisId !== null
+          && pendingRecoveryIntentConnectionDiagnosis?.id === diagnosisId
+        ) {
+          pendingRecoveryIntentConnectionDiagnosis = null;
+          approvalAttentionPopover?.open();
+        }
+        return;
+      }
+      if (diagnosisId !== null) {
+        const pending = pendingRecoveryIntentConnectionDiagnosis;
+        if (pending === null || pending.id !== diagnosisId) {
+          approvalAttentionPopover?.open();
+          return;
+        }
+        const diagnosis = {
+          id: diagnosisId,
+          profileId: marker.profileId,
+          profileLabel: bootProfileLabel,
+          areaLabel: serverSwitchLandingAreaLabel(marker.landingHash),
+          ...(pending.source === 'bounded_handoff'
+            ? { interruptionReason: pending.interruptionReason }
+            : {}),
+        };
+        const opened = pending.source === 'unresolved_receipt'
+          ? accountMenu.openConnectionDiagnosis(diagnosis, {
+              initialServerOutcome: pending.priorServerOutcome,
+              reviewServerControls: true,
+            })
+          : accountMenu.openConnectionDiagnosis(diagnosis);
+        if (opened !== 'opened') {
+          if (pendingRecoveryIntentConnectionDiagnosis?.id === diagnosisId) {
+            pendingRecoveryIntentConnectionDiagnosis = null;
+          }
+          approvalAttentionPopover?.open();
+        }
+        return;
+      }
+      clearRecoveryIntentReviewVerification();
+      setRecoveryIntentContinuationState(
+        'awaiting_review_outcome',
+        'escalated',
+        'server',
+      );
+      accountMenu.open();
+    });
+    return 'started';
+  };
+
+  keepRecoveryIntentReviewBlocked = (requested) => {
+    const marker = recoveryIntentContinuationMarker;
+    if (
+      marker === null
+      || bootProfileId === null
+      || marker.profileId !== bootProfileId
+      || requested.serverProfileId !== marker.profileId
+      || requested.landingHash !== marker.landingHash
+      || requested.intent !== marker.intent
+    ) {
+      retireRecoveryIntentContinuation();
+      return 'missing';
+    }
+    if (
+      requested.phase !== 'awaiting_review_outcome'
+      || requested.remediation !== 'escalated'
+      || requested.reviewTarget === undefined
+      || recoveryIntentContinuationPhase !== 'awaiting_review_outcome'
+      || recoveryIntentContinuationRemediation !== 'escalated'
+      || recoveryIntentContinuationReviewTarget !== requested.reviewTarget
+      || recoveryIntentContinuationRunInFlight
+      || pendingRecoveryReturnAction !== null
+    ) return 'unavailable';
+
+    // The person explicitly kept this blocked, so a prepared post-
+    // reconciliation check is no longer the next promised action. Retain the
+    // parent return but clear that narrow obligation before closing Attention.
+    clearRecoveryIntentReviewVerification();
     return 'started';
   };
 
@@ -10504,6 +11164,16 @@ export const bootstrapWebclient = async (
   // case real: `#reception` ↔ `#settings` flips the route through the helper.
   const detachHash = hashSource
     ? hashSource.onChange((hash) => {
+        if (
+          hash !== activeHash
+          && recoveryIntentContinuationPhase === 'checking'
+          && recoveryIntentReviewVerificationTarget !== null
+          && pendingRecoveryReturnAction?.landingHash !== hash
+        ) {
+          // Leaving while the post-review read is pending makes its answer
+          // unsafe to apply to the new view. Preserve only explicit re-entry.
+          interruptRecoveryIntentReviewVerification('navigation');
+        }
         if (hash !== activeHash) recoveryIntentOrientation?.clear();
         const next = resolveRoute(hash);
         const remountForDeepLink =
@@ -10645,6 +11315,7 @@ export const bootstrapWebclient = async (
       for (const lease of [...chatTurnLeases]) releaseChatTurnLease(lease);
       settledChatTurnIds.clear();
       recoveryIntentContinuationRunInFlight = false;
+      detachRecoveryIntentReviewVerificationStatus();
       detachRecoveryIntentContinuationReconnect();
       detachRecoveryIntentOwnershipListeners();
       cancelRecoveryIntentContinuationExpiry();

@@ -19,9 +19,13 @@
  *  Spec: D-192 (S4c3); survey Wall-D leaf. */
 
 import type { Classify, DeltaPage, IdKeyedDeltaDeps, ItemClass } from '../../file-source-adapters/id-keyed-delta.js';
+import {
+  assertProviderPageUrl,
+  readProviderStringContinuation,
+} from '../../provider-pagination-guard.js';
 
 // ────────────────────────────────────────────────────────────────
-// Fetch abstraction (injected — real `fetch` in prod, a fake in tests)
+// Fetch abstraction (injected — bounded provider fetch in prod, a fake in tests)
 // ────────────────────────────────────────────────────────────────
 
 export interface DynamicsFetchResponse {
@@ -105,10 +109,14 @@ export const parseDataverseDeltaPage = (res: unknown): DeltaPage => {
   if (!Array.isArray(obj.value)) {
     throw new DataverseError(0, undefined, 'dataverse delta response has no value array');
   }
-  const nextRaw = obj['@odata.nextLink'];
-  const deltaRaw = obj['@odata.deltaLink'];
-  const nextRef = typeof nextRaw === 'string' && nextRaw.length > 0 ? nextRaw : undefined;
-  const watermark = typeof deltaRaw === 'string' && deltaRaw.length > 0 ? deltaRaw : undefined;
+  const nextRef = readProviderStringContinuation(
+    obj['@odata.nextLink'],
+    'Dataverse',
+  );
+  const watermark = readProviderStringContinuation(
+    obj['@odata.deltaLink'],
+    'Dataverse watermark',
+  );
   return {
     items: obj.value,
     ...(nextRef !== undefined ? { nextRef } : {}),
@@ -169,8 +177,23 @@ export const isDataverseResync = (err: unknown): boolean =>
 export const buildDataverseDeltaDeps = (
   fetchImpl: DynamicsFetch,
   token: string,
+  trustedBaseUrl: string,
 ): IdKeyedDeltaDeps => ({
-  fetchPage: (ref: string): Promise<unknown> => dataverseGet(fetchImpl, ref, token),
-  parsePage: parseDataverseDeltaPage,
+  fetchPage: async (ref: string): Promise<unknown> =>
+    dataverseGet(
+      fetchImpl,
+      assertProviderPageUrl(ref, trustedBaseUrl, 'Dataverse'),
+      token,
+    ),
+  parsePage: (raw: unknown): DeltaPage => {
+    const page = parseDataverseDeltaPage(raw);
+    if (page.nextRef !== undefined) {
+      assertProviderPageUrl(page.nextRef, trustedBaseUrl, 'Dataverse');
+    }
+    if (page.watermark !== undefined) {
+      assertProviderPageUrl(page.watermark, trustedBaseUrl, 'Dataverse');
+    }
+    return page;
+  },
   classify: classifyDataverseActivity,
 });

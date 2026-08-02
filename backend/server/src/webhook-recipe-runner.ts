@@ -8,12 +8,23 @@
  */
 
 import type { AuditLogStore } from '@recued/storage';
+import {
+  contractPermitsDoorType,
+  isContractActive,
+  type RecipeDefinition,
+} from '@recued/contracts';
 import { handleExecute, type ExecuteHandlerDeps } from './execute-handler.js';
 import type {
   WebhookRecipeRunResult,
   WebhookRecipeRunner,
   WebhookRecipeRunRequest,
 } from './webhook-recipe-consumer.js';
+import {
+  deriveResolvedRecipeCapability,
+  type OpResolver,
+} from './derive-recipe-capability.js';
+import { doorCapabilityChanged } from './mint-door-contract.js';
+import type { DoorRecipeResolver } from './recipe-capability-wiring.js';
 import type { WebhookConsumerStore } from './storage/webhook-consumer-store.js';
 import type { ContractDefinitionStore } from './storage/contract-definition-store.js';
 import { buildWebhookContractSnapshot } from './webhook-contract-snapshot.js';
@@ -30,6 +41,8 @@ export interface ExecuteWebhookRecipeRunnerDeps {
    *  connection its provider reads resolve through, silently resolves to nothing.
    *  Same shape and reason as the reception runner's `resolveConfig` (3c·1). */
   resolveConfig: (recipeId: string) => Record<string, unknown> | undefined;
+  readonly resolveDoorRecipe?: DoorRecipeResolver;
+  readonly resolveOp?: OpResolver;
   /** D-209 #1 W3 — the store the door's `ContractSnapshot` resolves from. MUST be
    *  the same instance the Gateway reads its verdicts from (compose-listeners
    *  threads `execution.contractDefinitionStore`). A harness without one passes a
@@ -43,16 +56,18 @@ export interface ExecuteWebhookRecipeRunnerDeps {
 const assertTargetStillMatches = (
   deps: ExecuteWebhookRecipeRunnerDeps,
   input: WebhookRecipeRunRequest,
-): void => {
+): RecipeDefinition => {
   if (input.idempotency_key !== input.run_id) {
     throw new Error('webhook recipe runner: idempotency key must equal run id');
   }
   const stored = deps.executeDeps.recipeStore.getStored(input.recipe_id);
+  const recipe = deps.executeDeps.recipeStore.get(input.recipe_id);
   if (!stored
     || stored.publisher_id !== input.publisher_id
-    || deps.executeDeps.recipeStore.get(input.recipe_id) === null) {
+    || recipe === null) {
     throw new Error('webhook recipe runner: recipe target is no longer installed');
   }
+  return recipe;
 };
 
 const runOnce = async (
@@ -102,7 +117,24 @@ const runOnce = async (
 
   // Resolved fresh on every (re-)entry: a retry of a failed anchor runs with the
   // install config as it stands NOW, exactly like a fresh fire would.
+  const recipe = assertTargetStillMatches(deps, input);
   const config = deps.resolveConfig(input.recipe_id);
+  // Current production wiring always supplies the exact door resolver. Under that wiring,
+  // an unstamped, dead, or cross-class door is a terminal non-success before execution.
+  // An empty snapshot only fences ingredient calls; a pure-transform recipe could otherwise
+  // report success and silently consume the event after its door was revoked.
+  if (deps.resolveDoorRecipe !== undefined) {
+    const contractId = input.execution_source.contract_id;
+    if (contractId === undefined) return 'terminal_non_success';
+    const currentDoor = deps.definitionStore.get(contractId);
+    if (
+      currentDoor === null
+      || !isContractActive(currentDoor, (deps.now ?? Date.now)())
+      || !contractPermitsDoorType(currentDoor, 'webhook')
+    ) {
+      return 'terminal_non_success';
+    }
+  }
   // D-209 #1 W3 — a stamped door dispatches under its ContractSnapshot: the door's
   // tool allowlist + authored `admin` ceiling (two-sided enrollment IS the standing
   // approval, §1.4). NOT optional when the source carries a contract_id — a
@@ -116,6 +148,24 @@ const runOnce = async (
         now: deps.now ?? Date.now,
       })
     : undefined;
+  if (
+    input.execution_source.contract_id !== undefined
+    && deps.resolveDoorRecipe !== undefined
+  ) {
+    const dispatchRecipe = deps.resolveDoorRecipe(recipe, config ?? {});
+    const storedDoor = deps.definitionStore.get(input.execution_source.contract_id);
+    if (!dispatchRecipe.ok) {
+      throw new Error('webhook recipe runner: door binding changed; re-save the recipe');
+    }
+    const resolveOp = dispatchRecipe.resolveOp ?? deps.resolveOp;
+    const derived = deriveResolvedRecipeCapability(recipe, dispatchRecipe.recipe, {
+      ...(config === undefined ? {} : { config }),
+      ...(resolveOp === undefined ? {} : { resolveOp }),
+    });
+    if (!derived.ok || doorCapabilityChanged(storedDoor, derived.capability).changed) {
+      throw new Error('webhook recipe runner: door authority changed; re-save the recipe');
+    }
+  }
   const result = await handleExecute(deps.executeDeps, {
     recipe_id: input.recipe_id,
     context: input.context,

@@ -127,14 +127,14 @@ const setupHarness = () => {
   return {
     db, config, registry, state, auditLog, cache, retention, cascade,
     bootstrapDeps,
-    close: () => { cascade.close(); db.close(); },
+    close: async () => { await cascade.close(); db.close(); },
   };
 };
 
 describe('Phase B e2e — cache pressure → LRU → recover', () => {
   let h: ReturnType<typeof setupHarness>;
   beforeEach(() => { h = setupHarness(); });
-  afterEach(() => h.close());
+  afterEach(async () => { await h.close(); });
 
   it('filling the cache past pressureAt triggers auto-reclaim and returns to running', async () => {
     // Seed the cache with enough bytes to actually cross pressureAt.

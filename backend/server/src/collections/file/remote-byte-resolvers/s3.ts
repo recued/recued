@@ -42,6 +42,7 @@ export const buildS3RemoteByteResolver = (deps: S3RemoteByteResolverDeps): Remot
       method: init.method,
       headers: init.headers,
       ...(init.body !== undefined ? { body: init.body as string | Uint8Array } : {}),
+      ...(init.signal !== undefined ? { signal: init.signal } : {}),
     });
 
   return async (req) => {

@@ -57,6 +57,7 @@ import {
 import {
   getMessengerVendorDeclaration,
   listMessengerVendors,
+  resolveMessengerConnectionIngressMode,
   type ConnectionRow,
 } from '@recued/contracts';
 import {
@@ -136,6 +137,10 @@ const readInboundSecret = (
   if (secret_field === undefined) return null;
   const row = connectionStore.get('notification', connection_name);
   if (row === null) return null;
+  // The provider lookup contract requires the matching notification subtype.
+  // A same-named row must never lend verification material to another vendor
+  // route, and an untyped row carries no authority for any route.
+  if (row.subtype !== vendor) return null;
   let config: unknown;
   try {
     config = JSON.parse(row.config_json);
@@ -145,6 +150,14 @@ const readInboundSecret = (
   if (config === null || typeof config !== 'object' || Array.isArray(config)) {
     return null;
   }
+  const declaration = getMessengerVendorDeclaration(vendor);
+  if (
+    declaration === null
+    || resolveMessengerConnectionIngressMode(
+      declaration,
+      config as Record<string, unknown>,
+    ) !== 'webhook'
+  ) return null;
   const secret = (config as Record<string, unknown>)[secret_field];
   if (typeof secret !== 'string' || secret.length === 0) return null;
   return { row, secret };
@@ -284,14 +297,17 @@ export const composeVendorWebhookPort = (
   const messengerVendors: Record<string, WebhookVendorDescriptor> = {};
   for (const vendor of listMessengerVendors()) {
     const declaration = getMessengerVendorDeclaration(vendor);
-    // Only a `webhook` ingress has a webhook descriptor. A `socket` / `poll`
-    // vendor (Discord's Gateway) arrives by another path and must NOT be exposed
-    // on this port — skipping is the fail-closed choice.
-    if (declaration === null || declaration.ingress.mode !== 'webhook') continue;
+    // Compose descriptors for every vendor that CAN run webhook mode. The
+    // per-connection secret lookup below still exposes exactly one selected
+    // mode and returns a vendor-agnostic 404 for local-mode rows.
+    if (
+      declaration === null
+      || !declaration.ingress.supported_modes.includes('webhook')
+    ) continue;
     const leaf = MESSENGER_WEBHOOK_DESCRIPTOR_LEAVES[vendor];
     if (leaf === undefined) continue;
 
-    const id_field = declaration.ingress.id_field ?? 'id';
+    const id_field = declaration.ingress.id_field;
     // Default dispatch stub — log + drop — when no inbound-answer dispatcher is
     // wired. The log detail reproduces the vendor's NATIVE id field name, as the
     // two per-vendor stubs it replaces did, so log lines stay byte-identical.

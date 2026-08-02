@@ -1766,7 +1766,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'work.search': {
     name: 'work.search',
     description:
-      "Search Mary's work items — one `kind` per call: `task`, `project`, `note`, `commitment`, or `booking` (a reservation: customer, price, how it ended, and its own date/time in `slot_start_at` / `slot_end_at` — a booking is NOT a calendar event and is never in the calendar) — across every registered Source (Recued's own records + synced vendor mirrors like HubSpot/Salesforce tasks). Filter with `query` (case-insensitive substring over title + body text) / `source_id` / `done`. Results are the LOCAL mirror: `source_freshness` says how current each Source is (poll-synced mirrors can trail the vendor), and any `long_text.fidelity: 'preview'` is a bounded excerpt — NEVER present it as the complete body (use `work.read` with `fidelity: 'remote_detail'` for the full text). Set `current: true` only when the user asks for latest/right-now state, `detail: true` only when complete bodies are needed — both trigger bounded targeted vendor reads; if the result carries `narrow`, the query exceeded the read cap: narrow it (or answer from the local rows disclosing `limitations`), do not re-send unchanged. Read-cost-zero when neither flag is set — never invokes LLMs.",
+      "Search Mary's work items — one `kind` per call: `task`, `project`, `note`, `commitment`, or `booking` (a reservation: customer, price, how it ended, and its own date/time in `slot_start_at` / `slot_end_at` — a booking is NOT a calendar event and is never in the calendar) — across every registered Source: Recued's records, synced vendor mirrors, and `read_through` Sources fetched directly on demand without canonical work-entity materialization. Filter with `query` (case-insensitive substring over title + body text) / `source_id` / `done`. Each result `id` is Source-qualified routing metadata: pass it VERBATIM to `work.read` or the matching provider operation; never strip or rewrite its prefix. A mirrored row can also go to a generic `data.<kind>` update/delete; a `live: true` read-through item has no local row, so write it through its matching provider operation. `source_freshness: read_through` means the result was fetched live and was not written to `data_<kind>`; other external freshness states describe poll-synced local mirrors that can trail the vendor. Any `long_text.fidelity: 'preview'` is a bounded excerpt — NEVER present it as the complete body (use `work.read` with `fidelity: 'remote_detail'` for the full text). Set `current: true` only when the user asks for latest/right-now state, `detail: true` only when complete bodies are needed — both trigger bounded targeted reads for mirrored candidates; read-through Sources are already live. If the result carries `narrow`, the query exceeded the read cap: narrow it (or answer from retained local rows disclosing `limitations`), do not re-send unchanged. This tool never invokes an LLM, but it can invoke declared provider read operations.",
     arg_schema: {
       type: 'object',
       properties: {
@@ -1806,7 +1806,7 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
   'work.read': {
     name: 'work.read',
     description:
-      "Read ONE work item (task / project / note / commitment / booking) by `kind` + `id`. A `booking` is the whole reservation — `lifecycle_state` (confirmed / completed / cancelled / no_show), price, customer, and its time in `slot_start_at` / `slot_end_at`. Answer 'when is it' from those two fields; do NOT look in the calendar, which holds personal events and never bookings. An absent slot pair means no time is agreed yet, not a failed lookup. Default `fidelity: 'rich_meta'` serves the local mirror row — `long_text.fidelity` marks 'complete' vs 'preview' (a bounded excerpt; never present a preview as the full body). Use `fidelity: 'remote_detail'` when the complete body/detail is required (fetches from the vendor when the Source serves it remotely), or `fidelity: 'current_remote'` when the user asks for latest/right-now state (always fetches vendor-current). A vendor fetch that fails degrades honestly to the local row with `escalation_error` naming the cause — do not retry the same call; answer from the local row and tell the user, citing `source_freshness`.",
+      "Read ONE work item (task / project / note / commitment / booking) by `kind` + `id`. A `booking` is the whole reservation — `lifecycle_state` (confirmed / completed / cancelled / no_show), price, customer, and its time in `slot_start_at` / `slot_end_at`. Answer 'when is it' from those two fields; do NOT look in the calendar, which holds personal events and never bookings. An absent slot pair means no time is agreed yet, not a failed lookup. For a retained row, default `fidelity: 'rich_meta'` serves the local record; use `remote_detail` for complete vendor detail or `current_remote` for latest state. A retained-row vendor failure degrades honestly to that local row with `escalation_error`. For a Source-qualified `read_through` id, every fidelity reads the declared provider directly, returns `live: true` plus `source_freshness: read_through`, and writes no canonical `data_<kind>` row; because no local fallback exists, a provider/config/policy failure is an explicit read error. Do not retry the same failed call unchanged. `long_text.fidelity: 'preview'` is always a bounded excerpt, never the complete body.",
     arg_schema: {
       type: 'object',
       properties: {
@@ -1815,12 +1815,15 @@ export const TIER1_TOOL_DESCRIPTORS: Readonly<Record<Tier1ToolName, Tier1ToolDes
           enum: [...WORK_ENTITY_KINDS],
           description: 'The work-item family.',
         },
-        id: { type: 'string', description: "The item's id (from `work.search` results)." },
+        id: {
+          type: 'string',
+          description: "The Source-qualified item id from `work.search`; pass it unchanged (legacy bare ids also work).",
+        },
         fidelity: {
           type: 'string',
           enum: ['rich_meta', 'remote_detail', 'current_remote'],
           description:
-            "'rich_meta' (default) = local mirror; 'remote_detail' = complete record where the Source serves it; 'current_remote' = vendor-current now.",
+            "'rich_meta' (default) = retained local row, or a live direct read for `read_through`; 'remote_detail' = complete record where served; 'current_remote' = vendor-current now.",
         },
       },
       required: ['kind', 'id'],

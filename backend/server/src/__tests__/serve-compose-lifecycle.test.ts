@@ -77,7 +77,7 @@ const makeOptions = (
       stopAll: vi.fn(async () => undefined),
       list: vi.fn(() => []),
     },
-    cascade: { close: vi.fn() },
+    cascade: { close: vi.fn(async () => undefined) },
     getHttpServer: vi.fn(() => undefined),
     getSchedulersBundle: vi.fn(() => undefined),
     exit: vi.fn(),
@@ -124,6 +124,7 @@ describe('composeServeLifecycle', () => {
         auditLog: options.auditLog,
         drainSteps: expect.any(Object),
         getInFlightCount: expect.any(Function),
+        exit: options.exit,
         // D-178 slice 5 — `onCrashLoopDetected` (the legacy D-108 crash-loop →
         // npm-rollback flag write) is retired; no longer passed.
       }),
@@ -197,7 +198,7 @@ describe('composeServeLifecycle', () => {
         stopAll: vi.fn(async (filter) => { order.push(`stop:${filter?.kind}`); }),
         list: vi.fn(() => []),
       },
-      cascade: { close: vi.fn(() => { order.push('cascade'); }) },
+      cascade: { close: vi.fn(async () => { order.push('cascade'); }) },
       db: { close: vi.fn(() => { order.push('db'); }) },
       getHttpServer: vi.fn(() => currentHttpServer),
       getSchedulersBundle: vi.fn(() => currentSchedulerBundle),
@@ -214,7 +215,7 @@ describe('composeServeLifecycle', () => {
       cron: { getHandle: vi.fn(() => ({ pause, inFlight })) },
     } as unknown as SchedulersBundle;
     await drainSteps.pause_scheduler();
-    expect(pause).toHaveBeenCalledTimes(1);
+    expect(pause).not.toHaveBeenCalled();
     expect(createOptions.getInFlightCount()).toBe(1);
 
     currentHttpServer = { close: closeHttp };
@@ -225,7 +226,7 @@ describe('composeServeLifecycle', () => {
     await drainSteps.close_cascade();
     await drainSteps.close_db();
     expect(order.slice(5)).toEqual([
-      'pause',
+      'stop:scheduler',
       'http',
       'stop:timer',
       'stop:emitter',
@@ -235,6 +236,121 @@ describe('composeServeLifecycle', () => {
 
     currentSchedulerBundle = undefined;
     expect(createOptions.getInFlightCount()).toBe(0);
+  });
+
+  it('keeps close_cascade pending until the cascade drain settles', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const lifecycle = makeLifecycle();
+    lifecycleMocks.createLifecycle.mockReturnValue(lifecycle);
+    const close = vi.fn(() => held);
+
+    await composeServeLifecycle(makeOptions({ cascade: { close } }));
+    const drainSteps = lifecycleMocks.createLifecycle.mock.calls[0]![0].drainSteps;
+
+    let settled = false;
+    const closing = drainSteps.close_cascade().then(() => { settled = true; });
+    await Promise.resolve();
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(settled).toBe(false);
+
+    release();
+    await closing;
+    expect(settled).toBe(true);
+  });
+
+  it('starts timer and emitter shutdown together and surfaces either failure', async () => {
+    const calls: string[] = [];
+    let releaseTimer!: () => void;
+    const heldTimer = new Promise<void>((resolve) => { releaseTimer = resolve; });
+    const lifecycle = makeLifecycle();
+    lifecycleMocks.createLifecycle.mockReturnValue(lifecycle);
+    await composeServeLifecycle(makeOptions({
+      backgroundServices: {
+        register: vi.fn(),
+        registerInterval: vi.fn(),
+        list: vi.fn(() => []),
+        stopAll: vi.fn((filter) => {
+          calls.push(filter?.kind ?? 'all');
+          if (filter?.kind === 'timer') return heldTimer;
+          return Promise.reject(new Error('emitter close failed'));
+        }),
+      },
+    }));
+    const stopTimers = lifecycleMocks.createLifecycle.mock.calls[0]![0]
+      .drainSteps.stop_timers;
+
+    const stopping = stopTimers();
+    await Promise.resolve();
+    expect(calls).toEqual(['timer', 'emitter']);
+    releaseTimer();
+    await expect(stopping).rejects.toThrow(/background services failed to stop/);
+  });
+
+  it('attempts every collection stop when one stack rejects', async () => {
+    const calls: string[] = [];
+    const lifecycle = makeLifecycle();
+    lifecycleMocks.createLifecycle.mockReturnValue(lifecycle);
+    await composeServeLifecycle(makeOptions({
+      storage: {
+        fileStack: {
+          disposeAll: vi.fn(async () => {
+            calls.push('file');
+            throw new Error('watcher stuck');
+          }),
+        },
+      },
+      collection: {
+        collectionRegistry: { dispose: vi.fn(async () => { calls.push('registry'); }) },
+        calendarStack: { disposeAll: vi.fn(async () => { calls.push('calendar'); }) },
+        mailStack: { disposeAll: vi.fn(async () => { calls.push('mail'); }) },
+        serviceStack: { disposeAll: vi.fn(async () => { calls.push('service'); }) },
+        supervisionStack: { disposeAll: vi.fn(async () => { calls.push('supervision'); }) },
+      },
+    }));
+    const pauseCollections = lifecycleMocks.createLifecycle.mock.calls[0]![0]
+      .drainSteps.pause_collections;
+
+    await expect(pauseCollections()).rejects.toThrow(/collection stacks failed to stop/);
+    expect(calls).toEqual([
+      'registry', 'file', 'calendar', 'mail', 'service', 'supervision',
+    ]);
+  });
+
+  it('surfaces a database close failure to the drain orchestrator', async () => {
+    const lifecycle = makeLifecycle();
+    lifecycleMocks.createLifecycle.mockReturnValue(lifecycle);
+    const closeError = new Error('database busy');
+
+    await composeServeLifecycle(makeOptions({
+      db: { close: vi.fn(() => { throw closeError; }) },
+    }));
+    const drainSteps = lifecycleMocks.createLifecycle.mock.calls[0]![0].drainSteps;
+
+    await expect(drainSteps.close_db()).rejects.toBe(closeError);
+  });
+
+  it('threads the shared audit append barrier into the terminal flush', async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const drainAuditWrites = vi.fn(() => pending);
+    lifecycleMocks.createLifecycle.mockReturnValue(makeLifecycle());
+
+    await composeServeLifecycle(makeOptions({
+      storage: { fileStack: undefined, drainAuditWrites },
+    }));
+    const flushAudit = lifecycleMocks.createLifecycle.mock.calls[0]![0]
+      .drainSteps.flush_audit;
+
+    let flushed = false;
+    const flushing = flushAudit().then(() => { flushed = true; });
+    await Promise.resolve();
+    expect(drainAuditWrites).toHaveBeenCalledOnce();
+    expect(flushed).toBe(false);
+
+    release();
+    await flushing;
+    expect(flushed).toBe(true);
   });
 
   it('folds the in-flight registry active-run count into getInFlightCount', async () => {

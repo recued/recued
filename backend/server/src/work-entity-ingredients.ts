@@ -68,6 +68,8 @@ import {
   COMMITMENT_CANCEL_FROM_STATES,
   COMMITMENT_FULFILL_ALLOWED_EXPIRY_POLICIES,
   COMMITMENT_FULFILL_FROM_STATES,
+  parseQualifiedWorkEntityId,
+  QualifiedWorkEntityIdError,
   isTaskIdempotencyKey,
   RECUED_BUILTIN_SOURCE_ID,
   taskIdFromIdempotencyKey,
@@ -376,6 +378,81 @@ export class WorkEntityNotFoundError extends Error {
     this.id = id;
   }
 }
+
+/** Resolve an AI-facing qualified id back to the local mirror row used by
+ * kernel CRUD. Legacy local ids remain valid for existing recipe/RPC callers. */
+const resolveWorkEntityInputId = (
+  deps: WorkEntityIngredientDeps,
+  kind: WorkEntityKind,
+  rawId: string,
+): string => {
+  const qualified = parseQualifiedWorkEntityId(rawId);
+  if (qualified === null) return rawId;
+  if (qualified.kind !== kind) {
+    throw new QualifiedWorkEntityIdError(
+      'QUALIFIED_ID_KIND_MISMATCH',
+      `QUALIFIED_ID_KIND_MISMATCH: this operation targets '${kind}', but the id is for `
+        + `'${qualified.kind}'. No write was made. Retry with 'work.search' and use an id `
+        + `whose kind is '${kind}'.`,
+      { retry_with: 'work.search', actual_source: qualified.source_id },
+    );
+  }
+  const entity = qualified.identity === 'source'
+    ? deps.store.readBySourceIdentity(kind, qualified.source_id, qualified.record_id)
+    : deps.store.readByKind(kind, qualified.record_id);
+  if (entity === null) throw new WorkEntityNotFoundError(kind, rawId);
+  if (entity.source_id !== qualified.source_id) {
+    throw new QualifiedWorkEntityIdError(
+      'SOURCE_MISMATCH',
+      `SOURCE_MISMATCH: the qualified id names source '${qualified.source_id}', but local row `
+        + `'${entity.id}' belongs to '${entity.source_id}'. No write was made. Retry with `
+        + `'work.search' and pass the returned id unchanged.`,
+      {
+        retry_with: 'work.search',
+        expected_source: entity.source_id,
+        actual_source: qualified.source_id,
+      },
+    );
+  }
+  return entity.id;
+};
+
+const readWorkEntityInput = (
+  deps: WorkEntityIngredientDeps,
+  kind: WorkEntityKind,
+  rawId: string,
+): WorkEntity | null => {
+  const qualified = parseQualifiedWorkEntityId(rawId);
+  if (qualified === null) return deps.resolver.readEntity(kind, rawId);
+  if (qualified.kind !== kind) {
+    throw new QualifiedWorkEntityIdError(
+      'QUALIFIED_ID_KIND_MISMATCH',
+      `QUALIFIED_ID_KIND_MISMATCH: work.read requested '${kind}', but the id is for `
+        + `'${qualified.kind}'. Retry with kind '${qualified.kind}' and the same id.`,
+      { retry_with: 'work.read', actual_source: qualified.source_id },
+    );
+  }
+  const entity = qualified.identity === 'source'
+    ? deps.resolver.readEntityBySourceIdentity(
+        kind,
+        qualified.source_id,
+        qualified.record_id,
+      )
+    : deps.resolver.readEntity(kind, qualified.record_id);
+  if (entity !== null && entity.source_id !== qualified.source_id) {
+    throw new QualifiedWorkEntityIdError(
+      'SOURCE_MISMATCH',
+      `SOURCE_MISMATCH: the qualified id names source '${qualified.source_id}', but local row `
+        + `'${entity.id}' belongs to '${entity.source_id}'. Retry with 'work.search'.`,
+      {
+        retry_with: 'work.search',
+        expected_source: entity.source_id,
+        actual_source: qualified.source_id,
+      },
+    );
+  }
+  return entity;
+};
 
 export interface WorkEntityIngredientDeps {
   store: WorkEntityStore;
@@ -934,8 +1011,17 @@ const taskCreate = (deps: WorkEntityIngredientDeps) =>
     if (input.linked_mail_thread_id != null && input.linked_mail_thread_id !== '') {
       writeInput.linked_mail_thread_id = input.linked_mail_thread_id;
     }
-    if (input.parent_project_id != null) writeInput.parent_project_id = input.parent_project_id;
-    if (input.blocks_task_ids != null) writeInput.blocks_task_ids = input.blocks_task_ids;
+    if (input.parent_project_id != null) {
+      writeInput.parent_project_id = resolveWorkEntityInputId(
+        deps,
+        'project',
+        input.parent_project_id,
+      );
+    }
+    if (input.blocks_task_ids != null) {
+      writeInput.blocks_task_ids = input.blocks_task_ids.map((id) =>
+        resolveWorkEntityInputId(deps, 'task', id));
+    }
     if (input.source_extension_blob != null) writeInput.source_extension_blob = input.source_extension_blob;
     if (idempotencyKey !== null) {
       writeInput.source_extension_blob = {
@@ -1001,7 +1087,8 @@ const taskUpdate = (deps: WorkEntityIngredientDeps) =>
     blocks_task_ids?: readonly string[];
     source_extension_blob?: Record<string, unknown>;
   }): Promise<{ task: Task }> => {
-    const existing = deps.store.readTask(input.id);
+    const localId = resolveWorkEntityInputId(deps, 'task', input.id);
+    const existing = deps.store.readTask(localId);
     if (!existing) throw new WorkEntityNotFoundError('task', input.id);
     const sourceReg = deps.store.getSource(existing.source_id);
     // Phase 1 BEFORE the local write — a structurally-unpushable
@@ -1057,9 +1144,18 @@ const taskUpdate = (deps: WorkEntityIngredientDeps) =>
     else if (existing.parent_calendar_event_id !== undefined) writeInput.parent_calendar_event_id = existing.parent_calendar_event_id;
     if (input.linked_mail_thread_id != null) writeInput.linked_mail_thread_id = input.linked_mail_thread_id;
     else if (existing.linked_mail_thread_id !== undefined) writeInput.linked_mail_thread_id = existing.linked_mail_thread_id;
-    if (input.parent_project_id != null) writeInput.parent_project_id = input.parent_project_id;
-    else if (existing.parent_project_id !== undefined) writeInput.parent_project_id = existing.parent_project_id;
-    writeInput.blocks_task_ids = input.blocks_task_ids ?? existing.blocks_task_ids;
+    if (input.parent_project_id != null) {
+      writeInput.parent_project_id = resolveWorkEntityInputId(
+        deps,
+        'project',
+        input.parent_project_id,
+      );
+    } else if (existing.parent_project_id !== undefined) {
+      writeInput.parent_project_id = existing.parent_project_id;
+    }
+    writeInput.blocks_task_ids = input.blocks_task_ids?.map((id) =>
+      resolveWorkEntityInputId(deps, 'task', id)
+    ) ?? existing.blocks_task_ids;
     if (existing.source_record_id !== undefined) writeInput.source_record_id = existing.source_record_id;
     if (existing.connection_id !== undefined) writeInput.connection_id = existing.connection_id;
     if (existing.source_record_hash !== undefined) writeInput.source_record_hash = existing.source_record_hash;
@@ -1117,7 +1213,8 @@ const taskDelete = (deps: WorkEntityIngredientDeps) =>
     id: string;
     tombstoned: boolean;
   }> => {
-    const existing = deps.store.readTask(input.id);
+    const localId = resolveWorkEntityInputId(deps, 'task', input.id);
+    const existing = deps.store.readTask(localId);
     if (!existing) throw new WorkEntityNotFoundError('task', input.id);
     const tombstone = input.tombstone !== false;
     const sourceReg = deps.store.getSource(existing.source_id);
@@ -1133,7 +1230,7 @@ const taskDelete = (deps: WorkEntityIngredientDeps) =>
         });
       }
     }
-    const ok = deps.store.deleteTask(input.id, { tombstone, ...(deps.now ? { now: deps.now() } : {}) });
+    const ok = deps.store.deleteTask(localId, { tombstone, ...(deps.now ? { now: deps.now() } : {}) });
     if (!ok) throw new WorkEntityNotFoundError('task', input.id);
     emitWorkEntityEvent(deps, 'task', 'deleted', tagWorkEntity('task', existing), tagWorkEntity('task', existing));
     cascadeOnWrite(deps, 'task', existing.id, 'delete');
@@ -1142,7 +1239,8 @@ const taskDelete = (deps: WorkEntityIngredientDeps) =>
 
 const taskMarkDone = (deps: WorkEntityIngredientDeps) =>
   async (input: { id: string; done?: boolean; completed_at?: number }): Promise<{ task: Task }> => {
-    const existing = deps.store.readTask(input.id);
+    const localId = resolveWorkEntityInputId(deps, 'task', input.id);
+    const existing = deps.store.readTask(localId);
     if (!existing) throw new WorkEntityNotFoundError('task', input.id);
     const done = input.done !== false;
     const sourceReg = deps.store.getSource(existing.source_id);
@@ -1302,7 +1400,8 @@ const noteUpdate = (deps: WorkEntityIngredientDeps) =>
     if (input.body !== undefined && (typeof input.body !== 'string' || input.body.length === 0)) {
       throw new WorkEntityValidationError('body is required', 'body');
     }
-    const existing = deps.store.readNote(input.id);
+    const localId = resolveWorkEntityInputId(deps, 'note', input.id);
+    const existing = deps.store.readNote(localId);
     if (!existing) throw new WorkEntityNotFoundError('note', input.id);
     const sourceReg = deps.store.getSource(existing.source_id);
     // Phase 1 BEFORE the local write — a structurally-unpushable
@@ -1368,7 +1467,8 @@ const noteDelete = (deps: WorkEntityIngredientDeps) =>
     id: string;
     tombstoned: boolean;
   }> => {
-    const existing = deps.store.readNote(input.id);
+    const localId = resolveWorkEntityInputId(deps, 'note', input.id);
+    const existing = deps.store.readNote(localId);
     if (!existing) throw new WorkEntityNotFoundError('note', input.id);
     const tombstone = input.tombstone !== false;
     const sourceReg = deps.store.getSource(existing.source_id);
@@ -1384,7 +1484,7 @@ const noteDelete = (deps: WorkEntityIngredientDeps) =>
         });
       }
     }
-    const ok = deps.store.deleteNote(input.id, { tombstone, ...(deps.now ? { now: deps.now() } : {}) });
+    const ok = deps.store.deleteNote(localId, { tombstone, ...(deps.now ? { now: deps.now() } : {}) });
     if (!ok) throw new WorkEntityNotFoundError('note', input.id);
     emitWorkEntityEvent(deps, 'note', 'deleted', tagWorkEntity('note', existing), tagWorkEntity('note', existing));
     cascadeOnWrite(deps, 'note', existing.id, 'delete');
@@ -1460,8 +1560,14 @@ const commitmentCreate = (deps: WorkEntityIngredientDeps) =>
       writeInput.derived_from_mail_thread_id = input.derived_from_mail_thread_id;
     }
     if (input.derived_from_meeting_id != null) writeInput.derived_from_meeting_id = input.derived_from_meeting_id;
-    if (input.blocks_task_ids != null) writeInput.blocks_task_ids = input.blocks_task_ids;
-    if (input.blocks_project_ids != null) writeInput.blocks_project_ids = input.blocks_project_ids;
+    if (input.blocks_task_ids != null) {
+      writeInput.blocks_task_ids = input.blocks_task_ids.map((id) =>
+        resolveWorkEntityInputId(deps, 'task', id));
+    }
+    if (input.blocks_project_ids != null) {
+      writeInput.blocks_project_ids = input.blocks_project_ids.map((id) =>
+        resolveWorkEntityInputId(deps, 'project', id));
+    }
     if (input.source_extension_blob != null) writeInput.source_extension_blob = input.source_extension_blob;
     // D-192 F1 — evidence snapshots ride create-only (the store
     // validates shape + cap; updates can never touch the lane).
@@ -1484,7 +1590,8 @@ const commitmentUpdate = (deps: WorkEntityIngredientDeps) =>
     blocks_project_ids?: readonly string[];
     source_extension_blob?: Record<string, unknown>;
   }): Promise<{ commitment: Commitment }> => {
-    const existing = deps.store.readCommitment(input.id);
+    const localId = resolveWorkEntityInputId(deps, 'commitment', input.id);
+    const existing = deps.store.readCommitment(localId);
     if (!existing) throw new WorkEntityNotFoundError('commitment', input.id);
     const sourceReg = deps.store.getSource(existing.source_id);
     if (sourceReg) {
@@ -1540,8 +1647,12 @@ const commitmentUpdate = (deps: WorkEntityIngredientDeps) =>
       due_status_changed_at: dueStatusChangedAt,
       sync_state: existing.sync_state,
       conflict_policy: existing.conflict_policy,
-      blocks_task_ids: input.blocks_task_ids ?? existing.blocks_task_ids,
-      blocks_project_ids: input.blocks_project_ids ?? existing.blocks_project_ids,
+      blocks_task_ids: input.blocks_task_ids?.map((id) =>
+        resolveWorkEntityInputId(deps, 'task', id)
+      ) ?? existing.blocks_task_ids,
+      blocks_project_ids: input.blocks_project_ids?.map((id) =>
+        resolveWorkEntityInputId(deps, 'project', id)
+      ) ?? existing.blocks_project_ids,
     };
     if (input.promised_for_at !== undefined) writeInput.promised_for_at = input.promised_for_at;
     else if (existing.promised_for_at !== undefined) writeInput.promised_for_at = existing.promised_for_at;
@@ -1609,7 +1720,8 @@ const commitmentLifecycleMove = (
 ) => async (input: { id: string; fulfilled_at?: number; cancelled_at?: number }): Promise<{
   commitment: Commitment;
 }> => {
-  const existing = deps.store.readCommitment(input.id);
+  const localId = resolveWorkEntityInputId(deps, 'commitment', input.id);
+  const existing = deps.store.readCommitment(localId);
   if (!existing) throw new WorkEntityNotFoundError('commitment', input.id);
   const allowedFromStates = to === 'fulfilled'
     ? COMMITMENT_FULFILL_FROM_STATES
@@ -1721,14 +1833,15 @@ const commitmentDelete = (deps: WorkEntityIngredientDeps) =>
     id: string;
     tombstoned: boolean;
   }> => {
-    const existing = deps.store.readCommitment(input.id);
+    const localId = resolveWorkEntityInputId(deps, 'commitment', input.id);
+    const existing = deps.store.readCommitment(localId);
     if (!existing) throw new WorkEntityNotFoundError('commitment', input.id);
     const tombstone = input.tombstone !== false;
     const sourceReg = deps.store.getSource(existing.source_id);
     if (sourceReg) {
       await prepareVendorWrite(deps, sourceReg, 'commitment', 'delete', {});
     }
-    const ok = deps.store.deleteCommitment(input.id, { tombstone, ...(deps.now ? { now: deps.now() } : {}) });
+    const ok = deps.store.deleteCommitment(localId, { tombstone, ...(deps.now ? { now: deps.now() } : {}) });
     if (!ok) throw new WorkEntityNotFoundError('commitment', input.id);
     emitWorkEntityEvent(
       deps,
@@ -1801,7 +1914,8 @@ const bookingUpdate = (deps: WorkEntityIngredientDeps) =>
     counterparty_contact_id?: string;
     source_extension_blob?: Record<string, unknown>;
   }): Promise<{ booking: Booking }> => {
-    const existing = deps.store.readBooking(input.id);
+    const localId = resolveWorkEntityInputId(deps, 'booking', input.id);
+    const existing = deps.store.readBooking(localId);
     if (!existing) throw new WorkEntityNotFoundError('booking', input.id);
     const now = deps.now?.() ?? Date.now();
     // A lifecycle move re-stamps `state_changed_at`; a metadata-only
@@ -1877,10 +1991,11 @@ const bookingDelete = (deps: WorkEntityIngredientDeps) =>
     id: string;
     tombstoned: boolean;
   }> => {
-    const existing = deps.store.readBooking(input.id);
+    const localId = resolveWorkEntityInputId(deps, 'booking', input.id);
+    const existing = deps.store.readBooking(localId);
     if (!existing) throw new WorkEntityNotFoundError('booking', input.id);
     const tombstone = input.tombstone !== false;
-    const ok = deps.store.deleteBooking(input.id, {
+    const ok = deps.store.deleteBooking(localId, {
       tombstone,
       ...(deps.now ? { now: deps.now() } : {}),
     });
@@ -1940,7 +2055,13 @@ const projectCreate = (deps: WorkEntityIngredientDeps) =>
     if (input.state !== undefined) writeInput.state = input.state;
     if (input.target_completion_at !== undefined) writeInput.target_completion_at = input.target_completion_at;
     if (input.related_contact_ids !== undefined) writeInput.related_contact_ids = input.related_contact_ids;
-    if (input.parent_project_id !== undefined) writeInput.parent_project_id = input.parent_project_id;
+    if (input.parent_project_id !== undefined) {
+      writeInput.parent_project_id = resolveWorkEntityInputId(
+        deps,
+        'project',
+        input.parent_project_id,
+      );
+    }
     if (input.source_extension_blob != null) writeInput.source_extension_blob = input.source_extension_blob;
     if (vendor !== null && vendor.ok && vendor.operation === 'create') {
       writeInput.source_record_id = vendor.source_record_id;
@@ -1962,7 +2083,8 @@ const projectUpdate = (deps: WorkEntityIngredientDeps) =>
     parent_project_id?: string;
     source_extension_blob?: Record<string, unknown>;
   }): Promise<{ project: Project }> => {
-    const existing = deps.store.readProject(input.id);
+    const localId = resolveWorkEntityInputId(deps, 'project', input.id);
+    const existing = deps.store.readProject(localId);
     if (!existing) throw new WorkEntityNotFoundError('project', input.id);
     const sourceReg = deps.store.getSource(existing.source_id);
     const route = sourceReg !== null
@@ -1988,8 +2110,15 @@ const projectUpdate = (deps: WorkEntityIngredientDeps) =>
     else if (existing.description !== undefined) writeInput.description = existing.description;
     if (input.target_completion_at !== undefined) writeInput.target_completion_at = input.target_completion_at;
     else if (existing.target_completion_at !== undefined) writeInput.target_completion_at = existing.target_completion_at;
-    if (input.parent_project_id !== undefined) writeInput.parent_project_id = input.parent_project_id;
-    else if (existing.parent_project_id !== undefined) writeInput.parent_project_id = existing.parent_project_id;
+    if (input.parent_project_id !== undefined) {
+      writeInput.parent_project_id = resolveWorkEntityInputId(
+        deps,
+        'project',
+        input.parent_project_id,
+      );
+    } else if (existing.parent_project_id !== undefined) {
+      writeInput.parent_project_id = existing.parent_project_id;
+    }
     if (existing.source_record_id !== undefined) writeInput.source_record_id = existing.source_record_id;
     if (existing.connection_id !== undefined) writeInput.connection_id = existing.connection_id;
     if (existing.source_record_hash !== undefined) writeInput.source_record_hash = existing.source_record_hash;
@@ -2032,7 +2161,8 @@ const projectUpdate = (deps: WorkEntityIngredientDeps) =>
 
 const projectArchive = (deps: WorkEntityIngredientDeps) =>
   async (input: { id: string }): Promise<{ project: Project }> => {
-    const existing = deps.store.readProject(input.id);
+    const localId = resolveWorkEntityInputId(deps, 'project', input.id);
+    const existing = deps.store.readProject(localId);
     if (!existing) throw new WorkEntityNotFoundError('project', input.id);
     if (existing.state === 'archived') {
       // Idempotent — already archived. Return the existing record
@@ -2107,7 +2237,8 @@ const projectDelete = (deps: WorkEntityIngredientDeps) =>
     id: string;
     tombstoned: boolean;
   }> => {
-    const existing = deps.store.readProject(input.id);
+    const localId = resolveWorkEntityInputId(deps, 'project', input.id);
+    const existing = deps.store.readProject(localId);
     if (!existing) throw new WorkEntityNotFoundError('project', input.id);
     const tombstone = input.tombstone !== false;
     const sourceReg = deps.store.getSource(existing.source_id);
@@ -2122,7 +2253,7 @@ const projectDelete = (deps: WorkEntityIngredientDeps) =>
         });
       }
     }
-    const ok = deps.store.deleteProject(input.id, { tombstone, ...(deps.now ? { now: deps.now() } : {}) });
+    const ok = deps.store.deleteProject(localId, { tombstone, ...(deps.now ? { now: deps.now() } : {}) });
     if (!ok) throw new WorkEntityNotFoundError('project', input.id);
     emitWorkEntityEvent(
       deps,
@@ -2169,7 +2300,13 @@ export const createWorkEntityDispatchers = (deps: WorkEntityIngredientDeps) => (
       ...(input.include_deleted !== undefined ? { include_deleted: input.include_deleted } : {}),
       ...(input.include_disabled !== undefined ? { include_disabled: input.include_disabled } : {}),
       ...(input.parent_project_id !== undefined
-        ? { parent_project_id: input.parent_project_id }
+        ? {
+            parent_project_id: resolveWorkEntityInputId(
+              deps,
+              'project',
+              input.parent_project_id,
+            ),
+          }
         : {}),
       ...(input.limit !== undefined ? { limit: input.limit } : {}),
       ...(input.offset !== undefined ? { offset: input.offset } : {}),
@@ -2180,7 +2317,7 @@ export const createWorkEntityDispatchers = (deps: WorkEntityIngredientDeps) => (
     };
   },
   workEntityGet: async (input: { kind: WorkEntityKind; id: string }) => {
-    const entity = deps.resolver.readEntity(input.kind, input.id);
+    const entity = readWorkEntityInput(deps, input.kind, input.id);
     return { entity, found: entity !== null };
   },
   taskCreate: taskCreate(deps),

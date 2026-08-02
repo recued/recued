@@ -337,14 +337,32 @@ describe('createSharedStore', () => {
     expect(results[0].key).toBe('deal.1');
   });
 
-  it('delete removes the row and its CAS backing', async () => {
+  it('delete removes the row and leaves CAS reclamation to the orphan sweep', async () => {
     const { blobs, store } = mkStore();
     const big = 'y'.repeat(INLINE_CUTOFF_BYTES + 1);
     await store.write('big', big, { author_id: 'a' });
     expect(await blobs.totalBytes()).toBeGreaterThan(0);
     await store.delete('big');
     expect(await store.read('big')).toBeNull();
+    // Row deletion cannot know whether another store sharing this
+    // content-addressed root still references the hash. Physical cleanup is a
+    // reference-aware sweep concern, not an exact-delete side effect.
+    expect(await blobs.totalBytes()).toBeGreaterThan(0);
+    expect(await blobs.sweepOrphans(new Set())).toBe(1);
     expect(await blobs.totalBytes()).toBe(0);
+  });
+
+  it('delete preserves a deduplicated CAS blob referenced by a sibling row', async () => {
+    const { blobs, store } = mkStore();
+    const big = 'd'.repeat(INLINE_CUTOFF_BYTES + 1);
+    await store.write('duplicate.one', big, { author_id: 'a' });
+    await store.write('duplicate.two', big, { author_id: 'b' });
+    expect(await blobs.totalBytes()).toBeGreaterThan(0);
+
+    await expect(store.delete('duplicate.one')).resolves.toBe(true);
+
+    await expect(store.read('duplicate.two')).resolves.toMatchObject({ value: big });
+    expect(await blobs.totalBytes()).toBeGreaterThan(0);
   });
 
   it('deleteByPrefix removes every matching row', async () => {
@@ -356,6 +374,18 @@ describe('createSharedStore', () => {
     expect(deleted).toBe(2);
     expect(await store.read('deal.1')).toBeNull();
     expect(await store.read('contact.1')).not.toBeNull();
+  });
+
+  it('deleteByPrefix preserves CAS bytes referenced outside the prefix', async () => {
+    const { blobs, store } = mkStore();
+    const big = 'p'.repeat(INLINE_CUTOFF_BYTES + 1);
+    await store.write('doomed.one', big, { author_id: 'a' });
+    await store.write('survivor.one', big, { author_id: 'b' });
+
+    await expect(store.deleteByPrefix('doomed')).resolves.toBe(1);
+
+    await expect(store.read('survivor.one')).resolves.toMatchObject({ value: big });
+    expect(await blobs.totalBytes()).toBeGreaterThan(0);
   });
 
   it('deleteByPrefix accepts a trailing namespace delimiter', async () => {

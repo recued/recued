@@ -14,6 +14,8 @@ import { describe, expect, it } from 'vitest';
 import {
   CONTACT_SOURCE_DECLARATIONS,
   FILE_VENDOR_DECLARATIONS,
+  WORK_ENTITY_SOURCE_DECLARABLE_KINDS,
+  getWorkEntitySourceLandingContract,
 } from '@recued/contracts';
 
 import {
@@ -27,8 +29,34 @@ import {
 } from '../contact-source-adapters/index.js';
 import type { CrmMirrorLeafDeps } from '../contact-source-adapters/crm-mirror-leaf.js';
 import type { GooglePeopleLeafDeps } from '../contact-source-adapters/google-people-leaf.js';
+import {
+  WORK_ENTITY_SOURCE_RUNTIME_ADAPTER_KINDS,
+  workEntitySourceRuntimeAdapter,
+} from '../work-entity-source-runtime-adapters.js';
 
 describe('D-192 — per-vendor adapter maps are complete vs their declaration registry', () => {
+  it('work-entity Source: every pack-declarable kind has one executable landing adapter', () => {
+    expect(WORK_ENTITY_SOURCE_RUNTIME_ADAPTER_KINDS).toEqual(
+      WORK_ENTITY_SOURCE_DECLARABLE_KINDS,
+    );
+    for (const kind of WORK_ENTITY_SOURCE_DECLARABLE_KINDS) {
+      const contract = getWorkEntitySourceLandingContract(kind);
+      const runtime = workEntitySourceRuntimeAdapter(kind);
+      expect(contract, `missing landing contract for '${kind}'`).not.toBeNull();
+      expect(runtime.kind).toBe(kind);
+      expect(runtime.table).toBe(`data_${kind}`);
+      expect(contract?.canonical_collection).toBe(`data.${kind}`);
+      expect(contract?.qualified_id_namespace).toBe('we1');
+      expect(contract?.postures).toEqual(['records', 'read_through']);
+      for (const operation of ['project', 'read', 'upsert', 'tombstone'] as const) {
+        expect(
+          runtime[operation],
+          `landing adapter '${kind}' has no executable ${operation} operation`,
+        ).toBeTypeOf('function');
+      }
+    }
+  });
+
   it('file-source: every FILE_VENDOR_DECLARATIONS vendor resolves to a list leaf', () => {
     const resolve = buildFileSourceAdapterResolver({
       resolveConnection: (async () => null) as never,

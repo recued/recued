@@ -231,6 +231,19 @@ export interface ContractScope {
   readonly connection_names?: ReadonlyArray<string>;
 }
 
+/** Server-derived execution limits for a non-owner door.
+ *
+ *  Authority scope answers WHAT a door may call; this adjacent pin answers HOW MUCH one
+ *  admitted invocation may execute. It is deliberately absent from owner-authored contract
+ *  requests: a door composer derives it from the surface class and the owner gesture, then
+ *  the dispatch path enforces the persisted values. */
+export interface DoorExecutionPolicy {
+  /** Maximum authored/visited recipe steps admitted for one door-driven run. */
+  readonly max_steps: number;
+  /** Whether this door may spend the owner's configured AI quota. */
+  readonly allow_ai: boolean;
+}
+
 // ════════════════════════════════════════════════════════════════
 // ContractDefinition — the contract_id lifecycle record
 // ════════════════════════════════════════════════════════════════
@@ -287,6 +300,9 @@ export interface ContractDefinition {
   readonly minted_by: string;
   readonly display_name: string;
   readonly scope: ContractScope;
+  /** Derived per-run cost boundary for a door. Absent on legacy rows and ordinary
+   *  contracts; a dispatch class that requires one must fail closed until re-bound. */
+  readonly door_execution_policy?: DoorExecutionPolicy;
   /** D-187 §6 (step 7) — the level-1 DOOR TYPES this contract may back
    *  ({@link DoorType}). EMPTY or ABSENT = wildcard ("any door type") — the same
    *  "empty axis = any" convention {@link ContractScope} uses, and the

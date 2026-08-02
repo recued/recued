@@ -134,6 +134,12 @@ const TASK_CREATE_OP = 'task.create';
 const TASK_UPDATE_OP = 'task.update';
 
 const validSourceManifest = (): Record<string, any> => ({
+  operations: {
+    [TASK_LIST_OP]: { risk_tier: 'read' },
+    [TASK_READ_OP]: { risk_tier: 'read' },
+    [TASK_CREATE_OP]: { risk_tier: 'write' },
+    [TASK_UPDATE_OP]: { risk_tier: 'write' },
+  },
   surfaces: {
     api: {
       openapi_source: {

@@ -449,6 +449,17 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
     required: [],
   },
 
+  // Derived door execution limits. Scope pins WHAT may run; this pins how much one
+  // anonymous invocation may execute and whether it may consume AI quota.
+  door_execution_policy: {
+    fields: ['max_steps', 'allow_ai'],
+    types: {
+      max_steps: 'number',
+      allow_ai: 'bool',
+    },
+    required: ['max_steps', 'allow_ai'],
+  },
+
   // D-177 N.3 — the recipe identity a session grant is bound to. Referenced as a
   // NESTED value_shape by `contract_definition.bound_recipe`; both halves are
   // required so a session row can never be minted with a partial binding.
@@ -497,6 +508,7 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
       'minted_by',
       'display_name',
       'scope',
+      'door_execution_policy',
       'door_types',
       'max_risk_without_approval',
       'approved_actions_template',
@@ -526,6 +538,7 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
       minted_by: 'string',
       display_name: 'string',
       scope: 'contract_scope',
+      door_execution_policy: 'door_execution_policy?',
       // D-187 §6 + D-196 — the level-1 door-type axis.
       // Optional array-of-enum: absent / `[]` = wildcard (any door type — the
       // behaviour-preserving default); a non-empty list restricts the contract

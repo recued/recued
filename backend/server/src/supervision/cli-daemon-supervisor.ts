@@ -176,9 +176,9 @@ export interface CliDaemonSupervisorDeps {
    *  so the composition root writes one D-120 activity row per daemon lifecycle
    *  change. Wired from `auditLog.logActivity` in `compose-supervision-stack`;
    *  absent ⇒ no audit (the dbless harness, tests). Best-effort — the supervisor
-   *  swallows a throw (must never break the state machine), and the writer side
-   *  is fire-and-forget. */
-  audit?: (event: DaemonAuditEvent) => void;
+   *  swallows a throw (must never break the state machine), tracks an async
+   *  writer without blocking transitions, and drains it at disposal. */
+  audit?: (event: DaemonAuditEvent) => void | Promise<void>;
 }
 
 export interface CliDaemonSupervisor {
@@ -194,9 +194,10 @@ export interface CliDaemonSupervisor {
   /** Boot reconcile — adopt a surviving daemon, else fresh-start each enabled
    *  daemon that asked for `restart_on_server_start`. */
   startAll(configs: SupervisedDaemonConfig[]): Promise<void>;
-  /** Server shutdown — cancel timers + drop in-memory tracking, but LEAVE the
-   *  daemons running (they're detached; the next boot's `startAll` adopts the
-   *  survivors). Killing on every bounce would needlessly blip the tunnel. */
+  /** Server shutdown — close launch admission, cancel timers, drain active
+   *  launches/audits, then drop in-memory tracking, but LEAVE the daemons
+   *  running (they're detached; the next boot's `startAll` adopts survivors).
+   *  Killing on every bounce would needlessly blip the tunnel. */
   disposeAll(): Promise<void>;
 }
 
@@ -214,6 +215,10 @@ interface DaemonRecord {
   // control
   pollTimer: NodeJS.Timeout | null;
   restartTimer: NodeJS.Timeout | null;
+  /** The detached executor call currently establishing this daemon. A restart
+   *  timer clears itself before that async call settles, so the Promise is the
+   *  only reliable stop / shutdown drain handle after the timer has fired. */
+  launchPromise: Promise<void> | null;
   /** True between a deliberate `stop()` and the daemon's actual exit — so a
    *  marker / pid-death isn't misclassified as a crash. */
   shuttingDown: boolean;
@@ -257,6 +262,9 @@ export const createCliDaemonSupervisor = (
   });
 
   const records = new Map<string, DaemonRecord>();
+  const pendingAudits = new Set<Promise<void>>();
+  let closed = false;
+  let disposePromise: Promise<void> | undefined;
 
   const newRecord = (config: SupervisedDaemonConfig): DaemonRecord => ({
     config,
@@ -270,6 +278,7 @@ export const createCliDaemonSupervisor = (
     state: 'unknown',
     pollTimer: null,
     restartTimer: null,
+    launchPromise: null,
     shuttingDown: false,
   });
 
@@ -292,6 +301,7 @@ export const createCliDaemonSupervisor = (
     const prior = r.state;
     if (prior === state) return; // no-op transition — don't fan a non-change
     r.state = state;
+    if (closed) return;
     try {
       deps.broadcast?.({ ingredient_slug: r.config.ingredient_slug, op: r.config.op });
     } catch {
@@ -310,7 +320,7 @@ export const createCliDaemonSupervisor = (
     const isBootStopReconciliation = prior === 'unknown' && state === 'stopped';
     if (!isBootStopReconciliation) {
       try {
-        deps.audit?.({
+        const pending = deps.audit?.({
           ingredient_slug: r.config.ingredient_slug,
           op: r.config.op,
           state,
@@ -319,6 +329,14 @@ export const createCliDaemonSupervisor = (
           consecutive_crashes: r.consecutive_crashes,
           at: now(),
         });
+        if (pending && typeof pending.then === 'function') {
+          const task = Promise.resolve(pending);
+          pendingAudits.add(task);
+          const clear = (): void => { pendingAudits.delete(task); };
+          // Attach both branches so a best-effort audit rejection is observed
+          // even when no shutdown drain is active yet.
+          void task.then(clear, clear);
+        }
       } catch {
         /* best-effort audit emit */
       }
@@ -417,10 +435,16 @@ export const createCliDaemonSupervisor = (
   };
 
   const scheduleRestart = (r: DaemonRecord, delay: number): void => {
+    if (closed) return;
     cancelRestart(r);
     r.restartTimer = setTimeoutFn(() => {
       r.restartTimer = null;
-      void launch(r);
+      if (closed) return;
+      void runLaunch(r).catch((err) => {
+        log('warn', `daemon '${r.config.ingredient_slug}/${r.config.op}' restart failed`, {
+          err: err instanceof Error ? err.message : String(err),
+        });
+      });
     }, delay);
   };
 
@@ -430,6 +454,8 @@ export const createCliDaemonSupervisor = (
     r.pid = null;
     r.started_at = null;
     r.last_exit_code = code;
+
+    if (closed) return;
 
     if (r.shuttingDown) {
       r.shuttingDown = false;
@@ -464,6 +490,7 @@ export const createCliDaemonSupervisor = (
    *  the initial `start()` and by `scheduleRestart` (which keeps the crash
    *  counter — only `start()` resets it). */
   const launch = async (r: DaemonRecord): Promise<void> => {
+    if (closed) return;
     const binding = resolveBinding(r.config);
     if (!binding) {
       // The daemon never launched — stamp the runtime fields so the 'crashed'
@@ -509,16 +536,39 @@ export const createCliDaemonSupervisor = (
       log('warn', `daemon '${r.config.ingredient_slug}/${r.config.op}' launch failed`, {
         err: err instanceof Error ? err.message : String(err),
       });
+      if (closed) return;
       // Treat a failed launch as a crash → backoff retry per policy.
       handleExit(r, -1);
       return;
     }
 
+    // disposeAll deliberately leaves detached daemons alive, but it must not
+    // re-arm tracking after shutdown started. The executor/marker contract lets
+    // the next server boot adopt a launch that crossed this boundary.
+    if (closed) return;
+
     r.pid = typeof result.pid === 'number' ? result.pid : null;
     r.started_at = now();
-    r.shuttingDown = false;
+    // A stop that raced this executor is waiting on launchPromise. Publish the
+    // pid for it to terminate, but do not briefly resurrect the daemon or arm a
+    // poll while the explicit stop is pending.
+    if (r.shuttingDown) return;
     setState(r, 'running');
     startPoll(r);
+  };
+
+  /** Coalesce every path that can establish a daemon (manual start, boot
+   *  reconcile, timer restart) onto one Promise so stop and dispose have a
+   *  complete async lifecycle handle. */
+  const runLaunch = (r: DaemonRecord): Promise<void> => {
+    if (r.launchPromise) return r.launchPromise;
+    const task = launch(r);
+    r.launchPromise = task;
+    const clear = (): void => {
+      if (r.launchPromise === task) r.launchPromise = null;
+    };
+    void task.then(clear, clear);
+    return task;
   };
 
   /** Adopt a daemon that survived the server restart — record it + arm the
@@ -535,6 +585,7 @@ export const createCliDaemonSupervisor = (
   };
 
   const start = async (config: SupervisedDaemonConfig): Promise<SupervisedDaemonStatus> => {
+    if (closed) throw new Error('cli daemon supervisor is disposed');
     const key = recordKey(config.ingredient_slug, config.op);
     let r = records.get(key);
     if (r) {
@@ -548,7 +599,7 @@ export const createCliDaemonSupervisor = (
     // A manual / explicit start clears the crash history (cf. service clearCrash).
     r.consecutive_crashes = 0;
     r.shuttingDown = false;
-    await launch(r);
+    await runLaunch(r);
     return statusOf(r);
   };
 
@@ -584,6 +635,14 @@ export const createCliDaemonSupervisor = (
     }
     cancelRestart(r);
     stopPoll(r);
+    r.shuttingDown = true;
+    // A restart timer clears its handle before awaiting the detached executor.
+    // Drain that launch so its eventual pid cannot appear after stop returns.
+    if (r.launchPromise) {
+      try { await r.launchPromise; } catch { /* launch owns failure state */ }
+      cancelRestart(r);
+      stopPoll(r);
+    }
     const pid = r.pid;
     if (pid !== null) {
       killGroup(pid, 'SIGTERM');
@@ -599,7 +658,9 @@ export const createCliDaemonSupervisor = (
   };
 
   const startAll = async (configs: SupervisedDaemonConfig[]): Promise<void> => {
+    if (closed) throw new Error('cli daemon supervisor is disposed');
     for (const config of configs) {
+      if (closed) return;
       if (!config.enabled) continue; // disabled = the user stopped it; leave it
       const key = recordKey(config.ingredient_slug, config.op);
       const r = newRecord(config);
@@ -611,7 +672,7 @@ export const createCliDaemonSupervisor = (
         adopt(r, survivor);
       } else if (config.restart_on_server_start) {
         // Dead + boot-persistent → relaunch fresh.
-        try { await launch(r); }
+        try { await runLaunch(r); }
         catch (err) {
           log('warn', `daemon '${config.ingredient_slug}/${config.op}' reconcile launch failed`, {
             err: err instanceof Error ? err.message : String(err),
@@ -624,13 +685,32 @@ export const createCliDaemonSupervisor = (
     }
   };
 
-  const disposeAll = async (): Promise<void> => {
-    for (const r of records.values()) {
+  const disposeAll = (): Promise<void> => {
+    if (disposePromise) return disposePromise;
+    // Close admission synchronously so no public start or queued restart can
+    // enter outside the launch snapshot below.
+    closed = true;
+    const current = [...records.values()];
+    for (const r of current) {
       cancelRestart(r);
       stopPoll(r);
       // Intentionally NOT killing — daemons are detached and survive the bounce.
     }
-    records.clear();
+    const activeLaunches = current.flatMap((r) =>
+      r.launchPromise ? [r.launchPromise] : []
+    );
+    const activeAudits = [...pendingAudits];
+    disposePromise = Promise.allSettled([...activeLaunches, ...activeAudits]).then(() => {
+      // A launch may have reached its completion edge while disposal waited.
+      // Clean again before dropping the only references to its timers.
+      for (const r of current) {
+        cancelRestart(r);
+        stopPoll(r);
+      }
+      records.clear();
+      pendingAudits.clear();
+    });
+    return disposePromise;
   };
 
   return {

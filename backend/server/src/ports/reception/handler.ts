@@ -1424,7 +1424,10 @@ export const createReceptionPortHandler = (
       if (req.method === 'POST') {
         emitVerifiedMutationArrival();
         if (intakeFormSubmitHandler) {
-          await intakeFormSubmitHandler(req, res, ctx);
+          // Carry the endpoint-scoped HMAC projection already computed for the
+          // access log. The form handler needs the same privacy-preserving value
+          // to enforce its advertised per-IP cap; never pass the raw address.
+          await intakeFormSubmitHandler(req, res, ctx, source_ip_hash);
         } else {
           writeJson(res, 503, { error: { code: 'not_configured' } });
         }

@@ -29,10 +29,17 @@ import { presentAutomationFailure } from './automation-failure.js';
 export interface SchedulerConfig {
   store: ScheduleStore;
   executeDeps: ExecuteHandlerDeps;
+  /** Deterministic execution seam for lifecycle tests. Production uses the
+   *  real execute handler. */
+  execute?: typeof handleExecute;
   /** Override for tests. */
   now?: () => number;
   /** Tick frequency in ms. Default 60s. Set lower for tests. */
   tickIntervalMs?: number;
+  /** Reports failures from scheduler-owned background ticks. Manual `tick()`
+   *  calls still reject to their caller. The hook is guarded so diagnostics
+   *  cannot turn a contained tick failure into an unhandled rejection. */
+  onBackgroundError?: (message: string, error: unknown) => void;
   /** Vault-unlocked gate. When provided and `false`, a tick is a no-op
    *  (no schedule fires) — autonomous execution must not run while the
    *  vault is sealed (its recipes can't reach credentials, and the run
@@ -45,7 +52,7 @@ export interface SchedulerConfig {
 
 export interface SchedulerHandle {
   start(): void;
-  /** Stop the tick interval. Awaits any in-flight tick so callers can
+  /** Stop the tick interval. Awaits every in-flight tick so callers can
    *  safely close the database afterward without racing a pending
    *  write. */
   stop(): Promise<void>;
@@ -74,15 +81,30 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
   const now = config.now ?? (() => Date.now());
   const intervalMs = config.tickIntervalMs ?? 60_000;
   let handle: ReturnType<typeof setInterval> | null = null;
-  /** Promise tracking any in-flight tick. Callers of stop() await this
-   *  so we don't race the DB close. */
-  let inFlightTick: Promise<void> | null = null;
+  /** Every interval-driven tick remains owned until it settles. Ticks may
+   *  overlap so a slow schedule does not starve unrelated schedules; tracking
+   *  only the newest promise lets a short later tick hide an older live one
+   *  from shutdown. */
+  const inFlightTicks = new Set<Promise<void>>();
   /** Schedule IDs currently being fired in any tick. Prevents an
    *  overlapping tick from re-firing the same schedule when its run is
    *  longer than `intervalMs` — without this, a schedule that takes
    *  2 minutes on a 1-minute tick would start firing again before the
    *  first execution finished. */
   const firingNow = new Set<string>();
+
+  const reportBackgroundError = (message: string, error: unknown): void => {
+    try {
+      if (config.onBackgroundError) {
+        config.onBackgroundError(message, error);
+      } else {
+        console.error(`[scheduler] ${message}`, error);
+      }
+    } catch {
+      // A diagnostics hook must never promote a contained scheduler failure
+      // back into the process-wide fatal `unhandledRejection` path.
+    }
+  };
 
   /** Compute the next firing timestamp for a cron expression after a
    *  given time. Returns null for malformed or never-firing crons. */
@@ -160,7 +182,7 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
       // run-mode + audit attribution, but the policy gate uses
       // `'schedule'` channel uniformly (a catch-up is a delayed
       // scheduled fire, not a separate channel).
-      const result = await handleExecute(config.executeDeps, {
+      const result = await (config.execute ?? handleExecute)(config.executeDeps, {
         recipe_id: schedule.recipe_id,
         trigger_source: backfill ? 'backfill' : 'schedule',
         execution_source: {
@@ -261,7 +283,13 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
     const fired: string[] = [];
 
     const schedules = config.store.list();
-    for (const schedule of schedules) {
+    for (const listed of schedules) {
+      // An overlapping tick may have completed this schedule since `list()`
+      // produced its snapshot. Re-read immediately before the no-await
+      // admission section so a stale snapshot cannot fire the same cron minute
+      // after the newer tick releases `firingNow`.
+      const schedule = config.store.get(listed.schedule_id);
+      if (schedule === null) continue;
       if (!schedule.enabled) continue;
 
       if (isOneShot(schedule)) {
@@ -343,13 +371,23 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
     return fired;
   };
 
-  /** Run a tick and track the promise so stop() can await it. */
+  /** Run a tick and retain its promise so stop() can await all generations. */
   const trackedTick = async (): Promise<void> => {
     const p = (async () => { await tick(); })();
-    inFlightTick = p;
+    inFlightTicks.add(p);
     try { await p; } finally {
-      if (inFlightTick === p) inFlightTick = null;
+      inFlightTicks.delete(p);
     }
+  };
+
+  /** Launch a scheduler-owned tick with a rejection handler attached in the
+   *  same turn. `trackedTick` keeps shutdown ownership; this wrapper keeps a
+   *  transient store/runtime failure out of the process-fatal rejection
+   *  handler while preserving direct `tick()` rejection semantics. */
+  const launchTrackedTick = (): void => {
+    void trackedTick().catch((error) => {
+      reportBackgroundError('background tick failed', error);
+    });
   };
 
   return {
@@ -357,31 +395,29 @@ export const createScheduler = (config: SchedulerConfig): SchedulerHandle => {
       if (handle !== null) return;
       // Fire an immediate tick on start so any schedules due at boot
       // time don't wait a full minute.
-      void trackedTick();
-      handle = setInterval(() => { void trackedTick(); }, intervalMs);
+      launchTrackedTick();
+      handle = setInterval(launchTrackedTick, intervalMs);
     },
     async stop() {
       if (handle !== null) {
         clearInterval(handle);
         handle = null;
       }
-      // Await the in-flight tick so the caller can safely close the DB
-      // without racing an updateRun() against a closed handle.
-      if (inFlightTick) {
-        try { await inFlightTick; } catch { /* swallow — tick errors are logged internally */ }
-      }
+      // Snapshot after disarming the interval: no new scheduler-owned tick can
+      // start, and every older generation must settle before the DB is closed.
+      await Promise.allSettled([...inFlightTicks]);
     },
     pause() {
       if (handle !== null) {
         clearInterval(handle);
         handle = null;
       }
-      // Intentionally do NOT await inFlightTick — the drain
+      // Intentionally do NOT await in-flight ticks — the drain
       // pipeline's await_inflight step handles the wait under its
       // own timeout.
     },
     inFlight() {
-      return inFlightTick !== null;
+      return inFlightTicks.size > 0;
     },
     tick,
   };

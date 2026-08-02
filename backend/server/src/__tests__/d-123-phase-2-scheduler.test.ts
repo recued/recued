@@ -417,6 +417,95 @@ describe('createHousekeepingScheduler', () => {
     expect(clearTimer).toHaveBeenCalledWith('token');
   });
 
+  it('serializes concurrent Run-now cycles and drains the queued work on stop', async () => {
+    const { config, state } = setupBalanced();
+    const releases: Array<() => void> = [];
+    const calls: number[] = [];
+    const task: HousekeepingTaskInstance = {
+      meta: { id: 'serial', description: 'serial', interruptible: true, kind: 'core' },
+      async step(): Promise<HousekeepingStepResult> {
+        const call = calls.length + 1;
+        calls.push(call);
+        await new Promise<void>((resolve) => { releases.push(resolve); });
+        return { status: 'complete', cursor: { kind: 'complete' } };
+      },
+    };
+    const sched = createHousekeepingScheduler({
+      ctx: stubCtx(() => NOW),
+      config,
+      state,
+      busy: stubBusy(),
+      registry: () => [task],
+    });
+
+    const first = sched.runOnce();
+    const second = sched.runOnce();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(calls).toEqual([1]);
+
+    let stopped = false;
+    const stopping = sched.stop().then(() => { stopped = true; });
+    releases[0]!();
+    await first;
+    await Promise.resolve();
+    expect(calls).toEqual([1, 2]);
+    expect(stopped).toBe(false);
+
+    releases[1]!();
+    await Promise.all([first, second, stopping]);
+    expect(stopped).toBe(true);
+  });
+
+  it('recovers the idle probe after a pre-task cycle failure', async () => {
+    const { config, state } = setupBalanced();
+    let probe: (() => void) | undefined;
+    let registryCalls = 0;
+    let taskCalls = 0;
+    const sched = createHousekeepingScheduler({
+      ctx: stubCtx(() => NOW),
+      config,
+      state,
+      busy: stubBusy(),
+      registry: () => {
+        registryCalls += 1;
+        if (registryCalls === 1) throw new Error('registry unavailable');
+        return [{
+          meta: { id: 'recovered', description: 'recovered', interruptible: true, kind: 'core' },
+          async step(): Promise<HousekeepingStepResult> {
+            taskCalls += 1;
+            return { status: 'complete', cursor: { kind: 'complete' } };
+          },
+        }];
+      },
+      setTimer: (fn) => { probe = fn; return 'token'; },
+      clearTimer: vi.fn(),
+    });
+
+    await expect(sched.runOnce()).rejects.toThrow('registry unavailable');
+    sched.start();
+    probe?.();
+    await Promise.resolve();
+    await Promise.resolve();
+    await sched.stop();
+    expect(taskCalls).toBe(1);
+  });
+
+  it('contains a cycle-complete observer failure', async () => {
+    const { config, state } = setupBalanced();
+    const sched = createHousekeepingScheduler({
+      ctx: stubCtx(() => NOW),
+      config,
+      state,
+      busy: stubBusy(),
+      registry: () => [completingTask('a')],
+      onCycleComplete: () => { throw new Error('observer boom'); },
+    });
+
+    await expect(sched.runOnce()).resolves.toMatchObject({ tasks_complete: 1 });
+    await expect(sched.stop()).resolves.toBeUndefined();
+  });
+
   it('emits onCycleComplete after each cycle', async () => {
     const { config, state } = setupBalanced();
     const events: number[] = [];

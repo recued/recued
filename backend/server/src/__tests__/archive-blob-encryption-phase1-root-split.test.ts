@@ -91,8 +91,8 @@ describe('blob-encryption Phase 1 — posture-split CAS roots', () => {
     sharedBlobs = createBlobStore(join(dir, 'blobs'));
   });
 
-  afterEach(() => {
-    for (const c of open) c.close();
+  afterEach(async () => {
+    await Promise.all(open.map((c) => c.close()));
     open.length = 0;
     db.close();
     rmSync(dir, { recursive: true, force: true });
@@ -122,12 +122,12 @@ describe('blob-encryption Phase 1 — posture-split CAS roots', () => {
     const collectionHash = await cacheBlobs.put(randomBytes(2048));
     const orphanHash = await cacheBlobs.put(randomBytes(2048));
 
+    pressure('cache');
     const cascade = mkCascade({
       cacheBlobs,
       cacheBlobRefs: () => new Set([cacheHash]),
       collectionBlobRefs: () => new Set([collectionHash]),
     });
-    pressure('cache');
     const r = await cascade.reclaim('cache', { force: true });
 
     expect(r.ran).toBe(true);
@@ -143,12 +143,12 @@ describe('blob-encryption Phase 1 — posture-split CAS roots', () => {
     const cacheHash = await cacheBlobs.put(randomBytes(2048));
     const collectionHash = await cacheBlobs.put(randomBytes(2048));
 
+    pressure('cache');
     const cascade = mkCascade({
       cacheBlobs,
       cacheBlobRefs: () => new Set([cacheHash]),
       // collectionBlobRefs deliberately absent
     });
-    pressure('cache');
     await cascade.reclaim('cache', { force: true });
 
     expect(await cacheBlobs.has(cacheHash)).toBe(true);
@@ -160,12 +160,12 @@ describe('blob-encryption Phase 1 — posture-split CAS roots', () => {
     const annotationHash = await sharedBlobs.put(randomBytes(2048));
     const orphanHash = await sharedBlobs.put(randomBytes(2048));
 
+    pressure('shared_store');
     const cascade = mkCascade({
       sharedBlobs,
       sharedBlobRefs: () => new Set([sharedHash]),
       annotationBlobRefs: () => new Set([annotationHash]),
     });
-    pressure('shared_store');
     const r = await cascade.reclaim('shared_store', { force: true });
 
     expect(r.ran).toBe(true);
@@ -180,6 +180,7 @@ describe('blob-encryption Phase 1 — posture-split CAS roots', () => {
     const keylessHash = await sharedBlobs.put(randomBytes(2048));
     const cacheHash = await cacheBlobs.put(randomBytes(2048));
 
+    pressure('cache');
     const cascade = mkCascade({
       cacheBlobs,
       sharedBlobs,
@@ -187,7 +188,6 @@ describe('blob-encryption Phase 1 — posture-split CAS roots', () => {
       collectionBlobRefs: () => new Set(),
       // sharedBlobRefs/annotationBlobRefs intentionally not consulted by a cache sweep
     });
-    pressure('cache');
     await cascade.reclaim('cache', { force: true });
 
     expect(await sharedBlobs.has(keylessHash)).toBe(true); // untouched — different root

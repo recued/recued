@@ -464,7 +464,9 @@ export const createMailCollection = (
   let stopSync: (() => Promise<void>) | undefined;
   /** Unsubscribe for the provider's per-attempt outcome stream. */
   let stopOutcomes: (() => void) | undefined;
-  let starting = false;
+  let startInFlight: Promise<void> | null = null;
+  let syncGeneration = 0;
+  let closed = false;
 
   const bumpError = (msg: string, err: unknown): void => {
     localErrorCount++;
@@ -582,6 +584,7 @@ export const createMailCollection = (
   const materializeInboundAttachments = async (
     msg: CanonicalMessage,
     mailRecordId: string,
+    shouldContinue: () => boolean,
   ): Promise<void> => {
     const attachments = msg.attachments ?? [];
     if (attachments.length === 0) return;
@@ -596,9 +599,11 @@ export const createMailCollection = (
     }
 
     for (const [idx, part] of attachments.entries()) {
+      if (!shouldContinue()) return;
       const sourcePartId = part.source_part_id || `part-${idx}`;
       try {
         const bytes = await part.fetchBytes();
+        if (!shouldContinue()) return;
         const fileRecord = await deps.fileIngestor.ingest({
           bytes,
           filename: part.filename,
@@ -607,6 +612,7 @@ export const createMailCollection = (
           source_id: `${mailRecordId}:${sourcePartId}`,
           now: nowOf(),
         });
+        if (!shouldContinue()) return;
         await deps.attach(
           {
             file_id: fileRecord.record_id,
@@ -622,14 +628,19 @@ export const createMailCollection = (
     }
   };
 
-  const upsertMessage = async (msg: CanonicalMessage): Promise<void> => {
+  const upsertMessage = async (
+    msg: CanonicalMessage,
+    shouldContinue: () => boolean,
+  ): Promise<void> => {
     const { record, bodyBytes } = buildRecord(msg, nowOf);
     try {
+      if (!shouldContinue()) return;
       if (bodyBytes <= INLINE_CUTOFF_BYTES) {
         record.body_inline = msg.body_text ?? '';
       } else {
         record.blob_hash = await blobs.put(Buffer.from(msg.body_text, 'utf8'));
       }
+      if (!shouldContinue()) return;
       const prev = table.upsert(record);
       if (prev) emitter.updated(record.record_id, prev.hot_fields);
       else emitter.created(record.record_id);
@@ -642,7 +653,8 @@ export const createMailCollection = (
       // old one. Throttled, because this runs once per ingested message and a
       // 30-day backfill is thousands of them.
       touchSyncClock();
-      await materializeInboundAttachments(msg, record.record_id);
+      await materializeInboundAttachments(msg, record.record_id, shouldContinue);
+      if (!shouldContinue()) return;
       if (opts.onMessageUpserted) {
         try { opts.onMessageUpserted(msg); }
         catch (err) { bumpError(`mail onMessageUpserted hook failed for ${msg.source_id}`, err); }
@@ -652,7 +664,11 @@ export const createMailCollection = (
     }
   };
 
-  const onSyncEvent = async (event: ProviderSyncEvent): Promise<void> => {
+  const onSyncEvent = async (
+    event: ProviderSyncEvent,
+    shouldContinue: () => boolean,
+  ): Promise<void> => {
+    if (!shouldContinue()) return;
     if (event.kind === 'deleted') {
       const recordId = recordIdFor(event.source_id);
       const prev = table.delete(recordId);
@@ -663,133 +679,163 @@ export const createMailCollection = (
       bumpError(`sync event ${event.kind} missing message`, null);
       return;
     }
-    await upsertMessage(event.message);
+    await upsertMessage(event.message, shouldContinue);
+  };
+
+  const isCurrentGeneration = (generation: number): boolean =>
+    !closed && syncGeneration === generation;
+
+  /** Durable state reporting spans the whole sync lifetime, not just the start
+   *  call. Generation checks make that reporting part of the owned lifecycle:
+   *  an outcome or scan result arriving after stop cannot write SQLite. */
+  const runSyncStart = async (generation: number): Promise<void> => {
+    const shouldContinue = (): boolean => isCurrentGeneration(generation);
+    state = 'syncing';
+    // Subscribe BEFORE connect so the first attempt is observed. Drop any prior
+    // subscription so a stop→start cycle never multiplies reporting writes.
+    if (stopOutcomes) {
+      try { stopOutcomes(); }
+      catch (err) { bumpError('mail sync outcome detach failed', err); }
+      stopOutcomes = undefined;
+    }
+    try {
+      stopOutcomes = provider.onSyncOutcome?.((outcome) => {
+        if (shouldContinue()) onProviderOutcome(outcome);
+      });
+    } catch (err) {
+      // Outcome reporting is observability, not a prerequisite for fetching.
+      // A broken optional subscriber must not strand an otherwise usable inbox.
+      bumpError('mail sync outcome subscribe failed', err);
+    }
+    try {
+      await provider.connect();
+    } catch (err) {
+      if (!shouldContinue()) return;
+      state = 'error';
+      bumpError('mail provider connect failed', err);
+      // Report BEFORE rethrowing. `startLive` catches this and only logs, so
+      // this write is the sole durable trace the caller ever sees.
+      reportSyncOutcome(classifySyncFailure(err));
+      throw err;
+    }
+    if (!shouldContinue()) return;
+
+    // D-124 Phase 2.4 — record one sync-level `collection_backfill`
+    // activity row at drain completion. Per-message failures are derived from
+    // the local error-count delta because live ingest deliberately contains
+    // individual malformed provider rows.
+    const backfillRecorder = createBackfillAuditRecorder({
+      auditLog: opts.auditLog,
+      platform: 'mail',
+      slug,
+      now: nowOf,
+      log,
+    });
+    try {
+      await provider.initialScan({
+        backfill_days: opts.config().backfill_days,
+        onMessage: async (msg) => {
+          if (!shouldContinue()) return false;
+          const before = localErrorCount;
+          await upsertMessage(msg, shouldContinue);
+          if (!shouldContinue()) return false;
+          if (localErrorCount > before) backfillRecorder.recordFailure();
+          else backfillRecorder.recordImport(msg.received_at);
+          return true;
+        },
+      });
+      if (!shouldContinue()) return;
+      // The provider cursor is now stable; this write is idempotent on restart.
+      try { opts.instances?.markBackfillComplete('mail', slug); }
+      catch (err) { bumpError('mail markBackfillComplete failed', err); }
+      await backfillRecorder.finish();
+    } catch (err) {
+      if (!shouldContinue()) return;
+      bumpError('mail initialScan failed', err);
+      await backfillRecorder.finish('failed');
+      reportSyncOutcome(classifySyncFailure(err));
+    }
+    if (!shouldContinue()) return;
+
+    try {
+      const stop = await provider.startSync((event) =>
+        onSyncEvent(event, shouldContinue));
+      if (!shouldContinue()) {
+        try { await stop(); } catch { /* stale start teardown */ }
+        return;
+      }
+      stopSync = stop;
+      state = 'connected';
+      lastIndexedAt = nowOf();
+      // Deliberately do not report healthy here: installing a listener is not
+      // proof that an inbound fetch succeeded. Message/outcome evidence owns it.
+    } catch (err) {
+      if (!shouldContinue()) return;
+      state = 'error';
+      bumpError('mail startSync failed', err);
+      reportSyncOutcome(classifySyncFailure(err));
+    }
   };
 
   const sync: CollectionSyncAdapter = {
-    /** Durable state reporting spans the whole sync lifetime, not just this call:
-     *  the provider's `onSyncOutcome` stream (subscribed below) carries every
-     *  later scan / poll / reconnect attempt, so a token revoked mid-life
-     *  downgrades the row and a clean-but-empty poll keeps the clock moving.
-     *
-     *  A provider that does not implement `onSyncOutcome` still gets the
-     *  start-attempt reporting inline below — honest, just coarser. */
-    async start() {
-      if (starting || stopSync) return;
-      starting = true;
-      state = 'syncing';
-      // Subscribe BEFORE connect so the very first attempt is observed. Idempotent
-      // across restarts: a prior subscription is dropped first, so a
-      // stop→start cycle cannot accumulate duplicate listeners (which would
-      // multiply row writes and defeat the throttle).
-      stopOutcomes?.();
-      stopOutcomes = provider.onSyncOutcome?.(onProviderOutcome);
-      try {
-        await provider.connect();
-      } catch (err) {
-        state = 'error';
-        bumpError('mail provider connect failed', err);
-        // Report BEFORE rethrowing. `startLive` catches this and only logs, so
-        // this write is the sole durable trace the caller ever sees.
-        reportSyncOutcome(classifySyncFailure(err));
-        starting = false;
-        throw err;
-      }
-      // D-124 Phase 2.4 — record one sync-level `collection_backfill`
-      // activity row at drain completion. `recordImport(received_at)`
-      // tags the underlying mail Date: header so `data.timeline()`
-      // event-axis queries can later show "Recued indexed 2,000 mails
-      // spanning 2018-04 → 2026-04 in 3 minutes." `recordFailure()`
-      // captures per-message permanent rejections (provider couldn't
-      // ingest a row but the drain itself progressed) — derived via
-      // localErrorCount delta since `upsertMessage` swallows internally
-      // for live-sync resilience.
-      const backfillRecorder = createBackfillAuditRecorder({
-        auditLog: opts.auditLog,
-        platform: 'mail',
-        slug,
-        now: nowOf,
-        log,
+    start() {
+      if (closed || stopSync) return Promise.resolve();
+      if (startInFlight) return startInFlight;
+      const generation = syncGeneration;
+      let active: Promise<void>;
+      active = runSyncStart(generation).finally(() => {
+        if (startInFlight === active) startInFlight = null;
       });
-      try {
-        await provider.initialScan({
-          backfill_days: opts.config().backfill_days,
-          onMessage: async (msg) => {
-            const before = localErrorCount;
-            await upsertMessage(msg);
-            if (localErrorCount > before) backfillRecorder.recordFailure();
-            else backfillRecorder.recordImport(msg.received_at);
-            return true;
-          },
-        });
-        // D-124 Phase 2.1 — flip the denormalized backfill bool when
-        // the provider's initial drain resolves cleanly. The cursor
-        // (gmail historyId / graph deltaLink seed / imap UIDNEXT) is
-        // now stable; idempotent on restart. Threaded as optional so
-        // legacy in-memory test harnesses keep working without a
-        // matching instance row.
-        try { opts.instances?.markBackfillComplete('mail', slug); }
-        catch (err) { bumpError('mail markBackfillComplete failed', err); }
-        await backfillRecorder.finish();
-      } catch (err) {
-        bumpError('mail initialScan failed', err);
-        // Continue to live sync even if scan partially failed —
-        // downstream deltas will fill the gap. backfill_complete
-        // stays false so trigger fan-out remains suppressed; the
-        // next successful initialScan (after restart / resync) flips
-        // it. Audit row carries `'failed'` so the activity feed shows
-        // the user the drain didn't complete.
-        await backfillRecorder.finish('failed');
-        // The 30-day history is missing or partial. Live sync still starts
-        // below, so this may be overwritten by a healthy tick — which is
-        // correct: "new mail arrives, history is short" is a live mailbox.
-        reportSyncOutcome(classifySyncFailure(err));
-      }
-      try {
-        stopSync = await provider.startSync(onSyncEvent);
-        state = 'connected';
-        lastIndexedAt = nowOf();
-        // ⛔ Deliberately NOT reporting `'healthy'` here.
-        //
-        // `startSync` resolving does not prove an inbound fetch worked: the
-        // immediate first tick swallows its own errors via `markError`, and
-        // IMAP's `startSync` only installs listeners. The tempting proxy —
-        // `provider.health().last_successful_sync_at > 0` — is worse than
-        // nothing, because that clock is a LIFETIME clock advanced by
-        // non-inbound activity: a successful SEND bumps it
-        // (`gmail-provider.ts` in `sendImpl`) and so does sent-reconciliation.
-        // A mailbox that can send but cannot read would therefore report
-        // healthy — precisely the "everything looks fine, no mail appears"
-        // failure this whole change exists to end.
-        //
-        // The only claim worth making is one backed by evidence, so `'healthy'`
-        // is reported from exactly one place: `touchSyncClock()`, on a message
-        // actually reaching the warehouse. An empty-but-working mailbox
-        // therefore keeps enroll's `'healthy'` with a NULL `last_synced_at` —
-        // no worse than before this change, and not a fresh lie.
-      } catch (err) {
-        state = 'error';
-        bumpError('mail startSync failed', err);
-        reportSyncOutcome(classifySyncFailure(err));
-      } finally {
-        starting = false;
-      }
+      startInFlight = active;
+      return active;
     },
     async stop() {
+      // Invalidate provider callbacks before any asynchronous teardown.
+      syncGeneration += 1;
       state = 'disconnected';
-      // Drop the outcome subscription first: a provider tearing down can emit a
-      // reconnect failure on the way out, and a stopped collection reporting
-      // 'expired' would blame the credential for our own shutdown.
+      const activeStart = startInFlight;
+      const stops: Promise<void>[] = [];
+      const failures: unknown[] = [];
       if (stopOutcomes) {
-        try { stopOutcomes(); } catch { /* best-effort detach */ }
+        try { stopOutcomes(); }
+        catch (err) {
+          bumpError('mail sync outcome detach failed', err);
+          failures.push(err);
+        }
         stopOutcomes = undefined;
       }
       if (stopSync) {
-        const s = stopSync;
+        const stop = stopSync;
         stopSync = undefined;
-        try { await s(); } catch (err) { bumpError('mail stopSync failed', err); }
+        try {
+          stops.push(Promise.resolve(stop()).catch((err) => {
+            bumpError('mail stopSync failed', err);
+            failures.push(err);
+          }));
+        } catch (err) {
+          bumpError('mail stopSync failed', err);
+          failures.push(err);
+        }
       }
-      try { await provider.close(); } catch (err) { bumpError('mail provider close failed', err); }
+      const closeProvider = async (): Promise<void> => {
+        try {
+          await provider.close();
+        } catch (err) {
+          bumpError('mail provider close failed', err);
+          failures.push(err);
+        }
+      };
+      stops.push(closeProvider());
+      if (activeStart) stops.push(activeStart.catch(() => undefined));
+      await Promise.all(stops);
+      // `close()` above is also the cancellation signal for a slow connect or
+      // scan. If that operation races through after the first close, it may
+      // have acquired fresh sockets; the provider contract is idempotent, so a
+      // final close after the owned start settles seals that late-open window.
+      if (activeStart) await closeProvider();
+      if (failures.length > 0) {
+        throw new AggregateError(failures, 'mail collection failed to stop');
+      }
     },
   };
 
@@ -1253,6 +1299,9 @@ export const createMailCollection = (
     runRetention,
     send,
     lookupSentByReconciliationId,
-    async close() { await sync.stop(); },
+    async close() {
+      closed = true;
+      await sync.stop();
+    },
   };
 };

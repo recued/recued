@@ -1,9 +1,9 @@
-/** @recued/transport — D-160 P0 shared Slack / Telegram raw transport.
+/** @recued/transport — D-160 P0 shared messenger raw transport.
  *
  *  The raw vendor send + inbound-parse plumbing — pure HTTP, no Recued-
  *  domain coupling. `@recued/messenger` (D-160) composes it; D-158's
- *  `slack` / `telegram` notification channels will ride the same package
- *  (one transport, one Slack integration — D-160 N.7).
+ *  remote notification channels ride the same package
+ *  (one transport implementation per vendor — D-160 N.7).
  *
  *  Required follow-up: the pre-existing `connection.notification`
  *  Slack/Telegram send path in
@@ -61,10 +61,9 @@ export {
   type WhatsAppTransportOptions,
 } from './whatsapp.js';
 
-// D-192 — the fourth chat transport. A NOTIFY + APPROVE channel: Discord's
-// Interactions webhook carries button presses but no plain user messages (those live
-// on the Gateway, a persistent WS — `socket` ingress, unimplemented), so
-// `parseInbound` returns null by design and the messenger turn never fires.
+// D-192 — the fourth chat transport. Gateway `MESSAGE_CREATE` payloads become
+// ordinary inbound turns; Interactions payloads continue to decode approval and
+// live-control button presses through the same transport.
 export {
   createDiscordTransport,
   discordInteractionId,

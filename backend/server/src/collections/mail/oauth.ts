@@ -24,6 +24,9 @@
  *  envelope.
  */
 
+import { ResponseBodyTooLargeError } from '@recued/ingredients';
+import { makeBoundedOriginHttpFetcher } from '../../bounded-origin-http-fetcher.js';
+
 /** Prefix tag for the `account.<provider>.<slug>.*` namespace.
  *  Historically mail-only (gmail / graph); D-117 adds `gcal` for the
  *  calendar Google adapter. Microsoft Graph reuses `'graph'` across
@@ -123,6 +126,28 @@ export class OAuthError extends Error {
     if (oauth_error !== undefined) this.oauth_error = oauth_error;
   }
 }
+
+const oauthTransportFailure = (
+  code: 'token_exchange_failed' | 'token_refresh_failed',
+  label: string,
+  error: unknown,
+): OAuthError => {
+  if (error instanceof ResponseBodyTooLargeError) {
+    return new OAuthError(
+      'invalid_response',
+      502,
+      `${label} response exceeded the ${error.maxBytes}-byte limit`,
+    );
+  }
+  const isAbort = error instanceof Error && error.name === 'AbortError';
+  return new OAuthError(
+    code,
+    isAbort ? 504 : 502,
+    isAbort
+      ? `${label} timed out while waiting for the provider response`
+      : `${label} request failed`,
+  );
+};
 
 /** Pull the RFC 6749 § 5.2 `error` field out of a token-endpoint error body.
  *  Tolerant by construction: a non-JSON or JSON-but-shapeless body yields
@@ -422,22 +447,11 @@ interface TokenResponse {
  *  gates itself on `deps.fetcher !== undefined` is therefore DEAD in production
  *  while looking perfectly wired in tests, so callers take this fallback instead
  *  of testing for absence. */
-export const defaultHttpFetcher: HttpFetcher = async (url, init) => {
-  // Node 20+ ships fetch globally; we wrap Response in the narrow
-  // shape so tests can provide a matching fake without also faking
-  // every `Response` method.
-  const res = await fetch(url, {
-    method: init?.method,
-    headers: init?.headers,
-    body: init?.body,
-  });
-  return {
-    status: res.status,
-    ok: res.ok,
-    json: () => res.json(),
-    text: () => res.text(),
-  };
-};
+export const defaultHttpFetcher: HttpFetcher = makeBoundedOriginHttpFetcher({
+  // Mail message bodies can legitimately exceed the ordinary 16 MiB API
+  // ceiling; 32 MiB covers provider message limits while remaining finite.
+  maxResponseBytes: 32 * 1024 * 1024,
+});
 
 const parseTokenResponse = (raw: unknown): TokenResponse => {
   if (!raw || typeof raw !== 'object') {
@@ -464,6 +478,23 @@ const parseTokenResponse = (raw: unknown): TokenResponse => {
   // providers slip in commas / tabs).
   if (typeof obj.scope === 'string' && obj.scope.length > 0) out.scope = obj.scope;
   return out;
+};
+
+const readTokenResponse = async (
+  response: Awaited<ReturnType<HttpFetcher>>,
+  label: string,
+): Promise<TokenResponse> => {
+  let raw: unknown;
+  try {
+    raw = await response.json();
+  } catch (error) {
+    throw new OAuthError(
+      'invalid_response',
+      502,
+      `${label} returned malformed JSON: ${(error as Error).message}`,
+    );
+  }
+  return parseTokenResponse(raw);
 };
 
 /** D-127 P4.2 — split the OAuth `scope` string into a deduped
@@ -509,11 +540,16 @@ export const exchangeCodeForTokens = async (
   if (opts.providerConfig.clientSecret) {
     body.set('client_secret', opts.providerConfig.clientSecret);
   }
-  const res = await fetcher(opts.providerConfig.tokenUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  });
+  let res: Awaited<ReturnType<HttpFetcher>>;
+  try {
+    res = await fetcher(opts.providerConfig.tokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+  } catch (error) {
+    throw oauthTransportFailure('token_exchange_failed', 'token exchange', error);
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new OAuthError(
@@ -523,8 +559,7 @@ export const exchangeCodeForTokens = async (
       parseOAuthErrorField(text),
     );
   }
-  const raw = await res.json();
-  const parsed = parseTokenResponse(raw);
+  const parsed = await readTokenResponse(res, 'token endpoint');
   if (!parsed.refresh_token) {
     // Providers occasionally omit refresh_token on re-enrollment of an
     // already-consented account. Defensive message here so the caller
@@ -590,11 +625,16 @@ export const refreshAccessToken = async (
   if (opts.providerConfig.clientSecret) {
     body.set('client_secret', opts.providerConfig.clientSecret);
   }
-  const res = await fetcher(opts.providerConfig.tokenUrl, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: body.toString(),
-  });
+  let res: Awaited<ReturnType<HttpFetcher>>;
+  try {
+    res = await fetcher(opts.providerConfig.tokenUrl, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: body.toString(),
+    });
+  } catch (error) {
+    throw oauthTransportFailure('token_refresh_failed', 'token refresh', error);
+  }
   if (!res.ok) {
     const text = await res.text().catch(() => '');
     throw new OAuthError(
@@ -604,8 +644,7 @@ export const refreshAccessToken = async (
       parseOAuthErrorField(text),
     );
   }
-  const raw = await res.json();
-  const parsed = parseTokenResponse(raw);
+  const parsed = await readTokenResponse(res, 'token endpoint');
   const expiresAt = nowMs + parsed.expires_in * 1000;
   await opts.accountStore.set(accessTokenKey(opts.provider, opts.slug), parsed.access_token);
   await opts.accountStore.set(expiresAtKey(opts.provider, opts.slug), String(expiresAt));

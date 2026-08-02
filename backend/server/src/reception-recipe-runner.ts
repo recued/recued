@@ -42,13 +42,21 @@
 
 import {
   buildReceptionOrderContext,
+  contractPermitsDoorType,
+  isContractActive,
   type ContractSnapshot,
   type ExecutionSource,
+  type RecipeDefinition,
   type ReceptionOrderContext,
   type ReceptionOrderContextRefusal,
 } from '@recued/contracts';
 
 import { handleExecute, type ExecuteHandlerDeps } from './execute-handler.js';
+import {
+  deriveResolvedRecipeCapability,
+  type OpResolver,
+} from './derive-recipe-capability.js';
+import { doorCapabilityChanged } from './mint-door-contract.js';
 import { resolveReceptionDoorContractId } from './reception-door-bind.js';
 import { buildReceptionContractSnapshot } from './reception-contract-snapshot.js';
 import type { ContractDefinitionStore } from './storage/contract-definition-store.js';
@@ -56,6 +64,12 @@ import type { ReceptionIntakeRecipePairStore } from './storage/reception-intake-
 import type { SellerStore } from './storage/seller-store.js';
 import type { SellerOrderStore } from './storage/seller-order-store.js';
 import type { ExecuteResponse } from './types.js';
+import type { DoorRecipeResolver } from './recipe-capability-wiring.js';
+import {
+  analyzeReceptionRecipeCost,
+  receptionDoorPolicyAdmits,
+  type ReceptionRecipeCostRefusal,
+} from './reception-recipe-cost-policy.js';
 
 /** D-207 §4.4 — "an order exists iff there is an offer."
  *
@@ -99,6 +113,13 @@ export interface ReceptionRecipeRunnerDeps {
    *  owner the list they are consenting to. If the run then resolved a DIFFERENT config, the
    *  consent list would describe a run that cannot happen. One derivation, two consumers. */
   readonly resolveConfig: (recipeId: string) => Record<string, unknown> | undefined;
+  /** Current stored recipe snapshot. Runtime re-checks the same cost profile bind accepted,
+   *  closing legacy contracts and any recipe drift before an order or external call exists. */
+  readonly resolveRecipe: (recipeId: string) => RecipeDefinition | null;
+  readonly resolveDoorRecipe?: DoorRecipeResolver;
+  readonly resolveOp?: OpResolver;
+  readonly resolveIngredientKind?: (ingredientSlug: string) => string | undefined;
+  readonly resolveOpKinds?: () => ReadonlyMap<string, string>;
   /** Present only on a server with a seller substrate. A pair whose recipe names an offer
    *  on a server WITHOUT one is a refusal, not a silent plain-intake fallback: the owner
    *  built a form to sell something and the visitor would be thanked for nothing. */
@@ -107,6 +128,27 @@ export interface ReceptionRecipeRunnerDeps {
     readonly orders: Pick<SellerOrderStore, 'openOrder'>;
   };
   readonly now: () => number;
+  /** Fail-fast execution ceilings. A public submission is already durable before
+   *  it reaches this runner, so saturation must not grow an in-memory queue. */
+  readonly maxConcurrentRunsGlobal?: number;
+  readonly maxConcurrentRunsPerEndpoint?: number;
+}
+
+export const RECEPTION_RECIPE_MAX_CONCURRENT_RUNS_GLOBAL = 16;
+export const RECEPTION_RECIPE_MAX_CONCURRENT_RUNS_PER_ENDPOINT = 4;
+
+const boundedConcurrency = (value: number | undefined, fallback: number): number =>
+  value === undefined || !Number.isFinite(value)
+    ? fallback
+    : Math.max(1, Math.min(100, Math.floor(value)));
+
+export class ReceptionRecipeConcurrencyError extends Error {
+  readonly code = 'reception_recipe_concurrency_limited';
+
+  constructor(readonly scope: 'global' | 'endpoint') {
+    super(`reception recipe runner: ${scope} concurrency limit reached`);
+    this.name = 'ReceptionRecipeConcurrencyError';
+  }
 }
 
 export interface ReceptionRunInput {
@@ -142,6 +184,17 @@ const REFUSAL_MESSAGE: Readonly<Record<ReceptionOrderContextRefusal, string>> = 
   correlated_url_unrenderable:
     'the offer\'s checkout link cannot be rendered as a link button once stamped with '
     + 'this order\'s correlation',
+};
+
+const runtimeCostRefusalMessage = (refusal: ReceptionRecipeCostRefusal): string => {
+  switch (refusal.reason) {
+    case 'cost_step_limit':
+      return `public reception recipe has ${refusal.steps} steps (max ${refusal.max_steps})`;
+    case 'cost_dynamic_fanout':
+      return `public reception recipe step '${refusal.step_id}' uses unbounded foreach fan-out`;
+    case 'cost_unknown_dispatch_kind':
+      return `public reception recipe step '${refusal.step_id}' has unclassifiable dispatch '${refusal.target}'`;
+  }
 };
 
 /** Open the order this submission is buying, if it is buying one.
@@ -218,90 +271,210 @@ export type ReceptionRecipeRunner = {
 
 export const createReceptionRecipeRunner = (
   deps: ReceptionRecipeRunnerDeps,
-): ReceptionRecipeRunner => ({
-  async run(input: ReceptionRunInput): Promise<ReceptionRunOutcome> {
+): ReceptionRecipeRunner => {
+  const maxGlobal = boundedConcurrency(
+    deps.maxConcurrentRunsGlobal,
+    RECEPTION_RECIPE_MAX_CONCURRENT_RUNS_GLOBAL,
+  );
+  const maxPerEndpoint = Math.min(
+    maxGlobal,
+    boundedConcurrency(
+      deps.maxConcurrentRunsPerEndpoint,
+      RECEPTION_RECIPE_MAX_CONCURRENT_RUNS_PER_ENDPOINT,
+    ),
+  );
+  const inFlightBySubmission = new Map<string, Promise<ReceptionRunOutcome>>();
+  const activeByEndpoint = new Map<string, number>();
+  let activeGlobal = 0;
+
+  const runOnce = async (input: ReceptionRunInput): Promise<ReceptionRunOutcome> => {
     const pair = deps.pairStore.findByEndpoint(input.endpoint_id);
     if (pair === null) return { kind: 'no_door' };
 
     const contract_id = resolveReceptionDoorContractId(input.endpoint_id, deps);
     if (contract_id === null) return { kind: 'no_door' };
 
-    // The actor stays `anonymous` — the truth. It would have been smaller to reuse the
-    // `(reception, contracted_user)` variant, which already carries a contract_id, but
-    // `contracted_user` renders as an AGENT assertion while `anonymous` renders as
-    // VISITOR-derived, and that actor propagates into every row the recipe writes.
-    // Identity says WHO; contract_id says UNDER WHAT AUTHORITY.
-    const execution_source: ExecutionSource = {
-      channel: 'reception',
-      actor: 'anonymous',
-      reception_id: input.endpoint_id,
-      contract_id,
-    };
-
-    // NOT optional: a contract-bearing source with no snapshot THROWS at
-    // `evaluatePreflightAdmission`. A revoked door yields an EMPTY allowlist here, which
-    // denies every dispatch — the live kill-switch over an already-public form.
-    const contract_snapshot: ContractSnapshot = buildReceptionContractSnapshot(
-      execution_source,
-      {
-        definitionStore: deps.definitionStore,
-        allowedTools: allowedToolsFor(deps.definitionStore),
-        now: deps.now,
-      },
-    );
-
-    // ⛔ THE CONFIG MUST BE PASSED EXPLICITLY — `handleExecute` will NOT merge it for us.
-    //
-    // Its install-dish overlay only applies to a run with NO `run_id`
-    // (`execute-handler.ts`: `else if (deps.dishStore && internal.run_id === undefined)`).
-    // That gate reads `run_id` as "this is a REPLAY that brought its own config", which is
-    // true of the callers it was written for — `pick-server-wiring` and `saga-server-wiring`
-    // both pass a captured `config` alongside their `run_id`.
-    //
-    // We pass a `run_id` for an entirely different reason (idempotency; see below) and are a
-    // FRESH fire, not a replay. So we fall through every branch, and without this line the
-    // recipe would run with an EMPTY config: `{{config.*}}` — including the connection the
-    // door was minted against, and the `seller_offer_id` the owner pointed at their offer —
-    // would silently resolve to nothing. Not a refusal. Silence.
-    const config = deps.resolveConfig(pair.binding.recipe_id);
-
-    // ── D-207 slice 3c — the order, opened SERVER-SIDE ────────────────────────────────
-    //
-    // Not by a recipe op, and this is FORCED rather than stylistic: every
-    // `core.seller.order.*` write resolves to `ask`, an anonymous actor is pinned to the
-    // `read` ceiling, so a recipe-dispatched `order.open` would HOLD — and a held run
-    // returns no output, so the visitor would get a thank-you page carrying no way to
-    // pay. The runner writes the order exactly as it already wrote the durable
-    // submission row, and hands the recipe a READ-ONLY projection to render.
-    const order = openOrderForPair(config, input, deps);
-    if (!order.ok) return { kind: 'failed', errors: [order.error] };
-
-    const result = await handleExecute(
-      deps.executeDeps,
-      {
-        recipe_id: pair.binding.recipe_id,
-        context: {
-          reception_submission: input.submission,
-          // Absent when the pair sells nothing — §4.4: an order exists iff there is an
-          // offer. A plain intake recipe sees exactly what it saw before.
-          ...(order.context === null ? {} : { reception_order: order.context }),
-        },
-        ...(config === undefined ? {} : { config }),
-        trigger_source: 'reception',
-        execution_source,
-        contract_snapshot,
-      },
-      // The submission id is the idempotency anchor: a re-drive of the SAME submission
-      // (a drain retry, a reconciliation sweep) collapses onto one run rather than
-      // re-firing its side effects.
-      { run_id: `reception:${input.submission_id}` },
-    );
-
-    if (!result.success) {
-      // `awaiting_approval` is QUEUED, not failed — the run is durably paused at the gate.
-      if (result.awaiting_approval === true) return { kind: 'held' };
-      return { kind: 'failed', errors: result.errors };
+    // The snapshot/gateway can floor a dead door's ingredient calls, but this runner also
+    // owns server-side effects (notably Seller order creation) that happen before the
+    // engine. Revocation and cross-door misbinding must therefore stop the WHOLE run here,
+    // not merely empty the downstream tool allowlist.
+    const storedDoor = deps.definitionStore.get(contract_id);
+    if (
+      storedDoor === null
+      || !isContractActive(storedDoor, deps.now())
+      || !contractPermitsDoorType(storedDoor, 'reception')
+    ) {
+      return {
+        kind: 'failed',
+        errors: ['public reception door is no longer active; ask the owner to re-bind this form'],
+      };
     }
-    return { kind: 'completed', output: result.output };
-  },
-});
+
+    // Request-rate limits bound HOW OFTEN this reaches us. This is the orthogonal per-run
+    // cost fence: use the current recipe and the policy persisted at the owner's bind.
+    // Missing/legacy policy, recipe drift, unknown kinds, foreach, and AI without opt-in all
+    // fail before opening a Seller order or invoking the execution engine.
+    const recipe = deps.resolveRecipe(pair.binding.recipe_id);
+    if (recipe === null) {
+      return {
+        kind: 'failed',
+        errors: [`public reception recipe '${pair.binding.recipe_id}' is unavailable`],
+      };
+    }
+    const config = deps.resolveConfig(pair.binding.recipe_id);
+    const dispatchRecipe = deps.resolveDoorRecipe?.(recipe, config ?? {})
+      ?? { ok: true as const, recipe };
+    if (!dispatchRecipe.ok) {
+      return {
+        kind: 'failed',
+        errors: ['public reception recipe binding changed; ask the owner to re-bind this form'],
+      };
+    }
+    const cost = analyzeReceptionRecipeCost(dispatchRecipe.recipe, {
+      ...(deps.resolveIngredientKind === undefined
+        ? {}
+        : { resolveIngredientKind: deps.resolveIngredientKind }),
+      ...(deps.resolveOpKinds === undefined ? {} : { resolveOpKinds: deps.resolveOpKinds }),
+    });
+    if (!cost.ok) {
+      return { kind: 'failed', errors: [runtimeCostRefusalMessage(cost.refusal)] };
+    }
+    if (!receptionDoorPolicyAdmits(storedDoor?.door_execution_policy, cost.profile)) {
+      return {
+        kind: 'failed',
+        errors: [
+          cost.profile.uses_ai
+            ? 'public reception recipe requires an owner AI-cost opt-in; re-bind this form'
+            : 'public reception recipe has no valid per-run execution policy; re-bind this form',
+        ],
+      };
+    }
+    if (deps.resolveDoorRecipe !== undefined) {
+      const resolveOp = dispatchRecipe.resolveOp ?? deps.resolveOp;
+      const derived = deriveResolvedRecipeCapability(recipe, dispatchRecipe.recipe, {
+        ...(config === undefined ? {} : { config }),
+        ...(resolveOp === undefined ? {} : { resolveOp }),
+      });
+      if (!derived.ok || doorCapabilityChanged(storedDoor, derived.capability).changed) {
+        return {
+          kind: 'failed',
+          errors: ['public reception recipe authority changed; ask the owner to re-bind this form'],
+        };
+      }
+    }
+
+    const activeForEndpoint = activeByEndpoint.get(input.endpoint_id) ?? 0;
+    if (activeForEndpoint >= maxPerEndpoint) {
+      throw new ReceptionRecipeConcurrencyError('endpoint');
+    }
+    if (activeGlobal >= maxGlobal) {
+      throw new ReceptionRecipeConcurrencyError('global');
+    }
+    activeGlobal += 1;
+    activeByEndpoint.set(input.endpoint_id, activeForEndpoint + 1);
+
+    try {
+      // The actor stays `anonymous` — the truth. It would have been smaller to reuse the
+      // `(reception, contracted_user)` variant, which already carries a contract_id, but
+      // `contracted_user` renders as an AGENT assertion while `anonymous` renders as
+      // VISITOR-derived, and that actor propagates into every row the recipe writes.
+      // Identity says WHO; contract_id says UNDER WHAT AUTHORITY.
+      const execution_source: ExecutionSource = {
+        channel: 'reception',
+        actor: 'anonymous',
+        reception_id: input.endpoint_id,
+        contract_id,
+      };
+
+      // NOT optional: a contract-bearing source with no snapshot THROWS at
+      // `evaluatePreflightAdmission`. A revoked door yields an EMPTY allowlist here, which
+      // denies every dispatch — the live kill-switch over an already-public form.
+      const contract_snapshot: ContractSnapshot = buildReceptionContractSnapshot(
+        execution_source,
+        {
+          definitionStore: deps.definitionStore,
+          allowedTools: allowedToolsFor(deps.definitionStore),
+          now: deps.now,
+        },
+      );
+
+      // ⛔ THE CONFIG MUST BE PASSED EXPLICITLY — `handleExecute` will NOT merge it for us.
+      //
+      // Its install-dish overlay only applies to a run with NO `run_id`
+      // (`execute-handler.ts`: `else if (deps.dishStore && internal.run_id === undefined)`).
+      // That gate reads `run_id` as "this is a REPLAY that brought its own config", which is
+      // true of the callers it was written for — `pick-server-wiring` and `saga-server-wiring`
+      // both pass a captured `config` alongside their `run_id`.
+      //
+      // We pass a `run_id` for an entirely different reason (idempotency; see below) and are a
+      // FRESH fire, not a replay. So we fall through every branch, and without this line the
+      // recipe would run with an EMPTY config: `{{config.*}}` — including the connection the
+      // door was minted against, and the `seller_offer_id` the owner pointed at their offer —
+      // would silently resolve to nothing. Not a refusal. Silence.
+      // ── D-207 slice 3c — the order, opened SERVER-SIDE ──────────────────────────────
+      //
+      // Not by a recipe op, and this is FORCED rather than stylistic: every
+      // `core.seller.order.*` write resolves to `ask`, an anonymous actor is pinned to the
+      // `read` ceiling, so a recipe-dispatched `order.open` would HOLD — and a held run
+      // returns no output, so the visitor would get a thank-you page carrying no way to
+      // pay. The runner writes the order exactly as it already wrote the durable
+      // submission row, and hands the recipe a READ-ONLY projection to render.
+      const order = openOrderForPair(config, input, deps);
+      if (!order.ok) return { kind: 'failed', errors: [order.error] };
+
+      const result = await handleExecute(
+        deps.executeDeps,
+        {
+          recipe_id: pair.binding.recipe_id,
+          context: {
+            reception_submission: input.submission,
+            // Absent when the pair sells nothing — §4.4: an order exists iff there is an
+            // offer. A plain intake recipe sees exactly what it saw before.
+            ...(order.context === null ? {} : { reception_order: order.context }),
+          },
+          ...(config === undefined ? {} : { config }),
+          trigger_source: 'reception',
+          execution_source,
+          contract_snapshot,
+        },
+        // The submission id is the idempotency anchor: a re-drive of the SAME submission
+        // (a drain retry, a reconciliation sweep) collapses onto one run rather than
+        // re-firing its side effects.
+        { run_id: `reception:${input.submission_id}` },
+      );
+
+      if (!result.success) {
+        // `awaiting_approval` is QUEUED, not failed — the run is durably paused at the gate.
+        if (result.awaiting_approval === true) return { kind: 'held' };
+        return { kind: 'failed', errors: result.errors };
+      }
+      return { kind: 'completed', output: result.output };
+    } finally {
+      activeGlobal -= 1;
+      const remaining = (activeByEndpoint.get(input.endpoint_id) ?? 1) - 1;
+      if (remaining <= 0) activeByEndpoint.delete(input.endpoint_id);
+      else activeByEndpoint.set(input.endpoint_id, remaining);
+    }
+  };
+
+  return {
+    run(input) {
+      // A durable submission is the idempotency identity all the way down to
+      // `handleExecute`. Collapse an in-process retry before it consumes a second
+      // slot or races the same run/order anchor.
+      const key = `${input.endpoint_id}\u0000${input.submission_id}`;
+      const existing = inFlightBySubmission.get(key);
+      if (existing !== undefined) return existing;
+
+      const started = runOnce(input);
+      let tracked: Promise<ReceptionRunOutcome>;
+      tracked = started.finally(() => {
+        if (inFlightBySubmission.get(key) === tracked) {
+          inFlightBySubmission.delete(key);
+        }
+      });
+      inFlightBySubmission.set(key, tracked);
+      return tracked;
+    },
+  };
+};

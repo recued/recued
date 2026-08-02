@@ -35,10 +35,17 @@
  *
  *  Spec: D-207 §5.1a / §5.1b / §5.2. */
 
-import { getKernelOp, recipeOutputSections, type RecipeDefinition } from '@recued/contracts';
+import {
+  getKernelDomain,
+  getKernelOp,
+  kernelVerbRiskTier,
+  parseOpId,
+  recipeOutputSections,
+  type RecipeDefinition,
+} from '@recued/contracts';
 
 import {
-  deriveRecipeCapability,
+  deriveResolvedRecipeCapability,
   type RecipeCapability,
   type RecipeCapabilityRefusal,
   type OpResolver,
@@ -51,6 +58,12 @@ import {
   type MintDoorDeps,
 } from './mint-door-contract.js';
 import type { ReceptionIntakeRecipePairStore } from './storage/reception-intake-recipe-pair-store.js';
+import type { DoorRecipeResolver } from './recipe-capability-wiring.js';
+import {
+  analyzeReceptionRecipeCost,
+  receptionDoorExecutionPolicy,
+  type ReceptionRecipeCostRefusal,
+} from './reception-recipe-cost-policy.js';
 
 /** D-207 slice 3c — a door that owes the visitor a SYNCHRONOUS RESPONSE cannot write.
  *
@@ -99,18 +112,28 @@ export type ReceptionDoorWriteRefusal = {
 /** Every way a recipe can be refused a door. Static analyzability comes from the
  *  derivation; this policy refusal is the BIND's own, which is why it lives here and not
  *  inside a function whose job is to describe what a recipe DOES. */
-export type ReceptionDoorRefusal = RecipeCapabilityRefusal | ReceptionDoorWriteRefusal;
+export type ReceptionDoorRefusal =
+  | RecipeCapabilityRefusal
+  | ReceptionDoorWriteRefusal
+  | ReceptionRecipeCostRefusal;
 
 export interface ReceptionDoorBindDeps extends MintDoorDeps {
   readonly pairStore: ReceptionIntakeRecipePairStore;
   /** The installed dish's resolved `config_overlay` for this recipe — where the connection
    *  values actually live (a Recipe is a pure paper record; D-179). */
   readonly resolveConfig: (recipeId: string) => Record<string, unknown> | undefined;
+  /** Exact authored-op lowering used by `handleExecute`. Production always supplies it;
+   *  optional only for narrow legacy harnesses containing already-concrete recipes. */
+  readonly resolveDoorRecipe?: DoorRecipeResolver;
   readonly resolveOp?: OpResolver;
   /** op id → its risk tier, across BOTH the kernel registry and the installed pack
    *  catalogs. Absent ⇒ only ops we can classify from the kernel pass, and everything else
    *  is refused on a responding door. Fail-closed by construction. */
   readonly resolveOpRisk?: (opId: string) => string | undefined;
+  /** Cost classification uses the same installed manifests/op inventory the run lowers
+   *  through. Unknown dispatch kinds refuse rather than being assumed non-AI. */
+  readonly resolveIngredientKind?: (ingredientSlug: string) => string | undefined;
+  readonly resolveOpKinds?: () => ReadonlyMap<string, string>;
 }
 
 export type ReceptionDoorBindResult =
@@ -157,6 +180,25 @@ const respondsWith = (
   return null;
 };
 
+/** Canonical CRM/accounting ops are open verb-convention addresses, so they do not have a
+ * closed `getKernelOp()` row. Their risk is nevertheless kernel-defined by the final verb.
+ * Keep this deliberately limited to registered canonical-convention domains: treating any
+ * syntactically valid `core.*` address as a canonical read would turn an unknown op into a
+ * fail-open classification. */
+const canonicalConventionRisk = (opId: string): string | undefined => {
+  const parsed = parseOpId(opId);
+  if (
+    parsed === null
+    || parsed.tier !== 'kernel'
+    || getKernelDomain(parsed.domain)?.class !== 'canonical_convention'
+  ) {
+    return undefined;
+  }
+  const finalDot = parsed.op.lastIndexOf('.');
+  if (finalDot < 0) return undefined;
+  return kernelVerbRiskTier(parsed.op.slice(finalDot + 1)) ?? undefined;
+};
+
 /** Refuse a responding door that can write. `null` ⇒ nothing to refuse. */
 const refuseWriteOnRespondingDoor = (
   recipe: RecipeDefinition,
@@ -170,7 +212,7 @@ const refuseWriteOnRespondingDoor = (
   // Sorted, so the op we name is stable across binds — an owner who fixes one write and
   // re-binds should be told about the NEXT one, not a different one at random.
   for (const op of capability.operation_ids) {
-    const risk = resolveOpRisk?.(op) ?? getKernelOp(op)?.risk;
+    const risk = resolveOpRisk?.(op) ?? getKernelOp(op)?.risk ?? canonicalConventionRisk(op);
     // ⛔ `!== 'read'` — NOT `=== 'write'`. This catches `destructive` and `admin`, and it
     // catches an op whose risk we could not resolve AT ALL (`undefined`). An unresolvable
     // op is refused because we cannot prove it will not hold, and a fence that admits what
@@ -201,21 +243,43 @@ export const bindReceptionDoor = (
   deps: ReceptionDoorBindDeps,
 ): ReceptionDoorBindResult => {
   const config = deps.resolveConfig(input.recipeId);
-  const derived = deriveRecipeCapability(input.recipe, {
+  const dispatchRecipe = deps.resolveDoorRecipe?.(input.recipe, config ?? {})
+    ?? { ok: true as const, recipe: input.recipe };
+  if (!dispatchRecipe.ok) {
+    return {
+      kind: 'refused',
+      refusal: {
+        reason: 'dispatch_unresolvable',
+        step_id: '<recipe>',
+        detail: dispatchRecipe.reason,
+      },
+    };
+  }
+  const resolveOp = dispatchRecipe.resolveOp ?? deps.resolveOp;
+  const derived = deriveResolvedRecipeCapability(input.recipe, dispatchRecipe.recipe, {
     ...(config === undefined ? {} : { config }),
-    ...(deps.resolveOp === undefined ? {} : { resolveOp: deps.resolveOp }),
+    ...(resolveOp === undefined ? {} : { resolveOp }),
   });
   // §5.1a — the door's ONE eligibility rule. Refused at BIND, never at fire.
   if (!derived.ok) return { kind: 'refused', refusal: derived.refusal };
 
   // D-207 slice 3c — a door that OWES the visitor a synchronous response cannot write.
   const responding = refuseWriteOnRespondingDoor(
-    input.recipe,
+    dispatchRecipe.recipe,
     config,
     derived.capability,
     deps.resolveOpRisk,
   );
   if (responding !== null) return { kind: 'refused', refusal: responding };
+
+  const cost = analyzeReceptionRecipeCost(dispatchRecipe.recipe, {
+    ...(deps.resolveIngredientKind === undefined
+      ? {}
+      : { resolveIngredientKind: deps.resolveIngredientKind }),
+    ...(deps.resolveOpKinds === undefined ? {} : { resolveOpKinds: deps.resolveOpKinds }),
+  });
+  if (!cost.ok) return { kind: 'refused', refusal: cost.refusal };
+  const executionPolicy = receptionDoorExecutionPolicy(cost.profile);
 
   const pair = deps.pairStore.findByEndpoint(input.endpointId);
   const existingContractId = pair?.contract_id ?? null;
@@ -223,7 +287,7 @@ export const bindReceptionDoor = (
     ? null
     : deps.definitionStore.get(existingContractId);
 
-  const diff = doorCapabilityChanged(stored, derived.capability);
+  const diff = doorCapabilityChanged(stored, derived.capability, executionPolicy);
 
   // Nothing about the door's AUTHORITY moved. Silent — however much the recipe's bytes
   // changed. This is the case that keeps the consent surface trustworthy.
@@ -260,6 +324,7 @@ export const bindReceptionDoor = (
       recipeId: input.recipeId,
       capability: derived.capability,
       mintedBy: input.mintedBy,
+      doorExecutionPolicy: executionPolicy,
     },
     deps,
   );

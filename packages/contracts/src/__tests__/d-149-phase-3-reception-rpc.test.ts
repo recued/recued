@@ -211,7 +211,7 @@ describe('D-149 P3 § Contract Tightening — RECEPTION_RATE_LIMIT_DEFAULTS', ()
   it('per-kind windows match the spec table', () => {
     expect(
       RECEPTION_RATE_LIMIT_DEFAULTS.per_endpoint_kind.intake_form,
-    ).toEqual({ window_ms: 3_600_000, max_requests: 10 });
+    ).toEqual({ window_ms: 3_600_000, max_requests: 60 });
     expect(
       RECEPTION_RATE_LIMIT_DEFAULTS.per_endpoint_kind.drop_link,
     ).toEqual({ window_ms: 3_600_000, max_requests: 5 });

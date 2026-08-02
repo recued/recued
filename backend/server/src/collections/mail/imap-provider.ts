@@ -576,7 +576,7 @@ interface FolderState {
   folder: string;
   client: ImapClient | null;
   stopIdle: (() => void) | null;
-  reconnecting: boolean;
+  reconnectTask: Promise<void> | null;
   attempts: number;
 }
 
@@ -599,6 +599,18 @@ export const createImapProvider = (
   let errorCount24h = 0;
   let pendingQueueSize = 0;
   let stopped = false;
+  const cancelReconnectDelays = new Set<() => void>();
+
+  const waitForReconnectDelay = async (ms: number): Promise<void> => {
+    let cancel!: () => void;
+    const cancelled = new Promise<void>((resolve) => { cancel = resolve; });
+    cancelReconnectDelays.add(cancel);
+    try {
+      await Promise.race([sleepOf(ms), cancelled]);
+    } finally {
+      cancelReconnectDelays.delete(cancel);
+    }
+  };
 
   const makeClient = (folder: string): ImapClient => {
     const cfg = opts.config();
@@ -760,8 +772,7 @@ export const createImapProvider = (
     };
     const onClose = (): void => {
       if (stopped) return;
-      if (state.reconnecting) return;
-      void reconnect(state, cb);
+      scheduleReconnect(state, cb);
     };
     const onError = (err: unknown): void => {
       markError(`imap client error folder=${state.folder}`, err);
@@ -782,12 +793,11 @@ export const createImapProvider = (
     };
   };
 
-  const reconnect = async (
+  const reconnectLoop = async (
     state: FolderState,
     cb: ProviderSyncCallback,
   ): Promise<void> => {
-    state.reconnecting = true;
-    try {
+    while (!stopped) {
       // Exponential backoff — capped so a bad credential or hard
       // outage doesn't spin at 60 s forever, but also doesn't retry
       // at full speed and trip rate limits. Initial 1 s → 2 → 4 → 8 →
@@ -798,31 +808,78 @@ export const createImapProvider = (
       const init = cfg.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
       state.attempts++;
       const delay = Math.min(init * Math.pow(2, state.attempts - 1), cap);
-      await sleepOf(delay);
+      try {
+        await waitForReconnectDelay(delay);
+      } catch (err) {
+        if (!stopped) markError(`imap reconnect delay failed folder=${state.folder}`, err);
+        return;
+      }
       if (stopped) return;
+
+      let candidate: ImapClient | null = null;
       try {
         state.stopIdle?.();
       } catch { /* stale handle */ }
       state.stopIdle = null;
-      state.client = makeClient(state.folder);
-      await state.client.connect();
-      await state.client.mailboxOpen(state.folder);
+      if (state.client) {
+        try { state.client.close(); } catch { /* stale transport */ }
+        state.client = null;
+      }
+
+      try {
+        candidate = makeClient(state.folder);
+        state.client = candidate;
+        await candidate.connect();
+        if (stopped) {
+          try { candidate.close(); } catch { /* shutdown containment */ }
+          if (state.client === candidate) state.client = null;
+          return;
+        }
+        await candidate.mailboxOpen(state.folder);
+        if (stopped) {
+          try { candidate.close(); } catch { /* shutdown containment */ }
+          if (state.client === candidate) state.client = null;
+          return;
+        }
+      } catch (err) {
+        try { candidate?.close(); } catch { /* failed attempt cleanup */ }
+        if (candidate && state.client === candidate) state.client = null;
+        if (stopped) return;
+        markError(`imap reconnect failed folder=${state.folder}`, err);
+        // Reported per ATTEMPT, not once per outage: the owned loop retries, so
+        // a permanently-bad credential keeps re-asserting `auth` rather than
+        // reporting once and going quiet.
+        reportReconnect(state.folder, false, isImapAuthFailure(err) ? 'auth' : 'transient');
+        continue;
+      }
+
       state.stopIdle = attachListeners(state, cb);
       state.attempts = 0;
       lastSuccessfulSyncAt = nowOf();
       // This folder is back — reported as provider-wide success only if it was
       // the last one down.
       reportReconnect(state.folder, true);
-    } catch (err) {
-      markError(`imap reconnect failed folder=${state.folder}`, err);
-      // Reported per ATTEMPT, not once per outage: the backoff loop re-enters
-      // itself below, so a permanently-bad credential keeps re-asserting `auth`
-      // rather than reporting once and going quiet.
-      reportReconnect(state.folder, false, isImapAuthFailure(err) ? 'auth' : 'transient');
-      if (!stopped) void reconnect(state, cb);
-    } finally {
-      state.reconnecting = false;
+      return;
     }
+  };
+
+  const scheduleReconnect = (
+    state: FolderState,
+    cb: ProviderSyncCallback,
+  ): void => {
+    if (stopped || state.reconnectTask) return;
+    let task!: Promise<void>;
+    task = reconnectLoop(state, cb)
+      .catch((err) => {
+        // The loop contains expected transport failures. This final boundary
+        // owns programmer/config failures too so EventEmitter never launches an
+        // unhandled rejection.
+        if (!stopped) markError(`imap reconnect loop failed folder=${state.folder}`, err);
+      })
+      .finally(() => {
+        if (state.reconnectTask === task) state.reconnectTask = null;
+      });
+    state.reconnectTask = task;
   };
 
   // ── outbound send (D-127 P1.5) ──────────────────────────────
@@ -1182,6 +1239,12 @@ export const createImapProvider = (
 
     async connect() {
       if (connected) return;
+      // `sync.stop()` closes transport state while the vault is sealed, and
+      // `sync.start()` reuses this provider on unlock. Reopen reconnect
+      // admission here; leaving the terminal flag set makes the next socket
+      // loss silently permanent after the first lock/unlock cycle.
+      stopped = false;
+      downFolders.clear();
       const cfg = opts.config();
       for (const folder of cfg.folders) {
         const client = makeClient(folder);
@@ -1197,7 +1260,7 @@ export const createImapProvider = (
           folder,
           client,
           stopIdle: null,
-          reconnecting: false,
+          reconnectTask: null,
           attempts: 0,
         });
       }
@@ -1239,19 +1302,39 @@ export const createImapProvider = (
 
     async close(): Promise<void> {
       stopped = true;
-      for (const state of folders.values()) {
+      for (const cancel of [...cancelReconnectDelays]) cancel();
+      const states = [...folders.values()];
+      const reconnects = states
+        .map((state) => state.reconnectTask)
+        .filter((task): task is Promise<void> => task !== null);
+
+      // Close current transports immediately so an in-progress connect/open is
+      // interrupted where the client supports it, then await every admitted
+      // reconnect. The reconnect loop checks `stopped` after each network await
+      // and closes a transport that nevertheless opened late.
+      for (const state of states) {
         try { state.stopIdle?.(); } catch { /* detach best-effort */ }
         state.stopIdle = null;
         if (state.client) {
+          const client = state.client;
+          state.client = null;
           try {
-            if (state.client.usable) await state.client.logout();
-            else state.client.close();
+            if (client.usable) await client.logout();
+            else client.close();
           } catch (err) {
             markError(`imap logout failed folder=${state.folder}`, err);
-            try { state.client.close(); } catch { /* swallow */ }
+            try { client.close(); } catch { /* swallow */ }
           }
-          state.client = null;
         }
+      }
+      await Promise.allSettled(reconnects);
+      // Defensive final fence for a client implementation whose `connect()`
+      // ignored the first close and completed immediately before its stopped
+      // check. Reconnect tasks have settled, so no new client can appear now.
+      for (const state of states) {
+        if (!state.client) continue;
+        try { state.client.close(); } catch { /* shutdown containment */ }
+        state.client = null;
       }
       folders.clear();
       connected = false;

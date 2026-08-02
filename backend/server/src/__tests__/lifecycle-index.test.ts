@@ -1,16 +1,18 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import {
   createLifecycle,
+  type CreateLifecycleOptions,
   type Lifecycle,
 } from '../lifecycle/index.js';
 import { createServerStateStore, type ServerStateStore } from '../server-state.js';
 import { createLifecycleStateStore } from '../lifecycle/lifecycle-state.js';
 import { createStorageGate } from '@recued/storage-gate';
 import { createRuntimeConfigStore } from '@recued/config';
+import type { ActivityEntry, AuditLogStore } from '@recued/storage';
 
 interface Harness {
   dataPath: string;
@@ -25,6 +27,8 @@ const newHarness = (opts: {
   supervisorMode?: import('@recued/contracts').SupervisorMode;
   onCrashHaltChange?: (active: boolean) => void;
   crashLoopConfig?: { threshold?: number; window_s?: number };
+  auditLog?: AuditLogStore;
+  drainSteps?: CreateLifecycleOptions['drainSteps'];
 } = {}): Harness => {
   const dataPath = mkdtempSync(join(tmpdir(), 'recued-lifecycle-'));
   const db = new Database(':memory:');
@@ -56,6 +60,8 @@ const newHarness = (opts: {
     supervisorMode: opts.supervisorMode ?? 'dev',
     ...(opts.onCrashHaltChange ? { onCrashHaltChange: opts.onCrashHaltChange } : {}),
     ...(opts.crashLoopConfig ? { crashLoopConfig: opts.crashLoopConfig } : {}),
+    ...(opts.auditLog ? { auditLog: opts.auditLog } : {}),
+    ...(opts.drainSteps ? { drainSteps: opts.drainSteps } : {}),
     exit: (code) => { exits.push(code); },
   });
   return {
@@ -144,6 +150,69 @@ describe('createLifecycle — drain + shutdown', () => {
     const b = h.lifecycle.requestDrain({ intent: 'shutdown', reason: 'b' });
     const [ra, rb] = await Promise.all([a, b]);
     expect(ra).toBe(rb);
+  });
+
+  it('every drain path stops and drains config reload work before continuing', async () => {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    const stop = vi.spyOn(h.lifecycle.configWatcher, 'stop').mockImplementation(() => held);
+
+    let settled = false;
+    const draining = h.lifecycle.drain
+      .drain({ intent: 'shutdown', reason: 'direct' })
+      .then((result) => {
+        settled = true;
+        return result;
+      });
+    await vi.waitFor(() => { expect(stop).toHaveBeenCalledTimes(1); });
+    expect(settled).toBe(false);
+
+    release();
+    await draining;
+    expect(settled).toBe(true);
+  });
+
+  it('flushes the terminal lifecycle audit before close_db and admits no late writes', async () => {
+    let releaseCompleted!: () => void;
+    const completedHeld = new Promise<void>((resolve) => { releaseCompleted = resolve; });
+    let dbClosed = false;
+    let writesAfterClose = 0;
+    const entries: ActivityEntry[] = [];
+    const logActivity = vi.fn(async (entry: ActivityEntry) => {
+      if (dbClosed) {
+        writesAfterClose += 1;
+        throw new Error('database is closed');
+      }
+      entries.push(entry);
+      if (entry.action === 'drain_completed') await completedHeld;
+    });
+    h.close();
+    h = newHarness({
+      auditLog: { logActivity } as unknown as AuditLogStore,
+      drainSteps: {
+        close_db: async () => { dbClosed = true; },
+      },
+    });
+    h.lifecycle.markBooted();
+
+    let drained = false;
+    const draining = h.lifecycle.requestDrain({
+      intent: 'shutdown',
+      reason: 'audit-order',
+    }).then((result) => {
+      drained = true;
+      return result;
+    });
+    await vi.waitFor(() => {
+      expect(entries.some((entry) => entry.action === 'drain_completed')).toBe(true);
+    });
+    expect(dbClosed).toBe(false);
+    expect(drained).toBe(false);
+
+    releaseCompleted();
+    await draining;
+    expect(dbClosed).toBe(true);
+    expect(writesAfterClose).toBe(0);
   });
 });
 

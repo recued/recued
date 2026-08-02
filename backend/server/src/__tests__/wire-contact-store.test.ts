@@ -126,6 +126,7 @@ describe('composeContactStore', () => {
       remergePromptStore: undefined,
       contactMergeCycleObserver: undefined,
       upstreamMergeStore: undefined,
+      backfillDone: undefined,
     });
   });
 
@@ -136,6 +137,7 @@ describe('composeContactStore', () => {
     expect(bundle.remergePromptStore).toBeDefined();
     expect(bundle.contactMergeCycleObserver).toBeDefined();
     expect(bundle.upstreamMergeStore).toBeDefined();
+    expect(bundle.backfillDone).toBeInstanceOf(Promise);
   });
 
   it('delete succeeds when enrichmentCascade is omitted', () => {
@@ -294,6 +296,28 @@ describe('composeContactStore', () => {
       expect.any(Database),
       bundle.contactStore,
     );
+    await expect(bundle.backfillDone).resolves.toBeUndefined();
+  });
+
+  it('surfaces backfill settlement for the shutdown drain', async () => {
+    const backfillMock = vi.mocked(backfillContacts);
+    let releaseBackfill!: () => void;
+    backfillMock.mockImplementationOnce(() =>
+      new Promise((resolve) => {
+        releaseBackfill = () => resolve(backfillResult);
+      }));
+
+    const bundle = composeWithDb();
+    let settled = false;
+    const observed = bundle.backfillDone!.then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    releaseBackfill();
+    await observed;
+    expect(settled).toBe(true);
   });
 
   it('swallows backfillContacts rejections without unhandled rejection', async () => {
@@ -303,11 +327,15 @@ describe('composeContactStore', () => {
     backfillMock.mockRejectedValueOnce(new Error('boom'));
 
     try {
-      expect(() => composeWithDb()).not.toThrow();
+      let bundle: ReturnType<typeof composeContactStore> | undefined;
+      expect(() => {
+        bundle = composeWithDb();
+      }).not.toThrow();
       await flushMicrotasks();
 
       expect(backfillMock).toHaveBeenCalledTimes(1);
       expect(unhandledRejection).not.toHaveBeenCalled();
+      await expect(bundle?.backfillDone).resolves.toBeUndefined();
     } finally {
       process.removeListener('unhandledRejection', unhandledRejection);
     }

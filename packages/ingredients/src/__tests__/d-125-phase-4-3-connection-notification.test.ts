@@ -48,6 +48,7 @@ import {
 import type { ConnectionNotificationHandlerDeps, NotificationBusBody } from '../connection-notification.js';
 import { IngredientError, type ResolvedCall } from '../types.js';
 import type { ConnectionHandlerCtx } from '../connection.js';
+import { DEFAULT_RESPONSE_BODY_MAX_BYTES } from '../bounded-response-body.js';
 
 // ────────────────────────────────────────────────────────────────
 // Test fixtures
@@ -328,6 +329,24 @@ describe('D-125 P4.3 — slack subtype', () => {
       .rejects.toMatchObject({ code: 'OAUTH_EXPIRED' });
   });
 
+  it('releases an unread non-success vendor response body', async () => {
+    const cancel = vi.fn();
+    const { fetch } = captureFetch(() =>
+      new Response(new ReadableStream<Uint8Array>({ cancel }), {
+        status: 503,
+        statusText: 'Unavailable',
+      }));
+    const handler = createConnectionNotificationHandler(mkDeps({
+      fetchImpl: fetch,
+      decodeAuth: async () => slackBearer,
+    }));
+
+    await expect(handler(mkRow(), { text: 'hi' }, mkCall({ risk_tier: 'read' })))
+      .rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+    await Promise.resolve();
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
   it('throws API_RATE_LIMITED on 429', async () => {
     const { fetch } = captureFetch(() => new Response('rate', { status: 429 }));
     const handler = createConnectionNotificationHandler(mkDeps({
@@ -396,7 +415,50 @@ describe('D-125 P4.3 — slack subtype', () => {
       .rejects.toMatchObject({ code: 'STEP_TIMEOUT' });
   });
 
-  it('malformed response JSON throws NETWORK_ERROR', async () => {
+  it('keeps the timeout active while the vendor response body streams', async () => {
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const abort = (): void => {
+            const error = new Error('body aborted');
+            error.name = 'AbortError';
+            controller.error(error);
+          };
+          if (init?.signal?.aborted) abort();
+          else init?.signal?.addEventListener('abort', abort, { once: true });
+        },
+      });
+      return new Response(stream, { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const handler = createConnectionNotificationHandler(mkDeps({
+      fetchImpl,
+      decodeAuth: async () => slackBearer,
+    }));
+
+    await expect(handler(
+      mkRow(),
+      { text: 'hi', timeout_ms: 100 },
+      mkCall({ risk_tier: 'read' }),
+    )).rejects.toMatchObject({ code: 'STEP_TIMEOUT' });
+  });
+
+  it('rejects an oversized read response before buffering it', async () => {
+    const { fetch } = captureFetch(() => new Response('{}', {
+      headers: {
+        'content-type': 'application/json',
+        'content-length': String(DEFAULT_RESPONSE_BODY_MAX_BYTES + 1),
+      },
+    }));
+    const handler = createConnectionNotificationHandler(mkDeps({
+      fetchImpl: fetch,
+      decodeAuth: async () => slackBearer,
+    }));
+
+    await expect(handler(mkRow(), { text: 'hi' }, mkCall({ risk_tier: 'read' })))
+      .rejects.toMatchObject({ code: 'INGREDIENT_OUTPUT_VALIDATION_FAILED' });
+  });
+
+  it('malformed write acknowledgement maps to ACTION_DELIVERY_UNCERTAIN', async () => {
     const { fetch } = captureFetch(() =>
       new Response('not json', { status: 200, headers: { 'content-type': 'application/json' } }));
     const handler = createConnectionNotificationHandler(mkDeps({
@@ -404,6 +466,17 @@ describe('D-125 P4.3 — slack subtype', () => {
       decodeAuth: async () => slackBearer,
     }));
     await expect(handler(mkRow(), { text: 'hi' }, mkCall()))
+      .rejects.toMatchObject({ code: 'ACTION_DELIVERY_UNCERTAIN' });
+  });
+
+  it('malformed read response remains NETWORK_ERROR', async () => {
+    const { fetch } = captureFetch(() =>
+      new Response('not json', { status: 200, headers: { 'content-type': 'application/json' } }));
+    const handler = createConnectionNotificationHandler(mkDeps({
+      fetchImpl: fetch,
+      decodeAuth: async () => slackBearer,
+    }));
+    await expect(handler(mkRow(), { text: 'hi' }, mkCall({ risk_tier: 'read' })))
       .rejects.toMatchObject({ code: 'NETWORK_ERROR' });
   });
 });

@@ -38,6 +38,7 @@ import { syncWebclientBundle } from './webclient-sync.js';
 import { resolveWebclientBundleDir } from '../webclient-bundle-loader.js';
 import { osFreeBytes } from '../storage/disk-free.js';
 import type { UpdateApplyDeps, UpdateModeDeps } from '../update-handler.js';
+import { makeBoundedOriginHttpFetcher } from '../bounded-origin-http-fetcher.js';
 
 /** The frozen trusted release public key (minisign format). Re-exported from
  *  the dependency-free `trusted-release-pubkey.ts` so the thin-image launcher
@@ -175,12 +176,22 @@ export const updateCheckUserAgent = (
   distributionChannel: DistributionChannel,
 ): string => `recued/${version} (${platform}; ${distributionChannel})`;
 
+export const RELEASE_METADATA_TIMEOUT_MS = 30_000;
+export const RELEASE_METADATA_MAX_BYTES = 1024 * 1024;
+
 const makeFetchText =
-  (userAgent: string) =>
-  async (url: string): Promise<string> => {
-    const res = await fetch(url, { headers: { 'user-agent': userAgent } });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    return res.text();
+  (userAgent: string) => {
+    const fetchMetadata = makeBoundedOriginHttpFetcher({
+      timeoutMs: RELEASE_METADATA_TIMEOUT_MS,
+      maxResponseBytes: RELEASE_METADATA_MAX_BYTES,
+    });
+    return async (url: string): Promise<string> => {
+      const res = await fetchMetadata(url, {
+        headers: { 'user-agent': userAgent },
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.text();
+    };
   };
 
 /** Channels whose binary lives on a writable volume and self-applies (I-8):

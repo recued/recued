@@ -71,9 +71,11 @@ import {
   projectToResolution,
   readOwnerOperationOverride,
   operationSpecHash,
+  QualifiedWorkEntityIdError,
   resolveCatalogOperationPolicy,
   resolveCliReachabilityPolicy,
   resolveTrustCeiling,
+  routeQualifiedWorkEntityOperationArgs,
   CONTRACTED_DEFAULT_TRUST_CEILING,
   isRecordsExecutionBinding,
   recordsPrincipalFromExecutionSource,
@@ -1998,8 +2000,9 @@ export const runCatalogOperation = async (
   // computed once from the ORIGINAL op args (before any pagination continuation
   // rewrites `input`) with the op's declared volatile exclusions, so it matches
   // the grant-gate basis and stays stable across every audited outcome.
-  const auditArgHash = auditCanonicalArgHash(
-    asRecord(input.args),
+  const originalArgs = asRecord(input.args);
+  let auditArgHash = auditCanonicalArgHash(
+    originalArgs,
     manifest.operations?.[call.operation_id]?.hash_exclude_args,
   );
 
@@ -2225,13 +2228,42 @@ export const runCatalogOperation = async (
     throw denyError(call, resolution);
   }
 
+  // A model-facing qualified id is routing metadata, not a provider-native
+  // argument. Validate the exact declared Source + selected connection and
+  // unwrap it before request-schema checks, approval, grants, or dispatch. A
+  // mismatch therefore cannot be approved into a wrong-provider call.
+  let effectiveArgs = originalArgs;
+  try {
+    effectiveArgs = routeQualifiedWorkEntityOperationArgs({
+      manifest,
+      operation: call.operation_id,
+      connection_name: call.connection_name,
+      args: originalArgs,
+    }).args;
+  } catch (error) {
+    if (error instanceof QualifiedWorkEntityIdError) {
+      emitGatewayAudit(ctx, {
+        ...auditBase(slug, call, resolution, ctx, stepMeta, auditArgHash),
+        outcome: 'failed',
+        failure_mode: error.code === 'SOURCE_MISMATCH'
+          ? 'source_mismatch'
+          : 'qualified_id_invalid',
+      });
+    }
+    throw error;
+  }
+  auditArgHash = auditCanonicalArgHash(
+    effectiveArgs,
+    manifest.operations?.[call.operation_id]?.hash_exclude_args,
+  );
+
   // ── closed request schema ── opt-in curated operations reject malformed,
   // missing, or undeclared args before an approval pause/session-grant match
   // can confer authority and before any provider boundary is crossed.
   const op = declaredOp;
   const requestSchemaViolation = closedRequestSchemaViolation(
     op?.request_schema,
-    asRecord(input.args),
+    effectiveArgs,
   );
   if (requestSchemaViolation !== null) {
     emitGatewayAudit(ctx, {
@@ -2257,7 +2289,7 @@ export const runCatalogOperation = async (
   // to `/` — whole-account, the pre-path-picker default, so path scope only
   // ever RESTRICTS a connection that carries a `subresource_path`. The target
   // is derived from the SAME decoded `args` the dispatch consumes
-  // (`asRecord(input.args)`), so a transport that percent-decodes args cannot
+  // (`effectiveArgs`), so a transport that percent-decodes args cannot
   // reopen the literal-dot traversal bypass `checkPathScope` closes (Slice 3a).
   // The op is looked up by the SHORT key (`call.operation_id` — the `operations`
   // map key), the same key the policy + binding lookups use. A violation audits
@@ -2267,7 +2299,7 @@ export const runCatalogOperation = async (
     const subresourcePath = await ctx.connectionSubresourcePathResolver?.(
       call.connection_name,
     );
-    const ps = checkPathScope(op.path_scope, asRecord(input.args), subresourcePath);
+    const ps = checkPathScope(op.path_scope, effectiveArgs, subresourcePath);
     if (!ps.ok) {
       emitGatewayAudit(ctx, {
         ...auditBase(slug, call, resolution, ctx, stepMeta, auditArgHash),
@@ -2357,7 +2389,7 @@ export const runCatalogOperation = async (
     if (!catalogHashesComputed) {
       catalogHashesComputed = true;
       try {
-        const projected = projectResolvedArgs(asRecord(input.args));
+        const projected = projectResolvedArgs(effectiveArgs);
         catalogHashes = canonicalArgHash(
           projected,
           op?.hash_exclude_args ? { excludePaths: op.hash_exclude_args } : {},
@@ -2391,7 +2423,7 @@ export const runCatalogOperation = async (
           openProjectionMemo = ctx.catalogSessionGrants.resolveOpenProjection({
             ingredient_slug: slug,
             operation_id: resolution.operation_id,
-            args: asRecord(input.args),
+            args: effectiveArgs,
             ...(stepMeta?.step_id !== undefined && stepMeta.step_id !== ''
               ? { gated_step_id: stepMeta.step_id }
               : {}),
@@ -2419,7 +2451,7 @@ export const runCatalogOperation = async (
       if (op !== undefined) {
         try {
           scopedDestinationsMemo = extractScopedDestinationEmails(
-            asRecord(input.args),
+            effectiveArgs,
             // D-177 N.2 — same authority set the publish validator + open walk
             // use (path-template target ids included; one source of truth).
             collectOperationAuthorityPaths(op, operationPathTemplate(manifest, call.operation_id)),
@@ -2452,7 +2484,7 @@ export const runCatalogOperation = async (
   const chunkedBinding = manifest.surfaces?.api?.executes?.[call.operation_id];
   const chunkedWalk = chunkedBinding !== undefined
     ? await buildChunkedUploadWalk(
-        chunkedBinding, asRecord(input.args), ctx, resolution.operation_id,
+        chunkedBinding, effectiveArgs, ctx, resolution.operation_id,
       )
     : undefined;
 
@@ -2633,7 +2665,7 @@ export const runCatalogOperation = async (
   // graphql `subscription`) resolves no executor / `producesDispatch` false →
   // `execInput` undefined → fail closed `unsupported_binding_kind` below.
   const protocolEx = protocolExecutorFor(binding);
-  let dispatchArgs = asRecord(input.args);
+  let dispatchArgs = effectiveArgs;
   let execInput =
     protocolEx !== undefined && binding !== undefined && protocolEx.producesDispatch(binding)
       ? protocolEx.buildDispatchInput(binding, dispatchArgs, connectionName)
@@ -2852,7 +2884,7 @@ export const runCatalogOperation = async (
   ctx.onCatalogDispatchProceed?.({
     ingredient_slug: slug,
     operation_id: resolution.operation_id,
-    args: asRecord(input.args),
+    args: effectiveArgs,
     connection_name: call.connection_name,
   });
 
@@ -2872,7 +2904,7 @@ export const runCatalogOperation = async (
       }
       const result = await ctx.recordsOperationExecutor!({
         binding: recordsBinding,
-        args: asRecord(input.args),
+        args: effectiveArgs,
         principal: recordsPrincipal,
         ...(ctx.outputRecipeHash ? { recipe_digest: ctx.outputRecipeHash } : {}),
         ...(ctx.recordsMutationContext ?? {}),
@@ -2945,8 +2977,8 @@ export const runCatalogOperation = async (
         surface_dispatch_authority_input: authorityExecInput,
         surface_dispatch_sensitive: true,
       };
-      // Rebuild only after trusted injection. The original authored args remain
-      // the request-schema, approval/grant-hash, and gateway-audit basis.
+      // Rebuild only after trusted injection. The Source-validated effective
+      // args remain the request-schema, approval/grant-hash, and audit basis.
       execInput = protocolEx!.buildDispatchInput(binding, dispatchArgs, connectionName);
       prepared.validateDispatchInput(execInput);
     }
@@ -2957,7 +2989,7 @@ export const runCatalogOperation = async (
         operation_key: call.operation_id,
         operation_id: resolution.operation_id,
         binding: cliBinding,
-        args: asRecord(input.args),
+        args: effectiveArgs,
         ...(timeout_ms !== undefined ? { timeout_ms } : {}),
         ...(stepMeta ? { stepMeta } : {}),
       });

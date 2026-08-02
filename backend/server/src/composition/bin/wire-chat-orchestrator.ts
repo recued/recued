@@ -1000,6 +1000,10 @@ export const composeChatOrchestrator = (
     // contract. The source fails closed on an absent turn source, so a bare
     // harness gets no raw ops rather than an unfiltered catalog.
     rawOpSource: chatToolRegistryInputs.rawOpSource,
+    // The paired dispatch half. Raw ops stay outside InternalToolRegistry
+    // because their visible set is contract-derived per turn; the orchestrator
+    // resolves the same source row before routing here.
+    rawOpDispatch: chatToolRegistryInputs.rawOpDispatch,
     // Lever-2 (2026-07-02) — prototype catalog-delivery knob. `full`
     // (default) is the launch baseline; `RECUED_CHAT_CATALOG_MODE=index`
     // leans Tier-2 entries to slug+description for on-demand `tools.search`

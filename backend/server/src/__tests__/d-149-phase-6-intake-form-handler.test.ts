@@ -148,9 +148,10 @@ const fakeReq = (
   url: string,
   body?: string,
   headers?: Record<string, string>,
+  remoteAddress = '203.0.113.7',
 ): IncomingMessage => {
   const socket = new Socket();
-  Object.defineProperty(socket, 'remoteAddress', { value: '203.0.113.7' });
+  Object.defineProperty(socket, 'remoteAddress', { value: remoteAddress });
   const req = new IncomingMessage(socket);
   req.method = method;
   req.url = url;
@@ -605,7 +606,58 @@ describe('D-149 P6 § A.5.3 — POST /reception/intake/<id>', () => {
     insertEndpoint(env, 'goodbearer', cfg);
     const handler = buildHandler(env);
 
-    const submitOnce = async (n: number): Promise<{ status: number; body: string }> => {
+    const submitOnce = async (
+      n: number,
+      remoteAddress = '203.0.113.7',
+    ): Promise<{ status: number; body: string; retryAfter: string | undefined }> => {
+      const nonce = env.formNonce.issue('ep-intake-1', NOW);
+      const body = `t=goodbearer&form_nonce=${nonce}&visitor_email=v${n}%40example.com&your_name=Q${n}&service_interest=consulting&details=hello`;
+      const res = fakeRes();
+      await handler(
+        fakeReq('POST', '/reception/intake/ep-intake-1?t=goodbearer', body, {
+          host: 'localhost',
+          origin: 'http://localhost',
+          'content-type': 'application/x-www-form-urlencoded',
+        }, remoteAddress),
+        res,
+      );
+      const retryAfter = res.getHeader('Retry-After');
+      return {
+        status: res.status,
+        body: res.body,
+        retryAfter: typeof retryAfter === 'string' ? retryAfter : undefined,
+      };
+    };
+
+    expect((await submitOnce(1)).status).toBe(200);
+    expect((await submitOnce(2)).status).toBe(200);
+    // Third submission from the SAME source within the rolling hour is denied.
+    const blocked = await submitOnce(3);
+    expect(blocked.status).toBe(429);
+    expect(blocked.body).toContain('hourly submission limit');
+    expect(blocked.retryAfter).toBe('3600');
+
+    // A different source still owns its own allowance. The old endpoint-wide
+    // count returned 429 here, letting one actor deny the form to everyone.
+    expect((await submitOnce(4, '198.51.100.24')).status).toBe(200);
+
+    const sourceHashes = env.submission
+      .listPendingForEndpoint('ep-intake-1')
+      .map((row) => row.source_ip_hash);
+    expect(sourceHashes).not.toContain(null);
+    expect(new Set(sourceHashes).size).toBe(2);
+  });
+
+  it('does not let the pre-verification envelope override a valid 60/hour form setting', async () => {
+    const env = buildEnv();
+    const cfg: IntakeFormConfig = {
+      ...goodConfig,
+      anti_spam: { ...goodConfig.anti_spam, rate_limit_per_ip: 60 },
+    };
+    insertEndpoint(env, 'goodbearer', cfg);
+    const handler = buildHandler(env);
+
+    for (let n = 1; n <= 11; n += 1) {
       const nonce = env.formNonce.issue('ep-intake-1', NOW);
       const body = `t=goodbearer&form_nonce=${nonce}&visitor_email=v${n}%40example.com&your_name=Q${n}&service_interest=consulting&details=hello`;
       const res = fakeRes();
@@ -617,15 +669,36 @@ describe('D-149 P6 § A.5.3 — POST /reception/intake/<id>', () => {
         }),
         res,
       );
-      return { status: res.status, body: res.body };
+      expect(res.status, `submission ${n}`).toBe(200);
+    }
+  });
+
+  it('atomically reserves the final per-source slot across concurrent submissions', async () => {
+    const env = buildEnv();
+    const cfg: IntakeFormConfig = {
+      ...goodConfig,
+      anti_spam: { ...goodConfig.anti_spam, rate_limit_per_ip: 1 },
+    };
+    insertEndpoint(env, 'goodbearer', cfg);
+    const handler = buildHandler(env);
+
+    const submit = async (n: number): Promise<number> => {
+      const nonce = env.formNonce.issue('ep-intake-1', NOW);
+      const body = `t=goodbearer&form_nonce=${nonce}&visitor_email=v${n}%40example.com&your_name=Q${n}&service_interest=consulting&details=hello`;
+      const res = fakeRes();
+      await handler(
+        fakeReq('POST', '/reception/intake/ep-intake-1?t=goodbearer', body, {
+          host: 'localhost',
+          origin: 'http://localhost',
+          'content-type': 'application/x-www-form-urlencoded',
+        }),
+        res,
+      );
+      return res.status;
     };
 
-    expect((await submitOnce(1)).status).toBe(200);
-    expect((await submitOnce(2)).status).toBe(200);
-    // Third submission within the rolling hour MUST be rate-limited.
-    const blocked = await submitOnce(3);
-    expect(blocked.status).toBe(429);
-    expect(blocked.body).toContain('hourly submission limit');
+    expect((await Promise.all([submit(1), submit(2)])).sort()).toEqual([200, 429]);
+    expect(env.submission.listPendingForEndpoint('ep-intake-1')).toHaveLength(1);
   });
 
   it('rejects POST when a required visitor field is missing', async () => {

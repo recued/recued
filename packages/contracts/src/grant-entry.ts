@@ -38,6 +38,7 @@
 
 import type { CanonicalCollectionName } from './canonical-record.js';
 import type { EnrichmentTopic } from './enrichment-registry.js';
+import { KERNEL_OP_PREFIX } from './op-model.js';
 
 // ────────────────────────────────────────────────────────────────
 // GrantEntryKind — the three entry kinds in the one grant namespace
@@ -103,6 +104,18 @@ export const PRIMITIVE_GRANT_PREFIX = 'primitive.';
 export const primitiveGrantEntry = (toolName: string): string =>
   `${PRIMITIVE_GRANT_PREFIX}${toolName}`;
 
+/** D-228 — the namespace for a manifest-backed ingredient tool's synthetic op
+ *  id. The identity is minted by `@recued/ingredient-authoring`; the prefix
+ *  lives here because declared catalog ids must not be allowed to impersonate
+ *  it once that grant path is wired. Like `primitive.`, it is a valid OP grant
+ *  prefix and therefore must NOT join {@link RESERVED_GRANT_ENTRY_PREFIXES}. */
+export const INGREDIENT_GRANT_PREFIX = 'ingredient.';
+
+/** The leading form of the Tier-K namespace. `KERNEL_OP_PREFIX` deliberately
+ *  omits the separator because `parseOpId` reasons in segments; grant ids are
+ *  strings, so declaration collision checks need the exact `core.` form. */
+export const KERNEL_GRANT_PREFIX = `${KERNEL_OP_PREFIX}.`;
+
 /** The reserved prefixes an `op`-kind entry-key (an `operation_id`) must NOT
  *  start with — the invariant that lets `classifyGrantEntry` treat "neither
  *  reserved prefix" as `op`. Kernel ops start `core.`; pack ops carry a `/`
@@ -111,6 +124,30 @@ export const RESERVED_GRANT_ENTRY_PREFIXES: readonly string[] = Object.freeze([
   COLLECTION_GRANT_PREFIX,
   TOPIC_GRANT_PREFIX,
 ]);
+
+/** Prefixes a catalog/manifest-declared operation id may not claim.
+ *
+ *  This is deliberately broader than {@link RESERVED_GRANT_ENTRY_PREFIXES}:
+ *  `core.*`, `primitive.*`, and `ingredient.*` are all legitimate OP grant
+ *  keys, but their implementations are server-owned. Letting a downloaded
+ *  catalog declare one would make an existing grant for the server operation
+ *  authorize the catalog operation too. `data.*` / `enrichment.*` are included
+ *  because they are not op keys at all and would be misclassified by the grant
+ *  store.
+ *
+ *  Do not feed this list to `opGrantEntry`: doing so would disable the genuine
+ *  kernel/primitive/synthetic operations it protects. It is for authoring and
+ *  manifest validation only. */
+export const DECLARED_OPERATION_ID_RESERVED_PREFIXES: readonly string[] = Object.freeze([
+  ...RESERVED_GRANT_ENTRY_PREFIXES,
+  KERNEL_GRANT_PREFIX,
+  PRIMITIVE_GRANT_PREFIX,
+  INGREDIENT_GRANT_PREFIX,
+]);
+
+/** Return the reserved namespace a declared operation id attempts to claim. */
+export const declaredOperationIdReservedPrefix = (operationId: string): string | undefined =>
+  DECLARED_OPERATION_ID_RESERVED_PREFIXES.find((prefix) => operationId.startsWith(prefix));
 
 // ────────────────────────────────────────────────────────────────
 // Format helpers — typed at the source id space (the authoring path)

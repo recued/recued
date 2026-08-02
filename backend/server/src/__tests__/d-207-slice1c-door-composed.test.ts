@@ -112,6 +112,9 @@ const recipe = (
 const LEAD_CAPTURE_STEPS = [
   { id: 'file_lead', op: 'core.crm.contact.create' },
 ];
+const CRM_VARIABLES = {
+  crm: { type: 'connection', label: 'CRM account', default: '' },
+};
 
 const buildAuditLog = (): { auditLog: AuditLogStore; rows: ActivityEntry[] } => {
   const rows: ActivityEntry[] = [];
@@ -141,7 +144,7 @@ const harness = () => {
   const { auditLog, rows } = buildAuditLog();
   const broadcasts: ReceptionBroadcastEvent[] = [];
   const savedRecipes = new Map<string, RecipeDefinition>();
-  savedRecipes.set(RECIPE_ID, recipe(LEAD_CAPTURE_STEPS));
+  savedRecipes.set(RECIPE_ID, recipe(LEAD_CAPTURE_STEPS, 1, CRM_VARIABLES));
 
   endpoints.create({
     endpoint_id: ENDPOINT_ID,
@@ -192,7 +195,29 @@ const harness = () => {
       set: (contract_id: string, key: string) => { grants.push({ contract_id, key }); },
     } as unknown as ContractGrantEntryStore,
     now,
-    resolveConfig: () => ({}),
+    resolveConfig: () => ({ crm: 'crm-primary' }),
+    resolveDoorRecipe: (input) => ({
+      ok: true,
+      recipe: {
+        ...input,
+        steps: input.steps.map((step) => 'op' in step && step.op === 'core.crm.contact.create'
+          ? {
+              id: step.id,
+              ingredient: 'crm-catalog',
+              connection: '{{config.crm}}',
+              input: {
+                operation: 'contact.create',
+                args: 'args' in step ? step.args ?? {} : {},
+              },
+            }
+          : step),
+      },
+    }),
+    resolveOp: (slug, operation) =>
+      slug === 'crm-catalog' && operation === 'contact.create'
+        ? ['core.crm.contact.create']
+        : [],
+    resolveIngredientKind: () => 'connection',
   };
 
   const deps: ReceptionRpcDeps = {
@@ -242,7 +267,11 @@ describe('D-207 slice 1c — the bind rpc HANGS the door', () => {
     const first = await bind(h);
     expect(first.door).toEqual({
       status: 'needs_consent',
-      added: ['core.crm.contact.create'],
+      added: [
+        'connection:crm-primary',
+        'core.crm.contact.create',
+        'ingredient:crm-catalog',
+      ],
       removed: [],
       operation_ids: ['core.crm.contact.create'],
     });
@@ -272,6 +301,7 @@ describe('D-207 slice 1c — the bind rpc HANGS the door', () => {
 
     // No payment code anywhere in this path.
     const minted = h.definitions.get('door_1');
+    expect(minted?.scope.connection_names).toEqual(['crm-primary']);
     expect(JSON.stringify(minted)).not.toMatch(/stripe|checkout|offer|payment/i);
   });
 
@@ -316,6 +346,7 @@ describe('D-207 slice 1c — the bind rpc HANGS the door', () => {
     h.savedRecipes.set(RECIPE_ID, recipe(
       [...LEAD_CAPTURE_STEPS, { id: 'reply', op: 'core.mail.send' }],
       2,
+      CRM_VARIABLES,
     ));
 
     const widened = await bind(h, { expected_updated_at: bound.pair.updated_at });

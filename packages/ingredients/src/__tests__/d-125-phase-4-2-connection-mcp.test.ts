@@ -49,6 +49,7 @@ import type {
 } from '../connection-mcp.js';
 import { IngredientError, type ResolvedCall } from '../types.js';
 import type { ConnectionHandlerCtx } from '../connection.js';
+import { DEFAULT_RESPONSE_BODY_MAX_BYTES } from '../bounded-response-body.js';
 
 // ────────────────────────────────────────────────────────────────
 // Test fixtures
@@ -563,6 +564,42 @@ describe('connection.mcp handler — tool list pre-validation', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('connection.mcp handler — JSON-RPC envelope', () => {
+  it('rejects an oversized response before buffering it', async () => {
+    const { deps } = mkDeps(
+      { type: 'none' },
+      () => new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result: {} }), {
+        headers: {
+          'content-type': 'application/json',
+          'content-length': String(DEFAULT_RESPONSE_BODY_MAX_BYTES + 1),
+        },
+      }),
+    );
+    const handler = createConnectionMcpHandler(deps);
+
+    await expect(handler(mkRow(), { tool: 'list' }, mkCall()))
+      .rejects.toMatchObject({ code: 'INGREDIENT_OUTPUT_VALIDATION_FAILED' });
+  });
+
+  it('does not present a malformed write acknowledgement as safely retryable', async () => {
+    const { deps } = mkDeps(
+      { type: 'none' },
+      () => new Response('not json', {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    const handler = createConnectionMcpHandler(deps);
+
+    await expect(handler(
+      mkRow(),
+      { tool: 'create_issue' },
+      mkCall({ risk_tier: 'write' }),
+    )).rejects.toMatchObject({
+      code: 'ACTION_DELIVERY_UNCERTAIN',
+      details: { cause: 'malformed_response' },
+    });
+  });
+
   it('returns { status: ok, result, headers: undefined } on success', async () => {
     const { deps } = mkDeps({ type: 'none' }, okJsonRpc({ items: [1, 2, 3] }));
     const handler = createConnectionMcpHandler(deps);
@@ -878,6 +915,41 @@ describe('connection.mcp handler — auth injection', () => {
     expect(persisted[0]).toMatchObject({ type: 'oauth2_refresh', current_access_token: 'refreshed-tok' });
   });
 
+  it('uses the refreshed token and reports a non-fatal MCP persistence failure', async () => {
+    const persistError = new Error('sqlite is read-only');
+    const onPersistFailure = vi.fn();
+    const { deps, calls } = mkDeps(
+      {
+        type: 'oauth2_refresh',
+        refresh_token: 'rt',
+        client_id: 'c',
+        token_endpoint: 'https://oauth/token',
+      },
+      (call) => call.url.includes('oauth/token')
+        ? new Response(JSON.stringify({
+            access_token: 'usable-now',
+            refresh_token: 'rotated-rt',
+            expires_in: 3600,
+          }), { status: 200, headers: { 'content-type': 'application/json' } })
+        : okJsonRpc({})(call),
+      {
+        persistAuth: async () => { throw persistError; },
+        onPersistFailure,
+      },
+    );
+    const row = mkRow();
+
+    await expect(createConnectionMcpHandler(deps)(
+      row,
+      { tool: 'list' },
+      mkCall(),
+    )).resolves.toMatchObject({ status: 'ok' });
+
+    expect(calls.at(-1)?.headers.authorization).toBe('Bearer usable-now');
+    expect(onPersistFailure).toHaveBeenCalledOnce();
+    expect(onPersistFailure).toHaveBeenCalledWith(row, persistError);
+  });
+
   it('type=oauth2_refresh when the refresh itself fails: TOKEN_REFRESH_FAILED', async () => {
     const { deps } = mkDeps(
       {
@@ -902,6 +974,23 @@ describe('connection.mcp handler — auth injection', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('connection.mcp handler — HTTP status classification', () => {
+  it('releases an unread non-success response body', async () => {
+    const cancel = vi.fn();
+    const { deps } = mkDeps(
+      { type: 'none' },
+      () => new Response(new ReadableStream<Uint8Array>({ cancel }), {
+        status: 503,
+        statusText: 'Unavailable',
+      }),
+    );
+    const handler = createConnectionMcpHandler(deps);
+
+    await expect(handler(mkRow(), { tool: 'list' }, mkCall({ risk_tier: 'read' })))
+      .rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+    await Promise.resolve();
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
   it('401 → OAUTH_EXPIRED', async () => {
     const { deps } = mkDeps(
       { type: 'bearer', token: 't' },
@@ -988,6 +1077,33 @@ describe('connection.mcp handler — network errors + timeout', () => {
       handler(mkRow(), { tool: 'list', timeout_ms: 100 }, mkCall({ risk_tier: 'read' })),
     ).rejects.toMatchObject({ code: 'STEP_TIMEOUT' });
     expect(Date.now() - start).toBeLessThan(2000);
+  });
+
+  it('keeps the timeout active while the SSE response body streams', async () => {
+    const fetchImpl = (async (_url: RequestInfo | URL, init?: RequestInit) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const abort = (): void => {
+            const error = new Error('body aborted');
+            error.name = 'AbortError';
+            controller.error(error);
+          };
+          if (init?.signal?.aborted) abort();
+          else init?.signal?.addEventListener('abort', abort, { once: true });
+        },
+      });
+      return new Response(stream, { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const handler = createConnectionMcpHandler({
+      decodeAuth: async () => ({ type: 'none' }),
+      fetchImpl,
+    });
+
+    await expect(handler(
+      mkRow(),
+      { tool: 'list', timeout_ms: 100 },
+      mkCall({ risk_tier: 'read' }),
+    )).rejects.toMatchObject({ code: 'STEP_TIMEOUT' });
   });
 });
 

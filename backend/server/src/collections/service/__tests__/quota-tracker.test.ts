@@ -12,7 +12,7 @@ import { promises as fsp } from 'node:fs';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 
 import { SERVICE_CWD_SUBDIR } from '@recued/contracts';
@@ -180,7 +180,7 @@ describe('startSampler', () => {
     expect(store.get('a')?.quota_bytes_cached).toBe(100);
     expect(store.get('b')?.quota_bytes_cached).toBe(200);
 
-    stop();
+    await stop();
   });
 
   it('sampler stop function suppresses further work', async () => {
@@ -194,10 +194,29 @@ describe('startSampler', () => {
     });
     // First tick fires immediately.
     await new Promise((r) => setTimeout(r, 5));
-    stop();
+    await stop();
     const callsAfterStop = calls;
     // Wait long enough for any queued tick to drain.
     await new Promise((r) => setTimeout(r, 30));
     expect(calls).toBe(callsAfterStop);
+  });
+
+  it('does not persist a sample that finishes after stop closes admission', async () => {
+    let release!: (entries: []) => void;
+    const held = new Promise<[]>((resolve) => { release = resolve; });
+    const readdir = vi.spyOn(fsp, 'readdir').mockReturnValueOnce(held as never);
+    const write = vi.spyOn(store, 'upsert');
+    const stop = tracker.startSampler({
+      intervalMs: 100_000,
+      enrolledSlugs: () => ['late'],
+    });
+    await vi.waitFor(() => { expect(readdir).toHaveBeenCalledTimes(1); });
+
+    const stopping = stop();
+    release([]);
+    await stopping;
+
+    expect(write).not.toHaveBeenCalled();
+    expect(store.get('late')).toBeNull();
   });
 });

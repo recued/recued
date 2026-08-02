@@ -453,6 +453,12 @@ export const handleMailEnrollOAuth = async (
     );
   }
 
+  // One normalized fetcher for every identity/profile read in this flow. Keep
+  // it available before the token exchange: a legacy shared grant may need its
+  // current account identity recovered before we decide whether replacing it is
+  // safe, and that check must not consume the single-use OAuth code first.
+  const httpFetcher: HttpFetcher = deps.fetcher ?? defaultHttpFetcher;
+
   // ── Shared-grant protection (Microsoft only) ──────────────────
   //
   // A `graph` calendar row at this slug reads the SAME
@@ -469,12 +475,35 @@ export const handleMailEnrollOAuth = async (
   const sharesGrantWithCalendar =
     adapter === 'graph'
     && deps.instances.get('calendar', slug)?.adapter_type === 'graph';
-  const priorIdentity = sharesGrantWithCalendar
-    ? await readGraphGrantIdentity(deps.accountStore, slug)
-    : null;
   const snapshot: GraphGrantSnapshot | null = sharesGrantWithCalendar
     ? await snapshotGraphGrant(deps.accountStore, slug)
     : null;
+  let priorIdentity = sharesGrantWithCalendar
+    ? await readGraphGrantIdentity(deps.accountStore, slug)
+    : null;
+
+  // Grants created before account-identity stamping can still be recovered
+  // safely from their CURRENT authenticated access token. If that token is no
+  // longer readable, we cannot prove a replacement OAuth code belongs to the
+  // same Microsoft account. Refuse before exchanging (and therefore before
+  // mutating the shared credential) instead of silently re-pointing Calendar.
+  if (
+    sharesGrantWithCalendar
+    && priorIdentity === null
+    && snapshot?.access_token
+  ) {
+    priorIdentity = await fetchGraphGrantIdentity(snapshot.access_token, httpFetcher);
+  }
+  if (sharesGrantWithCalendar && priorIdentity === null) {
+    throw new RpcError(
+      'conflict',
+      `collection.mail.enrollOAuth: calendar '${slug}' shares this Microsoft sign-in, `
+      + 'but the current account identity could not be verified. Retry after the '
+      + 'existing sign-in is reachable, or delete that calendar and reconnect both '
+      + 'accounts. The shared credential was not changed.',
+      409,
+    );
+  }
 
   let exchange: { access_token: string; granted_scopes: string[] };
   try {
@@ -499,9 +528,6 @@ export const handleMailEnrollOAuth = async (
     throw err;
   }
 
-  // A single normalized fetcher, reused by the profile + identity reads below.
-  const httpFetcher: HttpFetcher = deps.fetcher ?? defaultHttpFetcher;
-
   // ── Verify the new grant still serves the calendar lane ────────
   if (adapter === 'graph') {
     const identity = await fetchGraphGrantIdentity(exchange.access_token, httpFetcher);
@@ -522,16 +548,26 @@ export const handleMailEnrollOAuth = async (
     };
 
     if (sharesGrantWithCalendar) {
+      // The exchange already replaced the shared credential, so an unreadable
+      // NEW identity must restore the snapshot and refuse. Treating absence as
+      // "no mismatch" is a fail-open: it lets a transient `/me` failure silently
+      // re-point the live calendar to an unproven Microsoft account.
+      if (identity === null) {
+        return refuse(
+          `Microsoft could not confirm the identity of the new sign-in while `
+          + `calendar '${slug}' shares it. Retry, or delete that calendar first.`,
+        );
+      }
+      // The pre-exchange recovery/refusal above makes this impossible, but keep
+      // the dispatch boundary independently fail-closed if the flow is refactored.
+      if (priorIdentity === null) {
+        return refuse(
+          `the current Microsoft account identity for calendar '${slug}' is unknown. `
+          + 'Reconnect both accounts before replacing their shared sign-in.',
+        );
+      }
       // A DIFFERENT account would re-point the calendar at someone else's data.
-      // Only refuse on a known mismatch: an unknown prior identity (grant
-      // predates this check) or an unreadable new one is not evidence of a
-      // different account, and refusing on absence would strand every owner who
-      // enrolled before this shipped.
-      if (
-        priorIdentity !== null
-        && identity !== null
-        && !graphGrantIdentitiesMatch(priorIdentity, identity)
-      ) {
+      if (!graphGrantIdentitiesMatch(priorIdentity, identity)) {
         await refuse(
           `this sign-in is a different Microsoft account than the one calendar `
           + `'${slug}' uses (${describeGraphGrantIdentity(priorIdentity)} → `

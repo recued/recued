@@ -47,7 +47,19 @@ import {
 } from './raw-op-tool-catalog.js';
 import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
 import { checkFormContract, type FormDefinitionReader } from './form-contract-gate.js';
-import type { ExecuteRequest } from './types.js';
+import {
+  executeResponseAuditRunId,
+  type ExecuteRequest,
+  type ExecuteResponse,
+} from './types.js';
+import {
+  MCP_ACTION_NOTIFICATION_METHOD,
+  MCP_ACTION_STATUS_TOOL_NAME,
+  isMcpActionTerminal,
+  projectMcpActionPublicState,
+  type McpActionKind,
+  type McpActionRecord,
+} from './mcp-action-store.js';
 import type { VaultStore } from '@recued/storage';
 import type {
   ContractSnapshot,
@@ -143,6 +155,12 @@ interface JsonRpcResponse {
   error?: { code: number; message: string; data?: unknown };
 }
 
+interface JsonRpcNotification {
+  jsonrpc: '2.0';
+  method: string;
+  params: unknown;
+}
+
 // ────────────────────────────────────────────────────────────────
 // MCP protocol constants
 // ────────────────────────────────────────────────────────────────
@@ -194,6 +212,7 @@ const CUSTOMER_STATUS_OP_ID = 'core.customer.status';
  *  the open D-221 §3.3 question about business-role checks living in pack code. */
 /** Direct MCP setup, status, and catalog affordances are explicitly free. */
 const MCP_FREE_CUSTOMER_TOOL_NAMES: ReadonlySet<string> = new Set([
+  MCP_ACTION_STATUS_TOOL_NAME,
   CUSTOMER_STATUS_TOOL_NAME,
   'recued_listRecipes',
   'recued_getRecipe',
@@ -694,6 +713,26 @@ const TOOLS = [
     },
   },
   {
+    name: MCP_ACTION_STATUS_TOOL_NAME,
+    description:
+      'Query a token-bound async action returned by a Recued tool that paused for out-of-band owner approval. The same action_ref follows the entire original invocation across additional approval gates. Terminal responses include the deferred final result. Do not resend the original tool call while this reports awaiting_approval or running.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        action_ref: {
+          type: 'string',
+          maxLength: 128,
+          description: 'Opaque action_ref returned by the original held tool call.',
+        },
+      },
+      required: ['action_ref'],
+      additionalProperties: false,
+    },
+    _meta: {
+      'com.recued/async-action-query': true,
+    },
+  },
+  {
     name: 'recued_getAudit',
     description: 'Get recent recipe execution audit entries from this server. Optionally filter by recipe_id. Entries include success, duration, token usage, and step outcomes.',
     inputSchema: {
@@ -1141,9 +1180,25 @@ export const buildMcpGrantCatalogLegacyEntries = (
 // MCP message handlers
 // ────────────────────────────────────────────────────────────────
 
-const handleInitialize = (): unknown => ({
+const handleInitialize = (deps: McpDeps): unknown => ({
   protocolVersion: MCP_PROTOCOL_VERSION,
-  capabilities: { tools: {} },
+  capabilities: {
+    tools: {},
+    ...(deps.mcpActionStore
+      ? {
+          experimental: {
+            'com.recued/async-actions': {
+              version: 1,
+              queryTool: MCP_ACTION_STATUS_TOOL_NAME,
+              ...(deps.mcpActionNotifications === true
+                ? { notificationMethod: MCP_ACTION_NOTIFICATION_METHOD }
+                : {}),
+              notificationsAreHints: true,
+            },
+          },
+        }
+      : {}),
+  },
   serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
 });
 
@@ -1196,7 +1251,19 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
   // callback means ONLY the token's checklist on both axes (the transport no
   // longer collapses it to `() => false` for a dead contract).
   if (deps.boundContractId !== undefined && deps.boundContractActive !== true) {
-    return { tools: [] };
+    // Revocation prevents every NEW business operation, but the authenticated
+    // token must still be able to observe how an invocation accepted before
+    // revocation settled (normally as a fresh-authority denial). This utility
+    // is token-row-scoped and cannot dispatch or grant a capability.
+    const actionStatus = TOOLS.find((tool) => tool.name === MCP_ACTION_STATUS_TOOL_NAME);
+    return {
+      tools:
+        actionStatus !== undefined
+        && deps.mcpActionStore !== undefined
+        && deps.mcpPrincipalActive?.() === true
+          ? [actionStatus]
+          : [],
+    };
   }
   const { routes, extManifests } = await buildRouteMap(deps);
   const ingredientTools: Array<ReturnType<typeof buildIngredientTool> & {
@@ -1300,6 +1367,17 @@ const handleToolsList = async (deps: McpDeps): Promise<unknown> => {
   const gate = deps.inboundTokenAuthorize;
   return {
     tools: allTools.filter((t) => {
+      // Continuation status is an authenticated protocol utility, not a new
+      // business capability. It can reveal only records bound to this same
+      // token identity, so it does not require a second checklist grant; token
+      // liveness and row ownership are both enforced at call time too.
+      if (t.name === MCP_ACTION_STATUS_TOOL_NAME) {
+        return deps.mcpActionStore !== undefined
+          && (
+            deps.ownerAdmitAll === true
+            || deps.mcpPrincipalActive?.() === true
+          );
+      }
       // D-196 customer.status is not part of the inbound token business-tool
       // checklist. It is self-scoped and governed by the customer's contract
       // op grant (`core.customer.status`) plus the seller-customer context.
@@ -1433,6 +1511,13 @@ export interface McpDeps extends ExecuteHandlerDeps {
    *  leaves (2) and (3) open. Only a positive claim separates them, and the two
    *  paths that can honestly make it are the two that authenticated. */
   ownerAdmitAll?: boolean;
+  /** Positive liveness proof for a non-owner MCP token. Async-action status is
+   * not a separately grantable business tool: it can reveal only rows bound to
+   * this same token, but it still requires the token itself to be active. */
+  mcpPrincipalActive?: () => boolean;
+  /** True only on a transport that can actually deliver unsolicited JSON-RPC
+   * messages. Recued's current stateless HTTP POST transport is polling-only. */
+  mcpActionNotifications?: boolean;
   /** D-166 P2 token↔contract binding — the minted `contract_id` the inbound
    *  token is bound to (from `McpInboundTokenRecord.contract_id`). When set,
    *  `buildMcpExecutionSource` stamps it as `ExecutionSource.contract_id` so the
@@ -1500,11 +1585,251 @@ const isFailedExecuteResponse = (value: unknown): boolean =>
   && !Array.isArray(value)
   && (value as { success?: unknown }).success === false;
 
-const textProjectedExecuteResult = (result: unknown) => {
-  const response = text(projectRunResultForAgent(result));
+const mcpActionPrincipalId = (deps: McpDeps): string =>
+  deps.mcpTokenId ?? STDIO_MCP_TOKEN_ID;
+
+const currentCheckpointId = async (
+  deps: McpDeps,
+  runId: string,
+): Promise<string | undefined> => {
+  try {
+    const anchor = await deps.auditLog?.get(runId);
+    if (anchor?.commit_status === 'awaiting_approval' && anchor.checkpoint_id) {
+      return anchor.checkpoint_id;
+    }
+  } catch {
+    // Fall through to the checkpoint index; registration remains best-effort.
+  }
+  try {
+    return (await deps.checkpointStore?.listByRun(runId))?.[0]?.checkpoint_id;
+  } catch {
+    return undefined;
+  }
+};
+
+const mcpActionKindForRun = async (
+  deps: McpDeps,
+  runId: string,
+): Promise<McpActionKind> => {
+  try {
+    const checkpoint = (await deps.checkpointStore?.listByRun(runId))?.[0];
+    return checkpoint?.raw_op !== undefined ? 'raw_op' : 'recipe';
+  } catch {
+    // Recipe runs are the dominant registry path; raw-op callers use the
+    // explicit route below and pass their kind without inference.
+    return 'recipe';
+  }
+};
+
+/** Attach a durable continuation address to an already-durable hold. Failure
+ * never changes approval semantics: the action remains held and must not be
+ * retried, while the missing receipt is logged for the operator. */
+const attachMcpActionRef = async (
+  deps: McpDeps,
+  input: {
+    run_id: string | undefined;
+    tool_name: string;
+    kind: McpActionKind;
+    projected: unknown;
+  },
+): Promise<unknown> => {
+  if (
+    !deps.mcpActionStore
+    || input.run_id === undefined
+    || input.projected === null
+    || typeof input.projected !== 'object'
+    || Array.isArray(input.projected)
+  ) return input.projected;
+  try {
+    const action = await deps.mcpActionStore.createHeld({
+      run_id: input.run_id,
+      principal_id: mcpActionPrincipalId(deps),
+      tool_name: input.tool_name,
+      kind: input.kind,
+      checkpoint_id: await currentCheckpointId(deps, input.run_id),
+    });
+    return {
+      ...(input.projected as Record<string, unknown>),
+      action_ref: action.action_ref,
+      action_status: action.status,
+      action_query_tool: MCP_ACTION_STATUS_TOOL_NAME,
+      ...(deps.mcpActionNotifications === true
+        ? { action_notification_method: MCP_ACTION_NOTIFICATION_METHOD }
+        : {}),
+    };
+  } catch (error) {
+    console.warn(
+      `[mcp] failed to persist async action for run_id=${input.run_id}: `
+        + (error instanceof Error ? error.message : String(error)),
+    );
+    return input.projected;
+  }
+};
+
+const textProjectedExecuteResult = async (
+  result: unknown,
+  deps: McpDeps,
+  toolName: string,
+) => {
+  const projected = projectRunResultForAgent(result);
+  const held =
+    result !== null
+    && typeof result === 'object'
+    && !Array.isArray(result)
+    && (result as { awaiting_approval?: unknown }).awaiting_approval === true;
+  const projectedWithAction = held
+    ? await attachMcpActionRef(deps, {
+        run_id: executeResponseAuditRunId(result as ExecuteResponse),
+        tool_name: toolName,
+        kind: 'recipe',
+        projected,
+      })
+    : projected;
+  const response = text(projectedWithAction);
   return isFailedExecuteResponse(result)
     ? markMcpZeroCustomerUsage(response)
     : response;
+};
+
+const MCP_ACTION_STALE_RUNNING_MS = 15 * 60 * 1_000;
+/** Give the answer writer a short window to retain its exact response after it
+ * publishes the terminal audit anchor. Recovery must not race that write and
+ * permanently replace a richer result with the audit-only fallback. */
+const MCP_ACTION_TERMINAL_SETTLEMENT_GRACE_MS = 30_000;
+
+/** Reconcile crash/restart residue from the existing durable checkpoint + run
+ * anchor. Normal answer handling writes the exact result directly; this is the
+ * recovery backstop for a process that crossed one durable write but not the
+ * next. */
+const reconcileMcpAction = async (
+  deps: McpDeps,
+  record: McpActionRecord,
+): Promise<McpActionRecord> => {
+  if (!deps.mcpActionStore || isMcpActionTerminal(record.status)) return record;
+  let checkpoint = null as Awaited<ReturnType<NonNullable<McpDeps['checkpointStore']>['get']>>;
+  try {
+    if (record.current_checkpoint_id !== undefined && deps.checkpointStore) {
+      checkpoint = await deps.checkpointStore.get(record.current_checkpoint_id);
+    }
+    if (checkpoint === null && deps.checkpointStore) {
+      checkpoint = (await deps.checkpointStore.listByRun(record.run_id))[0] ?? null;
+    }
+  } catch {
+    // A transient storage read must not manufacture a terminal result.
+    return record;
+  }
+
+  let anchor = null as Awaited<ReturnType<NonNullable<McpDeps['auditLog']>['get']>>;
+  try {
+    anchor = await deps.auditLog?.get(record.run_id) ?? null;
+  } catch {
+    return record;
+  }
+
+  if (anchor?.commit_status === 'awaiting_approval') {
+    if (record.status === 'awaiting_approval') {
+      return await deps.mcpActionStore.markAwaiting(
+        record.run_id,
+        anchor.checkpoint_id ?? checkpoint?.checkpoint_id,
+      ) ?? record;
+    }
+    // A running resume may legitimately leave the old awaiting anchor in place
+    // until handleExecute writes the next/terminal anchor. Only return it to a
+    // recoverable wait after the recipe's default hard timeout has elapsed.
+    if (Date.now() - record.updated_at > MCP_ACTION_STALE_RUNNING_MS && checkpoint !== null) {
+      return await deps.mcpActionStore.markAwaiting(
+        record.run_id,
+        anchor.checkpoint_id ?? checkpoint.checkpoint_id,
+        'The interrupted resume remains recoverable from its durable checkpoint and will be retried.',
+      ) ?? record;
+    }
+    return record;
+  }
+
+  if (anchor !== null) {
+    if (
+      typeof anchor.finished_at === 'number'
+      && Date.now() - anchor.finished_at <= MCP_ACTION_TERMINAL_SETTLEMENT_GRACE_MS
+    ) {
+      return record;
+    }
+    const firstError = anchor.errors[0];
+    const failure = {
+      status: anchor.commit_status,
+      run_id: record.run_id,
+      ...(firstError !== undefined ? { error: firstError } : {}),
+      message:
+        firstError?.message
+        ?? 'The exact deferred result was unavailable after recovery; inspect Recued Logs for this run.',
+    };
+    if (anchor.commit_status === 'succeeded') {
+      return await deps.mcpActionStore.finish(record.run_id, {
+        status: 'completed',
+        status_message: 'The action completed; its exact deferred result was unavailable after recovery.',
+        result: failure,
+      }) ?? record;
+    }
+    if (anchor.commit_status === 'cancelled') {
+      return await deps.mcpActionStore.finish(record.run_id, {
+        status: 'cancelled',
+        status_message: 'The action was cancelled.',
+        result: failure,
+      }) ?? record;
+    }
+    if (anchor.commit_status === 'in_doubt') {
+      return await deps.mcpActionStore.finish(record.run_id, {
+        status: 'in_doubt',
+        status_message: failure.message,
+        result: failure,
+      }) ?? record;
+    }
+    if (anchor.commit_status === 'failed') {
+      return await deps.mcpActionStore.finish(record.run_id, {
+        status: 'failed',
+        status_message: failure.message,
+        result: failure,
+      }) ?? record;
+    }
+    return record;
+  }
+
+  if (checkpoint !== null) {
+    if (record.status === 'awaiting_approval') {
+      return await deps.mcpActionStore.markAwaiting(
+        record.run_id,
+        checkpoint.checkpoint_id,
+      ) ?? record;
+    }
+    if (Date.now() - record.updated_at > MCP_ACTION_STALE_RUNNING_MS) {
+      return await deps.mcpActionStore.markAwaiting(
+        record.run_id,
+        checkpoint.checkpoint_id,
+        'The interrupted resume remains recoverable from its durable checkpoint and will be retried.',
+      ) ?? record;
+    }
+    return record;
+  }
+
+  if (record.status === 'running' && Date.now() - record.updated_at <= MCP_ACTION_STALE_RUNNING_MS) {
+    return record;
+  }
+
+  // Raw ops intentionally have no run anchor and claim (delete) their checkpoint
+  // before dispatch. Losing both while still non-terminal is therefore not a
+  // safe-to-retry failure; a recipe action with neither substrate is corrupt too.
+  return await deps.mcpActionStore.finish(record.run_id, {
+    status: record.kind === 'raw_op' ? 'in_doubt' : 'failed',
+    status_message: record.kind === 'raw_op'
+      ? 'The raw operation checkpoint was consumed, but no terminal provider result was retained. Inspect Recued Logs before retrying.'
+      : 'The action no longer has a recoverable checkpoint or run anchor.',
+    result: {
+      status: record.kind === 'raw_op' ? 'in_doubt' : 'failed',
+      code: 'continuation_state_missing',
+      message: record.kind === 'raw_op'
+        ? 'The provider side effect may have occurred; inspect Recued Logs before retrying.'
+        : 'The durable continuation state is missing.',
+    },
+  }) ?? record;
 };
 
 export type McpCustomerUsageInput = CustomerSurfaceUsageInput;
@@ -1672,7 +1997,11 @@ const preflightMcpCustomerUsage = (
   deps: McpDeps,
 ): McpCustomerUsagePreflight => {
   const args = params.arguments ?? {};
-  if (deps.boundContractId !== undefined && deps.boundContractActive !== true) {
+  if (
+    params.name !== MCP_ACTION_STATUS_TOOL_NAME
+    && deps.boundContractId !== undefined
+    && deps.boundContractActive !== true
+  ) {
     return {
       ok: false,
       result: err(
@@ -1681,7 +2010,23 @@ const preflightMcpCustomerUsage = (
     };
   }
 
-  if (params.name === CUSTOMER_STATUS_TOOL_NAME) {
+  if (params.name === MCP_ACTION_STATUS_TOOL_NAME) {
+    if (!deps.mcpActionStore) {
+      return {
+        ok: false,
+        result: err('Async MCP action tracking is not configured on this server.'),
+      };
+    }
+    if (
+      deps.ownerAdmitAll !== true
+      && deps.mcpPrincipalActive?.() !== true
+    ) {
+      return {
+        ok: false,
+        result: err('The MCP token for this async action is no longer active.'),
+      };
+    }
+  } else if (params.name === CUSTOMER_STATUS_TOOL_NAME) {
     if (!deps.customerStatus) {
       return {
         ok: false,
@@ -1819,7 +2164,11 @@ const handleToolCall = async (
   // `inboundTokenAuthorize` callback is now PURELY the token's checklist on both
   // axes — the HTTP transport no longer collapses it to `() => false` for a dead
   // contract (that conflated "contract dead" with "token grants nothing").
-  if (deps.boundContractId !== undefined && deps.boundContractActive !== true) {
+  if (
+    params.name !== MCP_ACTION_STATUS_TOOL_NAME
+    && deps.boundContractId !== undefined
+    && deps.boundContractActive !== true
+  ) {
     return err(
       'The contract bound to this token is no longer live (revoked / expired / exhausted).',
     );
@@ -1835,7 +2184,17 @@ const handleToolCall = async (
   // substrate predicate level. D-228 superseded the D-137 interim here:
   // `ownerAdmitAll` is the positive verified-owner bypass; an absent
   // callback by itself means no token/checklist and denies below.
-  if (params.name === CUSTOMER_STATUS_TOOL_NAME) {
+  if (params.name === MCP_ACTION_STATUS_TOOL_NAME) {
+    if (!deps.mcpActionStore) {
+      return err('Async MCP action tracking is not configured on this server.');
+    }
+    if (
+      deps.ownerAdmitAll !== true
+      && deps.mcpPrincipalActive?.() !== true
+    ) {
+      return err('The MCP token for this async action is no longer active.');
+    }
+  } else if (params.name === CUSTOMER_STATUS_TOOL_NAME) {
     if (!deps.customerStatus) {
       return err('customer.status is available only to an admitted seller customer token.');
     }
@@ -1960,7 +2319,16 @@ const handleToolCall = async (
       const result = await registryAdapter.callTool(params.name, args);
       if (result.ok) {
         status = 'ok';
-        const response = text(result.result);
+        const projected =
+          result.run_held?.kind === 'approval' && result.run_id !== undefined
+            ? await attachMcpActionRef(deps, {
+                run_id: result.run_id,
+                tool_name: params.name,
+                kind: await mcpActionKindForRun(deps, result.run_id),
+                projected: result.result,
+              })
+            : result.result;
+        const response = text(projected);
         return result.run_failed || result.run_held
           ? markMcpZeroCustomerUsage(response)
           : response;
@@ -2084,7 +2452,7 @@ const handleToolCall = async (
         }
         // Defensive: if the extension ever returns a held ExecuteResponse,
         // project it to the clean agent-facing shape too (no-op otherwise).
-        return textProjectedExecuteResult(result);
+        return await textProjectedExecuteResult(result, deps, params.name);
       }
       // Server-side dispatch via inline kernel recipe.
       const manifest = deps.executorConfig.manifests.get(slug);
@@ -2105,7 +2473,7 @@ const handleToolCall = async (
       });
       // Project a preflight-HELD ingredient run to its clean agent-facing
       // shape (no bare `success:false` that reads as a silent failure).
-      return textProjectedExecuteResult(result);
+      return await textProjectedExecuteResult(result, deps, params.name);
     } catch (e) {
       const { RpcError } = await import('@recued/contracts');
       if (e instanceof RpcError) {
@@ -2157,12 +2525,17 @@ const handleToolCall = async (
           // expected, successful outcome — NOT an error. Same agent-facing
           // message a held recipe run gets (expected-outcome framing +
           // do-NOT-resend + tell-the-user), so a weak/local model never loops.
-          return markMcpZeroCustomerUsage(text({
-            status: 'awaiting_approval',
-            awaiting_approval: true,
-            op: outcome.op_id,
-            message: HELD_FOR_APPROVAL_MESSAGE,
-          }));
+          return markMcpZeroCustomerUsage(text(await attachMcpActionRef(deps, {
+            run_id: outcome.run_id,
+            tool_name: params.name,
+            kind: 'raw_op',
+            projected: {
+              status: 'awaiting_approval',
+              awaiting_approval: true,
+              op: outcome.op_id,
+              message: HELD_FOR_APPROVAL_MESSAGE,
+            },
+          })));
         case 'ask':
           // The DEGRADED stub — an ask-tier op that could not be held durably
           // (hold substrate unwired). Self-describing + anti-loop (the message
@@ -2193,6 +2566,7 @@ const handleToolCall = async (
   // above (same reason). No-op without a bound active contract.
   if (
     params.name !== 'recued_runRecipe'
+    && params.name !== MCP_ACTION_STATUS_TOOL_NAME
     && params.name !== CUSTOMER_STATUS_TOOL_NAME
   ) {
     // D-187 — apply the op-risk × stage-trust APPROVAL decision (+ the per-tool ACCESS
@@ -2206,6 +2580,29 @@ const handleToolCall = async (
   }
 
   switch (params.name) {
+    // ── async action status/result ───────────────────────────
+    case MCP_ACTION_STATUS_TOOL_NAME: {
+      if (
+        Object.keys(args).some((key) => key !== 'action_ref')
+        || typeof args.action_ref !== 'string'
+        || args.action_ref.length === 0
+        || args.action_ref.length > 128
+      ) {
+        return err('action_ref is required and is the only accepted argument.');
+      }
+      const record = await deps.mcpActionStore!.getOwned(
+        args.action_ref,
+        mcpActionPrincipalId(deps),
+      );
+      if (record === null) {
+        // Unknown and wrong-principal intentionally share one response: an
+        // opaque ref must not become an action-existence oracle.
+        return err('Async action not found for this MCP token.');
+      }
+      const reconciled = await reconcileMcpAction(deps, record);
+      return text(projectMcpActionPublicState(reconciled));
+    }
+
     // ── customerStatus ────────────────────────────────────
     case CUSTOMER_STATUS_TOOL_NAME: {
       try {
@@ -2302,7 +2699,7 @@ const handleToolCall = async (
         const result = await handleExecute(deps, req);
         // Project a preflight-HELD run to its clean agent-facing shape (no
         // bare `success:false`, which an MCP agent reads as a silent failure).
-        return textProjectedExecuteResult(result);
+        return await textProjectedExecuteResult(result, deps, params.name);
       } catch (e) {
         const { RpcError } = await import('@recued/contracts');
         if (e instanceof RpcError) {
@@ -2725,7 +3122,7 @@ const dispatch = async (
   try {
     switch (request.method) {
       case 'initialize':
-        return { jsonrpc: '2.0', id, result: handleInitialize() };
+        return { jsonrpc: '2.0', id, result: handleInitialize(deps) };
 
       case 'notifications/initialized':
         // Client acknowledgement — no response needed
@@ -2906,16 +3303,113 @@ export const createMcpHttpDispatch = (
  *  Returns a cleanup function. */
 export const startMCPServer = (deps: McpDeps): { close: () => void } => {
   const rl = createInterface({ input: process.stdin, terminal: false });
+  const stdioDeps: McpDeps = { ...deps, mcpActionNotifications: true };
 
-  const send = (response: JsonRpcResponse): void => {
-    process.stdout.write(JSON.stringify(response) + '\n');
+  const send = (message: JsonRpcResponse | JsonRpcNotification): void => {
+    process.stdout.write(JSON.stringify(message) + '\n');
   };
+
+  // The standalone stdio profile and the main server are separate processes
+  // sharing WAL-backed SQLite. Subscribe catches same-process transitions;
+  // polling catches the main server settling an approval in another process.
+  // Revisions dedupe the two paths, and first observation of a newly-created
+  // waiting action is silent because the tools/call response already carried it.
+  const actionPrincipal = mcpActionPrincipalId(stdioDeps);
+  const actionWatcherStartedAt = Date.now();
+  const seenActionRevisions = new Map<string, number>();
+  const pendingActionNotifications = new Map<string, McpActionRecord>();
+  let actionNotificationsReady = false;
+  const sendActionStatus = (record: McpActionRecord): void => {
+    send({
+      jsonrpc: '2.0',
+      method: MCP_ACTION_NOTIFICATION_METHOD,
+      params: {
+        ...projectMcpActionPublicState(record, { includeResult: false }),
+        query_tool: MCP_ACTION_STATUS_TOOL_NAME,
+      },
+    });
+  };
+  const emitActionStatus = (record: McpActionRecord): void => {
+    if (record.principal_id !== actionPrincipal) return;
+    const seen = seenActionRevisions.get(record.action_ref) ?? 0;
+    if (record.revision <= seen) return;
+    seenActionRevisions.set(record.action_ref, record.revision);
+    if (!actionNotificationsReady) {
+      pendingActionNotifications.set(record.action_ref, record);
+      return;
+    }
+    sendActionStatus(record);
+  };
+  const unsubscribeAction = stdioDeps.mcpActionStore?.subscribe((event) => {
+    const { record } = event;
+    if (record.principal_id !== actionPrincipal) return;
+    if (event.kind === 'created') {
+      seenActionRevisions.set(record.action_ref, record.revision);
+      return;
+    }
+    emitActionStatus(record);
+  });
+  let actionPollInFlight = false;
+  let initialActionScanComplete = false;
+  const pollActions = async (): Promise<void> => {
+    if (!stdioDeps.mcpActionStore || actionPollInFlight) return;
+    actionPollInFlight = true;
+    try {
+      if (!initialActionScanComplete) {
+        // One startup scan adopts continuations from a prior MCP process. New
+        // calls in this process are tracked by the store subscription below;
+        // subsequent polls use keyed reads instead of scanning the full table.
+        for (const observed of await stdioDeps.mcpActionStore.listOwned(actionPrincipal)) {
+          const record = await reconcileMcpAction(stdioDeps, observed);
+          const seen = seenActionRevisions.get(record.action_ref);
+          if (seen === undefined) {
+            if (
+              record.revision > 1
+              && record.updated_at >= actionWatcherStartedAt
+            ) {
+              emitActionStatus(record);
+            } else {
+              seenActionRevisions.set(record.action_ref, record.revision);
+            }
+            continue;
+          }
+          emitActionStatus(record);
+        }
+        initialActionScanComplete = true;
+        return;
+      }
+      for (const actionRef of [...seenActionRevisions.keys()]) {
+        const observed = await stdioDeps.mcpActionStore.getOwned(
+          actionRef,
+          actionPrincipal,
+        );
+        if (observed === null) {
+          seenActionRevisions.delete(actionRef);
+          pendingActionNotifications.delete(actionRef);
+          continue;
+        }
+        const record = await reconcileMcpAction(stdioDeps, observed);
+        emitActionStatus(record);
+      }
+    } catch (error) {
+      console.error(
+        '[mcp] async-action notification poll failed: '
+          + (error instanceof Error ? error.message : String(error)),
+      );
+    } finally {
+      actionPollInFlight = false;
+    }
+  };
+  const actionPollTimer = stdioDeps.mcpActionStore
+    ? setInterval(() => { void pollActions(); }, 1_000)
+    : undefined;
+  actionPollTimer?.unref();
 
   rl.on('line', async (line) => {
     const trimmed = line.trim();
     if (!trimmed) return;
 
-    let msg: JsonRpcRequest;
+    let msg: unknown;
     try {
       msg = JSON.parse(trimmed);
     } catch {
@@ -2927,8 +3421,20 @@ export const startMCPServer = (deps: McpDeps): { close: () => void } => {
       return;
     }
 
-    const response = await dispatch(msg, deps);
+    const response = await dispatch(msg, stdioDeps);
     if (response) send(response);
+    if (
+      typeof msg === 'object'
+      && msg !== null
+      && !Array.isArray(msg)
+      && (msg as { method?: unknown }).method === 'notifications/initialized'
+    ) {
+      actionNotificationsReady = true;
+      for (const record of pendingActionNotifications.values()) {
+        sendActionStatus(record);
+      }
+      pendingActionNotifications.clear();
+    }
   });
 
   rl.on('close', () => {
@@ -2937,6 +3443,8 @@ export const startMCPServer = (deps: McpDeps): { close: () => void } => {
 
   return {
     close: () => {
+      if (actionPollTimer !== undefined) clearInterval(actionPollTimer);
+      unsubscribeAction?.();
       rl.close();
     },
   };

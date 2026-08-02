@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   handleRequestShutdown,
@@ -74,8 +74,9 @@ const newHarness = (): Harness => {
         supervisor_mode: 'dev',
         drain: drain.state,
         now: () => 1_700_000_005_000,
-      }),
+    }),
     drain,
+    requestDrain: (opts) => drain.drain(opts),
     onDrainComplete: (intent, reason) => {
       h.drainCompletions.push({ intent, reason });
     },
@@ -92,6 +93,17 @@ describe('handleRequestShutdown', () => {
   it('returns accepted:true on first call', () => {
     const r = handleRequestShutdown(h.deps, { reason: 'test' });
     expect(r).toEqual({ accepted: true });
+  });
+
+  it('uses the full lifecycle drain entry point', async () => {
+    const requestDrain = vi.fn((opts) => h.drain.drain(opts));
+    h.deps.requestDrain = requestDrain;
+    handleRequestShutdown(h.deps, { reason: 'full-lifecycle' });
+    await vi.waitFor(() => { expect(requestDrain).toHaveBeenCalledTimes(1); });
+    expect(requestDrain).toHaveBeenCalledWith(expect.objectContaining({
+      intent: 'shutdown',
+      reason: 'full-lifecycle',
+    }));
   });
 
   it('returns accepted:false when a drain is already active', async () => {

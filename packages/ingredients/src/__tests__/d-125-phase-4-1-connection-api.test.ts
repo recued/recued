@@ -52,11 +52,13 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   CONNECTION_API_TIMEOUT_MS,
   OAUTH2_REFRESH_LEAD_MS,
+  PIPEDRIVE_OAUTH_TOKEN_URL,
 } from '@recued/contracts';
 import type { ConnectionAuth, ConnectionRow } from '@recued/contracts';
 import { createConnectionApiHandler } from '../connection-api.js';
 import type { ConnectionApiHandlerDeps } from '../connection-api.js';
 import { IngredientError, type ResolvedCall } from '../types.js';
+import { DEFAULT_RESPONSE_BODY_MAX_BYTES } from '../bounded-response-body.js';
 
 // ────────────────────────────────────────────────────────────────
 // Test fixtures
@@ -130,16 +132,28 @@ const mkDeps = (
   authOrRow: ConnectionAuth | ((row: ConnectionRow) => ConnectionAuth),
   responder: (call: FetchCall) => Response | Promise<Response>,
   extra: Partial<ConnectionApiHandlerDeps> = {},
-): { deps: ConnectionApiHandlerDeps; calls: FetchCall[]; persisted: Array<{ row: ConnectionRow; auth: ConnectionAuth }> } => {
+): {
+  deps: ConnectionApiHandlerDeps;
+  calls: FetchCall[];
+  persisted: Array<{
+    row: ConnectionRow;
+    auth: ConnectionAuth;
+    configPatch?: { base_url: string };
+  }>;
+} => {
   const { fetch: fetchImpl, calls } = captureFetch(responder);
-  const persisted: Array<{ row: ConnectionRow; auth: ConnectionAuth }> = [];
+  const persisted: Array<{
+    row: ConnectionRow;
+    auth: ConnectionAuth;
+    configPatch?: { base_url: string };
+  }> = [];
   const decodeAuth = typeof authOrRow === 'function'
     ? async (row: ConnectionRow) => authOrRow(row)
     : async () => authOrRow;
   const deps: ConnectionApiHandlerDeps = {
     decodeAuth,
-    persistAuth: async (row, auth) => {
-      persisted.push({ row, auth });
+    persistAuth: async (row, auth, configPatch) => {
+      persisted.push({ row, auth, ...(configPatch !== undefined ? { configPatch } : {}) });
     },
     fetchImpl,
     ...extra,
@@ -792,6 +806,105 @@ describe('connection.api handler — OAuth2 refresh', () => {
     });
   });
 
+  it('uses and atomically persists a valid provider runtime-base change on refresh', async () => {
+    const fixedNow = 1_700_000_000_000;
+    const auth = refreshableAuth({
+      token_endpoint: PIPEDRIVE_OAUTH_TOKEN_URL,
+      current_access_token: 'old-token',
+      expires_at: 0,
+    });
+    const row = mkRow({
+      name: 'pipedrive',
+      config_json: JSON.stringify({
+        vendor: 'pipedrive',
+        base_url: 'https://old-company.pipedrive.com',
+      }),
+    });
+    const { deps, calls, persisted } = mkDeps(auth, (call) => {
+      if (call.url === PIPEDRIVE_OAUTH_TOKEN_URL) {
+        return okJson({
+          access_token: 'new-token',
+          refresh_token: 'rotated-refresh',
+          expires_in: 3600,
+          api_domain: 'https://new-company.pipedrive.com/',
+        });
+      }
+      return okJson({ ok: true });
+    }, { now: () => fixedNow });
+
+    await createConnectionApiHandler(deps)(
+      row,
+      { method: 'GET', path: '/api/v2/deals', 'query.limit': 10 },
+      mkCall(),
+    );
+
+    expect(calls[1]?.url).toBe('https://new-company.pipedrive.com/api/v2/deals?limit=10');
+    expect(calls[1]?.headers.authorization).toBe('Bearer new-token');
+    expect(persisted).toHaveLength(1);
+    expect(persisted[0]).toMatchObject({
+      auth: {
+        current_access_token: 'new-token',
+        refresh_token: 'rotated-refresh',
+      },
+      configPatch: { base_url: 'https://new-company.pipedrive.com' },
+    });
+  });
+
+  it('persists a rotated credential but ignores an unsafe refresh runtime base', async () => {
+    const issue = vi.fn();
+    const auth = refreshableAuth({
+      token_endpoint: PIPEDRIVE_OAUTH_TOKEN_URL,
+      current_access_token: 'old-token',
+      expires_at: 0,
+    });
+    const row = mkRow({
+      name: 'pipedrive',
+      config_json: JSON.stringify({
+        vendor: 'pipedrive',
+        base_url: 'https://known-company.pipedrive.com',
+      }),
+    });
+    const { deps, calls, persisted } = mkDeps(auth, (call) => {
+      if (call.url === PIPEDRIVE_OAUTH_TOKEN_URL) {
+        return okJson({
+          access_token: 'new-token',
+          refresh_token: 'rotated-refresh',
+          expires_in: 3600,
+          api_domain: 'https://attacker.example',
+        });
+      }
+      return okJson({ ok: true });
+    }, { onRuntimeBaseIssue: issue });
+
+    await createConnectionApiHandler(deps)(
+      row,
+      { method: 'GET', path: '/api/v2/deals' },
+      mkCall(),
+    );
+
+    expect(calls[1]?.url).toBe('https://known-company.pipedrive.com/api/v2/deals');
+    expect(calls.some((call) => call.url.startsWith('https://attacker.example'))).toBe(false);
+    expect(persisted[0]?.auth).toMatchObject({ refresh_token: 'rotated-refresh' });
+    expect(persisted[0]?.configPatch).toBeUndefined();
+    expect(issue).toHaveBeenCalledWith(row, expect.objectContaining({ status: 'invalid' }));
+  });
+
+  it('bounds the credential endpoint response before parsing it', async () => {
+    const auth = refreshableAuth({ current_access_token: 'expired', expires_at: 0 });
+    const { deps, calls } = mkDeps(auth, (call) =>
+      call.url === 'https://oauth.example/token'
+        ? okJson({ access_token: 'ignored' }, 200, {
+            'content-length': String(1024 * 1024 + 1),
+          })
+        : okJson({ ok: true }),
+    );
+    const handler = createConnectionApiHandler(deps);
+
+    await expect(handler(mkRow(), { method: 'GET', path: '/x' }, mkCall()))
+      .rejects.toMatchObject({ code: 'TOKEN_REFRESH_FAILED' });
+    expect(calls).toHaveLength(1);
+  });
+
   it('uses HTTP Basic client auth when oauth2_refresh token_auth_style=basic', async () => {
     const fixedNow = 1_700_000_000_000;
     const auth = refreshableAuth({
@@ -976,6 +1089,22 @@ describe('connection.api handler — OAuth2 refresh', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('connection.api handler — status classification', () => {
+  it('releases an unread non-success response body', async () => {
+    const cancel = vi.fn();
+    const { deps } = mkDeps({ type: 'none' }, () =>
+      new Response(new ReadableStream<Uint8Array>({ cancel }), {
+        status: 503,
+        statusText: 'Unavailable',
+      }),
+    );
+    const handler = createConnectionApiHandler(deps);
+
+    await expect(handler(mkRow(), { method: 'GET', path: '/x' }, mkCall()))
+      .rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+    await Promise.resolve();
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
   it('200 → success', async () => {
     const { deps } = mkDeps({ type: 'none' }, () => okJson({ id: 42 }));
     const handler = createConnectionApiHandler(deps);
@@ -1099,6 +1228,60 @@ describe('connection.api handler — network errors + timeout', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('connection.api handler — response shape', () => {
+  it('rejects an oversized response before buffering it', async () => {
+    const { deps } = mkDeps({ type: 'none' }, () => okJson({}, 200, {
+      'content-length': String(DEFAULT_RESPONSE_BODY_MAX_BYTES + 1),
+    }));
+    const handler = createConnectionApiHandler(deps);
+
+    await expect(handler(mkRow(), { method: 'GET', path: '/x' }, mkCall()))
+      .rejects.toMatchObject({ code: 'INGREDIENT_OUTPUT_VALIDATION_FAILED' });
+  });
+
+  it('classifies an oversized write acknowledgement as delivery-uncertain', async () => {
+    const { deps } = mkDeps({ type: 'none' }, () => okJson({}, 200, {
+      'content-length': String(DEFAULT_RESPONSE_BODY_MAX_BYTES + 1),
+    }));
+    const handler = createConnectionApiHandler(deps);
+
+    await expect(handler(
+      mkRow(),
+      { method: 'POST', path: '/x' },
+      mkCall({ risk_tier: 'write' }),
+    )).rejects.toMatchObject({
+      code: 'ACTION_DELIVERY_UNCERTAIN',
+      details: { cause: 'response_too_large' },
+    });
+  });
+
+  it('keeps the request timeout active while the response body streams', async () => {
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          const abort = (): void => {
+            const error = new Error('body aborted');
+            error.name = 'AbortError';
+            controller.error(error);
+          };
+          if (init?.signal?.aborted) abort();
+          else init?.signal?.addEventListener('abort', abort, { once: true });
+        },
+      });
+      return new Response(stream, { headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    const handler = createConnectionApiHandler({
+      decodeAuth: async () => ({ type: 'none' }),
+      persistAuth: async () => {},
+      fetchImpl,
+    });
+
+    await expect(handler(
+      mkRow(),
+      { method: 'GET', path: '/slow-body', timeout_ms: 100 },
+      mkCall(),
+    )).rejects.toMatchObject({ code: 'STEP_TIMEOUT' });
+  });
+
   it('returns { status, headers, result } when call.output is empty', async () => {
     const { deps } = mkDeps({ type: 'none' }, () =>
       okJson({ id: 'abc', name: 'Acme' }, 200, { 'x-trace': 'tx-1' }),

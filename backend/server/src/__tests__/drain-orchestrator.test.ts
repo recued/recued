@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   createDrainOrchestrator,
   type DrainOrchestrator,
@@ -34,6 +34,7 @@ describe('drain — happy path', () => {
       callOrder.push(name);
     };
     const { drain } = newOrchestrator({
+      stop_accepting_rpc: mkStep('stop_accepting_rpc'),
       pause_scheduler: mkStep('pause_scheduler'),
       close_ws: mkStep('close_ws'),
       stop_timers: mkStep('stop_timers'),
@@ -49,7 +50,7 @@ describe('drain — happy path', () => {
     expect(result.completed).toContain('release_lock');
     expect(result.completed).toContain('pause_scheduler');
     expect(callOrder).toEqual([
-      'pause_scheduler', 'close_ws', 'stop_timers',
+      'stop_accepting_rpc', 'pause_scheduler', 'close_ws', 'stop_timers',
       'close_cascade', 'flush_audit', 'close_db',
     ]);
   });
@@ -118,15 +119,18 @@ describe('drain — timeout and abort', () => {
     expect(calls).toEqual(['pause_scheduler', 'close_ws']);
   });
 
-  it('swallows thrown exceptions from a step (step still marked completed)', async () => {
+  it('records a thrown step as aborted and continues cleanup', async () => {
+    const closeWs = vi.fn(async () => undefined);
     const { drain } = newOrchestrator({
       pause_scheduler: async () => {
         throw new Error('oops');
       },
+      close_ws: closeWs,
     });
     const result = await drain.drain({ reason: 't', intent: 'shutdown' });
-    expect(result.completed).toContain('pause_scheduler');
-    expect(result.aborted).not.toContain('pause_scheduler');
+    expect(result.completed).not.toContain('pause_scheduler');
+    expect(result.aborted).toContain('pause_scheduler');
+    expect(closeWs).toHaveBeenCalledTimes(1);
   });
 
   it('respects total drain timeout across multiple slow steps', async () => {

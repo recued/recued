@@ -40,6 +40,10 @@ import {
   isTelegramSupportedPort,
   type ConnectionRow,
 } from '@recued/contracts';
+import {
+  makeBoundedOriginHttpFetcher,
+  type BoundedHttpFetcher,
+} from '../../bounded-origin-http-fetcher.js';
 import type { WebhookVendorDescriptor } from '../../ports/webhook/handler.js';
 import {
   TELEGRAM_SECRET_HEADER,
@@ -222,6 +226,10 @@ export interface TelegramSetWebhookArgs {
   secret_token: string;
   /** Inject for testing; defaults to `globalThis.fetch`. */
   fetchImpl?: typeof fetch;
+  /** One deadline spanning headers and body consumption. */
+  timeoutMs?: number;
+  /** Response ceiling (bytes). Defaults to the shared provider API limit. */
+  maxResponseBytes?: number;
 }
 
 /** Validate the URL's scheme + port against Telegram's documented
@@ -271,10 +279,16 @@ export const setTelegramWebhook = async (
     };
   }
 
-  const fetchImpl = args.fetchImpl ?? globalThis.fetch;
+  const fetchImpl = makeBoundedOriginHttpFetcher({
+    ...(args.fetchImpl !== undefined ? { fetchImpl: args.fetchImpl } : {}),
+    ...(args.timeoutMs !== undefined ? { timeoutMs: args.timeoutMs } : {}),
+    ...(args.maxResponseBytes !== undefined
+      ? { maxResponseBytes: args.maxResponseBytes }
+      : {}),
+  });
   const apiUrl = `https://api.telegram.org/bot${encodeURIComponent(args.bot_token)}/setWebhook`;
 
-  let response: Response;
+  let response: Awaited<ReturnType<BoundedHttpFetcher>>;
   try {
     response = await fetchImpl(apiUrl, {
       method: 'POST',

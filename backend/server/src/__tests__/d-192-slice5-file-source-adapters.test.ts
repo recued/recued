@@ -832,6 +832,45 @@ describe('buildOneDriveFileSourceLeaf', () => {
     expect(calls[1].url).toBe(`${OD_ROOT_DELTA}?token=NEXT`); // followed the nextLink
   });
 
+  it('refuses an off-origin nextLink before forwarding the Graph bearer', async () => {
+    const attackerUrl = 'https://attacker.invalid/collect?token=next';
+    const { fetchImpl, calls } = stubFetch([
+      { json: { value: [odItem({ id: 'p1' })], '@odata.nextLink': attackerUrl } },
+      { json: { value: [], '@odata.deltaLink': `${OD_ROOT_DELTA}?token=DLZ` } },
+    ]);
+    const leaf = buildOneDriveFileSourceLeaf({
+      resolveConnection: resolverFor(odBearer()),
+      fetchImpl,
+    });
+    const out = await leaf(odRequest());
+    expect(out).toMatchObject({
+      ok: false,
+      kind: 'error',
+      reason: expect.stringContaining('off-origin URL'),
+    });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.url).toBe(OD_ROOT_DELTA);
+    expect(calls.some((call) => call.url === attackerUrl)).toBe(false);
+  });
+
+  it('refuses an off-origin deltaLink instead of certifying or persisting it', async () => {
+    const attackerUrl = 'https://attacker.invalid/collect?token=delta';
+    const { fetchImpl, calls } = stubFetch([
+      { json: { value: [odItem({ id: 'p1' })], '@odata.deltaLink': attackerUrl } },
+    ]);
+    const leaf = buildOneDriveFileSourceLeaf({
+      resolveConnection: resolverFor(odBearer()),
+      fetchImpl,
+    });
+    const out = await leaf(odRequest());
+    expect(out).toMatchObject({
+      ok: false,
+      kind: 'error',
+      reason: expect.stringContaining('off-origin URL'),
+    });
+    expect(calls).toHaveLength(1);
+  });
+
   it('fail-closes complete when a page has neither nextLink nor deltaLink (undrained, no false complete)', async () => {
     const { fetchImpl } = stubFetch([{ json: { value: [odItem({ id: 'x' })] /* no links */ } }]);
     const leaf = buildOneDriveFileSourceLeaf({ resolveConnection: resolverFor(odBearer()), fetchImpl });
@@ -848,6 +887,24 @@ describe('buildOneDriveFileSourceLeaf', () => {
       fetchImpl: stubFetch([{ json: {} }]).fetchImpl,
     });
     expect(await emptyObj(odRequest())).toMatchObject({ ok: false, kind: 'error' });
+  });
+
+  it('fail-closes on a non-string Graph continuation instead of certifying exhaustion', async () => {
+    const leaf = buildOneDriveFileSourceLeaf({
+      resolveConnection: resolverFor(odBearer()),
+      fetchImpl: stubFetch([{
+        json: {
+          value: [odItem({ id: 'partial' })],
+          '@odata.nextLink': 0,
+          '@odata.deltaLink': `${OD_ROOT_DELTA}?token=must-not-land`,
+        },
+      }]).fetchImpl,
+    });
+    expect(await leaf(odRequest())).toMatchObject({
+      ok: false,
+      kind: 'error',
+      reason: expect.stringContaining('non-string continuation'),
+    });
   });
 
   it('returns config when the connection is gone or carries no bearer token', async () => {
@@ -875,7 +932,7 @@ describe('buildOneDriveFileSourceLeaf', () => {
   });
 
   it('targets a non-default drive when config.drive_id is set (full walk start URL)', async () => {
-    const { fetchImpl, calls } = stubFetch([{ json: { value: [], '@odata.deltaLink': 'x' } }]);
+    const { fetchImpl, calls } = stubFetch([{ json: { value: [], '@odata.deltaLink': `${OD_ROOT_DELTA}?token=x` } }]);
     const leaf = buildOneDriveFileSourceLeaf({
       resolveConnection: resolverFor(odBearer({ drive_id: 'b!xyz' })),
       fetchImpl,
@@ -885,7 +942,7 @@ describe('buildOneDriveFileSourceLeaf', () => {
   });
 
   it('returns an import_scope in the outcome but pushes NOTHING down (client-side glob only)', async () => {
-    const { fetchImpl, calls } = stubFetch([{ json: { value: [], '@odata.deltaLink': 'x' } }]);
+    const { fetchImpl, calls } = stubFetch([{ json: { value: [], '@odata.deltaLink': `${OD_ROOT_DELTA}?token=x` } }]);
     const leaf = buildOneDriveFileSourceLeaf({
       resolveConnection: resolverFor(odBearer({ import_scope: 'Team/**' })),
       fetchImpl,
@@ -983,7 +1040,7 @@ describe('buildOneDriveFileSourceLeaf', () => {
   it('detects resyncRequired by error CODE even on a non-410 status (defensive) → full fallback', async () => {
     const { fetchImpl, calls } = stubFetch([
       { ok: false, status: 400, text: '{"error":{"code":"resyncRequired"}}' },
-      { json: { value: [odItem({ id: 'z' })], '@odata.deltaLink': 'x' } },
+      { json: { value: [odItem({ id: 'z' })], '@odata.deltaLink': `${OD_ROOT_DELTA}?token=x` } },
     ]);
     const leaf = buildOneDriveFileSourceLeaf({ resolveConnection: resolverFor(odBearer()), fetchImpl });
     const out = await leaf(odRequest('c1', `${OD_ROOT_DELTA}?token=STALE`));
@@ -1226,6 +1283,21 @@ describe('buildGoogleFileSourceLeaf', () => {
       fetchImpl: stubFetch([{ json: { startPageToken: 'T' } }, { json: {} }]).fetchImpl,
     });
     expect(await leaf(gRequest())).toMatchObject({ ok: false, kind: 'error' });
+  });
+
+  it('fail-closes on a non-string files.list continuation instead of false-completing', async () => {
+    const leaf = buildGoogleFileSourceLeaf({
+      resolveConnection: resolverFor(gBearer()),
+      fetchImpl: stubFetch([
+        { json: { startPageToken: 'T' } },
+        { json: { files: [gFile({ id: 'partial' })], nextPageToken: 0 } },
+      ]).fetchImpl,
+    });
+    expect(await leaf(gRequest())).toMatchObject({
+      ok: false,
+      kind: 'error',
+      reason: expect.stringContaining('non-string continuation'),
+    });
   });
 
   it('fail-closes complete:false when files.list reports incompleteSearch (partial set, no nextPageToken) — no false absence-delete', async () => {
@@ -1702,6 +1774,21 @@ describe('buildBoxFileSourceLeaf', () => {
       fetchImpl: stubFetch([{ json: { next_stream_position: 1000, entries: [] } }, { json: {} }]).fetchImpl,
     });
     expect(await leaf(boxRequest())).toMatchObject({ ok: false, kind: 'error' });
+  });
+
+  it('fail-closes on a non-string folder marker instead of false-completing', async () => {
+    const leaf = buildBoxFileSourceLeaf({
+      resolveConnection: resolverFor(boxBearer()),
+      fetchImpl: stubFetch([
+        { json: { next_stream_position: 1000, entries: [] } },
+        { json: { entries: [boxFile({ id: 'partial' })], next_marker: 0 } },
+      ]).fetchImpl,
+    });
+    expect(await leaf(boxRequest())).toMatchObject({
+      ok: false,
+      kind: 'error',
+      reason: expect.stringContaining('non-string continuation'),
+    });
   });
 
   it('config.folder_id bounds the full-walk root', async () => {

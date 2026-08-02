@@ -35,7 +35,7 @@
  *
  *  Pure: no I/O, no clock. Spec: D-207 §5.1a / §5.1d. */
 
-import type { RecipeDefinition } from '@recued/contracts';
+import { parseOpId, type RecipeDefinition } from '@recued/contracts';
 
 /** The authority surface of a recipe — exactly the axes `ContractScope` stores. */
 export interface RecipeCapability {
@@ -65,6 +65,10 @@ export interface RecipeCapability {
 
 /** Why a recipe cannot back a public door. Each is a BIND-time refusal. */
 export type RecipeCapabilityRefusal =
+  /** The same canonical/Tier-P lowering used at dispatch could not produce a concrete
+   *  recipe under the saved install config. Minting from the authored form would hide
+   *  implicit account bindings or grant an operation the engine cannot actually run. */
+  | { readonly reason: 'dispatch_unresolvable'; readonly step_id: '<recipe>'; readonly detail: string }
   /** A step's `op` / `ingredient` is templated — the dispatch target is not knowable
    *  until runtime, so no honest closure exists (`run-ingredient` is the canonical
    *  case). */
@@ -245,6 +249,59 @@ export const deriveRecipeCapability = (
       connection_names: [...connections].sort(),
       pack_bound_connection_ops: [...packBound].sort(),
       operation_steps: opSteps,
+    },
+  };
+};
+
+/** Derive a door from both representations that participate in one real dispatch.
+ *
+ * The authored form retains the stable op identity (`core.ai.*`, canonical-convention
+ * ops); dispatch lowering retains the concrete catalog/kernel tool and the exact account
+ * ref the engine will resolve. Neither representation alone is complete. Union the
+ * authority axes, while taking unresolved pack-default diagnostics from the concrete form
+ * only (an authored slot-less op may have been resolved successfully). */
+export const deriveResolvedRecipeCapability = (
+  authoredRecipe: RecipeDefinition,
+  dispatchRecipe: RecipeDefinition,
+  opts?: Parameters<typeof deriveRecipeCapability>[1],
+): RecipeCapabilityDerivation => {
+  const authored = deriveRecipeCapability(authoredRecipe, opts);
+  if (!authored.ok) return authored;
+  const dispatch = dispatchRecipe === authoredRecipe
+    ? authored
+    : deriveRecipeCapability(dispatchRecipe, opts);
+  if (!dispatch.ok) return dispatch;
+
+  const operationSteps: Record<string, string> = { ...authored.capability.operation_steps };
+  for (const [opId, stepId] of Object.entries(dispatch.capability.operation_steps)) {
+    if (!(opId in operationSteps)) operationSteps[opId] = stepId;
+  }
+  const dispatchOps = new Set(dispatch.capability.operation_ids);
+  const stableAuthoredOps = authored.capability.operation_ids.filter((opId) =>
+    dispatchRecipe === authoredRecipe
+    || dispatchOps.has(opId)
+    // A two-tier id is itself a stable authority identity even when lowering exposes an
+    // additional concrete catalog op. A legacy bare canonical (`deal.search`) is only an
+    // authoring address; once lowered, the concrete catalog op is the grantable identity.
+    || parseOpId(opId) !== null,
+  );
+  return {
+    ok: true,
+    capability: {
+      operation_ids: [...new Set([
+        ...stableAuthoredOps,
+        ...dispatch.capability.operation_ids,
+      ])].sort(),
+      ingredient_ids: [...new Set([
+        ...authored.capability.ingredient_ids,
+        ...dispatch.capability.ingredient_ids,
+      ])].sort(),
+      connection_names: [...new Set([
+        ...authored.capability.connection_names,
+        ...dispatch.capability.connection_names,
+      ])].sort(),
+      pack_bound_connection_ops: [...dispatch.capability.pack_bound_connection_ops],
+      operation_steps: operationSteps,
     },
   };
 };

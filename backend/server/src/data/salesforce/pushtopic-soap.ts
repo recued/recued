@@ -62,6 +62,8 @@ import {
   type SalesforceRelationshipEntityName,
 } from '@recued/contracts';
 
+import { defaultProviderApiFetch } from '../provider-api-fetch.js';
+
 // ────────────────────────────────────────────────────────────────
 // Errors
 // ────────────────────────────────────────────────────────────────
@@ -113,7 +115,7 @@ export interface EnsurePushTopicsResult {
 
 /** Caller-supplied dependencies — pluggable for tests. */
 export interface SalesforcePushTopicDeps {
-  /** HTTP fetcher. Defaults to `globalThis.fetch`. Tests inject a
+  /** HTTP fetcher. Defaults to the server's bounded provider fetch. Tests inject a
    *  per-call stub that records URLs + method + body for assertions. */
   fetcher?: typeof fetch;
   /** OAuth2 single-flight refresh hook — invoked on 401 from either
@@ -136,7 +138,7 @@ export const ensurePushTopics = async (
   connection: ConnectionRecord,
   deps: SalesforcePushTopicDeps,
 ): Promise<EnsurePushTopicsResult> => {
-  const fetcher = deps.fetcher ?? globalThis.fetch.bind(globalThis);
+  const fetcher = deps.fetcher ?? defaultProviderApiFetch;
   const baseUrl = readBaseUrl(connection);
   const wantedNames = SALESFORCE_ENTITY_NAMES.map(
     (entity) => SALESFORCE_PUSHTOPIC_NAMES[entity],
@@ -180,7 +182,7 @@ export const ensureEngagementPushTopics = async (
   >,
   deps: SalesforcePushTopicDeps,
 ): Promise<EnsurePushTopicsResult> => {
-  const fetcher = deps.fetcher ?? globalThis.fetch.bind(globalThis);
+  const fetcher = deps.fetcher ?? defaultProviderApiFetch;
   const baseUrl = readBaseUrl(connection);
   const wantedNames = entities.map(
     (entity) => SALESFORCE_ENGAGEMENT_PUSHTOPIC_NAMES[entity],

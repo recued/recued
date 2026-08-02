@@ -1815,6 +1815,14 @@ export interface WorkEntityStore {
   // ── polymorphic ────────────────────────────────────────────────
   /** Generic by-kind read. Returns the row tagged with `_kind`. */
   readByKind<K extends WorkEntityKind>(kind: K, id: string): WorkEntity | null;
+  /** Resolve the stable mirror identity emitted at tool boundaries. The
+   *  `(source_id, source_record_id)` pair is unique within each kind table;
+   *  unlike a local row id it can also be handed safely to a provider tool. */
+  readBySourceIdentity(
+    kind: WorkEntityKind,
+    source_id: string,
+    source_record_id: string,
+  ): WorkEntity | null;
   countByKind(kind: WorkEntityKind, query?: WorkEntityListQuery): number;
   /** Generic by-kind list across all Sources (or one when
    *  `query.source_id` is set). Returns rows tagged with `_kind`. */
@@ -1924,7 +1932,11 @@ export const createWorkEntityStore = (
       write_capable          = excluded.write_capable,
       mcp_exposed            = excluded.mcp_exposed,
       schema_extension_blob  = excluded.schema_extension_blob,
-      config_blob            = excluded.config_blob
+      config_blob            = excluded.config_blob,
+      sync_posture           = CASE
+        WHEN @sync_posture_supplied = 1 THEN excluded.sync_posture
+        ELSE sync_posture
+      END
   `);
   const getSourceStmt = db.prepare(
     `SELECT * FROM ${SOURCE_REGISTRY_TABLE} WHERE id = ?`,
@@ -1939,6 +1951,9 @@ export const createWorkEntityStore = (
     }
     if (!SOURCE_KIND_SET.has(reg.source_kind)) {
       throw new SourceRegistrationError(`unknown source_kind '${reg.source_kind}'`);
+    }
+    if (reg.sync_posture !== undefined && !isSourceSyncPosture(reg.sync_posture)) {
+      throw new SourceRegistrationError(`unknown sync_posture '${String(reg.sync_posture)}'`);
     }
     if (typeof reg.source_label !== 'string' || reg.source_label.length === 0) {
       throw new SourceRegistrationError('source_label is required');
@@ -1972,11 +1987,13 @@ export const createWorkEntityStore = (
       registered_at,
       config_blob: stringifyJsonObject(reg.config_blob),
       enabled: enabledFirstInsert,
-      // D-192 P-1 — first-insert posture (default `records`). Like
-      // `enabled`, the ON CONFLICT clause omits `sync_posture`, so a
-      // boot-wire re-register preserves the value set at creation
-      // (posture is structural — never toggled after a Source exists).
+      // D-192 P-1 — first-insert posture (default `records`). On conflict an
+      // omitted posture preserves the structural value (capability probes and
+      // old callers must not reset it); an explicit declaration posture updates
+      // it so a pack declaration update/reinstall can migrate records ↔
+      // read-through deliberately. There is no user/runtime posture toggle.
       sync_posture: reg.sync_posture ?? 'records',
+      sync_posture_supplied: reg.sync_posture === undefined ? 0 : 1,
     });
     // Re-read the row so we surface the actual persisted `enabled`
     // value (the conflict path may have preserved a prior toggle).
@@ -3236,6 +3253,19 @@ export const createWorkEntityStore = (
     }
   };
 
+  const readBySourceIdentity: WorkEntityStore['readBySourceIdentity'] = (
+    kind,
+    source_id,
+    source_record_id,
+  ) => {
+    if (!WORK_ENTITY_KIND_SET.has(kind)) return null;
+    const row = db
+      .prepare(`SELECT id FROM ${TABLE_FOR_KIND[kind]}
+        WHERE source_id = ? AND source_record_id = ?`)
+      .get(source_id, source_record_id) as { id: string } | undefined;
+    return row === undefined ? null : readByKind(kind, row.id);
+  };
+
   const countByKind: WorkEntityStore['countByKind'] = (kind, query) => {
     switch (kind) {
       case 'task':
@@ -3343,6 +3373,7 @@ export const createWorkEntityStore = (
     setDefaultSource,
     clearDefaultSource,
     readByKind,
+    readBySourceIdentity,
     countByKind,
     listByKind,
     listRecordIdentitiesForSource,

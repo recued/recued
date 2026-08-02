@@ -79,7 +79,15 @@ import type { ConnectionHandlerCtx, ConnectionKindHandler } from './connection.j
 import { IngredientError, type ResolvedCall } from './types.js';
 import { resolveTimeoutMs, isWriteRiskTier } from './timeout.js';
 import { CrossOriginRedirectError, fetchOriginPinned } from './origin-pinned-fetch.js';
-import { createEnsureFreshAuth } from './connection-api.js';
+import {
+  createEnsureFreshAuth,
+  type EnsureFreshAuthDeps,
+} from './connection-api.js';
+import {
+  discardResponseBody,
+  readBoundedResponseText,
+  ResponseBodyTooLargeError,
+} from './bounded-response-body.js';
 
 const KNOWN_TRANSPORTS: ReadonlySet<McpTransport> = new Set<McpTransport>([
   'sse',
@@ -595,7 +603,12 @@ export interface ConnectionMcpHandlerDeps {
    *  but the rotated auth isn't written back, so if the issuer ROTATED the
    *  `refresh_token` the next refresh can fail closed (the old token may be
    *  revoked). Production boot always supplies it. */
-  persistAuth?: (row: ConnectionRow, newAuth: ConnectionAuth) => Promise<void>;
+  persistAuth?: EnsureFreshAuthDeps['persistAuth'];
+
+  /** Advisory sink for a refreshed credential that could not be written back.
+   * The in-flight MCP call still uses the fresh token; production records the
+   * storage failure without exposing credential material. */
+  onPersistFailure?: EnsureFreshAuthDeps['onPersistFailure'];
 
   /** fetch implementation. Defaults to `globalThis.fetch`. Tests
    *  inject a stub that returns canned responses to assert wire-shape
@@ -1023,6 +1036,7 @@ export const createConnectionMcpHandler = (
     persistAuth: deps.persistAuth ?? (async () => {}),
     fetchImpl,
     now,
+    ...(deps.onPersistFailure ? { onPersistFailure: deps.onPersistFailure } : {}),
   });
 
   // Per-record client state. SSE-as-HTTP-POST is stateless so its
@@ -1474,10 +1488,14 @@ export const createConnectionMcpHandler = (
         { slug: call.slug, name: record.name, ...subjectMeta },
       );
     }
-    clearTimeout(timer);
+    const finishResponse = (): void => {
+      discardResponseBody(response);
+      clearTimeout(timer);
+    };
 
     // ────────────── HTTP status classification ──────────────
     if (!response.ok) {
+      finishResponse();
       if (response.status === 401 || response.status === 403) {
         throw new IngredientError(
           'OAUTH_EXPIRED',
@@ -1508,16 +1526,57 @@ export const createConnectionMcpHandler = (
 
     // ────────────── parse JSON-RPC envelope ──────────────
     let envelope: JsonRpcResponse;
+    let measuredBytes: number;
     try {
-      envelope = await response.json() as JsonRpcResponse;
+      const read = await readBoundedResponseText(response);
+      measuredBytes = read.byteLength;
+      envelope = JSON.parse(read.text) as JsonRpcResponse;
     } catch (e) {
+      finishResponse();
+      if (e instanceof ResponseBodyTooLargeError) {
+        if (isWrite) {
+          throw new IngredientError(
+            'ACTION_DELIVERY_UNCERTAIN',
+            `MCP write to '${record.name}' returned an oversized response after invocation — outcome cannot be confirmed, please verify state in the target system before retrying`,
+            { name: record.name, ...subjectMeta, cause: 'response_too_large', max_bytes: e.maxBytes },
+          );
+        }
+        throw new IngredientError(
+          'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+          `connection.mcp: ${record.name} response exceeded the ${e.maxBytes}-byte body limit`,
+          { name: record.name, max_bytes: e.maxBytes },
+        );
+      }
+      const isAbort = (e as Error).name === 'AbortError';
+      if (isWrite) {
+        throw new IngredientError(
+          'ACTION_DELIVERY_UNCERTAIN',
+          `MCP write to '${record.name}' ${isAbort ? `timed out after ${timeoutMs}ms while reading the response` : 'returned an unreadable response'} — outcome cannot be confirmed, please verify state in the target system before retrying`,
+          { name: record.name, ...subjectMeta, cause: isAbort ? 'timeout' : 'malformed_response' },
+        );
+      }
+      if (isAbort) {
+        throw new IngredientError(
+          'STEP_TIMEOUT',
+          `connection.mcp call to '${record.name}' ${subject} timed out after ${timeoutMs}ms while reading the response`,
+          { slug: call.slug, name: record.name, ...subjectMeta },
+        );
+      }
       throw new IngredientError(
         'NETWORK_ERROR',
         `connection.mcp: ${record.name} returned malformed JSON: ${(e as Error).message}`,
         { name: record.name },
       );
     }
+    finishResponse();
     if (envelope.jsonrpc !== '2.0') {
+      if (isWrite) {
+        throw new IngredientError(
+          'ACTION_DELIVERY_UNCERTAIN',
+          `MCP write to '${record.name}' returned a non-JSON-RPC response after invocation — outcome cannot be confirmed, please verify state in the target system before retrying`,
+          { name: record.name, ...subjectMeta, cause: 'invalid_response_envelope' },
+        );
+      }
       throw new IngredientError(
         'NETWORK_ERROR',
         `connection.mcp: ${record.name} returned non-JSON-RPC response`,
@@ -1529,7 +1588,7 @@ export const createConnectionMcpHandler = (
     const declaredLen = response.headers.get('content-length');
     const bytesIn = declaredLen !== null && Number.isFinite(Number(declaredLen))
       ? Number(declaredLen)
-      : new TextEncoder().encode(JSON.stringify(envelope)).byteLength;
+      : measuredBytes;
     ctx?.setBytes(bytesIn, bytesOut);
 
     // ────────────── pool bump (after successful wire) ──────────────

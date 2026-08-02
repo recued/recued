@@ -23,8 +23,8 @@
  *  `resolveCatalogManifest` is the SAME closure the boot wire + write
  *  executor consume (built once in `composeAppContext`, threaded here via
  *  the app context) so registration, write, and sync enumerate ONE
- *  declaration set (kernel ∪ pack-declared `work_entity_sources`) and can't
- *  drift. Absent → kernel declarations only (the pre-pass-through posture). */
+ *  declaration set (pack-declared `work_entity_sources`, then compatibility
+ *  fallbacks) and can't drift. Absent → compatibility declarations only. */
 
 import type { ConnectionRow, IngredientManifest } from '@recued/contracts';
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
@@ -59,8 +59,8 @@ export interface ComposeWorkEntitySourceSyncInput {
   dependencyStore?: SourceDependencyEntityStore | undefined;
   /** D-192 — the SAME connection→catalog-manifest resolver the boot wire +
    *  write executor consume (`AppContext.resolveWorkEntityCatalogManifestRef`),
-   *  so sync tasks enumerate pack-declared Sources alongside the kernel
-   *  registry. Absent → kernel declarations only. */
+   *  so sync tasks enumerate authoritative pack-declared Sources before the
+   *  compatibility registry. Absent → compatibility declarations only. */
   resolveCatalogManifest?: ((row: ConnectionRow) => IngredientManifest | null) | undefined;
   /** D-192 — append this wire's by-name reconcile to the install-hook fan-out
    *  (`AppContext.registerWorkEntitySourceReconcilerRef`), so a pack reinstall

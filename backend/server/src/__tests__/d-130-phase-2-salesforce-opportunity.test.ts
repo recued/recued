@@ -245,20 +245,47 @@ describe('D-130 P2 — searchSalesforceObjects pagination', () => {
     expect(seenUrls[2]).toBe(`${PROD_INSTANCE_URL}/services/data/${SALESFORCE_API_VERSION}/query/01g000000000002`);
   });
 
-  it('terminates when the page has done=false but no nextRecordsUrl (defensive)', async () => {
+  it('rejects a repeated nextRecordsUrl before refetching it forever', async () => {
+    let calls = 0;
+    const repeatedPath = `/services/data/${SALESFORCE_API_VERSION}/query/repeat`;
+    const fetcher = async (): Promise<Response> => {
+      calls += 1;
+      return new Response(JSON.stringify({
+        records: [],
+        done: false,
+        nextRecordsUrl: repeatedPath,
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const consume = async (): Promise<void> => {
+      for await (const _row of searchSalesforceObjects(
+        sampleSalesforceConnection(),
+        { soql: 'SELECT Id FROM Opportunity' },
+        { fetcher: fetcher as typeof fetch, refreshAuth: async () => sampleAuth() },
+      )) {
+        // exhaust
+      }
+    };
+    await expect(consume()).rejects.toThrow('repeated a page reference');
+    expect(calls).toBe(2);
+  });
+
+  it('rejects done=false without nextRecordsUrl instead of returning a partial walk', async () => {
     const fetcher = async (): Promise<Response> =>
       new Response(JSON.stringify({ records: [rawOpportunity({}, 'only')], done: false }), {
         status: 200,
       });
-    const ids: string[] = [];
-    for await (const r of searchSalesforceObjects(
-      sampleSalesforceConnection(),
-      { soql: 'SELECT Id FROM Opportunity' },
-      { fetcher: fetcher as typeof fetch, refreshAuth: async () => sampleAuth() },
-    )) {
-      ids.push(String(r.Id));
-    }
-    expect(ids).toEqual(['only']);
+    const consume = async (): Promise<void> => {
+      for await (const _row of searchSalesforceObjects(
+        sampleSalesforceConnection(),
+        { soql: 'SELECT Id FROM Opportunity' },
+        { fetcher: fetcher as typeof fetch, refreshAuth: async () => sampleAuth() },
+      )) {
+        // exhaust
+      }
+    };
+    await expect(consume()).rejects.toThrow(
+      'done=false without a continuation',
+    );
   });
 });
 

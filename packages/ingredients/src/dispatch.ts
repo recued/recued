@@ -296,6 +296,22 @@ export const createIngredientExecutor = (
     return options.kernelAdapter(receptionCall);
   }
 
+  // `reception-materialize` is the INTERNAL sink of the trusted branch above,
+  // not a recipe-callable kernel capability. A plain ingredient step naming
+  // the slug would otherwise jump directly to `runReceptionProjection` and
+  // skip the catalog gateway's D-157 approval hold entirely. The legitimate
+  // path never loads this manifest: it loads the reception catalog manifest,
+  // proves `surface_dispatch`, then invokes the kernel adapter with a synthetic
+  // call and returns above. Reject every manifest-loaded call here, including a
+  // hand-built caller that tries to supply an engine-only StepMeta marker.
+  if (manifest.slug === RECEPTION_MATERIALIZE_SLUG) {
+    throw new IngredientError(
+      'INGREDIENT_INTERNAL_ONLY',
+      `Ingredient '${RECEPTION_MATERIALIZE_SLUG}' is an internal approval-resume dispatch target and cannot be invoked directly`,
+      { slug: RECEPTION_MATERIALIZE_SLUG },
+    );
+  }
+
   const slot = resolveDispatchSlot(manifest);
   const adapter = slot === 'kernel'
     ? options.kernelAdapter

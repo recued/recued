@@ -43,6 +43,8 @@
  *
  *  Spec: D-192; taxonomy §0. */
 
+import { ProviderPaginationGuard } from '../provider-pagination-guard.js';
+
 // ────────────────────────────────────────────────────────────────
 // The two per-vendor closures + the parsed-page shape
 // ────────────────────────────────────────────────────────────────
@@ -151,6 +153,9 @@ export const drainPagedList = async (
   let complete = true;
   let watermark: string | undefined;
   let pages = 0;
+  const pagination = new ProviderPaginationGuard('paged-list drain', {
+    maxPages: MAX_PAGED_LIST_PAGES,
+  });
   for (;;) {
     if (pages >= MAX_PAGED_LIST_PAGES) {
       throw new Error(
@@ -158,7 +163,7 @@ export const drainPagedList = async (
       );
     }
     pages += 1;
-    const page = deps.parsePage(await deps.fetchPage(ref));
+    const page = deps.parsePage(await deps.fetchPage(pagination.claim(ref)));
     for (const entry of page.entries) entries.push(entry);
     // Sticky out-of-band incompleteness (Google `incompleteSearch`) — any page.
     if (page.incomplete === true) complete = false;

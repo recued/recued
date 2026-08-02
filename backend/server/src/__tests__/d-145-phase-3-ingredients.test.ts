@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   CONNECTION_SOURCE_ID,
+  qualifyWorkEntityId,
   RECUED_BUILTIN_SOURCE_ID,
   taskIdFromIdempotencyKey,
   WORK_ENTITY_KINDS,
@@ -37,6 +38,7 @@ import type {
   WorkEntitySourceWriteExecutor,
   WorkEntityVendorWriteDispatchOutcome,
   WorkEntityVendorWritePrepared,
+  WorkEntityVendorWriteTarget,
 } from '../work-entity-write-executor.js';
 
 let dir: string;
@@ -61,6 +63,7 @@ interface FakePrepared {
 const fakeWriteExecutor = (
   onDispatch: (
     input: FakePrepared,
+    target?: WorkEntityVendorWriteTarget,
   ) => WorkEntityVendorWriteDispatchOutcome | Promise<WorkEntityVendorWriteDispatchOutcome>,
 ): WorkEntitySourceWriteExecutor => ({
   prepare: ({ source_id, kind, operation, patch }) => ({
@@ -68,7 +71,8 @@ const fakeWriteExecutor = (
     vendor_relevant: true,
     prepared: { source_id, kind, operation, patch } as unknown as WorkEntityVendorWritePrepared,
   }),
-  dispatch: async (prepared) => onDispatch(prepared as unknown as FakePrepared),
+  dispatch: async (prepared, target) =>
+    onDispatch(prepared as unknown as FakePrepared, target),
   // No source dependencies in this seam's fakes — the create-assist preflight
   // resolves to no bound args.
   resolveCreateDependencies: async () => ({ ok: true, createArgs: {}, plannedCreates: [] }),
@@ -450,6 +454,100 @@ describe('task-* ingredients', () => {
     expect(updated.task.source_id).toBe(RECUED_BUILTIN_SOURCE_ID('task'));
   });
 
+  it('task update/delete resolve a Source-qualified id through the mirror', async () => {
+    const sourceId = 'todoist.personal.task';
+    store.registerSource({
+      id: sourceId,
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      source_label: 'Todoist tasks (personal)',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    store.writeTask({
+      id: 'mirror-task-1',
+      source_id: sourceId,
+      source_record_id: 'todoist-native-1',
+      title: 'Original',
+    }, NOW);
+    const qualifiedId = qualifyWorkEntityId({
+      kind: 'task',
+      source_id: sourceId,
+      source_record_id: 'todoist-native-1',
+      local_id: 'mirror-task-1',
+    });
+    dispatchers = buildDispatchers(fakeWriteExecutor(({ operation }) =>
+      operation === 'delete'
+        ? { ok: true, operation: 'delete' }
+        : { ok: true, operation: 'update', applied: 'pushed', verified: false }));
+
+    const updated = await dispatchers.taskUpdate({
+      id: qualifiedId,
+      title: 'Updated through generic data.task',
+    });
+    expect(updated.task).toMatchObject({
+      id: 'mirror-task-1',
+      source_id: sourceId,
+      source_record_id: 'todoist-native-1',
+      title: 'Updated through generic data.task',
+    });
+    expect(store.readBySourceIdentity('task', sourceId, 'todoist-native-1')?.id)
+      .toBe('mirror-task-1');
+
+    const deleted = await dispatchers.taskDelete({ id: qualifiedId });
+    expect(deleted).toEqual({ ok: true, id: qualifiedId, tombstoned: true });
+    expect(store.readTask('mirror-task-1')?.sync_state).toBe('tombstoned');
+  });
+
+  it('a forged local qualified id fails loud without writing another Source row', async () => {
+    const created = await dispatchers.taskCreate({ title: 'Untouched' });
+    const wrongSourceId = qualifyWorkEntityId({
+      kind: 'task',
+      source_id: 'todoist.personal.task',
+      local_id: created.task.id,
+    });
+
+    await expect(dispatchers.taskUpdate({
+      id: wrongSourceId,
+      title: 'Must not land',
+    })).rejects.toMatchObject({
+      code: 'SOURCE_MISMATCH',
+      retry_with: 'work.search',
+      actual_source: 'todoist.personal.task',
+    });
+    expect(store.readTask(created.task.id)?.title).toBe('Untouched');
+  });
+
+  it('resolves qualified work-entity relationship ids to local foreign keys', async () => {
+    const project = await dispatchers.projectCreate({ title: 'Roadmap' });
+    const blocker = await dispatchers.taskCreate({ title: 'Foundation' });
+    const projectId = qualifyWorkEntityId({
+      kind: 'project',
+      source_id: project.project.source_id,
+      local_id: project.project.id,
+    });
+    const blockerId = qualifyWorkEntityId({
+      kind: 'task',
+      source_id: blocker.task.source_id,
+      local_id: blocker.task.id,
+    });
+
+    const child = await dispatchers.taskCreate({
+      title: 'Ship it',
+      parent_project_id: projectId,
+      blocks_task_ids: [blockerId],
+    });
+    expect(child.task.parent_project_id).toBe(project.project.id);
+    expect(child.task.blocks_task_ids).toEqual([blocker.task.id]);
+
+    const listed = await dispatchers.workEntityList({
+      kind: 'task',
+      parent_project_id: projectId,
+    });
+    expect(listed.entities.map((entity) => entity.id)).toContain(child.task.id);
+  });
+
   it('task-update preserves untouched fields', async () => {
     const created = await dispatchers.taskCreate({ title: 'orig', body: 'keep' });
     const updated = await dispatchers.taskUpdate({ id: created.task.id, title: 'new' });
@@ -615,6 +713,68 @@ describe('note-* ingredients', () => {
     const out = await dispatchers.noteUpdate({ id: created.note.id, body: 'new' });
     expect(out.note.title).toBe('keep');
     expect(out.note.related_project_ids).toEqual(['p-1']);
+  });
+
+  it('note update/delete resolve a Source-qualified id and dispatch to its Source', async () => {
+    const sourceId = 'hubspot.personal.note';
+    store.registerSource({
+      id: sourceId,
+      top_tier_kind: 'note',
+      source_kind: 'connection',
+      source_label: 'HubSpot notes (personal)',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    store.writeNote({
+      id: 'mirror-note-1',
+      source_id: sourceId,
+      source_record_id: 'note-native-1',
+      body: 'Original',
+    }, NOW);
+    const calls: FakePrepared[] = [];
+    const targets: Array<WorkEntityVendorWriteTarget | undefined> = [];
+    dispatchers = buildDispatchers(fakeWriteExecutor((input, target) => {
+      calls.push(input);
+      targets.push(target);
+      return input.operation === 'delete'
+        ? { ok: true, operation: 'delete' }
+        : { ok: true, operation: 'update', applied: 'pushed', verified: false };
+    }));
+    const qualifiedId = qualifyWorkEntityId({
+      kind: 'note',
+      source_id: sourceId,
+      source_record_id: 'note-native-1',
+      local_id: 'mirror-note-1',
+    });
+
+    const out = await dispatchers.noteUpdate({ id: qualifiedId, body: 'Updated' });
+    expect(out.note).toMatchObject({
+      id: 'mirror-note-1',
+      source_id: sourceId,
+      source_record_id: 'note-native-1',
+      body: 'Updated',
+    });
+    expect(calls[0]).toMatchObject({
+      source_id: sourceId,
+      kind: 'note',
+      operation: 'update',
+      patch: { body: 'Updated' },
+    });
+    expect(targets[0]).toMatchObject({
+      local_id: 'mirror-note-1',
+      prior: { source_id: sourceId, source_record_id: 'note-native-1' },
+      current: { source_id: sourceId, source_record_id: 'note-native-1' },
+    });
+
+    const deleted = await dispatchers.noteDelete({ id: qualifiedId });
+    expect(deleted).toEqual({ ok: true, id: qualifiedId, tombstoned: true });
+    expect(calls.map(({ operation }) => operation)).toEqual(['update', 'delete']);
+    expect(targets[1]).toMatchObject({
+      local_id: 'mirror-note-1',
+      prior: { source_id: sourceId, source_record_id: 'note-native-1' },
+    });
+    expect(store.readNote('mirror-note-1')?.sync_state).toBe('tombstoned');
   });
 
   it('note-update on missing id throws', async () => {
@@ -876,6 +1036,71 @@ describe('project-* ingredients', () => {
     });
     expect(out.project.title).toBe('new');
     expect(out.project.state).toBe('completed');
+  });
+
+  it('project update/delete resolve a Source-qualified id and dispatch to its Source', async () => {
+    const sourceId = 'linear.personal.project';
+    store.registerSource({
+      id: sourceId,
+      top_tier_kind: 'project',
+      source_kind: 'connection',
+      source_label: 'Linear projects (personal)',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    store.writeProject({
+      id: 'mirror-project-1',
+      source_id: sourceId,
+      source_record_id: 'project-native-1',
+      title: 'Original',
+    }, NOW);
+    const calls: FakePrepared[] = [];
+    const targets: Array<WorkEntityVendorWriteTarget | undefined> = [];
+    dispatchers = buildDispatchers(fakeWriteExecutor((input, target) => {
+      calls.push(input);
+      targets.push(target);
+      return input.operation === 'delete'
+        ? { ok: true, operation: 'delete' }
+        : { ok: true, operation: 'update', applied: 'pushed', verified: false };
+    }));
+    const qualifiedId = qualifyWorkEntityId({
+      kind: 'project',
+      source_id: sourceId,
+      source_record_id: 'project-native-1',
+      local_id: 'mirror-project-1',
+    });
+
+    const out = await dispatchers.projectUpdate({
+      id: qualifiedId,
+      title: 'Updated',
+    });
+    expect(out.project).toMatchObject({
+      id: 'mirror-project-1',
+      source_id: sourceId,
+      source_record_id: 'project-native-1',
+      title: 'Updated',
+    });
+    expect(calls[0]).toMatchObject({
+      source_id: sourceId,
+      kind: 'project',
+      operation: 'update',
+      patch: { title: 'Updated' },
+    });
+    expect(targets[0]).toMatchObject({
+      local_id: 'mirror-project-1',
+      prior: { source_id: sourceId, source_record_id: 'project-native-1' },
+      current: { source_id: sourceId, source_record_id: 'project-native-1' },
+    });
+
+    const deleted = await dispatchers.projectDelete({ id: qualifiedId });
+    expect(deleted).toEqual({ ok: true, id: qualifiedId, tombstoned: true });
+    expect(calls.map(({ operation }) => operation)).toEqual(['update', 'delete']);
+    expect(targets[1]).toMatchObject({
+      local_id: 'mirror-project-1',
+      prior: { source_id: sourceId, source_record_id: 'project-native-1' },
+    });
+    expect(store.readProject('mirror-project-1')?.sync_state).toBe('tombstoned');
   });
 
   it('project-update on missing id throws', async () => {

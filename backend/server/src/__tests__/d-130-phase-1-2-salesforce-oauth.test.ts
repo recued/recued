@@ -148,7 +148,7 @@ describe('D-130 P1.2 — completeVendorOAuth helper for Salesforce', () => {
     expect(result.instance_url).toBe('https://mycompany--sandbox.sandbox.my.salesforce.com');
   });
 
-  it('omits instance_url from result when token response did not include it (HubSpot-shaped response)', async () => {
+  it('rejects a Salesforce response that omits its required instance_url', async () => {
     const provider = getVendorProvider('salesforce')!;
     const { fetcher } = makeFetcher([
       {
@@ -157,22 +157,51 @@ describe('D-130 P1.2 — completeVendorOAuth helper for Salesforce', () => {
           access_token: 'A',
           refresh_token: 'R',
           scope: 'api',
-          // no instance_url — defensive: vendor returned a malformed
-          // response. Helper doesn't synthesize one.
+          // no instance_url — accepting this used to leave the form's
+          // login.salesforce.com placeholder as the bearer destination.
         },
       },
     ]);
 
-    const result = await completeVendorOAuth({
+    await expect(completeVendorOAuth({
       provider,
       code: 'C',
       redirect_uri: 'https://app.recued.com/cb',
       client_id: 'CID',
       client_secret: 'SEC',
       fetcher,
+    })).rejects.toMatchObject({
+      code: 'token_response_invalid',
+      message: expect.stringContaining('missing required instance_url'),
     });
+  });
 
-    expect(result.instance_url).toBeUndefined();
+  it.each([
+    ['http://acme.my.salesforce.com', 'must use HTTPS'],
+    ['https://attacker.example', 'outside the provider allowlist'],
+    ['https://salesforce.com.attacker.example', 'outside the provider allowlist'],
+    ['https://owner:secret@acme.my.salesforce.com', 'must not contain credentials'],
+    ['https://acme.my.salesforce.com/services/data', 'must be an origin'],
+    [false, 'must be a non-empty string'],
+  ])('rejects unsafe Salesforce instance_url %s', async (instance_url, reason) => {
+    const provider = getVendorProvider('salesforce')!;
+    const { fetcher } = makeFetcher([{ status: 200, body: {
+      access_token: 'A',
+      refresh_token: 'R',
+      scope: 'api',
+      instance_url,
+    } }]);
+    await expect(completeVendorOAuth({
+      provider,
+      code: 'C',
+      redirect_uri: 'https://app.recued.com/cb',
+      client_id: 'CID',
+      client_secret: 'SEC',
+      fetcher,
+    })).rejects.toMatchObject({
+      code: 'token_response_invalid',
+      message: expect.stringContaining(reason),
+    });
   });
 
   it('sandbox=false explicitly picks production', async () => {
@@ -184,6 +213,7 @@ describe('D-130 P1.2 — completeVendorOAuth helper for Salesforce', () => {
           access_token: 'A',
           refresh_token: 'R',
           scope: 'api',
+          instance_url: 'https://acme.my.salesforce.com',
         },
       },
     ]);
@@ -213,6 +243,7 @@ describe('D-130 P1.2 — completeVendorOAuth helper for Salesforce', () => {
           access_token: 'A',
           refresh_token: 'R',
           scope: 'api refresh_token offline_access',
+          instance_url: 'https://acme.my.salesforce.com',
         },
       },
     ]);
@@ -243,7 +274,12 @@ describe('D-130 P1.2 — completeVendorOAuth helper for Salesforce', () => {
     const { fetcher, calls } = makeFetcher([
       {
         status: 200,
-        body: { access_token: 'A', refresh_token: 'R', scope: 'api' },
+        body: {
+          access_token: 'A',
+          refresh_token: 'R',
+          scope: 'api',
+          instance_url: 'https://acme.my.salesforce.com',
+        },
       },
     ]);
 
@@ -278,6 +314,7 @@ describe('D-130 P1.2 — handleConnectionCompleteVendorOAuth rpc forwards sandbo
             access_token: 'A',
             refresh_token: 'R-SANDBOX',
             scope: 'api refresh_token',
+            instance_url: 'https://acme--sandbox.sandbox.my.salesforce.com',
           },
         },
       ]);
@@ -344,6 +381,7 @@ describe('D-130 P1.2 — handleConnectionCompleteVendorOAuth rpc forwards sandbo
             access_token: 'A',
             refresh_token: 'R-PROD',
             scope: 'api refresh_token',
+            instance_url: 'https://acme.my.salesforce.com',
           },
         },
       ]);

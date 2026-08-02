@@ -84,6 +84,17 @@ describe('drainIdKeyedDelta', () => {
     expect(refs).toEqual(['START', 'P2']); // followed nextRef, stopped at the terminal page
   });
 
+  it('rejects a repeated nextRef before fetching the same page forever', async () => {
+    const { deps, refs } = depsFor({
+      START: { items: [], nextRef: 'P2' },
+      P2: { items: [], nextRef: 'P2' },
+    });
+    await expect(drainIdKeyedDelta(deps, 'START')).rejects.toThrow(
+      'id-keyed delta pagination repeated a page reference',
+    );
+    expect(refs).toEqual(['START', 'P2']);
+  });
+
   it('last-occurrence-wins: file then del (same page) → removed, not upserted', async () => {
     const { deps } = depsFor({ START: { items: [{ op: 'file', id: 'x' }, { op: 'del', id: 'x' }], watermark: 'W' } });
     const drain = await drainIdKeyedDelta(deps, 'START');

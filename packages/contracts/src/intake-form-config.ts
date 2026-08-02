@@ -409,7 +409,8 @@ export interface IntakeFormContactMapping {
 /** Anti-spam config per spec § A.5.3 line 703-709. Substrate enforces
  *  honeypot field presence + rate limit at request time. PoW + CAPTCHA are
  *  reserved compatibility fields: neither is currently implemented or
- *  exposed by the authoring UI. */
+ *  exposed by the authoring UI, and validation therefore requires both flags
+ *  to remain false rather than accepting an unenforced security promise. */
 export interface IntakeFormAntiSpamConfig {
   /** Bot-bait field names — substrate-rendered hidden inputs. A
    *  submission where ANY honeypot field carries a non-empty value is
@@ -419,11 +420,11 @@ export interface IntakeFormAntiSpamConfig {
   /** Per-IP submission rate ceiling (clamps below the substrate
    *  default; never above). */
   readonly rate_limit_per_ip: number;
-  /** Reserved for a possible client-side hash-puzzle challenge; currently
-   *  unimplemented and unenforced. */
+  /** Reserved for a possible client-side hash-puzzle challenge; must remain
+   *  false until runtime enforcement ships. */
   readonly require_proof_of_work: boolean;
-  /** Reserved for a possible CAPTCHA challenge; currently unimplemented and
-   *  unenforced. */
+  /** Reserved for a possible CAPTCHA challenge; must remain false until
+   *  runtime enforcement ships. */
   readonly require_captcha: boolean;
   /** Optional email-domain allowlist — submissions where the visitor's
    *  email's domain is NOT in this list are tagged `'rejected_domain'`. */
@@ -1206,11 +1207,23 @@ export const validateIntakeFormConfig = (
         code: 'anti_spam_invalid',
         detail: 'anti_spam.require_proof_of_work must be boolean',
       });
+    } else if (a.require_proof_of_work) {
+      failures.push({
+        code: 'anti_spam_invalid',
+        detail:
+          'anti_spam.require_proof_of_work is reserved and must be false until proof-of-work enforcement is available',
+      });
     }
     if (typeof a.require_captcha !== 'boolean') {
       failures.push({
         code: 'anti_spam_invalid',
         detail: 'anti_spam.require_captcha must be boolean',
+      });
+    } else if (a.require_captcha) {
+      failures.push({
+        code: 'anti_spam_invalid',
+        detail:
+          'anti_spam.require_captcha is reserved and must be false until CAPTCHA enforcement is available',
       });
     }
     if (a.known_domain_allowlist !== undefined) {

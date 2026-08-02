@@ -103,7 +103,7 @@ interface WireHarness {
     getFire?: () => FireCommitmentEvidenceProposal | undefined;
     getLedger?: () => MessageCommitmentLedger | undefined;
     getContactStore?: () => ContactStore | undefined;
-  }) => () => void;
+  }) => () => Promise<void>;
   close: () => void;
 }
 
@@ -172,6 +172,41 @@ describe('D-192 M4b — readMessengerMatchPatterns', () => {
 });
 
 describe('D-192 M4b — wireMessengerCommitmentFunnel', () => {
+  it('unsubscribe closes admission and waits for an admitted proposal', async () => {
+    const h = makeHarness();
+    let releaseFire: (() => void) | undefined;
+    const fire = vi.fn<FireCommitmentEvidenceProposal>(() =>
+      new Promise<void>((resolve) => {
+        releaseFire = resolve;
+      }));
+    const off = h.wire({ getFire: () => fire });
+    try {
+      upsertSlackConnection(h.store, { match_patterns: PATTERNS });
+      h.bus.emit(messengerEvent());
+      await flushAsync();
+      expect(fire).toHaveBeenCalledTimes(1);
+
+      let stopped = false;
+      const firstStop = off();
+      expect(off()).toBe(firstStop);
+      const observed = firstStop.then(() => {
+        stopped = true;
+      });
+      await Promise.resolve();
+      expect(stopped).toBe(false);
+
+      h.bus.emit(messengerEvent({ record_id: 'm2' }));
+      expect(fire).toHaveBeenCalledTimes(1);
+      if (releaseFire === undefined) throw new Error('proposal did not start');
+      releaseFire();
+      await observed;
+    } finally {
+      releaseFire?.();
+      await off();
+      h.close();
+    }
+  });
+
   it('fires one held proposal for a matching messenger message', async () => {
     const h = makeHarness();
     const off = h.wire();

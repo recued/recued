@@ -42,6 +42,10 @@ export const RESERVED_HANDLES: ReadonlySet<string> = new Set([
   // dotted stamp broke, and reserving these is what restores it by
   // construction rather than by comment.
   'data', 'enrichment',
+  // D-228 — server-minted OP namespaces. These classify as ordinary op grants,
+  // so a dotted pack stamp owned by either publisher handle would collide with
+  // a genuine Tier-1 / ingredient-tool grant instead of failing structurally.
+  'primitive', 'ingredient',
   'system', 'admin', 'administrator', 'moderator', 'mod', 'staff', 'support',
   'official', 'internal', 'test', 'demo', 'example', 'sample',
   // Auth / security

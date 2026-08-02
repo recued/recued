@@ -1,12 +1,12 @@
 {
   "schema_version": 1,
   "source": {
-    "commit": "58ccf20ae770064347099d0f33b2392d98b2ad46",
-    "tree": "ecaba2b5a3cfc245eeeea54ab07f186792c4c87f",
-    "committed_at": "2026-08-01T11:33:57-07:00"
+    "commit": "31dc5fa1590d9e2790706bb9609b3b0e1be4ba10",
+    "tree": "4b7ecb1fef316f7553813ead61d5d6f122b08410",
+    "committed_at": "2026-08-02T01:45:41-07:00"
   },
-  "export_manifest_sha256": "eaa36b7813bedccfea7aec5e826ad4f5d1accea780a8f07d96acff3d496bc31a",
-  "version": "26.8.1",
+  "export_manifest_sha256": "33d552d892d07b0b2c921cf1e960f3099dc8660241f83f0197cff89514e50931",
+  "version": "26.8.2",
   "license": "AGPL-3.0-only",
   "entrypoints": [
     "backend/server",
@@ -26,6 +26,7 @@
     "backend/server/src/__tests__/d-148-p10-cloud-narrowing.test.ts",
     "backend/server/src/__tests__/d-148-p11-extension-webapp-retirement.test.ts",
     "backend/server/src/__tests__/d-149-phase-10-deployment-integration.test.ts",
+    "backend/server/src/__tests__/d-178-release-publish-channel-paths.test.ts",
     "backend/server/src/__tests__/d-178-release-publish-signing-gate.test.ts",
     "backend/server/src/__tests__/phase-e-package.test.ts",
     "backend/server/src/__tests__/prefetch-pii-coverage-measure.test.ts",
@@ -98,8 +99,10 @@
       "backend/server/src/__tests__/d-192-mailchimp-full-capacity.test.ts",
       "backend/server/src/__tests__/d-192-microsoft-todo-make-live.test.ts",
       "backend/server/src/__tests__/d-192-outreach-make-live.test.ts",
+      "backend/server/src/__tests__/d-192-pack-owned-first-party-sources.test.ts",
       "backend/server/src/__tests__/d-192-pipedrive-make-live.test.ts",
       "backend/server/src/__tests__/d-192-planner-make-live.test.ts",
+      "backend/server/src/__tests__/d-192-quo-make-live.test.ts",
       "backend/server/src/__tests__/d-192-salesforce-make-live.test.ts",
       "backend/server/src/__tests__/d-192-source-wire-url-composition.test.ts",
       "backend/server/src/__tests__/d-192-sync-reconcile-stale-closure.test.ts",
@@ -389,7 +392,7 @@
       "packages/recipes/src/__tests__/woocommerce-customer-reply-desk.test.ts",
       "packages/recipes/src/__tests__/zendesk-ticket-reply-closure-loop.test.ts"
     ],
-    "sha256": "677cec88435ce8d1bf03a60a3b09f8d514e465d4a2e28820cea2a63c51cffab5",
+    "sha256": "48adf0cdb53ab8b44ea90d8a59c60533851e1cc45e24624296af785806c0e35f",
     "roots": [
       "apps/auth-worker",
       "backend/api",
@@ -494,7 +497,7 @@
     "packages/warehouse-events"
   ],
   "payload": {
-    "file_count": 5072,
-    "sha256": "f4c0c91822fdd49f8b9e0c807f6cc6e55959b6319b14d8321cafddf4b9727bdb"
+    "file_count": 5113,
+    "sha256": "304a081e3db86bceaa02a4d037b33e0d836ef6510f44c3dc2ba3789b005fdd08"
   }
 }

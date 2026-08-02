@@ -71,6 +71,11 @@ import type {
   FileFetch,
   FileSourceLeafDeps,
 } from './index.js';
+import { fetchFileSourceApi } from './http-json.js';
+import {
+  assertProviderPageUrl,
+  readProviderStringContinuation,
+} from '../provider-pagination-guard.js';
 
 const GRAPH_API = 'https://graph.microsoft.com/v1.0';
 /** The `/drive/root:` (or `/drives/{id}/root:`) namespace marker Graph prefixes
@@ -108,15 +113,30 @@ const parseGraphDeltaPage = (res: unknown): DeltaPage => {
   if (!Array.isArray(obj.value)) {
     throw new GraphError(0, undefined, 'graph /delta response has no value array');
   }
-  const nextRaw = obj['@odata.nextLink'];
-  const deltaRaw = obj['@odata.deltaLink'];
-  const nextRef = typeof nextRaw === 'string' && nextRaw.length > 0 ? nextRaw : undefined;
-  const watermark = typeof deltaRaw === 'string' && deltaRaw.length > 0 ? deltaRaw : undefined;
+  const nextRef = readProviderStringContinuation(
+    obj['@odata.nextLink'],
+    'OneDrive',
+  );
+  const watermark = readProviderStringContinuation(
+    obj['@odata.deltaLink'],
+    'OneDrive watermark',
+  );
   return {
     items: obj.value,
     ...(nextRef !== undefined ? { nextRef } : {}),
     ...(watermark !== undefined ? { watermark } : {}),
   };
+};
+
+const parseTrustedGraphDeltaPage = (res: unknown): DeltaPage => {
+  const page = parseGraphDeltaPage(res);
+  if (page.nextRef !== undefined) {
+    assertProviderPageUrl(page.nextRef, GRAPH_API, 'OneDrive');
+  }
+  if (page.watermark !== undefined) {
+    assertProviderPageUrl(page.watermark, GRAPH_API, 'OneDrive');
+  }
+  return page;
 };
 
 /** Pull `error.code` from a Graph error body (best-effort) so `resyncRequired`
@@ -132,7 +152,8 @@ const graphErrorCode = (text: string): string | undefined => {
 };
 
 const graphGet = async (fetchImpl: FileFetch, url: string, token: string): Promise<unknown> => {
-  const res = await fetchImpl(url, {
+  const safeUrl = assertProviderPageUrl(url, GRAPH_API, 'OneDrive');
+  const res = await fetchFileSourceApi(fetchImpl, safeUrl, {
     method: 'GET',
     headers: { authorization: `Bearer ${token}` },
   });
@@ -301,7 +322,7 @@ export const buildOneDriveFileSourceLeaf = (
     // stored deltaLink) is already a full URL.
     const kdeps: IdKeyedDeltaDeps = {
       fetchPage: (ref) => graphGet(deps.fetchImpl, ref, token),
-      parsePage: parseGraphDeltaPage,
+      parsePage: parseTrustedGraphDeltaPage,
       classify: oneDriveClassify,
     };
 

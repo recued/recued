@@ -24,7 +24,11 @@ import {
   resolveConnectionSchema,
   syncVendorOAuthEndpointValue,
 } from '../connection-schemas/index.js';
-import { getVendorProvider } from '@recued/contracts';
+import {
+  getMessengerVendorDeclaration,
+  getVendorProvider,
+  resolveMessengerConnectionIngressMode,
+} from '@recued/contracts';
 import type { ConnectionAuth, ConnectionKind, ConnectionView } from '@recued/contracts';
 import { connectionRowKey } from './state.js';
 
@@ -259,6 +263,15 @@ export const buildConnectionEditDialogPatch = (
     vendor ?? undefined,
   );
   if (schema) {
+    // A pre-ingress-mode messenger row historically ran as a webhook. The
+    // renderer visually selects option[0] when form state is absent, so without
+    // this explicit projection an old row would *look* local-first while saving
+    // back as webhook. Make the compatibility decision visible and editable.
+    const messenger = subtype === null ? null : getMessengerVendorDeclaration(subtype);
+    if (messenger !== null && values['config.ingress_mode'] === undefined) {
+      const legacyMode = resolveMessengerConnectionIngressMode(messenger, {});
+      if (legacyMode !== null) values['config.ingress_mode'] = legacyMode;
+    }
     const authField = schema.fields.find((f) => f.key === 'auth.type');
     const storedAuthType = view.auth_type;
     if (

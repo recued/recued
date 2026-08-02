@@ -63,12 +63,19 @@ const harness = (opts?: {
     now: NOW,
     resolveConfig: () => opts?.config ?? {},
     // Pack-catalog risks only; the bind falls back to the kernel registry itself.
-    ...(opts?.opRisk ? { resolveOpRisk: (op: string) => opts.opRisk![op] } : {}),
+    ...(opts?.opRisk
+      ? {
+          resolveOpRisk: (op: string) => opts.opRisk![op],
+          resolveOpKinds: () => new Map(
+            Object.keys(opts.opRisk!).map((op) => [op, 'http']),
+          ),
+        }
+      : {}),
   };
 };
 
 const bind = (
-  h: ReturnType<typeof harness>,
+  h: Parameters<typeof bindReceptionDoor>[1],
   recipe: Record<string, unknown>,
 ) =>
   bindReceptionDoor(
@@ -204,6 +211,84 @@ describe('D-207 slice 3c — a responding door is READ-ONLY', () => {
       steps: [{ id: 'read', op: 'core.seller.offer.get' }],
     });
     expect(out.kind).toBe('bound');
+  });
+
+  it('a resolved canonical CRM read remains bindable while its concrete account is pinned', () => {
+    const h = {
+      ...harness({ config: { crm: 'hubspot-live' } }),
+      resolveDoorRecipe: () => ({
+        ok: true as const,
+        recipe: {
+          output: RENDERS,
+          steps: [{
+            id: 'read',
+            ingredient: 'hubspot-catalog',
+            connection: '{{config.crm}}',
+            input: { operation: 'deal.search', args: {} },
+          }],
+        } as unknown as RecipeDefinition,
+      }),
+      resolveOp: (slug: string, operation: string) =>
+        slug === 'hubspot-catalog' && operation === 'deal.search'
+          ? ['recued-core.hubspot.deal.search']
+          : [],
+      resolveOpRisk: (op: string) =>
+        op === 'recued-core.hubspot.deal.search' ? 'read' : undefined,
+      resolveIngredientKind: (slug: string) =>
+        slug === 'hubspot-catalog' ? 'http' : undefined,
+    };
+    const out = bind(h, {
+      output: RENDERS,
+      steps: [{ id: 'read', op: 'core.crm.deal.search' }],
+    });
+
+    expect(out.kind).toBe('bound');
+    if (out.kind === 'bound') {
+      expect(out.capability.operation_ids).toEqual([
+        'core.crm.deal.search',
+        'recued-core.hubspot.deal.search',
+      ]);
+      expect(out.capability.connection_names).toEqual(['hubspot-live']);
+    }
+  });
+
+  it('a resolved canonical CRM write is still refused from the authored grant axis', () => {
+    const h = {
+      ...harness({ config: { crm: 'hubspot-live' } }),
+      resolveDoorRecipe: () => ({
+        ok: true as const,
+        recipe: {
+          output: RENDERS,
+          steps: [{
+            id: 'create',
+            ingredient: 'hubspot-catalog',
+            connection: '{{config.crm}}',
+            input: { operation: 'deal.create', args: {} },
+          }],
+        } as unknown as RecipeDefinition,
+      }),
+      resolveOp: (slug: string, operation: string) =>
+        slug === 'hubspot-catalog' && operation === 'deal.create'
+          ? ['recued-core.hubspot.deal.create']
+          : [],
+      resolveOpRisk: (op: string) =>
+        op === 'recued-core.hubspot.deal.create' ? 'write' : undefined,
+      resolveIngredientKind: (slug: string) =>
+        slug === 'hubspot-catalog' ? 'http' : undefined,
+    };
+    const out = bind(h, {
+      output: RENDERS,
+      steps: [{ id: 'create', op: 'core.crm.deal.create' }],
+    });
+
+    expect(out).toMatchObject({
+      kind: 'refused',
+      refusal: {
+        reason: 'write_on_responding_door',
+        op: 'core.crm.deal.create',
+        risk: 'write',
+      },
+    });
   });
 
   it('a responding recipe with NO ops at all is bound — the (C) shape', () => {

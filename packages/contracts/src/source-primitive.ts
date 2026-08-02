@@ -47,8 +47,15 @@ export const SOURCE_KIND_SET: ReadonlySet<SourceKind> = new Set(SOURCE_KINDS);
  *  metadata + `storage_ref:'remote'` without fetching bodies during sync
  *  (explicit reads resolve lazily); `contact_import` = scoped import into `data.contact`
  *  via D-138 merge. Taxonomy D-192 § 2 +
- *  D-192. */
-export const SOURCE_SYNC_POSTURES = ['records', 'file_meta_ref', 'contact_import'] as const;
+ *  `read_through` = no warehouse materialization at all: generic reads
+ *  invoke the declared Source on demand and return transient, Source-qualified
+ *  entities; D-192. */
+export const SOURCE_SYNC_POSTURES = [
+  'records',
+  'read_through',
+  'file_meta_ref',
+  'contact_import',
+] as const;
 export type SourceSyncPosture = (typeof SOURCE_SYNC_POSTURES)[number];
 export const SOURCE_SYNC_POSTURE_SET: ReadonlySet<SourceSyncPosture> = new Set(
   SOURCE_SYNC_POSTURES,
@@ -74,11 +81,11 @@ export interface SourceRegistration {
   id: string;
   top_tier_kind: SourceTopTierKind;
   source_kind: SourceKind;
-  /** D-192 P-1 — how this Source syncs (the posture). Optional in the
+  /** D-192 P-1 — how this Source is read/materialized (the posture). Optional in the
    *  type so callers that pre-date P-1 keep working; the store coerces
-   *  `undefined → 'records'` at write time (every Source built today is
-   *  records-posture). Structural, not a user toggle — preserved across
-   *  boot-wire re-registration like `enabled`. Taxonomy § 2. */
+   *  `undefined → 'records'` at write time. `read_through` deliberately
+   *  persists no canonical rows; generic reads invoke its declaration live.
+   *  Structural pack policy, not a user toggle. Taxonomy § 2. */
   sync_posture?: SourceSyncPosture;
   source_label: string;
   write_capable: boolean;

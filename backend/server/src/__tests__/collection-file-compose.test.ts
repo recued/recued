@@ -157,8 +157,76 @@ describe('composeFileStack (Phase 7 / D-110)', () => {
   it('disposeAll is idempotent', async () => {
     seedRow(stack, 'solo');
     await stack.startAll();
-    await stack.disposeAll();
-    await stack.disposeAll();
+    const first = stack.disposeAll();
+    const second = stack.disposeAll();
+    expect(second).toBe(first);
+    await first;
+  });
+
+  it('disposeAll closes replacement admission for an in-flight resync', async () => {
+    let starts = 0;
+    let releaseStop!: () => void;
+    const stopHeld = new Promise<void>((resolve) => { releaseStop = resolve; });
+    stack.adapters.register({
+      type: 'draining-resync',
+      async probeCaps() {
+        return {
+          read: 'yes', write: 'no', delete: 'no', watch: 'none',
+          mirror: 'disabled', auth: 'none', path_style: 'posix',
+        };
+      },
+      create() {
+        return {
+          async start() { starts += 1; },
+          async stop() { await stopHeld; },
+        };
+      },
+    });
+    seedRow(stack, 'closing', 'draining-resync');
+    await stack.startAll();
+    const stored = stack.instances.get('file', 'closing')!;
+    const resync = stack.enrollDeps.onResync!({
+      slug: stored.slug,
+      platform: 'file',
+      adapter_type: stored.adapter_type,
+      caps: stored.caps,
+      auth_state: stored.auth_state,
+      last_synced_at: stored.last_synced_at,
+    });
+    await Promise.resolve();
+
+    const disposing = stack.disposeAll();
+    releaseStop();
+    await Promise.all([resync, disposing]);
+
+    expect(starts).toBe(1);
+    await expect(
+      stack.kernelDispatchers.fileWrite({
+        slug: 'closing', path: 'x', body_b64: '',
+      }),
+    ).rejects.toThrow(/FILE_ADAPTER_UNREACHABLE/);
+  });
+
+  it('disposeAll reports an adapter that fails to stop', async () => {
+    stack.adapters.register({
+      type: 'drain-failure',
+      async probeCaps() {
+        return {
+          read: 'yes', write: 'no', delete: 'no', watch: 'none',
+          mirror: 'disabled', auth: 'none', path_style: 'posix',
+        };
+      },
+      create() {
+        return {
+          async start() {},
+          async stop() { throw new Error('watcher still active'); },
+        };
+      },
+    });
+    seedRow(stack, 'stuck-drain', 'drain-failure');
+    await stack.startAll();
+
+    await expect(stack.disposeAll()).rejects.toThrow(/one or more adapters failed to stop/);
   });
 
   it('startAll skips rows whose adapter_type is not registered and logs', async () => {

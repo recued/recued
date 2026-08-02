@@ -12,7 +12,7 @@
  *  expected codes.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,7 +32,6 @@ import {
   type AuditLogStore,
 } from '@recued/storage';
 import {
-  handleRequestShutdown,
   handleGetLifecycleState,
   handleResetCrashLoop,
 } from '../lifecycle/lifecycle-handler.js';
@@ -136,23 +135,13 @@ describe('Phase C e2e — boot → running → drain → terminal', () => {
 
   it('requestShutdown rpc triggers drain → clean exit path', async () => {
     e.lifecycle.markBooted();
-    const r = handleRequestShutdown(
-      {
-        getSnapshot: () => e.lifecycle.getSnapshot(),
-        drain: e.lifecycle.drain,
-        onDrainComplete: () => {},
-        crashLoop: e.lifecycle.crashLoop,
-      },
-      { reason: 'e2e' },
-    );
+    const handler = e.lifecycle.handlerSlice!.handlers['server.requestShutdown'];
+    const r = await handler({ reason: 'e2e' }, {} as never);
     expect(r).toEqual({ accepted: true });
-    // Wait for the drain to resolve.
-    await new Promise((resolve) => setTimeout(resolve, 150));
+    await vi.waitFor(() => { expect(e.exits).toEqual([0]); });
     expect(e.lifecycle.drain.state.active).toBe(false);
-    // We use lifecycle.requestDrain directly below for state flip —
-    // handleRequestShutdown fires the drain but doesn't flip the
-    // state machine through `draining → shutting_down` (that happens
-    // inside lifecycle.requestDrain, which e2e test #3 exercises).
+    expect(e.lifecycle.machine.state).toBe('shutting_down');
+    expect(e.lifecycle.store.getShutdownAt()).not.toBeNull();
   });
 
   it('lifecycle.requestDrain runs every wired step + flips terminal state', async () => {
@@ -226,8 +215,6 @@ describe('Phase C e2e — crash-loop detection', () => {
     e.lifecycle.crashLoopPersistence.setCrashLoopActive(true);
 
     const r = handleResetCrashLoop({
-      getSnapshot: () => e.lifecycle.getSnapshot(),
-      drain: e.lifecycle.drain,
       crashLoop: e.lifecycle.crashLoop,
     });
     expect(r.ok).toBe(true);
@@ -249,8 +236,6 @@ describe('Phase C e2e — signal listener + config reload', () => {
     e.lifecycle.markBooted();
     const snap = handleGetLifecycleState({
       getSnapshot: () => e.lifecycle.getSnapshot(),
-      drain: e.lifecycle.drain,
-      crashLoop: e.lifecycle.crashLoop,
     });
     expect(snap.state).toBe('running');
     expect(snap.supervisor_mode).toBe('dev');

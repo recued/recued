@@ -195,14 +195,12 @@ describe('createContractStore — seedSchema', () => {
     store.seedSchema(D165_CONTRACT_SCHEMA);
     store.seedSchema(D165_CONTRACT_SCHEMA);
 
-    // 14 composite keys: 11 after the D-187 policy-matrix retirement, + D-202's
-    // `quality_delegation_suggestion` (Task 5) + `quality_delegation_signal`
-    // (Slice 1), + D-211's global owner operation defaults.
-    expect(store.scan('schema', ['composite_keys'])).toHaveLength(14);
-    // 22 value shapes: 17 after D-187, + D-202's `quality_delegation_snapshot` /
-    // `_evidence` / `_suggestion` (Task 5) + `quality_delegation_signal` (Slice 1).
-    // + D-211's `owner_operation_policy`.
-    expect(store.scan('schema', ['value_shapes'])).toHaveLength(22);
+    expect(store.scan('schema', ['composite_keys'])).toHaveLength(
+      Object.keys(D165_CONTRACT_SCHEMA.composite_keys).length,
+    );
+    expect(store.scan('schema', ['value_shapes'])).toHaveLength(
+      Object.keys(D165_CONTRACT_SCHEMA.value_shapes).length,
+    );
   });
 
   it('throws ContractSchemaSeedError for a malformed registry', () => {

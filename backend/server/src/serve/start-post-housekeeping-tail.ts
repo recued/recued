@@ -34,6 +34,7 @@ export type PostHousekeepingTailStorageContext = Pick<
   // D-157 N.8 — the stale-checkpoint retention sweep's stores.
   | 'checkpointStore'
   | 'auditLog'
+  | 'drainAuditWrites'
 >;
 
 export type PostHousekeepingTailAppContext = Pick<
@@ -140,14 +141,32 @@ export const startPostHousekeepingTail = (
     supervisionStack: options.collection.supervisionStack,
     cascade: options.cascade,
     server: options.server,
+    drainAuditWrites: storage.drainAuditWrites,
     db: storage.db,
   });
 
   // D-178 slice 4b — run the on-boot update reconcile AFTER markBooted (above):
   // the server is serving, so a staged release that reached here booted healthy
-  // → commit. An auto-revert path requests a restart of its own. Fire-and-forget
-  // + self-swallowing, so it never blocks or fails the boot it follows.
-  void options.runUpdateBootReconcile?.();
+  // → commit. An auto-revert path requests a restart of its own. The operation
+  // remains best-effort, but belongs to the emitter drain: it can write update
+  // sidecars and audit state, so shutdown must not close persistence underneath it.
+  if (options.runUpdateBootReconcile) {
+    let reconcileDone: Promise<void>;
+    try {
+      reconcileDone = Promise.resolve(options.runUpdateBootReconcile()).catch(
+        () => undefined,
+      );
+    } catch {
+      // Preserve the best-effort contract even for a malformed injected thunk
+      // that throws synchronously rather than returning a rejected promise.
+      reconcileDone = Promise.resolve();
+    }
+    options.backgroundServices.register({
+      name: 'update-boot-reconcile',
+      kind: 'emitter',
+      stop: () => reconcileDone,
+    });
+  }
 
   return shutdown;
 };

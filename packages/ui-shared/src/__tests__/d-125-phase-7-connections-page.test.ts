@@ -707,6 +707,143 @@ describe('D-125 P7.1 — dialog stages', () => {
     expect(html).toContain('Bot Token');
   });
 
+  it.each([
+    {
+      subtype: 'slack',
+      mode: 'socket',
+      guide: 'slack-socket',
+      title: 'Connect Slack from this machine',
+      option: 'Local — Socket Mode (recommended)',
+      portal: 'Open Slack app settings',
+      localField: 'auth.app_token',
+    },
+    {
+      subtype: 'telegram',
+      mode: 'poll',
+      guide: 'telegram-poll',
+      title: 'Connect Telegram from this machine',
+      option: 'Local — long polling (recommended)',
+      portal: 'Open BotFather',
+      localField: 'config.match_patterns',
+    },
+    {
+      subtype: 'discord',
+      mode: 'socket',
+      guide: 'discord-gateway',
+      title: 'Connect Discord from this machine',
+      option: 'Local — Gateway (recommended)',
+      portal: 'Open Discord Developer Portal',
+      localField: 'config.match_patterns',
+    },
+  ] as const)(
+    'puts the recommended $subtype setup path before its credentials',
+    ({ subtype, mode, guide, title, option, portal, localField }) => {
+      const html = renderConnectionsPage(withDialog({
+        stage: 'form',
+        kind: 'notification',
+        subtype,
+        values: {
+          'config.ingress_mode': mode,
+          'auth.type': 'bearer',
+        },
+      }));
+
+      expect(html).toContain('data-connection-onboarding-selector');
+      expect(html).toContain(`data-connection-onboarding="${guide}"`);
+      expect(html).toContain('data-tone="recommended"');
+      expect(html).toContain(title);
+      expect(html).toContain(`<option value="${mode}" selected>${option}</option>`);
+      expect(html).toContain(`${portal} (new tab) <span aria-hidden="true">↗</span>`);
+      expect(html).toContain('target="_blank" rel="noopener noreferrer"');
+      expect(html).toContain('What Save and probe checks:');
+      expect(html).toContain('read status');
+      expect(html).toContain(`data-field-key="${localField}"`);
+      expect(html).not.toContain('data-field-key="auth.type"');
+
+      const selectorAt = html.indexOf('data-connection-onboarding-selector');
+      const guideAt = html.indexOf(`data-connection-onboarding="${guide}"`);
+      const credentialsAt = html.indexOf('data-field-key="display_name"');
+      expect(selectorAt).toBeGreaterThan(-1);
+      expect(guideAt).toBeGreaterThan(selectorAt);
+      expect(credentialsAt).toBeGreaterThan(guideAt);
+    },
+  );
+
+  it.each([
+    {
+      subtype: 'slack',
+      guide: 'slack-webhook',
+      localGuide: 'slack-socket',
+      requiredField: 'config.signing_secret',
+      hiddenField: 'auth.app_token',
+      endpoint: '/webhooks/slack/slack',
+    },
+    {
+      subtype: 'telegram',
+      guide: 'telegram-webhook',
+      localGuide: 'telegram-poll',
+      requiredField: 'config.webhook_secret',
+      hiddenField: null,
+      endpoint: '/webhooks/telegram/telegram',
+    },
+    {
+      subtype: 'discord',
+      guide: 'discord-webhook',
+      localGuide: 'discord-gateway',
+      requiredField: 'config.public_key',
+      hiddenField: 'config.match_patterns',
+      endpoint: '/webhooks/discord/discord',
+    },
+  ] as const)(
+    'switches $subtype to an honest advanced-webhook checklist',
+    ({ subtype, guide, localGuide, requiredField, hiddenField, endpoint }) => {
+      const html = renderConnectionsPage(withDialog({
+        stage: 'form',
+        kind: 'notification',
+        subtype,
+        values: {
+          'config.ingress_mode': 'webhook',
+          'auth.type': 'bearer',
+        },
+      }));
+
+      expect(html).toContain(`data-connection-onboarding="${guide}"`);
+      expect(html).toContain('data-tone="advanced"');
+      expect(html).not.toContain(`data-connection-onboarding="${localGuide}"`);
+      expect(html).toContain('Public webhook');
+      expect(html).toContain(`&lt;public-host&gt;${endpoint}`);
+      expect(html).toContain(`data-field-key="${requiredField}"`);
+      if (hiddenField !== null) {
+        expect(html).not.toContain(`data-field-key="${hiddenField}"`);
+      }
+      expect(html).toContain('does not test');
+    },
+  );
+
+  it('keeps edit mode compact while retaining the friendly mode labels', () => {
+    const html = renderConnectionsPage(withDialog({
+      stage: 'form',
+      mode: 'edit',
+      kind: 'notification',
+      subtype: 'slack',
+      editingId: 'notification/slack',
+      values: {
+        name: 'slack',
+        display_name: 'Slack',
+        'config.ingress_mode': 'socket',
+        'config.channel_id': 'C123',
+        'auth.type': 'bearer',
+      },
+    }));
+
+    expect(html).not.toContain('data-connection-onboarding-selector');
+    expect(html).not.toContain('data-connection-onboarding=');
+    expect(html).toContain('data-field-key="config.ingress_mode"');
+    expect(html).toContain('Local — Socket Mode (recommended)');
+    expect(html).toContain('Checks Slack bot identity');
+    expect(html).not.toContain('data-field-key="auth.type"');
+  });
+
   it('edit-mode form omits the Back button (no kind picker to step back to)', () => {
     const html = renderConnectionsPage(
       withDialog({
@@ -1503,6 +1640,54 @@ describe('D-125 P7.2 — schemas', () => {
     );
   });
 
+  it('makes local ingress the first choice and reveals only mode-specific credentials', () => {
+    const modeField = (subtype: 'slack' | 'telegram' | 'discord') =>
+      notificationSchemas[subtype].fields.find((field) => field.key === 'config.ingress_mode');
+    expect(modeField('slack')?.options).toEqual(['socket', 'webhook']);
+    expect(modeField('telegram')?.options).toEqual(['poll', 'webhook']);
+    expect(modeField('discord')?.options).toEqual(['socket', 'webhook']);
+    expect(modeField('slack')?.optionLabels?.socket).toContain('recommended');
+    expect(modeField('telegram')?.optionLabels?.poll).toContain('recommended');
+    expect(modeField('discord')?.optionLabels?.webhook).toContain('approvals only');
+
+    for (const subtype of ['slack', 'telegram', 'discord'] as const) {
+      expect(notificationSchemas[subtype].onboarding?.selectorKey)
+        .toBe('config.ingress_mode');
+      expect(notificationSchemas[subtype].onboarding?.guides).toHaveLength(2);
+      expect(notificationSchemas[subtype].fields.find((field) => field.key === 'auth.type')?.hidden)
+        .toBe(true);
+    }
+
+    const slackFields = (mode: string) => notificationSchemas.slack.fields
+      .filter((field) => field.showWhen?.({ 'config.ingress_mode': mode }) ?? true)
+      .map((field) => field.key);
+    expect(slackFields('socket')).toContain('auth.app_token');
+    expect(slackFields('socket')).not.toContain('config.signing_secret');
+    expect(slackFields('webhook')).toContain('config.signing_secret');
+    expect(slackFields('webhook')).not.toContain('auth.app_token');
+
+    const webhookValues = {
+      name: 'telegram',
+      display_name: 'Telegram',
+      'config.ingress_mode': 'webhook',
+      'config.chat_id': '1',
+      'auth.type': 'bearer',
+      'auth.token': 'bot-token',
+    };
+    expect(connectionFormValidationIssue(
+      notificationSchemas.telegram,
+      webhookValues,
+      undefined,
+      'create',
+    )).toMatchObject({ fieldKey: 'config.webhook_secret' });
+    expect(connectionFormValidationIssue(
+      notificationSchemas.telegram,
+      webhookValues,
+      undefined,
+      'edit',
+    )).toBeNull();
+  });
+
   it('resolveConnectionSchema returns api regardless of subtype', () => {
     expect(resolveConnectionSchema('api')).toBe(apiSchema);
     expect(resolveConnectionSchema('api', 'irrelevant')).toBe(apiSchema);
@@ -1575,6 +1760,29 @@ describe('D-125 P7.2 — payload projection', () => {
     expect(payload.subtype).toBe('slack');
     expect(payload.config).toEqual({ channel_id: 'C123' });
     expect(payload.auth).toEqual({ type: 'bearer', token: 'xoxb-…' });
+  });
+
+  it('projects Slack Socket Mode with both encrypted auth credentials', () => {
+    const payload = projectConnectionPayload(
+      notificationSchemas.slack,
+      {
+        name: 'slack',
+        display_name: 'Slack',
+        'config.ingress_mode': 'socket',
+        'config.channel_id': 'C123',
+        'auth.type': 'bearer',
+        'auth.token': 'xoxb-token',
+        'auth.app_token': 'xapp-token',
+      },
+      'notification',
+      'slack',
+    );
+    expect(payload.config).toEqual({ ingress_mode: 'socket', channel_id: 'C123' });
+    expect(payload.auth).toEqual({
+      type: 'bearer',
+      token: 'xoxb-token',
+      app_token: 'xapp-token',
+    });
   });
 
   it('drops empty optional fields (oauth2_refresh client_secret left blank)', () => {
@@ -1698,6 +1906,19 @@ describe('D-125 P7.2 — view → values flatten', () => {
     expect(patch.values['auth.password']).toBeUndefined();
     expect(patch.values['config.auth_type']).toBeUndefined();
     expect(patch.values['config.granted_scopes']).toBeUndefined();
+  });
+
+  it('shows the historical webhook mode when editing a messenger row that predates ingress_mode', () => {
+    const patch = buildConnectionEditDialogPatch({
+      name: 'telegram',
+      kind: 'notification',
+      subtype: 'telegram',
+      display_name: 'Telegram',
+      auth_type: 'bearer',
+      chat_id: '1',
+    });
+
+    expect(patch.values['config.ingress_mode']).toBe('webhook');
   });
 
   it('builds an edit dialog patch that restores vendor schema defaults', () => {

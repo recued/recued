@@ -35,6 +35,7 @@
 import type { ImportScope } from '@recued/contracts';
 
 import type { FileSourceListOutcome } from '../file-source-sync.js';
+import { ProviderPaginationGuard } from '../provider-pagination-guard.js';
 
 // ────────────────────────────────────────────────────────────────
 // The three per-vendor closures
@@ -153,6 +154,9 @@ export const drainIdKeyedDelta = async (
   let ref = startRef;
   let watermark: string | undefined;
   let pages = 0;
+  const pagination = new ProviderPaginationGuard('id-keyed delta', {
+    maxPages: MAX_ID_KEYED_DELTA_PAGES,
+  });
   for (;;) {
     if (pages >= MAX_ID_KEYED_DELTA_PAGES) {
       throw new Error(
@@ -160,7 +164,7 @@ export const drainIdKeyedDelta = async (
       );
     }
     pages += 1;
-    const page = deps.parsePage(await deps.fetchPage(ref));
+    const page = deps.parsePage(await deps.fetchPage(pagination.claim(ref)));
     foldPage(page.items, deps.classify, acc);
     if (page.nextRef !== undefined) {
       ref = page.nextRef;

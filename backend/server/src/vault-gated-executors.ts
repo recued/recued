@@ -57,37 +57,85 @@ export interface VaultGatedExecutorsDeps {
 }
 
 export interface VaultGatedExecutorsHandle {
-  /** Unsubscribe from the state bus (shutdown). */
-  dispose(): void;
+  /** Close unlock admission, unsubscribe, and drain admitted resume work. */
+  dispose(): Promise<void>;
 }
 
 export const wireVaultGatedExecutors = (
   deps: VaultGatedExecutorsDeps,
 ): VaultGatedExecutorsHandle => {
-  const unsubscribe = deps.vaultStateBus.subscribe((next) => {
-    if (next !== 'unlocked') return;
-    deps.log?.('vault unlocked — resuming autonomous executors');
-    // auto-run: catch-up fire + re-arm every roster entry.
-    void deps
-      .getAutoRunHandle()
-      ?.tick()
-      .catch(() => {
-        // A resume-kick failure is logged-and-forgotten; the next natural
-        // tick (or a later transition) retries. Never throw out of the
-        // bus callback — it runs inside KeyManager.transition().
-      });
-    // cron: immediate same-minute catch-up.
-    void deps
-      .getCronHandle()
-      ?.tick()
-      .catch(() => {});
-    void deps.recoverPendingApprovals?.().catch(() => {
-      // The answer stays durable and a later unlock/boot retries. Never throw
-      // out of KeyManager.transition().
+  const inFlight = new Set<Promise<void>>();
+  let closed = false;
+  let disposePromise: Promise<void> | undefined;
+
+  const logInfo = (message: string): void => {
+    try {
+      deps.log?.(message);
+    } catch {
+      // Diagnostics must not interrupt the unlock fan-out.
+    }
+  };
+
+  const reportResumeFailure = (label: string, error: unknown): void => {
+    const message = `[vault-resume] ${label} failed: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    try {
+      if (deps.log) deps.log(message);
+      else console.warn(message);
+    } catch {
+      // A broken diagnostics sink must not recreate an unhandled rejection or
+      // prevent sibling executors from receiving the unlock edge.
+    }
+  };
+
+  const admit = (
+    label: string,
+    start: () => Promise<unknown> | undefined,
+  ): void => {
+    if (closed) return;
+    let work: Promise<unknown> | undefined;
+    try {
+      work = start();
+    } catch (error) {
+      reportResumeFailure(label, error);
+      return;
+    }
+    if (work === undefined) return;
+    let tracked!: Promise<void>;
+    tracked = Promise.resolve(work).then(
+      () => undefined,
+      (error) => reportResumeFailure(label, error),
+    ).finally(() => {
+      inFlight.delete(tracked);
     });
+    inFlight.add(tracked);
+  };
+
+  const unsubscribe = deps.vaultStateBus.subscribe((next) => {
+    if (closed || next !== 'unlocked') return;
+    logInfo('vault unlocked — resuming autonomous executors');
+    // auto-run: catch-up fire + re-arm every roster entry.
+    admit('auto-run resume', () => deps.getAutoRunHandle()?.tick());
+    // cron: immediate same-minute catch-up.
+    admit('cron resume', () => deps.getCronHandle()?.tick());
+    // The answer stays durable and a later unlock/boot retries on failure.
+    admit('pending approval recovery', () => deps.recoverPendingApprovals?.());
     // watches: re-derive demand + re-arm the loops recompute() disarmed.
-    deps.watchManager?.recompute();
+    try {
+      deps.watchManager?.recompute();
+    } catch (error) {
+      reportResumeFailure('watch resume', error);
+    }
   });
 
-  return { dispose: unsubscribe };
+  return {
+    dispose(): Promise<void> {
+      if (disposePromise) return disposePromise;
+      closed = true;
+      unsubscribe();
+      disposePromise = Promise.allSettled([...inFlight]).then(() => undefined);
+      return disposePromise;
+    },
+  };
 };

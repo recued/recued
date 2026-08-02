@@ -118,6 +118,7 @@ const makeOAuthFetcher = (opts: {
   refreshToken?: string;
   scope?: string;
   subject?: string;
+  subjectByAccessToken?: Readonly<Record<string, string | null>>;
   accountEmail?: string;
 } = {}) => vi.fn(async (
   url: string,
@@ -136,8 +137,22 @@ const makeOAuthFetcher = (opts: {
     });
   }
   if (url.startsWith(GRAPH_ME_URL)) {
+    const authorization = _init?.headers?.Authorization ?? '';
+    const accessToken = authorization.startsWith('Bearer ')
+      ? authorization.slice('Bearer '.length)
+      : '';
+    const hasMappedSubject = Object.prototype.hasOwnProperty.call(
+      opts.subjectByAccessToken ?? {},
+      accessToken,
+    );
+    const mappedSubject = hasMappedSubject
+      ? opts.subjectByAccessToken?.[accessToken]
+      : undefined;
+    if (mappedSubject === null) {
+      return jsonResponse({ error: 'identity_unavailable' }, { ok: false, status: 503 });
+    }
     return jsonResponse({
-      id: opts.subject ?? 'new-subject',
+      id: mappedSubject ?? opts.subject ?? 'new-subject',
       userPrincipalName: opts.accountEmail ?? 'owner@example.test',
     });
   }
@@ -521,8 +536,13 @@ describe('handleMailEnrollOAuth Graph shared-grant identity protection', () => {
     expect(h.instances.get('mail', 'work')?.adapter_type).toBe('graph');
   });
 
-  it('D5 allows a pre-identity grant and records the newly resolved identity', async () => {
-    const fetcher = makeOAuthFetcher({ subject: 'newly-known-subject' });
+  it('D5 recovers a pre-identity grant from its current token and allows the same account', async () => {
+    const fetcher = makeOAuthFetcher({
+      subjectByAccessToken: {
+        'access-legacy-subject': 'legacy-subject',
+        'new-access-token': 'legacy-subject',
+      },
+    });
     const h = makeHarness({
       account: graphGrant('legacy-subject', { includeIdentity: false }),
       fetcher,
@@ -533,11 +553,65 @@ describe('handleMailEnrollOAuth Graph shared-grant identity protection', () => {
 
     expect(JSON.parse(
       h.account.data.get('graph.work.grant_identity') ?? 'null',
-    )).toEqual({ subject: 'newly-known-subject' });
+    )).toEqual({ subject: 'legacy-subject' });
     expect(h.instances.get('mail', 'work')?.adapter_type).toBe('graph');
   });
 
-  it('D6 records identity on a Graph mail enroll before any calendar shares it', async () => {
+  it('D6 refuses a different account even when the shared grant predates identity stamping', async () => {
+    const fetcher = makeOAuthFetcher({
+      subjectByAccessToken: {
+        'access-legacy-subject': 'legacy-subject',
+        'new-access-token': 'different-subject',
+      },
+    });
+    const h = makeHarness({
+      account: graphGrant('legacy-subject', { includeIdentity: false }),
+      fetcher,
+    });
+    putCalendar(h, 'work', 'graph');
+    const before = Object.fromEntries(h.account.data);
+
+    await expect(enrollGraphMail(h)).rejects.toMatchObject({ code: 'conflict' });
+
+    expect(Object.fromEntries(h.account.data)).toEqual(before);
+    expect(h.instances.get('mail', 'work')).toBeNull();
+  });
+
+  it('D7 refuses before exchange when the existing shared account cannot be identified', async () => {
+    const fetcher = makeOAuthFetcher({
+      subjectByAccessToken: { 'access-legacy-subject': null },
+    });
+    const h = makeHarness({
+      account: graphGrant('legacy-subject', { includeIdentity: false }),
+      fetcher,
+    });
+    putCalendar(h, 'work', 'graph');
+    const before = Object.fromEntries(h.account.data);
+
+    await expect(enrollGraphMail(h)).rejects.toMatchObject({ code: 'conflict' });
+
+    expect(fetcher.mock.calls.some(([url]) => url === TOKEN_URL)).toBe(false);
+    expect(Object.fromEntries(h.account.data)).toEqual(before);
+  });
+
+  it('D8 restores the shared grant when the new account identity cannot be read', async () => {
+    const fetcher = makeOAuthFetcher({
+      subjectByAccessToken: { 'new-access-token': null },
+    });
+    const h = makeHarness({
+      account: graphGrant('shared-subject'),
+      fetcher,
+    });
+    putCalendar(h, 'work', 'graph');
+    const before = Object.fromEntries(h.account.data);
+
+    await expect(enrollGraphMail(h)).rejects.toMatchObject({ code: 'conflict' });
+
+    expect(Object.fromEntries(h.account.data)).toEqual(before);
+    expect(h.instances.get('mail', 'work')).toBeNull();
+  });
+
+  it('D9 records identity on a Graph mail enroll before any calendar shares it', async () => {
     const fetcher = makeOAuthFetcher({ subject: 'mail-first-subject' });
     const h = makeHarness({ fetcher });
 

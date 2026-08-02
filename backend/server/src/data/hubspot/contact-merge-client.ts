@@ -32,6 +32,7 @@ import {
   type UpstreamMergeVendorPair,
 } from '@recued/contracts';
 
+import { defaultProviderApiFetch } from '../provider-api-fetch.js';
 import type {
   VendorMergeClient,
   VendorMergePreview,
@@ -187,7 +188,7 @@ const projectFieldOutcomes = (
 export const createHubSpotContactMergeClient = (
   deps: HubSpotMergeDeps,
 ): VendorMergeClient => {
-  const fetcher = deps.fetcher ?? globalThis.fetch.bind(globalThis);
+  const fetcher = deps.fetcher ?? defaultProviderApiFetch;
   const refreshAuth = deps.refreshAuth;
 
   return {

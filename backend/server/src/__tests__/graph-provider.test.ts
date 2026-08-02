@@ -34,6 +34,8 @@ const providerConfig: OAuthProviderConfig = {
   clientId: 'cid',
 };
 const DELTA_KEY = 'graph.work.delta_link.headers_v1.inbox';
+const graphDeltaLink = (token: string, folder = 'inbox'): string =>
+  `https://graph.microsoft.com/v1.0/me/mailFolders/${folder}/messages/delta?$deltatoken=${token}`;
 
 const mkGraphMsg = (overrides: Partial<GraphMessagePayload> = {}): GraphMessagePayload => ({
   id: 'gid-1',
@@ -160,7 +162,7 @@ describe('GraphProvider — initialScan', () => {
         { match: (u) => u.includes('/messages?'),
           response: { status: 200, body: { value: [mkGraphMsg({ id: 'gid-1', subject: 's1' })] } } },
         { match: (u) => u.includes('/messages/delta'),
-          response: { status: 200, body: { value: [], '@odata.deltaLink': 'DELTA-LINK' } } },
+          response: { status: 200, body: { value: [], '@odata.deltaLink': graphDeltaLink('scan') } } },
       ],
     });
     await h.provider.connect();
@@ -170,7 +172,7 @@ describe('GraphProvider — initialScan', () => {
       onMessage: async (m) => { got.push(m.subject); return true; },
     });
     expect(got).toEqual(['s1']);
-    expect(h.store.data.get(DELTA_KEY)).toBe('DELTA-LINK');
+    expect(h.store.data.get(DELTA_KEY)).toBe(graphDeltaLink('scan'));
     expect(h.calls.some((url) =>
       url.includes('$select=') && url.includes('internetMessageHeaders'))).toBe(true);
   });
@@ -184,7 +186,7 @@ describe('GraphProvider — initialScan', () => {
             mkGraphMsg({ id: 'b', subject: 'sb' }),
           ] } } },
         { match: (u) => u.includes('/messages/delta'),
-          response: { status: 200, body: { value: [], '@odata.deltaLink': 'DL' } } },
+          response: { status: 200, body: { value: [], '@odata.deltaLink': graphDeltaLink('abort') } } },
       ],
     });
     await h.provider.connect();
@@ -198,30 +200,31 @@ describe('GraphProvider — initialScan', () => {
 
   it('follows @odata.nextLink for pagination', async () => {
     let page = 0;
+    const page2Url = 'https://graph.microsoft.com/v1.0/me/messages?$skiptoken=PAGE2';
     const routes: Route[] = [
       { match: (u) => u.includes('/messages/delta'),
-        response: { status: 200, body: { value: [], '@odata.deltaLink': 'DL' } } },
+        response: { status: 200, body: { value: [], '@odata.deltaLink': graphDeltaLink('paged') } } },
     ];
     const fetcher: HttpFetcher = async (url) => {
       if (url.includes('/messages?')) {
         page++;
         if (page === 1) {
           return { status: 200, ok: true,
-            async json() { return { value: [mkGraphMsg({ id: '1', subject: 'p1' })], '@odata.nextLink': 'PAGE2' }; },
+            async json() { return { value: [mkGraphMsg({ id: '1', subject: 'p1' })], '@odata.nextLink': page2Url }; },
             async text() { return '{}'; } };
         }
         return { status: 200, ok: true,
           async json() { return { value: [mkGraphMsg({ id: '2', subject: 'p2' })] }; },
           async text() { return '{}'; } };
       }
-      if (url.includes('/messages/delta') || url === 'PAGE2') {
-        if (url === 'PAGE2') {
+      if (url.includes('/messages/delta') || url === page2Url) {
+        if (url === page2Url) {
           return { status: 200, ok: true,
             async json() { return { value: [mkGraphMsg({ id: '2', subject: 'p2' })] }; },
             async text() { return '{}'; } };
         }
         return { status: 200, ok: true,
-          async json() { return { value: [], '@odata.deltaLink': 'DL' }; },
+          async json() { return { value: [], '@odata.deltaLink': graphDeltaLink('paged') }; },
           async text() { return '{}'; } };
       }
       return { status: 404, ok: false, async json() { return {}; }, async text() { return 'nope'; } };
@@ -249,6 +252,100 @@ describe('GraphProvider — initialScan', () => {
     await provider.close();
   });
 
+  it('refuses an off-origin nextLink before forwarding the Graph bearer', async () => {
+    const attackerUrl = 'https://attacker.invalid/collect?cursor=mail';
+    h = newHarness({
+      routes: [
+        {
+          match: (u) => u.includes('/messages?'),
+          response: {
+            status: 200,
+            body: { value: [], '@odata.nextLink': attackerUrl },
+          },
+        },
+      ],
+    });
+    await h.provider.connect();
+    await expect(h.provider.initialScan({
+      backfill_days: 7,
+      onMessage: async () => true,
+    })).rejects.toThrow('off-origin URL');
+    expect(h.calls.some((url) => url === attackerUrl)).toBe(false);
+  });
+
+  it('refuses an off-origin deltaLink instead of persisting a poisoned watermark', async () => {
+    const attackerUrl = 'https://attacker.invalid/collect?cursor=delta';
+    h = newHarness({
+      routes: [
+        {
+          match: (u) => u.includes('/messages?'),
+          response: { status: 200, body: { value: [] } },
+        },
+        {
+          match: (u) => u.includes('/messages/delta'),
+          response: {
+            status: 200,
+            body: { value: [], '@odata.deltaLink': attackerUrl },
+          },
+        },
+      ],
+    });
+    await h.provider.connect();
+    await expect(h.provider.initialScan({
+      backfill_days: 7,
+      onMessage: async () => true,
+    })).rejects.toThrow('off-origin URL');
+    expect(h.store.data.has(DELTA_KEY)).toBe(false);
+  });
+
+  it('rejects a repeated nextLink before refetching the same page forever', async () => {
+    const page2Url = 'https://graph.microsoft.com/v1.0/me/messages?$skiptoken=repeat';
+    h = newHarness({
+      routes: [
+        {
+          match: (u) => u === page2Url,
+          response: {
+            status: 200,
+            body: { value: [], '@odata.nextLink': page2Url },
+          },
+        },
+        {
+          match: (u) => u.includes('/messages?'),
+          response: {
+            status: 200,
+            body: { value: [], '@odata.nextLink': page2Url },
+          },
+        },
+      ],
+    });
+    await h.provider.connect();
+    await expect(h.provider.initialScan({
+      backfill_days: 7,
+      onMessage: async () => true,
+    })).rejects.toThrow('repeated a page reference');
+    expect(h.calls.filter((url) => url === page2Url)).toHaveLength(1);
+  });
+
+  it('rejects a non-string nextLink instead of treating a partial list as exhausted', async () => {
+    h = newHarness({
+      routes: [
+        {
+          match: (u) => u.includes('/messages?'),
+          response: {
+            status: 200,
+            body: { value: [], '@odata.nextLink': 0 },
+          },
+        },
+      ],
+    });
+    await h.provider.connect();
+    await expect(h.provider.initialScan({
+      backfill_days: 7,
+      onMessage: async () => true,
+    })).rejects.toThrow('non-string continuation');
+    expect(h.calls.filter((url) => url.includes('/messages?'))).toHaveLength(1);
+  });
+
   it('skips @removed entries during initial scan', async () => {
     h = newHarness({
       routes: [
@@ -258,7 +355,7 @@ describe('GraphProvider — initialScan', () => {
             { id: 'gone', '@removed': { reason: 'deleted' } },
           ] } } },
         { match: (u) => u.includes('/messages/delta'),
-          response: { status: 200, body: { value: [], '@odata.deltaLink': 'DL' } } },
+          response: { status: 200, body: { value: [], '@odata.deltaLink': graphDeltaLink('removed') } } },
       ],
     });
     await h.provider.connect();
@@ -295,7 +392,7 @@ describe('GraphProvider — initialScan', () => {
             contentBytes: bytes.toString('base64'),
           } } },
         { match: (u) => u.includes('/messages/delta'),
-          response: { status: 200, body: { value: [], '@odata.deltaLink': 'DL' } } },
+          response: { status: 200, body: { value: [], '@odata.deltaLink': graphDeltaLink('attachment') } } },
       ],
     });
     await h.provider.connect();
@@ -322,16 +419,18 @@ describe('GraphProvider — initialScan', () => {
 
 describe('GraphProvider — incremental sync', () => {
   it('applies delta updates + @removed tombstones', async () => {
+    const firstDelta = 'https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=1';
+    const nextDelta = 'https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages/delta?$deltatoken=2';
     h = newHarness({
-      seed: { [DELTA_KEY]: 'https://delta.example/inbox?t=1' },
+      seed: { [DELTA_KEY]: firstDelta },
       routes: [
-        { match: (u) => u === 'https://delta.example/inbox?t=1',
+        { match: (u) => u === firstDelta,
           response: { status: 200, body: {
             value: [
               mkGraphMsg({ id: 'new-1', subject: 'new' }),
               { id: 'old-1', '@removed': { reason: 'deleted' } },
             ],
-            '@odata.deltaLink': 'https://delta.example/inbox?t=2',
+            '@odata.deltaLink': nextDelta,
           } } },
       ],
     });
@@ -340,19 +439,19 @@ describe('GraphProvider — incremental sync', () => {
     await h.provider.startSync(async (e) => { events.push(e); });
     const kinds = events.map((e) => `${e.kind}:${e.source_id}`);
     expect(kinds).toEqual(expect.arrayContaining(['updated:new-1', 'deleted:old-1']));
-    expect(h.store.data.get(DELTA_KEY)).toBe('https://delta.example/inbox?t=2');
+    expect(h.store.data.get(DELTA_KEY)).toBe(nextDelta);
   });
 
   it('seeds a delta link on first run when none stored', async () => {
     h = newHarness({
       routes: [
         { match: (u) => u.includes('/messages/delta'),
-          response: { status: 200, body: { value: [], '@odata.deltaLink': 'INITIAL-LINK' } } },
+          response: { status: 200, body: { value: [], '@odata.deltaLink': graphDeltaLink('initial') } } },
       ],
     });
     await h.provider.connect();
     await h.provider.startSync(async () => undefined);
-    expect(h.store.data.get(DELTA_KEY)).toBe('INITIAL-LINK');
+    expect(h.store.data.get(DELTA_KEY)).toBe(graphDeltaLink('initial'));
   });
 
   it('iterates across multiple folders from folder_filter', async () => {
@@ -362,13 +461,13 @@ describe('GraphProvider — incremental sync', () => {
       if (url.includes('/mailFolders/inbox/messages/delta')) {
         inboxCalls++;
         return { status: 200, ok: true,
-          async json() { return { value: [], '@odata.deltaLink': 'inbox-delta' }; },
+          async json() { return { value: [], '@odata.deltaLink': graphDeltaLink('folder', 'inbox') }; },
           async text() { return '{}'; } };
       }
       if (url.includes('/mailFolders/archive/messages/delta')) {
         archiveCalls++;
         return { status: 200, ok: true,
-          async json() { return { value: [], '@odata.deltaLink': 'archive-delta' }; },
+          async json() { return { value: [], '@odata.deltaLink': graphDeltaLink('folder', 'archive') }; },
           async text() { return '{}'; } };
       }
       return { status: 404, ok: false, async json() { return {}; }, async text() { return 'nope'; } };
@@ -390,8 +489,8 @@ describe('GraphProvider — incremental sync', () => {
     await provider.startSync(async () => undefined);
     expect(inboxCalls).toBeGreaterThanOrEqual(1);
     expect(archiveCalls).toBeGreaterThanOrEqual(1);
-    expect(store.data.get('graph.work.delta_link.headers_v1.inbox')).toBe('inbox-delta');
-    expect(store.data.get('graph.work.delta_link.headers_v1.archive')).toBe('archive-delta');
+    expect(store.data.get('graph.work.delta_link.headers_v1.inbox')).toBe(graphDeltaLink('folder', 'inbox'));
+    expect(store.data.get('graph.work.delta_link.headers_v1.archive')).toBe(graphDeltaLink('folder', 'archive'));
     await provider.close();
   });
 
@@ -409,7 +508,7 @@ describe('GraphProvider — incremental sync', () => {
           return { status: 401, ok: false, async json() { return {}; }, async text() { return 'nope'; } };
         }
         return { status: 200, ok: true,
-          async json() { return { value: [], '@odata.deltaLink': 'DL' }; },
+          async json() { return { value: [], '@odata.deltaLink': graphDeltaLink('refresh') }; },
           async text() { return '{}'; } };
       }
       return { status: 404, ok: false, async json() { return {}; }, async text() { return 'nope'; } };

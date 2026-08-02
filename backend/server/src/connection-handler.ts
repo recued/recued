@@ -59,6 +59,9 @@ import {
   isValidOAuthEndpointUrl,
   CONNECTION_INBOUND_SECRET_FIELDS,
   getMessengerVendorDeclaration,
+  messengerVendorSupportsIngressMode,
+  resolveMessengerConnectionIngressMode,
+  MESSENGER_INGRESS_MODE_CONFIG_KEY,
   MESSENGER_AUTH_KIND_CONNECTION_TYPES,
   NOTIFICATION_SUBTYPES as CONTRACT_NOTIFICATION_SUBTYPES,
   resolveBearerAccessToken,
@@ -116,6 +119,7 @@ import {
   VendorOAuthError,
   type HttpFetcher,
 } from './connection-vendor-oauth.js';
+import { makeBoundedOriginHttpFetcher } from './bounded-origin-http-fetcher.js';
 import {
   startVendorOAuth,
   defaultFlowId,
@@ -152,6 +156,7 @@ import {
   generateConnectionSetupGuide,
   type ConnectionSetupGuideDeps,
 } from './connection-setup-guide.js';
+import { makeConnectionRuntimeBaseIssueSink } from './connection-runtime-base-issue.js';
 
 export interface ConnectionRpcDeps {
   store: ConnectionStoreSqlite;
@@ -487,6 +492,7 @@ const readStoredMatchPatterns = (config_json: string): MessageMatchPattern[] => 
  *  verification. */
 const CONNECTION_UPDATE_PRESERVED_CONFIG_FIELDS: ReadonlyArray<string> = [
   MESSAGE_MATCH_CONFIG_KEY,
+  MESSENGER_INGRESS_MODE_CONFIG_KEY,
   ...CONNECTION_INBOUND_SECRET_FIELDS,
 ];
 
@@ -765,6 +771,7 @@ const ensureAuth = (where: string, auth: unknown): ConnectionAuth => {
       break;
     case 'bearer':
       requireStringField(where, auth, 'token');
+      ensureOptionalStringField(where, auth, 'app_token');
       break;
     case 'basic':
       requireStringField(where, auth, 'username');
@@ -858,6 +865,87 @@ const ensureMessengerAuthDeliverable = (
       'it sends with a bot token, so another credential shape would enroll, ' +
       'report healthy, and then silently never deliver a message.',
   );
+};
+
+/** Persist one explicit ingress mode on every messenger write. Current forms
+ *  submit the local-first default; older clients that omit the new field keep
+ *  webhook behavior. An explicit invalid value fails closed. */
+const normalizeMessengerIngressConfig = (
+  where: string,
+  subtype: string | undefined,
+  config: Record<string, unknown>,
+  existingConfig?: Readonly<Record<string, unknown>>,
+): Record<string, unknown> => {
+  if (subtype === undefined) return config;
+  const declaration = getMessengerVendorDeclaration(subtype);
+  if (declaration === null) return config;
+  let selected = config[MESSENGER_INGRESS_MODE_CONFIG_KEY];
+  if (selected === undefined) {
+    // An omitted field is an older-client request. Preserve webhook behavior
+    // and persist it explicitly; current UI clients always submit the local
+    // declaration default from their first select option.
+    selected = resolveMessengerConnectionIngressMode(declaration, existingConfig ?? {});
+  }
+  if (!messengerVendorSupportsIngressMode(declaration, selected)) {
+    throw new RpcError(
+      'bad_request',
+      `${where}: config.${MESSENGER_INGRESS_MODE_CONFIG_KEY} must be one of `
+        + declaration.ingress.supported_modes.map((mode) => `'${mode}'`).join(' or '),
+    );
+  }
+  return { ...config, [MESSENGER_INGRESS_MODE_CONFIG_KEY]: selected };
+};
+
+/** Slack Socket Mode needs an app-level `xapp-…` token in addition to the bot
+ *  token used for messages. Keep it in encrypted auth, never plaintext config. */
+const ensureMessengerIngressCredentials = (
+  where: string,
+  subtype: string | undefined,
+  config: Readonly<Record<string, unknown>>,
+  auth: ConnectionAuth,
+): void => {
+  if (subtype !== 'slack') return;
+  const declaration = getMessengerVendorDeclaration(subtype);
+  if (declaration === null) return;
+  if (resolveMessengerConnectionIngressMode(declaration, config) !== 'socket') return;
+  if (
+    auth.type !== 'bearer'
+    || typeof auth.app_token !== 'string'
+    || auth.app_token.trim().length === 0
+  ) {
+    throw new RpcError(
+      'bad_request',
+      `${where}: Slack Socket Mode requires auth.app_token (an app-level xapp token with connections:write)`,
+    );
+  }
+};
+
+/** A current client that explicitly selects webhook mode must provide (or, on
+ * update, preserve) that vendor's verification material. Legacy callers that
+ * omit `ingress_mode` retain their historical acceptance path, while runtime
+ * health still reports an old incomplete row as invalid. */
+const ensureMessengerWebhookVerificationMaterial = (
+  where: string,
+  subtype: string | undefined,
+  config: Readonly<Record<string, unknown>>,
+): void => {
+  if (subtype === undefined) return;
+  const declaration = getMessengerVendorDeclaration(subtype);
+  if (
+    declaration === null
+    || resolveMessengerConnectionIngressMode(declaration, config) !== 'webhook'
+  ) return;
+  const field = declaration.ingress.secret_field;
+  if (
+    field === undefined
+    || typeof config[field] !== 'string'
+    || (config[field] as string).trim().length === 0
+  ) {
+    throw new RpcError(
+      'bad_request',
+      `${where}: webhook mode requires config.${field ?? 'verification_material'}`,
+    );
+  }
 };
 
 /** AAD binding domain — separates connection-row ciphertext from
@@ -1195,10 +1283,28 @@ export const handleConnectionEnroll = async (
       'collection.connection.enroll: display_name is required',
     );
   }
-  const config = ensureConfig('collection.connection.enroll', a.config);
+  const existing = deps.store.get(kind, name);
+  const requestedConfig = ensureConfig('collection.connection.enroll', a.config);
+  const config = normalizeMessengerIngressConfig(
+    'collection.connection.enroll',
+    subtype,
+    requestedConfig,
+    existing ? parseStoredConfig(existing.config_json) : undefined,
+  );
   ensureValidMatchPatterns('collection.connection.enroll', config);
   const auth = ensureAuth('collection.connection.enroll', a.auth);
   ensureMessengerAuthDeliverable('collection.connection.enroll', subtype, auth);
+  ensureMessengerIngressCredentials('collection.connection.enroll', subtype, config, auth);
+  if (Object.prototype.hasOwnProperty.call(
+    requestedConfig,
+    MESSENGER_INGRESS_MODE_CONFIG_KEY,
+  )) {
+    ensureMessengerWebhookVerificationMaterial(
+      'collection.connection.enroll',
+      subtype,
+      config,
+    );
+  }
   const now = deps.now?.() ?? Date.now();
   // D-192 CORE #5e — resolve a SharePoint document library's drive id from a
   // pasted `config.site_url` (a no-op for every other enroll). May refresh the
@@ -1211,7 +1317,6 @@ export const handleConnectionEnroll = async (
   // Preserve enrolled_at across re-enrollments — first sight wins on
   // identity, every patch refreshes updated_at. This matches the
   // `account.*` semantics pre-RIP.
-  const existing = deps.store.get(kind, name);
   const enrolled_at = existing?.enrolled_at ?? now;
   // D-165 P3.path-picker — set the sub-resource scope. Preserve-on-absent:
   // a re-enroll that omits the field keeps the existing scope rather than
@@ -1374,8 +1479,48 @@ export const handleConnectionUpdate = async (
         merged[key] = existingConfig[key];
       }
     }
-    ensureValidMatchPatterns('collection.connection.update', merged);
-    config_json = JSON.stringify(merged);
+    const normalized = normalizeMessengerIngressConfig(
+      'collection.connection.update',
+      existing.subtype,
+      merged,
+      existingConfig,
+    );
+    ensureValidMatchPatterns('collection.connection.update', normalized);
+    config_json = JSON.stringify(normalized);
+  }
+  const finalConfig = parseStoredConfig(config_json);
+  const messengerDeclaration = existing.subtype === undefined
+    ? null
+    : getMessengerVendorDeclaration(existing.subtype);
+  if (
+    patch.config !== undefined
+    && Object.prototype.hasOwnProperty.call(
+      patch.config,
+      MESSENGER_INGRESS_MODE_CONFIG_KEY,
+    )
+  ) {
+    ensureMessengerWebhookVerificationMaterial(
+      'collection.connection.update',
+      existing.subtype,
+      finalConfig,
+    );
+  }
+  if (
+    existing.subtype === 'slack'
+    && messengerDeclaration !== null
+    && resolveMessengerConnectionIngressMode(messengerDeclaration, finalConfig) === 'socket'
+  ) {
+    const finalAuth = auth ?? await decodeAuthFromStorage(
+      existing.auth_ciphertext,
+      { kind, name },
+      deps.getEncryptionKey,
+    );
+    ensureMessengerIngressCredentials(
+      'collection.connection.update',
+      existing.subtype,
+      finalConfig,
+      finalAuth,
+    );
   }
   const auth_ciphertext =
     auth !== undefined
@@ -1620,14 +1765,12 @@ export const handleConnectionProbe = async (
   const connectionUpdatedAt = Math.max(now, existing.updated_at + 1);
   const maxErrorLen = 256;
   const probeTimeoutMs = 10_000;
-  const fetcher: HttpFetcher = deps.fetcher ?? (async (url, init) => {
-    const res = await fetch(url, init);
-    return {
-      status: res.status,
-      ok: res.ok,
-      json: () => res.json() as Promise<unknown>,
-      text: () => res.text(),
-    };
+  // Production composition does not inject a fetcher. Keep the probe's
+  // deadline active through response-body consumption, cap every body, and
+  // refuse cross-origin redirects before credentials can follow them. The
+  // narrow injected seam remains for deterministic tests.
+  const fetcher: HttpFetcher = deps.fetcher ?? makeBoundedOriginHttpFetcher({
+    timeoutMs: probeTimeoutMs,
   });
   const truncateError = (message: string): string =>
     message.length > maxErrorLen ? message.slice(0, maxErrorLen) : message;
@@ -1696,6 +1839,10 @@ export const handleConnectionProbe = async (
     init?: { method?: string; headers?: Record<string, string>; body?: string },
     timeoutMs = probeTimeoutMs,
   ): Promise<Awaited<ReturnType<HttpFetcher>>> => {
+    // The bounded production fetcher owns one abortable deadline spanning
+    // connect, headers, redirects, and body. A second Promise.race would return
+    // just before its abort timer and briefly orphan the underlying request.
+    if (deps.fetcher === undefined) return fetcher(url, init);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       return await Promise.race([
@@ -1708,8 +1855,14 @@ export const handleConnectionProbe = async (
       if (timer !== undefined) clearTimeout(timer);
     }
   };
+  // A provider may move a tenant between provider-owned origins and return the
+  // replacement beside a rotated OAuth credential. Keep the candidate config
+  // local until the probe has completed and the optimistic row check below has
+  // passed, just like `authCiphertext`: the in-flight probe must use the new
+  // origin, but a concurrent editor must still win without a partial write.
+  let configJson = existing.config_json;
   const readConfig = (): Record<string, unknown> => {
-    const parsed: unknown = JSON.parse(existing.config_json);
+    const parsed: unknown = JSON.parse(configJson);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
       return parsed as Record<string, unknown>;
     }
@@ -2178,7 +2331,7 @@ export const handleConnectionProbe = async (
         : placement === 'bot_header'
           ? `Bot ${token}`
           : null;
-    return probeJsonNotification(
+    const botHealth = await probeJsonNotification(
       url,
       {
         method,
@@ -2190,6 +2343,27 @@ export const handleConnectionProbe = async (
       // reflects the token in an error body would leak it from the header
       // placement too.
       token,
+    );
+    if (botHealth.status !== 'ok') return botHealth;
+
+    const config = parseStoredConfig(existing.config_json);
+    const ingressMode = resolveMessengerConnectionIngressMode(declaration, config);
+    if (declaration.vendor !== 'slack' || ingressMode !== 'socket') return botHealth;
+    if (
+      auth.type !== 'bearer'
+      || typeof auth.app_token !== 'string'
+      || auth.app_token.trim().length === 0
+    ) {
+      return healthOf('auth_failed', 'slack_app_token_missing');
+    }
+    return probeJsonNotification(
+      'https://slack.com/api/apps.connections.open',
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${auth.app_token}` },
+      },
+      declaration.vendor,
+      auth.app_token,
     );
   };
   const probeNotification = async (auth: ConnectionAuth): Promise<ConnectionHealth> => {
@@ -2275,12 +2449,26 @@ export const handleConnectionProbe = async (
         const ensureFreshAuth = createEnsureFreshAuth({
           fetchImpl: deps.resolveFetch ?? globalThis.fetch.bind(globalThis),
           now: () => now,
-          persistAuth: async (_row, newAuth) => {
+          ...(deps.auditLog
+            ? {
+                onRuntimeBaseIssue: makeConnectionRuntimeBaseIssueSink(
+                  deps.auditLog,
+                  () => now,
+                ),
+              }
+            : {}),
+          persistAuth: async (_row, newAuth, configPatch) => {
             authCiphertext = await encodeAuthForStorage(
               newAuth,
               { kind, name },
               checkedKey,
             );
+            if (configPatch !== undefined) {
+              configJson = JSON.stringify({
+                ...readConfig(),
+                base_url: configPatch.base_url,
+              });
+            }
           },
         });
         switch (kind) {
@@ -2404,7 +2592,7 @@ export const handleConnectionProbe = async (
     ...(existing.subtype !== undefined ? { subtype: existing.subtype } : {}),
     display_name: existing.display_name,
     ...(existing.publisher_id !== undefined ? { publisher_id: existing.publisher_id } : {}),
-    config_json: existing.config_json,
+    config_json: configJson,
     auth_ciphertext: authCiphertext,
     enrolled_at: existing.enrolled_at,
     updated_at: connectionUpdatedAt,
@@ -2759,7 +2947,11 @@ const credentialCandidateFromOwnerInput = (auth: ConnectionAuth): ConnectionAuth
     case 'none':
       return { type: 'none' };
     case 'bearer':
-      return { type: 'bearer', token: auth.token };
+      return {
+        type: 'bearer',
+        token: auth.token,
+        ...(auth.app_token !== undefined ? { app_token: auth.app_token } : {}),
+      };
     case 'basic':
       return { type: 'basic', username: auth.username, password: auth.password };
     case 'header':
@@ -3160,6 +3352,21 @@ export const handleConnectionRotateCredentials = async (
       [MESSAGE_MATCH_CONFIG_KEY]: a.match_patterns,
     };
   }
+  // Rotation replaces the WHOLE auth envelope, so a Slack Socket Mode row whose
+  // replacement carries only the bot token would drop `app_token` and take its
+  // ingress down — the supervisor stops the runner and reports `invalid`, with
+  // nothing to restart it. Enroll and update both hold this invariant; hold it
+  // on the third write path too, before the attempt is claimed or any network
+  // call runs. The config that governs is the candidate when the rotation
+  // patches one, otherwise the stored row's.
+  ensureMessengerIngressCredentials(
+    method,
+    existing.subtype,
+    candidateConfig === undefined
+      ? parseStoredConfig(existing.config_json)
+      : ensureConfig(method, candidateConfig),
+    auth,
+  );
   const snapshot = connectionRowFingerprint(existing);
   const recoveryStore = credentialRotationRecoveryStore(method, deps.store);
   // A repeated attempt id resolves its durable outcome even though a

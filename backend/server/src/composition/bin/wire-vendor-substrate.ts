@@ -42,6 +42,7 @@ import type {
   ConnectionRecord,
   ConnectionAuth,
 } from '@recued/contracts';
+import { getVendorProvider } from '@recued/contracts';
 import type { ConnectionStoreSqlite } from '../../storage/connection-store.js';
 import { decodeConnectionRow } from '../../storage/connection-row-decode.js';
 import type { EngagementStore } from '../../storage/engagement-store.js';
@@ -51,7 +52,9 @@ import type { ContactStore } from '../../storage/contact-store.js';
 import type { UpstreamMergeStore } from '../../storage/upstream-merge-store.js';
 import type { KeyManager } from '../../key-manager.js';
 import type { WarehouseEventBus } from '@recued/warehouse-events';
+import type { AuditLogStore } from '@recued/storage';
 import type { ConnectionLookup } from '../../housekeeping/reconciliation/vendor-reconciler.js';
+import { makeConnectionRuntimeBaseIssueSink } from '../../connection-runtime-base-issue.js';
 import {
   VENDOR_BOOT_REGISTRY,
   type UpstreamMergeRegistry,
@@ -74,6 +77,9 @@ export interface ComposeVendorSubstrateDeps {
   contactStore: ContactStore | undefined;
   upstreamMergeStore: UpstreamMergeStore | undefined;
   upstreamMergeRegistry: UpstreamMergeRegistry | undefined;
+  /** Advisory visibility when a provider rotates credentials but supplies a
+   * missing or unsafe tenant origin. The response URL itself is never logged. */
+  auditLog: Pick<AuditLogStore, 'logActivity'> | undefined;
   warehouseBus: WarehouseEventBus;
   eventBus: EventBus;
 }
@@ -95,6 +101,9 @@ export interface VendorSubstrateBundle {
    *  Salesforce boot didn't surface one (no engagementStore wired).
    *  Swaps the dual-schema call entity's housekeeping task per reprobe. */
   registerSalesforceCallEntity?: VendorBootBundle['registerSalesforceCallEntity'];
+  /** Aggregate drain for background work started by vendor boots. The serve
+   *  layer registers it with the process background-service lifecycle. */
+  stop?: () => Promise<void>;
 }
 
 /** Compose the vendor substrate. Async because each vendor's `boot`
@@ -108,10 +117,13 @@ export const composeVendorSubstrate = async (
   // without forcing the connection-handler module into the boot import
   // graph for callers that don't wire the substrate.
   const { decodeAuthFromStorage, encodeAuthForStorage } = await import('../../connection-handler.js');
-  const { refreshOAuth2 } = await import('@recued/ingredients');
+  const { refreshOAuth2WithMetadata } = await import('@recued/ingredients');
 
   const keyProvider = (deps.keys && deps.keys.state() !== 'uninitialized')
     ? deps.keys.keyProvider('connection')
+    : undefined;
+  const runtimeBaseIssueSink = deps.auditLog
+    ? makeConnectionRuntimeBaseIssueSink(deps.auditLog)
     : undefined;
 
   // Vendor-agnostic OAuth2 refresh. Fired by a vendor's search helper
@@ -135,18 +147,44 @@ export const composeVendorSubstrate = async (
     if (connection.auth.type !== 'oauth2_refresh') {
       return connection.auth;
     }
-    const fresh = await refreshOAuth2(
+    const vendor = typeof connection.config.vendor === 'string'
+      ? getVendorProvider(connection.config.vendor)
+      : null;
+    const refreshed = await refreshOAuth2WithMetadata(
       connection.auth,
       globalThis.fetch.bind(globalThis),
       () => Date.now(),
+      vendor,
     );
+    const fresh = refreshed.auth;
     const existing = deps.connectionStore.get(connection.kind, connection.name);
     if (existing) {
+      if (
+        refreshed.runtime_base.status === 'missing'
+        || refreshed.runtime_base.status === 'invalid'
+      ) {
+        runtimeBaseIssueSink?.(existing, refreshed.runtime_base);
+      }
       const auth_ciphertext = await encodeAuthForStorage(
         fresh,
         { kind: existing.kind, name: existing.name },
         keyProvider,
       );
+      let config_json = existing.config_json;
+      if (refreshed.runtime_base.status === 'valid') {
+        try {
+          const parsed: unknown = JSON.parse(existing.config_json);
+          if (parsed !== null && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            config_json = JSON.stringify({
+              ...(parsed as Record<string, unknown>),
+              base_url: refreshed.runtime_base.base_url,
+            });
+          }
+        } catch {
+          // Preserve the rotated credential even if a corrupt config cannot be
+          // patched; the ordinary connection error will direct re-enrollment.
+        }
+      }
       deps.connectionStore.upsert({
         kind: existing.kind,
         name: existing.name,
@@ -155,7 +193,7 @@ export const composeVendorSubstrate = async (
         ...(existing.publisher_id !== undefined
           ? { publisher_id: existing.publisher_id }
           : {}),
-        config_json: existing.config_json,
+        config_json,
         auth_ciphertext,
         enrolled_at: existing.enrolled_at,
         updated_at: Date.now(),
@@ -232,6 +270,11 @@ export const composeVendorSubstrate = async (
   // either order). Bundle outputs aggregate into the substrate bundle
   // — today only Salesforce surfaces `registerSalesforceCallEntity`.
   let registerSalesforceCallEntity: VendorBootBundle['registerSalesforceCallEntity'];
+  const vendorStops: Array<{
+    slug: (typeof VENDOR_BOOT_REGISTRY)[number]['slug'];
+    stop: NonNullable<VendorBootBundle['stop']>;
+  }> = [];
+  let recoverySweep: Promise<void> | undefined;
   for (const entry of VENDOR_BOOT_REGISTRY) {
     const bundle = await entry.boot({
       connectionStore: deps.connectionStore,
@@ -245,6 +288,9 @@ export const composeVendorSubstrate = async (
     });
     if (bundle.registerSalesforceCallEntity !== undefined) {
       registerSalesforceCallEntity = bundle.registerSalesforceCallEntity;
+    }
+    if (bundle.stop !== undefined) {
+      vendorStops.push({ slug: entry.slug, stop: bundle.stop });
     }
   }
 
@@ -293,17 +339,58 @@ export const composeVendorSubstrate = async (
     // happy-path is one connection per vendor; multi-connection
     // setups may need the user to retry from the failure banner
     // instead of relying on the sweep.
-    void runUpstreamMergeRecoverySweep(sweepDeps, (vendor) => {
-      const rows = deps.connectionStore.list({ kind: 'api' });
-      for (const row of rows) {
-        if (row.subtype === vendor) return row.name;
-      }
-      return null;
-    }).catch(() => {
-      // Sweep failures are best-effort; per-row failures are
-      // captured on the row itself + emitted via the bus.
-    });
+    recoverySweep = runUpstreamMergeRecoverySweep(
+      sweepDeps,
+      (vendor) => {
+        const rows = deps.connectionStore.list({ kind: 'api' });
+        for (const row of rows) {
+          if (row.subtype === vendor) return row.name;
+        }
+        return null;
+      },
+    ).then(
+      () => undefined,
+      () => {
+        // Sweep failures are best-effort; per-row failures are captured on
+        // the row itself + emitted via the bus. Keep the settled promise so
+        // shutdown still waits for every admitted write to finish.
+      },
+    );
   }
+
+  let stopPromise: Promise<void> | undefined;
+  const stop = (): Promise<void> => {
+    if (stopPromise) return stopPromise;
+    stopPromise = (async () => {
+      // Invoke every stop before awaiting one so each vendor closes admission
+      // promptly. Reverse boot order mirrors the server's other lifecycle
+      // drains without serializing independent network shutdowns.
+      const pending = [...vendorStops].reverse().map(({ slug, stop }) => {
+        try {
+          return Promise.resolve(stop()).catch((error) => {
+            throw new Error(`vendor '${slug}' failed to stop`, { cause: error });
+          });
+        } catch (error) {
+          return Promise.reject(
+            new Error(`vendor '${slug}' failed to stop`, { cause: error }),
+          );
+        }
+      });
+      if (recoverySweep !== undefined) pending.push(recoverySweep);
+      const results = await Promise.allSettled(pending);
+      const errors = results
+        .filter((result): result is PromiseRejectedResult =>
+          result.status === 'rejected')
+        .map((result) => result.reason);
+      if (errors.length > 0) {
+        throw new AggregateError(
+          errors,
+          'one or more vendor background services failed to stop',
+        );
+      }
+    })();
+    return stopPromise;
+  };
 
   return {
     lookupConnection,
@@ -311,5 +398,6 @@ export const composeVendorSubstrate = async (
     ...(registerSalesforceCallEntity !== undefined
       ? { registerSalesforceCallEntity }
       : {}),
+    ...(vendorStops.length > 0 || recoverySweep !== undefined ? { stop } : {}),
   };
 };

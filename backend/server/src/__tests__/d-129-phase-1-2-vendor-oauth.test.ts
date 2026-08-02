@@ -23,10 +23,15 @@ import {
   HUBSPOT_OAUTH_TOKEN_URL,
   HUBSPOT_OAUTH_INTROSPECT_URL,
   PIPEDRIVE_OAUTH_TOKEN_URL,
+  CONNECTION_API_TIMEOUT_MS,
+  getVendorProvider,
   type ConnectionVendorProvider,
 } from '@recued/contracts';
 
-import { CrossOriginRedirectError } from '@recued/ingredients';
+import {
+  CrossOriginRedirectError,
+  ResponseBodyTooLargeError,
+} from '@recued/ingredients';
 
 import { handleConnectionCompleteVendorOAuth } from '../connection-handler.js';
 import {
@@ -379,6 +384,47 @@ describe('handleConnectionCompleteVendorOAuth — happy path', () => {
       cleanup();
     }
   });
+
+  it('refuses an off-provider Pipedrive api_domain before it can become base_url', async () => {
+    const { fetcher } = makeFetcher([{ status: 200, body: {
+      access_token: 'ACCESS-1',
+      refresh_token: 'REFRESH-1',
+      scope: 'base',
+      api_domain: 'https://attacker.example',
+    } }]);
+    await expect(completeVendorOAuth({
+      provider: getVendorProvider('pipedrive')!,
+      code: 'C',
+      redirect_uri: 'https://app.recued.com/cb',
+      client_id: 'CID',
+      client_secret: 'SEC',
+      fetcher,
+    })).rejects.toMatchObject({
+      code: 'token_response_invalid',
+      message: expect.stringContaining('outside the provider allowlist'),
+    });
+  });
+
+  it('does not grant undeclared instance_url authority to another provider', async () => {
+    const { fetcher } = makeFetcher([{ status: 200, body: {
+      access_token: 'ACCESS-1',
+      refresh_token: 'REFRESH-1',
+      scope: 'oauth',
+      instance_url: 'https://attacker.example',
+      api_domain: 'https://attacker.example',
+    } }]);
+    await expect(completeVendorOAuth({
+      provider: getVendorProvider('hubspot')!,
+      code: 'C',
+      redirect_uri: 'https://app.recued.com/cb',
+      client_id: 'CID',
+      client_secret: 'SEC',
+      fetcher,
+    })).resolves.toEqual({
+      refresh_token: 'REFRESH-1',
+      granted_scopes: ['oauth'],
+    });
+  });
 });
 
 describe('handleConnectionCompleteVendorOAuth — error mapping', () => {
@@ -716,6 +762,46 @@ const makeNativeFetch = (
 };
 
 describe('makeOriginPinnedFetcher — SSRF redirect pin', () => {
+  it('keeps its deadline active while a provider response body stalls', async () => {
+    vi.useFakeTimers();
+    try {
+      const fetcher = makeOriginPinnedFetcher((async (_input, init) => {
+        const stream = new ReadableStream<Uint8Array>({
+          start(controller) {
+            const abort = (): void => {
+              const error = new Error('body aborted');
+              error.name = 'AbortError';
+              controller.error(error);
+            };
+            if (init?.signal?.aborted) abort();
+            else init?.signal?.addEventListener('abort', abort, { once: true });
+          },
+        });
+        return new Response(stream, {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      }) as typeof fetch);
+      const pending = fetcher('https://auth.synthetic.example/token');
+      const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+
+      await vi.advanceTimersByTimeAsync(CONNECTION_API_TIMEOUT_MS);
+      await rejected;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('rejects a token response over the one-MiB ceiling before buffering it', async () => {
+    const fetcher = makeOriginPinnedFetcher((async () =>
+      new Response('{}', {
+        headers: { 'content-length': String(1024 * 1024 + 1) },
+      })) as typeof fetch);
+
+    await expect(fetcher('https://auth.synthetic.example/token'))
+      .rejects.toBeInstanceOf(ResponseBodyTooLargeError);
+  });
+
   it('refuses the first cross-origin redirect before contacting the target', async () => {
     const { fetchImpl, urls } = makeNativeFetch([
       new Response(null, {

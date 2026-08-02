@@ -31,7 +31,11 @@ import {
   serverBundleFromJSON,
   serverBundleToJSON,
 } from '@recued/crypto';
-import type { ArchiveImportRebind, ArchiveManifest } from '@recued/contracts';
+import {
+  DRAIN_STEP_NAMES,
+  type ArchiveImportRebind,
+  type ArchiveManifest,
+} from '@recued/contracts';
 import type { AuditLogStore } from '@recued/storage';
 import { createClientTokenStore } from '../pairing/client-tokens.js';
 import { createPairedInstancesStore } from '../paired-instances-store.js';
@@ -989,14 +993,12 @@ export const composeArchiveRpcDeps = (
           .requestDrain({ intent: 'restart', reason: 'archive_import' })
           .then(
             async (result) => {
-              // Commit the swap ONLY if the drain genuinely quiesced writers
-              // (`await_inflight` didn't time out) AND closed the db
-              // (`close_db` completed). Otherwise the runtime abandons the
-              // staged restore and the supervisor reboots on the original db.
+              // Commit the swap ONLY after the complete production drain. A
+              // timeout, thrown step, or missing/unwired step means some source
+              // may still own the live DB, so fail closed and abandon staging.
               const drainOk =
-                result.completed.includes('close_db') &&
-                !result.aborted.includes('close_db') &&
-                !result.aborted.includes('await_inflight');
+                result.aborted.length === 0 &&
+                DRAIN_STEP_NAMES.every((step) => result.completed.includes(step));
               await onDrained(drainOk);
               const code = lifecycle.supervisor.handoff('restart');
               exit(code);

@@ -935,12 +935,14 @@ export interface ServerPressureReclaimResult {
   /** Populated only when `ran === false`. Distinguishes "already ran"
    *  (`debounced`) from "joined an in-flight reclaim" (`coalesced`)
    *  from "unknown surface" (`no_such_surface`) from "surface not
-   *  evictable" (`not_evictable`). */
+   *  evictable" (`not_evictable`) or a cascade whose shutdown drain has
+   *  already begun (`closed`). */
   reason_if_skipped?:
     | 'debounced'
     | 'coalesced'
     | 'no_such_surface'
-    | 'not_evictable';
+    | 'not_evictable'
+    | 'closed';
 }
 
 export type ServerRpcRegistry = {

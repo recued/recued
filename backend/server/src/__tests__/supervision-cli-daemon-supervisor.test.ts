@@ -274,6 +274,87 @@ describe('cli-daemon-supervisor — stop + reconcile + dispose', () => {
     await vi.advanceTimersByTimeAsync(POLL + 1_000);
     expect(h.executor).toHaveBeenCalledTimes(1);
   });
+
+  it('disposeAll drains a restart launch whose timer has already fired', async () => {
+    const h = harness();
+    await h.supervisor.start(config());
+    h.fs.set(EXIT(1));
+    await vi.advanceTimersByTimeAsync(POLL);
+
+    let releaseLaunch!: () => void;
+    const launchHeld = new Promise<void>((resolve) => { releaseLaunch = resolve; });
+    h.executor.mockImplementationOnce(async () => {
+      await launchHeld;
+      return { mode: 'detached', pid: 5252 };
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(h.executor).toHaveBeenCalledTimes(2);
+
+    let disposed = false;
+    const disposing = h.supervisor.disposeAll().then(() => { disposed = true; });
+    await Promise.resolve();
+    expect(disposed).toBe(false);
+
+    releaseLaunch();
+    await disposing;
+    expect(disposed).toBe(true);
+    expect(h.supervisor.isTracked(ING, OP)).toBe(false);
+
+    // The just-finished launch must not arm an orphan poll/restart after the
+    // supervisor has detached for server shutdown.
+    h.fs.set(EXIT(1));
+    await vi.advanceTimersByTimeAsync(POLL + 1_000);
+    expect(h.executor).toHaveBeenCalledTimes(2);
+  });
+
+  it('disposeAll drains lifecycle audit writes before releasing supervisor state', async () => {
+    const h = harness();
+    let releaseAudit!: () => void;
+    const auditHeld = new Promise<void>((resolve) => { releaseAudit = resolve; });
+    h.audit.mockImplementationOnce(() => auditHeld);
+
+    await h.supervisor.start(config());
+    let disposed = false;
+    const disposing = h.supervisor.disposeAll().then(() => { disposed = true; });
+    await Promise.resolve();
+    expect(disposed).toBe(false);
+
+    releaseAudit();
+    await disposing;
+    expect(disposed).toBe(true);
+    expect(h.supervisor.isTracked(ING, OP)).toBe(false);
+  });
+
+  it('stop() waits for a restart launch in flight and stops its resulting pid', async () => {
+    const h = harness();
+    await h.supervisor.start(config());
+    h.fs.set(EXIT(1));
+    await vi.advanceTimersByTimeAsync(POLL);
+
+    let releaseLaunch!: () => void;
+    const launchHeld = new Promise<void>((resolve) => { releaseLaunch = resolve; });
+    h.executor.mockImplementationOnce(async () => {
+      await launchHeld;
+      return { mode: 'detached', pid: 5252 };
+    });
+    await vi.advanceTimersByTimeAsync(1_000);
+
+    let stopped = false;
+    const stopping = h.supervisor.stop(ING, OP).then((result) => {
+      stopped = true;
+      return result;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    expect(h.kill).not.toHaveBeenCalledWith(5252, 'SIGTERM');
+
+    h.setAlive(false);
+    releaseLaunch();
+    const result = await stopping;
+    expect(result.state).toBe('stopped');
+    expect(h.kill).toHaveBeenCalledWith(5252, 'SIGTERM');
+    expect(h.supervisor.status(ING, OP)?.state).toBe('stopped');
+  });
 });
 
 describe('process-group-kill', () => {

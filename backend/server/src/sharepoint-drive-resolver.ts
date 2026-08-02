@@ -21,6 +21,10 @@
  *  Spec: D-192; enrollment sibling of `onedrive.ts`. */
 
 import { MICROSOFT_GRAPH_API_BASE } from '@recued/contracts';
+import {
+  makeBoundedOriginHttpFetcher,
+  type BoundedHttpFetcher,
+} from './bounded-origin-http-fetcher.js';
 
 export type SharePointDriveResolution =
   | { ok: true; drive_id: string }
@@ -73,6 +77,8 @@ export const resolveSharePointDriveId = async (opts: {
   token: string;
   graphBase?: string;
   fetchImpl: typeof fetch;
+  timeoutMs?: number;
+  maxResponseBytes?: number;
 }): Promise<SharePointDriveResolution> => {
   const parsed = parseSharePointSiteUrl(opts.siteUrl);
   if ('error' in parsed) {
@@ -83,9 +89,16 @@ export const resolveSharePointDriveId = async (opts: {
     parsed.hostname,
     parsed.sitePath,
   );
-  let res: Response;
+  const fetchGraph = makeBoundedOriginHttpFetcher({
+    fetchImpl: opts.fetchImpl,
+    ...(opts.timeoutMs !== undefined ? { timeoutMs: opts.timeoutMs } : {}),
+    ...(opts.maxResponseBytes !== undefined
+      ? { maxResponseBytes: opts.maxResponseBytes }
+      : {}),
+  });
+  let res: Awaited<ReturnType<BoundedHttpFetcher>>;
   try {
-    res = await opts.fetchImpl(endpoint, {
+    res = await fetchGraph(endpoint, {
       method: 'GET',
       headers: { authorization: `Bearer ${opts.token}` },
     });

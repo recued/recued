@@ -426,6 +426,7 @@ describe('D-192 M4c-UI — trigger editor host wiring', () => {
     h.field('display_name', 'New Slack', 'INPUT');
     h.field('config.channel_id', 'C9', 'INPUT');
     h.field('auth.token', 'xoxb-new', 'INPUT');
+    h.field('auth.app_token', 'xapp-new', 'INPUT');
     h.field('config.match_patterns.0.kind', 'tag', 'SELECT');
     h.field('config.match_patterns.0.value', 'commit', 'INPUT');
     h.click({ action: 'connections-submit-form' });

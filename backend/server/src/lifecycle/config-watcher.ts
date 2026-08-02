@@ -85,8 +85,9 @@ export interface ConfigWatcher {
   /** Begin watching the file if `watchFile` is enabled. No-op when
    *  disabled or when configPath is null. */
   start(): void;
-  /** Stop watching. Safe to call when not started. */
-  stop(): void;
+  /** Stop watching, reject new reload admission, and drain an admitted load.
+   *  Safe to call when not started. */
+  stop(): Promise<void>;
   /** True between start() and stop(). */
   readonly watching: boolean;
 }
@@ -118,6 +119,16 @@ export const createConfigWatcher = (
 
   let watcher: { close: () => void } | null = null;
   let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+  let accepting = true;
+  let generation = 0;
+  let reloadTail: Promise<void> = Promise.resolve();
+
+  const skipped = (reason: string): ReloadInfo => ({
+    runtime_changed: [],
+    bootstrap_changed: [],
+    restart_required: false,
+    reason,
+  });
 
   const diffBootstrap = (next: BootstrapConfig): string[] => {
     const changed: string[] = [];
@@ -165,17 +176,12 @@ export const createConfigWatcher = (
     return applied;
   };
 
-  const doReload = async (reason: string): Promise<ReloadInfo> => {
+  const doReload = async (reason: string, admittedGeneration: number): Promise<ReloadInfo> => {
     if (!deps.configPath) {
       log('warn', 'reload requested but no config file path — skipping', {
         reason,
       });
-      return {
-        runtime_changed: [],
-        bootstrap_changed: [],
-        restart_required: false,
-        reason,
-      };
+      return skipped(reason);
     }
 
     let loaded: LoadedConfig;
@@ -185,13 +191,14 @@ export const createConfigWatcher = (
       log('error', 'reload: loadConfig failed — keeping current values', {
         err: errShape(err),
       });
-      return {
-        runtime_changed: [],
-        bootstrap_changed: [],
-        restart_required: false,
-        reason,
-      };
+      return skipped(reason);
     }
+
+    // stop() closes admission synchronously. A load that was already awaiting
+    // disk I/O must not apply runtime values or lifecycle-state writes after a
+    // drain has begun; generation also prevents an old load from leaking into
+    // a later stop/start cycle.
+    if (!accepting || admittedGeneration !== generation) return skipped(reason);
 
     const bootstrapChanged = diffBootstrap(loaded.bootstrap);
     const runtimeChanged = diffRuntime(loaded.runtime);
@@ -222,20 +229,37 @@ export const createConfigWatcher = (
     return info;
   };
 
+  const enqueueReload = (reason: string): Promise<ReloadInfo> => {
+    if (!accepting) return Promise.resolve(skipped(reason));
+    const admittedGeneration = generation;
+    const task = reloadTail.then(() => {
+      if (!accepting || admittedGeneration !== generation) return skipped(reason);
+      return doReload(reason, admittedGeneration);
+    });
+    // Keep the admission queue usable even if an unexpected callback throws;
+    // the caller still receives the original rejection.
+    reloadTail = task.then(() => undefined, () => undefined);
+    return task;
+  };
+
   const fsWatchTrigger = () => {
     if (debounceTimer) clearTimeout(debounceTimer);
     debounceTimer = setTimeout(() => {
       debounceTimer = null;
-      void doReload('fs.watch').catch((err) => {
+      void enqueueReload('fs.watch').catch((err) => {
         log('error', 'fs.watch reload failed', { err: errShape(err) });
       });
     }, debounceMs);
   };
 
   return {
-    reload: doReload,
+    reload: enqueueReload,
 
     start() {
+      if (!accepting) {
+        accepting = true;
+        generation += 1;
+      }
       if (watcher || !deps.watchFile || !deps.configPath) return;
       const watchImpl = deps.watchImpl ?? defaultFsWatch;
       try {
@@ -249,6 +273,10 @@ export const createConfigWatcher = (
     },
 
     stop() {
+      if (accepting) {
+        accepting = false;
+        generation += 1;
+      }
       if (watcher) {
         try {
           watcher.close();
@@ -261,6 +289,7 @@ export const createConfigWatcher = (
         clearTimeout(debounceTimer);
         debounceTimer = null;
       }
+      return reloadTail;
     },
 
     get watching() {

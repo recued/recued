@@ -469,6 +469,112 @@ const emptyBridgeCapabilityProfile = (): BridgeCapabilityProfile => ({
   alarms_supported: false,
 });
 
+/** Maximum size of one inbound JSON message on the primary rpc socket.
+ *
+ *  Recipe authoring and other application envelopes can legitimately be much
+ *  larger than the small HTTP control bodies, so keep a generous 4 MiB
+ *  ceiling. The `ws` default is 100 MiB, however, which lets one authenticated
+ *  client make the server allocate and then stringify/parse a very large frame
+ *  before any rpc-level validation can run. Binary file and archive traffic
+ *  uses the separately capped data sockets below. */
+export const RPC_WS_MAX_PAYLOAD_BYTES = 4 * 1024 * 1024;
+
+/** Bound asynchronous rpc work admitted from the primary socket.
+ *
+ *  A paired client may legitimately fan out independent reads, so these are
+ *  deliberately generous rather than a throughput throttle. Without a hard
+ *  ceiling, however, one buggy or compromised bearer can enqueue an
+ *  unbounded number of slow handlers and retain their request state until the
+ *  downstream calls settle. The global ceiling also covers reconnect/many-tab
+ *  fan-out that would evade a per-socket limit. */
+export const RPC_WS_MAX_IN_FLIGHT_PER_CLIENT = 64;
+export const RPC_WS_MAX_IN_FLIGHT_GLOBAL = 256;
+
+/** Maximum simultaneously running upload chunks / archive chunks / archive
+ *  downloads across all data sockets. The shipped upload transport is
+ *  strictly ack-paced (one chunk in flight per socket); this process-wide cap
+ *  prevents a bearer from bypassing that property with many sockets. */
+export const DATA_WS_MAX_IN_FLIGHT_GLOBAL = 16;
+
+/** Maximum serialized JSON bytes queued on one WebSocket. A normal socket
+ *  drains each send promptly; crossing this generous ceiling means the peer is
+ *  stalled (or one response is pathologically large), and retaining more
+ *  frames only converts that peer into an unbounded process-memory sink. */
+export const WS_JSON_MAX_BUFFERED_BYTES = 16 * 1024 * 1024;
+
+export type BoundedWsJsonSendResult =
+  | { ok: true; bytes: number }
+  | {
+      ok: false;
+      reason: 'closed' | 'serialization_error' | 'backpressure' | 'transport_error';
+      detail?: string;
+    };
+
+/** Serialize + enqueue one JSON frame under a hard per-socket pressure cap.
+ *  Exported as a leaf helper so the memory-safety behavior is testable without
+ *  manufacturing kernel socket backpressure. */
+export const sendBoundedWsJson = (
+  socket: {
+    readyState: number;
+    bufferedAmount?: number;
+    send(data: string): void;
+    terminate?: () => void;
+    close?: () => void;
+  },
+  data: unknown,
+  openState = 1,
+): BoundedWsJsonSendResult => {
+  if (socket.readyState !== openState) return { ok: false, reason: 'closed' };
+  const terminate = (): void => {
+    try {
+      if (typeof socket.terminate === 'function') socket.terminate();
+      else socket.close?.();
+    } catch { /* already closed */ }
+  };
+
+  let serialized: string | undefined;
+  try {
+    serialized = JSON.stringify(data);
+  } catch (err) {
+    terminate();
+    return {
+      ok: false,
+      reason: 'serialization_error',
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+  if (serialized === undefined) {
+    terminate();
+    return { ok: false, reason: 'serialization_error', detail: 'JSON value is not serializable' };
+  }
+
+  const bytes = Buffer.byteLength(serialized, 'utf8');
+  const rawBuffered = socket.bufferedAmount;
+  const buffered = typeof rawBuffered === 'number' && Number.isFinite(rawBuffered) && rawBuffered > 0
+    ? rawBuffered
+    : 0;
+  if (bytes > WS_JSON_MAX_BUFFERED_BYTES || buffered > WS_JSON_MAX_BUFFERED_BYTES - bytes) {
+    terminate();
+    return { ok: false, reason: 'backpressure' };
+  }
+
+  try {
+    socket.send(serialized);
+    return { ok: true, bytes };
+  } catch (err) {
+    // Preserve the caller-visible transport error without forcing a second
+    // lifecycle transition here. In-memory/test transports and some adapters
+    // deliberately throw while the socket remains closable; the owner decides
+    // whether/when to revoke it. Backpressure above is the branch that must
+    // terminate immediately to bound retained memory.
+    return {
+      ok: false,
+      reason: 'transport_error',
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+};
+
 // ────────────────────────────────────────────────────────────────
 // Types
 // ────────────────────────────────────────────────────────────────
@@ -709,8 +815,9 @@ export interface WsServerHandle {
    *  the cloud-side heartbeat emitter builds. Fire-and-forget —
    *  a missed push surfaces as a stale snapshot (pill goes gray). */
   broadcastServerHeartbeat(payload: unknown): void;
-  /** Close all connections. */
-  close(): void;
+  /** Close upgrade/message admission + all connections, then drain rpc/data
+   *  handlers and bearer checks admitted before teardown began. Idempotent. */
+  close(): Promise<void>;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -1449,7 +1556,7 @@ const buildWsBinding = (
         revokeConnectedInstance: () => ({ revoked: false }),
         revokeAllConnectedInstances: () => 0,
         closeAllForWsLockout: () => 0,
-        close: () => {},
+        close: () => Promise.resolve(),
       },
       upgrade: (_req, socket) => { try { socket.destroy(); } catch { /* socket already closed */ } },
     };
@@ -1956,11 +2063,7 @@ const buildWsBinding = (
         ? {
             bus: eventsDeps.bus,
             pushToClient: (client, payload) => {
-              try {
-                if (client.ws.readyState === WS_OPEN) {
-                  client.ws.send(JSON.stringify(payload));
-                }
-              } catch { /* non-fatal — client disconnect race */ }
+              send(client.ws, payload);
             },
             subscriberId: (client) => client.ws,
           }
@@ -1983,11 +2086,50 @@ const buildWsBinding = (
     lifecycleState,
   });
 
-  const WsServer = ws.WebSocketServer as new (opts: { noServer: boolean; maxPayload?: number }) => any;
+  const WsServer = ws.WebSocketServer as new (opts: {
+    noServer: boolean;
+    maxPayload?: number;
+    perMessageDeflate?: boolean;
+  }) => any;
   const WS_OPEN = ws.WebSocket?.OPEN ?? ws.OPEN ?? 1;
 
-  const wss = new WsServer({ noServer: true });
+  const wss = new WsServer({
+    noServer: true,
+    maxPayload: RPC_WS_MAX_PAYLOAD_BYTES,
+    perMessageDeflate: false,
+  });
   const clients = new Map<any, WsClient>();
+  const activeRpcDispatches = new Set<Promise<void>>();
+  const activeRpcDispatchCountBySocket = new WeakMap<object, number>();
+  const activeDataSocketDispatches = new Set<Promise<void>>();
+  const activeUpgradeVerifications = new Set<Promise<void>>();
+  let upgradeAdmissionOpen = true;
+  let rpcAdmissionOpen = true;
+  let dataSocketAdmissionOpen = true;
+  let closePromise: Promise<void> | undefined;
+
+  /** Own async work launched by the three binary data sockets. Transport
+   *  teardown stops new messages, but the service promise may already be past
+   *  its socket read and writing SQLite/files; terminal close must wait for it
+   *  before the caller closes those resources. */
+  const trackDataSocketDispatch = (task: Promise<void>): void => {
+    activeDataSocketDispatches.add(task);
+    const clear = (): void => { activeDataSocketDispatches.delete(task); };
+    void task.then(clear, clear);
+  };
+
+  const trackUpgradeVerification = (task: Promise<void>): void => {
+    activeUpgradeVerifications.add(task);
+    const clear = (): void => { activeUpgradeVerifications.delete(task); };
+    void task.then(clear, clear);
+  };
+
+  const terminateDataSocket = (socket: any): void => {
+    try {
+      if (typeof socket.terminate === 'function') socket.terminate();
+      else socket.close();
+    } catch { /* already closed */ }
+  };
 
   // D-172 resumable uploads — a SEPARATE WebSocketServer for the dedicated
   // binary `/ws/upload` data socket. Kept distinct from the rpc `wss` on
@@ -2114,13 +2256,13 @@ const buildWsBinding = (
       if (target.ws.readyState !== WS_OPEN) {
         return { ok: false, reason: 'bridge_offline' };
       }
-      try {
-        target.ws.send(JSON.stringify(envelope));
-      } catch (err) {
+      const sent = sendBoundedWsJson(target.ws, envelope, WS_OPEN);
+      if (!sent.ok) {
+        if (sent.reason === 'closed') return { ok: false, reason: 'bridge_offline' };
         return {
           ok: false,
           reason: 'transport_error',
-          detail: err instanceof Error ? err.message : String(err),
+          detail: sent.detail ?? sent.reason,
         };
       }
       return { ok: true };
@@ -2198,6 +2340,10 @@ const buildWsBinding = (
   // store is wired, raw/opaque bearers reject at upgrade; db-less
   // harnesses without the store retain their legacy path.
   const upgradeHandler: PortUpgradeHandler = (req: IncomingMessage, socket: Socket, head: Buffer) => {
+    if (!upgradeAdmissionOpen) {
+      try { socket.destroy(); } catch { /* already closed */ }
+      return;
+    }
     const url = req.url ?? '';
     if (!url.startsWith('/ws')) {
       socket.destroy();
@@ -2315,22 +2461,33 @@ const buildWsBinding = (
       const uploadService = uploadDeps.service;
       uploadWss.handleUpgrade(req, socket, head, (wsUp: any) => {
         wsUp.binaryType = 'nodebuffer';
+        let chunkInFlight = false;
         wsUp.on('message', (raw: any, isBinary: boolean) => {
+          if (!dataSocketAdmissionOpen) return;
           // The data socket carries ONLY binary chunk frames; the control plane
           // (create / probe / finalize / delete) is rpc on the other socket. A
           // text frame is a protocol violation → ignore.
           if (!isBinary) return;
+          // The client is ack-paced. A second frame before the first settles
+          // would otherwise append another retained closure to the upload
+          // core's per-id promise chain. Many sockets are bounded globally.
+          if (chunkInFlight || activeDataSocketDispatches.size >= DATA_WS_MAX_IN_FLIGHT_GLOBAL) {
+            terminateDataSocket(wsUp);
+            return;
+          }
+          chunkInFlight = true;
           const frame: Uint8Array = Array.isArray(raw) ? Buffer.concat(raw) : (raw as Uint8Array);
-          uploadService
+          const task = uploadService
             .handleChunkFrame(scope_key, frame)
             .then((ack) => {
-              if (wsUp.readyState === WS_OPEN) wsUp.send(JSON.stringify(ack));
+              sendBoundedWsJson(wsUp, ack, WS_OPEN);
             })
             .catch(() => {
               // `handleChunkFrame` is total (every path resolves to an ack), so
               // this only guards against an unexpected unhandled rejection —
               // drop quietly; the client re-sends on its no-ack timeout.
             });
+          trackDataSocketDispatch(task.finally(() => { chunkInFlight = false; }));
         });
         wsUp.on('error', () => { /* socket-level error — the close path tears down */ });
       });
@@ -2361,22 +2518,30 @@ const buildWsBinding = (
       const archiveUploadService = archiveUploadDeps.service;
       archiveUploadWss.handleUpgrade(req, socket, head, (wsUp: any) => {
         wsUp.binaryType = 'nodebuffer';
+        let chunkInFlight = false;
         wsUp.on('message', (raw: any, isBinary: boolean) => {
+          if (!dataSocketAdmissionOpen) return;
           // The data socket carries ONLY binary chunk frames; the control plane
           // (create / probe / finalize / delete) is rpc on the other socket. A
           // text frame is a protocol violation → ignore.
           if (!isBinary) return;
+          if (chunkInFlight || activeDataSocketDispatches.size >= DATA_WS_MAX_IN_FLIGHT_GLOBAL) {
+            terminateDataSocket(wsUp);
+            return;
+          }
+          chunkInFlight = true;
           const frame: Uint8Array = Array.isArray(raw) ? Buffer.concat(raw) : (raw as Uint8Array);
-          archiveUploadService
+          const task = archiveUploadService
             .handleChunkFrame(scope_key, frame)
             .then((ack) => {
-              if (wsUp.readyState === WS_OPEN) wsUp.send(JSON.stringify(ack));
+              sendBoundedWsJson(wsUp, ack, WS_OPEN);
             })
             .catch(() => {
               // `handleChunkFrame` is total (every path resolves to an ack), so
               // this only guards an unexpected unhandled rejection — drop
               // quietly; the client re-sends on its no-ack timeout.
             });
+          trackDataSocketDispatch(task.finally(() => { chunkInFlight = false; }));
         });
         wsUp.on('error', () => { /* socket-level error — the close path tears down */ });
       });
@@ -2422,12 +2587,17 @@ const buildWsBinding = (
         // is in flight would interleave chunks — both ignored.
         let started = false;
         wsDl.on('message', (raw: any, isBinary: boolean) => {
-          if (isBinary || started) return;
+          if (!dataSocketAdmissionOpen || isBinary || started) return;
+          if (activeDataSocketDispatches.size >= DATA_WS_MAX_IN_FLIGHT_GLOBAL) {
+            terminateDataSocket(wsDl);
+            return;
+          }
           started = true;
           const text = typeof raw === 'string' ? raw : (raw as Buffer).toString('utf8');
-          downloadService.handleStart(text, sink).catch(() => {
+          const task = downloadService.handleStart(text, sink).catch(() => {
             // handleStart is total; this only guards an unexpected rejection.
           });
+          trackDataSocketDispatch(task);
         });
         wsDl.on('error', () => { /* socket-level error — the close path tears down */ });
       });
@@ -2457,9 +2627,16 @@ const buildWsBinding = (
         accept(undefined);
         return;
       }
-      clientTokens!
+      const task = clientTokens!
         .verify(structured.token_id, structured.bearer)
         .then(({ ok, record }) => {
+          // The verifier may have been doing Argon2 work while terminal close
+          // shut every WebSocketServer. Never touch SQLite or accept the raw
+          // socket after that fence.
+          if (!upgradeAdmissionOpen) {
+            try { socket.destroy(); } catch { /* already closed */ }
+            return;
+          }
           if (!ok || !record) { reject401(); return; }
           // Stamp last_used_at — best-effort; a touch failure shouldn't block
           // the accepted upgrade (the verify already succeeded so the bearer is
@@ -2482,6 +2659,7 @@ const buildWsBinding = (
           // unexpected Argon2id throw must not silently accept).
           reject401();
         });
+      trackUpgradeVerification(task);
     };
 
     // Route the upgrade: the dedicated binary upload data socket (only when the
@@ -2937,10 +3115,30 @@ const buildWsBinding = (
       // separate per-endpoint message types (execute_request, etc.). The
       // handler runs async; the message loop never blocks on a slow rpc.
       case 'rpc': {
+        // Terminal close flips this before taking the active-dispatch snapshot.
+        // The event loop cannot interleave another message between those two
+        // synchronous operations, so every admitted task is owned by close().
+        if (!rpcAdmissionOpen) break;
         const requestId = msg.request_id as string;
         if (!requestId) break; // can't correlate a reply, drop silently
         const method = msg.method as string;
         const args = (msg.args as Record<string, unknown>) ?? {};
+
+        const socketInFlight = activeRpcDispatchCountBySocket.get(client.ws) ?? 0;
+        if (
+          socketInFlight >= RPC_WS_MAX_IN_FLIGHT_PER_CLIENT
+          || activeRpcDispatches.size >= RPC_WS_MAX_IN_FLIGHT_GLOBAL
+        ) {
+          send(client.ws, {
+            type: 'rpc_result',
+            request_id: requestId,
+            error: {
+              code: 'rpc_overloaded',
+              message: 'Too many RPC calls are already running; retry shortly.',
+            },
+          });
+          break;
+        }
 
         // Pre-enrollment gate (mirror of the register-message gate):
         // until the realm has a recovery-key check enrolled, the only
@@ -2963,7 +3161,7 @@ const buildWsBinding = (
           break;
         }
 
-        void (async () => {
+        const task = (async () => {
           try {
             // D-151 follow-on — resolve the caller's paired-instance
             // identity for the rpc gate layer ONLY. Webclients are
@@ -2999,15 +3197,22 @@ const buildWsBinding = (
             });
           }
         })();
+        activeRpcDispatches.add(task);
+        activeRpcDispatchCountBySocket.set(client.ws, socketInFlight + 1);
+        const clear = (): void => {
+          activeRpcDispatches.delete(task);
+          const remaining = (activeRpcDispatchCountBySocket.get(client.ws) ?? 1) - 1;
+          if (remaining > 0) activeRpcDispatchCountBySocket.set(client.ws, remaining);
+          else activeRpcDispatchCountBySocket.delete(client.ws);
+        };
+        void task.then(clear, clear);
         break;
       }
     }
   };
 
   const send = (ws: any, data: unknown): void => {
-    if (ws.readyState === WS_OPEN) {
-      ws.send(JSON.stringify(data));
-    }
+    sendBoundedWsJson(ws, data, WS_OPEN);
   };
 
   handle = {
@@ -3300,8 +3505,24 @@ const buildWsBinding = (
     ...(bridgeDispatcher ? { bridgeDispatcher } : {}),
 
     close() {
+      if (closePromise) return closePromise;
+      // Close every admission door before snapshotting the tasks below. Work
+      // admitted before these assignments is already in an owned Set; work
+      // observed after them is rejected/dropped before dispatch.
+      upgradeAdmissionOpen = false;
+      rpcAdmissionOpen = false;
+      dataSocketAdmissionOpen = false;
       for (const { ws } of clients.values()) {
-        ws.close();
+        // This is terminal server teardown, not the user-visible `/ws`
+        // lockout ceremony (`closeAllForWsLockout`). A graceful `ws.close()`
+        // waits up to the library's 30-second close timeout when a peer never
+        // replies, while the lifecycle close_ws step has a much shorter hard
+        // deadline. Terminate the transport so one uncooperative paired client
+        // cannot abort shutdown, restart, or online-restore drain.
+        try {
+          if (typeof ws.terminate === 'function') ws.terminate();
+          else ws.close();
+        } catch { /* already closed */ }
       }
       clients.clear();
       // Reject-all on the four delegation maps whose callers expect an
@@ -3360,6 +3581,15 @@ const buildWsBinding = (
         }
         archiveUploadWss.close();
       }
+      // Handler errors are normalized/contained by their dispatch wrappers;
+      // allSettled is still deliberate defense-in-depth so teardown itself
+      // never rejects merely because a future reply/error path regresses.
+      closePromise = Promise.allSettled([
+        ...activeRpcDispatches,
+        ...activeDataSocketDispatches,
+        ...activeUpgradeVerifications,
+      ]).then(() => undefined);
+      return closePromise;
     },
   };
 

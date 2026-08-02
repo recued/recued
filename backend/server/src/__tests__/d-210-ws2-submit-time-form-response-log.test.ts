@@ -62,6 +62,7 @@ import { ensureReceptionSchema } from '../storage/reception-store.js';
 
 const NOW = 1_700_000_000_000;
 const ENDPOINT_ID = 'ep-ws2-log';
+const SOURCE_IP_HASH = 'endpoint-scoped-test-source';
 const FORM_DEFINITION_ID = 'enquiry-v1';
 const PII_KEY = deriveFormSubmissionPiiKeyFromSubDek(new Uint8Array(32).fill(0x6e));
 
@@ -182,6 +183,7 @@ const submit = async (input: {
     }).toString()),
     postRes,
     endpoint,
+    SOURCE_IP_HASH,
   );
 
   const row = db

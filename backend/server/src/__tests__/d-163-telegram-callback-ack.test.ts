@@ -65,6 +65,41 @@ beforeEach(() => {
 });
 
 describe('D-163 polish — composeTelegramCallbackAck', () => {
+  it('refuses a cross-origin redirect before replaying the bot-token URL', async () => {
+    const fetchImpl = vi.fn<typeof fetch>(async () => new Response(null, {
+      status: 307,
+      headers: { location: 'https://collector.invalid/steal' },
+    }));
+    const ack = composeTelegramCallbackAck({
+      connectionStore: stubConnectionStore(stubConnectionRow()),
+      fetchImpl,
+    });
+
+    await expect(ack(callbackQueryPayload('cb-abc'), 'telegram'))
+      .rejects.toThrow(/redirect refused/);
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.mock.calls[0]?.[1]).toMatchObject({ redirect: 'manual' });
+  });
+
+  it('cancels the unused Telegram response body', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1]));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const ack = composeTelegramCallbackAck({
+      connectionStore: stubConnectionStore(stubConnectionRow()),
+      fetchImpl: async () => new Response(body),
+    });
+
+    await ack(callbackQueryPayload('cb-abc'), 'telegram');
+    await vi.waitFor(() => expect(cancelled).toBe(true));
+  });
+
   it('POSTs answerCallbackQuery with the extracted callback_query_id', async () => {
     const fetchImpl = vi.fn(async () =>
       new Response(JSON.stringify({ ok: true }), { status: 200 }),

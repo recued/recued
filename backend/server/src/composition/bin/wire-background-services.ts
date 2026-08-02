@@ -33,10 +33,11 @@
  *    3. Fallback `shutdown()` (no-lifecycle path) — calls `stopAll()` once across every
  *       kind so timers, schedulers, and any future emitters all detach cleanly.
  *
- *  `stopAll()` walks in REVERSE registration order so a service registered after its
- *  dependency stops before that dependency. Per-service failures are caught + logged via
- *  `console.warn` so a broken stop can't block the rest. Filtering by `kind` is optional —
- *  omit the filter for the "everything" pathway. */
+ *  `stopAll()` invokes stops in REVERSE registration order, closing every matched service's
+ *  admission before awaiting any one drain. Per-service failures are logged and collected,
+ *  never allowed to block sibling teardown, then surfaced as an AggregateError so lifecycle
+ *  and maintenance cannot report a partial quieting as complete. Filtering by `kind` is
+ *  optional — omit the filter for the "everything" pathway. */
 
 export type ServiceKind = 'timer' | 'scheduler' | 'emitter';
 
@@ -56,11 +57,12 @@ export interface IntervalServiceSpec {
    *  getter (callers that want runtime-tuned cadences resolve their `runtimeConfig.get` at the
    *  call site). */
   readonly intervalMs: number;
-  /** Body called every `intervalMs`. Errors should be swallowed by the closure itself —
-   *  a tick that throws WILL bubble to `setInterval`'s default error handler and be
-   *  unhandled. Mirroring the pre-extraction pattern, every existing tick wraps its work in a
-   *  try/catch. */
-  readonly tick: () => void;
+  /** Body called every `intervalMs`. Async work MUST be returned rather than detached: the
+   *  registry tracks every returned promise and shutdown waits for all of them before the
+   *  database is closed. Sync throws and async rejections are isolated + logged so one
+   *  best-effort timer cannot crash the process. Overlapping ticks remain allowed; callers
+   *  that require serialization keep their own admission guard. */
+  readonly tick: () => Promise<void> | void;
   /** Fire `tick()` once synchronously at registration time. Mirrors the pre-extraction
    *  "fire once immediately so a restart sweeps without waiting a full interval" pattern. */
   readonly fireImmediate?: boolean;
@@ -83,10 +85,10 @@ export interface BackgroundServiceRegistry {
   /** Build + register an unref'd `setInterval`-based service (`kind: 'timer'`). Returns
    *  the stop closure for callers that want a local handle (e.g., to support a future
    *  per-service stop pathway). */
-  registerInterval(spec: IntervalServiceSpec): () => void;
-  /** Stop every registered service matching the optional filter, in reverse registration
-   *  order. Best-effort — per-service failures are caught + logged via `console.warn` so
-   *  one broken stop can't block the rest. Returns once every awaited stop has resolved. */
+  registerInterval(spec: IntervalServiceSpec): () => Promise<void> | void;
+  /** Stop every registered service matching the optional filter. Stop hooks are invoked in
+   *  reverse registration order before any one hook is awaited. Every sibling is attempted;
+   *  failures are logged and then surfaced as an AggregateError after all drains settle. */
   stopAll(filter?: StopAllFilter): Promise<void>;
   /** Names of registered services matching the optional filter, in registration order. */
   list(filter?: StopAllFilter): readonly string[];
@@ -99,14 +101,42 @@ export const createBackgroundServiceRegistry = (): BackgroundServiceRegistry => 
     services.push(service);
   };
 
-  const registerInterval = (spec: IntervalServiceSpec): (() => void) => {
-    const timer = setInterval(spec.tick, spec.intervalMs);
+  const registerInterval = (
+    spec: IntervalServiceSpec,
+  ): (() => Promise<void> | void) => {
+    const inFlight = new Set<Promise<void>>();
+    let stopped = false;
+    let stopPromise: Promise<void> | undefined;
+
+    const warn = (err: unknown): void => {
+      console.warn(`[background-service] ${spec.name} tick failed`, err);
+    };
+    const runTick = (): void => {
+      if (stopped) return;
+      let outcome: Promise<void> | void;
+      try {
+        outcome = spec.tick();
+      } catch (err) {
+        warn(err);
+        return;
+      }
+      if (!outcome) return;
+
+      let tracked: Promise<void>;
+      tracked = Promise.resolve(outcome)
+        .catch(warn)
+        .finally(() => {
+          inFlight.delete(tracked);
+        });
+      inFlight.add(tracked);
+    };
+
+    const timer = setInterval(runTick, spec.intervalMs);
     // `.unref?.()` so the timer doesn't hold the event loop open at shutdown. The optional
     // chaining covers timer-shim edge cases (some test runners stub `setInterval` without
     // the `.unref` method).
     timer.unref?.();
-    const stop = (): void => {
-      clearInterval(timer);
+    const finishStop = (): void => {
       if (spec.onStop) {
         try {
           spec.onStop();
@@ -115,9 +145,26 @@ export const createBackgroundServiceRegistry = (): BackgroundServiceRegistry => 
         }
       }
     };
+    const stop = (): Promise<void> => {
+      if (stopPromise) return stopPromise;
+      if (stopped) return Promise.resolve();
+      stopped = true;
+      clearInterval(timer);
+      const active = [...inFlight];
+      if (active.length === 0) {
+        // Preserve the historical synchronous onStop behaviour when there is
+        // no async tick to drain (the returned resolved promise is still
+        // awaitable by lifecycle callers).
+        finishStop();
+        stopPromise = Promise.resolve();
+      } else {
+        stopPromise = Promise.allSettled(active).then(finishStop);
+      }
+      return stopPromise;
+    };
     services.push({ name: spec.name, kind: 'timer', stop });
     if (spec.fireImmediate) {
-      spec.tick();
+      runTick();
     }
     return stop;
   };
@@ -126,16 +173,27 @@ export const createBackgroundServiceRegistry = (): BackgroundServiceRegistry => 
     !filter?.kind || svc.kind === filter.kind;
 
   const stopAll = async (filter?: StopAllFilter): Promise<void> => {
-    // Reverse-order stop so a service registered after its dependency stops before its
-    // dependency. Mirrors the dispose-stack convention used elsewhere in the codebase.
-    for (let i = services.length - 1; i >= 0; i--) {
-      const svc = services[i]!;
-      if (!matches(svc, filter)) continue;
+    const matched = services.filter((svc) => matches(svc, filter)).reverse();
+    const stops = matched.map((svc) => {
       try {
-        await svc.stop();
+        return Promise.resolve(svc.stop()).catch((err) => {
+          console.warn(`[background-service] ${svc.name} stop failed`, err);
+          throw err;
+        });
       } catch (err) {
         console.warn(`[background-service] ${svc.name} stop failed`, err);
+        return Promise.reject(err);
       }
+    });
+    const results = await Promise.allSettled(stops);
+    const errors = results
+      .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+      .map((result) => result.reason);
+    if (errors.length > 0) {
+      throw new AggregateError(
+        errors,
+        'one or more background services failed to stop',
+      );
     }
   };
 

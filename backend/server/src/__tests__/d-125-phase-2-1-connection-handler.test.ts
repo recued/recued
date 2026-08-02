@@ -91,6 +91,116 @@ describe('handleConnectionEnroll', () => {
     expect(store.get('api', 'hubspot')?.health_json).toBe('{"status":"unknown"}');
   });
 
+  it('persists an explicit local messenger mode and keeps omitted legacy requests on webhook', async () => {
+    await handleConnectionEnroll(
+      { store, now: tickNow },
+      {
+        name: 'telegram',
+        kind: 'notification',
+        subtype: 'telegram',
+        display_name: 'Telegram',
+        config: { chat_id: '1', ingress_mode: 'poll' },
+        auth: bearer('bot-token'),
+      },
+    );
+    expect(JSON.parse(store.get('notification', 'telegram')!.config_json).ingress_mode)
+      .toBe('poll');
+
+    await handleConnectionEnroll(
+      { store, now: tickNow },
+      {
+        name: 'discord',
+        kind: 'notification',
+        subtype: 'discord',
+        display_name: 'Discord',
+        config: { channel_id: '2', public_key: 'a'.repeat(64) },
+        auth: bearer('bot-token'),
+      },
+    );
+    expect(JSON.parse(store.get('notification', 'discord')!.config_json).ingress_mode)
+      .toBe('webhook');
+  });
+
+  it('requires Slack Socket Mode app credentials in encrypted auth and rejects unsupported modes', async () => {
+    const base = {
+      name: 'slack',
+      kind: 'notification' as const,
+      subtype: 'slack',
+      display_name: 'Slack',
+      config: { channel_id: 'C1', ingress_mode: 'socket' },
+    };
+    await expect(handleConnectionEnroll(
+      { store, now: tickNow },
+      { ...base, auth: bearer('xoxb-token') },
+    )).rejects.toThrow(/auth\.app_token/);
+
+    await handleConnectionEnroll(
+      { store, now: tickNow },
+      {
+        ...base,
+        auth: { type: 'bearer', token: 'xoxb-token', app_token: 'xapp-token' },
+      },
+    );
+    expect(store.get('notification', 'slack')?.config_json).toContain('"ingress_mode":"socket"');
+    expect(store.get('notification', 'slack')?.auth_ciphertext).not.toContain('xapp-token');
+
+    await expect(handleConnectionEnroll(
+      { store, now: tickNow },
+      {
+        name: 'telegram-unsupported',
+        kind: 'notification',
+        subtype: 'telegram',
+        display_name: 'Telegram',
+        config: { chat_id: '1', ingress_mode: 'socket' },
+        auth: bearer('bot-token'),
+      },
+    )).rejects.toThrow(/ingress_mode must be one of 'poll' or 'webhook'/);
+  });
+
+  it('requires verification material for an explicit webhook and preserves it on edit', async () => {
+    await expect(handleConnectionEnroll(
+      { store, now: tickNow },
+      {
+        name: 'telegram-new-webhook',
+        kind: 'notification',
+        subtype: 'telegram',
+        display_name: 'Telegram',
+        config: { chat_id: '1', ingress_mode: 'webhook' },
+        auth: bearer('bot-token'),
+      },
+    )).rejects.toThrow(/webhook mode requires config\.webhook_secret/);
+
+    await handleConnectionEnroll(
+      { store, now: tickNow },
+      {
+        name: 'telegram-legacy-webhook',
+        kind: 'notification',
+        subtype: 'telegram',
+        display_name: 'Telegram',
+        // Omitted mode represents an older client and remains compatible.
+        config: { chat_id: '1', webhook_secret: 'saved-secret' },
+        auth: bearer('bot-token'),
+      },
+    );
+    await handleConnectionUpdate(
+      { store, now: tickNow },
+      {
+        name: 'telegram-legacy-webhook',
+        kind: 'notification',
+        patch: {
+          config: { chat_id: '2', ingress_mode: 'webhook' },
+        },
+      },
+    );
+    expect(JSON.parse(
+      store.get('notification', 'telegram-legacy-webhook')!.config_json,
+    )).toMatchObject({
+      chat_id: '2',
+      ingress_mode: 'webhook',
+      webhook_secret: 'saved-secret',
+    });
+  });
+
   it('enrolls a MULTI-header auth (Plaid PLAID-CLIENT-ID + PLAID-SECRET); view leaks neither value', async () => {
     const result = await handleConnectionEnroll(
       { store, now: tickNow },

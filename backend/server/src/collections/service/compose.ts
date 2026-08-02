@@ -183,7 +183,10 @@ export const composeServiceStack = (
   const templates = buildServiceTemplateResolver(opts.manifests);
 
   // Audit adapter — one ActivityEntry per ServiceAuditEvent.
+  const pendingAuditWrites = new Set<Promise<void>>();
+  let auditAccepting = true;
   const emitAudit = (evt: ServiceAuditEvent): void => {
+    if (!auditAccepting) return;
     if (!opts.auditLog) {
       log('info', `service_event ${evt.event_name} ${evt.slug}`, evt);
       return;
@@ -200,14 +203,33 @@ export const composeServiceStack = (
         error: evt.error,
       }),
     };
-    // Fire-and-forget — audit writes never block supervisor /
-    // dispatcher hot paths.
-    void opts.auditLog.logActivity(entry).catch((err) => {
-      log('warn', 'service audit write failed', {
-        slug: evt.slug,
-        err: err instanceof Error ? err.message : String(err),
+    // Non-blocking on hot paths, but still owned by the stack: disposeAll()
+    // closes admission and drains these writes before lifecycle closes SQLite.
+    let write: Promise<void>;
+    try {
+      write = Promise.resolve(opts.auditLog.logActivity(entry)).catch((err) => {
+        try {
+          log('warn', 'service audit write failed', {
+            slug: evt.slug,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        } catch {
+          // Diagnostics must not turn a contained audit failure into an
+          // unhandled rejection.
+        }
       });
-    });
+    } catch (err) {
+      try {
+        log('warn', 'service audit write failed', {
+          slug: evt.slug,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      } catch { /* diagnostics are best-effort */ }
+      return;
+    }
+    pendingAuditWrites.add(write);
+    const clear = (): void => { pendingAuditWrites.delete(write); };
+    void write.then(clear, clear);
   };
 
   // Checker context — Phase 4 dispatcher defaults are real-Node
@@ -432,15 +454,13 @@ export const composeServiceStack = (
           });
         }
       }
-      // Re-register the health loop in case the interval or check
-      // spec changed.
-      if (spec.health_check) {
-        healthLoops.remove(slug);
-        healthLoops.add(spec);
-      }
+      // Re-register in case the interval/check changed. Removal is
+      // unconditional: changing health_check to null must retire the old loop.
+      await healthLoops.remove(slug);
+      if (spec.health_check) healthLoops.add(spec);
     },
     onDeleting: async (slug) => {
-      healthLoops.remove(slug);
+      await healthLoops.remove(slug);
       if (supervisor.isTracked(slug)) {
         try { await supervisor.stop(slug); }
         catch (err) {
@@ -512,14 +532,36 @@ export const composeServiceStack = (
     }
   };
 
-  const disposeAll = async (): Promise<void> => {
-    try { samplerStop(); } catch { /* ignore */ }
-    try { healthLoops.stopAll(); } catch { /* ignore */ }
-    try { await supervisor.shutdown(); } catch (err) {
-      log('warn', 'service supervisor.shutdown failed', {
-        err: err instanceof Error ? err.message : String(err),
-      });
+  let disposePromise: Promise<void> | null = null;
+  const disposeAll = (): Promise<void> => {
+    if (disposePromise) return disposePromise;
+
+    // Close every admission gate synchronously before awaiting a single drain.
+    // The lifecycle pauses collections before waiting for already-admitted RPCs,
+    // so those RPCs must be unable to recreate a timer, child, or audit write.
+    auditAccepting = false;
+    let samplerDrain: Promise<void>;
+    try {
+      samplerDrain = Promise.resolve(samplerStop());
+    } catch {
+      samplerDrain = Promise.resolve();
     }
+    const healthDrain = healthLoops.stopAll();
+    const supervisorDrain = supervisor.shutdown();
+
+    disposePromise = (async () => {
+      try { await samplerDrain; } catch { /* ignore */ }
+      try { await healthDrain; } catch { /* ignore */ }
+      try { await supervisorDrain; } catch (err) {
+        log('warn', 'service supervisor.shutdown failed', {
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+      while (pendingAuditWrites.size > 0) {
+        await Promise.allSettled([...pendingAuditWrites]);
+      }
+    })();
+    return disposePromise;
   };
 
   return {

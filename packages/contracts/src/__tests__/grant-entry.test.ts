@@ -12,11 +12,14 @@ import { describe, expect, it } from 'vitest';
 import {
   classifyGrantEntry,
   collectionGrantEntry,
+  declaredOperationIdReservedPrefix,
+  INGREDIENT_GRANT_PREFIX,
   isCollectionGrantEntry,
   isOpGrantEntry,
   isTopicGrantEntry,
   opGrantEntry,
   parseGrantEntry,
+  primitiveGrantEntry,
   topicGrantEntry,
 } from '../grant-entry.js';
 import {
@@ -40,6 +43,17 @@ describe('grant-entry taxonomy — format', () => {
   it('opGrantEntry fails LOUD on a reserved-prefix id (would mis-classify at the gate)', () => {
     expect(() => opGrantEntry('data.mail')).toThrow(/reserved_prefix/);
     expect(() => opGrantEntry('enrichment.embedding')).toThrow(/reserved_prefix/);
+  });
+
+  it('keeps server-owned op ids grantable while reserving them from declarations', () => {
+    const primitive = primitiveGrantEntry('recipe.run');
+    const ingredient = `${INGREDIENT_GRANT_PREFIX}mail-send_01234567`;
+    for (const opId of ['core.mail.send', primitive, ingredient]) {
+      expect(opGrantEntry(opId), opId).toBe(opId);
+      expect(classifyGrantEntry(opId), opId).toBe('op');
+      expect(declaredOperationIdReservedPrefix(opId), opId).toBeDefined();
+    }
+    expect(declaredOperationIdReservedPrefix('alice.mail-pack.message.send')).toBeUndefined();
   });
 });
 

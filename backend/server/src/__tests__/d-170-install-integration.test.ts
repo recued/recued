@@ -284,7 +284,11 @@ describe('D-170 install integration — wide composition in an app_pack', () => 
     // Catalog resolves through the registry with its operations (N.16).
     const catalog = env.registry.get('acme');
     expect(catalog?.operations).toMatchObject({
-      'deal.read': { risk_tier: 'read', approval: 'never' },
+      'deal.read': {
+        operation_id: 'recued-core/acme.deal.read',
+        risk_tier: 'read',
+        approval: 'never',
+      },
       'deal.create': { risk_tier: 'write', approval: 'ask' },
     });
 
@@ -304,6 +308,25 @@ describe('D-170 install integration — wide composition in an app_pack', () => 
     });
   });
 
+  it('stamps a third-party body and grant ids with verified pack provenance', async () => {
+    const manifest = {
+      ...appPack(wideComposition()),
+      publisher: 'community-author',
+    };
+
+    const result = await env.install(manifest);
+
+    expect(result.ok).toBe(true);
+    const catalog = env.registry.get('acme');
+    expect(catalog?.author).toBe('community-author');
+    expect(catalog?.operations?.['deal.read']?.operation_id)
+      .toBe('community-author.acme-crm.deal.read');
+    expect(catalog?.operations?.['deal.create']?.operation_id)
+      .toBe('community-author.acme-crm.deal.create');
+    expect(Object.values(catalog?.operations ?? {}).map((spec) => spec.operation_id))
+      .not.toContain('recued-core/acme.deal.read');
+  });
+
   it('uninstalls the pack, removing catalog body + inventory + deregistering', async () => {
     await env.install(appPack(wideComposition()));
     const result = await env.uninstall({ pack_slug: 'acme-crm' });
@@ -317,8 +340,8 @@ describe('D-170 install integration — wide composition in an app_pack', () => 
 
   it('keeps a catalog shared by another installed pack (refcount-aware uninstall)', async () => {
     // Two packs both declare catalog slug `acme` (re-install path allowed).
-    await env.install(appPack(wideComposition('acme'), 'acme-crm-a'));
-    await env.install(appPack(wideComposition('acme'), 'acme-crm-b'));
+    expect((await env.install(appPack(wideComposition('acme'), 'acme-crm-a'))).ok).toBe(true);
+    expect((await env.install(appPack(wideComposition('acme'), 'acme-crm-b'))).ok).toBe(true);
 
     // Uninstall A → `acme` survives (B still lists it).
     const a = await env.uninstall({ pack_slug: 'acme-crm-a' });
@@ -332,6 +355,30 @@ describe('D-170 install integration — wide composition in an app_pack', () => 
     expect(b.ok).toBe(true);
     if (b.ok) expect(b.removed_ingredient_ids).toEqual(['acme']);
     expect(env.registry.get('acme')).toBeNull();
+  });
+
+  it('refuses a second pack that would rewrite a shared slug under another grant identity', async () => {
+    const first = {
+      ...appPack(wideComposition('acme'), 'alice-crm'),
+      publisher: 'alice-publisher',
+    };
+    const second = {
+      ...appPack(wideComposition('acme'), 'bob-crm'),
+      publisher: 'bob-publisher',
+    };
+    expect((await env.install(first)).ok).toBe(true);
+
+    const refused = await env.install(second);
+
+    expect(refused.ok).toBe(false);
+    if (!refused.ok) {
+      expect(refused.code).toBe('slug_conflict');
+      expect(refused.message).toMatch(/another installed pack with a different body/);
+    }
+    expect(env.registry.get('acme')?.author).toBe('alice-publisher');
+    expect(env.registry.get('acme')?.operations?.['deal.read']?.operation_id)
+      .toBe('alice-publisher.alice-crm.deal.read');
+    expect(env.contractStore.get('installed_pack', ['bob-crm'])).toBeNull();
   });
 
   it('refuses to uninstall a pack-owned child directly by ingredient_id', async () => {

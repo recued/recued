@@ -293,6 +293,20 @@ const makeOptions = (
 }) as unknown as ComposeListenersOptions;
 
 describe('composeListeners', () => {
+  it('stops listeners despite a sibling teardown failure and coalesces close', async () => {
+    const failure = new Error('synthetic handler drain failure');
+    listenerMocks.handlerSet.close.mockRejectedValueOnce(failure);
+    const result = await composeListeners(makeOptions());
+
+    const first = result.server.close();
+    const second = result.server.close();
+    expect(second).toBe(first);
+    await expect(first).rejects.toSatisfy((error: unknown) =>
+      error instanceof AggregateError && error.errors.includes(failure));
+    expect(listenerMocks.handlerSet.close).toHaveBeenCalledTimes(1);
+    expect(listenerMocks.coordinator.stop).toHaveBeenCalledTimes(1);
+  });
+
   it('publishes the live bridge dispatcher after handler assembly and before listener coordination', async () => {
     const publishBridgeDispatcher = vi.fn();
 

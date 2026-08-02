@@ -249,6 +249,7 @@ export const wireSalesforceReconciliation = (
 export const bootSalesforce = async (
   deps: VendorBootDeps,
 ): Promise<VendorBootBundle> => {
+  let stopCometDLifecycle: VendorBootBundle['stop'];
   // D-130 P5 + P5.2 — reconcilers + per-entity webhook processors.
   // The Sales Cloud trio shares one replayId tracker for reconnect-
   // with-replayId resume across the trio (CometD long-poll restart
@@ -373,7 +374,7 @@ export const bootSalesforce = async (
           info.at,
         ),
     });
-    wireSalesforceCometDLifecycle({
+    const cometDLifecycle = wireSalesforceCometDLifecycle({
       connectionStore: deps.connectionStore,
       lookupConnection: deps.lookupConnection,
       refreshAuth: deps.refreshAuth,
@@ -389,6 +390,7 @@ export const bootSalesforce = async (
         });
       },
     });
+    stopCometDLifecycle = () => cometDLifecycle.stopAll();
   }
 
   // D-184 — the dual-schema call entity (voice_call vs call_history) is
@@ -452,10 +454,17 @@ export const bootSalesforce = async (
         }
       }
     };
-    return { registerSalesforceCallEntity };
+    return {
+      registerSalesforceCallEntity,
+      ...(stopCometDLifecycle !== undefined
+        ? { stop: stopCometDLifecycle }
+        : {}),
+    };
   }
 
   // No engagementStore — engagement reconcile isn't wired; nothing to
   // surface for the call-entity reprobe.
-  return {};
+  return stopCometDLifecycle !== undefined
+    ? { stop: stopCometDLifecycle }
+    : {};
 };

@@ -351,6 +351,10 @@ export type ActivityAction =
   // `target` = `<connection_name>`; `detail` carries the auth type + the
   // non-secret error text.
   | 'connection_credential_persist_failed'
+  // A provider refresh rotated the usable credential but omitted or returned
+  // an unsafe tenant API origin. Recued keeps the last trusted origin and
+  // records only the validation classification (never the response URL).
+  | 'connection_runtime_base_refresh_ignored'
   // D-165 P0 — one row per gateway-routed catalog-form operation call
   // (Invariant 5), emitted on success, execution failure, AND gate
   // denial. Target carries the connection record `name`; `detail` is

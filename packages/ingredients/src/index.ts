@@ -11,6 +11,14 @@ export {
   CrossOriginRedirectError,
   RedirectLimitError,
 } from './origin-pinned-fetch.js';
+export {
+  DEFAULT_RESPONSE_BODY_MAX_BYTES,
+  ResponseBodyTooLargeError,
+  discardResponseBody,
+  readBoundedResponseBytes,
+  readBoundedResponseText,
+  type BoundedResponseText,
+} from './bounded-response-body.js';
 export { withIngredientCache, type IngredientCacheOptions } from './cache.js';
 export {
   createIngredientExecutor,
@@ -48,10 +56,14 @@ export {
 export {
   createConnectionApiHandler,
   refreshOAuth2,
+  refreshOAuth2WithMetadata,
   exchangeOAuth2ClientCredentials,
   createEnsureFreshAuth,
+  createEnsureFreshAuthDetailed,
   type ConnectionApiHandlerDeps,
   type EnsureFreshAuthDeps,
+  type OAuth2RefreshResult,
+  type FreshConnectionAuth,
 } from './connection-api.js';
 export {
   createConnectionMcpHandler,

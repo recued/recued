@@ -7,7 +7,7 @@ import { composeRetentionPruners } from '../composition/bin/wire-retention-prune
 type RegisteredInterval = {
   name: string;
   intervalMs: number;
-  tick: () => void;
+  tick: () => Promise<void> | void;
   fireImmediate: boolean;
 };
 
@@ -215,14 +215,14 @@ describe('composeRetentionPruners audit-prune', () => {
     expect(auditRetention.runSafe).toHaveBeenCalledTimes(1);
   });
 
-  it('does not throw synchronously when runSafe returns a rejected promise', () => {
+  it('contains a rejected runSafe promise', async () => {
     const auditRetention = makeAuditRetention();
     const rejected = Promise.reject(new Error('best-effort audit failure'));
     rejected.catch(() => {});
     auditRetention.runSafe.mockReturnValue(rejected);
     const registrations = composeWithDeps({ auditRetention });
 
-    expect(() => registrations[0].tick()).not.toThrow();
+    await expect(registrations[0].tick()).resolves.toBeUndefined();
     expect(auditRetention.runSafe).toHaveBeenCalledTimes(1);
   });
 });

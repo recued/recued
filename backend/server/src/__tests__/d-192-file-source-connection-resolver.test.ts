@@ -110,6 +110,39 @@ describe('createFileSourceConnectionResolver — Dropbox oauth2_refresh', () => 
     expect(out!.config).toEqual({ vendor: 'dropbox' });
   });
 
+  it('keeps the fresh token usable and reports a non-fatal persistence failure', async () => {
+    const row = makeRow(
+      'dropbox',
+      dropboxOAuth(/* no current_access_token */),
+      { vendor: 'dropbox' },
+    );
+    const store = makeStore([row]);
+    const persistError = new Error('connection store is read-only');
+    const onPersistFailure = vi.fn();
+    const failingEncode = (async () => {
+      throw persistError;
+    }) as unknown as (typeof import('../connection-handler.js'))['encodeAuthForStorage'];
+    const resolve = createFileSourceConnectionResolver({
+      connectionStore: store,
+      decodeAuthFromStorage,
+      encodeAuthForStorage: failingEncode,
+      keyProvider: undefined,
+      fetchImpl: tokenFetch('fresh-for-this-cycle'),
+      now: () => NOW,
+      onPersistFailure,
+    });
+
+    const out = await resolve('dropbox');
+
+    expect(out?.auth).toMatchObject({
+      type: 'oauth2_refresh',
+      current_access_token: 'fresh-for-this-cycle',
+    });
+    expect(store.upserts).toHaveLength(0);
+    expect(onPersistFailure).toHaveBeenCalledOnce();
+    expect(onPersistFailure).toHaveBeenCalledWith(row, persistError);
+  });
+
   it('does NOT re-refresh an already-fresh token', async () => {
     const store = makeStore([
       makeRow('dropbox', dropboxOAuth('still-good', NOW + 24 * 3_600_000), { vendor: 'dropbox' }),

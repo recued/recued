@@ -732,8 +732,8 @@ export type {
 
 // D-194 — pack-driven connection enrollment: the `connection_requirements[]`
 // manifest descriptor (validated first-party-only on `BulkPackManifest`), its
-// shape validator (shared with the seed self-check), and the interim
-// compile-time seed (migrates to pack-contributed at D-166).
+// shape validator (shared with the fallback self-check), and the legacy
+// compile-time fallback for pre-migration manifests.
 export {
   CONNECTION_AUTH_DESCRIPTOR_TYPES,
   BULK_PACK_MAX_CONNECTION_REQUIREMENTS,
@@ -989,7 +989,8 @@ export {
 // predicates (`contractLifecycleState` / `isContractActive` / `contractScopeMatches`).
 // The store mint/use/expire/revoke ops + the use-resolution gating consume these.
 export type {
-  ContractScope, ContractDefinition, ContractLifecycleState, ContractScopeContext,
+  ContractScope, DoorExecutionPolicy, ContractDefinition, ContractLifecycleState,
+  ContractScopeContext,
   MintContractRequest, ContractDefinitionView,
   ContractListRequest, ContractListResponse,
   BoundRecipeRef, SessionGrantBatchMember,
@@ -1364,11 +1365,15 @@ export {
   COLLECTION_GRANT_PREFIX,
   TOPIC_GRANT_PREFIX,
   RESERVED_GRANT_ENTRY_PREFIXES,
+  DECLARED_OPERATION_ID_RESERVED_PREFIXES,
   collectionGrantEntry,
   topicGrantEntry,
   opGrantEntry,
+  KERNEL_GRANT_PREFIX,
   PRIMITIVE_GRANT_PREFIX,
   primitiveGrantEntry,
+  INGREDIENT_GRANT_PREFIX,
+  declaredOperationIdReservedPrefix,
   classifyGrantEntry,
   parseGrantEntry,
   isOpGrantEntry,
@@ -2455,6 +2460,7 @@ export {
   MESSENGER_SURFACE_SET,
   MESSENGER_INGRESS_MODES,
   MESSENGER_INGRESS_MODE_SET,
+  MESSENGER_INGRESS_MODE_CONFIG_KEY,
   MESSENGER_VERIFICATIONS,
   MESSENGER_VERIFICATION_SET,
   MESSENGER_PLATFORM_ID_SOURCES,
@@ -2477,6 +2483,10 @@ export {
   assertMessengerVendorRegistry,
   buildMessengerVendorDeclaration,
   getMessengerVendorDeclaration,
+  messengerVendorSupportsIngressMode,
+  resolveMessengerConnectionIngressMode,
+  resolveMessengerConnectionRoles,
+  resolveMessengerVendorRoles,
   listMessengerVendors,
   isDeclaredMessengerVendor,
 } from './messenger-vendors.js';
@@ -2595,6 +2605,7 @@ export {
   getVendorProvider,
   listVendorProviders,
   resolveVendorOAuthEndpoints,
+  resolveVendorOAuthRuntimeBase,
   composeRealmBaseUrl,
   buildGenericVendorProvider,
   GENERIC_OAUTH_VENDOR,
@@ -2648,6 +2659,8 @@ export type {
   ConnectionVendorProvider,
   ConnectionSandboxFlag,
   VendorOAuthConfig,
+  VendorOAuthRuntimeBaseConfig,
+  VendorOAuthRuntimeBaseResolution,
   RealmBaseConfig,
   SalesforceEntityName,
   SalesforceEngagementEntityName,
@@ -4910,11 +4923,14 @@ export type { ImportScope, CompiledImportScope } from './import-scope.js';
 export {
   WORK_ENTITY_SOURCE_DECLARABLE_KINDS,
   WORK_ENTITY_SOURCE_DECLARABLE_KIND_SET,
+  WORK_ENTITY_SOURCE_LANDING_CONTRACTS,
+  getWorkEntitySourceLandingContract,
   isWorkEntitySourceDeclarableKind,
   WORK_ENTITY_CONTRACT_SOURCE_KINDS,
   WORK_ENTITY_CONTRACT_SOURCE_SURFACES,
   WORK_ENTITY_CONTRACT_SOURCE_TRANSPORT,
   WORK_ENTITY_SYNC_MODES,
+  WORK_ENTITY_SOURCE_POSTURES,
   WORK_ENTITY_SYNC_DEPTHS,
   WORK_ENTITY_TOMBSTONE_KINDS,
   WORK_ENTITY_LIST_ROW_KINDS,
@@ -4956,8 +4972,10 @@ export {
 } from './work-entity-sources.js';
 export type {
   WorkEntitySourceDeclarableKind,
+  WorkEntitySourceLandingContract,
   WorkEntityContractSourceKind,
   WorkEntitySyncMode,
+  WorkEntitySourcePosture,
   WorkEntitySyncDepth,
   WorkEntityTombstoneKind,
   WorkEntityListRowKind,
@@ -5006,6 +5024,24 @@ export type {
   WorkEntityDependencyResolveMode,
   WorkEntitySourceDeclaration,
 } from './work-entity-sources.js';
+
+// Tool-boundary work-entity identity. Generic reads emit a versioned qualified
+// id; generic writes resolve it through the mirror, while a provider operation
+// validates its exact Source/connection before unwrapping the native id.
+export {
+  QUALIFIED_WORK_ENTITY_ID_VERSION,
+  QUALIFIED_WORK_ENTITY_ID_PREFIX,
+  QualifiedWorkEntityIdError,
+  qualifyWorkEntityId,
+  parseQualifiedWorkEntityId,
+  routeQualifiedWorkEntityOperationArgs,
+} from './work-entity-qualified-id.js';
+export type {
+  QualifiedWorkEntityIdentityKind,
+  QualifiedWorkEntityId,
+  QualifiedWorkEntityIdErrorCode,
+  QualifiedWorkEntityOperationRouting,
+} from './work-entity-qualified-id.js';
 
 // D-192 Slice 7 — the transitive container-read admission, shared by the gate
 // (`deriveAllowedOperations`) and the consent-disclosure UIs so they can't drift.
@@ -5628,6 +5664,7 @@ export {
   // literal. Replaces the hand-spelled `if (channel === 'bridge') return false` that
   // used to live inside the shared gates.
   CHANNEL_ROLES,
+  CHANNEL_ROLE_AXES,
 } from './notifications.js';
 export type {
   NotificationBridgeModeRow,

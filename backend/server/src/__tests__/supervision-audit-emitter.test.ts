@@ -2,9 +2,9 @@
  *
  *  `buildDaemonAuditEmitter` is the seam the composition root hands the
  *  supervisor as its `audit` callback: it maps a daemon state TRANSITION to one
- *  `ActivityEntry` and writes it fire-and-forget. This pins the state→action
- *  mapping (the queryable action codes consumers filter on), the row shape
- *  (target / detail / activity_id), the unmapped-state skip, and the
+ *  `ActivityEntry` and returns a shutdown-drainable write Promise. This pins the
+ *  state→action mapping (the queryable action codes consumers filter on), the
+ *  row shape (target / detail / activity_id), the unmapped-state skip, and the
  *  never-throw discipline. The supervisor-side emit (which transitions fire, and
  *  the boot-reconciliation suppression) is covered in
  *  supervision-cli-daemon-supervisor.test.ts. */
@@ -80,12 +80,11 @@ describe('buildDaemonAuditEmitter — daemon lifecycle → activity row', () => 
     for (const a of actions) expect(a).toMatch(/^supervised_daemon_/);
   });
 
-  it('is fire-and-forget — a rejected write never throws out of the emitter', async () => {
+  it('contains a rejected write in the returned drainable Promise', async () => {
     const logActivity = vi.fn((_entry: ActivityEntry) => Promise.reject(new Error('disk full')));
     const store = { logActivity } as unknown as AuditLogStore;
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    expect(() => buildDaemonAuditEmitter(store)(event())).not.toThrow();
-    await Promise.resolve(); // let the .catch microtask run under the spy
+    await expect(buildDaemonAuditEmitter(store)(event())).resolves.toBeUndefined();
     warn.mockRestore();
   });
 });

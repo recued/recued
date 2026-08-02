@@ -122,6 +122,24 @@ const writeErrorPage = (
   );
 };
 
+const writeSourceRateLimitPage = (
+  res: ServerResponse,
+  display_name: string,
+  now: number,
+  retry_after_at: number,
+): void => {
+  res.setHeader(
+    'Retry-After',
+    String(Math.max(1, Math.ceil((retry_after_at - now) / 1000))),
+  );
+  writeErrorPage(
+    res,
+    display_name,
+    "You've reached this form's hourly submission limit. Please try again later.",
+    429,
+  );
+};
+
 // ────────────────────────────────────────────────────────────────
 // Form-nonce store (in-memory, per-process)
 // ────────────────────────────────────────────────────────────────
@@ -644,8 +662,13 @@ export interface IntakeFormSubmitHandlerDeps {
 
 export const createIntakeFormSubmitHandler = (
   deps: IntakeFormSubmitHandlerDeps,
-): ((req: IncomingMessage, res: ServerResponse, endpoint: ReceptionEndpointContext) => Promise<void>) => {
-  return async (req, res, endpoint) => {
+): ((
+  req: IncomingMessage,
+  res: ServerResponse,
+  endpoint: ReceptionEndpointContext,
+  sourceIpHash: string,
+) => Promise<void>) => {
+  return async (req, res, endpoint, sourceIpHash) => {
     const endpoint_id = endpoint.endpoint_id;
     if (!endpoint_id) {
       writeErrorPage(res, 'this form', 'Submission unavailable.', 503);
@@ -653,6 +676,13 @@ export const createIntakeFormSubmitHandler = (
     }
     if (req.method !== 'POST') {
       writeErrorPage(res, 'this form', 'Method not allowed.', 405);
+      return;
+    }
+    if (typeof sourceIpHash !== 'string' || sourceIpHash.length === 0) {
+      // This is an internal dispatcher projection. Missing it would silently
+      // collapse all visitors into a shared bucket (or bypass the durable
+      // guard), so a partially wired production caller must fail closed.
+      writeErrorPage(res, 'this form', 'Submission unavailable.', 503);
       return;
     }
 
@@ -754,32 +784,26 @@ export const createIntakeFormSubmitHandler = (
     const now = deps.now();
     const submission_id = randomUUID();
 
-    // Codex review fold (P2 #1, 2026-05-13) — enforce the per-form
-    // `anti_spam.rate_limit_per_ip` AGAINST the per-form rolling-hour
-    // submission count. The dispatcher's pre-verify uses the static
-    // per-kind default; Mary's per-form override is consulted here so
-    // a form configured tighter than the substrate default actually
-    // gates correctly. Counted per-endpoint (not per-IP-per-endpoint)
-    // since the submissions table is the source of truth for "how many
-    // submissions this form has accepted." Effect: a 5/hr form admits
-    // 5 submissions in any 1-hour window from all visitors combined,
-    // tighter than the kind-default 10/hr; a 60/hr form admits up to
-    // the configured ceiling instead of being silently capped at the
-    // substrate default.
+    // The static pre-verification limiter protects HMAC work before the token
+    // is trusted. This durable, form-local check enforces the owner's actual
+    // `anti_spam.rate_limit_per_ip` setting against the endpoint-scoped HMAC
+    // of the source address. The required internal dispatch argument prevents
+    // a partially wired caller from collapsing visitors into one shared bucket.
     const RATE_WINDOW_MS = 60 * 60 * 1000;
-    const formWindowCount = deps.getSubmissionStore().countWithinWindow({
+    const windowStartAt = now - RATE_WINDOW_MS;
+    const submissionStore = deps.getSubmissionStore();
+    const sourceWindowUsage = submissionStore.readSourceWindowUsage({
       endpoint_id,
-      window_start_at: now - RATE_WINDOW_MS,
+      source_ip_hash: sourceIpHash,
+      window_start_at: windowStartAt,
       now,
     });
-    if (formWindowCount >= config.anti_spam.rate_limit_per_ip) {
-      const retryAfterSec = 60; // honest "try again in a minute" hint
-      res.setHeader('Retry-After', String(retryAfterSec));
-      writeErrorPage(
+    if (sourceWindowUsage.count >= config.anti_spam.rate_limit_per_ip) {
+      writeSourceRateLimitPage(
         res,
         display_name,
-        "This form has hit its hourly submission limit. Please try again later.",
-        429,
+        now,
+        (sourceWindowUsage.oldest_submitted_at ?? now) + RATE_WINDOW_MS,
       );
       return;
     }
@@ -897,19 +921,32 @@ export const createIntakeFormSubmitHandler = (
     if (honeypotTripped) metadataPayload.honeypots_tripped = parsed.honeypotsTripped;
     if (config.template_ref) metadataPayload.template_ref = config.template_ref;
 
-    deps.getSubmissionStore().insert({
+    const submissionInput = {
       submission_id,
       endpoint_id,
       form_definition_id: config.form_definition.form_definition_id,
       submitted_at: now,
-      source_ip_hash: null, // dispatcher already wrote the per-IP hash to the access log
+      source_ip_hash: sourceIpHash,
       visitor_email_encrypted,
       submission_blob_encrypted,
       schema_version: SUBMISSION_SCHEMA_VERSION,
       processing_outcome: outcome,
       pair_binding: nonceStamp.pair_binding,
       metadata: metadataPayload,
+    } as const;
+    // Encryption yielded above, so the cheap read cannot authorize this write.
+    // Re-check and insert synchronously to prevent two concurrent submissions
+    // from consuming the same final per-source slot.
+    const inserted = submissionStore.insertIfSourceAvailable({
+      ...submissionInput,
+      max_submissions_per_window: config.anti_spam.rate_limit_per_ip,
+      window_start_at: windowStartAt,
+      now,
     });
+    if ('conflict' in inserted) {
+      writeSourceRateLimitPage(res, display_name, now, inserted.retry_after_at);
+      return;
+    }
 
     // D-210 audit finding 3a (2026-07-20) — THE `form_response` WRITE MOVED TO APPROVE.
     //

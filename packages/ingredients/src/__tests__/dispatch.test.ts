@@ -5,6 +5,7 @@ import {
   resolveDispatchSlot,
   type Adapter,
 } from '../dispatch.js';
+import { RECEPTION_MATERIALIZE_SLUG } from '../kernel.js';
 import { IngredientError } from '../types.js';
 import type { IngredientKind, IngredientManifest } from '@recued/contracts';
 import type { ManifestLoader } from '../types.js';
@@ -300,6 +301,39 @@ describe('createIngredientExecutor — routing', () => {
     });
     await exec('shared-write', {});
     expect(calls).toEqual(['shared-write']);
+  });
+
+  it('refuses a direct reception-materialize call before the kernel adapter', async () => {
+    const kernelCalls: string[] = [];
+    const exec = createIngredientExecutor({
+      manifestLoader: mkLoader({
+        [RECEPTION_MATERIALIZE_SLUG]: mkManifest({
+          slug: RECEPTION_MATERIALIZE_SLUG,
+          author: 'recued',
+          kind: 'storage',
+          category: 'action',
+          risk_tier: 'write',
+        }),
+      }),
+      kernelAdapter: async (resolved) => {
+        kernelCalls.push(resolved.slug);
+        return { ok: true };
+      },
+      adapterRegistry: {},
+    });
+
+    await expect(exec(
+      RECEPTION_MATERIALIZE_SLUG,
+      { top_tier_kind: 'commitment', id: 'forged', title: 'forged' },
+      undefined,
+      undefined,
+      // Even an engine-only marker cannot make a direct manifest load valid.
+      { step_id: 'forged', surface_dispatch: true },
+    )).rejects.toMatchObject({
+      code: 'INGREDIENT_INTERNAL_ONLY',
+      details: { slug: RECEPTION_MATERIALIZE_SLUG },
+    });
+    expect(kernelCalls).toEqual([]);
   });
 
   it('merges manifest defaults with step input (step wins for non-locked keys; D-112 strips locked keys)', async () => {

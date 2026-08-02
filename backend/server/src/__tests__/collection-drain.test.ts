@@ -192,10 +192,10 @@ describe('pause_collections drain step — close() failures', () => {
 
   it('survives a close() that throws — best-effort dispose across siblings', async () => {
     // One collection throws, one completes cleanly. The registry's
-    // dispose throws an AggregateError, but the drain orchestrator
-    // catches + logs step-thrown errors (DrainStepFn contract says
-    // "never rethrow") and records the step as completed. The
-    // sibling's close() still fires because dispose is best-effort.
+    // dispose throws an AggregateError. The drain orchestrator contains it so
+    // later cleanup still runs, but records the step as aborted — an archive
+    // restore must never mistake partial collection teardown for a safe drain.
+    // The sibling's close() still fires because dispose is best-effort.
     const cleanCalls: string[] = [];
     h.registry.register({
       ...stubCollection('mail', 'broken', () => {}),
@@ -209,10 +209,8 @@ describe('pause_collections drain step — close() failures', () => {
       reason: 'with-broken-close',
     });
 
-    // Step still appears in completed (orchestrator swallows step
-    // throws). The sibling's close() fired despite the earlier throw.
-    expect(result.completed).toContain('pause_collections');
-    expect(result.aborted).not.toContain('pause_collections');
+    expect(result.completed).not.toContain('pause_collections');
+    expect(result.aborted).toContain('pause_collections');
     expect(cleanCalls).toEqual(['file:fine']);
   });
 });

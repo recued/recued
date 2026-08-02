@@ -40,7 +40,8 @@ export interface SupervisionStack {
   bindExecutor: (exec: CliInvocationExecutor) => void;
   /** Boot reconcile — adopt survivors / relaunch each enabled daemon. */
   startAll: () => Promise<void>;
-  /** Shutdown — cancel timers + drop tracking (daemons survive the bounce). */
+  /** Shutdown — close admission and drain async supervisor work before dropping
+   *  tracking (detached daemons survive the bounce). */
   disposeAll: () => Promise<void>;
 }
 
@@ -83,17 +84,17 @@ export const STATE_TO_AUDIT_ACTION: Partial<Record<ServiceState, ActivityAction>
   permanently_crashed: 'supervised_daemon_permanently_crashed',
 };
 
-/** Adapt a daemon state transition → one D-120 activity row, fire-and-forget:
- *  the supervisor's `setState` is a synchronous state-machine path, so the
- *  write must never block nor unwind it (mirrors the D-118 service audit
- *  adapter). `target` is `<ingredient_slug>/<op>`; the JSON `detail` carries the
- *  runtime facts the row is keyed by. A write failure only warns — the durable
- *  daemon state lives in the supervisor + store, not this breadcrumb. */
+/** Adapt a daemon state transition → one D-120 activity row. The supervisor's
+ *  synchronous state-machine path does not await this Promise, but tracks it so
+ *  `disposeAll()` drains the write before SQLite closes. `target` is
+ *  `<ingredient_slug>/<op>`; the JSON `detail` carries the runtime facts the row
+ *  is keyed by. A write failure only warns — the durable daemon state lives in
+ *  the supervisor + store, not this breadcrumb. */
 export const buildDaemonAuditEmitter =
   (auditLog: AuditLogStore) =>
-    (event: DaemonAuditEvent): void => {
+    (event: DaemonAuditEvent): Promise<void> => {
       const action = STATE_TO_AUDIT_ACTION[event.state];
-      if (!action) return;
+      if (!action) return Promise.resolve();
       const entry: ActivityEntry = {
         activity_id: `daemon_${event.ingredient_slug}_${event.op}_${event.at}_${randomUUID().slice(0, 8)}`,
         timestamp: event.at,
@@ -107,7 +108,7 @@ export const buildDaemonAuditEmitter =
           consecutive_crashes: event.consecutive_crashes,
         }),
       };
-      void auditLog.logActivity(entry).catch((err) => {
+      return auditLog.logActivity(entry).catch((err) => {
         const where = `${event.ingredient_slug}/${event.op}`;
         // eslint-disable-next-line no-console
         console.warn(

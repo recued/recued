@@ -598,6 +598,7 @@ describe('composeExecutorConfig top-level shape', () => {
     }));
     expect(config.connectionMcp).toEqual(expect.objectContaining({
       decodeAuth: expect.any(Function),
+      onPersistFailure: expect.any(Function),
       wsConnect: expect.any(Function),
       spawnStdioMcp: expect.any(Function),
     }));
@@ -773,6 +774,68 @@ describe('composeExecutorConfig connection handler block', () => {
       last_used_at: 123,
       health_json: '{"status":"ok"}',
     });
+  });
+
+  it('atomically merges a refreshed provider base URL without dropping connection config', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const { compose } = await importComposerWithConnectionMocks();
+    const store = connectionStore();
+    const config = await compose(buildDeps({ connectionStore: store }));
+    const row = connectionRow({
+      config_json: JSON.stringify({
+        vendor: 'pipedrive',
+        base_url: 'https://old.pipedrive.com',
+        cadence: '6h',
+      }),
+    });
+
+    await config.connectionApi?.persistAuth(
+      row,
+      { type: 'bearer', token: 'fresh' },
+      { base_url: 'https://new.pipedrive.com' },
+    );
+
+    const upsert = store.upsert.mock.calls[0]![0] as Record<string, unknown>;
+    expect(JSON.parse(upsert.config_json as string)).toEqual({
+      vendor: 'pipedrive',
+      base_url: 'https://new.pipedrive.com',
+      cadence: '6h',
+    });
+    expect(upsert.auth_ciphertext).toBe('encoded-auth');
+  });
+
+  it('audits an ignored provider runtime origin without recording response data', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const { compose } = await importComposerWithConnectionMocks();
+    const log = auditLog();
+    const config = await compose(buildDeps({
+      connectionStore: connectionStore(),
+      auditLog: log,
+    }));
+    const row = connectionRow({
+      config_json: JSON.stringify({ vendor: 'pipedrive' }),
+    });
+
+    config.connectionApi?.onRuntimeBaseIssue?.(row, {
+      status: 'invalid',
+      field: 'api_domain',
+      reason: 'host is outside the provider allowlist',
+    });
+
+    expect(log.logActivity).toHaveBeenCalledWith(expect.objectContaining({
+      timestamp: NOW,
+      action: 'connection_runtime_base_refresh_ignored',
+      target: 'crm',
+      detail: JSON.stringify({
+        kind: 'api',
+        vendor: 'pipedrive',
+        status: 'invalid',
+        field: 'api_domain',
+        reason: 'host is outside the provider allowlist',
+      }),
+    }));
+    expect(JSON.stringify(vi.mocked(log.logActivity).mock.calls))
+      .not.toContain('attacker.example');
   });
 
   // D-165 P3.path-picker — the api adapter's OAuth2-refresh write-back

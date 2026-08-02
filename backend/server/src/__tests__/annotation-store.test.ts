@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import Database from 'better-sqlite3';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { createBlobStore } from '../storage/blob-store.js';
 import {
@@ -246,6 +246,77 @@ describe('createAnnotationStore', () => {
       expect(remaining).toHaveLength(3);
       expect(remaining.every((a) => a.key === 'summary')).toBe(true);
     });
+
+    it('delete by filter preserves deduplicated CAS bytes referenced by a survivor', async () => {
+      const { blobs, store } = mkStore();
+      const deleteSpy = vi.spyOn(blobs, 'delete');
+      const big = 'f'.repeat(ANNOTATION_INLINE_CUTOFF_BYTES + 100);
+      await store.annotate({
+        target_collection: 'mail', target_id: 'doomed', key: 'transcript',
+        value: big, authored_by_recipe_id: 'r1',
+        source_record_hash: 'a', recipe_hash: 'b',
+      });
+      await store.annotate({
+        target_collection: 'mail', target_id: 'survivor', key: 'transcript',
+        value: big, authored_by_recipe_id: 'r2',
+        source_record_hash: 'c', recipe_hash: 'd',
+      });
+
+      await expect(store.deleteAnnotations({ target_id: 'doomed' })).resolves.toBe(1);
+
+      expect(deleteSpy).not.toHaveBeenCalled();
+      await expect(store.annotationsForRecord('mail', 'survivor')).resolves.toMatchObject([
+        { value: big },
+      ]);
+      expect(await blobs.totalBytes()).toBeGreaterThan(0);
+    });
+
+    it('deleteAnnotation preserves deduplicated CAS bytes referenced by a survivor', async () => {
+      const { blobs, store } = mkStore();
+      const deleteSpy = vi.spyOn(blobs, 'delete');
+      const big = 'e'.repeat(ANNOTATION_INLINE_CUTOFF_BYTES + 100);
+      const doomed = await store.annotate({
+        target_collection: 'mail', target_id: 'doomed', key: 'transcript',
+        value: big, authored_by_recipe_id: 'r1',
+        source_record_hash: 'a', recipe_hash: 'b',
+      });
+      await store.annotate({
+        target_collection: 'mail', target_id: 'survivor', key: 'transcript',
+        value: big, authored_by_recipe_id: 'r2',
+        source_record_hash: 'c', recipe_hash: 'd',
+      });
+
+      await expect(store.deleteAnnotation(doomed._id)).resolves.toBe(true);
+
+      expect(deleteSpy).not.toHaveBeenCalled();
+      await expect(store.annotationsForRecord('mail', 'survivor')).resolves.toMatchObject([
+        { value: big },
+      ]);
+    });
+
+    it('rolls back the main row and FTS mutation when a filtered delete fails', async () => {
+      const { store } = mkStore();
+      await store.annotate({
+        target_collection: 'mail', target_id: 'protected', key: 'summary',
+        value: 'Acme deletion must roll back', authored_by_recipe_id: 'r1',
+        source_record_hash: 'a', recipe_hash: 'b',
+      });
+      db.exec(`
+        CREATE TRIGGER annotation_delete_test_abort
+        BEFORE DELETE ON annotation
+        BEGIN
+          SELECT RAISE(ABORT, 'test delete blocked');
+        END
+      `);
+
+      await expect(store.deleteAnnotations({ target_id: 'protected' }))
+        .rejects.toThrow(/test delete blocked/);
+
+      await expect(store.listAnnotations({ target_id: 'protected' })).resolves.toHaveLength(1);
+      await expect(store.searchAnnotations({ query: 'Acme' })).resolves.toMatchObject([
+        { target_id: 'protected' },
+      ]);
+    });
   });
 
   describe('value size guard', () => {
@@ -473,6 +544,30 @@ describe('createAnnotationStore', () => {
       const ann = await store.annotationsForRecord('mail', 'm1');
       expect(ann).toHaveLength(1);
     });
+
+    it('cascade preserves deduplicated CAS bytes referenced by another record', async () => {
+      const { blobs, store } = mkStore();
+      const deleteSpy = vi.spyOn(blobs, 'delete');
+      const big = 'c'.repeat(ANNOTATION_INLINE_CUTOFF_BYTES + 100);
+      await store.annotate({
+        target_collection: 'mail', target_id: 'doomed', key: 'transcript',
+        value: big, authored_by_recipe_id: 'r1',
+        source_record_hash: 'a', recipe_hash: 'b',
+      });
+      await store.annotate({
+        target_collection: 'mail', target_id: 'survivor', key: 'transcript',
+        value: big, authored_by_recipe_id: 'r2',
+        source_record_hash: 'c', recipe_hash: 'd',
+      });
+
+      expect(store.cascadeDelete('mail', 'doomed').annotations_deleted).toBe(1);
+      await Promise.resolve();
+
+      expect(deleteSpy).not.toHaveBeenCalled();
+      await expect(store.annotationsForRecord('mail', 'survivor')).resolves.toMatchObject([
+        { value: big },
+      ]);
+    });
   });
 
   describe('rewriteRecordId — D-138 § A.8 extras preservation', () => {
@@ -491,6 +586,25 @@ describe('createAnnotationStore', () => {
         source_record_hash: `src-${target_id}-${key}`,
         recipe_hash: 'rec-1',
       });
+
+    it('collision preserves deduplicated CAS bytes referenced by another record', async () => {
+      const { blobs, store } = mkStore();
+      const deleteSpy = vi.spyOn(blobs, 'delete');
+      const big = 'r'.repeat(ANNOTATION_INLINE_CUTOFF_BYTES + 100);
+      await seedContactAnnotation(store, 'survivor@x.com', 'note', 'canonical');
+      await seedContactAnnotation(store, 'loser@x.com', 'note', big);
+      await seedContactAnnotation(store, 'unrelated@x.com', 'note', big);
+
+      await expect(
+        store.rewriteRecordId('contact', 'loser@x.com', 'survivor@x.com'),
+      ).resolves.toMatchObject({ annotations_collided: 1 });
+      await Promise.resolve();
+
+      expect(deleteSpy).not.toHaveBeenCalled();
+      await expect(
+        store.annotationsForRecord('contact', 'unrelated@x.com'),
+      ).resolves.toMatchObject([{ value: big }]);
+    });
 
     it('preserves the loser value in survivor extras on a key collision (survivor value wins)', async () => {
       const { store } = mkStore();

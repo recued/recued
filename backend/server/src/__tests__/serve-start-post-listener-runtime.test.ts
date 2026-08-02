@@ -389,6 +389,37 @@ describe('startPostListenerRuntime', () => {
     await new Promise((resolve) => setImmediate(resolve));
     expect(recoverPendingAsks).toHaveBeenCalledTimes(1);
   });
+
+  it('registers local messenger ingress as a process-lifetime emitter', async () => {
+    runtimeMocks.startSchedulers.mockReturnValue({ tag: 'schedulers-bundle' });
+    runtimeMocks.composeCertStackLate.mockResolvedValue({
+      tlsCertSource: undefined,
+      tlsRenewerConfigured: false,
+    });
+    runtimeMocks.startHousekeepingStartup.mockResolvedValue({ scheduler: undefined });
+    const stop = vi.fn(async () => undefined);
+    const options = makeOptions({
+      messengerIngressSupervisor: {
+        start: vi.fn(async () => undefined),
+        stop,
+        reconcile: vi.fn(async () => undefined),
+        status: vi.fn(() => null),
+      },
+    });
+
+    await startPostListenerRuntime(options);
+
+    const register = options.backgroundServices.register as ReturnType<typeof vi.fn>;
+    const registration = register.mock.calls
+      .map((call) => call[0] as { name: string; kind: string; stop(): Promise<void> })
+      .find((service) => service.name === 'messenger-local-ingress');
+    expect(registration).toMatchObject({
+      name: 'messenger-local-ingress',
+      kind: 'emitter',
+    });
+    await registration!.stop();
+    expect(stop).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('start-post-listener-runtime source boundary', () => {

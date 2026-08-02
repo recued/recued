@@ -18,6 +18,7 @@
 
 import type { ProEntitlementClaim } from '@recued/contracts';
 import { ed25519Verify, type StoredAccountBinding } from '../keys/index.js';
+import { makeBoundedOriginHttpFetcher } from '../bounded-origin-http-fetcher.js';
 
 /** The resolved Pro entitlement — SECRET-FREE. NEVER carries the
  *  `server_scoped_credential` nor the raw signed claim token; only the
@@ -86,6 +87,8 @@ export interface RealProEntitlementSourceDeps {
   fetchImpl?: typeof fetch;
   /** Request timeout (ms). Default 10s. */
   timeoutMs?: number;
+  /** Response ceiling (bytes). Defaults to the shared provider API limit. */
+  maxResponseBytes?: number;
   /** Clock seam (tests). Defaults to `Date.now`. */
   now?: () => number;
 }
@@ -193,6 +196,37 @@ export const createHttpProEntitlementSource = (
   const fetchImpl = deps.fetchImpl ?? fetch;
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const now = deps.now ?? Date.now;
+  const fetchMintResponse = makeBoundedOriginHttpFetcher({
+    fetchImpl,
+    timeoutMs,
+    ...(deps.maxResponseBytes !== undefined
+      ? { maxResponseBytes: deps.maxResponseBytes }
+      : {}),
+  });
+
+  const mint = async (
+    endpoint: string,
+    binding: StoredAccountBinding,
+  ): Promise<{ kind: 'response'; body: unknown } | { kind: 'unavailable' }> => {
+    let response: Awaited<ReturnType<typeof fetchMintResponse>>;
+    try {
+      response = await fetchMintResponse(endpoint, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          server_scoped_credential: binding.server_scoped_credential,
+          server_fingerprint: binding.server_fingerprint,
+        }),
+      });
+    } catch {
+      return { kind: 'unavailable' };
+    }
+    try {
+      return { kind: 'response', body: await response.json() };
+    } catch {
+      return { kind: 'response', body: undefined };
+    }
+  };
 
   const resolveClaim = async (): Promise<VerifiedProEntitlementClaim | null> => {
     let binding: StoredAccountBinding | null;
@@ -212,30 +246,9 @@ export const createHttpProEntitlementSource = (
     const publicKeyB64 = deps.getPublicKeyB64();
     if (!endpoint || !publicKeyB64) return null;
 
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    let response: Response;
-    let body: unknown;
-    try {
-      response = await fetchImpl(endpoint, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({
-          server_scoped_credential: binding.server_scoped_credential,
-          server_fingerprint: binding.server_fingerprint,
-        }),
-        signal: controller.signal,
-      });
-      try {
-        body = await response.json();
-      } catch {
-        body = undefined;
-      }
-    } catch {
-      return null;
-    } finally {
-      clearTimeout(timer);
-    }
+    const minted = await mint(endpoint, binding);
+    if (minted.kind === 'unavailable') return null;
+    const body = minted.body;
 
     const obj =
       body && typeof body === 'object'
@@ -265,30 +278,11 @@ export const createHttpProEntitlementSource = (
         return { state: 'unavailable', reason: 'entitlement_source_unconfigured' };
       }
 
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-      let response: Response;
-      let body: unknown;
-      try {
-        response = await fetchImpl(endpoint, {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({
-            server_scoped_credential: binding.server_scoped_credential,
-            server_fingerprint: binding.server_fingerprint,
-          }),
-          signal: controller.signal,
-        });
-        try {
-          body = await response.json();
-        } catch {
-          body = undefined;
-        }
-      } catch {
+      const minted = await mint(endpoint, binding);
+      if (minted.kind === 'unavailable') {
         return { state: 'unavailable', reason: 'entitlement_mint_unavailable' };
-      } finally {
-        clearTimeout(timer);
       }
+      const body = minted.body;
 
       const obj =
         body && typeof body === 'object'

@@ -2,6 +2,8 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { startServer, type RunningServer } from '../server.js';
 import { createPairingManager } from '../pairing.js';
 
+const wait = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
 /** Post-trim server surface: /health, /auth/pair, 404 for everything else.
  *  Execute and schedules CRUD live on the WebSocket rpc channel — see
  *  ws-server.test.ts. HTTP only handles what cannot be WS. */
@@ -72,6 +74,42 @@ describe('recued-server HTTP server — slim surface', () => {
     const api = client(baseUrl, 'any-realm');
     const res = await api.request('GET', '/schedules');
     expect(res.status).toBe(404);
+  });
+});
+
+describe('recued-server legacy close facade', () => {
+  it('drains the WS handler before invoking the callback and coalesces close', async () => {
+    const running = await startServer(0);
+    const originalClose = running.wsServer.close.bind(running.wsServer);
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let handlerCloseCalls = 0;
+    running.wsServer.close = async () => {
+      handlerCloseCalls += 1;
+      await gate;
+      await originalClose();
+    };
+    let callbackFired = false;
+    const facadeClosed = new Promise<void>((resolve, reject) => {
+      running.server.close((error) => {
+        callbackFired = true;
+        if (error) reject(error);
+        else resolve();
+      });
+    });
+
+    try {
+      await wait(50);
+      expect(callbackFired).toBe(false);
+      expect(handlerCloseCalls).toBe(1);
+      release();
+      await facadeClosed;
+      await running.close();
+      expect(handlerCloseCalls).toBe(1);
+    } finally {
+      release();
+      await Promise.allSettled([running.close()]);
+    }
   });
 });
 

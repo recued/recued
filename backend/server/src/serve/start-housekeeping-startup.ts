@@ -1,5 +1,6 @@
 import type { UpstreamMergeRegistry } from '../data/vendor-boot-registry.js';
 import type { EventBus } from '../events/bus.js';
+import type { BackgroundServiceRegistry } from '../composition/bin/wire-background-services.js';
 import { clearDefaultHousekeepingRegistry } from '../housekeeping/index.js';
 import type { HousekeepingSchedulerBundle } from '../composition/bin/wire-housekeeping-substrate.js';
 import {
@@ -38,6 +39,7 @@ export interface StartHousekeepingStartupOptions {
   readonly collection: HousekeepingStartupCollectionContext;
   readonly upstreamMergeRegistry: UpstreamMergeRegistry | undefined;
   readonly publishVendorRefs: (refs: VendorSubstratePublishedRefs) => void;
+  readonly backgroundServices: BackgroundServiceRegistry;
   readonly rotationEngine: StartServeHousekeepingSchedulerOptions['rotationEngine'];
   readonly tlsCertSource: StartServeHousekeepingSchedulerOptions['tlsCertSource'];
   readonly tlsRenewerConfigured:
@@ -79,7 +81,9 @@ export const startHousekeepingStartup = async (
   const vendorRefs = await composeVendorSubstrateContext({
     app,
     upstreamMergeRegistry: options.upstreamMergeRegistry,
+    auditLog: storage.auditLog,
     eventBus: storage.eventBus,
+    backgroundServices: options.backgroundServices,
   });
   if (vendorRefs) {
     options.publishVendorRefs(vendorRefs);

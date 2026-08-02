@@ -36,7 +36,12 @@
  *
  *  Spec: D-207 §5.1 / §5.3. */
 
-import { isContractActive, type ContractSnapshot, type ExecutionSource } from '@recued/contracts';
+import {
+  contractPermitsDoorType,
+  isContractActive,
+  type ContractSnapshot,
+  type ExecutionSource,
+} from '@recued/contracts';
 
 import { buildVersionedContractSnapshot } from './contract-snapshot-version.js';
 import type { ContractDefinitionStore } from './storage/contract-definition-store.js';
@@ -73,7 +78,9 @@ export const buildReceptionContractSnapshot = (
 
   const resolvedAt = deps.now();
   const def = deps.definitionStore.get(contractId);
-  const live = def !== null && isContractActive(def, resolvedAt);
+  const live = def !== null
+    && isContractActive(def, resolvedAt)
+    && contractPermitsDoorType(def, 'reception');
 
   // A dead / revoked / deleted door authorizes NOTHING. `allowed_tools: []` denies every
   // dispatch (`tool_not_in_contract`) — the live kill-switch over an already-public form.

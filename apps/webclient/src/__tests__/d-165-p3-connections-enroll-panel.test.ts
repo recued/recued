@@ -1134,6 +1134,31 @@ describe('D-165 P3 connections enrollment panel — add flow', () => {
     mount.dispose();
   });
 
+  it('seeds messenger local mode and swaps the onboarding + credentials with the mode', async () => {
+    const panel = mountPanel({ connections: [] });
+    await panel.mount.whenLoaded();
+
+    panel.click({ action: 'connections-open-add' });
+    panel.click({ action: 'connections-pick-kind', kind: 'notification' });
+    panel.click({ action: 'connections-pick-subtype', subtype: 'slack' });
+
+    expect(panel.mount.getState().dialog.values['config.ingress_mode']).toBe('socket');
+    expect(panel.mount.getState().dialog.values['auth.type']).toBe('bearer');
+    expect(panel.getHtml()).toContain('data-connection-onboarding="slack-socket"');
+    expect(panel.getHtml()).toContain('data-conn-field="auth.app_token"');
+    expect(panel.getHtml()).not.toContain('data-conn-field="config.signing_secret"');
+    expect(panel.getHtml()).not.toContain('data-conn-field="auth.type"');
+
+    panel.field('config.ingress_mode', 'webhook', 'SELECT');
+
+    expect(panel.mount.getState().dialog.values['config.ingress_mode']).toBe('webhook');
+    expect(panel.getFocusedSelector()).toBe(fieldSelector('config.ingress_mode'));
+    expect(panel.getHtml()).toContain('data-connection-onboarding="slack-webhook"');
+    expect(panel.getHtml()).toContain('data-conn-field="config.signing_secret"');
+    expect(panel.getHtml()).not.toContain('data-conn-field="auth.app_token"');
+    panel.mount.dispose();
+  });
+
   it('pick a vendor preset seeds the vendor schema values + jumps to the form', async () => {
     const { mount, click } = mountPanel({ connections: [] });
     await mount.whenLoaded();

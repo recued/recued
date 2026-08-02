@@ -136,6 +136,11 @@ describe('D-192 S4c3 — Dataverse OData delta mechanics', () => {
     expect(parseDataverseDeltaPage({ value: [{ activityid: 'a' }], '@odata.nextLink': 'N', '@odata.deltaLink': 'D' }))
       .toEqual({ items: [{ activityid: 'a' }], nextRef: 'N', watermark: 'D' });
     expect(parseDataverseDeltaPage({ value: [] })).toEqual({ items: [] });
+    expect(() => parseDataverseDeltaPage({
+      value: [],
+      '@odata.nextLink': 0,
+      '@odata.deltaLink': 'D',
+    })).toThrow('non-string continuation');
     expect(() => parseDataverseDeltaPage({})).toThrow(DataverseError); // no value array
     expect(() => parseDataverseDeltaPage(null)).toThrow(DataverseError);
     expect(() => parseDataverseDeltaPage([1, 2])).toThrow(DataverseError);
@@ -159,12 +164,33 @@ describe('D-192 S4c3 — Dataverse OData delta mechanics', () => {
 
   it('buildDataverseDeltaDeps fetchPage sends Bearer auth + surfaces a 410 as DataverseError', async () => {
     const fetch = fakeFetch({ 'https://x/emails': { value: [{ activityid: 'a' }] } });
-    const deps = buildDataverseDeltaDeps(fetch, 'tok');
+    const deps = buildDataverseDeltaDeps(fetch, 'tok', 'https://x');
     const page = deps.parsePage(await deps.fetchPage('https://x/emails'));
     expect(page.items).toEqual([{ activityid: 'a' }]);
+    expect(() => deps.parsePage({
+      value: [],
+      '@odata.deltaLink': 'https://attacker.invalid/collect',
+    })).toThrow('Dataverse pagination refused an off-origin URL');
 
-    const failing = buildDataverseDeltaDeps(fakeFetch({}, { errorOn: { 'https://x/gone': { status: 410 } } }), 'tok');
+    const failing = buildDataverseDeltaDeps(
+      fakeFetch({}, { errorOn: { 'https://x/gone': { status: 410 } } }),
+      'tok',
+      'https://x',
+    );
     await expect(failing.fetchPage('https://x/gone')).rejects.toBeInstanceOf(DataverseError);
+  });
+
+  it('buildDataverseDeltaDeps refuses an off-origin continuation before sending auth', async () => {
+    const calls: string[] = [];
+    const fetch: DynamicsFetch = async (url) => {
+      calls.push(url);
+      throw new Error('must not fetch');
+    };
+    const deps = buildDataverseDeltaDeps(fetch, 'tok', 'https://acme.crm.dynamics.com');
+    await expect(deps.fetchPage('https://attacker.invalid/collect')).rejects.toThrow(
+      'Dataverse pagination refused an off-origin URL',
+    );
+    expect(calls).toEqual([]);
   });
 });
 
@@ -436,7 +462,7 @@ describe('D-192 S4c3 — end-to-end: Dynamics leaf + generic reconciler', () => 
     const coldUrl = leafFor('email', fakeFetch({})).coldStartRef(conn());
     const stale = 'https://acme.crm.dynamics.com/api/data/v9.2/emails?$deltatoken=STALE';
     const fetch = fakeFetch(
-      { [coldUrl]: { value: [{ activityid: 'fresh', subject: 'rebuilt', senton: '2023-10-01T00:00:00Z', modifiedon: '2023-10-01T00:00:00Z' }], '@odata.deltaLink': 'D2' } },
+      { [coldUrl]: { value: [{ activityid: 'fresh', subject: 'rebuilt', senton: '2023-10-01T00:00:00Z', modifiedon: '2023-10-01T00:00:00Z' }], '@odata.deltaLink': 'https://acme.crm.dynamics.com/api/data/v9.2/emails?$deltatoken=D2' } },
       { errorOn: { [stale]: { status: 410 } } },
     );
     const leaf = buildDynamicsEngagementLeaf(entity, { fetch });
@@ -449,6 +475,8 @@ describe('D-192 S4c3 — end-to-end: Dynamics leaf + generic reconciler', () => 
 
     expect(fetch.urls).toEqual([stale, coldUrl]); // 410 on the stale token → recover from cold
     expect(spy.ingests.map((i) => i.row.target_id)).toEqual(['dynamics_email_fresh']);
-    expect(r.delta!.takeWatermark('acme-dynamics')).toBe('D2');
+    expect(r.delta!.takeWatermark('acme-dynamics')).toBe(
+      'https://acme.crm.dynamics.com/api/data/v9.2/emails?$deltatoken=D2',
+    );
   });
 });

@@ -248,12 +248,9 @@ export const composeDdnsUpdatePoller = (
   deps.registry.registerInterval({
     name: 'ddns-update-poll',
     intervalMs,
-    tick: () => {
-      // Fire-and-forget — registerInterval's `tick` is synchronous-
-      // typed. The async body is intentionally not awaited; failures
-      // are swallowed inside `tick()` itself.
-      void tick();
-    },
+    // Return the work so registry shutdown drains an update that is already
+    // in flight before its stores and signing identity are torn down.
+    tick,
     fireImmediate: true,
   });
 };

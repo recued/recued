@@ -19,6 +19,8 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  resolveMessengerConnectionRoles,
+  resolveMessengerVendorRoles,
   MESSENGER_AUTH_KINDS,
   MESSENGER_AUTH_KIND_CONNECTION_TYPES,
   MESSENGER_INGRESS_MODES,
@@ -35,6 +37,8 @@ import {
   assertMessengerVendorRegistry,
   buildMessengerVendorDeclaration,
   getMessengerVendorDeclaration,
+  messengerVendorSupportsIngressMode,
+  resolveMessengerConnectionIngressMode,
   isDeclaredMessengerVendor,
   listMessengerVendors,
   resolveBearerAccessToken,
@@ -56,6 +60,7 @@ const validEntry = (): MessengerVendorDeclaration => ({
   surfaces: ['dm', 'channel'],
   ingress: {
     mode: 'webhook',
+    supported_modes: ['webhook'],
     verification: 'hmac',
     secret_field: 'signing_secret',
     id_field: 'event_id',
@@ -101,7 +106,12 @@ describe('D-192 M1 — MessengerVendorDeclaration registry', () => {
       expect(slack).toMatchObject({
         vendor: 'slack',
         display_name: 'Slack',
-        ingress: { mode: 'webhook', verification: 'hmac', secret_field: 'signing_secret' },
+        ingress: {
+          mode: 'socket',
+          supported_modes: ['socket', 'webhook'],
+          verification: 'hmac',
+          secret_field: 'signing_secret',
+        },
         recipient: { field: 'channel_id', numeric_ok: false },
         identity: { platform_id_source: 'profile_email' },
         auth: 'bot_token',
@@ -115,7 +125,12 @@ describe('D-192 M1 — MessengerVendorDeclaration registry', () => {
       expect(telegram).toMatchObject({
         vendor: 'telegram',
         display_name: 'Telegram',
-        ingress: { mode: 'webhook', verification: 'secret_token', secret_field: 'webhook_secret' },
+        ingress: {
+          mode: 'poll',
+          supported_modes: ['poll', 'webhook'],
+          verification: 'secret_token',
+          secret_field: 'webhook_secret',
+        },
         recipient: { field: 'chat_id', numeric_ok: true },
         // Telegram exposes no email — the M1 link writer is a structural no-op.
         identity: { platform_id_source: 'none' },
@@ -205,6 +220,15 @@ describe('D-192 M1 — MessengerVendorDeclaration registry', () => {
       expect(getMessengerVendorDeclaration('testvendor', custom)?.vendor).toBe('testvendor');
       expect(getMessengerVendorDeclaration('slack', custom)).toBeNull();
     });
+
+    it('resolves explicit modes and preserves webhook for rows predating ingress_mode', () => {
+      const slack = getMessengerVendorDeclaration('slack')!;
+      expect(messengerVendorSupportsIngressMode(slack, 'socket')).toBe(true);
+      expect(messengerVendorSupportsIngressMode(slack, 'poll')).toBe(false);
+      expect(resolveMessengerConnectionIngressMode(slack, {})).toBe('webhook');
+      expect(resolveMessengerConnectionIngressMode(slack, { ingress_mode: 'socket' })).toBe('socket');
+      expect(resolveMessengerConnectionIngressMode(slack, { ingress_mode: 'poll' })).toBeNull();
+    });
   });
 
   describe('per-entry shape validation', () => {
@@ -262,7 +286,7 @@ describe('D-192 M1 — MessengerVendorDeclaration registry', () => {
       expect(
         assertMessengerVendorDeclarationShape({
           ...validEntry(),
-          ingress: { mode: 'carrier_pigeon' },
+          ingress: { mode: 'carrier_pigeon', supported_modes: ['webhook'], id_field: 'id' },
         }).some((i) => i.includes('ingress.mode')),
       ).toBe(true);
     });
@@ -270,19 +294,19 @@ describe('D-192 M1 — MessengerVendorDeclaration registry', () => {
     it('requires verification + secret_field when ingress.mode is webhook', () => {
       const noVerify = assertMessengerVendorDeclarationShape({
         ...validEntry(),
-        ingress: { mode: 'webhook', secret_field: 'signing_secret' },
+        ingress: { mode: 'webhook', supported_modes: ['webhook'], secret_field: 'signing_secret', id_field: 'id' },
       });
       expect(noVerify.some((i) => i.includes('ingress.verification'))).toBe(true);
 
       const noSecret = assertMessengerVendorDeclarationShape({
         ...validEntry(),
-        ingress: { mode: 'webhook', verification: 'hmac' },
+        ingress: { mode: 'webhook', supported_modes: ['webhook'], verification: 'hmac', id_field: 'id' },
       });
       expect(noSecret.some((i) => i.includes('ingress.secret_field'))).toBe(true);
 
       const badVerify = assertMessengerVendorDeclarationShape({
         ...validEntry(),
-        ingress: { mode: 'webhook', verification: 'md5', secret_field: 's' },
+        ingress: { mode: 'webhook', supported_modes: ['webhook'], verification: 'md5', secret_field: 's', id_field: 'id' },
       });
       expect(badVerify.some((i) => i.includes('ingress.verification'))).toBe(true);
     });
@@ -290,7 +314,7 @@ describe('D-192 M1 — MessengerVendorDeclaration registry', () => {
     it('allows a socket-mode entry that omits verification + secret_field (the extension path)', () => {
       const socket = assertMessengerVendorDeclarationShape({
         ...validEntry(),
-        ingress: { mode: 'socket' },
+        ingress: { mode: 'socket', supported_modes: ['socket'], id_field: 'event_id' },
       });
       expect(socket).toEqual([]);
     });
@@ -298,9 +322,9 @@ describe('D-192 M1 — MessengerVendorDeclaration registry', () => {
     it('rejects verification / secret_field on a non-webhook mode', () => {
       const issues = assertMessengerVendorDeclarationShape({
         ...validEntry(),
-        ingress: { mode: 'poll', verification: 'hmac', secret_field: 's' },
+        ingress: { mode: 'poll', supported_modes: ['poll'], verification: 'hmac', secret_field: 's', id_field: 'id' },
       });
-      expect(issues.some((i) => i.includes("only valid when ingress.mode is 'webhook'"))).toBe(true);
+      expect(issues.some((i) => i.includes('only valid when webhook is supported'))).toBe(true);
     });
 
     it('rejects a bad recipient', () => {
@@ -541,6 +565,84 @@ describe('D-192 M1 — MessengerVendorDeclaration registry', () => {
       // to kind: 'api') and an enroll card carrying the OAuth fields. Until then the
       // empty list is what keeps the boot check honest.
       expect(MESSENGER_AUTH_KIND_CONNECTION_TYPES.oauth).toEqual([]);
+    });
+  });
+
+  describe('per-mode role narrowing', () => {
+    const discord = getMessengerVendorDeclaration('discord')!;
+
+    it('resolves Discord conversational on Gateway and notify+approve on webhook', () => {
+      expect(resolveMessengerVendorRoles(discord, 'socket')).toEqual({
+        notification: true,
+        approval: true,
+        messenger: true,
+      });
+      expect(resolveMessengerVendorRoles(discord, 'webhook')).toEqual({
+        notification: true,
+        approval: true,
+        messenger: false,
+      });
+    });
+
+    it('falls to the floor when the mode is unknown', () => {
+      // An unresolvable mode is not evidence of a capability. The floor is what
+      // holds in EVERY supported mode, so the narrowed axis goes off.
+      expect(resolveMessengerVendorRoles(discord, null).messenger).toBe(false);
+      expect(resolveMessengerVendorRoles(discord, null).approval).toBe(true);
+    });
+
+    it('resolves a stored row through its config, defaulting legacy rows to webhook', () => {
+      expect(resolveMessengerConnectionRoles(discord, { ingress_mode: 'socket' }).messenger)
+        .toBe(true);
+      expect(resolveMessengerConnectionRoles(discord, { ingress_mode: 'webhook' }).messenger)
+        .toBe(false);
+      // Pre-upgrade row: no `ingress_mode` resolves to webhook, so it keeps the
+      // notify+approve shape Discord actually shipped with.
+      expect(resolveMessengerConnectionRoles(discord, {}).messenger).toBe(false);
+      // An explicit BAD value resolves to null upstream ⇒ floor, not ceiling.
+      expect(resolveMessengerConnectionRoles(discord, { ingress_mode: 'nonsense' }).messenger)
+        .toBe(false);
+    });
+
+    it('leaves every vendor whose roles do not move untouched', () => {
+      // The invariant that keeps this facet honest: Discord is the ONLY entry
+      // that narrows. A future vendor adding one has to come through here.
+      const narrowing = MESSENGER_VENDOR_DECLARATIONS
+        .filter((d) => d.ingress.mode_roles !== undefined)
+        .map((d) => d.vendor);
+      expect(narrowing).toEqual(['discord']);
+      for (const declaration of MESSENGER_VENDOR_DECLARATIONS) {
+        if (declaration.ingress.mode_roles !== undefined) continue;
+        for (const mode of declaration.ingress.supported_modes) {
+          expect(resolveMessengerVendorRoles(declaration, mode)).toEqual(declaration.roles);
+        }
+      }
+    });
+
+    it('refuses a mode_roles entry that grants, repeats, or empties a role', () => {
+      const base = MESSENGER_VENDOR_DECLARATIONS.find((d) => d.vendor === 'discord')!;
+      const withOverride = (mode_roles: unknown): unknown =>
+        ({ ...base, ingress: { ...base.ingress, mode_roles } });
+
+      // Granting a role the vendor does not declare would make `roles` stop
+      // being the answer to "can this channel do X".
+      expect(assertMessengerVendorDeclarationShape(
+        withOverride({ webhook: { messenger: true } }),
+      )).toContainEqual(expect.stringContaining('repeats the ceiling'));
+      // A mode outside supported_modes is dead configuration.
+      expect(assertMessengerVendorDeclarationShape(
+        withOverride({ poll: { messenger: false } }),
+      )).toContainEqual(expect.stringContaining('not one of ingress.supported_modes'));
+      // An empty override reads as intent that is not there.
+      expect(assertMessengerVendorDeclarationShape(
+        withOverride({ webhook: {} }),
+      )).toContainEqual(expect.stringContaining('declares no narrowing'));
+      // A mode that gives up everything is an inert mode.
+      expect(assertMessengerVendorDeclarationShape(
+        withOverride({ webhook: { notification: false, approval: false, messenger: false } }),
+      )).toContainEqual(expect.stringContaining('no role at all'));
+      // ...and the shipped declaration itself is clean.
+      expect(assertMessengerVendorDeclarationShape(base)).toEqual([]);
     });
   });
 });

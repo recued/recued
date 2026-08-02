@@ -215,6 +215,42 @@ describe('D-219 argument capture — the store', () => {
     expect(store.deleteForSession('s1')).toBe(1);
     expect(store.count()).toBe(1);
   });
+
+  it('does not let an in-flight capture resurrect a forgotten turn', async () => {
+    const db = openDb();
+    const store = createExecutionCaseArgumentStore(db, keyProvider());
+    const capture = store.capture({
+      capture_id: 'late-turn', session_id: 's1', turn_id: 't1',
+      tool_name: 'mail.send', captured_at: 1, args: { to: 'private@example.com' },
+    });
+
+    expect(store.deleteForTurns([{ session_id: 's1', turn_id: 't1' }])).toBe(0);
+
+    await expect(capture).resolves.toBe(false);
+    await expect(store.listForTurn('s1', 't1')).resolves.toEqual([]);
+    await expect(store.capture({
+      capture_id: 'post-forget-turn', session_id: 's1', turn_id: 't1',
+      tool_name: 'mail.send', captured_at: 2, args: { to: 'private@example.com' },
+    })).resolves.toBe(false);
+  });
+
+  it('does not let an in-flight capture resurrect a forgotten session', async () => {
+    const db = openDb();
+    const store = createExecutionCaseArgumentStore(db, keyProvider());
+    const capture = store.capture({
+      capture_id: 'late-session', session_id: 's1', turn_id: 'unanchored',
+      tool_name: 'contact.search', captured_at: 1, args: { query: 'private' },
+    });
+
+    expect(store.deleteForSession('s1')).toBe(0);
+
+    await expect(capture).resolves.toBe(false);
+    expect(store.count()).toBe(0);
+    await expect(store.capture({
+      capture_id: 'post-forget-session', session_id: 's1', turn_id: 'new-turn',
+      tool_name: 'contact.search', captured_at: 2, args: { query: 'private' },
+    })).resolves.toBe(false);
+  });
 });
 
 describe('D-219 argument capture — the dispatch seam', () => {

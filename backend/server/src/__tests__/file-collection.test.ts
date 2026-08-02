@@ -191,6 +191,43 @@ describe('createFsWatcher — honest watch mode', () => {
     expect(fakeWatcher.close).toHaveBeenCalledOnce();
     await watcher.stop();
   });
+
+  it('waits for a debounced event already inside onEvent before stopping', async () => {
+    const fakeWatcher = Object.assign(new EventEmitter(), { close: vi.fn() });
+    let watchListener: ((eventType: string, filename: string | null) => void) | undefined;
+    let releaseEvent: () => void = () => {};
+    let markEventStarted: () => void = () => {};
+    const eventStarted = new Promise<void>((resolve) => { markEventStarted = resolve; });
+    const watcher = createFsWatcher({
+      root: h.root,
+      ignore: [],
+      debounceMs: 1,
+      watchMode: 'realtime',
+      onEvent: (event) => {
+        if (event.type !== 'change') return;
+        markEventStarted();
+        return new Promise<void>((resolve) => { releaseEvent = resolve; });
+      },
+      watchFactory: (_root, listener) => {
+        watchListener = listener;
+        return fakeWatcher as unknown as FSWatcher;
+      },
+    });
+    await watcher.start();
+    writeFileSync(join(h.root, 'late.txt'), 'late');
+    watchListener?.('change', 'late.txt');
+    await eventStarted;
+
+    let stopped = false;
+    const stopping = watcher.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    releaseEvent();
+    await stopping;
+    expect(stopped).toBe(true);
+    expect(fakeWatcher.close).toHaveBeenCalledOnce();
+  });
 });
 
 // ────────────────────────────────────────────────────────────────

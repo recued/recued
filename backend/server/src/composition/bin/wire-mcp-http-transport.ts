@@ -28,6 +28,7 @@
 
 import {
   isMcpInboundTokenToolAuthorized,
+  isMcpInboundTokenActive,
   MCP_INBOUND_TOKEN_PREFIX,
   type InternalToolRegistry,
   type McpInboundTokenRecord,
@@ -38,7 +39,11 @@ import type { HousekeepingStateStore } from '../../housekeeping/index.js';
 import type { ClientTokenRecord, ClientTokenStore } from '../../pairing/client-tokens.js';
 import type { ChatInboundTokenStore } from '../../storage/chat-inbound-token-store.js';
 import type { McpBodyVisibilityStore } from '../../storage/mcp-body-visibility-store.js';
-import type { McpBearerVerifier, McpDispatch } from '../../ports/mcp/handler.js';
+import type {
+  McpBearerVerifier,
+  McpConcurrencyLimitResolver,
+  McpDispatch,
+} from '../../ports/mcp/handler.js';
 import type { FormDefinitionReader } from '../../form-contract-gate.js';
 import { createMcpHttpDispatch, type McpDeps } from '../../mcp-server.js';
 import type { LoadCollectionRecord } from '../../mcp/timeline.js';
@@ -116,6 +121,7 @@ export interface McpHttpTransportBundle {
   readonly mcpHttpDeps: {
     readonly verifier: McpBearerVerifier;
     readonly dispatch: McpDispatch;
+    readonly resolveConcurrencyLimit: McpConcurrencyLimitResolver;
   };
   readonly logBootBanner: () => void;
 }
@@ -237,6 +243,22 @@ export const composeMcpHttpTransport = (
 
   const verifier: McpBearerVerifier = async (tok: string): Promise<boolean> =>
     (await resolveBearer(tok)) !== null;
+
+  /** Carry the D-137 per-token 3 / 5 / 10 concurrency tier to HTTP
+   *  admission. Canonical owner CLI tokens have no authored tier and retain
+   *  the handler's fixed ceiling. The handler invokes this only after bearer
+   *  verification; this second read also observes a raced revoke or expiry. */
+  const resolveConcurrencyLimit: McpConcurrencyLimitResolver = (bearer) => {
+    if (parseStructuredBearer(bearer)) return undefined;
+    if (
+      !deps.inboundTokenStore
+      || !bearer.startsWith(MCP_INBOUND_TOKEN_PREFIX)
+    ) return undefined;
+    return deps.inboundTokenStore.verifyBearer({
+      bearer,
+      now: Date.now(),
+    })?.concurrency_tier;
+  };
 
   // Vault-lock gate predicate. Absent (dbless / harness — no vault) ⇒ open.
   const isVaultUnlocked = deps.isVaultUnlocked ?? (() => true);
@@ -420,6 +442,7 @@ export const composeMcpHttpTransport = (
       return {
         ...baseMcpDeps,
         mcpTokenId: resolved.mcp_token_id,
+        mcpPrincipalActive: () => isMcpInboundTokenActive(record, Date.now()),
         // Audit attribution: the door's peer handle when set, else a
         // token-derived id — never the stdio_local fallback.
         agentId:
@@ -458,7 +481,7 @@ export const composeMcpHttpTransport = (
   };
 
   return {
-    mcpHttpDeps: { verifier, dispatch },
+    mcpHttpDeps: { verifier, dispatch, resolveConcurrencyLimit },
     logBootBanner,
   };
 };

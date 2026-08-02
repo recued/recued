@@ -23,6 +23,8 @@ import {
   ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR,
   ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
   ATTENTION_RECOVERY_INTENT_CONTINUATION_ATTR,
+  ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME_ATTR,
+  ATTENTION_RECOVERY_INTENT_SERVER_STATE_ATTR,
   ATTENTION_SEE_ALL_LINK_ATTR,
   ATTENTION_TOPBAR_HOST_ATTR,
   ATTENTION_TOPBAR_STYLES,
@@ -319,6 +321,9 @@ const makeFakeRecoverySubscribe = () => {
 const tick = async (n = 6): Promise<void> => {
   for (let i = 0; i < n; i += 1) await Promise.resolve();
 };
+const nextTask = (): Promise<void> => new Promise((resolve) => {
+  globalThis.setTimeout(resolve, 0);
+});
 
 const mountFor = (
   opts: {
@@ -358,6 +363,15 @@ const mountFor = (
       continuation: AttentionRecoveryIntentContinuation,
     ) => 'started' | 'missing' | 'unavailable';
     onRemediateRecoveryIntentConnection?: (
+      continuation: AttentionRecoveryIntentContinuation,
+    ) => 'started' | 'missing' | 'unavailable';
+    onReviewRecoveryIntentServer?: (
+      continuation: AttentionRecoveryIntentContinuation,
+    ) => 'started' | 'missing' | 'unavailable';
+    onResolveRecoveryIntentReview?: (
+      continuation: AttentionRecoveryIntentContinuation,
+    ) => 'started' | 'missing' | 'unavailable';
+    onKeepRecoveryIntentReviewBlocked?: (
       continuation: AttentionRecoveryIntentContinuation,
     ) => 'started' | 'missing' | 'unavailable';
     onDismissRecoveryIntentContinuation?: () => void;
@@ -516,6 +530,24 @@ const mountFor = (
             opts.onRemediateRecoveryIntentConnection,
         }
       : {}),
+    ...(opts.onReviewRecoveryIntentServer !== undefined
+      ? {
+          onReviewRecoveryIntentServer:
+            opts.onReviewRecoveryIntentServer,
+        }
+      : {}),
+    ...(opts.onResolveRecoveryIntentReview !== undefined
+      ? {
+          onResolveRecoveryIntentReview:
+            opts.onResolveRecoveryIntentReview,
+        }
+      : {}),
+    ...(opts.onKeepRecoveryIntentReviewBlocked !== undefined
+      ? {
+          onKeepRecoveryIntentReviewBlocked:
+            opts.onKeepRecoveryIntentReviewBlocked,
+        }
+      : {}),
     ...(opts.onDismissRecoveryIntentContinuation !== undefined
       ? {
           onDismissRecoveryIntentContinuation:
@@ -602,6 +634,16 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(handle.isOpen()).toBe(false);
 
     topbar.fireAction({ 'data-action': 'open-attention' });
+    doc.fire('click', { target: root } as unknown as MouseEvent);
+    expect(handle.isOpen()).toBe(false);
+
+    // Another shell surface can open Attention from its own click handler.
+    // That same event must not bubble into the outside-click closer and undo
+    // the handoff before the dialog is painted.
+    handle.open();
+    doc.fire('click', { target: root } as unknown as MouseEvent);
+    expect(handle.isOpen()).toBe(true);
+    await nextTask();
     doc.fire('click', { target: root } as unknown as MouseEvent);
     expect(handle.isOpen()).toBe(false);
 
@@ -1398,6 +1440,334 @@ describe('D-174 - approval attention top-bar adapter', () => {
     handle.dispose();
   });
 
+  it('ends a repeated recovery loop with direct review and explicit closure', async () => {
+    const continuation: AttentionRecoveryIntentContinuation = {
+      serverProfileId: 'profile-home',
+      serverProfileLabel: 'Home <private>',
+      landingHash: '#contracts',
+      areaLabel: 'Contracts',
+      intent: 'choose_again',
+      phase: 'failed',
+      remediation: 'escalated',
+    };
+    const review = vi.fn(() => 'started' as const);
+    const reviewServer = vi.fn(() => 'started' as const);
+    const resume = vi.fn(() => 'started' as const);
+    const remediate = vi.fn(() => 'started' as const);
+    const resolveReview = vi.fn(() => 'started' as const);
+    const keepBlocked = vi.fn(() => 'started' as const);
+    const dismiss = vi.fn();
+    const { root, topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentContinuation: continuation,
+      onResumeRecoveryIntentContinuation: resume,
+      onReviewRecoveryIntentContinuation: review,
+      onRemediateRecoveryIntentConnection: remediate,
+      onReviewRecoveryIntentServer: reviewServer,
+      onResolveRecoveryIntentReview: resolveReview,
+      onKeepRecoveryIntentReviewBlocked: keepBlocked,
+      onDismissRecoveryIntentContinuation: dismiss,
+    });
+    await handle.whenLoaded();
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-remediation="escalated"');
+    expect(topbar.innerHTML).toContain('Still can’t verify Contracts');
+    expect(topbar.innerHTML).toContain(
+      'Two recovery attempts couldn’t finish safely in this tab',
+    );
+    expect(topbar.innerHTML).toContain('stopped the retry loop');
+    expect(topbar.innerHTML).toContain('Review Contracts');
+    expect(topbar.innerHTML).toContain('Review server');
+    expect(topbar.innerHTML).toContain('Stop recovery');
+    expect(topbar.innerHTML).not.toContain('Try again');
+    expect(topbar.innerHTML).not.toContain('Review connection');
+    expect(topbar.innerHTML).toContain(
+      'aria-label="Review Home &lt;private&gt; before returning to Contracts"',
+    );
+    expect(topbar.innerHTML).not.toContain('Home <private>');
+    expect(ATTENTION_TOPBAR_STYLES).toContain(
+      '[data-phase="failed"][data-remediation="escalated"]',
+    );
+    expect(firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe(
+      'Recued stopped retrying Contracts in this tab. It won’t retry on its own.',
+    );
+
+    // Synthetic stale actions cannot bypass the cap.
+    topbar.fireAction({
+      'data-action': 'resume-recovery-intent-continuation',
+    });
+    topbar.fireAction({
+      'data-action': 'remediate-recovery-intent-connection',
+    });
+    expect(resume).not.toHaveBeenCalled();
+    expect(remediate).not.toHaveBeenCalled();
+
+    topbar.fireAction({
+      'data-action': 'review-recovery-intent-server',
+    });
+    expect(reviewServer).toHaveBeenCalledWith(continuation);
+    expect(review).not.toHaveBeenCalled();
+    expect(handle.isOpen()).toBe(false);
+    expect(handle.getRecoveryIntentContinuation()).toEqual(continuation);
+
+    const serverOutcome: AttentionRecoveryIntentContinuation = {
+      ...continuation,
+      phase: 'awaiting_review_outcome',
+      reviewTarget: 'server',
+    };
+    handle.setRecoveryIntentContinuation(serverOutcome);
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      'data-phase="awaiting_review_outcome"',
+    );
+    expect(topbar.innerHTML).toContain('data-review-target="server"');
+    expect(topbar.innerHTML).toContain(
+      'What happened after reviewing Home &lt;private&gt;?',
+    );
+    expect(topbar.innerHTML).toContain(
+      'Recued won’t assume the direct review fixed the issue',
+    );
+    expect(topbar.innerHTML).toContain(
+      'Looks resolved &mdash; verify &amp; choose again',
+    );
+    expect(topbar.innerHTML).toContain(
+      'aria-label="Looks resolved; verify Contracts on Home &lt;private&gt;, then choose again"',
+    );
+    expect(topbar.innerHTML).toContain(
+      'Still blocked &mdash; keep reminder',
+    );
+    expect(topbar.innerHTML).toContain('Stop recovery');
+    expect(topbar.innerHTML).not.toContain('Try again');
+    expect(topbar.innerHTML).not.toContain(
+      'data-action="review-recovery-intent-server"',
+    );
+    expect(topbar.innerHTML).not.toContain(
+      'data-action="review-recovery-intent-continuation"',
+    );
+    expect(topbar.innerHTML).not.toContain(
+      'data-action="resume-recovery-intent-continuation"',
+    );
+    expect(topbar.innerHTML).not.toContain('Home <private>');
+    expect(ATTENTION_TOPBAR_STYLES).toContain(
+      '[data-phase="awaiting_review_outcome"]',
+    );
+    expect(firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe(
+      'Review outcome needed for Contracts. Choose the Looks resolved option to run one fresh check, or keep the reminder if it is still blocked.',
+    );
+
+    // Synthetic stale actions cannot escape the explicit outcome handoff.
+    topbar.fireAction({
+      'data-action': 'resume-recovery-intent-continuation',
+    });
+    topbar.fireAction({
+      'data-action': 'review-recovery-intent-continuation',
+    });
+    topbar.fireAction({
+      'data-action': 'review-recovery-intent-server',
+    });
+    expect(resume).not.toHaveBeenCalled();
+    expect(review).not.toHaveBeenCalled();
+    expect(reviewServer).toHaveBeenCalledOnce();
+
+    topbar.fireAction({
+      'data-action': 'keep-recovery-intent-review-blocked',
+    });
+    expect(keepBlocked).toHaveBeenCalledWith(serverOutcome);
+    expect(handle.isOpen()).toBe(false);
+    expect(handle.getRecoveryIntentContinuation()).toEqual(serverOutcome);
+
+    const receiptOutcome: AttentionRecoveryIntentContinuation = {
+      ...serverOutcome,
+      serverControlOutcome: {
+        action: 'pause',
+        phase: 'superseded',
+        currentState: 'running',
+      },
+    };
+    handle.setRecoveryIntentContinuation({
+      ...receiptOutcome,
+      serverControlOutcome: {
+        ...receiptOutcome.serverControlOutcome!,
+        detail: 'private transport detail',
+      } as NonNullable<
+        AttentionRecoveryIntentContinuation['serverControlOutcome']
+      > & { readonly detail: string },
+    });
+    expect(handle.getRecoveryIntentContinuation()).toEqual(receiptOutcome);
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      `${ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME_ATTR}="superseded"`,
+    );
+    expect(topbar.innerHTML).toContain(
+      'data-server-control-action="pause"',
+    );
+    expect(topbar.innerHTML).toContain(
+      'data-server-control-state="running"',
+    );
+    expect(topbar.innerHTML).toContain('Server state changed after Pause');
+    expect(topbar.innerHTML).toContain(
+      'Pause completed, but a newer status from Home &lt;private&gt; reports a different execution state.',
+    );
+    expect(topbar.innerHTML).toContain(
+      'Latest known state: execution is running.',
+    );
+    expect(topbar.innerHTML).toContain(
+      'This server result does not verify Contracts.',
+    );
+    expect(topbar.innerHTML).toContain('Pause will not replay.');
+    expect(topbar.innerHTML).toContain(
+      'Verify Contracts &amp; choose again',
+    );
+    expect(topbar.innerHTML).toContain(
+      'aria-label="Verify Contracts on Home &lt;private&gt;, then choose again; Pause will not replay"',
+    );
+    expect(topbar.innerHTML).not.toContain(
+      'What happened after reviewing',
+    );
+    expect(topbar.innerHTML).not.toContain('private transport detail');
+    expect(firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe(
+      'Server state changed after Pause on Home <private>. This server result does not verify Contracts. Run one fresh Contracts check before choosing again; Pause will not replay.',
+    );
+    topbar.fireAction({
+      'data-action': 'keep-recovery-intent-review-blocked',
+    });
+    expect(keepBlocked).toHaveBeenLastCalledWith(receiptOutcome);
+    expect(handle.isOpen()).toBe(false);
+    expect(handle.getRecoveryIntentContinuation()).toEqual(receiptOutcome);
+
+    // A baseline belongs only to an unresolved historical receipt. Ignore a
+    // malformed/redundant observation attached to an already settled result.
+    handle.setRecoveryIntentContinuation({
+      ...receiptOutcome,
+      serverCurrentState: { state: 'paused' },
+    });
+    expect(handle.getRecoveryIntentContinuation()).toEqual(receiptOutcome);
+
+    const pendingReceiptOutcome: AttentionRecoveryIntentContinuation = {
+      ...serverOutcome,
+      serverControlOutcome: {
+        action: 'restart',
+        phase: 'pending',
+      },
+    };
+    handle.setRecoveryIntentContinuation(pendingReceiptOutcome);
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain('Restart was still pending');
+    expect(topbar.innerHTML).toContain(
+      'The last receipt from Home &lt;private&gt; had not confirmed the Restart request.',
+    );
+    expect(topbar.innerHTML).toContain(
+      'Review Home &lt;private&gt; again to compare its current live state with this receipt',
+    );
+    expect(topbar.innerHTML).toContain('Review server again');
+    expect(topbar.innerHTML).toContain('Verify Contracts instead');
+    expect(topbar.innerHTML).not.toContain(
+      'Still blocked &mdash; keep reminder',
+    );
+    expect(firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe(
+      'Restart was still pending on Home <private>. Review that exact server again, or verify Contracts instead before choosing again. Restart will not replay.',
+    );
+    expect(topbar.innerHTML).not.toContain('Restart is still pending');
+    topbar.fireAction({
+      'data-action': 'review-recovery-intent-server',
+    });
+    expect(reviewServer).toHaveBeenLastCalledWith(pendingReceiptOutcome);
+    expect(handle.isOpen()).toBe(false);
+
+    const reconciledReceiptOutcome: AttentionRecoveryIntentContinuation = {
+      ...pendingReceiptOutcome,
+      serverCurrentState: { state: 'running' },
+    };
+    handle.setRecoveryIntentContinuation(reconciledReceiptOutcome);
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      `${ATTENTION_RECOVERY_INTENT_SERVER_STATE_ATTR}="running"`,
+    );
+    expect(topbar.innerHTML).toContain('Current server state: running');
+    expect(topbar.innerHTML).toContain(
+      'The exact review received a fresh status from Home &lt;private&gt; reporting that execution was running.',
+    );
+    expect(topbar.innerHTML).toContain(
+      'does not prove the earlier Restart request started a fresh process',
+    );
+    expect(topbar.innerHTML).toContain(
+      'Verify Contracts &amp; choose again',
+    );
+    expect(topbar.innerHTML).toContain(
+      'Still blocked &mdash; keep reminder',
+    );
+    expect(topbar.innerHTML).not.toContain('Review server again');
+    expect(topbar.innerHTML).not.toContain('Verify Contracts instead');
+    expect(firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe(
+      'Latest review of Home <private> found execution running. The earlier Restart result remains historical. Run one fresh Contracts check before choosing again; Restart will not replay.',
+    );
+    topbar.fireAction({
+      'data-action': 'resolve-recovery-intent-review',
+    });
+    expect(resolveReview).toHaveBeenLastCalledWith(
+      reconciledReceiptOutcome,
+    );
+    expect(handle.isOpen()).toBe(false);
+
+    const areaOutcome: AttentionRecoveryIntentContinuation = {
+      ...serverOutcome,
+      reviewTarget: 'area',
+    };
+    handle.setRecoveryIntentContinuation(areaOutcome);
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      'What happened after reviewing Contracts?',
+    );
+    topbar.fireAction({
+      'data-action': 'resolve-recovery-intent-review',
+    });
+    expect(resolveReview).toHaveBeenCalledWith(areaOutcome);
+    expect(handle.isOpen()).toBe(false);
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    topbar.fireAction({
+      'data-action': 'dismiss-recovery-intent-continuation',
+    });
+    expect(dismiss).toHaveBeenCalledOnce();
+    expect(handle.getRecoveryIntentContinuation()).toBeNull();
+    handle.dispose();
+
+    const routeOnly = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentContinuation: continuation,
+      onResumeRecoveryIntentContinuation: resume,
+      onReviewRecoveryIntentContinuation: review,
+    });
+    await routeOnly.handle.whenLoaded();
+    routeOnly.topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(routeOnly.topbar.innerHTML).toContain(
+      'Review Contracts directly before choosing again',
+    );
+    expect(routeOnly.topbar.innerHTML).not.toContain('Review server');
+    expect(routeOnly.topbar.innerHTML).not.toContain(
+      'or Home &lt;private&gt; directly',
+    );
+    routeOnly.handle.dispose();
+  });
+
   it('fails closed to route review when no authoritative retry exists', async () => {
     const continuation: AttentionRecoveryIntentContinuation = {
       serverProfileId: 'profile-home',
@@ -1449,6 +1819,382 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(resume).not.toHaveBeenCalled();
     expect(handle.isOpen()).toBe(false);
     handle.dispose();
+  });
+
+  it('restores one privacy-safe exact-area check after reconciliation', async () => {
+    const continuation: AttentionRecoveryIntentContinuation = {
+      serverProfileId: 'profile-home',
+      serverProfileLabel: 'Home <private>',
+      landingHash: '#contracts',
+      areaLabel: 'Contracts',
+      intent: 'choose_again',
+      phase: 'verification_ready',
+      remediation: 'escalated',
+      reviewTarget: 'server',
+    };
+    const resolveReview = vi.fn(() => 'started' as const);
+    const review = vi.fn(() => 'started' as const);
+    const reviewServer = vi.fn(() => 'started' as const);
+    const keepBlocked = vi.fn(() => 'started' as const);
+    const { root, topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentContinuation: {
+        ...continuation,
+        // Memory-only reconciliation material must be discarded even if a
+        // stale caller tries to attach it to the restored phase.
+        serverControlOutcome: {
+          action: 'restart',
+          phase: 'pending',
+        },
+        serverCurrentState: { state: 'running' },
+      },
+      onResumeRecoveryIntentContinuation: vi.fn(() => 'started' as const),
+      onResolveRecoveryIntentReview: resolveReview,
+      onReviewRecoveryIntentContinuation: review,
+      onReviewRecoveryIntentServer: reviewServer,
+      onKeepRecoveryIntentReviewBlocked: keepBlocked,
+    });
+    await handle.whenLoaded();
+
+    expect(handle.getRecoveryIntentContinuation()).toEqual(continuation);
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="verification_ready"');
+    expect(topbar.innerHTML).toContain('data-review-target="server"');
+    expect(topbar.innerHTML).toContain('Finish checking Contracts');
+    expect(topbar.innerHTML).toContain(
+      'The server re-review finished, but the final Contracts check did not',
+    );
+    expect(topbar.innerHTML).toContain(
+      'restored only where to return and that you wanted to choose again',
+    );
+    expect(topbar.innerHTML).toContain(
+      'not the server action, receipt, current state, or credentials',
+    );
+    expect(topbar.innerHTML).toContain('Check Contracts now');
+    expect(topbar.innerHTML).not.toContain(
+      ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME_ATTR,
+    );
+    expect(topbar.innerHTML).not.toContain(
+      ATTENTION_RECOVERY_INTENT_SERVER_STATE_ATTR,
+    );
+    expect(topbar.innerHTML).not.toContain('Restart was still pending');
+    expect(topbar.innerHTML).not.toContain('Current server state: running');
+    expect(firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe(
+      'One fresh Contracts check remains. Only the saved return was restored—not the server action, receipt, current state, or credentials. Check the area when ready; nothing will replay.',
+    );
+    expect(ATTENTION_TOPBAR_STYLES).toContain(
+      '[data-phase="verification_ready"]',
+    );
+
+    // The restored marker offers only the route-owned check or explicit stop;
+    // synthetic direct-review/outcome actions cannot bypass that boundary.
+    topbar.fireAction({
+      'data-action': 'review-recovery-intent-server',
+    });
+    topbar.fireAction({
+      'data-action': 'review-recovery-intent-continuation',
+    });
+    topbar.fireAction({
+      'data-action': 'keep-recovery-intent-review-blocked',
+    });
+    expect(reviewServer).not.toHaveBeenCalled();
+    expect(review).not.toHaveBeenCalled();
+    expect(keepBlocked).not.toHaveBeenCalled();
+    topbar.fireAction({
+      'data-action': 'resolve-recovery-intent-review',
+    });
+    expect(resolveReview).toHaveBeenCalledWith(continuation);
+    expect(handle.isOpen()).toBe(false);
+    handle.setRecoveryIntentContinuation({
+      ...continuation,
+      reviewTarget: 'area',
+    });
+    expect(handle.getRecoveryIntentContinuation()).toBeNull();
+    handle.dispose();
+  });
+
+  it('makes interrupted resolved verification an explicit safe re-entry', async () => {
+    const areaInterrupted: AttentionRecoveryIntentContinuation = {
+      serverProfileId: 'profile-home',
+      serverProfileLabel: 'Home <private>',
+      landingHash: '#contracts',
+      areaLabel: 'Contracts',
+      intent: 'choose_again',
+      phase: 'verification_interrupted',
+      remediation: 'escalated',
+      reviewTarget: 'area',
+      interruptionReason: 'connection',
+    };
+    const resolveReview = vi.fn(() => 'started' as const);
+    const review = vi.fn(() => 'started' as const);
+    const reviewServer = vi.fn(() => 'started' as const);
+    const keepBlocked = vi.fn(() => 'started' as const);
+    const dismiss = vi.fn();
+    const { root, topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentContinuation: areaInterrupted,
+      onResumeRecoveryIntentContinuation: vi.fn(() => 'started' as const),
+      onResolveRecoveryIntentReview: resolveReview,
+      onReviewRecoveryIntentContinuation: review,
+      onReviewRecoveryIntentServer: reviewServer,
+      onKeepRecoveryIntentReviewBlocked: keepBlocked,
+      onDismissRecoveryIntentContinuation: dismiss,
+    });
+    await handle.whenLoaded();
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      'data-phase="verification_interrupted"',
+    );
+    expect(topbar.innerHTML).toContain('Verification was interrupted');
+    expect(topbar.innerHTML).toContain(
+      'Your “Looks resolved” outcome and exact return are still saved',
+    );
+    expect(topbar.innerHTML).toContain('It won’t retry on its own');
+    expect(topbar.innerHTML).toContain('Retry verification');
+    expect(topbar.innerHTML).toContain('Review Contracts');
+    expect(topbar.innerHTML).toContain('Stop recovery');
+    expect(topbar.innerHTML).not.toContain(
+      'Looks resolved &mdash; verify',
+    );
+    expect(topbar.innerHTML).not.toContain(
+      'Still blocked &mdash; keep reminder',
+    );
+    expect(topbar.innerHTML).not.toContain('Home <private>');
+    expect(firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe(
+      'Verification of Contracts was interrupted. It won’t retry on its own. Retry verification, review Contracts again, or stop recovery.',
+    );
+    expect(ATTENTION_TOPBAR_STYLES).toContain(
+      '[data-phase="verification_interrupted"]',
+    );
+
+    // Only the persisted target's direct-review action is valid.
+    topbar.fireAction({
+      'data-action': 'review-recovery-intent-server',
+    });
+    topbar.fireAction({
+      'data-action': 'keep-recovery-intent-review-blocked',
+    });
+    expect(reviewServer).not.toHaveBeenCalled();
+    expect(keepBlocked).not.toHaveBeenCalled();
+    topbar.fireAction({
+      'data-action': 'review-recovery-intent-continuation',
+    });
+    expect(review).toHaveBeenCalledWith(areaInterrupted);
+    expect(handle.isOpen()).toBe(false);
+
+    const serverInterrupted: AttentionRecoveryIntentContinuation = {
+      ...areaInterrupted,
+      reviewTarget: 'server',
+    };
+    handle.setRecoveryIntentContinuation(serverInterrupted);
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain('Review server');
+    expect(topbar.innerHTML).not.toContain(
+      'data-action="review-recovery-intent-continuation"',
+    );
+    topbar.fireAction({
+      'data-action': 'resolve-recovery-intent-review',
+    });
+    expect(resolveReview).toHaveBeenCalledWith(serverInterrupted);
+    expect(handle.isOpen()).toBe(false);
+    expect(dismiss).not.toHaveBeenCalled();
+    handle.dispose();
+  });
+
+  it('bounds repeated verification interruptions with connection-first review', async () => {
+    const handoff: AttentionRecoveryIntentContinuation = {
+      serverProfileId: 'profile-home',
+      serverProfileLabel: 'Home <private>',
+      landingHash: '#contracts',
+      areaLabel: 'Contracts',
+      intent: 'choose_again',
+      phase: 'verification_handoff',
+      remediation: 'escalated',
+      reviewTarget: 'area',
+      interruptionReason: 'connection',
+    };
+    const resume = vi.fn(() => 'started' as const);
+    const resolveReview = vi.fn(() => 'started' as const);
+    const review = vi.fn(() => 'started' as const);
+    const reviewServer = vi.fn(
+      (): 'started' | 'unavailable' => 'started',
+    );
+    const { root, topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentContinuation: handoff,
+      onResumeRecoveryIntentContinuation: resume,
+      onResolveRecoveryIntentReview: resolveReview,
+      onReviewRecoveryIntentContinuation: review,
+      onReviewRecoveryIntentServer: reviewServer,
+    });
+    await handle.whenLoaded();
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="verification_handoff"');
+    expect(topbar.innerHTML).toContain(
+      'Review the connection before another check',
+    );
+    expect(topbar.innerHTML).toContain(
+      'Two verification attempts did not finish safely',
+    );
+    expect(topbar.innerHTML).toContain('stopped the retry loop');
+    expect(topbar.innerHTML).toContain('Review connection');
+    expect(topbar.innerHTML).toContain('Review Contracts');
+    expect(topbar.innerHTML).toContain('Stop recovery');
+    expect(topbar.innerHTML).not.toContain('Retry verification');
+    expect(topbar.innerHTML).not.toContain('Looks resolved');
+    expect(topbar.innerHTML).not.toContain('Home <private>');
+    expect(firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe(
+      'Verification of Contracts was interrupted twice. Recued stopped the retry loop. Review the Home <private> connection or Contracts, or stop recovery.',
+    );
+
+    // The closed-list reason participates in presentation identity. A later
+    // interruption must update the cue even when phase, target, and route stay
+    // unchanged through a live shell render.
+    const navigationHandoff: AttentionRecoveryIntentContinuation = {
+      ...handoff,
+      interruptionReason: 'navigation',
+    };
+    handle.setRecoveryIntentContinuation(navigationHandoff);
+    expect(topbar.innerHTML).toContain('Verification keeps getting interrupted');
+    expect(topbar.innerHTML).not.toContain(
+      'Review the connection before another check',
+    );
+    handle.setRecoveryIntentContinuation(handoff);
+    expect(topbar.innerHTML).toContain(
+      'Review the connection before another check',
+    );
+
+    // A synthetic stale outcome/retry cannot bypass the connection-aware cap.
+    topbar.fireAction({
+      'data-action': 'resolve-recovery-intent-review',
+    });
+    topbar.fireAction({
+      'data-action': 'resume-recovery-intent-continuation',
+    });
+    expect(resolveReview).not.toHaveBeenCalled();
+    expect(resume).not.toHaveBeenCalled();
+    expect(handle.isOpen()).toBe(true);
+
+    topbar.fireAction({
+      'data-action': 'review-recovery-intent-server',
+    });
+    expect(reviewServer).toHaveBeenCalledWith(handoff);
+    expect(review).not.toHaveBeenCalled();
+    expect(handle.isOpen()).toBe(false);
+
+    reviewServer.mockReturnValue('unavailable');
+    handle.open();
+    expect(handle.isOpen()).toBe(true);
+    topbar.fireAction({
+      'data-action': 'review-recovery-intent-server',
+    });
+    expect(handle.isOpen()).toBe(true);
+    expect(topbar.innerHTML).toContain(
+      'review Contracts instead, or stop recovery',
+    );
+    handle.dispose();
+
+    // A degraded shell without Account must not advertise an unavailable
+    // connection action; the route-owned review becomes the honest primary.
+    const areaOnly = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentContinuation: handoff,
+      onResumeRecoveryIntentContinuation: resume,
+      onReviewRecoveryIntentContinuation: review,
+    });
+    await areaOnly.handle.whenLoaded();
+    areaOnly.topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(areaOnly.topbar.innerHTML).toContain(
+      'Review Contracts before another check',
+    );
+    expect(areaOnly.topbar.innerHTML).toContain(
+      'Review Contracts, then explicitly confirm the outcome',
+    );
+    expect(areaOnly.topbar.innerHTML).toContain(
+      'review that area before another check',
+    );
+    expect(areaOnly.topbar.innerHTML).not.toContain(
+      'Review the connection before another check',
+    );
+    expect(areaOnly.topbar.innerHTML).not.toContain(
+      'data-action="review-recovery-intent-server"',
+    );
+    expect(firstByAttr(
+      areaOnly.root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe(
+      'Verification of Contracts was interrupted twice. Recued stopped the retry loop. Review Contracts, or stop recovery.',
+    );
+    areaOnly.handle.dispose();
+
+    const stopOnly = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentContinuation: handoff,
+      onResumeRecoveryIntentContinuation: resume,
+    });
+    await stopOnly.handle.whenLoaded();
+    stopOnly.topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(stopOnly.topbar.innerHTML).toContain(
+      'This view cannot open a safe review target',
+    );
+    expect(stopOnly.topbar.innerHTML).toContain(
+      'keep the saved return for later or stop recovery',
+    );
+    expect(stopOnly.topbar.innerHTML).not.toContain(
+      'data-action="review-recovery-intent-continuation"',
+    );
+    expect(stopOnly.topbar.innerHTML).not.toContain(
+      'data-action="review-recovery-intent-server"',
+    );
+    expect(firstByAttr(
+      stopOnly.root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe(
+      'Verification of Contracts was interrupted twice. Recued stopped the retry loop. Keep the saved return for later, or stop recovery.',
+    );
+    stopOnly.handle.dispose();
+
+    const serverOnlyHandoff: AttentionRecoveryIntentContinuation = {
+      ...handoff,
+      reviewTarget: 'server',
+      interruptionReason: 'reload',
+    };
+    const unavailableServer = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentContinuation: serverOnlyHandoff,
+      onResumeRecoveryIntentContinuation: resume,
+      onReviewRecoveryIntentServer: vi.fn(() => 'unavailable' as const),
+    });
+    await unavailableServer.handle.whenLoaded();
+    unavailableServer.topbar.fireAction({ 'data-action': 'open-attention' });
+    unavailableServer.topbar.fireAction({
+      'data-action': 'review-recovery-intent-server',
+    });
+    expect(unavailableServer.handle.isOpen()).toBe(true);
+    expect(unavailableServer.topbar.innerHTML).toContain(
+      'keep it for later, or stop recovery',
+    );
+    expect(unavailableServer.topbar.innerHTML).not.toContain(
+      'review Contracts instead',
+    );
+    unavailableServer.handle.dispose();
   });
 
   it('covers reception inbox awaiting_approval holds through notification.pending_asks gateway.preflight attention', async () => {

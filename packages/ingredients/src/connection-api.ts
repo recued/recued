@@ -67,7 +67,9 @@
 import {
   CONNECTION_API_TIMEOUT_MS,
   OAUTH2_REFRESH_LEAD_MS,
+  getVendorProvider,
   isValidOAuthEndpointUrl,
+  resolveVendorOAuthRuntimeBase,
   walkPath,
   validateHeaderAuthEntries,
   describeHeaderAuthIssue,
@@ -86,6 +88,8 @@ import { sha256Hex } from '@recued/crypto/hash';
 import type {
   ConnectionAuth,
   ConnectionRow,
+  ConnectionVendorProvider,
+  VendorOAuthRuntimeBaseResolution,
 } from '@recued/contracts';
 import {
   encodeMultipart,
@@ -102,6 +106,12 @@ import {
 import { assertUrlSafe, composeApiUrl, interpolateUrl, UrlRefInvalidError } from './url-template.js';
 import { CrossOriginRedirectError, fetchOriginPinned } from './origin-pinned-fetch.js';
 import { parseChunkedWalkInput, runChunkedUpload } from './chunked-upload-runner.js';
+import {
+  discardResponseBody,
+  readBoundedResponseBytes,
+  readBoundedResponseText,
+  ResponseBodyTooLargeError,
+} from './bounded-response-body.js';
 
 const ALLOWED_METHODS = new Set([
   'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS',
@@ -190,6 +200,15 @@ export interface ConnectionApiHandlerDeps {
    *  for why the write stays non-fatal and why it must not stay silent. */
   onPersistFailure?: (row: ConnectionRow, error: unknown) => void;
 
+  /** A registered provider's refresh response omitted or malformed its
+   * tenant-specific API origin. The refresh gate ignores that destination but
+   * still uses and persists the rotated credential; this advisory hook lets a
+   * production host surface the degraded state without receiving the raw URL. */
+  onRuntimeBaseIssue?: (
+    row: ConnectionRow,
+    issue: Extract<VendorOAuthRuntimeBaseResolution, { status: 'missing' | 'invalid' }>,
+  ) => void;
+
   /** Persist a refreshed OAuth2 auth back to the connection store.
    *  Boot site re-encodes via `encodeAuthForStorage` (the same
    *  `connection` sub-DEK used by enrollment) and upserts the row
@@ -202,6 +221,7 @@ export interface ConnectionApiHandlerDeps {
   persistAuth: (
     row: ConnectionRow,
     newAuth: ConnectionAuth,
+    configPatch?: { base_url: string },
   ) => Promise<void>;
 
   /** fetch implementation. Defaults to `globalThis.fetch` (Node 18+
@@ -903,21 +923,27 @@ const parseResponseBody = async (
   response: Response,
   slug: string,
   stringifyUnsafeIntegers: boolean,
-): Promise<unknown> => {
+): Promise<{ readonly value: unknown; readonly byteLength: number }> => {
   const contentType = response.headers.get('content-type') ?? '';
+  let text: string;
+  let byteLength: number;
+  ({ text, byteLength } = await readBoundedResponseText(response));
   if (contentType.includes('application/json')) {
     try {
-      if (!stringifyUnsafeIntegers) return await response.json();
-      return JSON.parse(stringifyUnsafeJsonIntegers(await response.text())) as unknown;
+      const value = JSON.parse(
+        stringifyUnsafeIntegers ? stringifyUnsafeJsonIntegers(text) : text,
+      ) as unknown;
+      return { value, byteLength };
     } catch (e) {
       if ((e as Error).name === 'AbortError') throw e;
       throw new IngredientError(
         'NETWORK_ERROR',
         `${slug} returned malformed JSON`,
+        { response_body_failure: 'malformed_json' },
       );
     }
   }
-  return response.text();
+  return { value: text, byteLength };
 };
 
 const responseHeadersToObject = (
@@ -933,6 +959,102 @@ const responseHeadersToObject = (
  *  endpoint must fail loud rather than buffer an unbounded body into memory.
  *  Mirrors the CLI `output_capture` 64 MiB cap. */
 const RESPONSE_CAPTURE_MAX_BYTES = 64 * 1024 * 1024;
+const CREDENTIAL_RESPONSE_MAX_BYTES = 1024 * 1024;
+
+interface CredentialJsonRequest {
+  readonly label: string;
+  readonly endpoint: string;
+  readonly origin: string;
+  readonly init: Omit<RequestInit, 'signal'>;
+  readonly fetchImpl: typeof fetch;
+  readonly details?: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Credential exchanges run before the ordinary operation request, so the
+ * operation's AbortController cannot protect them. Give the exchange its own
+ * end-to-end deadline (including redirects and response streaming), bound its
+ * JSON body, and release every response on all exits.
+ */
+const fetchCredentialJson = async <T>({
+  label,
+  endpoint,
+  origin,
+  init,
+  fetchImpl,
+  details = {},
+}: CredentialJsonRequest): Promise<T> => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CONNECTION_API_TIMEOUT_MS);
+  let response: Response;
+  try {
+    response = await fetchOriginPinned(fetchImpl, endpoint, {
+      ...init,
+      signal: controller.signal,
+    }, origin);
+  } catch (e) {
+    clearTimeout(timer);
+    if (e instanceof CrossOriginRedirectError) {
+      throw new IngredientError(
+        'TOKEN_REFRESH_FAILED',
+        `${label} refused: ${e.message} — credentials not sent to the redirect target`,
+        { ...details, cause: 'cross_origin_redirect' },
+      );
+    }
+    const isAbort = (e as Error).name === 'AbortError';
+    throw new IngredientError(
+      'TOKEN_REFRESH_FAILED',
+      isAbort
+        ? `${label} timed out after ${CONNECTION_API_TIMEOUT_MS}ms`
+        : `${label} failed: ${(e as Error).message}`,
+      { ...details, cause: isAbort ? 'timeout' : 'network' },
+    );
+  }
+
+  try {
+    if (!response.ok) {
+      throw new IngredientError(
+        'TOKEN_REFRESH_FAILED',
+        `${label} returned ${response.status} ${response.statusText}`,
+        { ...details, status: response.status },
+      );
+    }
+
+    let text: string;
+    try {
+      ({ text } = await readBoundedResponseText(response, CREDENTIAL_RESPONSE_MAX_BYTES));
+    } catch (e) {
+      if (e instanceof ResponseBodyTooLargeError) {
+        throw new IngredientError(
+          'TOKEN_REFRESH_FAILED',
+          `${label} response exceeded the ${e.maxBytes}-byte body limit`,
+          { ...details, cause: 'response_too_large', max_bytes: e.maxBytes },
+        );
+      }
+      const isAbort = (e as Error).name === 'AbortError';
+      throw new IngredientError(
+        'TOKEN_REFRESH_FAILED',
+        isAbort
+          ? `${label} timed out after ${CONNECTION_API_TIMEOUT_MS}ms while reading the response`
+          : `${label} response failed: ${(e as Error).message}`,
+        { ...details, cause: isAbort ? 'timeout' : 'response_body' },
+      );
+    }
+
+    try {
+      return JSON.parse(text) as T;
+    } catch (e) {
+      throw new IngredientError(
+        'TOKEN_REFRESH_FAILED',
+        `${label} returned malformed JSON: ${(e as Error).message}`,
+        { ...details, cause: 'malformed_json' },
+      );
+    }
+  } finally {
+    discardResponseBody(response);
+    clearTimeout(timer);
+  }
+};
 
 /** Portable Uint8Array → base64 (the codebase avoids Node `Buffer` for
  *  portability — `btoa` is global in Node 18+ and every browser). Chunked
@@ -1019,6 +1141,8 @@ interface OAuth2TokenResponse {
   refresh_token?: string;
   expires_in?: number;
   token_type?: string;
+  instance_url?: unknown;
+  api_domain?: unknown;
 }
 
 /** Exchange an OAuth2 client id + secret for a short-lived bearer token.
@@ -1058,45 +1182,18 @@ export const exchangeOAuth2ClientCredentials = async (
   }
 
   const tokenOrigin = new URL(tokenEndpoint).origin;
-
-  let resp: Response;
-  try {
-    resp = await fetchOriginPinned(fetchImpl, tokenEndpoint, {
+  const data = await fetchCredentialJson<OAuth2TokenResponse>({
+    label: 'OAuth2 client-credentials exchange',
+    endpoint: tokenEndpoint,
+    origin: tokenOrigin,
+    fetchImpl,
+    init: {
       method: 'POST',
       headers,
       body: body.toString(),
-    }, tokenOrigin);
-  } catch (e) {
-    if (e instanceof CrossOriginRedirectError) {
-      throw new IngredientError(
-        'TOKEN_REFRESH_FAILED',
-        `OAuth2 client-credentials exchange refused: ${e.message} — credentials not sent to the redirect target`,
-        { token_endpoint: tokenEndpoint, cause: 'cross_origin_redirect' },
-      );
-    }
-    throw new IngredientError(
-      'TOKEN_REFRESH_FAILED',
-      `OAuth2 client-credentials exchange failed: ${(e as Error).message}`,
-      { token_endpoint: tokenEndpoint, cause: 'network' },
-    );
-  }
-  if (!resp.ok) {
-    throw new IngredientError(
-      'TOKEN_REFRESH_FAILED',
-      `OAuth2 client-credentials exchange returned ${resp.status} ${resp.statusText}`,
-      { status: resp.status },
-    );
-  }
-
-  let data: OAuth2TokenResponse;
-  try {
-    data = await resp.json() as OAuth2TokenResponse;
-  } catch (e) {
-    throw new IngredientError(
-      'TOKEN_REFRESH_FAILED',
-      `OAuth2 client-credentials exchange returned malformed JSON: ${(e as Error).message}`,
-    );
-  }
+    },
+    details: { token_endpoint: tokenEndpoint },
+  });
   if (data === null || typeof data !== 'object' || Array.isArray(data)) {
     throw new IngredientError(
       'TOKEN_REFRESH_FAILED',
@@ -1143,11 +1240,20 @@ export const exchangeOAuth2ClientCredentials = async (
  *  so re-implementing the OAuth2 grant flow in two places stays
  *  avoided. The harness builds its own persist callback (the
  *  connection-store upsert with re-encoded `auth_ciphertext`). */
-export const refreshOAuth2 = async (
+export interface OAuth2RefreshResult {
+  auth: ConnectionAuth;
+  runtime_base: VendorOAuthRuntimeBaseResolution;
+}
+
+/** Refresh with the provider response metadata retained. Callers that own the
+ * connection row use this form so a Salesforce/Pipedrive tenant-origin change
+ * can be persisted atomically beside a rotated credential. */
+export const refreshOAuth2WithMetadata = async (
   auth: Extract<ConnectionAuth, { type: 'oauth2_refresh' }>,
   fetchImpl: typeof fetch,
   now: () => number,
-): Promise<ConnectionAuth> => {
+  provider?: ConnectionVendorProvider | null,
+): Promise<OAuth2RefreshResult> => {
   const refreshToken = requireAuthString(auth, 'refresh_token');
   const clientId = requireAuthString(auth, 'client_id');
   const tokenEndpoint = requireOAuthTokenEndpoint(auth, 'OAuth2 refresh');
@@ -1174,43 +1280,18 @@ export const refreshOAuth2 = async (
   // re-send to the same trusted origin only; cross-origin is refused
   // before the secret leaves the box.
   const tokenOrigin = new URL(tokenEndpoint).origin;
-  let resp: Response;
-  try {
-    resp = await fetchOriginPinned(fetchImpl, tokenEndpoint, {
+  const data = await fetchCredentialJson<OAuth2TokenResponse>({
+    label: 'OAuth2 refresh',
+    endpoint: tokenEndpoint,
+    origin: tokenOrigin,
+    fetchImpl,
+    init: {
       method: 'POST',
       headers,
       body: body.toString(),
-    }, tokenOrigin);
-  } catch (e) {
-    if (e instanceof CrossOriginRedirectError) {
-      throw new IngredientError(
-        'TOKEN_REFRESH_FAILED',
-        `OAuth2 refresh refused: ${e.message} — credentials not sent to the redirect target`,
-        { token_endpoint: tokenEndpoint, cause: 'cross_origin_redirect' },
-      );
-    }
-    throw new IngredientError(
-      'TOKEN_REFRESH_FAILED',
-      `OAuth2 refresh failed: ${(e as Error).message}`,
-      { token_endpoint: tokenEndpoint, cause: 'network' },
-    );
-  }
-  if (!resp.ok) {
-    throw new IngredientError(
-      'TOKEN_REFRESH_FAILED',
-      `OAuth2 refresh returned ${resp.status} ${resp.statusText}`,
-      { status: resp.status },
-    );
-  }
-  let data: OAuth2TokenResponse;
-  try {
-    data = await resp.json() as OAuth2TokenResponse;
-  } catch (e) {
-    throw new IngredientError(
-      'TOKEN_REFRESH_FAILED',
-      `OAuth2 refresh returned malformed JSON: ${(e as Error).message}`,
-    );
-  }
+    },
+    details: { token_endpoint: tokenEndpoint },
+  });
   if (typeof data.access_token !== 'string' || data.access_token === '') {
     throw new IngredientError(
       'TOKEN_REFRESH_FAILED',
@@ -1232,8 +1313,25 @@ export const refreshOAuth2 = async (
       ? { expires_at: now() + data.expires_in * 1_000 }
       : {}),
   };
-  return next;
+  return {
+    auth: next,
+    runtime_base: provider === undefined || provider === null
+      ? { status: 'not_expected' }
+      : resolveVendorOAuthRuntimeBase(
+          provider,
+          data as unknown as Readonly<Record<string, unknown>>,
+        ),
+  };
 };
+
+/** Backward-compatible auth-only refresh. Consumers that do not own connection
+ * config keep their existing contract; row-aware gates use the metadata form. */
+export const refreshOAuth2 = async (
+  auth: Extract<ConnectionAuth, { type: 'oauth2_refresh' }>,
+  fetchImpl: typeof fetch,
+  now: () => number,
+): Promise<ConnectionAuth> =>
+  (await refreshOAuth2WithMetadata(auth, fetchImpl, now)).auth;
 
 // ────────────────────────────────────────────────────────────────
 // D-218 — AT Protocol session exchange
@@ -1296,44 +1394,18 @@ const postAtprotoSession = async (
   fetchImpl: typeof fetch,
   nsid: string,
 ): Promise<{ accessJwt: string; refreshJwt?: string }> => {
-  let resp: Response;
-  try {
-    resp = await fetchOriginPinned(fetchImpl, url.toString(), {
+  const data = await fetchCredentialJson<AtprotoSessionResponse>({
+    label: `AT Protocol ${nsid}`,
+    endpoint: url.toString(),
+    origin: url.origin,
+    fetchImpl,
+    init: {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', ...init.headers },
       ...(init.body !== undefined ? { body: init.body } : {}),
-    }, url.origin);
-  } catch (e) {
-    if (e instanceof CrossOriginRedirectError) {
-      throw new IngredientError(
-        'TOKEN_REFRESH_FAILED',
-        `AT Protocol ${nsid} refused: ${e.message} — credentials not sent to the redirect target`,
-        { nsid, cause: 'cross_origin_redirect' },
-      );
-    }
-    throw new IngredientError(
-      'TOKEN_REFRESH_FAILED',
-      `AT Protocol ${nsid} failed: ${(e as Error).message}`,
-      { nsid, cause: 'network' },
-    );
-  }
-  if (!resp.ok) {
-    throw new IngredientError(
-      'TOKEN_REFRESH_FAILED',
-      `AT Protocol ${nsid} returned ${resp.status} ${resp.statusText}`,
-      { nsid, status: resp.status },
-    );
-  }
-  let data: AtprotoSessionResponse;
-  try {
-    data = await resp.json() as AtprotoSessionResponse;
-  } catch (e) {
-    throw new IngredientError(
-      'TOKEN_REFRESH_FAILED',
-      `AT Protocol ${nsid} returned malformed JSON: ${(e as Error).message}`,
-      { nsid },
-    );
-  }
+    },
+    details: { nsid },
+  });
   const accessJwt = data.accessJwt;
   if (typeof accessJwt !== 'string' || accessJwt === '') {
     throw new IngredientError(
@@ -1431,7 +1503,11 @@ export interface EnsureFreshAuthDeps {
    *  a failure is swallowed — the fresh token is still used for the current call;
    *  the next call sees the un-persisted state and refreshes again (wasteful but
    *  safe). */
-  persistAuth: (row: ConnectionRow, newAuth: ConnectionAuth) => Promise<void>;
+  persistAuth: (
+    row: ConnectionRow,
+    newAuth: ConnectionAuth,
+    configPatch?: { base_url: string },
+  ) => Promise<void>;
   /** fetch implementation. Defaults to `globalThis.fetch`. */
   fetchImpl?: typeof fetch;
   /** Wall-clock source. Defaults to `Date.now`. */
@@ -1445,10 +1521,36 @@ export interface EnsureFreshAuthDeps {
    *  the durable row now holds a DEAD token, and the next call pays an extra
    *  round trip to discover that and log in again. Recoverable, and worth
    *  seeing.
-   *
-   *  Absent ⇒ silent, exactly as before (test harnesses, dbless boots). */
+  *
+  *  Absent ⇒ silent, exactly as before (test harnesses, dbless boots). */
   onPersistFailure?: (row: ConnectionRow, error: unknown) => void;
+  /** A registered provider omitted or malformed its refresh-response runtime
+   * base. The credential is still persisted (rotation may already have made the
+   * old refresh token unusable), but the unsafe destination is ignored. */
+  onRuntimeBaseIssue?: (
+    row: ConnectionRow,
+    issue: Extract<VendorOAuthRuntimeBaseResolution, { status: 'missing' | 'invalid' }>,
+  ) => void;
 }
+
+export interface FreshConnectionAuth {
+  auth: ConnectionAuth;
+  /** Valid provider-issued replacement for `config.base_url`. */
+  runtime_base_url?: string;
+}
+
+const registeredProviderForRow = (
+  row: ConnectionRow,
+): ConnectionVendorProvider | null => {
+  try {
+    const parsed: unknown = JSON.parse(row.config_json);
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+    const vendor = (parsed as Record<string, unknown>).vendor;
+    return typeof vendor === 'string' ? getVendorProvider(vendor) : null;
+  } catch {
+    return null;
+  }
+};
 
 /** Build the "refresh the OAuth2 access token if it's missing or within the
  *  lead window" gate shared by the `connection.api` + `connection.mcp` handlers.
@@ -1470,12 +1572,12 @@ export interface EnsureFreshAuthDeps {
  *  Across processes (server vs extension) refreshes are independent by design;
  *  LWW on `updated_at` + OAuth2-issuer revocation resolve that cross-runtime
  *  race. */
-export const createEnsureFreshAuth = (
+export const createEnsureFreshAuthDetailed = (
   deps: EnsureFreshAuthDeps,
-): ((row: ConnectionRow, auth: ConnectionAuth) => Promise<ConnectionAuth>) => {
+): ((row: ConnectionRow, auth: ConnectionAuth) => Promise<FreshConnectionAuth>) => {
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch.bind(globalThis);
   const now = deps.now ?? (() => Date.now());
-  const refreshFlight = new Map<string, Promise<ConnectionAuth>>();
+  const refreshFlight = new Map<string, Promise<FreshConnectionAuth>>();
 
   /** Run ONE credential exchange per row at a time, then persist it.
    *
@@ -1507,8 +1609,8 @@ export const createEnsureFreshAuth = (
    *  refresh token is not a dead connection: it is one extra login. */
   const exchangeInFlight = (
     row: ConnectionRow,
-    produce: () => Promise<ConnectionAuth>,
-  ): Promise<ConnectionAuth> => {
+    produce: () => Promise<FreshConnectionAuth>,
+  ): Promise<FreshConnectionAuth> => {
     const existing = refreshFlight.get(row.pk);
     if (existing) return existing;
     const flight = (async () => {
@@ -1516,7 +1618,13 @@ export const createEnsureFreshAuth = (
         const next = await produce();
         // Still within the single-flight, before the map clears in `finally`.
         try {
-          await deps.persistAuth(row, next);
+          await deps.persistAuth(
+            row,
+            next.auth,
+            next.runtime_base_url === undefined
+              ? undefined
+              : { base_url: next.runtime_base_url },
+          );
         } catch (e) {
           // Non-fatal by ruling, not by convenience — see the block comment
           // above. ⚠ But no longer silent: a swallowed write costs a real extra
@@ -1533,7 +1641,7 @@ export const createEnsureFreshAuth = (
     return flight;
   };
 
-  return async (row: ConnectionRow, auth: ConnectionAuth): Promise<ConnectionAuth> => {
+  return async (row: ConnectionRow, auth: ConnectionAuth): Promise<FreshConnectionAuth> => {
     // D-218 — an AT Protocol session takes the same single-flight and the same
     // persist, and a DIFFERENT freshness rule.
     //
@@ -1551,15 +1659,17 @@ export const createEnsureFreshAuth = (
       // slice-0 test caught by asserting the whitespace case.
       if (typeof auth.current_access_token === 'string'
         && auth.current_access_token.trim() !== '') {
-        return auth;
+        return { auth };
       }
       return exchangeInFlight(row, async () => {
         const baseUrl = readBaseUrl(row);
         const hasRefresh = typeof auth.refresh_token === 'string'
           && auth.refresh_token.trim() !== '';
-        if (!hasRefresh) return createAtprotoSession(auth, baseUrl, fetchImpl);
+        if (!hasRefresh) {
+          return { auth: await createAtprotoSession(auth, baseUrl, fetchImpl) };
+        }
         try {
-          return await refreshAtprotoSession(auth, baseUrl, fetchImpl);
+          return { auth: await refreshAtprotoSession(auth, baseUrl, fetchImpl) };
         } catch (e) {
           // D-218 § 7.5c — the retained app password earning its keep. A
           // refresh token dies for ordinary reasons: it aged out, the session
@@ -1585,25 +1695,57 @@ export const createEnsureFreshAuth = (
           // error rather than the refresh's — the more actionable of the two.
           const status = (e as IngredientError)?.details?.status;
           if (typeof status !== 'number') throw e;
-          return await createAtprotoSession(auth, baseUrl, fetchImpl);
+          return { auth: await createAtprotoSession(auth, baseUrl, fetchImpl) };
         }
       });
     }
-    if (!isRenewableOAuth2(auth)) return auth;
+    if (!isRenewableOAuth2(auth)) return { auth };
     const expiresAt = auth.expires_at;
     const haveAccessToken = typeof auth.current_access_token === 'string'
       && auth.current_access_token !== '';
     const fresh = haveAccessToken
       && typeof expiresAt === 'number'
       && expiresAt - OAUTH2_REFRESH_LEAD_MS > now();
-    if (fresh) return auth;
+    if (fresh) return { auth };
 
-    return exchangeInFlight(row, () => (
-      auth.type === 'oauth2_refresh'
-        ? refreshOAuth2(auth, fetchImpl, now)
-        : exchangeOAuth2ClientCredentials(auth, fetchImpl, now)
-    ));
+    return exchangeInFlight(row, async () => {
+      if (auth.type !== 'oauth2_refresh') {
+        return { auth: await exchangeOAuth2ClientCredentials(auth, fetchImpl, now) };
+      }
+      const refreshed = await refreshOAuth2WithMetadata(
+        auth,
+        fetchImpl,
+        now,
+        registeredProviderForRow(row),
+      );
+      if (
+        refreshed.runtime_base.status === 'missing'
+        || refreshed.runtime_base.status === 'invalid'
+      ) {
+        try {
+          deps.onRuntimeBaseIssue?.(row, refreshed.runtime_base);
+        } catch {
+          // Advisory only: never sacrifice a successfully rotated credential.
+        }
+      }
+      return {
+        auth: refreshed.auth,
+        ...(refreshed.runtime_base.status === 'valid'
+          ? { runtime_base_url: refreshed.runtime_base.base_url }
+          : {}),
+      };
+    });
   };
+};
+
+/** Auth-only compatibility surface used by connection kinds that do not need
+ * the refreshed runtime URL for their in-flight request. Persistence still
+ * receives the atomic config patch through the detailed gate. */
+export const createEnsureFreshAuth = (
+  deps: EnsureFreshAuthDeps,
+): ((row: ConnectionRow, auth: ConnectionAuth) => Promise<ConnectionAuth>) => {
+  const detailed = createEnsureFreshAuthDetailed(deps);
+  return async (row, auth) => (await detailed(row, auth)).auth;
 };
 
 /** Build the api handler bound to per-runtime deps. The returned
@@ -1627,11 +1769,14 @@ export const createConnectionApiHandler = (
   const now = deps.now ?? (() => Date.now());
 
   // Per-row single-flight OAuth2 refresh gate (shared with connection.mcp).
-  const ensureFreshAuth = createEnsureFreshAuth({
+  const ensureFreshAuth = createEnsureFreshAuthDetailed({
     persistAuth: deps.persistAuth,
     fetchImpl,
     now,
     ...(deps.onPersistFailure ? { onPersistFailure: deps.onPersistFailure } : {}),
+    ...(deps.onRuntimeBaseIssue
+      ? { onRuntimeBaseIssue: deps.onRuntimeBaseIssue }
+      : {}),
   });
 
   const handler: ConnectionKindHandler = async (
@@ -1683,7 +1828,7 @@ export const createConnectionApiHandler = (
       );
     }
 
-    const baseUrl = readBaseUrl(record);
+    let baseUrl = readBaseUrl(record);
 
     // ────────────── path param interpolation (D-112 parity) ──────────────
     // The engine's namespace resolver (`resolveDeep`) resolves only
@@ -1722,43 +1867,44 @@ export const createConnectionApiHandler = (
     // protocol-relative paths fall through unchanged so the cross-origin guard below still
     // refuses them; an already-rooted continuation cursor (Graph `@odata.nextLink`) is not
     // doubled. `assertUrlSafe(resolvedPath)` (above) still guards `..`/`.` traversal.
-    let url: URL;
-    try {
-      url = composeApiUrl(baseUrl, resolvedPath);
-    } catch (e) {
-      throw new IngredientError(
-        'INGREDIENT_OUTPUT_VALIDATION_FAILED',
-        `connection.api: cannot resolve path '${resolvedPath}' against base_url '${baseUrl}': ${(e as Error).message}`,
-        { slug: call.slug, name: record.name },
-      );
-    }
-    // Cross-origin guard (Codex review HIGH). A path that resolves to a
-    // DIFFERENT origin than base_url — absolute `scheme://host`,
-    // protocol-relative `//host`, or a backslash trick `new URL` normalizes —
-    // would send the request WITH the connection's auth to an attacker host.
-    // connection.api binds to the connection's own base_url; refuse any
-    // cross-origin resolution at the wire boundary (publish-time validation is
-    // the first gate; this is the runtime backstop for hand-built bindings).
-    let baseOrigin = '';
-    try {
-      baseOrigin = new URL(baseUrl).origin;
-    } catch { /* readBaseUrl already validated base_url parses */ }
-    if (url.origin !== baseOrigin) {
-      throw new IngredientError(
-        'URL_REF_INVALID',
-        `connection.api (${call.slug}): resolved path '${resolvedPath}' changes the origin to `
-          + `'${url.origin}' (base_url origin '${baseOrigin}') — cross-origin dispatch refused`,
-        { slug: call.slug, name: record.name },
-      );
-    }
     const queryParams = extractDotPrefix(params, 'query');
-    for (const [k, v] of Object.entries(queryParams)) {
-      if (Array.isArray(v)) {
-        for (const item of v) appendQueryScalar(url.searchParams, k, item);
-      } else {
-        appendQueryScalar(url.searchParams, k, v);
+    const resolveRequestUrl = (apiBase: string): { url: URL; baseOrigin: string } => {
+      let nextUrl: URL;
+      try {
+        nextUrl = composeApiUrl(apiBase, resolvedPath);
+      } catch (e) {
+        throw new IngredientError(
+          'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+          `connection.api: cannot resolve path '${resolvedPath}' against base_url '${apiBase}': ${(e as Error).message}`,
+          { slug: call.slug, name: record.name },
+        );
       }
-    }
+      // Cross-origin guard (Codex review HIGH). A path that resolves to a
+      // DIFFERENT origin than base_url — absolute `scheme://host`,
+      // protocol-relative `//host`, or a backslash trick `new URL` normalizes —
+      // would send the request WITH the connection's auth to an attacker host.
+      let nextBaseOrigin = '';
+      try {
+        nextBaseOrigin = new URL(apiBase).origin;
+      } catch { /* readBaseUrl already validated the stored base; refreshed bases are normalized. */ }
+      if (nextUrl.origin !== nextBaseOrigin) {
+        throw new IngredientError(
+          'URL_REF_INVALID',
+          `connection.api (${call.slug}): resolved path '${resolvedPath}' changes the origin to `
+            + `'${nextUrl.origin}' (base_url origin '${nextBaseOrigin}') — cross-origin dispatch refused`,
+          { slug: call.slug, name: record.name },
+        );
+      }
+      for (const [k, v] of Object.entries(queryParams)) {
+        if (Array.isArray(v)) {
+          for (const item of v) appendQueryScalar(nextUrl.searchParams, k, item);
+        } else {
+          appendQueryScalar(nextUrl.searchParams, k, v);
+        }
+      }
+      return { url: nextUrl, baseOrigin: nextBaseOrigin };
+    };
+    let { url, baseOrigin } = resolveRequestUrl(baseUrl);
 
     // ────────────── headers + body ──────────────
     const headerInputs = extractDotPrefix(params, 'header');
@@ -1784,7 +1930,15 @@ export const createConnectionApiHandler = (
 
     // ────────────── auth (decrypt + maybe refresh + inject) ──────────────
     const auth = await deps.decodeAuth(record);
-    const liveAuth = await ensureFreshAuth(record, auth);
+    const refreshed = await ensureFreshAuth(record, auth);
+    const liveAuth = refreshed.auth;
+    if (
+      refreshed.runtime_base_url !== undefined
+      && refreshed.runtime_base_url !== baseUrl
+    ) {
+      baseUrl = refreshed.runtime_base_url;
+      ({ url, baseOrigin } = resolveRequestUrl(baseUrl));
+    }
     injectAuth(liveAuth, headers, url);
 
     // ────────────── fetch with timeout ──────────────
@@ -1798,63 +1952,72 @@ export const createConnectionApiHandler = (
      *  Each attempt gets a fresh controller — a retry that inherited an
      *  already-fired abort signal would fail instantly and look like a target
      *  problem. */
-    const attempt = async (): Promise<Response> => {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
-    let response: Response;
-    try {
-      // SSRF: follow redirects manually, pinned to base_url's origin.
-      // The cross-origin guard above only covers the INITIAL url; without
-      // this a 3xx to an internal / metadata host would be followed
-      // (carrying non-stripped custom auth headers) and its body returned
-      // to the recipe. Same-origin redirects still work.
-      response = await fetchOriginPinned(fetchImpl, url.toString(), {
-        method,
-        headers,
-        body: body as BodyInit | undefined,
-        signal: controller.signal,
-      }, baseOrigin);
-    } catch (e) {
-      clearTimeout(timer);
-      if (e instanceof IngredientError) throw e;
-      if (e instanceof CrossOriginRedirectError) {
+    const attempt = async (): Promise<{
+      readonly response: Response;
+      finish(): void;
+    }> => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      let finished = false;
+      const finish = (): void => {
+        if (finished) return;
+        finished = true;
+        clearTimeout(timer);
+      };
+      try {
+        // SSRF: follow redirects manually, pinned to base_url's origin.
+        // The cross-origin guard above only covers the INITIAL url; without
+        // this a 3xx to an internal / metadata host would be followed
+        // (carrying non-stripped custom auth headers) and its body returned
+        // to the recipe. Same-origin redirects still work.
+        const response = await fetchOriginPinned(fetchImpl, url.toString(), {
+          method,
+          headers,
+          body: body as BodyInit | undefined,
+          signal: controller.signal,
+        }, baseOrigin);
+        return { response, finish };
+      } catch (e) {
+        finish();
+        if (e instanceof IngredientError) throw e;
+        if (e instanceof CrossOriginRedirectError) {
+          throw new IngredientError(
+            'URL_REF_INVALID',
+            `connection.api (${call.slug}): ${e.message} — cross-origin redirect refused`,
+            { slug: call.slug, name: record.name },
+          );
+        }
+        const isAbort = (e as Error).name === 'AbortError';
+        if (isWrite) {
+          throw new IngredientError(
+            'ACTION_DELIVERY_UNCERTAIN',
+            `Write via connection '${record.name}' ${isAbort ? `timed out after ${timeoutMs}ms` : `failed: ${(e as Error).message}`} — outcome cannot be confirmed, please verify state in the target system before retrying`,
+            {
+              slug: call.slug,
+              name: record.name,
+              risk_tier: call.risk_tier,
+              cause: isAbort ? 'timeout' : 'network',
+            },
+          );
+        }
+        if (isAbort) {
+          throw new IngredientError(
+            'STEP_TIMEOUT',
+            `connection.api call to '${record.name}' timed out after ${timeoutMs}ms`,
+            { slug: call.slug, name: record.name },
+          );
+        }
         throw new IngredientError(
-          'URL_REF_INVALID',
-          `connection.api (${call.slug}): ${e.message} — cross-origin redirect refused`,
+          'NETWORK_ERROR',
+          `connection.api call to '${record.name}' failed: ${(e as Error).message}`,
           { slug: call.slug, name: record.name },
         );
       }
-      const isAbort = (e as Error).name === 'AbortError';
-      if (isWrite) {
-        throw new IngredientError(
-          'ACTION_DELIVERY_UNCERTAIN',
-          `Write via connection '${record.name}' ${isAbort ? `timed out after ${timeoutMs}ms` : `failed: ${(e as Error).message}`} — outcome cannot be confirmed, please verify state in the target system before retrying`,
-          {
-            slug: call.slug,
-            name: record.name,
-            risk_tier: call.risk_tier,
-            cause: isAbort ? 'timeout' : 'network',
-          },
-        );
-      }
-      if (isAbort) {
-        throw new IngredientError(
-          'STEP_TIMEOUT',
-          `connection.api call to '${record.name}' timed out after ${timeoutMs}ms`,
-          { slug: call.slug, name: record.name },
-        );
-      }
-      throw new IngredientError(
-        'NETWORK_ERROR',
-        `connection.api call to '${record.name}' failed: ${(e as Error).message}`,
-        { slug: call.slug, name: record.name },
-      );
-    }
-    clearTimeout(timer);
-      return response;
     };
 
-    let response = await attempt();
+    let pending = await attempt();
+    try {
+      let response = pending.response;
 
     // ────────────── D-218 § 7.5a — reactive re-auth on a 401 ──────────────
     //
@@ -1890,10 +2053,11 @@ export const createConnectionApiHandler = (
       // still collapses concurrent 401s into ONE exchange, which matters
       // doubly when the refresh token is single-use. The cleared copy is local;
       // what gets persisted is built from the row's own credential fields.
-      const reauthed = await ensureFreshAuth(record, {
+      const reauthResult = await ensureFreshAuth(record, {
         ...liveAuth,
         current_access_token: undefined,
       });
+      const reauthed = reauthResult.auth;
       // ⚠ This narrowing is what the TYPE SYSTEM needs to read the field off a
       // `ConnectionAuth`, NOT a second guard — the behavioural one is
       // `liveAuth.type` above. A mutation sweep confirmed it: casting past this
@@ -1907,8 +2071,10 @@ export const createConnectionApiHandler = (
         // holds its socket open, and this is the one path that discards a
         // response instead of throwing on it.
         await response.body?.cancel().catch(() => {});
+        pending.finish();
         injectAuth(reauthed, headers, url);
-        response = await attempt();
+        pending = await attempt();
+        response = pending.response;
       }
     }
 
@@ -1923,29 +2089,11 @@ export const createConnectionApiHandler = (
     // by the engine-set `__rc_*` wire keys (see `buildApiDispatchInput`); a
     // recipe arg can never set them (the gateway strips the `__rc_` prefix).
     if (own(params, '__rc_capture') === '1') {
-      // Size cap: the `Content-Length` pre-check rejects an oversized download
-      // before buffering (the common path — the user's own Drive always sends
-      // it). The post-`arrayBuffer` check below is the backstop for a server
-      // that omits/understates Content-Length: it buffers up to the response
-      // size, then fails — a bounded transient spike, not a leak. (A future
-      // hardening could stream `response.body` and abort mid-read — Codex
-      // review MEDIUM; deferred to avoid a streaming-read fetch-mock change.)
-      const declaredLen = response.headers.get('content-length');
-      if (declaredLen !== null && Number(declaredLen) > RESPONSE_CAPTURE_MAX_BYTES) {
-        throw new IngredientError(
-          'INGREDIENT_OUTPUT_VALIDATION_FAILED',
-          `connection.api (${call.slug}): response is ${declaredLen} bytes, over the ${RESPONSE_CAPTURE_MAX_BYTES}-byte download cap`,
-          { slug: call.slug, name: record.name },
-        );
-      }
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (bytes.byteLength > RESPONSE_CAPTURE_MAX_BYTES) {
-        throw new IngredientError(
-          'INGREDIENT_OUTPUT_VALIDATION_FAILED',
-          `connection.api (${call.slug}): response is ${bytes.byteLength} bytes, over the ${RESPONSE_CAPTURE_MAX_BYTES}-byte download cap`,
-          { slug: call.slug, name: record.name },
-        );
-      }
+      // Both declared and chunked responses are capped before an attacker can
+      // make the server buffer the complete body. This supersedes the former
+      // post-arrayBuffer check, which detected an overage only after allocating
+      // it in full.
+      const bytes = await readBoundedResponseBytes(response, RESPONSE_CAPTURE_MAX_BYTES);
       const ctHeader = response.headers.get('content-type') ?? '';
       const detectedMime = ctHeader.split(';')[0].trim();
       const fallbackMime = String(own(params, '__rc_mime') ?? '');
@@ -1969,17 +2117,16 @@ export const createConnectionApiHandler = (
     // bytes_in lands after parseResponseBody so we know the actual
     // content length even when the server omitted the response header.
     const bytesOut = bodyByteLength(body);
-    const result = await parseResponseBody(
+    const parsed = await parseResponseBody(
       response,
       call.slug,
       own(params, '__rc_json_unsafe_integers') === 'string',
     );
+    const result = parsed.value;
     const declaredLen = response.headers.get('content-length');
     const bytesIn = declaredLen !== null && Number.isFinite(Number(declaredLen))
       ? Number(declaredLen)
-      : (typeof result === 'string'
-          ? new TextEncoder().encode(result).byteLength
-          : new TextEncoder().encode(JSON.stringify(result ?? null)).byteLength);
+      : parsed.byteLength;
     ctx?.setBytes(bytesIn, bytesOut);
 
     // ────────────── shape + output mapping ──────────────
@@ -1998,6 +2145,77 @@ export const createConnectionApiHandler = (
       return data;
     }
     return mapOutput(data, call.output, call.fallback);
+    } catch (e) {
+      if (e instanceof ResponseBodyTooLargeError) {
+        if (isWrite) {
+          throw new IngredientError(
+            'ACTION_DELIVERY_UNCERTAIN',
+            `Write via connection '${record.name}' returned an oversized response after request dispatch — outcome cannot be confirmed, please verify state in the target system before retrying`,
+            {
+              slug: call.slug,
+              name: record.name,
+              risk_tier: call.risk_tier,
+              cause: 'response_too_large',
+              max_bytes: e.maxBytes,
+            },
+          );
+        }
+        throw new IngredientError(
+          'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+          `connection.api (${call.slug}): response exceeded the ${e.maxBytes}-byte body limit`,
+          {
+            slug: call.slug,
+            name: record.name,
+            max_bytes: e.maxBytes,
+            ...(e.declaredBytes !== undefined ? { declared_bytes: e.declaredBytes } : {}),
+            ...(e.observedBytes !== undefined ? { observed_bytes: e.observedBytes } : {}),
+          },
+        );
+      }
+      if (e instanceof IngredientError) {
+        if (isWrite && e.details?.response_body_failure !== undefined) {
+          throw new IngredientError(
+            'ACTION_DELIVERY_UNCERTAIN',
+            `Write via connection '${record.name}' returned an unreadable response after request dispatch — outcome cannot be confirmed, please verify state in the target system before retrying`,
+            {
+              slug: call.slug,
+              name: record.name,
+              risk_tier: call.risk_tier,
+              cause: e.details.response_body_failure,
+            },
+          );
+        }
+        throw e;
+      }
+      const isAbort = (e as Error).name === 'AbortError';
+      if (isWrite) {
+        throw new IngredientError(
+          'ACTION_DELIVERY_UNCERTAIN',
+          `Write via connection '${record.name}' ${isAbort ? `timed out after ${timeoutMs}ms while reading the response` : `returned an unreadable response: ${(e as Error).message}`} — outcome cannot be confirmed, please verify state in the target system before retrying`,
+          {
+            slug: call.slug,
+            name: record.name,
+            risk_tier: call.risk_tier,
+            cause: isAbort ? 'timeout' : 'response_body',
+          },
+        );
+      }
+      if (isAbort) {
+        throw new IngredientError(
+          'STEP_TIMEOUT',
+          `connection.api call to '${record.name}' timed out after ${timeoutMs}ms while reading the response`,
+          { slug: call.slug, name: record.name },
+        );
+      }
+      throw new IngredientError(
+        'NETWORK_ERROR',
+        `connection.api call to '${record.name}' response failed: ${(e as Error).message}`,
+        { slug: call.slug, name: record.name },
+      );
+    } finally {
+      discardResponseBody(pending.response);
+      pending.finish();
+    }
   };
 
   /** D-217 slice 2b-ii-β — one act, N requests, below the commit boundary.

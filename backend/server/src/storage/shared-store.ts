@@ -763,9 +763,9 @@ export const createSharedStore = (opts: CreateSharedStoreOptions): SharedStore =
       assertValidKey(key);
       const apply = db.transaction(() => {
         const row = db
-          .prepare(`SELECT blob_hash, size_bytes, cas_revision FROM ${TABLE} WHERE key = ?`)
+          .prepare(`SELECT size_bytes, cas_revision FROM ${TABLE} WHERE key = ?`)
           .get(key) as
-            | { blob_hash: string | null; size_bytes: number; cas_revision: number | null }
+            | { size_bytes: number; cas_revision: number | null }
             | undefined;
         if (!row) return null;
         if (row.cas_revision !== null) {
@@ -777,12 +777,12 @@ export const createSharedStore = (opts: CreateSharedStoreOptions): SharedStore =
       });
       const row = apply.immediate();
       if (!row) return false;
-      // Main-table + FTS deletion commit together. Blob cleanup follows so a
-      // crash can strand only an orphan, never a surviving row with no bytes.
+      // Main-table + FTS deletion commit together. Do NOT unlink `blob_hash`
+      // here: the root is content-addressed and shared with sibling
+      // shared-store rows and annotations, so another live row may reference
+      // the same bytes. The reference-aware shared-store orphan sweep reclaims
+      // the physical blob after the last SQL reference disappears.
       reportDelta(-row.size_bytes);
-      if (row.blob_hash) {
-        await blobs.delete(row.blob_hash);
-      }
       return true;
     },
 
@@ -793,20 +793,19 @@ export const createSharedStore = (opts: CreateSharedStoreOptions): SharedStore =
         const rows = (descendantsOnly
           ? db
             .prepare(
-              `SELECT key, blob_hash, size_bytes, cas_revision
+              `SELECT key, size_bytes, cas_revision
                  FROM ${TABLE} WHERE key LIKE ? ESCAPE '\\'
                  ORDER BY key`,
             )
             .all(descendantPattern)
           : db
             .prepare(
-              `SELECT key, blob_hash, size_bytes, cas_revision
+              `SELECT key, size_bytes, cas_revision
                  FROM ${TABLE} WHERE key = ? OR key LIKE ? ESCAPE '\\'
                  ORDER BY key`,
             )
             .all(normalizedPrefix, descendantPattern)) as Array<{
               key: string;
-              blob_hash: string | null;
               size_bytes: number;
               cas_revision: number | null;
             }>;
@@ -826,17 +825,13 @@ export const createSharedStore = (opts: CreateSharedStoreOptions): SharedStore =
         return {
           changes: result.changes,
           freed: rows.reduce((total, row) => total + row.size_bytes, 0),
-          rows,
         };
       });
       const result = apply.immediate();
       reportDelta(-result.freed);
-      // As with exact delete, clean blob bytes only after the authoritative SQL
-      // state commits. Prefix rejection therefore leaves every row and blob
-      // untouched.
-      for (const row of result.rows) {
-        if (row.blob_hash) await blobs.delete(row.blob_hash);
-      }
+      // As with exact delete, leave content-addressed bytes to the combined
+      // shared + annotation reference-aware orphan sweep. Directly unlinking a
+      // hash here would corrupt any surviving row that deduplicated to it.
       return result.changes;
     },
 

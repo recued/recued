@@ -333,6 +333,30 @@ describe('D-209 #1 W2b — recipe.save mints the webhook door and stamps the tri
 // ── fail-closed windows ───────────────────────────────────────────────────
 
 describe('D-209 #1 W2b — every intermediate state fails closed', () => {
+  it('a dispatch-unresolvable recipe saves but never receives a webhook door', async () => {
+    const harness = await makeHarness();
+    Object.assign(harness.doorDeps, {
+      resolveDoorRecipe: () => ({
+        ok: false as const,
+        reason: 'configured connection has no bound catalog',
+      }),
+    });
+    const saved = saveRecipeInline(
+      harness.saveDeps,
+      webhookRecipe('door-dispatch-unresolvable'),
+      undefined,
+      bindings(harness),
+    );
+
+    expect(saved.saved).toBe(true);
+    expect(saved.webhook?.door).toMatchObject({
+      state: 'refused',
+      refusal: { reason: 'dispatch_unresolvable', step_id: '<recipe>' },
+    });
+    expect(doorIdFor(harness, 'door-dispatch-unresolvable')).toBeNull();
+    expect(harness.definitionStore.list()).toHaveLength(0);
+  });
+
   it('a failed cross-store save restores the PRIOR stamps and mints nothing', async () => {
     const harness = await makeHarness();
     const recipe = webhookRecipe('door-rollback');

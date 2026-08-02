@@ -101,6 +101,8 @@ import {
   isWebhookProfileId,
   webhookProfile,
   WEBHOOK_BINDING_RE,
+  KERNEL_GRANT_PREFIX,
+  declaredOperationIdReservedPrefix,
 } from '@recued/contracts';
 import type { ConnectorRuntimeSpec } from '@recued/contracts';
 import { RISK_TIER_SET, isRiskTier } from '@recued/contracts';
@@ -2860,6 +2862,7 @@ const validateCatalogForm = (m: Record<string, unknown>, add: AddFn): void => {
   const operations = (own(m, 'operations') ?? {}) as Record<string, unknown>;
   const opKeys = new Set(Object.keys(operations));
   const opRiskByKey: Record<string, string> = {};
+  const opKeyByDeclaredId = new Map<string, string>();
   for (const [opKey, rawSpec] of Object.entries(operations)) {
     const path = `operations.${opKey}`;
     if (!rawSpec || typeof rawSpec !== 'object' || Array.isArray(rawSpec)) {
@@ -2867,9 +2870,30 @@ const validateCatalogForm = (m: Record<string, unknown>, add: AddFn): void => {
       continue;
     }
     const spec = rawSpec as Record<string, unknown>;
-    if (typeof spec.operation_id !== 'string' || spec.operation_id.length === 0) {
+    if (typeof spec.operation_id !== 'string' || spec.operation_id.trim().length === 0) {
       add('error', 'CATALOG_OPERATION_INVALID', `${path}.operation_id`,
         `operation '${opKey}' must declare a non-empty operation_id`);
+    } else if (spec.operation_id !== spec.operation_id.trim()) {
+      add('error', 'CATALOG_OPERATION_INVALID', `${path}.operation_id`,
+        `operation '${opKey}' operation_id must not have leading or trailing whitespace`);
+    } else {
+      const reservedPrefix = declaredOperationIdReservedPrefix(spec.operation_id);
+      // A real bundled kernel manifest may own `core.*`; downloaded/catalog
+      // manifests may not borrow any server-owned identity. No kernel catalog
+      // ships today, but keeping the author-bound permitting case avoids making
+      // the reservation an accidental ban on a future reviewed kernel catalog.
+      const kernelOwnsPrefix = reservedPrefix === KERNEL_GRANT_PREFIX && isKernelManifest(m);
+      if (reservedPrefix !== undefined && !kernelOwnsPrefix) {
+        add('error', 'CATALOG_OPERATION_ID_RESERVED', `${path}.operation_id`,
+          `operation '${opKey}' operation_id '${spec.operation_id}' starts with reserved namespace '${reservedPrefix}'`);
+      }
+      const priorKey = opKeyByDeclaredId.get(spec.operation_id);
+      if (priorKey !== undefined) {
+        add('error', 'CATALOG_OPERATION_ID_DUPLICATE', `${path}.operation_id`,
+          `operation '${opKey}' reuses operation_id '${spec.operation_id}' already declared by '${priorKey}'`);
+      } else {
+        opKeyByDeclaredId.set(spec.operation_id, opKey);
+      }
     }
     const opRisk = typeof spec.risk_tier === 'string' ? spec.risk_tier : '';
     if (!isRiskTier(opRisk)) {

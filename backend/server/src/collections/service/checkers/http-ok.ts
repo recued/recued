@@ -11,6 +11,7 @@
  *  reachability + shape probe, not a response validator.
  */
 import type { ServiceCheckResult } from '@recued/contracts';
+import { discardResponseBody } from '@recued/ingredients';
 
 import {
   CheckerParamError,
@@ -80,8 +81,9 @@ const check = async (
   const io = withDefaults(ctx);
   const controller = new AbortController();
   const timer = setTimeout(() => { controller.abort(); }, params.timeout_ms);
+  let res: Response | undefined;
   try {
-    const res = await io.fetch(params.url, {
+    res = await io.fetch(params.url, {
       method: 'GET',
       signal: controller.signal,
     });
@@ -102,6 +104,7 @@ const check = async (
         : `${params.url} failed: ${msg}`,
     };
   } finally {
+    if (res !== undefined) discardResponseBody(res);
     clearTimeout(timer);
   }
 };

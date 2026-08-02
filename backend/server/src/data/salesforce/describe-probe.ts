@@ -52,6 +52,8 @@ import {
   type SalesforceRelationshipEntityName,
 } from '@recued/contracts';
 
+import { defaultProviderApiFetch } from '../provider-api-fetch.js';
+
 // ────────────────────────────────────────────────────────────────
 // Public types
 // ────────────────────────────────────────────────────────────────
@@ -61,7 +63,7 @@ export type SalesforceEngagementProbeEntity =
   | SalesforceRelationshipEntityName;
 
 export interface SalesforceProbeDeps {
-  /** HTTP fetcher. Defaults to `globalThis.fetch`. */
+  /** HTTP fetcher. Defaults to the server's bounded provider fetch. */
   fetcher?: typeof fetch;
   /** OAuth refresh hook — fired on 401 from the describe call. The
    *  boot wire wires this to the connection adapter's existing
@@ -219,7 +221,7 @@ const probeOneEntity = async (
   deps: SalesforceProbeDeps,
 ): Promise<ProbeOutcome> => {
   const sobjectName = SALESFORCE_ENGAGEMENT_SOBJECT_NAMES[entity];
-  const fetcher = deps.fetcher ?? globalThis.fetch.bind(globalThis);
+  const fetcher = deps.fetcher ?? defaultProviderApiFetch;
 
   const errors: string[] = [];
 

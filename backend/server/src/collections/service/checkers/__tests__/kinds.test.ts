@@ -62,6 +62,25 @@ describe('file_exists', () => {
 });
 
 describe('http_ok', () => {
+  it('cancels the unused health response body', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1]));
+      },
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const r = await runCheck(
+      { kind: 'http_ok', url: 'https://a.example/health' },
+      baseCtx({ fetch: async () => new Response(body, { status: 200 }) }),
+    );
+
+    expect(r.passed).toBe(true);
+    await vi.waitFor(() => expect(cancelled).toBe(true));
+  });
+
   it('passes on default status_ok = [200]', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response('ok', { status: 200 }));
     const r = await runCheck(

@@ -94,6 +94,7 @@ const makeOptions = (
     },
     upstreamMergeRegistry: new Map(),
     publishVendorRefs: vi.fn(),
+    backgroundServices: { register: vi.fn() },
     rotationEngine: { tag: 'rotation-engine' },
     tlsCertSource: { tag: 'tls-cert-source' },
     tlsRenewerConfigured: true,
@@ -168,7 +169,9 @@ describe('startHousekeepingStartup', () => {
     expect(startupMocks.composeVendorSubstrateContext).toHaveBeenCalledWith({
       app: options.app,
       upstreamMergeRegistry: options.upstreamMergeRegistry,
+      auditLog: options.storage.auditLog,
       eventBus: options.storage.eventBus,
+      backgroundServices: options.backgroundServices,
     });
     expect(options.publishVendorRefs).toHaveBeenCalledWith(vendorRefs);
     expect(startupMocks.composeHousekeepingLlmCallables).toHaveBeenCalledWith({

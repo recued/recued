@@ -13,6 +13,10 @@ import { join } from 'node:path';
 
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type {
+  IngredientManifest,
+  WorkEntitySourceDeclaration,
+} from '@recued/contracts';
 
 import {
   CONNECTION_SOURCE_ID,
@@ -27,6 +31,10 @@ import {
   type WorkEntityStore,
 } from '../storage/work-entity-store.js';
 import {
+  createWorkEntitySourceSyncStateStore,
+  ensureWorkEntitySourceSyncStateSchema,
+} from '../storage/work-entity-source-mirror.js';
+import {
   KERNEL_WORK_ENTITY_SOURCE_DECLARATIONS,
   autoRegisterRecuedBuiltinSources,
   wireWorkEntitySourceBoot,
@@ -37,6 +45,64 @@ let db: Database.Database;
 let store: WorkEntityStore;
 
 const NOW = 1_700_000_000_000;
+
+/** This suite exercises boot-time materialization policy, not marketplace
+ * catalog loading. Keep its declaration local so the generic server ratchet
+ * remains runnable in the public source tree without the private catalog. */
+const READ_THROUGH_TODOIST_SOURCE: WorkEntitySourceDeclaration = {
+  kind: 'task',
+  source_id_template: 'todoist.${connection_id}.task',
+  source_label_template: 'Todoist tasks (${connection_name})',
+  source_kind: 'connection',
+  remote: {
+    entity: 'task',
+    id: 'id',
+    version: { kind: 'updated_at', field: 'updated_at' },
+    hash_fields: ['content', 'checked'],
+  },
+  ops: {
+    list: 'task.list',
+    read: 'task.read',
+  },
+  op_bindings: {
+    read: { id_arg: 'task_id' },
+  },
+  sync: {
+    posture: 'read_through',
+    mode: 'read_only',
+    depth: 'meta',
+  },
+  read_resolution: {
+    default: 'source',
+    wild_query: {
+      remote_fanout: 'bounded_targeted',
+      max_sources: 1,
+      max_remote_records: 10,
+      on_exceeds_cap: 'ask_to_narrow',
+    },
+  },
+  projection: {
+    canonical: {
+      title: 'content',
+      done: 'checked',
+    },
+  },
+};
+
+const readThroughTodoistCatalog = (): IngredientManifest => ({
+  slug: 'todoist-source-boot-test',
+  name: 'Todoist Source boot test',
+  description: 'Minimal catalog fixture for boot-time Source reconciliation.',
+  author: 'recued-core',
+  kind: 'connection',
+  version: 1,
+  category: 'data',
+  risk_tier: 'read',
+  tags: ['test'],
+  input: {},
+  output: {},
+  work_entity_sources: [READ_THROUGH_TODOIST_SOURCE],
+});
 
 const upsertHubSpotConnection = (
   cs: ReturnType<typeof createConnectionStore>,
@@ -466,8 +532,8 @@ describe('wireWorkEntitySourceBoot — delete observer', () => {
   });
 });
 
-describe('KERNEL_WORK_ENTITY_SOURCE_DECLARATIONS (D-192 P2 — replaces TASK_CAPABLE_VENDORS)', () => {
-  it('carries the first-party HubSpot (task + note) + Salesforce (task) + Microsoft To Do (task) declarations', () => {
+describe('KERNEL_WORK_ENTITY_SOURCE_DECLARATIONS (legacy compatibility fallback)', () => {
+  it('retains HubSpot, Salesforce, and Microsoft To Do declarations for unbound legacy connections', () => {
     expect(Object.keys(KERNEL_WORK_ENTITY_SOURCE_DECLARATIONS).sort())
       .toEqual(['hubspot', 'microsoft', 'salesforce']);
     // Every declaration preserves the exact PA2 CONNECTION_SOURCE_ID shape
@@ -486,5 +552,85 @@ describe('KERNEL_WORK_ENTITY_SOURCE_DECLARATIONS (D-192 P2 — replaces TASK_CAP
       .toEqual(['task']);
     expect(KERNEL_WORK_ENTITY_SOURCE_DECLARATIONS.microsoft!.map((d) => d.kind))
       .toEqual(['task']);
+  });
+});
+
+describe('wireWorkEntitySourceBoot — read-through materialization policy', () => {
+  it('purges an old mirror, removes sync state, and preserves owner controls on declaration migration', () => {
+    const cs = createConnectionStore(db);
+    const connectionName = 'todoist-secure';
+    const sourceId = `todoist.${connectionName}.task`;
+    cs.upsert({
+      kind: 'api',
+      name: connectionName,
+      display_name: 'Secure Todoist',
+      config_json: JSON.stringify({ vendor: 'todoist' }),
+      auth_ciphertext: 'CIPHER',
+      enrolled_at: NOW,
+      updated_at: NOW,
+    });
+    const catalog = readThroughTodoistCatalog();
+
+    store.registerSource({
+      id: sourceId,
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      sync_posture: 'records',
+      source_label: 'Old mirrored Todoist',
+      write_capable: true,
+      mcp_exposed: true,
+      enabled: false,
+      registered_at: NOW - 1_000,
+    });
+    store.writeTask({
+      id: 'old-sensitive-row',
+      source_id: sourceId,
+      source_record_id: 'remote-1',
+      connection_id: connectionName,
+      title: 'Must leave the warehouse',
+      done: false,
+    }, NOW);
+    ensureWorkEntitySourceSyncStateSchema(db);
+    const syncState = createWorkEntitySourceSyncStateStore(db);
+    syncState.upsert({
+      source_id: sourceId,
+      contract_hash: 'old-records-contract',
+      sync_depth: 'meta',
+      sync_mode: 'read_write',
+      cursor_blob: null,
+      last_sync_started_at: null,
+      last_sync_completed_at: null,
+      last_success_at: null,
+      last_error_code: null,
+      last_error_message: null,
+      degraded: false,
+      field_health_blob: null,
+      list_complete: true,
+      stale_after_ms: 60_000,
+    });
+    const purged: string[] = [];
+
+    wireWorkEntitySourceBoot({
+      connectionStore: cs,
+      store,
+      syncState,
+      resolveCatalogManifest: () => catalog,
+      purgeMirroredData: (source) => {
+        purged.push(source.id);
+        store.deleteRecordsForSource(source.id);
+      },
+      now: () => NOW,
+    });
+
+    expect(purged).toEqual([sourceId]);
+    expect(store.countRecordsForSource(sourceId)).toBe(0);
+    expect(syncState.get(sourceId)).toBeNull();
+    expect(store.getSource(sourceId)).toMatchObject({
+      sync_posture: 'read_through',
+      write_capable: true,
+      mcp_exposed: true,
+      enabled: false,
+      registered_at: NOW - 1_000,
+    });
   });
 });

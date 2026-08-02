@@ -92,6 +92,9 @@ export interface Supervisor {
 export const createSupervisor = (ctx: SupervisorContext): Supervisor => {
   const records = new Map<string, ProcessRecord>();
   const pendingRestarts = new Map<string, PendingRestart>();
+  const pendingStarts = new Set<Promise<StartOutcome>>();
+  let closed = false;
+  let shutdownPromise: Promise<void> | null = null;
 
   const emit = (evt: ServiceAuditEvent): void => { ctx.emitEvent(evt); };
 
@@ -129,11 +132,16 @@ export const createSupervisor = (ctx: SupervisorContext): Supervisor => {
   };
 
   const scheduleRestart = (spec: ServiceInstanceSpec, delay: number): void => {
+    if (closed) return;
     const timer = ctx.setTimeout(() => {
       pendingRestarts.delete(spec.slug);
-      // Ignore the promise — start() updates state + emits audit
-      // on its own. Errors surface via audit, not via the timer.
-      void start(spec);
+      if (closed) return;
+      // Timer-fired starts are owned work. `start()` registers the promise so
+      // shutdown can drain an admitted launch; this catch adds a diagnostic
+      // for failures before the normal state/audit path can contain them.
+      void start(spec).catch((err) => {
+        console.warn(`[service-supervisor] restart failed for '${spec.slug}'`, err);
+      });
     }, delay);
     pendingRestarts.set(spec.slug, { slug: spec.slug, spec, timer });
   };
@@ -152,6 +160,13 @@ export const createSupervisor = (ctx: SupervisorContext): Supervisor => {
     signal: NodeJS.Signals | null,
   ): void => {
     records.delete(record.slug);
+    if (closed) {
+      // Shutdown deliberately closes state/audit admission before signalling
+      // children. A late exit may arrive after the warehouse DB is closed;
+      // settle stop callers without touching either persistence surface.
+      for (const r of record.stopResolvers) r();
+      return;
+    }
     const effective_code = exit_code ?? -1;
 
     // Manual stop — classify as 'stopped' regardless of exit shape.
@@ -223,7 +238,15 @@ export const createSupervisor = (ctx: SupervisorContext): Supervisor => {
     for (const r of record.stopResolvers) r();
   };
 
-  const start = async (spec: ServiceInstanceSpec): Promise<StartOutcome> => {
+  const closedStartOutcome = (): StartOutcome => ({
+    state: 'failed',
+    pid: null,
+    started_at: null,
+    detail: 'service supervisor is shut down',
+  });
+
+  const startOnce = async (spec: ServiceInstanceSpec): Promise<StartOutcome> => {
+    if (closed) return closedStartOutcome();
     if (spec.start === null) {
       return { state: 'failed', pid: null, started_at: null, detail: 'no lifecycle.start' };
     }
@@ -261,6 +284,11 @@ export const createSupervisor = (ctx: SupervisorContext): Supervisor => {
       }
     }
     const auditArgv = redactArgvForAudit(argv, vaultKeys, resolvedVault);
+
+    // Keep the check next to the irreversible spawn as well as at entry. It is
+    // redundant while ref resolution is synchronous, but preserves shutdown
+    // admission if that work becomes asynchronous later.
+    if (closed) return closedStartOutcome();
 
     let child: SpawnedProcess;
     try {
@@ -330,6 +358,15 @@ export const createSupervisor = (ctx: SupervisorContext): Supervisor => {
     return { state: 'running', pid: child.pid, started_at };
   };
 
+  const start = (spec: ServiceInstanceSpec): Promise<StartOutcome> => {
+    if (closed) return Promise.resolve(closedStartOutcome());
+    const active = startOnce(spec);
+    pendingStarts.add(active);
+    const clear = (): void => { pendingStarts.delete(active); };
+    void active.then(clear, clear);
+    return active;
+  };
+
   const stop = async (slug: string): Promise<StopOutcome> => {
     // Cancel any pending auto-restart — no running process, no
     // need to signal, but the timer has to go.
@@ -376,6 +413,7 @@ export const createSupervisor = (ctx: SupervisorContext): Supervisor => {
   };
 
   const clearCrash = async (spec: ServiceInstanceSpec): Promise<StartOutcome> => {
+    if (closed) return closedStartOutcome();
     cancelPendingRestart(spec.slug);
     ctx.stateStore.upsert(spec.slug, {
       consecutive_crashes: 0,
@@ -384,15 +422,26 @@ export const createSupervisor = (ctx: SupervisorContext): Supervisor => {
     return start(spec);
   };
 
-  const shutdown = async (): Promise<void> => {
+  const shutdown = (): Promise<void> => {
+    if (shutdownPromise) return shutdownPromise;
+    // Close start/restart admission synchronously. This runs before any await
+    // so an already-admitted RPC cannot recreate a child after the record
+    // snapshot below.
+    closed = true;
     // Cancel pending restarts first so shutdown doesn't race with
     // an auto-respawn.
     for (const slug of [...pendingRestarts.keys()]) {
       cancelPendingRestart(slug);
     }
-    await Promise.all(
-      [...records.keys()].map((slug) => stop(slug)),
-    );
+    shutdownPromise = (async () => {
+      while (pendingStarts.size > 0) {
+        await Promise.allSettled([...pendingStarts]);
+      }
+      await Promise.all(
+        [...records.keys()].map((slug) => stop(slug)),
+      );
+    })();
+    return shutdownPromise;
   };
 
   return {

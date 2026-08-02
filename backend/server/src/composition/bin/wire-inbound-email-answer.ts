@@ -116,8 +116,9 @@ export interface InboundEmailAnswerFunnel {
   /** Subscribe to `data.mail.**` created events. Idempotent (a second
    *  `start()` is a no-op); inert when a required dep is absent. */
   start(): void;
-  /** Unsubscribe. Idempotent. */
-  dispose(): void;
+  /** Close admission, unsubscribe, and await every already-admitted handler.
+   *  Idempotent and coalesced. */
+  dispose(): Promise<void>;
 }
 
 /** Skip the server's own sent ask-copy: a genuine inbound reply lands in
@@ -135,6 +136,9 @@ export const composeInboundEmailAnswer = (
 ): InboundEmailAnswerFunnel => {
   const { block, bus, resolveEmailAccountSlug, readInboundMail, log } = deps;
   let unsubscribe: (() => void) | null = null;
+  const inFlight = new Set<Promise<void>>();
+  let disposed = false;
+  let disposePromise: Promise<void> | undefined;
 
   const handle = async (event: WarehouseEvent): Promise<void> => {
     // A reply is a fresh message; ignore is-read flips / re-sync `updated`.
@@ -168,6 +172,7 @@ export const composeInboundEmailAnswer = (
 
   return {
     start(): void {
+      if (disposed) return;
       if (
         block === undefined ||
         bus === undefined ||
@@ -185,18 +190,27 @@ export const composeInboundEmailAnswer = (
         // including one from its pre-await prefix (an injected seam that throws)
         // — surfaces as a promise rejection, so this single `.catch` is a
         // complete guard; there is no synchronous throw path to guard.
-        void handle(event).catch((error) => {
+        if (disposed) return;
+        let tracked!: Promise<void>;
+        tracked = handle(event).catch((error) => {
           log?.('warn', 'inbound email answer funnel — handler threw', {
             error: error instanceof Error ? error.message : String(error),
           });
+        }).finally(() => {
+          inFlight.delete(tracked);
         });
+        inFlight.add(tracked);
       });
     },
-    dispose(): void {
+    dispose(): Promise<void> {
+      if (disposePromise) return disposePromise;
+      disposed = true;
       if (unsubscribe !== null) {
         unsubscribe();
         unsubscribe = null;
       }
+      disposePromise = Promise.allSettled([...inFlight]).then(() => undefined);
+      return disposePromise;
     },
   };
 };

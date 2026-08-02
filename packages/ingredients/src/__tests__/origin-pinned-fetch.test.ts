@@ -5,7 +5,7 @@
  *  issued; non-redirect + Location-less + unparseable-Location returned
  *  as-is; every hop fetched with `redirect: 'manual'`. */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   CrossOriginRedirectError,
   RedirectLimitError,
@@ -57,6 +57,22 @@ describe('fetchOriginPinned', () => {
     expect(calls.map((c) => c.url)).toEqual([`${BASE}/old`, `${BASE}/new`]);
   });
 
+  it('releases the intermediate response before following a redirect', async () => {
+    const cancel = vi.fn();
+    const { fetchImpl } = stub((url) =>
+      url.endsWith('/old')
+        ? new Response(new ReadableStream<Uint8Array>({ cancel }), {
+            status: 302,
+            headers: { location: `${BASE}/new` },
+          })
+        : new Response('{"ok":true}', { status: 200 }),
+    );
+
+    await fetchOriginPinned(fetchImpl, `${BASE}/old`, { method: 'GET' }, BASE);
+    await Promise.resolve();
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
   it('refuses a CROSS-origin redirect before issuing the cross-origin request', async () => {
     const { fetchImpl, calls } = stub(() =>
       redirectTo('http://169.254.169.254/latest/meta-data/'),
@@ -68,6 +84,25 @@ describe('fetchOriginPinned', () => {
     // was never contacted.
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe(`${BASE}/v1/x`);
+  });
+
+  it('releases a refused cross-origin redirect response', async () => {
+    const cancel = vi.fn();
+    const { fetchImpl } = stub(() =>
+      new Response(new ReadableStream<Uint8Array>({ cancel }), {
+        status: 307,
+        headers: { location: 'https://evil.example/x' },
+      }),
+    );
+
+    await expect(fetchOriginPinned(
+      fetchImpl,
+      `${BASE}/v1/x`,
+      { method: 'POST', body: 'secret' },
+      BASE,
+    )).rejects.toBeInstanceOf(CrossOriginRedirectError);
+    await Promise.resolve();
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 
   it('refuses a protocol-relative cross-origin redirect (//evil.example.com)', async () => {

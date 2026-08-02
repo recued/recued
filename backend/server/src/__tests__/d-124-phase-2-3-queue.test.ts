@@ -40,7 +40,9 @@ import {
 import {
   createTriggerDispatchQueue,
   queueKey,
+  TRIGGER_QUEUE_MAX_CONCURRENT_KEYS,
   TRIGGER_QUEUE_MAX_DEPTH_PER_KEY,
+  TRIGGER_QUEUE_MAX_KEYS,
 } from '../triggers/queue.js';
 
 type RunRecipe = TriggerDispatchRuntime['runRecipe'];
@@ -152,6 +154,78 @@ describe('D-124 Phase 2.3 — TriggerDispatchQueue', () => {
     a.resolve();
     b.resolve();
     await queue.drained();
+  });
+
+  it('bounds distinct-key execution and admits waiting keys in order', async () => {
+    const gates = [defer(), defer(), defer(), defer()];
+    const started: string[] = [];
+    let concurrent = 0;
+    let maxConcurrent = 0;
+    const queue = createTriggerDispatchQueue({
+      maxConcurrentKeys: 2,
+      maxKeys: 4,
+      processEvent: async (_trigger, e) => {
+        const index = Number(e.record_id.slice(1));
+        started.push(e.record_id);
+        concurrent += 1;
+        maxConcurrent = Math.max(maxConcurrent, concurrent);
+        await gates[index].promise;
+        concurrent -= 1;
+      },
+    });
+
+    for (let index = 0; index < gates.length; index += 1) {
+      expect(queue.enqueue(trigger(), event({ record_id: `r${index}` }))).toBe(true);
+    }
+    await flush();
+    expect(started).toEqual(['r0', 'r1']);
+    expect(queue.activeKeys()).toBe(4);
+
+    gates[0].resolve();
+    await flush();
+    expect(started).toEqual(['r0', 'r1', 'r2']);
+    gates[1].resolve();
+    await flush();
+    expect(started).toEqual(['r0', 'r1', 'r2', 'r3']);
+
+    gates[2].resolve();
+    gates[3].resolve();
+    await queue.drained();
+    expect(maxConcurrent).toBe(2);
+    expect(queue.activeKeys()).toBe(0);
+  });
+
+  it('refuses a new key at the retention ceiling but still coalesces a retained key', async () => {
+    const first = defer();
+    const seen: Array<{ id: string; at: number }> = [];
+    const overflows: number[] = [];
+    const queue = createTriggerDispatchQueue({
+      maxConcurrentKeys: 1,
+      maxKeys: 2,
+      onOverflow: ({ dropped_events }) => { overflows.push(dropped_events); },
+      processEvent: async (_trigger, e) => {
+        seen.push({ id: e.record_id, at: e.at });
+        if (e.record_id === 'active') await first.promise;
+      },
+    });
+
+    expect(queue.enqueue(trigger(), event({ record_id: 'active', at: 1 }))).toBe(true);
+    expect(queue.enqueue(trigger(), event({ record_id: 'waiting', at: 2 }))).toBe(true);
+    expect(queue.enqueue(trigger(), event({ record_id: 'overflow', at: 3 }))).toBe(false);
+    expect(queue.enqueue(trigger(), event({ record_id: 'waiting', at: 4 }))).toBe(true);
+    expect(queue.enqueue(trigger(), event({ record_id: 'waiting', at: 5 }))).toBe(true);
+    expect(queue.activeKeys()).toBe(2);
+    expect(queue.droppedEvents()).toBe(1);
+    expect(overflows).toEqual([1]);
+
+    first.resolve();
+    await queue.drained();
+    expect(seen).toEqual([
+      { id: 'active', at: 1 },
+      { id: 'waiting', at: 2 },
+      { id: 'waiting', at: 5 },
+    ]);
+    expect(seen.some(({ id }) => id === 'overflow')).toBe(false);
   });
 
   it('different triggers share a record_id but get separate keys', async () => {
@@ -365,6 +439,8 @@ describe('D-124 Phase 2.3 — TriggerDispatchQueue', () => {
 
   it('depth cap is fixed at 2 — in-flight + one tail', () => {
     expect(TRIGGER_QUEUE_MAX_DEPTH_PER_KEY).toBe(2);
+    expect(TRIGGER_QUEUE_MAX_CONCURRENT_KEYS).toBe(16);
+    expect(TRIGGER_QUEUE_MAX_KEYS).toBe(1_024);
   });
 
   it('drained() resolves once every active drain settles', async () => {

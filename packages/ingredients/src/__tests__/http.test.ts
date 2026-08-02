@@ -3,6 +3,7 @@ import { executeHTTP } from '../http.js';
 import { IngredientError } from '../types.js';
 import type { ResolvedCall } from '../types.js';
 import type { IngredientManifest } from '@recued/contracts';
+import { DEFAULT_RESPONSE_BODY_MAX_BYTES } from '../bounded-response-body.js';
 
 const fetchMock = vi.fn();
 const originalFetch = globalThis.fetch;
@@ -444,6 +445,53 @@ describe('executeHTTP — output mapping', () => {
 });
 
 describe('executeHTTP — error handling', () => {
+  it('releases an unread non-success response body', async () => {
+    const cancel = vi.fn();
+    fetchMock.mockResolvedValue(new Response(new ReadableStream<Uint8Array>({ cancel }), {
+      status: 503,
+    }));
+
+    await expect(executeHTTP(toResolved(baseManifest, {
+      method: 'GET', url: 'https://x.com',
+    }))).rejects.toMatchObject({ code: 'NETWORK_ERROR' });
+    await Promise.resolve();
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects an oversized response before buffering it', async () => {
+    fetchMock.mockResolvedValue(new Response('{}', {
+      headers: {
+        'content-type': 'application/json',
+        'content-length': String(DEFAULT_RESPONSE_BODY_MAX_BYTES + 1),
+      },
+    }));
+
+    await expect(executeHTTP(toResolved(baseManifest, {
+      method: 'GET', url: 'https://x.com',
+    }))).rejects.toMatchObject({
+      code: 'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+      details: { response_body_failure: 'too_large' },
+    });
+  });
+
+  it('does not present an oversized write acknowledgement as safely retryable', async () => {
+    fetchMock.mockResolvedValue(new Response('{}', {
+      headers: {
+        'content-type': 'application/json',
+        'content-length': String(DEFAULT_RESPONSE_BODY_MAX_BYTES + 1),
+      },
+    }));
+    const call = {
+      ...toResolved(baseManifest, { method: 'POST', url: 'https://x.com' }),
+      risk_tier: 'write',
+    };
+
+    await expect(executeHTTP(call)).rejects.toMatchObject({
+      code: 'ACTION_DELIVERY_UNCERTAIN',
+      details: { cause: 'too_large' },
+    });
+  });
+
   it('classifies 401 as OAUTH_EXPIRED', async () => {
     fetchMock.mockResolvedValue(jsonResponse({}, 401));
 

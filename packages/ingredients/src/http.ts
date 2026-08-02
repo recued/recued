@@ -3,6 +3,11 @@ import { IngredientError, type ResolvedCall } from './types.js';
 import { resolveTimeoutMs, isWriteRiskTier } from './timeout.js';
 import { assertUrlSafe, interpolateUrl, UrlRefInvalidError } from './url-template.js';
 import { CrossOriginRedirectError, fetchOriginPinned } from './origin-pinned-fetch.js';
+import {
+  discardResponseBody,
+  readBoundedResponseText,
+  ResponseBodyTooLargeError,
+} from './bounded-response-body.js';
 
 const PROTOTYPE_SENSITIVE_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -85,7 +90,16 @@ export const executeHTTP = async (resolved: ResolvedCall): Promise<unknown> => {
     const data = await parseResponse(response, slug);
     return mapOutput(data, output, fallback);
   } catch (e) {
-    if (e instanceof IngredientError) throw e;
+    if (e instanceof IngredientError) {
+      if (isWrite && e.details?.response_body_failure !== undefined) {
+        throw new IngredientError(
+          'ACTION_DELIVERY_UNCERTAIN',
+          `Write to ${slug} returned an unreadable response after request dispatch — outcome cannot be confirmed, please verify state in the target system before retrying`,
+          { risk_tier, cause: e.details.response_body_failure },
+        );
+      }
+      throw e;
+    }
     if (e instanceof CrossOriginRedirectError) {
       throw new IngredientError(
         'URL_REF_INVALID',
@@ -201,6 +215,8 @@ const buildBody = (raw: unknown, headers: Record<string, string>): string | unde
 const classifyHttpError = (response: Response, slug: string, isWrite: boolean): void => {
   if (response.ok) return;
 
+  discardResponseBody(response);
+
   const status = response.status;
   if (status === 401 || status === 403) {
     throw new IngredientError('OAUTH_EXPIRED', `${slug} returned ${status} ${response.statusText}`);
@@ -229,15 +245,37 @@ const classifyHttpError = (response: Response, slug: string, isWrite: boolean): 
  *  do not rewrite it as "malformed JSON". */
 const parseResponse = async (response: Response, slug: string): Promise<unknown> => {
   const contentType = response.headers.get('content-type') ?? '';
+  let text: string;
+  try {
+    ({ text } = await readBoundedResponseText(response));
+  } catch (e) {
+    if (e instanceof ResponseBodyTooLargeError) {
+      throw new IngredientError(
+        'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+        `${slug} response exceeded the ${e.maxBytes}-byte body limit`,
+        {
+          response_body_failure: 'too_large',
+          max_bytes: e.maxBytes,
+          ...(e.declaredBytes !== undefined ? { declared_bytes: e.declaredBytes } : {}),
+          ...(e.observedBytes !== undefined ? { observed_bytes: e.observedBytes } : {}),
+        },
+      );
+    }
+    throw e;
+  }
   if (contentType.includes('application/json')) {
     try {
-      return await response.json();
+      return JSON.parse(text) as unknown;
     } catch (e) {
       if ((e as Error).name === 'AbortError') throw e;
-      throw new IngredientError('NETWORK_ERROR', `${slug} returned malformed JSON`);
+      throw new IngredientError(
+        'NETWORK_ERROR',
+        `${slug} returned malformed JSON`,
+        { response_body_failure: 'malformed_json' },
+      );
     }
   }
-  return response.text();
+  return text;
 };
 
 /** Map response paths to output field names. Try fallback paths if primary returns undefined. */

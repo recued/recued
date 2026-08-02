@@ -16,7 +16,6 @@
  *  fan-out. */
 
 import {
-  getMessengerVendorDeclaration,
   MESSAGE_MATCH_CONFIG_KEY,
   MESSENGER_EVENT_PLATFORM,
   resolveMessengerSendToken,
@@ -26,6 +25,7 @@ import {
 import type { WarehouseEvent, WarehouseEventBus } from '@recued/warehouse-events';
 
 import type { FireCommitmentEvidenceProposal } from './commitment-evidence-capture.js';
+import { messengerConnectionRefusesTurn } from './messenger-connection-roles.js';
 import { decodeAuthFromStorage } from './connection-handler.js';
 import type { KeyManager } from './key-manager.js';
 import {
@@ -96,8 +96,11 @@ const asString = (value: unknown): string | undefined =>
 
 export const wireMessengerCommitmentFunnel = (
   deps: MessengerCommitmentFunnelDeps,
-): (() => void) => {
+): (() => Promise<void>) => {
   const now = deps.now ?? ((): number => Date.now());
+  const inFlight = new Set<Promise<void>>();
+  let closed = false;
+  let stopPromise: Promise<void> | undefined;
 
   // M1b — read the vendor's send token from its canonical
   // `connection.notification.<vendor>` row (D-163 I-4), late-bound + decoded
@@ -144,6 +147,7 @@ export const wireMessengerCommitmentFunnel = (
   };
 
   const onEvent = (ev: WarehouseEvent): void => {
+    if (closed) return;
     // Only inbound messenger message-created events (the subscribe pattern
     // already narrows to this; the guard is defense in depth).
     if (ev.platform !== MESSENGER_EVENT_PLATFORM) return;
@@ -160,16 +164,14 @@ export const wireMessengerCommitmentFunnel = (
       return;
     }
 
-    // D-192 — the vendor's DECLARED messenger role. A vendor that carries no plain
-    // messages (Discord) can never produce one of these events, so this is belt and
-    // braces — but it is the DECLARED kind: the funnel is a message-triggered surface,
-    // and a non-messenger vendor has no business reaching it even if some future
-    // ingress path emitted an event by mistake. It is also what keeps the enroll card
-    // honest: Discord's "Message triggers" field is inert precisely because of this,
-    // and now the code says so rather than the comment.
-    if (getMessengerVendorDeclaration(vendor)?.roles.messenger !== true) return;
+    // D-192 — the DECLARED messenger role for the mode this connection runs.
+    // The funnel is a message-triggered surface, so a mode that carries no
+    // ordinary messages (Discord's Interactions webhook) has no business here
+    // even if some future ingress path emitted an event by mistake.
+    const store = deps.getConnectionStore();
+    if (messengerConnectionRefusesTurn(store, vendor, connectionName)) return;
 
-    const patterns = readMessengerMatchPatterns(deps.getConnectionStore(), connectionName);
+    const patterns = readMessengerMatchPatterns(store, connectionName);
     if (patterns.length === 0) return; // no declared patterns — nothing to match
 
     const ledger = deps.getLedger();
@@ -193,7 +195,8 @@ export const wireMessengerCommitmentFunnel = (
     // Fire-and-forget: the run HOLDS at the gate (nothing to await on the emit
     // chain), and the funnel is internally guarded — but a catastrophic ledger
     // throw is caught here so a fold can never crash the bus fan-out.
-    void runMessageCommitmentFunnel(
+    let tracked!: Promise<void>;
+    tracked = runMessageCommitmentFunnel(
       {
         getFire: deps.getFire,
         ledger,
@@ -224,8 +227,21 @@ export const wireMessengerCommitmentFunnel = (
       { projection, patterns, message_id: ev.record_id },
     ).catch(() => {
       /* the failure is audited on the execute path; never abort the emit chain */
+    }).then(() => {
+      // The lifecycle tracks completion only; the funnel outcome is consumed
+      // internally and must not widen the drain promise's type.
+    }).finally(() => {
+      inFlight.delete(tracked);
     });
+    inFlight.add(tracked);
   };
 
-  return deps.bus.subscribe(MESSENGER_MESSAGE_EVENT_PATTERN, onEvent);
+  const unsubscribe = deps.bus.subscribe(MESSENGER_MESSAGE_EVENT_PATTERN, onEvent);
+  return () => {
+    if (stopPromise) return stopPromise;
+    closed = true;
+    unsubscribe();
+    stopPromise = Promise.allSettled([...inFlight]).then(() => undefined);
+    return stopPromise;
+  };
 };

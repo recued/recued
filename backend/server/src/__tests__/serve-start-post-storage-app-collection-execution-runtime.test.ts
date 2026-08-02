@@ -15,7 +15,10 @@ const bridgeMocks = vi.hoisted(() => ({
 }));
 
 const singletonMocks = vi.hoisted(() => ({
-  backgroundServices: { tag: 'default-background-services' },
+  backgroundServices: {
+    tag: 'default-background-services',
+    register: vi.fn(),
+  },
   schedulerRegistry: {
     producers: vi.fn(() => new Map([['default-producer', { tag: 'producer' }]])),
   },
@@ -70,6 +73,7 @@ beforeEach(() => {
   bridgeMocks.createExecutionLateBoundRefs.mockReset();
   bridgeMocks.startPostAppCollectionExecutionRuntime.mockReset();
   singletonMocks.schedulerRegistry.producers.mockClear();
+  singletonMocks.backgroundServices.register.mockClear();
 });
 
 const makePostBaseOptions = (
@@ -92,7 +96,10 @@ const makePostBaseOptions = (
       vaultQuotas: { totalBytes: 1024, perPublisherBytes: 256 },
     },
     serverVersion: '9.9.9',
-    backgroundServices: { tag: 'background-services' },
+    backgroundServices: {
+      tag: 'background-services',
+      register: vi.fn(),
+    },
     schedulerRegistry: {
       producers: vi.fn(() => new Map([['producer', { tag: 'producer' }]])),
     },
@@ -253,6 +260,7 @@ describe('startPostBaseStorageVaultRuntime', () => {
       connectionStoreRef: { tag: 'connection-store' },
       enrichmentCascadeRef: { tag: 'enrichment-cascade' },
       contactMergeCycleObserverRef: { tag: 'contact-observer' },
+      stopWarehouseEventBridges: vi.fn(async () => undefined),
     };
     const postApp = { tag: 'post-app-result' };
 
@@ -424,6 +432,7 @@ describe('startPostBaseStorageVaultRuntime', () => {
       connectionStoreRef: { tag: 'connection-store' },
       enrichmentCascadeRef: { tag: 'enrichment-cascade' },
       contactMergeCycleObserverRef: { tag: 'contact-observer' },
+      stopWarehouseEventBridges: vi.fn(async () => undefined),
     };
     const options = makePostBaseOptions({
       backgroundServices: undefined,
@@ -464,6 +473,7 @@ describe('startPostStorageAppCollectionExecutionRuntime', () => {
   it('orders late-bound refs, app context, and post-app runtime while threading app-owned refs', async () => {
     const order: string[] = [];
     const lateBound = { tag: 'late-bound' };
+    const contactBackfillDone = Promise.resolve();
     const app = {
       cacheBlobs: { tag: 'cache-blobs' },
       warehouseBus: { tag: 'warehouse-bus' },
@@ -472,6 +482,8 @@ describe('startPostStorageAppCollectionExecutionRuntime', () => {
       connectionStoreRef: { tag: 'connection-store' },
       enrichmentCascadeRef: { tag: 'enrichment-cascade' },
       contactMergeCycleObserverRef: { tag: 'contact-observer' },
+      stopWarehouseEventBridges: vi.fn(async () => undefined),
+      contactBackfillDone,
     };
     const postApp = {
       collection: { tag: 'collection' },
@@ -479,6 +491,10 @@ describe('startPostStorageAppCollectionExecutionRuntime', () => {
       postExecution: { tag: 'post-execution' },
     };
     const options = makeOptions();
+    const registerBackgroundService = vi.fn();
+    (options.postApp.postExecution.maintenance.backgroundServices as unknown as {
+      register: typeof registerBackgroundService;
+    }).register = registerBackgroundService;
     bridgeMocks.createExecutionLateBoundRefs.mockImplementation(() => {
       order.push('late-bound');
       return lateBound;
@@ -541,6 +557,20 @@ describe('startPostStorageAppCollectionExecutionRuntime', () => {
     const result = await startPostStorageAppCollectionExecutionRuntime(options);
 
     expect(order).toEqual(['late-bound', 'app', 'post-app']);
+    expect(registerBackgroundService).toHaveBeenCalledWith({
+      name: 'warehouse-event-bridges',
+      kind: 'emitter',
+      stop: app.stopWarehouseEventBridges,
+    });
+    expect(registerBackgroundService).toHaveBeenCalledWith({
+      name: 'contact-boot-backfill',
+      kind: 'emitter',
+      stop: expect.any(Function),
+    });
+    const backfillRegistration = registerBackgroundService.mock.calls.find(
+      ([service]) => service.name === 'contact-boot-backfill',
+    )?.[0];
+    await expect(backfillRegistration?.stop()).resolves.toBeUndefined();
     expect(result).toEqual({
       lateBound,
       app,

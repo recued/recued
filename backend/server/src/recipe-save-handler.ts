@@ -35,7 +35,7 @@ import { parseRecipe } from '@recued/recipes';
 import { assessRecipePiiPosture } from './auto-pii-apply.js';
 import { checkFormContract } from './form-contract-gate.js';
 import { checkInlineOpSteps } from './op-step-save-check.js';
-import { deriveRecipeCapability } from './derive-recipe-capability.js';
+import { deriveResolvedRecipeCapability } from './derive-recipe-capability.js';
 import {
   D201_WEBHOOK_RUNTIME_UNAVAILABLE,
   hasNonEmptyWebhookDeclarations,
@@ -141,9 +141,22 @@ const localWebhookDoorStatus = (
 ): LocalRecipeWebhookDoorStatus => {
   const door = deps.webhookDoor!;
   const config = door.resolveConfig(recipe.recipe_id);
-  const derived = deriveRecipeCapability(recipe, {
+  const dispatchRecipe = door.resolveDoorRecipe?.(recipe, config ?? {})
+    ?? { ok: true as const, recipe };
+  if (!dispatchRecipe.ok) {
+    return {
+      state: 'refused',
+      refusal: {
+        reason: 'dispatch_unresolvable',
+        step_id: '<recipe>',
+        detail: dispatchRecipe.reason,
+      },
+    };
+  }
+  const resolveOp = dispatchRecipe.resolveOp ?? door.resolveOp;
+  const derived = deriveResolvedRecipeCapability(recipe, dispatchRecipe.recipe, {
     ...(config === undefined ? {} : { config }),
-    ...(door.resolveOp === undefined ? {} : { resolveOp: door.resolveOp }),
+    ...(resolveOp === undefined ? {} : { resolveOp }),
   });
   if (!derived.ok) {
     return {

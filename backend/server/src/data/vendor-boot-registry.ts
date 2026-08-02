@@ -24,7 +24,9 @@
  *  cmdServe needs to publish to rpc deps. Salesforce is the only
  *  vendor today with a late-bound output (`registerSalesforceCallEntity`,
  *  consumed by the engagement-health reprobe rpc to swap the dual-schema
- *  call entity's housekeeping task); HubSpot returns an empty bundle. */
+ *  call entity's housekeeping task). A vendor that starts asynchronous
+ *  background work also returns a lifecycle stop hook; HubSpot returns an
+ *  empty bundle. */
 
 import type { ConnectionRecord, ConnectionAuth } from '@recued/contracts';
 import type { WarehouseEventBus } from '@recued/warehouse-events';
@@ -86,6 +88,10 @@ export interface VendorBootDeps {
  *  returns `{}`. Future vendors append fields here as they need late-
  *  bound surfacing into `bin.ts` rpc deps. */
 export interface VendorBootBundle {
+  /** Drain background work started by this vendor boot. The vendor substrate
+   *  composer aggregates these hooks and the serve layer registers the result
+   *  with graceful shutdown before storage closes. */
+  stop?: () => Promise<void> | void;
   /** D-184 — Salesforce call-entity registration hook. Captured by the
    *  engagement-health rpc and invoked on each reprobe to register / swap
    *  the dual-schema call entity's HOUSEKEEPING task for the reprobed

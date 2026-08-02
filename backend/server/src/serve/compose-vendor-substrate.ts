@@ -5,6 +5,8 @@ import {
 import type { EventBus } from '../events/bus.js';
 import type { UpstreamMergeRegistry } from '../data/vendor-boot-registry.js';
 import type { AppContext } from './compose-app-context.js';
+import type { BackgroundServiceRegistry } from '../composition/bin/wire-background-services.js';
+import type { AuditLogStore } from '@recued/storage';
 
 export type VendorSubstrateAppContext = Pick<
   AppContext,
@@ -21,7 +23,9 @@ export type VendorSubstrateAppContext = Pick<
 export interface ComposeVendorSubstrateContextOptions {
   readonly app: VendorSubstrateAppContext;
   readonly upstreamMergeRegistry: UpstreamMergeRegistry | undefined;
+  readonly auditLog?: Pick<AuditLogStore, 'logActivity'> | undefined;
   readonly eventBus: EventBus;
+  readonly backgroundServices: BackgroundServiceRegistry;
 }
 
 export interface VendorSubstratePublishedRefs {
@@ -35,7 +39,13 @@ export interface VendorSubstratePublishedRefs {
 export const composeVendorSubstrateContext = async (
   options: ComposeVendorSubstrateContextOptions,
 ): Promise<VendorSubstratePublishedRefs | undefined> => {
-  const { app, upstreamMergeRegistry, eventBus } = options;
+  const {
+    app,
+    upstreamMergeRegistry,
+    auditLog,
+    eventBus,
+    backgroundServices,
+  } = options;
   if (!app.connectionStoreRef) return undefined;
 
   const vendorBundle = await composeWireVendorSubstrate({
@@ -47,9 +57,18 @@ export const composeVendorSubstrateContext = async (
     contactStore: app.contactStoreRef,
     upstreamMergeStore: app.upstreamMergeStoreRef,
     upstreamMergeRegistry,
+    auditLog,
     warehouseBus: app.warehouseBus,
     eventBus,
   });
+
+  if (vendorBundle.stop !== undefined) {
+    backgroundServices.register({
+      name: 'vendor-substrate',
+      kind: 'emitter',
+      stop: vendorBundle.stop,
+    });
+  }
 
   return {
     apiConnectionLookup: vendorBundle.lookupConnection,

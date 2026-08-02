@@ -41,6 +41,10 @@ const RECOVERY_REENTRY_SESSION_KEY =
   'recued.webclient.recovery-reentry.v1';
 const SERVER_SWITCH_CONTINUITY_SESSION_KEY =
   'recued.webclient.server-switch-continuity.v1';
+const RECOVERY_INTENT_CONTINUATION_SESSION_KEY =
+  'recued.webclient.recovery-intent-continuation.v1';
+const RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY =
+  'recued.webclient.recovery-intent-review-verification.v2';
 
 const SHELL_HOST = 'data-recued-webclient-shell';
 const SHELL_CONTENT = 'data-recued-webclient-content';
@@ -48,6 +52,10 @@ const SHELL_TOPBAR = 'data-recued-webclient-topbar';
 const ATTENTION_TOPBAR = 'data-recued-attention-topbar';
 const ATTENTION_DIALOG = 'data-recued-attention-dialog';
 const ATTENTION_CLOSE = 'data-recued-attention-close-button';
+const ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME =
+  'data-recued-attention-recovery-intent-server-outcome';
+const ATTENTION_RECOVERY_INTENT_SERVER_STATE =
+  'data-recued-attention-recovery-intent-server-state';
 const CONNECTION_BANNER = 'data-recued-connection-banner';
 const CONNECTION_BANNER_ACTION = 'data-recued-connection-banner-action';
 const CONNECTION_STATUS_ANNOUNCER = 'data-recued-connection-status-announcer';
@@ -59,6 +67,24 @@ const ACCOUNT_MENU_SETTINGS = 'data-recued-account-menu-settings';
 const ACCOUNT_MENU_RECOVERY = 'data-recued-account-menu-recovery';
 const ACCOUNT_MENU_RECOVERY_STEPS = 'data-recued-account-menu-recovery-steps';
 const ACCOUNT_MENU_SERVER_SLOT = 'data-recued-account-menu-server-slot';
+const ACCOUNT_MENU_CONNECTION_DIAGNOSIS =
+  'data-recued-account-menu-connection-diagnosis';
+const ACCOUNT_MENU_CONNECTION_DIAGNOSIS_TITLE =
+  'data-recued-account-menu-connection-diagnosis-title';
+const ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS =
+  'data-recued-account-menu-connection-diagnosis-status';
+const ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT =
+  'data-recued-account-menu-connection-diagnosis-receipt';
+const ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS =
+  'data-recued-account-menu-connection-diagnosis-controls';
+const ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE =
+  'data-recued-account-menu-connection-diagnosis-reconcile';
+const ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN =
+  'data-recued-account-menu-connection-diagnosis-return';
+const SERVER_CONTROL_POPOVER =
+  'data-recued-webclient-server-control-popover';
+const SERVER_CONTROL_TITLE =
+  'data-recued-webclient-server-control-title';
 const SERVER_PROFILE_ITEM = 'data-recued-server-switcher-item';
 const SERVER_PROFILE_CURRENT = 'data-recued-server-switcher-current';
 const SERVER_PROFILE_RECENCY = 'data-recued-server-switcher-recency';
@@ -276,7 +302,7 @@ test('the Attention bell is a focused, responsive queue with an exact handoff', 
 
   const host = page.locator(`[${ATTENTION_TOPBAR}]`);
   const bell = page.getByRole('button', {
-    name: '2 decisions need your attention',
+    name: '2 items need your attention',
   });
   await expect(bell).toBeVisible();
   await expect(bell.locator('.top-bar-attention-bell svg')).toHaveCount(1);
@@ -297,7 +323,7 @@ test('the Attention bell is a focused, responsive queue with an exact handoff', 
   const dialog = page.locator(`[${ATTENTION_DIALOG}]`);
   await expect(dialog).toBeVisible();
   await expect(dialog).toHaveAccessibleName('Attention');
-  await expect(dialog).toContainText('2 decisions are waiting for you.');
+  await expect(dialog).toContainText('2 items are waiting for you.');
   await expect(dialog).toContainText('Connected action · Answer to continue');
   await expect(dialog).toContainText(
     'Approval · HubSpot contact update · Changes data',
@@ -310,7 +336,7 @@ test('the Attention bell is a focused, responsive queue with an exact handoff', 
     name: "Approve: Update Acme's account owner in HubSpot",
   })).toBeVisible();
   await expect(
-    dialog.getByRole('link', { name: 'Open full queue' }),
+    dialog.getByRole('link', { name: 'Open approvals' }),
   ).toBeVisible();
   await expect(page.locator(`[${ATTENTION_CLOSE}]`)).toBeFocused();
 
@@ -341,10 +367,597 @@ test('the Attention bell is a focused, responsive queue with an exact handoff', 
   await expect(dialog).toHaveCount(0);
 
   await bell.click();
-  await dialog.getByRole('link', { name: 'Open full queue' }).click();
+  await dialog.getByRole('link', { name: 'Open approvals' }).click();
   await expect(page).toHaveURL(/#approvals$/);
   await expect(page.locator('[data-recued-approvals-route]')).toBeVisible();
   await expect(page.locator(`[${ATTENTION_DIALOG}]`)).toHaveCount(0);
+});
+
+test('bounded verification lands on one exact Account diagnosis and returns explicitly', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?journey=bounded-verification&server_profiles=multiple#contracts`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_heartbeat',
+    payload: {
+      server_id: 'srv-bounded-verification',
+      last_seen_at: Date.now(),
+      lifecycle_state: 'running',
+      uptime_s: 120,
+      supervisor_mode: 'systemd',
+    },
+  }));
+
+  const bell = page.getByRole('button', {
+    name: '1 item needs your attention',
+  });
+  await bell.click();
+  const attention = page.locator(`[${ATTENTION_DIALOG}]`);
+  await expect(attention.locator(
+    '[data-phase="verification_handoff"]',
+  )).toBeVisible();
+  await attention.getByRole('button', {
+    name: /Review the .* connection before another verification of Contracts/,
+  }).click();
+
+  const account = page.locator(`[${ACCOUNT_MENU_POPOVER}]`);
+  const diagnosis = page.locator(`[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS}]`);
+  const diagnosisTitle = diagnosis.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_TITLE}]`,
+  );
+  const diagnosisStatus = diagnosis.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS}]`,
+  );
+  await expect(account).toBeVisible();
+  await expect(diagnosis).toBeVisible();
+  await expect(diagnosisTitle).toBeFocused();
+  await expect(diagnosis).toContainText(
+    'Opening Account does not retry verification or mark it resolved.',
+  );
+  await expect(diagnosisStatus).toContainText('is connected now');
+  const reviewControls = diagnosis.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS}]`,
+  );
+  const reportOutcome = diagnosis.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN}]`,
+  );
+  await expect(reviewControls).toBeEnabled();
+  await reviewControls.click();
+  const serverControls = page.locator(`[${SERVER_CONTROL_POPOVER}]`);
+  const serverControlsTitle = page.locator(`[${SERVER_CONTROL_TITLE}]`);
+  await expect(serverControls).toBeVisible();
+  await expect(serverControls).toHaveAccessibleName('Active server controls');
+  await expect(serverControlsTitle).toBeFocused();
+  await expect(diagnosis).toHaveAttribute('data-control-review', 'active');
+  await expect(diagnosisStatus).toContainText('controls are open');
+  const controlReceipt = diagnosis.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT}]`,
+  );
+  await serverControls.getByRole('button', { name: 'Pause server' }).click();
+  const confirmPause = serverControls.getByRole('button', {
+    name: 'Confirm pause',
+  });
+  await expect(confirmPause).toBeFocused();
+  await confirmPause.click();
+  await expect(controlReceipt).toBeVisible();
+  await expect(controlReceipt).toHaveAttribute('data-action', 'pause');
+  await expect(controlReceipt).toHaveAttribute('data-phase', 'confirmed');
+  await expect(controlReceipt).toContainText(
+    'Pause completed. The server confirmed execution is paused.',
+  );
+  await expect(controlReceipt).toContainText(
+    'This server result does not verify Contracts.',
+  );
+  const resumeServer = serverControls.getByRole('button', { name: 'Resume' });
+  await expect(resumeServer).toBeFocused();
+  await page.screenshot({
+    path: `${ARTIFACTS}/full-app-account-diagnosis-controls-mobile.png`,
+    fullPage: false,
+  });
+
+  // A live heartbeat may rebuild the control contents. Focus remains on the
+  // exact resulting action instead of falling to the page behind the surface.
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_heartbeat',
+    payload: {
+      server_id: 'srv-bounded-verification',
+      last_seen_at: Date.now(),
+      lifecycle_state: 'running',
+      uptime_s: 121,
+      supervisor_mode: 'systemd',
+      paused: true,
+    },
+  }));
+  await expect(resumeServer).toBeFocused();
+
+  // Connection loss closes the now-stale controls, keeps Account + diagnosis
+  // open, and lands on the exact outcome button rather than a hidden subtree.
+  await page.evaluate(() => window.__app.fireState('reconnecting'));
+  await expect(serverControls).toHaveCount(0);
+  await expect(diagnosisStatus).toContainText(
+    'is reconnecting or still being checked',
+  );
+  await expect(reportOutcome).toBeFocused();
+  await expect(reviewControls).toBeDisabled();
+  await expect(account).toBeVisible();
+  await page.evaluate(() => window.__app.fireState('connected'));
+  await expect(diagnosisStatus).toContainText('is connected now');
+  await expect(reviewControls).toBeDisabled();
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_heartbeat',
+    payload: {
+      server_id: 'srv-bounded-verification',
+      last_seen_at: Date.now(),
+      lifecycle_state: 'running',
+      uptime_s: 1,
+      supervisor_mode: 'systemd',
+      paused: true,
+    },
+  }));
+  await expect(reviewControls).toBeEnabled();
+  await reviewControls.click();
+  await expect(serverControlsTitle).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(account).toBeVisible();
+  await expect(serverControls).toHaveCount(0);
+  await expect(reportOutcome).toBeFocused();
+  await expect(diagnosis).toHaveAttribute('data-control-review', 'returned');
+  await expect(diagnosisStatus).toContainText('Back from');
+
+  // The receipt remains live after returning. A later authoritative status
+  // can supersede the action without moving focus or claiming route success.
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_heartbeat',
+    payload: {
+      server_id: 'srv-bounded-verification',
+      last_seen_at: Date.now(),
+      lifecycle_state: 'running',
+      uptime_s: 2,
+      supervisor_mode: 'systemd',
+      paused: false,
+    },
+  }));
+  await expect(controlReceipt).toHaveAttribute('data-phase', 'superseded');
+  await expect(controlReceipt).toContainText(
+    'a newer server status now reports that execution is running',
+  );
+  await expect(controlReceipt).toContainText(
+    'does not verify Contracts',
+  );
+  await expect(reportOutcome).toBeFocused();
+
+  // Quiet dismissal and a real reload keep the two-interruption cap. The
+  // Account cue itself is deliberately memory-only and does not replay.
+  await page.locator(`[${ACCOUNT_MENU_CLOSE}]`).click();
+  await expect(account).toBeHidden();
+  expect(await page.evaluate(
+    (key) => window.sessionStorage.getItem(key),
+    RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+  )).not.toBeNull();
+  await page.reload();
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect(page.locator(`[${ACCOUNT_MENU_POPOVER}]`)).toBeHidden();
+
+  const restoredBell = page.getByRole('button', {
+    name: '1 item needs your attention',
+  });
+  await restoredBell.click();
+  const restoredAttention = page.locator(`[${ATTENTION_DIALOG}]`);
+  await expect(restoredAttention.locator(
+    '[data-phase="verification_handoff"]',
+  )).toBeVisible();
+  const readsBeforeReturn = await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts'));
+  await restoredAttention.getByRole('button', {
+    name: /Review the .* connection before another verification of Contracts/,
+  }).click();
+  await expect(controlReceipt).toBeHidden();
+  await page.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN}]`,
+  ).click();
+
+  await expect(page.locator(`[${ACCOUNT_MENU_POPOVER}]`)).toBeHidden();
+  await expect(page.locator(`[${ATTENTION_DIALOG}]`)).toBeVisible();
+  await expect(page.locator(
+    '[data-phase="awaiting_review_outcome"][data-review-target="server"]',
+  )).toBeVisible();
+  await expect(page.locator(`[${ATTENTION_DIALOG}]`)).toContainText(
+    'What happened after reviewing',
+  );
+  expect(await page.evaluate(
+    (key) => window.sessionStorage.getItem(key),
+    RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+  )).toBeNull();
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts')))
+    .toBe(readsBeforeReturn);
+});
+
+test('carries a safe server receipt into Attention without replaying it after reload', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?journey=bounded-verification&server_profiles=multiple#contracts`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_heartbeat',
+    payload: {
+      server_id: 'srv-receipt-attention-handoff',
+      last_seen_at: Date.now(),
+      lifecycle_state: 'running',
+      uptime_s: 120,
+      supervisor_mode: 'systemd',
+    },
+  }));
+
+  const bell = page.getByRole('button', {
+    name: '1 item needs your attention',
+  });
+  await bell.click();
+  const attention = page.locator(`[${ATTENTION_DIALOG}]`);
+  await attention.getByRole('button', {
+    name: /Review the .* connection before another verification of Contracts/,
+  }).click();
+
+  const account = page.locator(`[${ACCOUNT_MENU_POPOVER}]`);
+  const diagnosis = page.locator(`[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS}]`);
+  await diagnosis.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS}]`,
+  ).click();
+  const serverControls = page.locator(`[${SERVER_CONTROL_POPOVER}]`);
+  await serverControls.getByRole('button', { name: 'Pause server' }).click();
+  await serverControls.getByRole('button', { name: 'Confirm pause' }).click();
+  await expect(diagnosis.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT}]`,
+  )).toHaveAttribute('data-phase', 'confirmed');
+  await page.keyboard.press('Escape');
+  await diagnosis.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN}]`,
+  ).click();
+
+  await expect(account).toBeHidden();
+  await expect(attention).toBeVisible();
+  await expect(page.locator(`[${ATTENTION_CLOSE}]`)).toBeFocused();
+  const outcome = attention.locator(
+    `[${ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME}="confirmed"]`
+      + '[data-server-control-action="pause"]'
+      + '[data-server-control-state="paused"]',
+  );
+  await expect(outcome).toBeVisible();
+  await expect(outcome).toContainText('Pause completed');
+  await expect(outcome).toContainText(
+    'Latest known state: execution is paused.',
+  );
+  await expect(outcome).toContainText(
+    'This server result does not verify Contracts.',
+  );
+  await expect(outcome).toContainText('Pause will not replay.');
+  await expect(outcome).not.toContainText(
+    'What happened after reviewing',
+  );
+  const verify = outcome.getByRole('button', {
+    name: /Verify Contracts on .* then choose again; Pause will not replay/,
+  });
+  await expect(verify).toHaveText('Verify Contracts & choose again');
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('server.setPaused'))).toBe(1);
+  await page.screenshot({
+    path: `${ARTIFACTS}/full-app-attention-server-outcome-mobile.png`,
+    fullPage: false,
+  });
+
+  await outcome.getByRole('button', {
+    name: 'Still blocked; keep the saved return to Contracts',
+  }).click();
+  await expect(attention).toBeHidden();
+  await bell.click();
+  await expect(outcome).toBeVisible();
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('server.setPaused'))).toBe(1);
+  expect(await page.evaluate(
+    (key) => window.sessionStorage.getItem(key),
+    RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+  )).toBeNull();
+  expect(await page.evaluate((key) => {
+    const raw = window.sessionStorage.getItem(key);
+    return raw === null
+      ? []
+      : Object.keys(JSON.parse(raw) as Record<string, unknown>).sort();
+  }, RECOVERY_INTENT_CONTINUATION_SESSION_KEY)).toEqual([
+    'intent',
+    'landing_hash',
+    'paused_at',
+    'profile_id',
+    'v',
+  ]);
+
+  // The harness restores its durable bounded-verification posture, but the
+  // receipt projection belongs to this page lifetime and cannot follow it.
+  await page.reload();
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const restoredBell = page.getByRole('button', {
+    name: '1 item needs your attention',
+  });
+  await restoredBell.click();
+  const restoredAttention = page.locator(`[${ATTENTION_DIALOG}]`);
+  await expect(restoredAttention.locator(
+    `[${ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME}]`,
+  )).toHaveCount(0);
+  await expect(restoredAttention).not.toContainText('Pause completed');
+  await expect(restoredAttention).not.toContainText('Pause will not replay');
+  await expect(restoredAttention).toContainText(
+    'Review the connection before another check',
+  );
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('server.setPaused'))).toBe(0);
+});
+
+test('reconciles an unresolved receipt with current server state without replaying it', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?journey=bounded-verification&server_profiles=multiple&server_control_response=hold#contracts`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_heartbeat',
+    payload: {
+      server_id: 'srv-unresolved-re-review',
+      last_seen_at: Date.now(),
+      lifecycle_state: 'running',
+      paused: false,
+      uptime_s: 120,
+      supervisor_mode: 'systemd',
+    },
+  }));
+
+  const bell = page.getByRole('button', {
+    name: '1 item needs your attention',
+  });
+  await bell.click();
+  const attention = page.locator(`[${ATTENTION_DIALOG}]`);
+  await attention.getByRole('button', {
+    name: /Review the .* connection before another verification of Contracts/,
+  }).click();
+
+  const account = page.locator(`[${ACCOUNT_MENU_POPOVER}]`);
+  const diagnosis = page.locator(`[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS}]`);
+  const diagnosisReceipt = diagnosis.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECEIPT}]`,
+  );
+  await diagnosis.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_CONTROLS}]`,
+  ).click();
+  const serverControls = page.locator(`[${SERVER_CONTROL_POPOVER}]`);
+  await serverControls.getByRole('button', { name: 'Pause server' }).click();
+  await serverControls.getByRole('button', { name: 'Confirm pause' }).click();
+  await expect(diagnosisReceipt).toHaveAttribute('data-action', 'pause');
+  await expect(diagnosisReceipt).toHaveAttribute('data-phase', 'pending');
+  await expect(diagnosisReceipt).toContainText('Pause requested');
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('server.setPaused'))).toBe(1);
+
+  await page.keyboard.press('Escape');
+  const reportOutcome = diagnosis.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN}]`,
+  );
+  await expect(reportOutcome).toBeFocused();
+  await reportOutcome.click();
+
+  await expect(account).toBeHidden();
+  await expect(attention).toBeVisible();
+  const outcome = attention.locator(
+    `[${ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME}="pending"]`
+      + '[data-server-control-action="pause"]',
+  );
+  await expect(outcome).toBeVisible();
+  await expect(outcome).toContainText('Pause was still pending');
+  await expect(outcome).toContainText(
+    /Review .+ again to compare its current live state with this receipt/,
+  );
+  const reviewAgain = outcome.getByRole('button', {
+    name: /Review the exact active-server controls for .* again; Pause will not replay/,
+  });
+  await expect(reviewAgain).toHaveText('Review server again');
+  await expect(outcome.getByRole('button', {
+    name: /Verify Contracts instead on .* then choose again; Pause will not replay/,
+  })).toHaveText('Verify Contracts instead');
+  await expect(outcome.getByRole('button', {
+    name: /Still blocked/,
+  })).toHaveCount(0);
+  await expect(outcome.getByRole('button', {
+    name: /Stop recovery/,
+  })).toBeVisible();
+
+  await reviewAgain.click();
+  await expect(account).toBeVisible();
+  await expect(diagnosis.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_TITLE}]`,
+  )).toContainText(/^Review .+ again$/);
+  await expect(diagnosis).not.toHaveAttribute('data-interruption-reason');
+  await expect(diagnosis).toContainText(
+    'The last server-control receipt did not settle the result.',
+  );
+  await expect(diagnosisReceipt).toHaveAttribute('data-phase', 'pending');
+  await expect(serverControls).toBeVisible();
+  await expect(serverControls).toContainText(
+    'Pause is still awaiting a server response.',
+  );
+  await expect(serverControls.getByRole('button', {
+    name: 'Pause server',
+  })).toBeDisabled();
+  await expect(serverControls.locator(`[${SERVER_CONTROL_TITLE}]`)).toBeFocused();
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('server.setPaused'))).toBe(1);
+  await page.screenshot({
+    path: `${ARTIFACTS}/full-app-attention-unresolved-server-re-review-mobile.png`,
+    fullPage: false,
+  });
+  const reconcile = diagnosis.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RECONCILE}]`,
+  );
+  await expect(reconcile).toHaveText('Waiting for current server state…');
+  await expect(reconcile).toBeDisabled();
+  expect(await page.evaluate(
+    (key) => window.sessionStorage.getItem(key),
+    RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+  )).toBeNull();
+
+  // Settling the old RPC is not enough: the closure stays locked until a
+  // subsequent heartbeat establishes what this exact server reports now.
+  expect(await page.evaluate(() =>
+    window.__app.releaseServerControlResponses?.())).toBe(1);
+  await expect(serverControls).not.toContainText(
+    'still awaiting a server response',
+  );
+  await expect(reconcile).toBeDisabled();
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_heartbeat',
+    payload: {
+      server_id: 'srv-unresolved-re-review',
+      last_seen_at: Date.now(),
+      lifecycle_state: 'running',
+      paused: true,
+      uptime_s: 121,
+      supervisor_mode: 'systemd',
+    },
+  }));
+  await expect(reconcile).toHaveText('Use current server state');
+  await expect(reconcile).toBeEnabled();
+  expect(await page.evaluate(
+    (key) => window.sessionStorage.getItem(key),
+    RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+  )).toBeNull();
+  await expect(diagnosis.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS}]`,
+  )).toContainText(
+    'stable current state ready to reconcile with the last receipt',
+  );
+  await expect(diagnosisReceipt).toContainText(
+    /^Last receipt — Pause requested/,
+  );
+
+  await page.keyboard.press('Escape');
+  await expect(reconcile).toBeFocused();
+  await reconcile.click();
+  await expect(account).toBeHidden();
+  await expect(attention).toBeVisible();
+  const reconciled = attention.locator(
+    `[${ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME}="pending"]`
+      + `[${ATTENTION_RECOVERY_INTENT_SERVER_STATE}="paused"]`
+      + '[data-server-control-action="pause"]',
+  );
+  await expect(reconciled).toBeVisible();
+  await expect(reconciled).toContainText('Current server state: paused');
+  await expect(reconciled).toContainText(
+    'without claiming the earlier Pause request caused it',
+  );
+  await expect(reconciled.getByRole('button', {
+    name: /Review the exact active-server controls/,
+  })).toHaveCount(0);
+  const verify = reconciled.getByRole('button', {
+    name: /Verify Contracts on .* then choose again; Pause will not replay/,
+  });
+  await expect(verify).toHaveText('Verify Contracts & choose again');
+  await expect(reconciled.getByRole('button', {
+    name: 'Still blocked; keep the saved return to Contracts',
+  })).toBeVisible();
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('server.setPaused'))).toBe(1);
+  expect(await page.evaluate((key) => {
+    const raw = window.sessionStorage.getItem(key);
+    return raw === null ? null : JSON.parse(raw) as unknown;
+  }, RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY)).toEqual({
+    v: 2,
+    profile_id: expect.any(String),
+    landing_hash: '#contracts',
+    intent: 'choose_again',
+    paused_at: 1_700_000_000_000,
+    review_target: 'server',
+    state: 'ready',
+    interruption_count: 0,
+    last_interruption: null,
+  });
+
+  // Interrupt the reconciliation-to-area-check handoff. Reload restores only
+  // the exact-area obligation: no historical receipt/current-state material,
+  // no server-control replay, and no automatic read on reconnect.
+  await page.reload();
+  await page.waitForFunction(() => window.__app?.ready === true);
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('server.setPaused'))).toBe(0);
+  const restoredBell = page.getByRole('button', {
+    name: '1 item needs your attention',
+  });
+  await restoredBell.click();
+  const restoredAttention = page.locator(`[${ATTENTION_DIALOG}]`);
+  const readyCheck = restoredAttention.locator(
+    '[data-phase="verification_ready"]',
+  );
+  await expect(readyCheck).toBeVisible();
+  await expect(readyCheck).toContainText('Finish checking Contracts');
+  await expect(readyCheck).toContainText(
+    'The server re-review finished, but the final Contracts check did not.',
+  );
+  await expect(readyCheck).toContainText(
+    'restored only where to return and that you wanted to choose again',
+  );
+  await expect(readyCheck).toContainText(
+    'not the server action, receipt, current state, or credentials',
+  );
+  await expect(readyCheck.locator(
+    `[${ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME}]`,
+  )).toHaveCount(0);
+  await expect(readyCheck.locator(
+    `[${ATTENTION_RECOVERY_INTENT_SERVER_STATE}]`,
+  )).toHaveCount(0);
+  await expect(readyCheck).not.toContainText('Pause was still pending');
+  await expect(readyCheck).not.toContainText('Current server state: paused');
+  const resumedVerify = readyCheck.getByRole('button', {
+    name: /Check Contracts now on .* no prior action or receipt will replay/,
+  });
+  await expect(resumedVerify).toHaveText('Check Contracts now');
+  await page.screenshot({
+    path: `${ARTIFACTS}/full-app-attention-reconciliation-reentry-mobile.png`,
+    fullPage: false,
+  });
+  const readsBeforeReconnect = await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts'));
+  await page.evaluate(() => window.__app.fireState('reconnecting'));
+  await page.evaluate(() => window.__app.fireState('connected'));
+  await page.waitForTimeout(50);
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts')))
+    .toBe(readsBeforeReconnect);
+  await expect(readyCheck).toHaveAttribute('data-phase', 'verification_ready');
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('server.setPaused'))).toBe(0);
+
+  await resumedVerify.click();
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts')))
+    .toBeGreaterThan(readsBeforeReconnect);
+  await expect(restoredAttention).toBeHidden();
+  await expect.poll(() => page.evaluate(
+    (key) => window.sessionStorage.getItem(key),
+    RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+  )).toBeNull();
+  expect(await page.evaluate(
+    (key) => window.sessionStorage.getItem(key),
+    RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+  )).toBeNull();
+  // The populated route has multiple panels backed by listContracts. Their
+  // supporting reads may settle alongside the route-owned retry, but closure
+  // must not leave a polling/retry loop behind.
+  const readsAfterClosure = await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts'));
+  await page.waitForTimeout(100);
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts')))
+    .toBe(readsAfterClosure);
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('server.setPaused'))).toBe(0);
 });
 
 test('Account server profiles own connection status, recovery, and the return online', async ({ page }) => {
@@ -421,6 +1034,19 @@ test('Account server profiles own connection status, recovery, and the return on
   });
   expect(mobilePillTarget.height).toBeGreaterThanOrEqual(44);
   await page.setViewportSize({ width: 390, height: 844 });
+
+  // Escape first returns from the nested active-server controls to their
+  // owning pill. A second Escape still closes Account, so the new diagnosis
+  // handoff cannot swallow the ordinary Account keyboard path.
+  const serverPillButton = serverStatus.locator('.server-pill[data-action]');
+  await serverPillButton.click();
+  const ordinaryServerControls = page.locator(`[${SERVER_CONTROL_POPOVER}]`);
+  await expect(ordinaryServerControls).toBeVisible();
+  await expect(page.locator(`[${SERVER_CONTROL_TITLE}]`)).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(ordinaryServerControls).toHaveCount(0);
+  await expect(dialog).toBeVisible();
+  await expect(serverPillButton).toBeFocused();
 
   await page.keyboard.press('Escape');
   await expect(dialog).toBeHidden();

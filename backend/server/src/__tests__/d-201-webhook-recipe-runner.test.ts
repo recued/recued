@@ -218,6 +218,86 @@ describe('D-201 Slices 5A/5B2A webhook recipe runner', () => {
     expect(executeRequest.contract_snapshot).toBeUndefined();
   });
 
+  it('refuses account drift under a stamped door before re-entering execution', async () => {
+    handleExecute.mockResolvedValue({ success: true });
+    const concreteRecipe = {
+      recipe_id: 'webhook-recipe',
+      version: 1,
+      prefetch_steps: [],
+      steps: [{
+        id: 'read',
+        ingredient: 'crm-catalog',
+        connection: '{{config.crm}}',
+        input: { operation: 'deal.search', args: {} },
+      }],
+    };
+    const base = deps(async () => null, () => ({ crm: 'acct-new' }));
+    vi.mocked(base.executeDeps.recipeStore.get).mockReturnValue(concreteRecipe as never);
+    const d = {
+      ...base,
+      resolveDoorRecipe: () => ({ ok: true as const, recipe: concreteRecipe as never }),
+      resolveOp: (slug: string, operation: string) =>
+        slug === 'crm-catalog' && operation === 'deal.search'
+          ? ['recued-core.crm.deal.search']
+          : [],
+      definitionStore: {
+        get: () => ({
+          contract_id: 'door-1',
+          status: 'active',
+          minted_at: 1,
+          door_types: ['webhook'],
+          scope: {
+            operation_ids: ['recued-core.crm.deal.search'],
+            ingredient_ids: ['crm-catalog'],
+            connection_names: ['acct-old'],
+          },
+        }),
+      },
+    };
+    const stamped = request();
+    stamped.execution_source.contract_id = 'door-1';
+
+    await expect(createExecuteWebhookRecipeRunner(d as never).run(stamped))
+      .rejects.toThrow('door authority changed');
+    expect(handleExecute).not.toHaveBeenCalled();
+  });
+
+  it('treats an unstamped production-wired target as terminal without executing it', async () => {
+    const d = {
+      ...deps(async () => null),
+      resolveDoorRecipe: (recipe: never) => ({ ok: true as const, recipe }),
+    };
+
+    await expect(createExecuteWebhookRecipeRunner(d as never).run(request()))
+      .resolves.toBe('terminal_non_success');
+    expect(handleExecute).not.toHaveBeenCalled();
+  });
+
+  it('treats a revoked production-wired door as terminal before a pure recipe can run', async () => {
+    handleExecute.mockResolvedValue({ success: true });
+    const d = {
+      ...deps(async () => null),
+      resolveDoorRecipe: (recipe: never) => ({ ok: true as const, recipe }),
+      definitionStore: {
+        get: () => ({
+          contract_id: 'door-1',
+          status: 'active',
+          minted_at: 1,
+          revoked_at: 2,
+          door_types: ['webhook'],
+          scope: {},
+        }),
+      },
+      now: () => 3,
+    };
+    const stamped = request();
+    stamped.execution_source.contract_id = 'door-1';
+
+    await expect(createExecuteWebhookRecipeRunner(d as never).run(stamped))
+      .resolves.toBe('terminal_non_success');
+    expect(handleExecute).not.toHaveBeenCalled();
+  });
+
   // ⛔ D-207 3d·5 — the empty-config bug. `handleExecute` skips its install-dish
   // config merge for any run carrying a `run_id`, and this runner always carries
   // one, so the runner must resolve and pass the install config itself. Without

@@ -19,6 +19,10 @@ import type { PreflightAskContext } from '@recued/gateway';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import type { ExecuteHandlerDeps } from '../execute-handler.js';
+import {
+  createMcpActionStore,
+  type McpActionRecord,
+} from '../mcp-action-store.js';
 import { RUN_INGREDIENT_RECIPE } from '../run-ingredient-recipe.js';
 
 const handleExecuteMock = vi.hoisted(() => vi.fn());
@@ -172,6 +176,151 @@ describe('PreflightResumer.resumeRun', () => {
         gated_step_id: 'gated_step',
         step_state: { lookup: { id: 'deal-1' } },
       },
+    });
+  });
+
+  it('settles the durable MCP action with the exact resumed result', async () => {
+    const log = auditLog();
+    await append(log, pausedAnchor());
+    const actions = createMcpActionStore(
+      createInMemoryCollection<McpActionRecord>(),
+      { newActionRef: () => 'mcpact-resume' },
+    );
+    await actions.createHeld({
+      run_id: 'run-1',
+      principal_id: 'token-a',
+      tool_name: 'seller/send',
+      kind: 'recipe',
+      checkpoint_id: 'checkpoint-1',
+    });
+    const deps = { ...executeDeps(), mcpActionStore: actions };
+    const resumer = createPreflightResumer({
+      auditLog: log,
+      getExecuteDeps: () => deps,
+    });
+
+    await resumer.resumeRun(checkpoint(), askContext());
+
+    expect(await actions.getByRun('run-1')).toMatchObject({
+      action_ref: 'mcpact-resume',
+      status: 'completed',
+      result: {
+        recipe_id: 'recipe-1',
+        success: true,
+        output: { sidebar: [] },
+      },
+    });
+  });
+
+  it('keeps the same action_ref when a resumed recipe reaches another gate', async () => {
+    const log = auditLog();
+    await append(log, pausedAnchor());
+    const actions = createMcpActionStore(
+      createInMemoryCollection<McpActionRecord>(),
+      { newActionRef: () => 'mcpact-multi-gate' },
+    );
+    await actions.createHeld({
+      run_id: 'run-1',
+      principal_id: 'token-a',
+      tool_name: 'seller/onboard',
+      kind: 'recipe',
+      checkpoint_id: 'checkpoint-1',
+    });
+    handleExecuteMock.mockImplementationOnce(async () => {
+      await append(log, pausedAnchor({ checkpoint_id: 'checkpoint-2' }));
+      return {
+        recipe_id: 'recipe-1',
+        recipe_hash: 'recipe-hash-1',
+        success: false,
+        awaiting_approval: true,
+        output: { sidebar: [] },
+        steps: [],
+        errors: [],
+        duration_ms: 1,
+      };
+    });
+    const deps = { ...executeDeps(), mcpActionStore: actions };
+    const resumer = createPreflightResumer({
+      auditLog: log,
+      getExecuteDeps: () => deps,
+    });
+
+    await resumer.resumeRun(checkpoint(), askContext());
+
+    expect(await actions.getByRun('run-1')).toMatchObject({
+      action_ref: 'mcpact-multi-gate',
+      status: 'awaiting_approval',
+      current_checkpoint_id: 'checkpoint-2',
+      approval_round: 2,
+    });
+  });
+
+  it('terminalizes both audit and action state for a tampered recipe checkpoint', async () => {
+    const log = auditLog();
+    await append(log, pausedAnchor());
+    const actions = createMcpActionStore(
+      createInMemoryCollection<McpActionRecord>(),
+      { newActionRef: () => 'mcpact-integrity' },
+    );
+    await actions.createHeld({
+      run_id: 'run-1',
+      principal_id: 'token-a',
+      tool_name: 'recipe.run',
+      kind: 'recipe',
+      checkpoint_id: 'checkpoint-1',
+    });
+    const deps = { ...executeDeps(), mcpActionStore: actions };
+    const resumer = createPreflightResumer({
+      auditLog: log,
+      getExecuteDeps: () => deps,
+    });
+
+    await resumer.resumeRun(checkpoint({
+      recipe_snapshot: RUN_INGREDIENT_RECIPE as unknown as Record<string, unknown>,
+    }), askContext());
+
+    expect(handleExecuteMock).not.toHaveBeenCalled();
+    expect(await log.get('run-1')).toMatchObject({
+      commit_status: 'failed',
+      errors: [{
+        code: 'RECIPE_VALIDATION_FAILED',
+        details: { reason: 'checkpoint_integrity_failed' },
+      }],
+    });
+    expect(await actions.getByRun('run-1')).toMatchObject({
+      status: 'failed',
+      result: { code: 'checkpoint_integrity_failed' },
+    });
+  });
+
+  it('terminalizes the audit anchor for forged compensation provenance', async () => {
+    const log = auditLog();
+    const compensation = {
+      ...RUN_INGREDIENT_RECIPE,
+      recipe_id: 'saga-undo-commit-approved',
+    } as RecipeDefinition;
+    await append(log, pausedAnchor({
+      recipe_id: compensation.recipe_id,
+      recipe_hash: hashRecipe(compensation),
+    }));
+    const resumer = createPreflightResumer({
+      auditLog: log,
+      getExecuteDeps: () => executeDeps(),
+    });
+
+    await resumer.resumeRun(checkpoint({
+      recipe_id: compensation.recipe_id,
+      recipe_snapshot: compensation as unknown as Record<string, unknown>,
+      predecessor_commit_id: 'commit-forged',
+    }), askContext());
+
+    expect(handleExecuteMock).not.toHaveBeenCalled();
+    expect(await log.get('run-1')).toMatchObject({
+      commit_status: 'failed',
+      errors: [{
+        code: 'RECIPE_VALIDATION_FAILED',
+        details: { reason: 'checkpoint_provenance_failed' },
+      }],
     });
   });
 
@@ -545,14 +694,32 @@ describe('PreflightResumer.resumeRun', () => {
   it('propagates handleExecute failures', async () => {
     const log = auditLog();
     await append(log, pausedAnchor());
+    const actions = createMcpActionStore(
+      createInMemoryCollection<McpActionRecord>(),
+      { newActionRef: () => 'mcpact-retry' },
+    );
+    await actions.createHeld({
+      run_id: 'run-1',
+      principal_id: 'token-a',
+      tool_name: 'seller/send',
+      kind: 'recipe',
+      checkpoint_id: 'checkpoint-1',
+    });
     handleExecuteMock.mockRejectedValueOnce(new Error('resume failed'));
+    const deps = { ...executeDeps(), mcpActionStore: actions };
     const resumer = createPreflightResumer({
       auditLog: log,
-      getExecuteDeps: () => executeDeps(),
+      getExecuteDeps: () => deps,
     });
 
     await expect(resumer.resumeRun(checkpoint(), askContext()))
       .rejects.toThrow('resume failed');
+    expect(await actions.getByRun('run-1')).toMatchObject({
+      action_ref: 'mcpact-retry',
+      status: 'awaiting_approval',
+      current_checkpoint_id: 'checkpoint-1',
+      approval_round: 1,
+    });
   });
 });
 
@@ -585,6 +752,35 @@ describe('PreflightResumer.denyRun', () => {
     expect(updated!.duration_ms).toBe(Date.now() - anchor.started_at);
     expect(updated!.checkpoint_id).toBeUndefined();
     expect(updated!.ask_id).toBeUndefined();
+  });
+
+  it('settles the token-bound MCP action when the owner denies', async () => {
+    const log = auditLog();
+    await append(log, pausedAnchor());
+    const actions = createMcpActionStore(
+      createInMemoryCollection<McpActionRecord>(),
+      { newActionRef: () => 'mcpact-denied' },
+    );
+    await actions.createHeld({
+      run_id: 'run-1',
+      principal_id: 'token-a',
+      tool_name: 'seller/send',
+      kind: 'recipe',
+      checkpoint_id: 'checkpoint-1',
+    });
+    const resumer = createPreflightResumer({
+      auditLog: log,
+      mcpActionStore: actions,
+      getExecuteDeps: () => undefined,
+    });
+
+    await resumer.denyRun(checkpoint(), askContext());
+
+    expect(await actions.getByRun('run-1')).toMatchObject({
+      action_ref: 'mcpact-denied',
+      status: 'denied',
+      result: { status: 'denied', denied: true },
+    });
   });
 
   it.each(['succeeded', 'failed', 'cancelled', 'in_doubt'] as const)(

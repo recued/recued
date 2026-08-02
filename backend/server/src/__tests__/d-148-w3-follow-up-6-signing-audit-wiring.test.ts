@@ -336,13 +336,16 @@ describe('D-148 follow-up #6 — serve signing source pin', () => {
     expect(source).toMatch(/import\s*\{\s*createSigningAuditLog\s*\}\s*from\s*['"]\.\.\/audit\/signing\.js['"]/);
   });
 
-  it('wraps the underlying audit log with createSigningAuditLog in storage composition', () => {
+  it('publishes the signed audit log through the drain-owned wrapper', () => {
     const storagePath = new URL('../serve/compose-storage-context.ts', import.meta.url).pathname;
     const source = readFileSync(storagePath, 'utf8');
     expect(source).toMatch(/createSigningAuditLog\(\s*baseAuditLog\s*,/);
-    // The wrapped reference is named `auditLog` so existing emit-site
-    // callers go through the wrapper without code changes.
-    expect(source).toMatch(/const\s+auditLog:\s*AuditLogStore\s*\|\s*undefined\s*=/);
+    expect(source).toMatch(/createDrainableAuditLog\(signingAuditLog\)/);
+    // The final drain-owned reference is named `auditLog` so every existing
+    // emit site gets both signing and terminal-flush ownership unchanged.
+    expect(source).toMatch(
+      /const\s+auditLog:\s*AuditLogStore\s*=\s*drainableAuditLog\.auditLog/,
+    );
   });
 
   it('defers identity boot until after the lifecycle lock claim', () => {

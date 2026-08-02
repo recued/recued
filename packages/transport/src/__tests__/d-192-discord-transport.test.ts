@@ -3,8 +3,8 @@
  *  Pins the three things a future edit could quietly break:
  *    - `Authorization: Bot`, not `Bearer` — one word, and the wrong one makes a
  *      healthy channel report `auth_failed`;
- *    - `parseInbound` ALWAYS null — the honest boundary of a webhook-only Discord,
- *      not a stub someone should "finish" without first building the Gateway;
+ *    - Gateway `MESSAGE_CREATE` parsing rejects bot/system messages and accepts
+ *      text or attachments;
  *    - buttons chunk into action rows of 5, and every cap is refused up front.
  */
 
@@ -164,15 +164,47 @@ describe('D-192 Discord — interactive prompts', () => {
 describe('D-192 Discord — inbound', () => {
   const transport = createDiscordTransport({ fetchImpl: vi.fn() as unknown as typeof fetch });
 
-  it('parseInbound is ALWAYS null — the honest boundary, not a stub', () => {
-    // ⚠ Do not "fix" this. Discord's Interactions webhook carries no plain user
-    // messages; those live on the Gateway (a persistent WS we do not run). The
-    // messenger turn and the commitment funnel both gate on `parseInbound`, so
-    // returning null is how a webhook-only Discord truthfully says "I cannot read
-    // what you type" — through the ordinary seam, with no shared-code branch.
+  it('parses Gateway MESSAGE_CREATE data and ignores interactions/bot posts', () => {
     expect(transport.parseInbound(press('ask-1|approve'))).toBeNull();
     expect(transport.parseInbound({ type: 1 })).toBeNull();
-    expect(transport.parseInbound({ content: 'hello there' })).toBeNull();
+    expect(transport.parseInbound({
+      id: 'MSG-2',
+      channel_id: CHANNEL,
+      content: 'hello there',
+      author: { id: 'USER-2', bot: false },
+    })).toEqual({ from: 'USER-2', text: 'hello there', vendor_message_id: 'MSG-2' });
+    expect(transport.parseInbound({
+      id: 'MSG-BOT',
+      channel_id: CHANNEL,
+      content: 'ignore me',
+      author: { id: 'BOT', bot: true },
+    })).toBeNull();
+  });
+
+  it('accepts attachment-only Gateway messages', () => {
+    expect(transport.parseInbound({
+      id: 'MSG-FILE',
+      channel_id: CHANNEL,
+      content: '',
+      author: { id: 'USER-2' },
+      attachments: [{
+        id: 'ATT-1',
+        url: 'https://cdn.discordapp.com/attachments/a/b/report.pdf',
+        content_type: 'application/pdf',
+        size: 1234,
+      }],
+    })).toEqual({
+      from: 'USER-2',
+      text: '',
+      vendor_message_id: 'MSG-FILE',
+      media: [{
+        type: 'application',
+        mime: 'application/pdf',
+        size: 1234,
+        remote_id: 'ATT-1',
+        remote_url: 'https://cdn.discordapp.com/attachments/a/b/report.pdf',
+      }],
+    });
   });
 
   it('decodes a button press, from a guild (member.user) and a DM (user)', () => {
@@ -199,6 +231,7 @@ describe('D-192 Discord — inbound', () => {
     expect(transport.parseConversationId(press('ask-1|approve'))).toBe(CHANNEL);
     expect(transport.parseCallbackConversationId(press('ask-1|approve'))).toBe(CHANNEL);
     expect(transport.parseConversationId({ type: 3 })).toBeNull();
+    expect(transport.parseConversationId({ channel_id: CHANNEL, content: 'hi' })).toBe(CHANNEL);
   });
 
   it('TRIMS an over-cap send instead of losing it silently — send, prompt AND close', async () => {

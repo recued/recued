@@ -931,24 +931,28 @@ export const createAnnotationStore = (
       );
     }
     const { sql, params } = compileAnnotationFilter(filter);
-    // Free CAS blobs + drop FTS rows for every match before the delete.
-    const rows = db
-      .prepare(`SELECT id, blob_hash, size_bytes FROM ${ANNOTATION_TABLE} ${sql}`)
-      .all(...params) as Array<{ id: string; blob_hash: string | null; size_bytes: number }>;
-    let freed = 0;
-    for (const r of rows) {
-      if (r.blob_hash) {
-        // Best-effort blob delete — orphan sweep covers stragglers.
-        void blobs.delete(r.blob_hash).catch(() => { /* swallow */ });
+    const apply = db.transaction(() => {
+      const rows = db
+        .prepare(`SELECT id, size_bytes FROM ${ANNOTATION_TABLE} ${sql}`)
+        .all(...params) as Array<{ id: string; size_bytes: number }>;
+      const res = db
+        .prepare(`DELETE FROM ${ANNOTATION_TABLE} ${sql}`)
+        .run(...params);
+      for (const row of rows) {
+        ftsDeleteRecord(db, ANNOTATION_FTS_TABLE, row.id);
       }
-      ftsDeleteRecord(db, ANNOTATION_FTS_TABLE, r.id);
-      freed += r.size_bytes;
-    }
-    const res = db
-      .prepare(`DELETE FROM ${ANNOTATION_TABLE} ${sql}`)
-      .run(...params);
-    reportDelta(-freed);
-    return res.changes;
+      return {
+        changes: res.changes,
+        freed: rows.reduce((total, row) => total + row.size_bytes, 0),
+      };
+    });
+    const result = apply.immediate();
+    // Blob bytes live in the same content-addressed root as data.shared and
+    // may still be referenced by another row with identical content. Never
+    // unlink a hash from a row-delete path; the combined reference-aware
+    // orphan sweep reclaims it after the final SQL reference disappears.
+    reportDelta(-result.freed);
+    return result.changes;
   };
 
   const deleteLinksByFilter = (filter: LinkFilter): number => {
@@ -1066,19 +1070,12 @@ export const createAnnotationStore = (
     const tx = db.transaction((col: string, recId: string): CascadeResult => {
       const annRows = db
         .prepare(
-          `SELECT id, blob_hash, size_bytes FROM ${ANNOTATION_TABLE}
+          `SELECT id, size_bytes FROM ${ANNOTATION_TABLE}
             WHERE target_collection = ? AND target_id = ?`,
         )
-        .all(col, recId) as Array<{ id: string; blob_hash: string | null; size_bytes: number }>;
+        .all(col, recId) as Array<{ id: string; size_bytes: number }>;
       let freed = 0;
       for (const r of annRows) {
-        if (r.blob_hash) {
-          // Inside the transaction we can't await blobs.delete —
-          // schedule it to run after the txn completes. Orphan sweep
-          // covers any failure.
-          const hash = r.blob_hash;
-          queueMicrotask(() => { void blobs.delete(hash).catch(() => { /* swallow */ }); });
-        }
         ftsDeleteRecord(db, ANNOTATION_FTS_TABLE, r.id);
         freed += r.size_bytes;
       }
@@ -1135,11 +1132,6 @@ export const createAnnotationStore = (
       resolvedLoserValues.set(row.id, await resolveAnnotationValue(row));
     }
 
-    // Blob hashes of loser rows actually deleted by the COMMITTED transaction.
-    // The CAS deletes are queued only after `tx()` returns — a mid-txn throw
-    // rolls back the row deletions, so firing the blob deletes unconditionally
-    // would orphan the restored rows' blobs.
-    const blobsToDelete: string[] = [];
     const tx = db.transaction(() => {
       // For each loser annotation, check if a survivor-side row exists at the
       // same `(collection, key)`. On collision: survivor's canonical value
@@ -1182,7 +1174,6 @@ export const createAnnotationStore = (
           ftsDeleteRecord(db, ANNOTATION_FTS_TABLE, row.id);
           freedBytes += row.size_bytes;
           collided++;
-          if (row.blob_hash) blobsToDelete.push(row.blob_hash);
           // A2 (D-138 § A.8) — preserve the loser value in the survivor's
           // `extras`, accumulating across multi-way merges (read-merge-write,
           // one key per absorbed loser). A malformed existing blob is reset
@@ -1245,13 +1236,7 @@ export const createAnnotationStore = (
         links_rewritten: linksRewritten,
       };
     });
-    const result = tx();
-    // Queue the CAS blob deletes only after the txn has COMMITTED (see
-    // `blobsToDelete`) — a rollback would otherwise orphan restored rows.
-    for (const hash of blobsToDelete) {
-      queueMicrotask(() => { void blobs.delete(hash).catch(() => { /* swallow */ }); });
-    }
-    return result;
+    return tx();
   };
 
   // ── staleness-driven eviction ─────────────────────────────────
@@ -1300,18 +1285,20 @@ export const createAnnotationStore = (
     searchAnnotations,
     deleteAnnotations: async (filter) => deleteAnnotationsByFilter(filter),
     deleteAnnotation: async (id) => {
-      const rows = db
-        .prepare(`SELECT blob_hash, size_bytes FROM ${ANNOTATION_TABLE} WHERE id = ?`)
-        .all(id) as Array<{ blob_hash: string | null; size_bytes: number }>;
-      if (rows.length === 0) return false;
-      const row = rows[0];
-      if (row.blob_hash) {
-        void blobs.delete(row.blob_hash).catch(() => { /* swallow */ });
-      }
-      ftsDeleteRecord(db, ANNOTATION_FTS_TABLE, id);
-      const res = db.prepare(`DELETE FROM ${ANNOTATION_TABLE} WHERE id = ?`).run(id);
+      const apply = db.transaction(() => {
+        const row = db
+          .prepare(`SELECT size_bytes FROM ${ANNOTATION_TABLE} WHERE id = ?`)
+          .get(id) as { size_bytes: number } | undefined;
+        if (!row) return null;
+        const res = db.prepare(`DELETE FROM ${ANNOTATION_TABLE} WHERE id = ?`).run(id);
+        if (res.changes === 0) return null;
+        ftsDeleteRecord(db, ANNOTATION_FTS_TABLE, id);
+        return row;
+      });
+      const row = apply.immediate();
+      if (!row) return false;
       reportDelta(-row.size_bytes);
-      return res.changes > 0;
+      return true;
     },
     listLinks: async (filter) => {
       const { sql, params } = compileLinkFilter(filter);

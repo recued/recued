@@ -258,16 +258,16 @@ describe('D-149 P10 § A.11 T-1 — Drive-by scraping / reconnaissance', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('D-149 P10 § A.11 T-2 — Bot form spam', () => {
-  it('intake_form per-kind window caps submissions per IP (indexed via P6)', () => {
-    // Indexed via `d-149-phase-6-intake-form-handler.test.ts` (per-endpoint
-    // honeypot trip → `'spam'` outcome). The substrate primitive verified
-    // here is the per-IP per-kind tighter window for `intake_form`
-    // (10/hour) — beyond it, submissions reject before the form is parsed.
+  it('intake_form pre-verification envelope caps requests per IP (indexed via P6)', () => {
+    // The durable P6 handler enforces each form's owner-selected 1..60/hour
+    // per-source cap. This earlier, token-less primitive is the matching
+    // 60/hour HMAC-work envelope: it still bounds anonymous abuse without
+    // silently overriding a valid form setting before the form is parsed.
     const db = new Database(':memory:');
     ensureReceptionSchema(db);
     const limiter = createReceptionRateLimiter({ db });
     const cap = RECEPTION_RATE_LIMIT_DEFAULTS.per_endpoint_kind.intake_form.max_requests;
-    expect(cap).toBe(10);
+    expect(cap).toBe(60);
     for (let i = 0; i < cap; i += 1) {
       expect(
         limiter.consumePreVerify({

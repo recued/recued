@@ -668,8 +668,17 @@ describe('archive rpc', () => {
     const slow = new Promise<void>((r) => {
       resolveFirst = r;
     });
+    let resolveFirstStarted!: () => void;
+    const firstStarted = new Promise<void>((r) => {
+      resolveFirstStarted = r;
+    });
+    let importCalls = 0;
     const runImport = vi.fn().mockImplementation(async () => {
-      await slow;
+      importCalls += 1;
+      if (importCalls === 1) {
+        resolveFirstStarted();
+        await slow;
+      }
       return { manifest, restored_at: 1_000 };
     });
     const { slice } = makeArchiveHandlers({
@@ -681,13 +690,18 @@ describe('archive rpc', () => {
       { path: archivePath, recoveryKey: KEY },
       {} as never,
     );
-    await new Promise((r) => setImmediate(r));
+    // Wait for the first call to acquire the import latch and enter the
+    // runtime. A single event-loop turn is not a synchronization point: the
+    // handler performs asynchronous path/key preflight before taking the
+    // latch, so under full-suite I/O load the second call could overtake it.
+    await firstStarted;
     await expect(
       slice!.handlers['server.archive.import']!(
         { path: archivePath, recoveryKey: KEY },
         {} as never,
       ),
     ).rejects.toMatchObject({ code: 'archive_import_in_progress' });
+    expect(runImport).toHaveBeenCalledTimes(1);
     resolveFirst();
     await first;
   });

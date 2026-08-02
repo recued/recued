@@ -67,6 +67,7 @@ import { createInstanceStore } from '../collections/instance-store.js';
 import type { ReceptionEndpointContext } from '../ports/reception/redacted-packet.js';
 
 const NOW = 1_700_000_000_000;
+const SOURCE_IP_HASH = 'endpoint-scoped-test-source';
 const PEPPER = deriveReceptionPepper(Buffer.alloc(32, 0xc4));
 const PII_KEY = deriveFormSubmissionPiiKeyFromSubDek(Buffer.alloc(32, 0x6e));
 const ENDPOINT_ID = 'ep-ws3-e2e';
@@ -211,6 +212,7 @@ const submitAndDrain = async (
     }).toString()),
     postRes,
     endpoint,
+    SOURCE_IP_HASH,
   );
   expect(postRes.statusCode).toBe(200);
 

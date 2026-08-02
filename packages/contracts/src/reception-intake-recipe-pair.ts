@@ -188,10 +188,14 @@ export interface ReceptionIntakeRecipePairBindInput {
  *  untouched — there a write holds, the owner approves it in the Inbox, and "we got your
  *  submission" stays true because nothing was owed in return. */
 export type ReceptionDoorRefusalReason =
+  | 'dispatch_unresolvable'
   | 'dynamic_dispatch'
   | 'dynamic_connection'
   | 'literal_connection'
-  | 'write_on_responding_door';
+  | 'write_on_responding_door'
+  | 'cost_step_limit'
+  | 'cost_dynamic_fanout'
+  | 'cost_unknown_dispatch_kind';
 
 /** D-207 slice 1c — the door minted (or not) alongside the pair.
  *
@@ -213,7 +217,8 @@ export type ReceptionDoorBindView =
     }
   /** The capability WIDENED. Nothing was minted: the pair is saved but the door stays
    *  SHUT until the owner re-binds with `confirm_capability: true`. `added` is the
-   *  consent prompt itself — the ops the public could not reach before and now could. */
+   *  consent prompt itself: canonical operation ids remain bare; changed tool/account
+   *  axes are rendered as `ingredient:<slug>` / `connection:<name>`. */
   | {
       readonly status: 'needs_consent';
       readonly added: readonly string[];

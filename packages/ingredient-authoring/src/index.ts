@@ -62,6 +62,7 @@ export {
   mcpGeneratedPackSlug,
   generateMcpPackComposition,
   stampGeneratedMcpCatalog,
+  stampPackOwnedManifest,
   mcpPackReviewRows,
   mcpToolsDrift,
   mcpToolsDriftFromHashes,

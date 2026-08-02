@@ -21,8 +21,9 @@
 import { createHash } from 'node:crypto';
 import { chmodSync, createWriteStream, existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { Readable } from 'node:stream';
+import { Readable, Transform, type TransformCallback } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
+import { discardResponseBody, fetchOriginPinned } from '@recued/ingredients';
 import { verify } from '@recued/release';
 import { fsyncDir, fsyncFile } from '../durable-fs.js';
 
@@ -73,10 +74,84 @@ export const writeStagedSig = (stagedPath: string, sig: string): void => {
  *  in a `finally`. */
 export type DownloadFn = (url: string, destPath: string) => Promise<void>;
 
-export const defaultDownload: DownloadFn = async (url, destPath) => {
-  const res = await fetch(url);
-  if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status}`);
-  await pipeline(Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]), createWriteStream(destPath));
+export const UPDATE_ARTIFACT_MAX_BYTES = 128 * 1024 * 1024;
+export const UPDATE_DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+
+export interface UpdateDownloadOptions {
+  fetchImpl?: typeof fetch;
+  maxBytes?: number;
+  timeoutMs?: number;
+}
+
+export class UpdateArtifactTooLargeError extends Error {
+  constructor(
+    public readonly maxBytes: number,
+    public readonly observedBytes?: number,
+  ) {
+    super(
+      observedBytes === undefined
+        ? `update artifact exceeds ${maxBytes}-byte limit`
+        : `update artifact reached ${observedBytes} bytes (limit ${maxBytes})`,
+    );
+    this.name = 'UpdateArtifactTooLargeError';
+  }
+}
+
+export const defaultDownload = async (
+  url: string,
+  destPath: string,
+  options: UpdateDownloadOptions = {},
+): Promise<void> => {
+  const maxBytes = options.maxBytes ?? UPDATE_ARTIFACT_MAX_BYTES;
+  const timeoutMs = options.timeoutMs ?? UPDATE_DOWNLOAD_TIMEOUT_MS;
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    throw new TypeError('update artifact limit must be a positive safe integer');
+  }
+  if (!Number.isSafeInteger(timeoutMs) || timeoutMs < 1) {
+    throw new TypeError('update download timeout must be a positive safe integer');
+  }
+
+  const origin = new URL(url).origin;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let res: Response | undefined;
+  try {
+    res = await fetchOriginPinned(
+      options.fetchImpl ?? globalThis.fetch,
+      url,
+      { signal: controller.signal },
+      origin,
+    );
+    if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status}`);
+
+    const declaredRaw = res.headers.get('content-length');
+    if (declaredRaw !== null && /^\d+$/.test(declaredRaw.trim())) {
+      const declared = Number(declaredRaw);
+      if (Number.isSafeInteger(declared) && declared > maxBytes) {
+        throw new UpdateArtifactTooLargeError(maxBytes, declared);
+      }
+    }
+
+    let received = 0;
+    const limiter = new Transform({
+      transform(chunk: Buffer, _encoding: BufferEncoding, callback: TransformCallback) {
+        received += chunk.byteLength;
+        if (received > maxBytes) {
+          callback(new UpdateArtifactTooLargeError(maxBytes, received));
+          return;
+        }
+        callback(null, chunk);
+      },
+    });
+    await pipeline(
+      Readable.fromWeb(res.body as Parameters<typeof Readable.fromWeb>[0]),
+      limiter,
+      createWriteStream(destPath),
+    );
+  } finally {
+    if (res !== undefined) discardResponseBody(res);
+    clearTimeout(timer);
+  }
 };
 
 export interface VerifyArtifactInput {

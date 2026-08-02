@@ -22,6 +22,7 @@ import {
 import {
   createWebhookOutboxRuntime,
   dispatchWebhookOutboxOnce,
+  WEBHOOK_OUTBOX_MAX_ACTIVE_DISPATCHES,
 } from '../webhook-outbox-dispatcher.js';
 
 const SECRET_KEY = new Uint8Array(32).fill(31);
@@ -974,6 +975,128 @@ describe('D-201 Slices 2 / 5B2B durable webhook delivery store', () => {
     await expect(activePass).resolves.toMatchObject({ dispatched: 1 });
     await stopping;
     expect(stopped).toBe(true);
+  });
+
+  it('waits for a recipe dispatch that outlives its polling-pass timeout', async () => {
+    const harness = await makeHarness();
+    await harness.deliveryStore.accept(acceptedInput(harness));
+    let releaseDispatch!: () => void;
+    const dispatchReleased = new Promise<void>((resolve) => {
+      releaseDispatch = resolve;
+    });
+    let dispatchEntered!: () => void;
+    const entered = new Promise<void>((resolve) => {
+      dispatchEntered = resolve;
+    });
+    const runtime = createWebhookOutboxRuntime(harness.deliveryStore, {
+      dispatch: async () => {
+        dispatchEntered();
+        await dispatchReleased;
+      },
+    }, {
+      dispatch_timeout_ms: 1,
+      base_retry_ms: 0,
+      max_retry_ms: 0,
+    });
+
+    const pass = runtime.drainOnce();
+    await entered;
+    await expect(pass).resolves.toMatchObject({ claimed: 1, retried: 1 });
+
+    let stopped = false;
+    const stopping = runtime.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    releaseDispatch();
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
+  it('pauses claims at the residual dispatch ceiling without burning attempts', async () => {
+    const harness = await makeHarness();
+    for (let index = 1; index <= 3; index += 1) {
+      await harness.deliveryStore.accept(acceptedInput(harness, {
+        deliveryKey: `delivery-cap-${index}`,
+        eventKey: `event-cap-${index}`,
+      }));
+    }
+    const gates: Array<{ promise: Promise<void>; resolve: () => void }> = [];
+    const logs: Array<{ message: string; code: string | number | undefined }> = [];
+    const runtime = createWebhookOutboxRuntime(harness.deliveryStore, {
+      dispatch: () => {
+        let resolve!: () => void;
+        const promise = new Promise<void>((done) => { resolve = done; });
+        gates.push({ promise, resolve });
+        return promise;
+      },
+    }, {
+      max_active_dispatches: 2,
+      dispatch_timeout_ms: 1,
+      base_retry_ms: 0,
+      max_retry_ms: 0,
+      log: (_level, message, metadata) => {
+        logs.push({ message, code: metadata.code });
+      },
+    });
+
+    await expect(runtime.drainOnce()).resolves.toMatchObject({
+      claimed: 2,
+      retried: 2,
+    });
+    expect(gates).toHaveLength(2);
+    expect(harness.deliveryStore.listOutbox().map((row) => row.attempt_count).sort())
+      .toEqual([0, 1, 1]);
+
+    await expect(runtime.drainOnce()).resolves.toEqual({
+      claimed: 0,
+      dispatched: 0,
+      retried: 0,
+      dead_lettered: 0,
+    });
+    await expect(runtime.drainOnce()).resolves.toMatchObject({ claimed: 0 });
+    expect(gates).toHaveLength(2);
+    expect(harness.deliveryStore.listOutbox().map((row) => row.attempt_count).sort())
+      .toEqual([0, 1, 1]);
+    expect(logs).toEqual([{
+      message: 'webhook outbox active dispatch ceiling reached',
+      code: 'active_dispatch_ceiling',
+    }]);
+
+    gates[0]!.resolve();
+    await new Promise<void>((resolve) => { setImmediate(resolve); });
+    await expect(runtime.drainOnce()).resolves.toMatchObject({
+      claimed: 1,
+      retried: 1,
+    });
+    expect(gates).toHaveLength(3);
+    expect(WEBHOOK_OUTBOX_MAX_ACTIVE_DISPATCHES).toBe(16);
+
+    for (const gate of gates) gate.resolve();
+    await runtime.stop();
+  });
+
+  it('refuses a fresh explicit pass after shutdown closes admission', async () => {
+    const harness = await makeHarness();
+    await harness.deliveryStore.accept(acceptedInput(harness));
+    let calls = 0;
+    const runtime = createWebhookOutboxRuntime(harness.deliveryStore, {
+      dispatch: async () => { calls += 1; },
+    });
+
+    await runtime.stop();
+
+    await expect(runtime.drainOnce()).resolves.toEqual({
+      claimed: 0,
+      dispatched: 0,
+      retried: 0,
+      dead_lettered: 0,
+    });
+    expect(calls).toBe(0);
+    expect(harness.deliveryStore.listOutbox()[0]).toMatchObject({
+      state: 'pending',
+      attempt_count: 0,
+    });
   });
 
   it('dead-letters an expired crash claim once its attempt ceiling is reached', async () => {

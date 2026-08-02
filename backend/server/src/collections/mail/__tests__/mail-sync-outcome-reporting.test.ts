@@ -64,18 +64,22 @@ const message = (source_id: string): CanonicalMessage => ({
 interface FakeProviderOptions {
   connectError?: unknown;
   initialScanError?: unknown;
+  initialScanWait?: Promise<void>;
   initialMessages?: CanonicalMessage[];
   startSyncError?: unknown;
+  closeError?: unknown;
   healthLastSuccessfulSyncAt?: number;
 }
 
 interface FakeProviderHandle {
   provider: MailProvider;
   deliver(msg: CanonicalMessage): Promise<void>;
+  closeCalls(): number;
 }
 
 const makeFakeProvider = (hooks: FakeProviderOptions = {}): FakeProviderHandle => {
   let syncCallback: ProviderSyncCallback | undefined;
+  let closeCallCount = 0;
 
   const provider: MailProvider = {
     kind: 'gmail',
@@ -87,6 +91,7 @@ const makeFakeProvider = (hooks: FakeProviderOptions = {}): FakeProviderHandle =
     },
     async initialScan(opts) {
       if (hooks.initialScanError !== undefined) throw hooks.initialScanError;
+      await hooks.initialScanWait;
       for (const msg of hooks.initialMessages ?? []) {
         if (!(await opts.onMessage(msg))) break;
       }
@@ -96,7 +101,10 @@ const makeFakeProvider = (hooks: FakeProviderOptions = {}): FakeProviderHandle =
       syncCallback = cb;
       return async () => {};
     },
-    async close() {},
+    async close() {
+      closeCallCount += 1;
+      if (hooks.closeError !== undefined) throw hooks.closeError;
+    },
     health(): ProviderHealth {
       return {
         last_successful_sync_at: hooks.healthLastSuccessfulSyncAt ?? 0,
@@ -108,6 +116,7 @@ const makeFakeProvider = (hooks: FakeProviderOptions = {}): FakeProviderHandle =
 
   return {
     provider,
+    closeCalls: () => closeCallCount,
     async deliver(msg) {
       if (!syncCallback) throw new Error('fake provider sync callback is not registered');
       await syncCallback({ kind: 'created', source_id: msg.source_id, message: msg });
@@ -352,5 +361,37 @@ describe('MailCollection sync-outcome reporting', () => {
     await expect(harness.collection.sync.start()).resolves.toBeUndefined();
     await expect(harness.provider.deliver(message('dbless-live'))).resolves.toBeUndefined();
     await expect(harness.collection.sync.stop()).resolves.toBeUndefined();
+  });
+
+  it('close invalidates an in-flight scan before it can arm live sync', async () => {
+    let release!: () => void;
+    const initialScanWait = new Promise<void>((resolve) => { release = resolve; });
+    const harness = withHarness({ provider: { initialScanWait } });
+    const starting = harness.collection.sync.start();
+    await Promise.resolve();
+
+    const closing = harness.collection.close();
+    release();
+    await Promise.all([starting, closing]);
+    expect(harness.provider.closeCalls()).toBe(2);
+    await expect(harness.provider.deliver(message('late'))).rejects.toThrow(
+      /sync callback is not registered/,
+    );
+
+    expect(harness.collection.list({ platform: 'mail', slug: SLUG })).toEqual([]);
+    expect(harness.instances.get('mail', SLUG)?.last_synced_at).toBeNull();
+    await harness.collection.sync.start();
+    expect(harness.collection.list({ platform: 'mail', slug: SLUG })).toEqual([]);
+  });
+
+  it('close reports a provider teardown failure', async () => {
+    const providerOptions: FakeProviderOptions = {};
+    const harness = withHarness({ provider: providerOptions });
+    await harness.collection.sync.start();
+    providerOptions.closeError = new Error('close boom');
+
+    await expect(harness.collection.close()).rejects.toThrow(/failed to stop/);
+
+    providerOptions.closeError = undefined;
   });
 });

@@ -35,6 +35,7 @@ import {
   getVendorProvider,
   listVendorProviders,
   resolveVendorOAuthEndpoints,
+  resolveVendorOAuthRuntimeBase,
   type ConnectionVendorProvider,
 } from '../index.js';
 
@@ -138,12 +139,92 @@ describe('Pipedrive provider constants', () => {
     expect(PIPEDRIVE_WEBHOOK_SIGNATURE_HEADER).toBe('Authorization');
     expect(PIPEDRIVE_DEFAULT_RECONCILIATION_CADENCE).toBe('6h');
     expect(getVendorProvider('pipedrive')!.oauth.token_auth_style).toBe('basic');
+    expect(getVendorProvider('pipedrive')!.oauth.runtime_base).toEqual({
+      token_response_field: 'api_domain',
+      allowed_hostname_suffixes: ['pipedrive.com'],
+    });
+  });
+});
+
+describe('vendor OAuth runtime-base authority', () => {
+  const pipedrive = (): ConnectionVendorProvider => getVendorProvider('pipedrive')!;
+
+  it('normalizes the declared provider field to an allowlisted HTTPS origin', () => {
+    expect(resolveVendorOAuthRuntimeBase(pipedrive(), {
+      api_domain: 'https://acme.pipedrive.com/',
+    })).toEqual({
+      status: 'valid',
+      field: 'api_domain',
+      base_url: 'https://acme.pipedrive.com',
+    });
+  });
+
+  it.each([
+    ['http://acme.pipedrive.com', 'must use HTTPS'],
+    ['https://owner:secret@acme.pipedrive.com', 'must not contain credentials'],
+    ['https://acme.pipedrive.com:8443', 'must not use a non-default port'],
+    ['https://acme.pipedrive.com/v1', 'must be an origin'],
+    ['https://acme.pipedrive.com?next=1', 'must be an origin'],
+    ['https://acme.pipedrive.com#fragment', 'must be an origin'],
+    ['https://pipedrive.com.attacker.example', 'outside the provider allowlist'],
+    ['https://127.0.0.1', 'outside the provider allowlist'],
+  ])('rejects an unsafe api_domain %s', (api_domain, reason) => {
+    expect(resolveVendorOAuthRuntimeBase(pipedrive(), { api_domain })).toMatchObject({
+      status: 'invalid',
+      field: 'api_domain',
+      reason: expect.stringContaining(reason),
+    });
+  });
+
+  it('distinguishes a missing required field from a malformed one', () => {
+    expect(resolveVendorOAuthRuntimeBase(pipedrive(), {})).toEqual({
+      status: 'missing',
+      field: 'api_domain',
+    });
+    expect(resolveVendorOAuthRuntimeBase(pipedrive(), { api_domain: false })).toEqual({
+      status: 'invalid',
+      field: 'api_domain',
+      reason: 'must be a non-empty string',
+    });
+  });
+
+  it('keeps response URL fields inert for providers that did not declare one', () => {
+    expect(resolveVendorOAuthRuntimeBase(getVendorProvider('hubspot')!, {
+      instance_url: 'https://attacker.example',
+      api_domain: 'https://attacker.example',
+    })).toEqual({ status: 'not_expected' });
   });
 });
 
 describe('D-129 P1 — assertConnectionVendorProviderShape', () => {
   it('passes a valid entry', () => {
     expect(assertConnectionVendorProviderShape(validHubSpot())).toEqual([]);
+  });
+
+  it('validates runtime-base response authority metadata', () => {
+    const invalid = validHubSpot();
+    invalid.oauth = {
+      ...invalid.oauth,
+      runtime_base: {
+        token_response_field: 'redirect_to' as 'instance_url',
+        allowed_hostname_suffixes: ['Pipedrive.com', 'bad..example'],
+      },
+    };
+    const issues = assertConnectionVendorProviderShape(invalid).join(';');
+    expect(issues).toContain('oauth.runtime_base.token_response_field');
+    expect(issues).toContain('lowercase DNS suffixes');
+
+    const empty = validHubSpot();
+    empty.oauth = {
+      ...empty.oauth,
+      runtime_base: {
+        token_response_field: 'instance_url',
+        allowed_hostname_suffixes: [],
+      },
+    };
+    expect(assertConnectionVendorProviderShape(empty).join(';')).toContain(
+      'allowed_hostname_suffixes must be a non-empty array',
+    );
   });
 
   it('rejects vendor segments that violate the regex', () => {

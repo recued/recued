@@ -7,13 +7,16 @@
  *  its cached snapshot on disconnect so a reconnect can't flash stale state. */
 
 import { describe, expect, it, vi } from 'vitest';
-import type { ServerHeartbeatSnapshot } from '@recued/contracts';
+import { RpcError, type ServerHeartbeatSnapshot } from '@recued/contracts';
 
 import {
   isServerHeartbeatSnapshot,
   mountWebclientServerPill,
 } from '../shell/server-pill-host.js';
-import type { WebclientConnectionStatus } from '../realtime/connection-status.js';
+import {
+  WEBCLIENT_HEARTBEAT_STALE_MS,
+  type WebclientConnectionStatus,
+} from '../realtime/connection-status.js';
 
 // last_seen_at is just within the pill's staleness window relative to NOW, so
 // a connected snapshot renders the green "running" pill.
@@ -240,6 +243,81 @@ const popoverClick = (action: string) => ({
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
 describe('webclient server pill — master pause control (D-188)', () => {
+  it('reads only a fresh stable heartbeat target as current state', () => {
+    const status = buildFakeStatus('connected');
+    const { host } = makeControllableHost();
+    let now = NOW;
+    const mount = mountWebclientServerPill({
+      host: host as unknown as HTMLElement,
+      status: status.status,
+      onStatus: status.onStatus,
+      now: () => now,
+      runSetPaused: vi.fn(async () => ({ ok: true, active_since: null })),
+    });
+
+    mount.noteSnapshot(runningSnapshot({ last_seen_at: -1 }));
+    expect(mount.readCurrentState()).toBeNull();
+    mount.noteSnapshot(runningSnapshot({ last_seen_at: 99_000_000 }));
+    // Freshness is bound to local receipt time, not an untrusted/skewed server
+    // timestamp, so a future payload clock cannot extend this observation.
+    expect(mount.readCurrentState()).toEqual({ state: 'running' });
+    now += WEBCLIENT_HEARTBEAT_STALE_MS;
+    expect(mount.readCurrentState()).toBeNull();
+    expect(mount.openControls()).toBe('unavailable');
+
+    mount.noteSnapshot(runningSnapshot({
+      last_seen_at: 99_000_001,
+      lifecycle_state: 'restarting',
+    }));
+    expect(mount.readCurrentState()).toBeNull();
+    mount.noteSnapshot(runningSnapshot({
+      last_seen_at: 99_000_002,
+      crash_halt_active: true,
+    }));
+    expect(mount.readCurrentState()).toBeNull();
+    mount.noteSnapshot(runningSnapshot({
+      last_seen_at: 99_000_003,
+      paused: true,
+    }));
+    expect(mount.readCurrentState()).toEqual({ state: 'paused' });
+    mount.dispose();
+  });
+
+  it('hands off only to fresh controls and returns on connection loss', () => {
+    const status = buildFakeStatus('connected');
+    const { host, parts } = makeControllableHost();
+    const onControlAvailabilityChange = vi.fn();
+    const onReturn = vi.fn();
+    const mount = mountWebclientServerPill({
+      host: host as unknown as HTMLElement,
+      status: status.status,
+      onStatus: status.onStatus,
+      now: () => NOW,
+      runSetPaused: vi.fn(async () => ({ ok: true, active_since: null })),
+      onControlAvailabilityChange,
+    });
+
+    expect(onControlAvailabilityChange).toHaveBeenLastCalledWith(false);
+    const handoff = { ownerId: 'diagnosis-1', onReturn, onReceipt: vi.fn() };
+    expect(mount.openControls(handoff)).toBe('unavailable');
+    mount.noteSnapshot(runningSnapshot());
+    expect(onControlAvailabilityChange).toHaveBeenLastCalledWith(true);
+    expect(mount.openControls(handoff)).toBe('opened');
+    expect(parts().popoverHost?.innerHTML).toContain(
+      'data-recued-webclient-server-control-popover',
+    );
+    expect(parts().popoverHost?.innerHTML).toContain(
+      'Active server controls',
+    );
+
+    status.set('reconnecting');
+    expect(parts().popoverHost?.innerHTML).toBe('');
+    expect(onReturn).toHaveBeenCalledOnce();
+    expect(onControlAvailabilityChange).toHaveBeenLastCalledWith(false);
+    expect(mount.openControls()).toBe('unavailable');
+    mount.dispose();
+  });
+
   it('renders a CLICKABLE pill when runSetPaused is wired', () => {
     const status = buildFakeStatus('connected');
     const { host, parts } = makeControllableHost();
@@ -292,10 +370,151 @@ describe('webclient server pill — master pause control (D-188)', () => {
     parts().popoverHost?.fire('click', popoverClick('pause-confirm'));
     expect(runSetPaused).toHaveBeenCalledWith(true);
     await flush();
-    // optimistic flip — the paused pill + the Resume action both show.
+    // The authoritative response flips the paused pill + resulting action.
     expect(parts().popoverHost?.innerHTML).toContain('Resume');
     expect(parts().pillHost?.innerHTML).toContain('server-pill--paused');
     mount.dispose();
+  });
+
+  it('emits a confirmed pause receipt and reconciles a newer server state', async () => {
+    const status = buildFakeStatus('connected');
+    const { host, parts } = makeControllableHost();
+    const receipts = vi.fn();
+    const mount = mountWebclientServerPill({
+      host: host as unknown as HTMLElement,
+      status: status.status,
+      onStatus: status.onStatus,
+      now: () => NOW,
+      runSetPaused: vi.fn(async () => ({ ok: true, active_since: 1 })),
+    });
+    mount.noteSnapshot(runningSnapshot({ paused: false }));
+    expect(mount.openControls({
+      ownerId: 'diagnosis-pause',
+      onReturn: vi.fn(),
+      onReceipt: receipts,
+    })).toBe('opened');
+    parts().popoverHost?.fire('click', popoverClick('pause-request'));
+    parts().popoverHost?.fire('click', popoverClick('pause-confirm'));
+    expect(receipts).toHaveBeenLastCalledWith({
+      action: 'pause',
+      phase: 'pending',
+    });
+    await flush();
+    expect(receipts).toHaveBeenLastCalledWith({
+      action: 'pause',
+      phase: 'confirmed',
+      currentState: 'paused',
+    });
+
+    mount.noteSnapshot(runningSnapshot({ paused: false, uptime_s: 7201 }));
+    expect(receipts).toHaveBeenLastCalledWith({
+      action: 'pause',
+      phase: 'superseded',
+      currentState: 'running',
+    });
+
+    parts().pillHost?.fire('click', pillClick);
+    const repeatedOwnerReceipts = vi.fn();
+    mount.openControls({
+      ownerId: 'diagnosis-pause',
+      onReturn: vi.fn(),
+      onReceipt: repeatedOwnerReceipts,
+    });
+    expect(repeatedOwnerReceipts).toHaveBeenLastCalledWith({
+      action: 'pause',
+      phase: 'superseded',
+      currentState: 'running',
+    });
+    const nextOwnerReceipts = vi.fn();
+    mount.openControls({
+      ownerId: 'diagnosis-next',
+      onReturn: vi.fn(),
+      onReceipt: nextOwnerReceipts,
+    });
+    expect(nextOwnerReceipts).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+
+  it('keeps a retired in-flight request explicit for a new review owner', async () => {
+    const status = buildFakeStatus('connected');
+    const { host, parts } = makeControllableHost();
+    let resolvePause = (_value: unknown): void => undefined;
+    const runSetPaused = vi.fn(() => new Promise((resolve) => {
+      resolvePause = resolve;
+    }));
+    const firstReceipts = vi.fn();
+    const nextReceipts = vi.fn();
+    const onCurrentStateAvailabilityChange = vi.fn();
+    const mount = mountWebclientServerPill({
+      host: host as unknown as HTMLElement,
+      status: status.status,
+      onStatus: status.onStatus,
+      now: () => NOW,
+      runSetPaused,
+      onCurrentStateAvailabilityChange,
+    });
+    expect(onCurrentStateAvailabilityChange).toHaveBeenLastCalledWith(false);
+    mount.noteSnapshot(runningSnapshot());
+    expect(onCurrentStateAvailabilityChange).toHaveBeenLastCalledWith(true);
+    expect(mount.readCurrentState()).toEqual({ state: 'running' });
+    mount.openControls({
+      ownerId: 'diagnosis-first',
+      onReturn: vi.fn(),
+      onReceipt: firstReceipts,
+    });
+    parts().popoverHost?.fire('click', popoverClick('pause-request'));
+    parts().popoverHost?.fire('click', popoverClick('pause-confirm'));
+    expect(onCurrentStateAvailabilityChange).toHaveBeenLastCalledWith(false);
+    expect(mount.readCurrentState()).toBeNull();
+    expect(firstReceipts).toHaveBeenLastCalledWith({
+      action: 'pause',
+      phase: 'pending',
+    });
+    expect(parts().popoverHost?.innerHTML).toContain(
+      'Pause is still awaiting a server response.',
+    );
+
+    mount.closeControls();
+    expect(mount.openControls({
+      ownerId: 'diagnosis-re-review',
+      onReturn: vi.fn(),
+      onReceipt: nextReceipts,
+    })).toBe('opened');
+    expect(parts().popoverHost?.innerHTML).toContain(
+      'controls stay unavailable until it settles',
+    );
+    expect(parts().popoverHost?.innerHTML).toContain(
+      'disabled aria-busy="true"',
+    );
+    expect(nextReceipts).not.toHaveBeenCalled();
+    expect(runSetPaused).toHaveBeenCalledTimes(1);
+    mount.noteSnapshot(runningSnapshot({ last_seen_at: 1_000_200 }));
+    expect(onCurrentStateAvailabilityChange).toHaveBeenLastCalledWith(false);
+    expect(mount.readCurrentState()).toBeNull();
+
+    resolvePause({ ok: true, active_since: 1 });
+    await flush();
+    expect(parts().popoverHost?.innerHTML).toContain('Execution paused');
+    expect(parts().popoverHost?.innerHTML).not.toContain(
+      'still awaiting a server response',
+    );
+    // The late completion updates live state, but generation ownership keeps
+    // it from becoming a synthetic receipt for the re-review.
+    expect(nextReceipts).not.toHaveBeenCalled();
+    expect(runSetPaused).toHaveBeenCalledTimes(1);
+    expect(onCurrentStateAvailabilityChange).toHaveBeenLastCalledWith(false);
+    expect(mount.readCurrentState()).toBeNull();
+
+    // The RPC result may update the visible control, but closure waits for a
+    // subsequent heartbeat so an old cached snapshot cannot be called current.
+    mount.noteSnapshot(runningSnapshot({
+      paused: true,
+      last_seen_at: 1_000_400,
+    }));
+    expect(onCurrentStateAvailabilityChange).toHaveBeenLastCalledWith(true);
+    expect(mount.readCurrentState()).toEqual({ state: 'paused' });
+    mount.dispose();
+    expect(onCurrentStateAvailabilityChange).toHaveBeenLastCalledWith(false);
   });
 
   it('Resume (from a paused snapshot) calls runSetPaused(false), no confirm', () => {
@@ -328,8 +547,13 @@ describe('webclient server pill — master pause control (D-188)', () => {
       now: () => NOW,
       runSetPaused,
     });
+    const receipts = vi.fn();
     mount.noteSnapshot(runningSnapshot());
-    parts().pillHost?.fire('click', pillClick);
+    mount.openControls({
+      ownerId: 'diagnosis-failed-pause',
+      onReturn: vi.fn(),
+      onReceipt: receipts,
+    });
     parts().popoverHost?.fire('click', popoverClick('pause-request'));
     parts().popoverHost?.fire('click', popoverClick('pause-confirm'));
     await flush();
@@ -337,6 +561,127 @@ describe('webclient server pill — master pause control (D-188)', () => {
     // not flipped — still the Pause path (no optimistic paused state on failure).
     expect(parts().popoverHost?.innerHTML).toContain('Pause server');
     expect(parts().pillHost?.innerHTML).not.toContain('server-pill--paused');
+    expect(receipts).toHaveBeenLastCalledWith({
+      action: 'pause',
+      phase: 'failed',
+      currentState: 'running',
+      detail: 'boom',
+    });
+    mount.dispose();
+  });
+
+  it('reports a dropped pause response as unconfirmed, never failed', async () => {
+    const status = buildFakeStatus('connected');
+    const { host, parts } = makeControllableHost();
+    const receipts = vi.fn();
+    const mount = mountWebclientServerPill({
+      host: host as unknown as HTMLElement,
+      status: status.status,
+      onStatus: status.onStatus,
+      now: () => NOW,
+      runSetPaused: vi.fn(async () => {
+        throw new RpcError(
+          'connection_lost',
+          'raw method-shaped transport error',
+          undefined,
+          'server.setPaused',
+        );
+      }),
+    });
+    mount.noteSnapshot(runningSnapshot());
+    mount.openControls({
+      ownerId: 'diagnosis-unknown-pause',
+      onReturn: vi.fn(),
+      onReceipt: receipts,
+    });
+    parts().popoverHost?.fire('click', popoverClick('pause-request'));
+    parts().popoverHost?.fire('click', popoverClick('pause-confirm'));
+    await flush();
+    expect(receipts).toHaveBeenLastCalledWith({
+      action: 'pause',
+      phase: 'unconfirmed',
+      currentState: 'running',
+      detail: 'The connection dropped before this finished, so its result is unknown.',
+    });
+    mount.dispose();
+  });
+
+  it('bounds long server detail in the diagnosis receipt', async () => {
+    const status = buildFakeStatus('connected');
+    const { host, parts } = makeControllableHost();
+    const receipts = vi.fn();
+    const longDetail = 'x'.repeat(500);
+    const mount = mountWebclientServerPill({
+      host: host as unknown as HTMLElement,
+      status: status.status,
+      onStatus: status.onStatus,
+      now: () => NOW,
+      runSetPaused: vi.fn(async () => { throw new Error(longDetail); }),
+    });
+    mount.noteSnapshot(runningSnapshot());
+    mount.openControls({
+      ownerId: 'diagnosis-long-error',
+      onReturn: vi.fn(),
+      onReceipt: receipts,
+    });
+    parts().popoverHost?.fire('click', popoverClick('pause-request'));
+    parts().popoverHost?.fire('click', popoverClick('pause-confirm'));
+    await flush();
+
+    const receipt = receipts.mock.lastCall?.[0];
+    expect(receipt?.phase).toBe('failed');
+    expect(receipt?.detail).toHaveLength(320);
+    expect(receipt?.detail).toMatch(/…$/);
+    mount.dispose();
+  });
+
+  it('does not paint a retired action failure into a newer diagnosis owner', async () => {
+    const status = buildFakeStatus('connected');
+    const { host, parts } = makeControllableHost();
+    let rejectPause = (_reason: unknown): void => undefined;
+    const runSetPaused = vi.fn(() => new Promise<{
+      ok: true;
+      active_since: number | null;
+    }>((_resolve, reject) => {
+      rejectPause = reject;
+    }));
+    const firstReceipts = vi.fn();
+    const nextReceipts = vi.fn();
+    const mount = mountWebclientServerPill({
+      host: host as unknown as HTMLElement,
+      status: status.status,
+      onStatus: status.onStatus,
+      now: () => NOW,
+      runSetPaused,
+    });
+    mount.noteSnapshot(runningSnapshot());
+    mount.openControls({
+      ownerId: 'diagnosis-retired',
+      onReturn: vi.fn(),
+      onReceipt: firstReceipts,
+    });
+    parts().popoverHost?.fire('click', popoverClick('pause-request'));
+    parts().popoverHost?.fire('click', popoverClick('pause-confirm'));
+    expect(firstReceipts).toHaveBeenLastCalledWith({
+      action: 'pause',
+      phase: 'pending',
+    });
+
+    mount.closeControls();
+    expect(mount.openControls({
+      ownerId: 'diagnosis-next',
+      onReturn: vi.fn(),
+      onReceipt: nextReceipts,
+    })).toBe('opened');
+    rejectPause(new Error('belongs only to the retired action'));
+    await flush();
+
+    expect(firstReceipts).toHaveBeenCalledTimes(1);
+    expect(nextReceipts).not.toHaveBeenCalled();
+    expect(parts().popoverHost?.innerHTML).not.toContain(
+      'belongs only to the retired action',
+    );
+    expect(parts().popoverHost?.innerHTML).toContain('Pause server');
     mount.dispose();
   });
 });
@@ -357,7 +702,7 @@ describe('webclient server pill — restart + crash-halt (D-188)', () => {
       ...extra,
     });
     mount.noteSnapshot(snapshot);
-    return { mount, parts };
+    return { mount, parts, status };
   };
 
   it('hides Restart when the supervisor will not respawn (dev / native)', () => {
@@ -401,6 +746,115 @@ describe('webclient server pill — restart + crash-halt (D-188)', () => {
     expect(runRequestRestart).toHaveBeenCalledTimes(1);
     await flush();
     expect(parts().popoverHost?.innerHTML).toContain('Restarting');
+    mount.dispose();
+  });
+
+  it('carries an accepted restart receipt through disconnect to uptime proof', async () => {
+    const receipts = vi.fn();
+    const onReturn = vi.fn();
+    const { mount, parts, status } = mountWith(
+      runningSnapshot({ supervisor_mode: 'systemd', uptime_s: 7200 }),
+      { runRequestRestart: vi.fn(async () => ({ accepted: true })) },
+    );
+    expect(mount.openControls({
+      ownerId: 'diagnosis-restart',
+      onReturn,
+      onReceipt: receipts,
+    })).toBe('opened');
+    parts().popoverHost?.fire('click', popoverClick('restart-request'));
+    parts().popoverHost?.fire('click', popoverClick('restart-confirm'));
+    expect(receipts).toHaveBeenLastCalledWith({
+      action: 'restart',
+      phase: 'pending',
+    });
+    await flush();
+    expect(receipts).toHaveBeenLastCalledWith({
+      action: 'restart',
+      phase: 'accepted',
+      currentState: 'restarting',
+    });
+
+    status.set('reconnecting');
+    expect(onReturn).toHaveBeenCalledOnce();
+    status.set('connected');
+    mount.noteSnapshot(runningSnapshot({
+      supervisor_mode: 'systemd',
+      uptime_s: 3,
+    }));
+    expect(receipts).toHaveBeenLastCalledWith({
+      action: 'restart',
+      phase: 'confirmed',
+      currentState: 'running',
+    });
+    mount.dispose();
+  });
+
+  it('does not call reconnect alone a completed restart without uptime proof', async () => {
+    const receipts = vi.fn();
+    const { mount, parts, status } = mountWith(
+      runningSnapshot({ supervisor_mode: 'systemd', uptime_s: 7200 }),
+      { runRequestRestart: vi.fn(async () => ({ accepted: true })) },
+    );
+    mount.openControls({
+      ownerId: 'diagnosis-restart-no-proof',
+      onReturn: vi.fn(),
+      onReceipt: receipts,
+    });
+    parts().popoverHost?.fire('click', popoverClick('restart-request'));
+    parts().popoverHost?.fire('click', popoverClick('restart-confirm'));
+    await flush();
+    status.set('reconnecting');
+    status.set('connected');
+    mount.noteSnapshot(runningSnapshot({
+      supervisor_mode: 'systemd',
+      uptime_s: 7300,
+      paused: true,
+    }));
+    expect(receipts).toHaveBeenLastCalledWith({
+      action: 'restart',
+      phase: 'reconnected',
+      currentState: 'paused',
+    });
+    mount.dispose();
+  });
+
+  it('reconciles a fresh post-restart heartbeat that beats the accepted response', async () => {
+    const receipts = vi.fn();
+    let acceptRestart = (): void => undefined;
+    const runRequestRestart = vi.fn(() => new Promise<{ accepted: true }>(
+      (resolve) => {
+        acceptRestart = () => resolve({ accepted: true });
+      },
+    ));
+    const { mount, parts, status } = mountWith(
+      runningSnapshot({ supervisor_mode: 'systemd', uptime_s: 7200 }),
+      { runRequestRestart },
+    );
+    mount.openControls({
+      ownerId: 'diagnosis-restart-race',
+      onReturn: vi.fn(),
+      onReceipt: receipts,
+    });
+    parts().popoverHost?.fire('click', popoverClick('restart-request'));
+    parts().popoverHost?.fire('click', popoverClick('restart-confirm'));
+    status.set('reconnecting');
+    status.set('connected');
+    mount.noteSnapshot(runningSnapshot({
+      supervisor_mode: 'systemd',
+      uptime_s: 2,
+    }));
+    expect(receipts).toHaveBeenLastCalledWith({
+      action: 'restart',
+      phase: 'pending',
+    });
+
+    acceptRestart();
+    await flush();
+    expect(receipts).toHaveBeenLastCalledWith({
+      action: 'restart',
+      phase: 'confirmed',
+      currentState: 'running',
+    });
     mount.dispose();
   });
 

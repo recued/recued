@@ -73,12 +73,15 @@ import type { WorkEntitySourceSyncState } from './storage/work-entity-source-mir
  *  - last success older than `stale_after_ms` → `stale`;
  *  - otherwise `fresh`. */
 export const classifyWorkEntitySourceFreshness = (
-  source: Pick<SourceRegistration, 'id' | 'source_kind'>,
+  source: Pick<SourceRegistration, 'id' | 'source_kind' | 'sync_posture'>,
   sync: WorkEntitySourceSyncState | null,
   now: number,
 ): WorkEntitySourceFreshness => {
   if (source.source_kind !== 'connection') {
     return { source_id: source.id, state: 'local' };
+  }
+  if (source.sync_posture === 'read_through') {
+    return { source_id: source.id, state: 'read_through' };
   }
   if (sync === null) {
     return { source_id: source.id, state: 'never_synced', last_success_at: null };
@@ -186,6 +189,13 @@ export const resolveWorkEntityReadPlan = (
   if (freshness.state === 'local') {
     return { action: 'local', fresh: true, limitations: [] };
   }
+  // A read-through Source has no local record to choose. Every fidelity class
+  // reaches the declared source; `source_freshness` carries the more precise
+  // materialization reason while the existing plan vocabulary records that a
+  // current remote value is required.
+  if (freshness.state === 'read_through') {
+    return { action: 'remote', reasons: ['current_remote_required'] };
+  }
 
   const localWith = (limitations: WorkEntityReadLimitation[]): WorkEntityReadPlan => ({
     action: 'local',
@@ -228,10 +238,10 @@ export const resolveWorkEntityReadPlan = (
       // honors that contract (codex fold — `source_stale` was
       // otherwise inert in the per-read planner).
       const declared = REMOTE_DETAIL_REASONS.filter((r) =>
-        policy?.remote_when.includes(r) ?? false,
+        policy?.remote_when?.includes(r) ?? false,
       );
       const staleEscalate =
-        stale && (policy?.remote_when.includes('source_stale') ?? false);
+        stale && (policy?.remote_when?.includes('source_stale') ?? false);
       if (declared.length === 0 && !staleEscalate) return localWith([]);
       if (!canEscalate) {
         return localWith(

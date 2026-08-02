@@ -174,6 +174,19 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
   let attachmentFailed = false;
   let attachmentError: unknown;
   const pending = new Map<string, ReturnType<typeof setTimeout>>();
+  const inFlight = new Set<Promise<void>>();
+
+  const track = (work: Promise<void>, label: string): void => {
+    let tracked: Promise<void>;
+    tracked = work
+      .catch((err) => {
+        log('warn', `fs watcher ${label} failed for ${root}`, { err });
+      })
+      .finally(() => {
+        inFlight.delete(tracked);
+      });
+    inFlight.add(tracked);
+  };
 
   const closeWatchHandle = (): void => {
     const active = watcher;
@@ -203,7 +216,7 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
     }
     const error = new FsWatchUnavailableError(root, cause);
     log('error', `fs.watch became unavailable for ${root}`, { err: cause });
-    void notifyUnavailable(error);
+    track(notifyUnavailable(error), 'degradation callback');
   };
 
   const isIgnored = (absPath: string): boolean => {
@@ -246,7 +259,7 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
     if (prior) clearTimeout(prior);
     const timer = setTimeout(() => {
       pending.delete(absPath);
-      void (async (): Promise<void> => {
+      track((async (): Promise<void> => {
         try {
           await stat(absPath);
           await safeFire({ type: 'change', path: absPath });
@@ -257,7 +270,7 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
             log('warn', `stat failed for ${absPath}`, { err });
           }
         }
-      })();
+      })(), `event for ${absPath}`);
     }, debounceMs);
     pending.set(absPath, timer);
   };
@@ -301,6 +314,8 @@ export const createFsWatcher = (opts: FsWatcherOptions): FsWatcher => {
       for (const timer of pending.values()) clearTimeout(timer);
       pending.clear();
       closeWatchHandle();
+      const active = [...inFlight];
+      if (active.length > 0) await Promise.allSettled(active);
     },
   };
 };

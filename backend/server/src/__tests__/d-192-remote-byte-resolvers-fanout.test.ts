@@ -5,7 +5,7 @@
  *  gap, the per-vendor unresolvable gaps (Google native doc, Notion prong-2), and
  *  the shared ceiling / mime handling. */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { RpcError, type FileMetaProjection } from '@recued/contracts';
 
 import { buildBoxRemoteByteResolver } from '../collections/file/remote-byte-resolvers/box.js';
@@ -14,7 +14,10 @@ import { buildGoogleRemoteByteResolver } from '../collections/file/remote-byte-r
 import { buildNotionRemoteByteResolver } from '../collections/file/remote-byte-resolvers/notion.js';
 import { buildOneDriveRemoteByteResolver } from '../collections/file/remote-byte-resolvers/onedrive.js';
 import { buildRemoteFileByteResolvers } from '../collections/file/remote-byte-resolvers/index.js';
-import { fetchRemoteBytes } from '../collections/file/remote-byte-resolvers/http-bytes.js';
+import {
+  REMOTE_BYTE_FETCH_TIMEOUT_MS,
+  fetchRemoteBytes,
+} from '../collections/file/remote-byte-resolvers/http-bytes.js';
 import {
   REMOTE_FILE_READ_MAX_BYTES,
   type RemoteFileByteRequest,
@@ -294,5 +297,115 @@ describe('D-192 M2 — the byte ceiling is enforced on the STREAM, not after a f
     const res = streamRes([new Uint8Array([1, 2, 3]), new Uint8Array([4, 5])]);
     const out = await fetchRemoteBytes({ fetchImpl: fetchReturning(res), url: 'https://cdn.example/x', headers: {}, maxBytes: 25, vendorLabel: 'Box', ref: 'r1' });
     expect([...out.bytes]).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('cancels an oversized declared body before reading it', async () => {
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const res: FileFetchResponse = {
+      ok: true,
+      status: 200,
+      headers: new Headers({ 'content-length': '26' }),
+      text: async () => { throw new Error('must not read'); },
+      json: async () => ({}),
+      arrayBuffer: async () => { throw new Error('must not buffer'); },
+      body,
+    };
+
+    await expect(fetchRemoteBytes({
+      fetchImpl: fetchReturning(res),
+      url: 'https://cdn.example/x',
+      headers: {},
+      maxBytes: 25,
+      vendorLabel: 'Box',
+      ref: 'r1',
+    })).rejects.toMatchObject({ code: 'remote_too_large' });
+    expect(cancelled).toBe(true);
+  });
+
+  it('caps and cancels a provider error body instead of calling unbounded text()', async () => {
+    let cancelled = false;
+    let textCalled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const res: FileFetchResponse = {
+      ok: false,
+      status: 502,
+      headers: new Headers({ 'content-length': '5000' }),
+      text: async () => {
+        textCalled = true;
+        throw new Error('must not buffer provider error body');
+      },
+      json: async () => ({}),
+      arrayBuffer: async () => new ArrayBuffer(0),
+      body,
+    };
+
+    await expect(fetchRemoteBytes({
+      fetchImpl: fetchReturning(res),
+      url: 'https://cdn.example/x',
+      headers: {},
+      maxBytes: 25,
+      vendorLabel: 'Box',
+      ref: 'r1',
+    })).rejects.toMatchObject({ code: 'remote_fetch_failed', status: 502 });
+    expect(textCalled).toBe(false);
+    expect(cancelled).toBe(true);
+  });
+
+  it('keeps an abortable deadline active while the response body stalls', async () => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      const fetchImpl: FileFetch = async (_url, init) => {
+        signal = init.signal;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            const abort = (): void => {
+              const error = new Error('aborted');
+              error.name = 'AbortError';
+              controller.error(error);
+            };
+            if (signal?.aborted) abort();
+            else signal?.addEventListener('abort', abort, { once: true });
+          },
+        });
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          text: async () => '',
+          json: async () => ({}),
+          arrayBuffer: async () => new ArrayBuffer(0),
+          body,
+        };
+      };
+      const pending = fetchRemoteBytes({
+        fetchImpl,
+        url: 'https://cdn.example/x',
+        headers: {},
+        maxBytes: 25,
+        vendorLabel: 'Box',
+        ref: 'r1',
+      });
+      const rejected = expect(pending).rejects.toMatchObject({
+        code: 'remote_fetch_failed',
+        status: 504,
+        message: expect.stringContaining('timed out'),
+      });
+
+      await vi.advanceTimersByTimeAsync(REMOTE_BYTE_FETCH_TIMEOUT_MS);
+      await rejected;
+      expect(signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

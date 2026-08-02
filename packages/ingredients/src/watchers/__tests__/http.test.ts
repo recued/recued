@@ -150,6 +150,20 @@ describe('evaluateHttpWatcher — error handling (non-fatal)', () => {
     expect(r.etag).toBeNull();
     expect(r.hash).toBeNull();
   });
+  it('releases an unread non-2xx response body', async () => {
+    const cancel = vi.fn();
+    const fetchFn = vi.fn(async () => new Response(
+      new ReadableStream<Uint8Array>({ cancel }),
+      { status: 503 },
+    ));
+    const r = await evaluateHttpWatcher(
+      { target_url: 'https://example.com' },
+      { fetchFn: fetchFn as unknown as typeof fetch },
+    );
+    await Promise.resolve();
+    expect(r.status).toBe(503);
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
   it('returns no-fire on 404', async () => {
     const fetchFn = vi.fn(async () => mkRes({ status: 404 }));
     const r = await evaluateHttpWatcher(
@@ -180,6 +194,51 @@ describe('evaluateHttpWatcher — error handling (non-fatal)', () => {
     );
     expect(r.should_run).toBe(false);
     expect(r.status).toBe(0);
+  });
+  it('keeps the timeout active while reading the response body', async () => {
+    const fetchFn = vi.fn(async (_url: string, init?: RequestInit) => {
+      let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
+      const stream = new ReadableStream<Uint8Array>({
+        start(value) { controller = value; },
+      });
+      init?.signal?.addEventListener('abort', () => {
+        controller?.error(new DOMException('aborted', 'AbortError'));
+      });
+      return new Response(stream, { status: 200 });
+    });
+
+    const r = await evaluateHttpWatcher(
+      { target_url: 'https://example.com' },
+      { fetchFn: fetchFn as unknown as typeof fetch, timeoutMs: 5 },
+    );
+    expect(r).toMatchObject({ should_run: false, status: 0 });
+  });
+});
+
+describe('evaluateHttpWatcher — bounded response body', () => {
+  it('returns only the first 2 MiB and cancels a lengthless oversized stream', async () => {
+    const cancel = vi.fn();
+    const chunk = new Uint8Array(1024 * 1024).fill('a'.charCodeAt(0));
+    const fetchFn = vi.fn(async () => new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(chunk);
+          controller.enqueue(chunk);
+          controller.enqueue(new Uint8Array(['b'.charCodeAt(0)]));
+        },
+        cancel,
+      }),
+      { status: 200 },
+    ));
+
+    const r = await evaluateHttpWatcher(
+      { target_url: 'https://example.com' },
+      { fetchFn: fetchFn as unknown as typeof fetch },
+    );
+    await Promise.resolve();
+    expect(new TextEncoder().encode(r.body)).toHaveLength(2 * 1024 * 1024);
+    expect(r.body.endsWith('a')).toBe(true);
+    expect(cancel).toHaveBeenCalledTimes(1);
   });
 });
 

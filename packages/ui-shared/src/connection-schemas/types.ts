@@ -66,6 +66,11 @@ export interface ConnectionField {
    *  exclusive with `options_source` — when both are set, the dynamic
    *  source wins. */
   options?: readonly string[];
+  /** Optional human-readable labels for static select values. Values remain
+   *  the stable machine strings in `options`; this only changes what the
+   *  owner sees (for example, `socket` can render as the recommended local
+   *  path without changing the payload contract). */
+  optionLabels?: Readonly<Record<string, string>>;
   /** D-127 P4.3 — dynamic option source for `type: 'select'`. The
    *  string is a stable id the host resolves at render time
    *  (currently: `'data.mail.send_capable_instances'` — the live
@@ -98,6 +103,42 @@ export interface ConnectionField {
    *  switching `auth.type` from `bearer` to `basic` doesn't smuggle
    *  the bearer token through). */
   showWhen?: (values: ConnectionFormValues) => boolean;
+}
+
+/** One provider-side action in a connection onboarding checklist. Keeping
+ *  this as plain, escaped schema data lets every host render the same setup
+ *  sequence without coupling the generic form to Slack/Telegram/Discord. */
+export interface ConnectionOnboardingStep {
+  title: string;
+  detail: string;
+}
+
+export interface ConnectionOnboardingGuide {
+  /** Stable render/test identity for this path (for example `slack-socket`). */
+  key: string;
+  tone: 'recommended' | 'advanced';
+  badge: string;
+  title: string;
+  description: string;
+  /** Trusted, schema-owned HTTPS destination opened in a new tab. */
+  portal?: {
+    label: string;
+    url: string;
+  };
+  steps: readonly ConnectionOnboardingStep[];
+  /** Exact boundary of the automatic post-save check. This must not imply a
+   *  message was delivered or read when the provider exposes no such receipt. */
+  verification: string;
+  /** Optional mode-specific consequence or limitation to surface before save. */
+  note?: string;
+  showWhen?: (values: ConnectionFormValues) => boolean;
+}
+
+export interface ConnectionOnboarding {
+  /** The field rendered before the guide so choosing a setup path immediately
+   *  swaps both the checklist and the mode-specific credential fields. */
+  selectorKey: string;
+  guides: readonly ConnectionOnboardingGuide[];
 }
 
 /** The probe spec is metadata only at this layer — the per-kind
@@ -139,6 +180,9 @@ export interface ConnectionSchema {
   /** Short one-liner explaining the kind/subtype, shown under the
    *  picker option and at the top of the dialog. */
   description: string;
+  /** Optional create-mode provider checklist. Edit forms stay compact; their
+   *  ordinary fields and credential-rotation guidance remain unchanged. */
+  onboarding?: ConnectionOnboarding;
   fields: readonly ConnectionField[];
   probe?: ConnectionProbeSpec;
 }

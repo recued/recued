@@ -58,7 +58,11 @@
 
 import { RecuedAcmeClient } from '@recued/server-network';
 
+import { makeBoundedOriginApiFetch } from '../../bounded-origin-http-fetcher.js';
 import type { AcmeCertIssuer } from './acme-domain-renewer.js';
+
+const ACME_CONTROL_TIMEOUT_MS = 30_000;
+const ACME_RESPONSE_MAX_BYTES = 1024 * 1024;
 
 /** Snapshot of the Pro subscription state — the bearer token the
  *  cloud helper validates on each `/v1/acme/issue-cert` call. The
@@ -129,8 +133,8 @@ export interface RecuedAcmeClientFactoryOptions {
   publisherId: PublisherIdResolver;
   /** Ed25519 signer (base64 output). */
   sign: AcmeRequestSigner;
-  /** Optional fetch override (tests). Pass-through to
-   *  `RecuedAcmeClient`. */
+  /** Optional underlying fetch override (tests). The factory still applies its
+   *  production deadline, response ceiling, and redirect policy around it. */
   fetch?: typeof fetch;
   /** Optional `Date.now()` override (tests). Pass-through to
    *  `RecuedAcmeClient`. */
@@ -144,6 +148,14 @@ export interface RecuedAcmeClientFactoryOptions {
 export const createRecuedAcmeClientFromRefs = (
   options: RecuedAcmeClientFactoryOptions,
 ): AcmeCertIssuer => {
+  const boundedFetch = makeBoundedOriginApiFetch({
+    ...(options.fetch ? { fetchImpl: options.fetch } : {}),
+    timeoutMs: ACME_CONTROL_TIMEOUT_MS,
+    maxResponseBytes: ACME_RESPONSE_MAX_BYTES,
+    // Issuance is a credentialed write to one canonical cloud endpoint. Do not
+    // replay the CSR or bearer through a redirect, even on the same origin.
+    redirectPolicy: 'error',
+  });
   return {
     async issueCert(args) {
       const auth = await options.proAuth();
@@ -171,7 +183,7 @@ export const createRecuedAcmeClientFromRefs = (
         pro_subscription_token: auth.pro_subscription_token,
         publisher_id,
         sign: options.sign,
-        ...(options.fetch ? { fetch: options.fetch } : {}),
+        fetch: boundedFetch,
         ...(options.now ? { now: options.now } : {}),
       });
       return client.issueCert(args);

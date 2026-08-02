@@ -1,6 +1,6 @@
 /** Drain orchestrator (Phase C).
  *
- *  Runs the fixed 10-step pipeline that takes a `running` server to a
+ *  Runs the fixed 11-step pipeline that takes a `running` server to a
  *  clean exit. Each step has its own per-step timeout; a timed-out
  *  step is recorded as aborted but the pipeline continues — every
  *  step is independently critical enough to attempt even if a prior
@@ -43,8 +43,8 @@ export type DrainLogger = (
 
 /** A step function invoked by the orchestrator. Receives an
  *  `AbortSignal` that fires when the per-step timeout elapses; the
- *  step should observe it to wind down ASAP. Must never throw — catch
- *  internally and log. */
+ *  step should observe it to wind down ASAP. A thrown/rejected step is
+ *  contained, recorded as aborted, and does not prevent later cleanup. */
 export type DrainStepFn = (signal: AbortSignal) => Promise<void>;
 
 export interface DrainWiring {
@@ -141,9 +141,10 @@ export const createDrainOrchestrator = (
       case 'stop_accepting_rpc':
         // Pure signaling step. The ws-server dispatcher gate reads
         // `machine.state` directly — no separate flag needed. This
-        // step exists as a pipeline anchor point for the audit log.
-        return async () => {
-          /* nothing to do — gate is already closed by the state flip */
+        // step also admits caller-wired shutdown sources (for example the
+        // config watcher) after the state flip has closed RPC admission.
+        return async (signal) => {
+          await wiring.steps?.stop_accepting_rpc?.(signal);
         };
 
       case 'await_inflight':
@@ -205,11 +206,11 @@ export const createDrainOrchestrator = (
     });
 
     try {
-      const work: Promise<'completed'> = fn(controller.signal)
+      const work: Promise<'completed' | 'aborted'> = fn(controller.signal)
         .then(() => 'completed' as const)
         .catch((err) => {
           log('warn', `drain step ${name} threw`, { err: errShape(err) });
-          return 'completed' as const;   // never rethrow from a step
+          return 'aborted' as const;   // contain the failure; keep draining
         });
       const outcome = await Promise.race([work, timeout]);
       if (outcome === 'aborted') {

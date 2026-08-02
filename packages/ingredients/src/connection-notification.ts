@@ -108,6 +108,11 @@ import type {
 import type { ConnectionHandlerCtx, ConnectionKindHandler } from './connection.js';
 import { IngredientError, type ResolvedCall } from './types.js';
 import { resolveTimeoutMs, isWriteRiskTier } from './timeout.js';
+import {
+  discardResponseBody,
+  readBoundedResponseText,
+  ResponseBodyTooLargeError,
+} from './bounded-response-body.js';
 
 /** D-192 seam 10 — the enrollable notification subtypes come from contracts
  *  (every declared chat transport + `email` + `in-app`), so a newly declared
@@ -353,9 +358,13 @@ const dispatchHttp = async (
       { slug: args.call.slug, name: args.record.name },
     );
   }
-  clearTimeout(timer);
+  const finishResponse = (): void => {
+    discardResponseBody(response);
+    clearTimeout(timer);
+  };
 
   if (!response.ok) {
+    finishResponse();
     if (response.status === 401 || response.status === 403) {
       throw new IngredientError(
         'OAUTH_EXPIRED',
@@ -385,20 +394,54 @@ const dispatchHttp = async (
   }
 
   let envelope: unknown;
+  let measuredBytes: number;
   try {
-    envelope = await response.json();
+    const read = await readBoundedResponseText(response);
+    measuredBytes = read.byteLength;
+    envelope = JSON.parse(read.text) as unknown;
   } catch (e) {
+    finishResponse();
+    if (e instanceof ResponseBodyTooLargeError) {
+      if (isWrite) {
+        throw new IngredientError(
+          'ACTION_DELIVERY_UNCERTAIN',
+          `${args.label} delivery via '${args.record.name}' returned an oversized response — outcome cannot be confirmed, please verify the recipient before retrying`,
+          { name: args.record.name, cause: 'response_too_large', max_bytes: e.maxBytes },
+        );
+      }
+      throw new IngredientError(
+        'INGREDIENT_OUTPUT_VALIDATION_FAILED',
+        `${args.label} delivery via '${args.record.name}' returned more than ${e.maxBytes} response bytes`,
+        { name: args.record.name, max_bytes: e.maxBytes },
+      );
+    }
+    const isAbort = (e as Error).name === 'AbortError';
+    if (isWrite) {
+      throw new IngredientError(
+        'ACTION_DELIVERY_UNCERTAIN',
+        `${args.label} delivery via '${args.record.name}' ${isAbort ? `timed out after ${args.timeoutMs}ms while reading the response` : 'returned an unreadable response'} — outcome cannot be confirmed, please verify the recipient before retrying`,
+        { name: args.record.name, cause: isAbort ? 'timeout' : 'malformed_response' },
+      );
+    }
+    if (isAbort) {
+      throw new IngredientError(
+        'STEP_TIMEOUT',
+        `${args.label} delivery to '${args.record.name}' timed out after ${args.timeoutMs}ms while reading the response`,
+        { slug: args.call.slug, name: args.record.name },
+      );
+    }
     throw new IngredientError(
       'NETWORK_ERROR',
       `${args.label} delivery via '${args.record.name}' returned malformed JSON: ${(e as Error).message}`,
       { name: args.record.name },
     );
   }
+  finishResponse();
 
   const declaredLen = response.headers.get('content-length');
   const bytesIn = declaredLen !== null && Number.isFinite(Number(declaredLen))
     ? Number(declaredLen)
-    : new TextEncoder().encode(JSON.stringify(envelope)).byteLength;
+    : measuredBytes;
   args.ctx?.setBytes(bytesIn, args.bodyBytesOut);
 
   return { envelope, bytesIn };

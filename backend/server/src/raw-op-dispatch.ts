@@ -99,7 +99,9 @@ import {
   isExternallyExposableIngredient,
   isPreflightRequiredSignal,
   parseOpId,
+  QualifiedWorkEntityIdError,
   resolveSessionGrantOffer,
+  routeQualifiedWorkEntityOperationArgs,
 } from '@recued/contracts';
 import {
   deriveChannelSessionId,
@@ -124,6 +126,7 @@ import { buildPackOpResolution } from './pack-inventory.js';
 import type { OpAdmissionGate } from './op-admission-gate.js';
 import type { ExecuteHandlerDeps } from './execute-handler.js';
 import { connectionBaseUrlFromConfig } from './execute-handler.js';
+import { KERNEL_WORK_ENTITY_SOURCE_DECLARATIONS } from './work-entity-source-boot.js';
 import {
   evaluateSellerCustomerAccessAdmission,
 } from './seller/customer-access-admission.js';
@@ -284,7 +287,56 @@ export type RawOpDispatchOutcome =
   | { kind: 'result'; result: unknown }
   | { kind: 'held'; op_id: string; run_id: string }
   | { kind: 'ask'; op_id: string; message: string }
-  | { kind: 'refused'; message: string };
+  | {
+      kind: 'refused';
+      message: string;
+      code?: QualifiedWorkEntityIdError['code'];
+      retry_with?: string;
+      expected_source?: string;
+      actual_source?: string;
+    };
+
+/** Terminal observation produced when an owner answer resumes a raw MCP op.
+ * The original implementation returned `void`, which made the exact provider
+ * result disappear at the approval boundary. This result is host-only: the
+ * PreflightResumer persists it against the originating MCP action reference. */
+export type RawOpResumeOutcome =
+  | { kind: 'completed'; result: unknown }
+  | { kind: 'failed'; code: string; message: string }
+  | { kind: 'in_doubt'; code: string; message: string }
+  | { kind: 'skipped'; reason: string };
+
+const KERNEL_SOURCE_VENDOR_BY_CATALOG: Readonly<Record<string, string>> = {
+  'hubspot-catalog': 'hubspot',
+  'salesforce-catalog': 'salesforce',
+  'microsoft-todo': 'microsoft',
+};
+
+const routingManifestForRawOp = (
+  manifest: IngredientManifest,
+  catalogSlug: string,
+): IngredientManifest => {
+  // Pack-carried declarations are authoritative. Append the legacy first-party
+  // kernel copies only as a compatibility fallback for installed catalogs that
+  // predate the ownership migration; candidate de-duplication keeps the pack
+  // copy when both identify the same Source. The
+  // binding must name one exact curated catalog: ingredient slugs are not an
+  // authority namespace, and prefix inference (`hubspot-*`) would let an
+  // unrelated/local catalog borrow HubSpot's Source identity and unwrap its
+  // ids. Never infer this from mutable connection vendor metadata either.
+  const vendor = KERNEL_SOURCE_VENDOR_BY_CATALOG[catalogSlug];
+  const kernel = vendor === undefined
+    ? []
+    : KERNEL_WORK_ENTITY_SOURCE_DECLARATIONS[vendor] ?? [];
+  if (kernel.length === 0) return manifest;
+  return {
+    ...manifest,
+    work_entity_sources: [
+      ...(manifest.work_entity_sources ?? []),
+      ...kernel,
+    ],
+  };
+};
 
 /** Dispatch a raw catalog op for an external door, recipe-less. Returns a
  *  {@link RawOpDispatchOutcome}; re-throws any non-preflight error from the
@@ -306,8 +358,36 @@ export const dispatchRawOp = async (
   //     HELD write freezes the exact op args + connection onto its checkpoint.
   //     A connection-needing op with none fails closed at the gateway
   //     (`no_connection_profile`); ai/storage ops pass ''.
-  const { [RAW_OP_CONNECTION_ARG]: connectionRaw, ...opArgs } = args;
+  const { [RAW_OP_CONNECTION_ARG]: connectionRaw, ...rawOpArgs } = args;
   const connectionName = typeof connectionRaw === 'string' ? connectionRaw : '';
+  let opArgs: Record<string, unknown>;
+  try {
+    opArgs = routeQualifiedWorkEntityOperationArgs({
+      manifest: routingManifestForRawOp(
+        manifest,
+        binding.catalog_slug,
+      ),
+      operation,
+      connection_name: connectionName,
+      args: rawOpArgs,
+    }).args;
+  } catch (error) {
+    if (error instanceof QualifiedWorkEntityIdError) {
+      return {
+        kind: 'refused',
+        message: error.message,
+        code: error.code,
+        ...(error.retry_with !== undefined ? { retry_with: error.retry_with } : {}),
+        ...(error.expected_source !== undefined
+          ? { expected_source: error.expected_source }
+          : {}),
+        ...(error.actual_source !== undefined
+          ? { actual_source: error.actual_source }
+          : {}),
+      };
+    }
+    throw error;
+  }
 
   // 5 — contract policy_matrix admission (Inc B-admission) — shared with the
   //     resume path (`admitRawOp`).
@@ -1088,9 +1168,9 @@ export const resumeRawOp = async (
       grant_mode?: string;
     };
   },
-): Promise<void> => {
+): Promise<RawOpResumeOutcome> => {
   const raw = checkpoint.raw_op;
-  if (raw === undefined) return; // not a raw-op checkpoint (the resumer routes; defensive)
+  if (raw === undefined) return { kind: 'skipped', reason: 'not_raw_op' };
   // Synchronous in-process claim — closes a same-process concurrent re-entry on
   // this exact checkpoint (no `await` between `has` + `add`). Released in the
   // `finally` so a re-run after this resume settles can still proceed.
@@ -1098,11 +1178,11 @@ export const resumeRawOp = async (
     console.warn(
       `[raw-op-resume] checkpoint ${checkpoint.checkpoint_id} resume already in flight — skipping (concurrent answer)`,
     );
-    return;
+    return { kind: 'skipped', reason: 'resume_already_in_flight' };
   }
   inflightRawOpResumes.add(checkpoint.checkpoint_id);
   try {
-    await dispatchResumedRawOp(deps, checkpoint, raw, opts);
+    return await dispatchResumedRawOp(deps, checkpoint, raw, opts);
   } finally {
     inflightRawOpResumes.delete(checkpoint.checkpoint_id);
   }
@@ -1121,7 +1201,7 @@ const dispatchResumedRawOp = async (
       grant_mode?: string;
     };
   },
-): Promise<void> => {
+): Promise<RawOpResumeOutcome> => {
   // 1 — AT-MOST-ONCE durable claim. Read-then-delete: a gone checkpoint means a
   //     prior attempt already consumed it — skip (never re-dispatch a write).
   //     The answer handler's trailing delete then no-ops.
@@ -1129,7 +1209,11 @@ const dispatchResumedRawOp = async (
     console.warn(
       `[raw-op-resume] no checkpoint store — cannot claim hold ${checkpoint.checkpoint_id}; skipping`,
     );
-    return;
+    return {
+      kind: 'failed',
+      code: 'checkpoint_store_unavailable',
+      message: 'The held raw operation could not claim its checkpoint because checkpoint storage is unavailable.',
+    };
   }
   let existing: Checkpoint | null;
   try {
@@ -1139,13 +1223,17 @@ const dispatchResumedRawOp = async (
       `[raw-op-resume] checkpoint get failed for ${checkpoint.checkpoint_id}: `
         + (e instanceof Error ? e.message : String(e)),
     );
-    return;
+    return {
+      kind: 'failed',
+      code: 'checkpoint_read_failed',
+      message: 'The held raw operation could not read its checkpoint during resume.',
+    };
   }
   if (existing === null) {
     console.warn(
       `[raw-op-resume] checkpoint ${checkpoint.checkpoint_id} already consumed — skipping (at-most-once)`,
     );
-    return;
+    return { kind: 'skipped', reason: 'checkpoint_already_consumed' };
   }
   try {
     await deps.checkpointStore.delete(checkpoint.checkpoint_id);
@@ -1154,7 +1242,11 @@ const dispatchResumedRawOp = async (
       `[raw-op-resume] checkpoint claim (delete) failed for ${checkpoint.checkpoint_id}: `
         + (e instanceof Error ? e.message : String(e)),
     );
-    return;
+    return {
+      kind: 'failed',
+      code: 'checkpoint_claim_failed',
+      message: 'The held raw operation could not claim its checkpoint and was not dispatched.',
+    };
   }
 
   // 2 — re-resolve the op (the pack may have been uninstalled while paused) +
@@ -1162,7 +1254,7 @@ const dispatchResumedRawOp = async (
   const resolved = resolveRawOpBinding(deps, raw.op_id);
   if (resolved.kind !== 'ok') {
     console.warn(`[raw-op-resume] cannot resume '${raw.op_id}': ${resolved.message}`);
-    return;
+    return { kind: 'failed', code: 'operation_unavailable', message: resolved.message };
   }
   // Op-identity drift (codex HIGH fold) — if the op id now resolves to a
   // DIFFERENT backing catalog than the hold froze (the pack was re-pointed while
@@ -1175,7 +1267,11 @@ const dispatchResumedRawOp = async (
       `[raw-op-resume] '${raw.op_id}' now resolves to catalog '${resolved.binding.catalog_slug}', `
         + `not the approved '${raw.catalog_slug}' (pack re-pointed while paused) — not dispatching`,
     );
-    return;
+    return {
+      kind: 'failed',
+      code: 'operation_binding_drift',
+      message: 'The operation binding changed while approval was pending; the stale approval was not used.',
+    };
   }
 
   // 3 — D-196 R2 fresh authority. The checkpoint's source/snapshot prove what
@@ -1192,7 +1288,11 @@ const dispatchResumedRawOp = async (
     console.warn(
       `[raw-op-resume] '${raw.op_id}' approval-resume authority resolver is unavailable — not dispatching`,
     );
-    return;
+    return {
+      kind: 'failed',
+      code: 'resume_authority_unavailable',
+      message: 'Fresh MCP authority could not be resolved, so the approved operation was not dispatched.',
+    };
   }
   let authority: ReturnType<
     NonNullable<RawOpDispatchDeps['approvalResumeAuthority']>['resolve']
@@ -1209,20 +1309,32 @@ const dispatchResumedRawOp = async (
         + (error instanceof Error ? error.message : String(error))
         + ' — not dispatching',
     );
-    return;
+    return {
+      kind: 'failed',
+      code: 'resume_authority_error',
+      message: 'Fresh MCP authority resolution failed, so the approved operation was not dispatched.',
+    };
   }
   if (!authority.admitted) {
     console.warn(
       `[raw-op-resume] '${raw.op_id}' fresh authority denied `
         + `(${authority.reason}: ${authority.detail}) — not dispatching`,
     );
-    return;
+    return {
+      kind: 'failed',
+      code: authority.reason,
+      message: `Fresh MCP authority denied the approved operation: ${authority.detail}`,
+    };
   }
   if (authority.contract_snapshot === undefined) {
     console.warn(
       `[raw-op-resume] '${raw.op_id}' fresh authority returned no contract snapshot — not dispatching`,
     );
-    return;
+    return {
+      kind: 'failed',
+      code: 'resume_contract_snapshot_missing',
+      message: 'Fresh MCP authority returned no contract snapshot; the approved operation was not dispatched.',
+    };
   }
   resumeExecutionSource = authority.execution_source;
   resumeContractSnapshot = authority.contract_snapshot;
@@ -1247,7 +1359,11 @@ const dispatchResumedRawOp = async (
       `[raw-op-resume] '${raw.op_id}' bound contract '${raw.bound_contract_id}' is no longer live `
         + '(revoked / expired / exhausted while paused) — not dispatching (kill-switch)',
     );
-    return;
+    return {
+      kind: 'failed',
+      code: 'bound_contract_inactive',
+      message: 'The MCP contract was revoked, expired, or exhausted while approval was pending.',
+    };
   }
   // D-196 R1a — the direct-MCP transport applies this pairing on the fresh
   // request, but a held raw op outlives that request. Reclassify the frozen
@@ -1279,7 +1395,11 @@ const dispatchResumedRawOp = async (
           `[raw-op-resume] '${raw.op_id}' seller customer admission denied on resume `
             + `(${sellerAdmission.reason}) — not dispatching`,
         );
-        return;
+        return {
+          kind: 'failed',
+          code: `seller_${sellerAdmission.reason}`,
+          message: 'Seller-customer admission no longer permits this approved operation.',
+        };
       }
     } catch (e) {
       console.warn(
@@ -1287,7 +1407,11 @@ const dispatchResumedRawOp = async (
           + (e instanceof Error ? e.message : String(e))
           + ' — not dispatching',
       );
-      return;
+      return {
+        kind: 'failed',
+        code: 'seller_admission_error',
+        message: 'Seller-customer admission could not be verified during resume.',
+      };
     }
   }
 
@@ -1310,7 +1434,11 @@ const dispatchResumedRawOp = async (
     console.warn(
       `[raw-op-resume] '${raw.op_id}' denied by contract policy on resume (${admission.detail}) — not dispatching`,
     );
-    return;
+    return {
+      kind: 'failed',
+      code: 'contract_policy_denied',
+      message: `Contract policy denied the approved operation during resume: ${admission.detail}`,
+    };
   }
 
   // 6 — dispatch through the Gateway in RESUME mode (preflight_admitted + the
@@ -1337,13 +1465,21 @@ const dispatchResumedRawOp = async (
       `[raw-op-resume] dispatch of '${raw.op_id}' failed: `
         + (e instanceof Error ? e.message : String(e)),
     );
-    return;
+    return {
+      kind: 'in_doubt',
+      code: 'raw_op_dispatch_in_doubt',
+      message: 'The provider dispatch failed after the durable checkpoint was claimed; inspect Recued Logs before retrying because the side effect may have occurred.',
+    };
   }
   if (dispatch.kind === 'preflight') {
     console.warn(
       `[raw-op-resume] '${raw.op_id}' re-raised preflight on resume (op-identity drift) — not dispatching the stale approval`,
     );
-    return;
+    return {
+      kind: 'failed',
+      code: 'operation_identity_drift',
+      message: 'The operation identity changed while approval was pending; the stale approval was not used.',
+    };
   }
 
   // 7 — `allow_session` mint: a successful approved dispatch with a session
@@ -1397,6 +1533,7 @@ const dispatchResumedRawOp = async (
       max_uses: opts.session_grant.max_uses,
     });
   }
+  return { kind: 'completed', result: dispatch.result };
 };
 
 /** Inc B-writes — the owner DENIED a recipe-less raw-op door hold. A raw op has

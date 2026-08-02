@@ -51,6 +51,10 @@ import {
   MAIL_RECONCILIATION_ID_HEADER,
 } from '@recued/contracts';
 import {
+  ProviderPaginationGuard,
+  readProviderStringContinuation,
+} from '../../provider-pagination-guard.js';
+import {
   mailAttachmentPartFromBytes,
   assertMailSentReconciliationQuery,
   evaluateMailSentReconciliationCandidates,
@@ -78,6 +82,7 @@ import {
   type SentMessageMeta,
 } from './provider.js';
 import {
+  defaultHttpFetcher,
   getAccessToken,
   grantedScopesInclude,
   keyPrefix,
@@ -87,6 +92,11 @@ import {
   type OAuthAccountStore,
   type OAuthProviderConfigSource,
 } from './oauth.js';
+import {
+  startDrainingInterval,
+  type ProviderPollScheduler,
+  type ProviderPollStop,
+} from '../draining-interval.js';
 
 // ────────────────────────────────────────────────────────────────
 // Gmail-specific config + constants
@@ -128,7 +138,7 @@ export interface CreateGmailProviderOptions {
   /** Test hook — override the poll scheduler so suites don't wait
    *  for real timers. Receives the tick callback; returns a stop
    *  function. Production uses `setInterval`. */
-  scheduler?: (cb: () => Promise<void>, intervalMs: number) => () => void;
+  scheduler?: ProviderPollScheduler;
 }
 
 const GMAIL_API_BASE = 'https://gmail.googleapis.com/gmail/v1/users/me';
@@ -332,7 +342,7 @@ interface GmailProfile { historyId: string; emailAddress: string; }
 interface GmailMessageRef { id: string; threadId: string; }
 interface GmailMessageList {
   messages?: GmailMessageRef[];
-  nextPageToken?: string;
+  nextPageToken?: unknown;
   resultSizeEstimate?: number;
 }
 interface GmailHistoryResponse {
@@ -344,7 +354,7 @@ interface GmailHistoryResponse {
     labelsRemoved?: Array<{ message: { id: string; threadId: string }; labelIds: string[] }>;
   }>;
   historyId?: string;
-  nextPageToken?: string;
+  nextPageToken?: unknown;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -488,19 +498,11 @@ const base64UrlEncode = (s: string): string =>
 export const createGmailProvider = (
   opts: CreateGmailProviderOptions,
 ): MailProvider => {
-  const fetcher = opts.fetcher ?? (async (url, init) => {
-    const res = await fetch(url, init);
-    return {
-      status: res.status,
-      ok: res.ok,
-      json: () => res.json(),
-      text: () => res.text(),
-    };
-  });
+  const fetcher = opts.fetcher ?? defaultHttpFetcher;
   const nowOf = (): number => opts.now?.() ?? Date.now();
 
   let stopped = false;
-  let pollStop: (() => void) | null = null;
+  let pollStop: ProviderPollStop | null = null;
   let lastSuccessfulSyncAt = 0;
   let errorCount24h = 0;
   let pendingQueueSize = 0;
@@ -752,12 +754,15 @@ export const createGmailProvider = (
     let pageToken: string | undefined;
     let aborted = false;
     const q = `newer_than:${scanOpts.backfill_days}d`;
+    const pagination = new ProviderPaginationGuard('gmail initial scan', {
+      trustedBaseUrl: GMAIL_API_BASE,
+    });
     do {
       const url = new URL(`${GMAIL_API_BASE}/messages`);
       url.searchParams.set('q', q);
       url.searchParams.set('maxResults', '100');
       if (pageToken) url.searchParams.set('pageToken', pageToken);
-      const list = await getWithRetry<GmailMessageList>(url.toString());
+      const list = await getWithRetry<GmailMessageList>(pagination.claim(url.toString()));
       if (!list) break;
       const ids = (list.messages ?? []).map((m) => m.id);
       for (const id of ids) {
@@ -774,7 +779,10 @@ export const createGmailProvider = (
         }
       }
       if (aborted) break;
-      pageToken = list.nextPageToken;
+      pageToken = readProviderStringContinuation(
+        list.nextPageToken,
+        'gmail initial scan',
+      );
     } while (pageToken);
   };
 
@@ -793,6 +801,9 @@ export const createGmailProvider = (
     // Set when the history endpoint rejects our cursor as aged-out. Per-attempt
     // local, so a concurrent tick cannot clear or observe it.
     let cursorAgedOut = false;
+    const pagination = new ProviderPaginationGuard('gmail history', {
+      trustedBaseUrl: GMAIL_API_BASE,
+    });
     do {
       const url = new URL(`${GMAIL_API_BASE}/history`);
       url.searchParams.set('startHistoryId', watermark);
@@ -804,7 +815,7 @@ export const createGmailProvider = (
       // `treat404AsAbsent: false` — a 404 here is an aged-out `startHistoryId`,
       // not an absent record, and it is PERMANENT until the watermark is
       // rebuilt. It must report a failed attempt (see the recovery below).
-      const page = await getWithRetry<GmailHistoryResponse>(url.toString(), {
+      const page = await getWithRetry<GmailHistoryResponse>(pagination.claim(url.toString()), {
         treat404AsAbsent: false,
         onFailureStatus: (status) => { if (status === 404) cursorAgedOut = true; },
       });
@@ -845,7 +856,10 @@ export const createGmailProvider = (
         }
         if (entry.id && Number(entry.id) > Number(latestId)) latestId = entry.id;
       }
-      pageToken = page.nextPageToken;
+      pageToken = readProviderStringContinuation(
+        page.nextPageToken,
+        'gmail history',
+      );
       if (page.historyId && Number(page.historyId) > Number(latestId)) {
         latestId = page.historyId;
       }
@@ -854,13 +868,12 @@ export const createGmailProvider = (
     lastSuccessfulSyncAt = nowOf();
   };
 
-  const defaultScheduler = (cb: () => Promise<void>, intervalMs: number): (() => void) => {
-    const handle = setInterval(() => {
-      void cb().catch((err) => markError('gmail poll tick failed', err));
-    }, intervalMs);
-    handle.unref?.();
-    return () => clearInterval(handle);
-  };
+  const defaultScheduler: ProviderPollScheduler = (cb, intervalMs) =>
+    startDrainingInterval({
+      tick: cb,
+      intervalMs,
+      onError: (err) => markError('gmail poll tick failed', err),
+    });
 
   // ── outbound send (D-127 P1.3) ──────────────────────────────
   //
@@ -997,6 +1010,9 @@ export const createGmailProvider = (
     assertMailSentReconciliationQuery(query);
     const candidates: MailSentReconciliationCandidate[] = [];
     let pageToken: string | undefined;
+    const pagination = new ProviderPaginationGuard('gmail sent reconciliation', {
+      trustedBaseUrl: GMAIL_API_BASE,
+    });
     try {
       do {
         const remaining = MAIL_SENT_RECONCILIATION_MAX_SCAN - candidates.length;
@@ -1012,7 +1028,9 @@ export const createGmailProvider = (
         url.searchParams.append('labelIds', 'SENT');
         url.searchParams.set('maxResults', String(Math.min(50, remaining)));
         if (pageToken) url.searchParams.set('pageToken', pageToken);
-        const page = await getReconciliationSource<GmailMessageList>(url.toString());
+        const page = await getReconciliationSource<GmailMessageList>(
+          pagination.claim(url.toString()),
+        );
         for (const ref of page.messages ?? []) {
           if (candidates.length >= MAIL_SENT_RECONCILIATION_MAX_SCAN) {
             return evaluateMailSentReconciliationCandidates(query, candidates, false);
@@ -1070,7 +1088,10 @@ export const createGmailProvider = (
           );
           candidates.push(await gmailReconciliationCandidate(raw));
         }
-        pageToken = page.nextPageToken;
+        pageToken = readProviderStringContinuation(
+          page.nextPageToken,
+          'gmail sent reconciliation',
+        );
         if (pageToken && candidates.length >= MAIL_SENT_RECONCILIATION_MAX_SCAN) {
           return evaluateMailSentReconciliationCandidates(query, candidates, false);
         }
@@ -1130,13 +1151,17 @@ export const createGmailProvider = (
       await tick();
       pollStop = scheduler(tick, intervalMs);
       return async () => {
-        if (pollStop) { pollStop(); pollStop = null; }
+        const stop = pollStop;
+        pollStop = null;
+        await stop?.();
       };
     },
 
     async close() {
       stopped = true;
-      if (pollStop) { pollStop(); pollStop = null; }
+      const stop = pollStop;
+      pollStop = null;
+      await stop?.();
     },
 
     health(): ProviderHealth {

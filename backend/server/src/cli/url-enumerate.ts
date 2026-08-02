@@ -12,10 +12,11 @@
  *  § "SSH context handling"). Tests stub the env via `EnumerateDeps`.
  */
 
-import { networkInterfaces, hostname } from 'node:os';
+import { hostname, homedir, networkInterfaces } from 'node:os';
+import { isIP } from 'node:net';
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { homedir } from 'node:os';
+import { makeBoundedOriginHttpFetcher } from '../bounded-origin-http-fetcher.js';
 
 export type UrlSource = 'configured' | 'LAN' | 'public IP';
 
@@ -57,6 +58,14 @@ export const PUBLIC_IP_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 const DEFAULT_CACHE_PATH = join(homedir(), '.recued', 'state.json');
 
+export const IPIFY_TIMEOUT_MS = 5_000;
+export const IPIFY_RESPONSE_MAX_BYTES = 4 * 1024;
+
+const fetchIpifyJson = makeBoundedOriginHttpFetcher({
+  timeoutMs: IPIFY_TIMEOUT_MS,
+  maxResponseBytes: IPIFY_RESPONSE_MAX_BYTES,
+});
+
 interface CacheEntry {
   ip: string;
   fetched_at: number;
@@ -96,11 +105,11 @@ const writeCache = (path: string, entry: CacheEntry): void => {
  *  "what's my IP" display where the address family doesn't matter. */
 export const fetchIpify = async (): Promise<string | null> => {
   try {
-    const res = await fetch('https://api.ipify.org?format=json', { method: 'GET' });
+    const res = await fetchIpifyJson('https://api.ipify.org?format=json', { method: 'GET' });
     if (!res.ok) return null;
     const body = await res.json() as { ip?: string };
     if (typeof body.ip !== 'string') return null;
-    if (!/^[0-9.]+$|^[0-9a-fA-F:]+$/.test(body.ip)) return null;
+    if (isIP(body.ip) === 0) return null;
     return body.ip;
   } catch {
     return null;
@@ -122,7 +131,7 @@ const IPV4_REGEX = new RegExp(`^${IPV4_OCTET}\\.${IPV4_OCTET}\\.${IPV4_OCTET}\\.
  *  unexpected non-IPv4 string. */
 export const fetchPublicIpv4 = async (): Promise<string | null> => {
   try {
-    const res = await fetch('https://api4.ipify.org?format=json', { method: 'GET' });
+    const res = await fetchIpifyJson('https://api4.ipify.org?format=json', { method: 'GET' });
     if (!res.ok) return null;
     const body = await res.json() as { ip?: string };
     if (typeof body.ip !== 'string') return null;

@@ -253,6 +253,14 @@ describe('D-166 contract_definition schema substrate', () => {
     });
   });
 
+  it('pins the derived door execution policy shape', () => {
+    expect(D165_CONTRACT_SCHEMA.value_shapes.door_execution_policy).toEqual({
+      fields: ['max_steps', 'allow_ai'],
+      types: { max_steps: 'number', allow_ai: 'bool' },
+      required: ['max_steps', 'allow_ai'],
+    });
+  });
+
   it('pins the contract_definition value shape and contract_lifecycle composite key', () => {
     expect(D165_CONTRACT_SCHEMA.value_shapes.contract_definition).toEqual({
       fields: [
@@ -261,6 +269,7 @@ describe('D-166 contract_definition schema substrate', () => {
         'minted_by',
         'display_name',
         'scope',
+        'door_execution_policy',
         // D-187 §6 (step 7) — the level-1 door-type axis.
         'door_types',
         // D-209 #1 — the derived door's authored stage-trust ceiling.
@@ -300,6 +309,7 @@ describe('D-166 contract_definition schema substrate', () => {
         minted_by: 'string',
         display_name: 'string',
         scope: 'contract_scope',
+        door_execution_policy: 'door_execution_policy?',
         // D-187 §6 + D-196 — the level-1 door-type axis (optional array-of-enum).
         // D-207 — `reception` joins it. See the derivation ratchet below: this literal is
         // the EXPECTATION, and the schema DERIVES its own from `DOOR_TYPES`.
@@ -475,6 +485,27 @@ describe('D-166 validateContractWrite for nested contract_scope', () => {
     expect(contractDefinitionWriteIssues(contractDefinitionValue({
       scope: {},
     }))).toEqual([]);
+  });
+
+  it('accepts a complete derived door execution policy', () => {
+    expect(contractDefinitionWriteIssues(contractDefinitionValue({
+      door_execution_policy: { max_steps: 64, allow_ai: false },
+    }))).toEqual([]);
+  });
+
+  it('rejects an incomplete or mistyped door execution policy', () => {
+    expect(contractDefinitionWriteIssues(contractDefinitionValue({
+      door_execution_policy: { max_steps: 64 },
+    }))).toContainEqual(expect.objectContaining({
+      code: 'type_mismatch',
+      entry: 'contract_definition.door_execution_policy',
+    }));
+    expect(contractDefinitionWriteIssues(contractDefinitionValue({
+      door_execution_policy: { max_steps: 64, allow_ai: 'yes' },
+    }))).toContainEqual(expect.objectContaining({
+      code: 'type_mismatch',
+      entry: 'contract_definition.door_execution_policy',
+    }));
   });
 });
 

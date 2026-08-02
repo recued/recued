@@ -32,6 +32,7 @@ import {
 } from '@recued/llm';
 import {
   isLlmGatewayPaidAcknowledged,
+  isMcpInboundConcurrencyTier,
   isMcpInboundTokenToolAuthorized,
   type ContractSnapshot,
   type McpInboundTokenRecord,
@@ -77,6 +78,11 @@ import { writeJson } from '../common/respond.js';
 const DEFAULT_MODEL_ALIAS = 'recued-seller';
 const DEFAULT_MAX_BODY_BYTES = 1024 * 1024;
 const DEFAULT_MAX_PROMPT_CHARS = 120_000;
+/** LLM calls intentionally have no default timer because aborting a billed
+ *  provider turn can discard a result the owner already paid for. Bound the
+ *  retained HTTP/provider work instead: each token also carries its authored
+ *  D-137 3 / 5 / 10 concurrent-call tier. */
+export const LLM_GATEWAY_MAX_IN_FLIGHT_GLOBAL = 32;
 const POOL_CURSOR_KEY = 'llm_gateway:pool';
 const CONTEXT_OMISSION_NOTICE =
   '[llm_gateway context notice] Older conversation messages were omitted from this request because it exceeded the gateway prompt budget. Continue from the preserved recent context; ask the caller for missing details if needed.';
@@ -211,6 +217,10 @@ export interface LlmGatewayHandlerDeps {
   readonly rng?: () => number;
   readonly max_body_bytes?: number;
   readonly max_prompt_chars?: number;
+  /** Process-wide completion ceiling. Invalid values fall back to the
+   *  exported production default; per-token ceilings come from the verified
+   *  token's authored `concurrency_tier`. */
+  readonly max_in_flight_global?: number;
   /** V1 direct-provider gateway exposes no tool catalog. Future chat-layer
    *  providers must keep owner-durable tools default-off and enable them only
    *  from an explicit contract-scoped grant/configuration. */
@@ -414,6 +424,8 @@ const readJsonBody = async (
       req.off('data', onData);
       req.off('end', onEnd);
       req.off('error', onError);
+      req.off('aborted', onAborted);
+      req.off('close', onClose);
     };
     const onData = (chunk: Buffer) => {
       if (settled) return;
@@ -452,10 +464,27 @@ const readJsonBody = async (
       cleanup();
       reject(err instanceof Error ? err : new Error(String(err)));
     };
+    const onAborted = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error('request_aborted'));
+    };
+    const onClose = () => {
+      // A normal completed request reaches `end` first and removes this
+      // listener. `close` before `end` is a disconnected/aborted body and must
+      // settle the reader rather than retaining a concurrency slot forever.
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(new Error('request_aborted'));
+    };
 
     req.on('data', onData);
     req.on('end', onEnd);
     req.on('error', onError);
+    req.on('aborted', onAborted);
+    req.on('close', onClose);
   });
 
 const pathname = (req: IncomingMessage): string => {
@@ -1784,6 +1813,49 @@ export const createLlmGatewayPortHandler = (
     deps.max_prompt_chars,
     DEFAULT_MAX_PROMPT_CHARS,
   );
+  const maxInFlightGlobal = normalizePositiveInt(
+    deps.max_in_flight_global,
+    LLM_GATEWAY_MAX_IN_FLIGHT_GLOBAL,
+  );
+  let activeCompletions = 0;
+  const activeCompletionsByToken = new Map<string, number>();
+
+  /** Reserve one chat-completion slot before body intake. The verified token's
+   *  authored tier is the per-token contract; the process ceiling prevents a
+   *  collection of distinct customer tokens from exhausting the server. */
+  const admitCompletion = (
+    token: McpInboundTokenRecord,
+    res: ServerResponse,
+  ): (() => void) | null => {
+    // Store decoding already validates the closed ladder. Treat an injected or
+    // corrupt off-ladder record as one slot rather than widening authority.
+    const tokenLimit = isMcpInboundConcurrencyTier(token.concurrency_tier)
+      ? token.concurrency_tier
+      : 1;
+    const tokenActive = activeCompletionsByToken.get(token.token_id) ?? 0;
+    if (activeCompletions >= maxInFlightGlobal || tokenActive >= tokenLimit) {
+      writeOpenAiError(
+        res,
+        503,
+        'llm_gateway_overloaded',
+        'Too many llm_gateway completions are already running; retry shortly.',
+        'server_error',
+        { 'retry-after': '1' },
+      );
+      return null;
+    }
+    activeCompletions += 1;
+    activeCompletionsByToken.set(token.token_id, tokenActive + 1);
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      activeCompletions -= 1;
+      const remaining = (activeCompletionsByToken.get(token.token_id) ?? 1) - 1;
+      if (remaining > 0) activeCompletionsByToken.set(token.token_id, remaining);
+      else activeCompletionsByToken.delete(token.token_id);
+    };
+  };
 
   return async (req: IncomingMessage, res: ServerResponse): Promise<void> => {
     const path = pathname(req);
@@ -1873,16 +1945,26 @@ export const createLlmGatewayPortHandler = (
       return;
     }
 
+    const releaseCompletion = admitCompletion(initialAuth.token, res);
+    if (!releaseCompletion) return;
+    try {
+
     let body: unknown;
     try {
       body = await readJsonBody(req, maxBodyBytes);
     } catch (e) {
       const code = e instanceof Error ? e.message : String(e);
+      const tooLarge = code === 'payload_too_large';
+      const aborted = code === 'request_aborted';
       writeOpenAiError(
         res,
-        code === 'payload_too_large' ? 413 : 400,
-        code === 'payload_too_large' ? 'payload_too_large' : 'invalid_json',
-        code === 'payload_too_large' ? 'request body too large.' : 'request body must be valid JSON.',
+        tooLarge ? 413 : 400,
+        tooLarge ? 'payload_too_large' : aborted ? 'request_aborted' : 'invalid_json',
+        tooLarge
+          ? 'request body too large.'
+          : aborted
+            ? 'request body was aborted before completion.'
+            : 'request body must be valid JSON.',
         'invalid_request_error',
       );
       return;
@@ -2231,5 +2313,8 @@ export const createLlmGatewayPortHandler = (
         ? { recued_outcome: completion.post_effect_outcome }
         : {}),
     });
+    } finally {
+      releaseCompletion();
+    }
   };
 };

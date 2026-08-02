@@ -51,7 +51,7 @@ describe('D-163 I-6 — capability badges on Settings render model', () => {
       'bridge',
       'slack',
       'telegram',
-      // D-192 — Discord (notify + approve) appears; WhatsApp (messenger-only) does
+      // D-192 — Discord (notify + approve + Gateway chat) appears; WhatsApp does
       // not. The panel is derived from `CHANNEL_ROLES`, not hand-spelled.
       'discord',
       'email',

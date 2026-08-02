@@ -39,6 +39,9 @@
 import type { Collection } from '@recued/storage';
 import {
   CHANNEL_ROLES,
+  getMessengerVendorDeclaration,
+  resolveMessengerVendorRoles,
+  type MessengerIngressMode,
   MESSENGER_VENDOR_SLUGS,
   NOTIFICATION_CREDENTIAL_CHANNELS,
   type NotificationCredentialChannel,
@@ -149,15 +152,25 @@ export const channelApprovalEnabled = (
 
 /** Messenger-axis eligibility — D-192's third axis: can you TALK to Recued here.
  *
- *  Discord declares `messenger: false` (its Interactions webhook carries button
- *  presses, never plain messages), so the turn and the commitment funnel skip it
- *  EXPLICITLY rather than relying on `parseInbound` happening to return null. Same
- *  outcome, but stated where a human and the Settings UI can both read it. */
+ *  ⚠ This is the ONE axis a vendor can hold in one ingress mode and not another.
+ *  Discord is conversational over the Gateway (`MESSAGE_CREATE`) and is not over
+ *  its Interactions webhook, which carries button presses and nothing else. So
+ *  the answer needs the CONNECTION's mode, not just the channel name.
+ *
+ *  `ingressMode` absent ⇒ the FLOOR: what holds in every supported mode. A
+ *  caller with no connection in hand cannot prove Discord is conversational, and
+ *  the ceiling is not a default — for every other channel the two coincide, so
+ *  this only ever costs the case it exists for. */
 export const channelMessengerEnabled = (
   settings: NotificationSettings,
   channel: ChannelName,
+  ingressMode?: MessengerIngressMode,
 ): boolean => {
-  if (!CHANNEL_ROLES[channel].messenger) return false;
+  const declaration = getMessengerVendorDeclaration(channel);
+  const supports = declaration === null
+    ? CHANNEL_ROLES[channel].messenger
+    : resolveMessengerVendorRoles(declaration, ingressMode ?? null).messenger;
+  if (!supports) return false;
   // The webclient IS the chat surface (D-137) — not a togglable destination.
   if (channel === 'ui') return true;
   if (channel === 'bridge') return false;
@@ -201,7 +214,7 @@ export const NOTIFICATION_VERIFICATION_PHRASE_MAX = 80;
  *  ⚠ DERIVED from `CHANNEL_ROLES`, not hand-spelled. This panel toggles the
  *  notification + approval axes ONLY, so a chat transport belongs here IFF it can
  *  be toggled on at least one of them (`roles.notification || roles.approval`).
- *  Discord (notify + approve, no free-text converse) therefore appears; WhatsApp
+ *  Discord (notify + approve + Gateway conversation) therefore appears; WhatsApp
  *  (converse ONLY — Meta's 24h window forbids unprompted notify/approve, so both
  *  axes are declared `false`) is correctly absent and is configured under
  *  Connections instead. Hand-spelling this list is exactly what silently dropped

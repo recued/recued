@@ -268,11 +268,15 @@ export const resolveCounterpartyFromContactEmails = (
  *  unsubscribe handle (shutdown). */
 export const wireCommitmentEvidenceCapture = (
   deps: CommitmentEvidenceCaptureDeps,
-): (() => void) => {
+): (() => Promise<void>) => {
   const now = deps.now ?? ((): number => Date.now());
   const declarations = deps.declarations ?? KERNEL_COMMITMENT_EVIDENCE_DECLARATIONS;
+  const inFlight = new Set<Promise<void>>();
+  let closed = false;
+  let stopPromise: Promise<void> | undefined;
 
   const onEvent = (ev: WarehouseEvent): void => {
+    if (closed) return;
     // `updated` only — see the module doc (backfill suppression). A
     // prev-LESS `updated` is skipped for the same reason (codex MEDIUM):
     // the reconciler emits record-only `updated` events for rows whose
@@ -344,7 +348,8 @@ export const wireCommitmentEvidenceCapture = (
       // fire remains the documented fail-safe-toward-fewer-proposals
       // residue.
       const claimed = { full_target_id: ev.record_id, field, value: current };
-      void runtime.fire({
+      let tracked!: Promise<void>;
+      tracked = runtime.fire({
         recipe: COMMITMENT_EVIDENCE_PROPOSAL_RECIPE as RecipeDefinition,
         execution_source: executionSource,
         payload,
@@ -358,9 +363,19 @@ export const wireCommitmentEvidenceCapture = (
         } catch {
           /* keep the claim */
         }
+      }).finally(() => {
+        inFlight.delete(tracked);
       });
+      inFlight.add(tracked);
     }
   };
 
-  return deps.bus.subscribe('**', onEvent);
+  const unsubscribe = deps.bus.subscribe('**', onEvent);
+  return () => {
+    if (stopPromise) return stopPromise;
+    closed = true;
+    unsubscribe();
+    stopPromise = Promise.allSettled([...inFlight]).then(() => undefined);
+    return stopPromise;
+  };
 };

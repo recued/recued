@@ -332,6 +332,14 @@ let harnessCounter = 0;
 
 const buildOrchestratorHarness = (
   entries: Record<string, ToolEntry> = { 'mail.send': writeEntry },
+  raw?: {
+    entry: ToolEntry & { tier: 2 };
+    dispatch: (
+      toolName: string,
+      args: unknown,
+      ctx: Parameters<InternalToolRegistry['dispatch']>[2],
+    ) => Promise<ChatDispatchResult>;
+  },
 ) => {
   const db = new Database(':memory:');
   ensureChatSchema(db);
@@ -385,6 +393,12 @@ const buildOrchestratorHarness = (
     planApprovalStore,
     now: () => nowMs,
     mintId: () => `mint-${harnessCounter}-${++mintCounter}`,
+    ...(raw !== undefined
+      ? {
+          rawOpSource: () => [raw.entry],
+          rawOpDispatch: raw.dispatch,
+        }
+      : {}),
   });
 
   return {
@@ -432,6 +446,51 @@ const expectPlanCancelled = (result: ChatDispatchResult): string => {
   expect(result.detail).toMatch(/^plan_id=/);
   return result.detail!.slice('plan_id='.length);
 };
+
+describe('D-225 raw catalog ops — one approval boundary', () => {
+  it('dispatches a raw write before the outer plan gate so SOURCE_MISMATCH fails loud', async () => {
+    const rawEntry: ToolEntry & { tier: 2 } = {
+      name: 'recued_op_recued-core.todoist.task.update',
+      tier: 2,
+      description: 'update one Todoist task',
+      arg_schema: { type: 'object' },
+      topic_tags: [],
+      classification: 'write',
+      concurrency_safe: false,
+    };
+    const rawDispatch = vi.fn(async (): Promise<ChatDispatchResult> => ({
+      ok: false,
+      reason: 'invalid_args',
+      detail:
+        "SOURCE_MISMATCH: the id belongs to 'hubspot.sales.task'. No provider call was made. "
+        + "Retry with 'data.task.update' using the same qualified id.",
+    }));
+    const h = buildOrchestratorHarness({}, {
+      entry: rawEntry,
+      dispatch: rawDispatch,
+    });
+
+    const result = await h.orchestrator.dispatch.dispatchTool({
+      session_id: h.session_id,
+      turn_id: 'turn_raw_source_mismatch',
+      tool_name: rawEntry.name,
+      arg_values: {
+        connection: 'personal',
+        task_id: 'we1:task:hubspot.sales.task:source:native-1',
+      },
+      picker_target: 'self',
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      reason: 'invalid_args',
+      detail: expect.stringContaining('SOURCE_MISMATCH'),
+    });
+    expect(rawDispatch).toHaveBeenCalledOnce();
+    expect(h.dispatchFn).not.toHaveBeenCalled();
+    expect(h.broadcasted.some((event) => event.kind === 'chat.plan_proposed')).toBe(false);
+  });
+});
 
 const approveHarnessPlan = (
   h: OrchestratorHarness,

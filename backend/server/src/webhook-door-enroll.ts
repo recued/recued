@@ -44,7 +44,7 @@
 import type { RecipeDefinition } from '@recued/contracts';
 
 import {
-  deriveRecipeCapability,
+  deriveResolvedRecipeCapability,
   type OpResolver,
   type RecipeCapabilityRefusal,
 } from './derive-recipe-capability.js';
@@ -59,6 +59,7 @@ import type {
   WebhookConsumerSnapshot,
   WebhookConsumerStore,
 } from './storage/webhook-consumer-store.js';
+import type { DoorRecipeResolver } from './recipe-capability-wiring.js';
 
 export interface WebhookDoorEnrollDeps extends MintDoorDeps {
   readonly consumerStore: Pick<
@@ -69,6 +70,7 @@ export interface WebhookDoorEnrollDeps extends MintDoorDeps {
    *  lookup the webhook runner feeds `handleExecute`, so the closure the door
    *  grants is derived from the config the run will actually use. */
   readonly resolveConfig: (recipeId: string) => Record<string, unknown> | undefined;
+  readonly resolveDoorRecipe?: DoorRecipeResolver;
   readonly resolveOp?: OpResolver;
   /** D-221 §3.3.3 — arming/minting is the non-owner exposure act. A
    * refusing preflight leaves trigger rows NULL-stamped and therefore
@@ -106,6 +108,8 @@ export const describeWebhookDoorRefusal = (
   refusal: RecipeCapabilityRefusal,
 ): string => {
   switch (refusal.reason) {
+    case 'dispatch_unresolvable':
+      return `this recipe cannot be lowered to the exact operations and account bindings the webhook would run: ${refusal.detail}`;
     case 'dynamic_dispatch':
       return `step '${refusal.step_id}' chooses what to run at runtime (${refusal.field}), so what this webhook could do is not knowable in advance. A webhook-armed recipe must be statically analyzable.`;
     case 'dynamic_connection':
@@ -190,10 +194,28 @@ export const reconcileWebhookDoors = (
       continue;
     }
     const config = deps.resolveConfig(entry.recipe_id);
-    const derived = deriveRecipeCapability(entry.recipe, {
-      ...(config === undefined ? {} : { config }),
-      ...(deps.resolveOp === undefined ? {} : { resolveOp: deps.resolveOp }),
-    });
+    const dispatchRecipe = deps.resolveDoorRecipe?.(entry.recipe, config ?? {})
+      ?? { ok: true as const, recipe: entry.recipe };
+    if (!dispatchRecipe.ok) {
+      outcomes.set(entry.recipe_id, {
+        kind: 'refused',
+        refusal: {
+          reason: 'dispatch_unresolvable',
+          step_id: '<recipe>',
+          detail: dispatchRecipe.reason,
+        },
+      });
+      continue;
+    }
+    const resolveOp = dispatchRecipe.resolveOp ?? deps.resolveOp;
+    const derived = deriveResolvedRecipeCapability(
+      entry.recipe,
+      dispatchRecipe.recipe,
+      {
+        ...(config === undefined ? {} : { config }),
+        ...(resolveOp === undefined ? {} : { resolveOp }),
+      },
+    );
     if (!derived.ok) {
       outcomes.set(entry.recipe_id, { kind: 'refused', refusal: derived.refusal });
       continue;

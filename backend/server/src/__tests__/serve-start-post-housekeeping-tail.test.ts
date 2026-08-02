@@ -70,7 +70,7 @@ const makeOptions = (
   ({
     dbPath: '/tmp/server.db',
     runtimeConfig: { get: vi.fn() },
-    backgroundServices: { stopAll: vi.fn() },
+    backgroundServices: { register: vi.fn(), stopAll: vi.fn() },
     storage: {
       db: { tag: 'db' },
       manifests: { size: vi.fn(() => 34) },
@@ -185,6 +185,67 @@ describe('startPostHousekeepingTail', () => {
     expect(tailMocks.logBootBanner).toHaveBeenCalledWith(
       expect.objectContaining({ notEnrolled: false }),
     );
+  });
+
+  it('registers update boot reconciliation so shutdown drains its persistence work', async () => {
+    let releaseReconcile: (() => void) | undefined;
+    const reconcileDone = new Promise<void>((resolve) => {
+      releaseReconcile = resolve;
+    });
+    const register = vi.fn();
+    const runUpdateBootReconcile = vi.fn(() => reconcileDone);
+    const options = makeOptions({
+      backgroundServices: {
+        register,
+        stopAll: vi.fn(),
+      } as unknown as StartPostHousekeepingTailOptions['backgroundServices'],
+      runUpdateBootReconcile,
+    });
+
+    startPostHousekeepingTail(options);
+
+    expect(runUpdateBootReconcile).toHaveBeenCalledOnce();
+    expect(register).toHaveBeenCalledOnce();
+    const service = register.mock.calls[0]?.[0] as {
+      name: string;
+      kind: string;
+      stop: () => Promise<void> | void;
+    };
+    expect(service).toMatchObject({
+      name: 'update-boot-reconcile',
+      kind: 'emitter',
+    });
+
+    let stopped = false;
+    const stopping = Promise.resolve(service.stop()).then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    releaseReconcile?.();
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
+  it('contains a failed best-effort update boot reconciliation during drain', async () => {
+    const register = vi.fn();
+    const options = makeOptions({
+      backgroundServices: {
+        register,
+        stopAll: vi.fn(),
+      } as unknown as StartPostHousekeepingTailOptions['backgroundServices'],
+      runUpdateBootReconcile: vi.fn(async () => {
+        throw new Error('reconcile failed');
+      }),
+    });
+
+    startPostHousekeepingTail(options);
+
+    const service = register.mock.calls[0]?.[0] as {
+      stop: () => Promise<void> | void;
+    };
+    await expect(service.stop()).resolves.toBeUndefined();
   });
 });
 

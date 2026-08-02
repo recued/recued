@@ -34,6 +34,7 @@ import { ensureReceptionSchema } from '../storage/reception-store.js';
 
 const NOW = 1_700_000_000_000;
 const ENDPOINT_ID = 'ep-direct-checkout';
+const SOURCE_IP_HASH = 'endpoint-scoped-test-source';
 const FORM_DEFINITION_ID = 'research-brief-v1';
 
 const formConfig = (): IntakeFormConfig => ({
@@ -517,11 +518,13 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
     const submitHandler = createIntakeFormSubmitHandler({
       getStore: () => registry(config) as never,
       getSubmissionStore: () => ({
-        countWithinWindow: submissionStore.countWithinWindow,
-        insert: (input: Parameters<typeof submissionStore.insert>[0]) => {
-          const inserted = submissionStore.insert(input);
-          order.push('insert');
-          return inserted;
+        ...submissionStore,
+        insertIfSourceAvailable: (
+          input: Parameters<typeof submissionStore.insertIfSourceAvailable>[0],
+        ) => {
+          const result = submissionStore.insertIfSourceAvailable(input);
+          if ('row' in result) order.push('insert');
+          return result;
         },
       }) as never,
       getFormNonceStore: () => nonceStore,
@@ -555,7 +558,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
       brief: 'Research this market.',
     }).toString();
     const postRes = fakeRes();
-    await submitHandler(fakeReq('POST', body), postRes, endpoint);
+    await submitHandler(fakeReq('POST', body), postRes, endpoint, SOURCE_IP_HASH);
 
     // D-207 slice 3c — 200, not 303. The only thing that ever redirected was D-200's
     // coordinator, and it is gone: under ruling (C) the product is a `link_button` rendered
@@ -624,7 +627,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
       amount_minor: '12500',
       currency: 'usd',
       brief: 'Research this market.',
-    }).toString()), postRes, endpoint);
+    }).toString()), postRes, endpoint, SOURCE_IP_HASH);
 
     // D-207 slice 1c — INVERTED. This asserted 200 (the success page) when the coordinator
     // THREW. That was the silent-success-page bug, tested in: a visitor on a paid form was
@@ -680,7 +683,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
       amount_minor: '12500',
       currency: 'usd',
       brief: 'Research this market.',
-    }).toString()), postRes, endpoint);
+    }).toString()), postRes, endpoint, SOURCE_IP_HASH);
 
     expect(postRes.statusCode).toBe(503);
     expect(postRes.body).toContain('Checkout is temporarily unavailable');
@@ -726,7 +729,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
       amount_minor: '12500',
       currency: 'usd',
       brief: 'Research this market.',
-    }).toString()), postRes, endpoint);
+    }).toString()), postRes, endpoint, SOURCE_IP_HASH);
 
     expect(postRes.statusCode).toBe(200);
     expect(claimCalls).toBe(0);
@@ -793,11 +796,13 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
       const submitHandler = createIntakeFormSubmitHandler({
         getStore: () => registry(config) as never,
         getSubmissionStore: () => ({
-          countWithinWindow: submissionStore.countWithinWindow,
-          insert: (input: Parameters<typeof submissionStore.insert>[0]) => {
-            const inserted = submissionStore.insert(input);
-            insertedOutcome = inserted.processing_outcome;
-            return inserted;
+          ...submissionStore,
+          insertIfSourceAvailable: (
+            input: Parameters<typeof submissionStore.insertIfSourceAvailable>[0],
+          ) => {
+            const result = submissionStore.insertIfSourceAvailable(input);
+            if ('row' in result) insertedOutcome = result.row.processing_outcome;
+            return result;
           },
         }) as never,
         getFormNonceStore: () => nonceStore,
@@ -824,7 +829,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
         ...(expectedOutcome === 'spam' ? { website: 'bot.example' } : {}),
       }).toString();
       const postRes = fakeRes();
-      await submitHandler(fakeReq('POST', body), postRes, endpoint);
+      await submitHandler(fakeReq('POST', body), postRes, endpoint, SOURCE_IP_HASH);
 
       expect(postRes.statusCode).toBe(200);
       expect(insertedOutcome).toBe(expectedOutcome);
@@ -873,7 +878,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
       brief: 'Research this market.',
     }).toString();
     const postRes = fakeRes();
-    await submitHandler(fakeReq('POST', body), postRes, endpoint);
+    await submitHandler(fakeReq('POST', body), postRes, endpoint, SOURCE_IP_HASH);
 
     expect(postRes.statusCode).toBe(409);
     expect(postRes.body).toContain('changed after it was opened');
@@ -936,7 +941,7 @@ describe('D-200 Slice 6g.2 public intake pair identity', () => {
       brief: 'Research this market.',
     }).toString();
     const postRes = fakeRes();
-    await submitHandler(fakeReq('POST', body), postRes, endpoint);
+    await submitHandler(fakeReq('POST', body), postRes, endpoint, SOURCE_IP_HASH);
 
     expect(resolveCalls).toBe(3);
     expect(postRes.statusCode).toBe(409);

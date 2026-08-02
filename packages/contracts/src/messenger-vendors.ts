@@ -23,7 +23,7 @@
  *  `contact_platform_link` for messenger, so a matched sender stays opaque).
  *  `ingress` / `recipient` / `surfaces` / `auth` are the owner-sketched
  *  vocabulary (taxonomy §3a) that the composer-retirement slice consumes when it
- *  folds the ~8 hardcoded `{ slack, telegram }` composers (`wire-vendor-webhook-
+ *  folds the hardcoded vendor composers (`wire-vendor-webhook-
  *  port.ts`, `wire-messenger-turn.ts`, the notification registry) into
  *  registry iteration; they are grounded in real per-vendor variance today, not
  *  speculative — each maps to a documented difference (Slack HMAC signing-secret
@@ -51,10 +51,14 @@
 // sibling `resolveBearerAccessToken` — which is where a credential resolver
 // belongs anyway.
 import type { ConnectionAuth } from './connection.js';
-// TYPE-ONLY for the same reason: `notifications.ts` imports this file at runtime
-// (it splices `MESSENGER_VENDOR_SLUGS` and reads each declaration's `roles`), so a
-// runtime import back would close a cycle. Erased at compile time; one-way only.
-import type { ChannelRoles } from './notifications.js';
+// A VALUE import, and the reason it points at `channel-roles.ts` rather than
+// `notifications.ts`: that module imports THIS one at runtime (it splices
+// `MESSENGER_VENDOR_SLUGS` and reads each declaration's `roles`), so importing a
+// value back from it closes a real cycle — whichever side evaluates first sees
+// the other half-built, and it surfaces as `MESSENGER_VENDOR_SLUGS is not
+// iterable` at import time. A type-only import hid that for as long as the axes
+// were a type; the leaf module is what keeps it one-way now that they are data.
+import { CHANNEL_ROLE_AXES, type ChannelRoles } from './channel-roles.js';
 
 // ────────────────────────────────────────────────────────────────
 // The vendor slugs — the TYPE-LEVEL half of the registry (D-192 seam 10)
@@ -100,13 +104,13 @@ export const MESSENGER_SURFACES = ['dm', 'group', 'channel', 'thread'] as const;
 export type MessengerSurface = (typeof MESSENGER_SURFACES)[number];
 export const MESSENGER_SURFACE_SET: ReadonlySet<string> = new Set(MESSENGER_SURFACES);
 
-/** How inbound messages arrive. `webhook` is the only mode any vendor uses
- *  today (Slack Events API + Telegram webhook); `socket` (Discord Gateway — a
- *  persistent WS the taxonomy flags as the ingress outlier) and `poll` are
- *  declared extension points with no entry yet. */
+/** How inbound messages arrive. A connection persists exactly one of these in
+ *  `config.ingress_mode`; local outbound-established transports are the default
+ *  where the vendor supports one, while webhook stays an explicit alternative. */
 export const MESSENGER_INGRESS_MODES = ['webhook', 'socket', 'poll'] as const;
 export type MessengerIngressMode = (typeof MESSENGER_INGRESS_MODES)[number];
 export const MESSENGER_INGRESS_MODE_SET: ReadonlySet<string> = new Set(MESSENGER_INGRESS_MODES);
+export const MESSENGER_INGRESS_MODE_CONFIG_KEY = 'ingress_mode';
 
 /** Webhook inbound-verification scheme.
  *   - `hmac`         — Slack: HMAC-SHA256 over `v0:<ts>:<body>` keyed by the
@@ -226,17 +230,21 @@ export const MESSENGER_PROBE_TOKEN_PLACEHOLDER = '{token}';
 // The declaration shape
 // ────────────────────────────────────────────────────────────────
 
-/** The inbound-transport facet — how verified messages arrive. `webhook` mode
- *  carries the verification scheme + the plaintext `config_json` field the
- *  inbound secret lives under; a future `socket` / `poll` vendor omits both
- *  (that ingress slice widens this shape — no such vendor exists yet). */
+/** The inbound-transport facet — how verified messages arrive. A declaration
+ *  names its local-first default plus every supported alternative. Webhook
+ *  capability additionally carries the verification scheme and plaintext
+ *  `config_json` key holding its verification material. */
 export interface MessengerIngress {
+  /** Default for a NEW enrollment. Existing rows that predate
+   *  `config.ingress_mode` resolve to webhook when webhook is supported. */
   mode: MessengerIngressMode;
-  /** Webhook verification scheme. Required iff `mode === 'webhook'`. */
+  /** Every mode the vendor can run. Non-empty, unique, and includes `mode`. */
+  supported_modes: readonly MessengerIngressMode[];
+  /** Webhook verification scheme. Required iff webhook is supported. */
   verification?: MessengerVerification;
   /** The `config_json` field holding the inbound VERIFICATION MATERIAL
    *  (`signing_secret` for Slack, `webhook_secret` for Telegram, `app_secret` for
-   *  WhatsApp, `public_key` for Discord). Required iff `mode === 'webhook'`.
+   *  WhatsApp, `public_key` for Discord). Required iff webhook is supported.
    *
    *  D-192 seam 11 — ONE generic reader pulls it off the row through this,
    *  replacing byte-identical per-vendor readers that differed only in which config
@@ -255,7 +263,8 @@ export interface MessengerIngress {
    *  generic machinery free of a special case. */
   secret_field?: string;
   /** The vendor's NATIVE inbound-id field — `event_id` (Slack), `update_id`
-   *  (Telegram). Required iff `mode === 'webhook'`.
+   *  (Telegram), `interaction_id` (Discord). Required for every ingress mode;
+   *  local runners surface their native ids under the same key as webhooks.
    *
    *  D-192 seam 11 — this is the only thing the two `dispatch{Slack,Telegram}Event`
    *  wrappers actually knew. Both normalized `{ connection_name, payload, <id> }`
@@ -263,7 +272,23 @@ export interface MessengerIngress {
    *  the id and what name to reproduce verbatim in the log line. Declaring it
    *  collapses them into one normalizer, so a new transport dispatches with no
    *  wrapper of its own. */
-  id_field?: string;
+  id_field: string;
+  /** Per-mode NARROWING of the vendor `roles` ceiling. Absent (the norm) ⇒ every
+   *  supported mode carries the full declared set.
+   *
+   *  Only Discord needs this today, and only on one axis. Slack (socket /
+   *  webhook) and Telegram (poll / webhook) each deliver ordinary messages AND
+   *  callbacks in either mode, so their roles do not move; Discord's Gateway
+   *  carries `MESSAGE_CREATE` while its Interactions endpoint carries button
+   *  presses and nothing else. `roles` therefore states what the VENDOR can do
+   *  and this states what a MODE gives up — the two facts have different
+   *  lifetimes and the ceiling is what makes the channel enrollable at all
+   *  (`CHANNEL_ROLES` is keyed by channel, with no connection in hand).
+   *
+   *  NARROWING ONLY, enforced at load: a mode may turn a declared role off, and
+   *  may never grant one the vendor does not declare — otherwise this becomes a
+   *  second, contradicting source of truth for the same question. */
+  mode_roles?: Readonly<Partial<Record<MessengerIngressMode, Partial<ChannelRoles>>>>;
 }
 
 /** The bound-conversation recipient facet — the single real per-vendor delta in
@@ -395,35 +420,114 @@ export function assertMessengerVendorDeclarationShape(entry: unknown): string[] 
     });
   }
 
-  // Ingress — webhook mode requires the verification scheme + secret field;
-  // socket / poll (no entry yet) must omit both.
+  // Ingress — one default plus a non-empty supported set. Webhook verification
+  // material is required exactly when webhook is one of the supported modes;
+  // the native id key is shared by webhook and local runners.
   if (e.ingress === null || typeof e.ingress !== 'object' || Array.isArray(e.ingress)) {
     issues.push("field 'ingress' must be an object");
   } else {
     const ing = e.ingress as Record<string, unknown>;
-    if (typeof ing.mode !== 'string' || !MESSENGER_INGRESS_MODE_SET.has(ing.mode)) {
+    const mode = typeof ing.mode === 'string' && MESSENGER_INGRESS_MODE_SET.has(ing.mode)
+      ? ing.mode as MessengerIngressMode
+      : null;
+    if (mode === null) {
       issues.push(`ingress.mode must be one of ${MESSENGER_INGRESS_MODES.join(' / ')}`);
-    } else if (ing.mode === 'webhook') {
+    }
+    const supported = Array.isArray(ing.supported_modes) ? ing.supported_modes : null;
+    if (supported === null || supported.length === 0) {
+      issues.push("ingress.supported_modes must be a non-empty array");
+    } else {
+      const seen = new Set<string>();
+      supported.forEach((candidate, idx) => {
+        if (typeof candidate !== 'string' || !MESSENGER_INGRESS_MODE_SET.has(candidate)) {
+          issues.push(
+            `ingress.supported_modes[${idx}] must be one of ${MESSENGER_INGRESS_MODES.join(' / ')}`,
+          );
+        } else if (seen.has(candidate)) {
+          issues.push(`ingress.supported_modes[${idx}] duplicate mode '${candidate}'`);
+        } else {
+          seen.add(candidate);
+        }
+      });
+      if (mode !== null && !seen.has(mode)) {
+        issues.push('ingress.supported_modes must include ingress.mode');
+      }
+    }
+    const supportsWebhook = supported?.includes('webhook') === true;
+    if (supportsWebhook) {
       if (typeof ing.verification !== 'string' || !MESSENGER_VERIFICATION_SET.has(ing.verification)) {
         issues.push(
-          `ingress.verification must be one of ${MESSENGER_VERIFICATIONS.join(' / ')} when ingress.mode is 'webhook'`,
+          `ingress.verification must be one of ${MESSENGER_VERIFICATIONS.join(' / ')} when webhook is supported`,
         );
       }
       if (typeof ing.secret_field !== 'string' || ing.secret_field.length === 0) {
-        issues.push("ingress.secret_field must be a non-empty string when ingress.mode is 'webhook'");
-      }
-      if (typeof ing.id_field !== 'string' || ing.id_field.length === 0) {
-        issues.push("ingress.id_field must be a non-empty string when ingress.mode is 'webhook'");
+        issues.push("ingress.secret_field must be a non-empty string when webhook is supported");
       }
     } else {
       if (ing.verification !== undefined) {
-        issues.push("ingress.verification is only valid when ingress.mode is 'webhook'");
+        issues.push('ingress.verification is only valid when webhook is supported');
       }
       if (ing.secret_field !== undefined) {
-        issues.push("ingress.secret_field is only valid when ingress.mode is 'webhook'");
+        issues.push('ingress.secret_field is only valid when webhook is supported');
       }
-      if (ing.id_field !== undefined) {
-        issues.push("ingress.id_field is only valid when ingress.mode is 'webhook'");
+    }
+    if (typeof ing.id_field !== 'string' || ing.id_field.length === 0) {
+      issues.push('ingress.id_field must be a non-empty string');
+    }
+    // Per-mode role narrowing. The ceiling is `roles`; this may only take away.
+    if (ing.mode_roles !== undefined) {
+      if (
+        ing.mode_roles === null
+        || typeof ing.mode_roles !== 'object'
+        || Array.isArray(ing.mode_roles)
+      ) {
+        issues.push('ingress.mode_roles must be an object');
+      } else {
+        const ceiling = (e.roles !== null && typeof e.roles === 'object' && !Array.isArray(e.roles))
+          ? e.roles as Record<string, unknown>
+          : null;
+        for (const [modeKey, override] of Object.entries(ing.mode_roles)) {
+          if (supported !== null && !supported.includes(modeKey)) {
+            issues.push(`ingress.mode_roles['${modeKey}'] is not one of ingress.supported_modes`);
+            continue;
+          }
+          if (override === null || typeof override !== 'object' || Array.isArray(override)) {
+            issues.push(`ingress.mode_roles['${modeKey}'] must be an object`);
+            continue;
+          }
+          const entries = Object.entries(override as Record<string, unknown>);
+          if (entries.length === 0) {
+            issues.push(`ingress.mode_roles['${modeKey}'] declares no narrowing — omit it instead`);
+          }
+          for (const [axis, value] of entries) {
+            if (!CHANNEL_ROLE_AXES.includes(axis as (typeof CHANNEL_ROLE_AXES)[number])) {
+              issues.push(`ingress.mode_roles['${modeKey}'].${axis} is not a role axis`);
+            } else if (typeof value !== 'boolean') {
+              issues.push(`ingress.mode_roles['${modeKey}'].${axis} must be a boolean`);
+            } else if (value === true && ceiling !== null && ceiling[axis] !== true) {
+              // A mode may not grant what the vendor does not declare, or the
+              // ceiling stops being the answer to "can this channel do X".
+              issues.push(
+                `ingress.mode_roles['${modeKey}'].${axis} may not grant a role absent from 'roles'`,
+              );
+            } else if (value === true) {
+              issues.push(
+                `ingress.mode_roles['${modeKey}'].${axis} repeats the ceiling — narrowing only`,
+              );
+            }
+          }
+          // A mode that gives up every axis is an inert mode — the same shape
+          // the vendor-level role check already refuses.
+          if (ceiling !== null) {
+            const narrowed = CHANNEL_ROLE_AXES.filter((axis) =>
+              ((override as Record<string, unknown>)[axis] ?? ceiling[axis]) === true);
+            if (narrowed.length === 0) {
+              issues.push(
+                `ingress.mode_roles['${modeKey}'] leaves the mode with no role at all`,
+              );
+            }
+          }
+        }
       }
     }
   }
@@ -477,7 +581,7 @@ export function assertMessengerVendorDeclarationShape(entry: unknown): string[] 
     issues.push("field 'roles' must be an object");
   } else {
     const r = e.roles as Record<string, unknown>;
-    for (const axis of ['notification', 'approval', 'messenger'] as const) {
+    for (const axis of CHANNEL_ROLE_AXES) {
       if (typeof r[axis] !== 'boolean') {
         issues.push(`roles.${axis} must be a boolean`);
       }
@@ -607,7 +711,8 @@ export const MESSENGER_VENDOR_DECLARATIONS: ReadonlyArray<MessengerVendorDeclara
     display_name: 'Slack',
     surfaces: ['dm', 'group', 'channel', 'thread'],
     ingress: {
-      mode: 'webhook',
+      mode: 'socket',
+      supported_modes: ['socket', 'webhook'],
       verification: 'hmac',
       secret_field: 'signing_secret',
       id_field: 'event_id',
@@ -635,7 +740,8 @@ export const MESSENGER_VENDOR_DECLARATIONS: ReadonlyArray<MessengerVendorDeclara
     display_name: 'Telegram',
     surfaces: ['dm', 'group', 'channel'],
     ingress: {
-      mode: 'webhook',
+      mode: 'poll',
+      supported_modes: ['poll', 'webhook'],
       verification: 'secret_token',
       secret_field: 'webhook_secret',
       id_field: 'update_id',
@@ -671,6 +777,7 @@ export const MESSENGER_VENDOR_DECLARATIONS: ReadonlyArray<MessengerVendorDeclara
     surfaces: ['dm'],
     ingress: {
       mode: 'webhook',
+      supported_modes: ['webhook'],
       // Meta signs the RAW request body with the App Secret and presents it as
       // `X-Hub-Signature-256: sha256=<hex>` — the same shared-secret HMAC family
       // as Slack, differing only in the base string (Slack prefixes `v0:<ts>:`
@@ -742,24 +849,20 @@ export const MESSENGER_VENDOR_DECLARATIONS: ReadonlyArray<MessengerVendorDeclara
     // id is the id either way, which is why the recipient facet is simple here.
     surfaces: ['dm', 'channel', 'thread'],
     ingress: {
-      // ⚠ THE HONEST BOUNDARY OF THIS VENDOR, stated where it is declared.
-      //
-      // `webhook` is TRUE and it is also HALF the story. Discord's Interactions
-      // endpoint is a real webhook and delivers everything Recued's control loop
-      // needs — a button PRESS on an approval arrives here, verified. But it does
-      // NOT deliver plain user messages: those only exist on the Gateway, a
-      // persistent WebSocket (`MESSENGER_INGRESS_MODES.socket`, declared and
-      // unimplemented).
-      //
-      // So Discord ships as a NOTIFY + APPROVE channel: Recued can message you and
-      // you can press its buttons, but you cannot talk back in free text. The
-      // messenger TURN and the commitment funnel both gate on
-      // `transport.parseInbound`, which returns null for every interaction payload,
-      // so they simply never fire — no special case, no shared-code branch, and no
-      // pretending. Declaring `socket` instead would be worse: the webhook port
-      // fail-closed SKIPS a non-webhook vendor, so the approvals that DO work would
-      // stop working too.
-      mode: 'webhook',
+      // Gateway is the local-first full-chat path: outbound WSS carries
+      // MESSAGE_CREATE plus interaction events without opening a public listener.
+      // The advanced webhook alternative remains approvals-only because Discord's
+      // Interactions endpoint does not deliver ordinary messages.
+      mode: 'socket',
+      supported_modes: ['socket', 'webhook'],
+      // ⚠ THE ONE ROLE THAT MOVES WITH THE MODE, in the whole registry.
+      // Gateway carries MESSAGE_CREATE, so Discord is a full conversation there.
+      // The Interactions endpoint carries button presses and nothing else — no
+      // ordinary message ever arrives — so webhook mode is notify + approve, the
+      // shape Discord shipped as before the Gateway existed. Stating it here
+      // keeps `roles` meaning "what this vendor can do" (which is what makes the
+      // channel enrollable at all) while the mode says what it gives up.
+      mode_roles: { webhook: { messenger: false } },
       // ASYMMETRIC — the first non-shared-secret scheme. Signature over
       // `<X-Signature-Timestamp><raw body>`, verified against the app's PUBLIC key.
       verification: 'ed25519',
@@ -777,13 +880,9 @@ export const MESSENGER_VENDOR_DECLARATIONS: ReadonlyArray<MessengerVendorDeclara
     identity: { platform_id_source: 'none' },
     projection: { structured_tags: false, structured_mentions: false },
     auth: 'bot_token',
-    // ⚠ NOTIFY + APPROVE, NEVER A CONVERSATION — the exact mirror of WhatsApp.
-    // Discord's Interactions webhook delivers button presses but not plain messages
-    // (those live on the Gateway, a persistent WS Recued does not run), so the chat
-    // turn has nothing to run on. Proactive reach, by contrast, is unlimited and free.
-    // This used to be expressed ONLY by `parseInbound` returning null — true, but
-    // invisible to the Settings UI and to anyone reading the registry.
-    roles: { notification: true, approval: true, messenger: false },
+    // Gateway MESSAGE_CREATE makes Discord a full conversation channel in local
+    // mode; Interactions continues carrying approval presses in either mode.
+    roles: { notification: true, approval: true, messenger: true },
     // ⚠ `bot_header`, NOT `bearer_header`. Discord reads `Bearer` as an OAuth2 user
     // token, so probing a perfectly valid BOT token with the wrong scheme returns
     // 401 and reports `auth_failed` on a healthy channel. Verified against the live
@@ -812,6 +911,70 @@ export const getMessengerVendorDeclaration = (
   }
   return null;
 };
+
+/** Is `mode` a declared option for this vendor? Kept beside the registry so
+ *  enrollment, webhook routing, and the local supervisor cannot drift. */
+export const messengerVendorSupportsIngressMode = (
+  declaration: MessengerVendorDeclaration,
+  mode: unknown,
+): mode is MessengerIngressMode =>
+  typeof mode === 'string'
+  && MESSENGER_INGRESS_MODE_SET.has(mode)
+  && declaration.ingress.supported_modes.includes(mode as MessengerIngressMode);
+
+/** Resolve a persisted connection's active ingress. New enrollment always
+ *  writes the explicit default. Absence therefore means a pre-upgrade row, and
+ *  preserves its historical webhook behavior when possible. An explicit bad
+ *  value is rejected (`null`) instead of silently selecting another mode. */
+export const resolveMessengerConnectionIngressMode = (
+  declaration: MessengerVendorDeclaration,
+  config: Readonly<Record<string, unknown>>,
+): MessengerIngressMode | null => {
+  const raw = config[MESSENGER_INGRESS_MODE_CONFIG_KEY];
+  if (raw === undefined) {
+    return declaration.ingress.supported_modes.includes('webhook')
+      ? 'webhook'
+      : declaration.ingress.mode;
+  }
+  return messengerVendorSupportsIngressMode(declaration, raw) ? raw : null;
+};
+
+/** The roles a vendor actually carries in one ingress mode — the declared
+ *  ceiling with that mode's narrowing applied. The ONE seam for "can this
+ *  connection do X", so the turn, the funnel, and the Settings axis cannot
+ *  answer it three ways.
+ *
+ *  `mode === null` means the mode could not be resolved (a malformed or
+ *  unsupported `config.ingress_mode`). That fails CLOSED to the floor — what is
+ *  true in EVERY supported mode — because an unresolvable mode is not evidence
+ *  of a capability. */
+export const resolveMessengerVendorRoles = (
+  declaration: MessengerVendorDeclaration,
+  mode: MessengerIngressMode | null,
+): ChannelRoles => {
+  const ceiling = declaration.roles;
+  const overrides = declaration.ingress.mode_roles;
+  if (overrides === undefined) return { ...ceiling };
+  const modes = mode === null ? declaration.ingress.supported_modes : [mode];
+  const resolved = { ...ceiling };
+  for (const axis of CHANNEL_ROLE_AXES) {
+    // Narrowing only, so a role survives exactly when every mode in scope keeps
+    // it — which for a single mode is that mode, and for the null floor is all.
+    resolved[axis] = ceiling[axis]
+      && modes.every((candidate) => overrides[candidate]?.[axis] !== false);
+  }
+  return resolved;
+};
+
+/** Convenience over `resolveMessengerVendorRoles` for a stored connection: read
+ *  the row's active mode, then narrow. Same fail-closed posture. */
+export const resolveMessengerConnectionRoles = (
+  declaration: MessengerVendorDeclaration,
+  config: Readonly<Record<string, unknown>>,
+): ChannelRoles => resolveMessengerVendorRoles(
+  declaration,
+  resolveMessengerConnectionIngressMode(declaration, config),
+);
 
 /** List every declared vendor slug (insertion order, deduped). */
 export const listMessengerVendors = (

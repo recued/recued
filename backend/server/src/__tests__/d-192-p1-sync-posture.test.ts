@@ -7,7 +7,7 @@
  *    - schema: the column lands at boot; ensureWorkEntitySchema is idempotent
  *    - default `records` when a caller omits it (pre-P-1 callers keep working)
  *    - an explicit posture round-trips register → get → list
- *    - UPSERT preserves the creation posture (structural, never toggled)
+ *    - omission preserves posture while an explicit declaration can migrate it
  *    - a legacy / invalid persisted cell coerces to `records`
  *
  *  NOTE: posture is orthogonal to `top_tier_kind` — `file` is not yet a
@@ -66,12 +66,18 @@ afterEach(() => {
 });
 
 describe('D-192 P-1 contract — SOURCE_SYNC_POSTURES', () => {
-  it('enumerates records | file_meta_ref | contact_import', () => {
-    expect([...SOURCE_SYNC_POSTURES]).toEqual(['records', 'file_meta_ref', 'contact_import']);
+  it('enumerates records | read_through | file_meta_ref | contact_import', () => {
+    expect([...SOURCE_SYNC_POSTURES]).toEqual([
+      'records',
+      'read_through',
+      'file_meta_ref',
+      'contact_import',
+    ]);
   });
 
   it('isSourceSyncPosture guards the closed set', () => {
     expect(isSourceSyncPosture('records')).toBe(true);
+    expect(isSourceSyncPosture('read_through')).toBe(true);
     expect(isSourceSyncPosture('file_meta_ref')).toBe(true);
     expect(isSourceSyncPosture('contact_import')).toBe(true);
     expect(isSourceSyncPosture('bogus')).toBe(false);
@@ -121,6 +127,15 @@ describe('D-192 P-1 store — sync_posture persistence', () => {
     const out = store.registerSource({ ...baseReg('s1'), source_label: 'Dropbox (relabel)', registered_at: NOW + 1000 });
     expect(out.sync_posture).toBe('file_meta_ref');
     expect(store.getSource('s1')?.sync_posture).toBe('file_meta_ref');
+  });
+
+  it('applies an explicitly declared posture migration', () => {
+    store.registerSource({ ...baseReg('s1'), sync_posture: 'records' });
+
+    const out = store.registerSource({ ...baseReg('s1'), sync_posture: 'read_through' });
+
+    expect(out.sync_posture).toBe('read_through');
+    expect(store.getSource('s1')?.sync_posture).toBe('read_through');
   });
 
   it('coerces a legacy / invalid persisted posture cell to records', () => {

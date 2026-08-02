@@ -9,7 +9,7 @@
  *    1. Resolve target path against `<dataPath>/services/<slug>/`.
  *       Manifest paths are joined under this prefix; an absolute
  *       path in the manifest is re-anchored (path-traversal guard).
- *    2. Stream download → `<target>.download.tmp`, hashing on
+ *    2. Stream download → a unique `<target>.download.<id>.tmp`, hashing on
  *       the fly. Reject the bytes when the verified hash doesn't
  *       match the declared one (`DownloadShaMismatchError`).
  *    3. If `<target>` already exists, move it to `<target>.bak`
@@ -23,11 +23,12 @@
  *  at validate time.
  */
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { promises as fsp } from 'node:fs';
-import { dirname, isAbsolute, join, normalize, relative } from 'node:path';
+import { basename, dirname, isAbsolute, join, normalize, relative } from 'node:path';
 
-import { SERVICE_CWD_SUBDIR } from '@recued/contracts';
+import { SERVICE_CWD_SUBDIR, isPrivateHost } from '@recued/contracts';
+import { discardResponseBody } from '@recued/ingredients';
 
 import {
   DownloadShaMismatchError,
@@ -49,6 +50,13 @@ export interface DownloadParams {
   target: string;
 }
 
+/** Installer payloads are executables/archives, not an unbounded artifact
+ * channel. This ceiling also bounds disk consumed before sha verification. */
+export const DOWNLOAD_INSTALLER_MAX_BYTES = 512 * 1024 * 1024;
+
+/** One deadline spans connect, headers, and streamed body consumption. */
+export const DOWNLOAD_INSTALLER_TIMEOUT_MS = 10 * 60 * 1000;
+
 export const validateDownloadParams = (raw: unknown): DownloadParams => {
   if (raw === null || typeof raw !== 'object') {
     throw new InstallerParamError('download', 'params must be an object');
@@ -60,10 +68,23 @@ export const validateDownloadParams = (raw: unknown): DownloadParams => {
   if (typeof url !== 'string' || url === '') {
     throw new InstallerParamError('download', 'url required (string)');
   }
-  if (!/^https:\/\//i.test(url)) {
+  let parsedUrl: URL;
+  try {
+    if (url !== url.trim()) throw new Error('surrounding whitespace');
+    parsedUrl = new URL(url);
+  } catch {
+    throw new InstallerParamError('download', 'url must be a valid absolute URL');
+  }
+  if (parsedUrl.protocol !== 'https:') {
     throw new InstallerParamError(
       'download',
       'url must be https:// — http downloads are not allowed',
+    );
+  }
+  if (parsedUrl.username !== '' || parsedUrl.password !== '') {
+    throw new InstallerParamError(
+      'download',
+      'url must not contain embedded credentials',
     );
   }
   if (
@@ -79,7 +100,7 @@ export const validateDownloadParams = (raw: unknown): DownloadParams => {
     throw new InstallerParamError('download', 'target required (string)');
   }
   return {
-    url,
+    url: parsedUrl.toString(),
     sha256,
     target,
   };
@@ -109,35 +130,164 @@ export const resolveDownloadTarget = (
   return candidate;
 };
 
-const sha256Hex = (buf: Buffer): string =>
-  createHash('sha256').update(buf).digest('hex');
-
 interface DownloadIO {
   fetch: typeof fetch;
 }
 
-/** Streaming-friendly fetch + hash. Reads the response into a
- *  buffer (installer payloads are typically tens of MB — small
- *  enough to keep in memory and avoid the temp-file race), writes
- *  to `<target>.download.tmp`, returns the verified hash. */
+const DOWNLOAD_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+const DOWNLOAD_REDIRECT_LIMIT = 5;
+
+/** Follow ordinary HTTPS CDN redirects without allowing a public download URL
+ * to bounce the server onto a local/private target. No credentials are sent,
+ * but an unrestricted redirect would still be an SSRF request primitive. */
+const fetchDownloadResponse = async (
+  fetchImpl: typeof fetch,
+  url: string,
+  signal: AbortSignal,
+): Promise<Response> => {
+  let current = new URL(url);
+  const initialIsPrivate = isPrivateHost(current.hostname);
+  for (let hop = 0; hop < DOWNLOAD_REDIRECT_LIMIT; hop += 1) {
+    const response = await fetchImpl(current, { signal, redirect: 'manual' });
+    if (!DOWNLOAD_REDIRECT_STATUSES.has(response.status)) return response;
+    const location = response.headers.get('location');
+    if (location === null || location === '') return response;
+
+    let next: URL;
+    try {
+      next = new URL(location, current);
+    } catch {
+      discardResponseBody(response);
+      throw new Error('download redirect contained an invalid Location');
+    }
+    if (next.protocol !== 'https:') {
+      discardResponseBody(response);
+      throw new Error('download redirect refused a non-HTTPS target');
+    }
+    if (next.username !== '' || next.password !== '') {
+      discardResponseBody(response);
+      throw new Error('download redirect refused embedded credentials');
+    }
+    if (!initialIsPrivate && isPrivateHost(next.hostname)) {
+      discardResponseBody(response);
+      throw new Error('download redirect refused a private/local target');
+    }
+    discardResponseBody(response);
+    current = next;
+  }
+  throw new Error(`download exceeded ${DOWNLOAD_REDIRECT_LIMIT} redirects`);
+};
+
+const declaredLength = (response: Response): number | undefined => {
+  const raw = response.headers.get('content-length');
+  if (raw === null || !/^\d+$/.test(raw.trim())) return undefined;
+  const parsed = Number(raw);
+  return Number.isSafeInteger(parsed) ? parsed : undefined;
+};
+
+const writeChunk = async (
+  file: Awaited<ReturnType<typeof fsp.open>>,
+  chunk: Uint8Array,
+  position: number,
+): Promise<number> => {
+  let offset = 0;
+  while (offset < chunk.byteLength) {
+    const { bytesWritten } = await file.write(
+      chunk,
+      offset,
+      chunk.byteLength - offset,
+      position + offset,
+    );
+    if (bytesWritten < 1) throw new Error('download staging write made no progress');
+    offset += bytesWritten;
+  }
+  return position + offset;
+};
+
+/** Fetch directly into a unique same-directory staging file while hashing.
+ * Memory stays at one response chunk; the file is never promoted until its
+ * bytes are complete, bounded, fsynced, and sha-verified. */
 const fetchAndStage = async (
   io: DownloadIO,
   url: string,
   expectedSha: string,
   tmpPath: string,
 ): Promise<void> => {
-  const res = await io.fetch(url);
-  if (!res.ok) {
-    throw new Error(`download fetched ${res.status} ${res.statusText}`);
+  const controller = new AbortController();
+  let timedOut = false;
+  let transferComplete = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, DOWNLOAD_INSTALLER_TIMEOUT_MS);
+  let res: Response | undefined;
+  try {
+    res = await fetchDownloadResponse(io.fetch, url, controller.signal);
+    if (!res.ok) {
+      throw new Error(`download fetched ${res.status} ${res.statusText}`);
+    }
+    const length = declaredLength(res);
+    if (length !== undefined && length > DOWNLOAD_INSTALLER_MAX_BYTES) {
+      throw new Error(
+        `download declared ${length} bytes (limit ${DOWNLOAD_INSTALLER_MAX_BYTES})`,
+      );
+    }
+
+    await fsp.mkdir(dirname(tmpPath), { recursive: true });
+    const file = await fsp.open(tmpPath, 'wx', 0o700);
+    try {
+      const hash = createHash('sha256');
+      let total = 0;
+      const reader = res.body?.getReader();
+      if (reader !== undefined) {
+        let complete = false;
+        try {
+          for (;;) {
+            const next = await reader.read();
+            if (next.done) {
+              complete = true;
+              break;
+            }
+            if (next.value.byteLength === 0) continue;
+            const nextTotal = total + next.value.byteLength;
+            if (nextTotal > DOWNLOAD_INSTALLER_MAX_BYTES) {
+              throw new Error(
+                `download exceeded ${DOWNLOAD_INSTALLER_MAX_BYTES}-byte limit`,
+              );
+            }
+            hash.update(next.value);
+            total = await writeChunk(file, next.value, total);
+          }
+        } finally {
+          if (!complete) void reader.cancel().catch(() => undefined);
+          try {
+            reader.releaseLock();
+          } catch {
+            // Abort/cancellation already owns stream cleanup.
+          }
+        }
+      }
+      transferComplete = true;
+      clearTimeout(timer);
+      const actual = hash.digest('hex');
+      if (actual !== expectedSha) {
+        throw new DownloadShaMismatchError(url, expectedSha, actual);
+      }
+      await file.sync();
+    } finally {
+      await file.close();
+    }
+  } catch (err) {
+    if (timedOut && !transferComplete) {
+      throw new Error(
+        `download timed out after ${DOWNLOAD_INSTALLER_TIMEOUT_MS}ms`,
+      );
+    }
+    throw err;
+  } finally {
+    if (res !== undefined) discardResponseBody(res);
+    clearTimeout(timer);
   }
-  const arrayBuffer = await res.arrayBuffer();
-  const buffer = Buffer.from(arrayBuffer);
-  const actual = sha256Hex(buffer);
-  if (actual !== expectedSha) {
-    throw new DownloadShaMismatchError(url, expectedSha, actual);
-  }
-  await fsp.mkdir(dirname(tmpPath), { recursive: true });
-  await fsp.writeFile(tmpPath, buffer);
 };
 
 const exists = async (path: string): Promise<boolean> => {
@@ -157,6 +307,22 @@ const safeRm = async (path: string): Promise<void> => {
   }
 };
 
+const safeRmDownloadTemps = async (target: string): Promise<void> => {
+  const parent = dirname(target);
+  const prefix = `${basename(target)}.download.`;
+  let names: string[];
+  try {
+    names = await fsp.readdir(parent);
+  } catch {
+    return;
+  }
+  for (const name of names) {
+    if (name.startsWith(prefix) && name.endsWith('.tmp')) {
+      await safeRm(join(parent, name));
+    }
+  }
+};
+
 /** Run the install/upgrade logic. Returns an outcome shaped like
  *  the spawn-based installers so the dispatcher can route
  *  uniformly. Failure modes:
@@ -168,7 +334,10 @@ const stageReplace = async (
   ctx: InstallerContext,
 ): Promise<InstallerOutcome> => {
   const target = resolveDownloadTarget(ctx, params.target);
-  const tmp = `${target}.download.tmp`;
+  // Unique + exclusive avoids concurrent installs deleting or following one
+  // another's predictable staging path. It remains in the target directory so
+  // the verified promotion is one-filesystem atomic.
+  const tmp = `${target}.download.${randomUUID()}.tmp`;
   const bak = `${target}.bak`;
   const fetchImpl = ctx.fetch ?? globalThis.fetch;
 
@@ -241,6 +410,8 @@ export const downloadInstaller: InstallerKindModule<DownloadParams> = {
     const resolved = resolveDownloadTarget(ctx, target);
     await safeRm(resolved);
     await safeRm(`${resolved}.bak`);
+    await safeRmDownloadTemps(resolved);
+    // Pre-hardening releases used one predictable staging filename.
     await safeRm(`${resolved}.download.tmp`);
     return { exit_code: 0, log_lines: [`removed ${resolved}`] };
   },

@@ -8,6 +8,9 @@ export type {
   ConnectionField,
   ConnectionFieldType,
   ConnectionFormValues,
+  ConnectionOnboarding,
+  ConnectionOnboardingGuide,
+  ConnectionOnboardingStep,
   ConnectionProbeSpec,
   ConnectionSchema,
 } from './types.js';

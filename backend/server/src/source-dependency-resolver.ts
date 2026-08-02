@@ -311,6 +311,43 @@ export const resolvePersistDependencyReadArgs = (
   return { ok: true, readArgs };
 };
 
+/** Collect persist selections bound to the Source LIST op without fetching or
+ *  materializing anything. This is the read-through twin of the sync runner's
+ *  `resolvePersistDependencies`: on-demand reads may use an existing Settings
+ *  selection, but they never turn a generic data read into a hidden dependency
+ *  discovery/write. A missing selection fails honestly with the picker cue. */
+export const resolvePersistDependencyListArgs = (
+  store: Pick<SourceDependencyEntityStore, 'getSelected'>,
+  source_id: string,
+  declaration: DependencyCarrier,
+): { ok: true; listArgs: Record<string, unknown> } | { ok: false; reason: string } => {
+  const listArgs: Record<string, unknown> = {};
+  for (const dep of declaration.source_dependencies ?? []) {
+    if (dep.resolve !== 'persist') continue;
+    const listBinds = dep.binds.filter((b) => b.op === 'list');
+    if (listBinds.length === 0) continue;
+    const sel = store.getSelected(source_id, dep.ref);
+    if (sel === null) {
+      return {
+        ok: false,
+        reason:
+          `dependency '${dep.ref}' has no selection for the list op — `
+          + 'pick one in Settings → Work Entities',
+      };
+    }
+    for (const b of listBinds) {
+      if (Object.prototype.hasOwnProperty.call(listArgs, b.arg)) {
+        return {
+          ok: false,
+          reason: `list op arg '${b.arg}' is bound by more than one persist dependency — one authority per arg`,
+        };
+      }
+      listArgs[b.arg] = b.wrap_array === true ? [sel.entity_pk] : sel.entity_pk;
+    }
+  }
+  return { ok: true, listArgs };
+};
+
 /** Collect the args persist dependencies bind to a WRITE op — `create` (attribute
  *  a new record) OR a TARGETED write `update`/`delete`/`complete` (scope an
  *  existing one). The SAME stored container that scopes the sync walk also scopes

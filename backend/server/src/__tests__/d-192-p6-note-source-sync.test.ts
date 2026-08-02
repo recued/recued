@@ -286,7 +286,7 @@ const seedSyncState = (
     degraded: false,
     field_health_blob: null,
     list_complete: true,
-    stale_after_ms: declaration.sync.stale_after_ms,
+    stale_after_ms: declaration.sync.stale_after_ms!,
   });
 };
 

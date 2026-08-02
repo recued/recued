@@ -42,6 +42,10 @@ import {
 } from '@recued/contracts';
 
 import type { CloudHandleClient, CloudHandleResult } from './index.js';
+import {
+  makeBoundedOriginHttpFetcher,
+  type BoundedHttpFetcher,
+} from '../bounded-origin-http-fetcher.js';
 
 /** Codex P3 fold — runtime guard at the HTTP boundary. Sources from
  *  the contracts closed-list (`HANDLE_RPC_ERROR_CODES`) so a new code
@@ -66,6 +70,10 @@ export interface RecuedCloudHandleClientOptions {
   cloud_base_url: string;
   /** Optional fetch override (tests). Defaults to global `fetch`. */
   fetch?: typeof fetch;
+  /** One deadline spanning headers and body consumption. */
+  timeoutMs?: number;
+  /** Response ceiling (bytes). Defaults to the shared provider API limit. */
+  maxResponseBytes?: number;
 }
 
 const trimTrailingSlash = (url: string): string => url.replace(/\/+$/, '');
@@ -85,11 +93,11 @@ const networkFailureResult = <T>(message: string): CloudHandleResult<T> => ({
  *  into `handle_validation_error`; codex P8 closed-list correctness is
  *  preserved by the contracts source-of-truth Set. */
 const postSignedHandleRequest = async <Req, Res>(
-  fetchImpl: typeof fetch,
+  fetchImpl: BoundedHttpFetcher,
   url: string,
   body: Req,
 ): Promise<CloudHandleResult<Res>> => {
-  let res: Response;
+  let res: Awaited<ReturnType<BoundedHttpFetcher>>;
   try {
     res = await fetchImpl(url, {
       method: 'POST',
@@ -131,7 +139,13 @@ const postSignedHandleRequest = async <Req, Res>(
 export const createRecuedCloudHandleClient = (
   options: RecuedCloudHandleClientOptions,
 ): CloudHandleClient => {
-  const fetchImpl = options.fetch ?? fetch;
+  const fetchImpl = makeBoundedOriginHttpFetcher({
+    ...(options.fetch !== undefined ? { fetchImpl: options.fetch } : {}),
+    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.maxResponseBytes !== undefined
+      ? { maxResponseBytes: options.maxResponseBytes }
+      : {}),
+  });
   const base = trimTrailingSlash(options.cloud_base_url);
 
   return {

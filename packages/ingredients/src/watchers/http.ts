@@ -27,6 +27,7 @@
  *  so the module loads in browser contexts. */
 
 import { IngredientError } from '../types.js';
+import { discardResponseBody } from '../bounded-response-body.js';
 import { fetchOriginPinned } from '../origin-pinned-fetch.js';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
@@ -107,11 +108,55 @@ const hashBody = async (body: string): Promise<string> => {
   return toHex(digest);
 };
 
+const concatChunks = (chunks: readonly Uint8Array[], total: number): Uint8Array => {
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return out;
+};
+
+/** Read at most the documented response prefix without first buffering the
+ * whole upstream body. The extra read after exactly MAX_BODY_BYTES is
+ * intentional: it distinguishes an exact-size response from an oversized one.
+ * Once an oversize byte is observed the rest of the stream is cancelled. */
 const sliceBody = async (res: Response): Promise<string> => {
-  const text = await res.text();
-  // Clip to MAX_BODY_BYTES at the string boundary; change detection
-  // sees the same prefix deterministically even for oversize bodies.
-  return text.length <= MAX_BODY_BYTES ? text : text.slice(0, MAX_BODY_BYTES);
+  const body = res.body;
+  if (body === null) return '';
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      const remaining = MAX_BODY_BYTES - total;
+      if (next.value.byteLength > remaining) {
+        if (remaining > 0) {
+          // `slice`, rather than `subarray`, releases a potentially very large
+          // hostile chunk before the bounded prefix is decoded.
+          chunks.push(next.value.slice(0, remaining));
+          total += remaining;
+        }
+        // Do not await cancellation: cleanup supplied by an untrusted stream
+        // must not turn the size ceiling into another unbounded wait.
+        void reader.cancel().catch(() => undefined);
+        break;
+      }
+      chunks.push(next.value);
+      total += next.value.byteLength;
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      // Abort/cancellation already owns the stream lock.
+    }
+  }
+  return new TextDecoder().decode(concatChunks(chunks, total));
 };
 
 const noFire = (status: number): HttpWatcherOutput => ({
@@ -134,8 +179,8 @@ export const evaluateHttpWatcher = async (
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-  let res: Response;
   try {
+    let res: Response;
     const headers: Record<string, string> = {};
     if (args.previous_etag) headers['If-None-Match'] = args.previous_etag;
     // SSRF: follow redirects manually, pinned to the watcher's declared
@@ -150,64 +195,68 @@ export const evaluateHttpWatcher = async (
       headers,
       signal: controller.signal,
     }, url.origin);
-  } catch {
-    // Network error / abort / DNS failure / refused redirect — non-fatal.
-    // Cursor unchanged.
-    return noFire(0);
-  } finally {
-    clearTimeout(timer);
-  }
 
-  // 304 — explicit "not modified". Preserve the caller's cursor.
-  if (res.status === 304) {
+    // 304 — explicit "not modified". Preserve the caller's cursor.
+    if (res.status === 304) {
+      return {
+        should_run: false,
+        body: '',
+        status: 304,
+        etag: args.previous_etag ?? null,
+        hash: args.previous_hash ?? null,
+      };
+    }
+
+    // Non-2xx — non-fatal no-fire so flapping URLs don't trip the
+    // scheduler's circuit breaker. Release the unread body so repeated
+    // watcher ticks cannot strand provider connections.
+    if (res.status < 200 || res.status >= 300) {
+      discardResponseBody(res);
+      return noFire(res.status);
+    }
+
+    const body = await sliceBody(res);
+    const etag = res.headers.get('etag');
+    const hash = await hashBody(body);
+
+    // First tick (no cursor) ⇒ fire. Recipe author is expected to
+    // store `etag` + `hash` in shared.* so subsequent ticks compare.
+    const firstTick = !args.previous_etag && !args.previous_hash;
+    if (firstTick) {
+      return { should_run: true, body, status: res.status, etag, hash };
+    }
+
+    // Prefer ETag comparison when both sides provide it.
+    if (etag !== null && args.previous_etag !== undefined) {
+      return {
+        should_run: etag !== args.previous_etag,
+        body,
+        status: res.status,
+        etag,
+        hash,
+      };
+    }
+
+    // Fallback — body hash. Compares against previous_hash when set; if
+    // the caller only has previous_etag but the new response lacks one,
+    // fall back to hash equality against previous_hash too (may be
+    // absent; treat absence as "changed" so the author gets to
+    // bootstrap the hash cursor).
+    const prevHash = args.previous_hash ?? null;
     return {
-      should_run: false,
-      body: '',
-      status: 304,
-      etag: args.previous_etag ?? null,
-      hash: args.previous_hash ?? null,
-    };
-  }
-
-  // Non-2xx — non-fatal no-fire so flapping URLs don't trip the
-  // scheduler's circuit breaker.
-  if (res.status < 200 || res.status >= 300) {
-    return noFire(res.status);
-  }
-
-  const body = await sliceBody(res);
-  const etag = res.headers.get('etag');
-  const hash = await hashBody(body);
-
-  // First tick (no cursor) ⇒ fire. Recipe author is expected to
-  // store `etag` + `hash` in shared.* so subsequent ticks compare.
-  const firstTick = !args.previous_etag && !args.previous_hash;
-  if (firstTick) {
-    return { should_run: true, body, status: res.status, etag, hash };
-  }
-
-  // Prefer ETag comparison when both sides provide it.
-  if (etag !== null && args.previous_etag !== undefined) {
-    return {
-      should_run: etag !== args.previous_etag,
+      should_run: prevHash === null || prevHash !== hash,
       body,
       status: res.status,
       etag,
       hash,
     };
+  } catch {
+    // Network error / abort / DNS failure / refused redirect / body-stream
+    // failure — non-fatal. Cursor unchanged and the scheduler keeps running.
+    return noFire(0);
+  } finally {
+    // The deadline covers the entire response lifecycle, including the body;
+    // clearing it immediately after headers leaves a slow body unbounded.
+    clearTimeout(timer);
   }
-
-  // Fallback — body hash. Compares against previous_hash when set; if
-  // the caller only has previous_etag but the new response lacks one,
-  // fall back to hash equality against previous_hash too (may be
-  // absent; treat absence as "changed" so the author gets to
-  // bootstrap the hash cursor).
-  const prevHash = args.previous_hash ?? null;
-  return {
-    should_run: prevHash === null || prevHash !== hash,
-    body,
-    status: res.status,
-    etag,
-    hash,
-  };
 };

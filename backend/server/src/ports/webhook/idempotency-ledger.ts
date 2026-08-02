@@ -53,6 +53,16 @@ export interface IdempotencyLedger {
    *  report whether this is a fresh delivery. Returns `fresh: false`
    *  when the same key has been seen inside the replay window. */
   record(vendor: string, event_id: string): { fresh: boolean };
+  /** Read-only replay check — does NOT record.
+   *
+   *  The webhook port answers the vendor before the work completes, so
+   *  check-and-set in one call is right there. Local ingress is the
+   *  opposite shape: Telegram polling, Slack Socket Mode, and the Discord
+   *  Gateway all RETRY a delivery whose dispatch failed (that is what
+   *  keeps a cursor honest), so burning the key on the attempt would turn
+   *  the retry into a silent drop. Those callers check here first and
+   *  `record` only after the dispatch resolves. */
+  seen(vendor: string, event_id: string): boolean;
   /** Snapshot count of currently-tracked keys — for diagnostics. */
   size(): number;
   /** Drop every entry. */
@@ -94,18 +104,22 @@ export const createIdempotencyLedger = (
 
   const bucketStart = (t: number): number => Math.floor(t / BUCKET_SIZE_MS) * BUCKET_SIZE_MS;
 
+  // O(buckets) scan for an existing key — bounded by 1440 in the steady
+  // state. Faster paths exist (per-key map with TTL) at the cost of an
+  // extra index; the spec-line cap is 24h replay, not perf-critical.
+  const hasKey = (key: string): boolean => {
+    for (const bucket of buckets) {
+      if (bucket.keys.has(key)) return true;
+    }
+    return false;
+  };
+
   return {
     record: (vendor, event_id) => {
       const t = now();
       sweep(t);
       const key = `${vendor}:${event_id}`;
-      // O(buckets) scan for an existing key — bounded by 1440 in the
-      // steady state. Faster paths exist (per-key map with TTL) at
-      // the cost of an extra index; the spec-line cap is 24h replay,
-      // not perf-critical.
-      for (const bucket of buckets) {
-        if (bucket.keys.has(key)) return { fresh: false };
-      }
+      if (hasKey(key)) return { fresh: false };
       const start = bucketStart(t);
       let bucket = indexByStart.get(start);
       if (!bucket) {
@@ -133,6 +147,10 @@ export const createIdempotencyLedger = (
         totalKeys -= 1;
       }
       return { fresh: true };
+    },
+    seen: (vendor, event_id) => {
+      sweep(now());
+      return hasKey(`${vendor}:${event_id}`);
     },
     size: () => {
       let count = 0;

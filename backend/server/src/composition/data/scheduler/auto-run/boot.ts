@@ -1,8 +1,8 @@
 /** Auto-run-scheduler boot (D-115 Phase 4).
  *
  *  Constructs the reactive recipe auto-run scheduler
- *  (`createServerAutoRunScheduler`), kicks `.start()` (fire-and-forget),
- *  registers its stop closure with `backgroundServices` under
+ *  (`createServerAutoRunScheduler`), kicks `.start()` with an attached failure
+ *  reporter, registers its stop closure with `backgroundServices` under
  *  `kind: 'scheduler'`, and exposes a typed slot.
  *
  *  Prerequisites: `ctx.db` AND a non-empty `ctx.executeDeps`. Either
@@ -32,6 +32,25 @@ import type { SchedulerBootContext, SchedulerSlot } from '../registry.js';
  *  single-source-of-truth pattern. */
 export const AUTO_RUN_SCHEDULER_NAME = 'auto-run-scheduler';
 
+const reportStartFailure = (error: unknown): void => {
+  try {
+    console.error('[auto-run] scheduler start failed', error);
+  } catch {
+    // Diagnostics must not turn a contained startup failure into another
+    // unhandled rejection.
+  }
+};
+
+const launchStart = (handle: ServerAutoRunHandle): void => {
+  try {
+    void handle.start().catch(reportStartFailure);
+  } catch (error) {
+    // ServerAutoRunHandle.start is async today, but keep the detached boot
+    // boundary safe if a future implementation validates synchronously.
+    reportStartFailure(error);
+  }
+};
+
 export const bootAutoRunScheduler = (
   ctx: SchedulerBootContext,
 ): SchedulerSlot<ServerAutoRunHandle> | undefined => {
@@ -58,7 +77,7 @@ export const bootAutoRunScheduler = (
       onFired: (recipe_id) =>
         emitReactiveFire(executeDeps.eventBus, recipe_id),
     });
-    void handle.start();
+    launchStart(handle);
   };
 
   start();

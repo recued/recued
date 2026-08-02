@@ -59,6 +59,10 @@ import {
 } from '@recued/contracts';
 
 import type { ConnectionLookup } from '../../housekeeping/reconciliation/vendor-reconciler.js';
+import {
+  defaultProviderApiFetch,
+  defaultProviderLongPollFetch,
+} from '../provider-api-fetch.js';
 import type {
   SalesforceCometDEvent,
   SalesforceReplayIdTracker,
@@ -138,8 +142,8 @@ export interface BuildSalesforceCometDSubscriberInput {
    *  errors propagate to the long-poll loop's retry decision; the
    *  loop catches + logs without rethrowing. */
   onEvent: (event: SalesforceCometDEvent) => void | Promise<void>;
-  /** HTTP fetcher. Defaults to `globalThis.fetch`. Tests inject a
-   *  per-call stub. */
+  /** HTTP fetcher. Defaults to the server's bounded provider fetches,
+   *  with a longer ceiling only for `/meta/connect`. Tests inject a stub. */
   fetcher?: typeof fetch;
   /** Sleep — used between reconnect-backoff attempts. Defaults to a
    *  setTimeout-promise. Tests pass a deterministic stub. */
@@ -220,7 +224,6 @@ interface BayeuxEventMessage {
 export const buildSalesforceCometDSubscriber = (
   input: BuildSalesforceCometDSubscriberInput,
 ): SalesforceCometDSubscriber => {
-  const fetcher = input.fetcher ?? globalThis.fetch.bind(globalThis);
   const sleep = input.sleep ?? defaultSleep;
   const log = input.log ?? noopLog;
   const reconnectBaseMs = input.reconnectBaseMs ?? 1_000;
@@ -295,6 +298,8 @@ export const buildSalesforceCometDSubscriber = (
     if (signal) {
       (fetchOptions as RequestInit & { signal?: AbortSignal }).signal = signal;
     }
+    const fetcher = input.fetcher
+      ?? (signal === undefined ? defaultProviderApiFetch : defaultProviderLongPollFetch);
     const response = await fetcher(endpoint, fetchOptions);
     if (response.status === 401) {
       throw new BayeuxAuthExpired();

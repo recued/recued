@@ -21,13 +21,15 @@
 import {
   isValidOAuthEndpointUrl,
   resolveVendorOAuthEndpoints,
+  resolveVendorOAuthRuntimeBase,
   type ConnectionVendorProvider,
 } from '@recued/contracts';
 import {
-  fetchOriginPinned,
   CrossOriginRedirectError,
   RedirectLimitError,
+  ResponseBodyTooLargeError,
 } from '@recued/ingredients';
+import { makeBoundedOriginHttpFetcher } from './bounded-origin-http-fetcher.js';
 
 /** Narrow http fetcher matching `collections/mail/oauth.ts` so tests
  *  can inject a fake without faking every `Response` method. */
@@ -87,20 +89,10 @@ export class VendorOAuthError extends Error {
  *  injected one. */
 export const makeOriginPinnedFetcher = (
   fetchImpl?: typeof fetch,
-): HttpFetcher => async (url, init) => {
-  const res = await fetchOriginPinned(
-    fetchImpl ?? fetch,
-    url,
-    { method: init?.method, headers: init?.headers, body: init?.body },
-    new URL(url).origin,
-  );
-  return {
-    status: res.status,
-    ok: res.ok,
-    json: () => res.json(),
-    text: () => res.text(),
-  };
-};
+): HttpFetcher => makeBoundedOriginHttpFetcher({
+  ...(fetchImpl !== undefined ? { fetchImpl } : {}),
+  maxResponseBytes: 1024 * 1024,
+});
 
 const defaultFetcher: HttpFetcher = makeOriginPinnedFetcher();
 
@@ -113,18 +105,10 @@ interface VendorTokenResponse {
    *  granted scopes back here. HubSpot omits this field; granted
    *  scopes for HubSpot come from the introspection endpoint instead. */
   scope?: string;
-  /** D-130 P5 — Salesforce stamps the per-org runtime base URL here on
-   *  every token + refresh response (e.g.
-   *  `https://mycompany.my.salesforce.com` for production,
-   *  `https://mycompany--sandbox.sandbox.my.salesforce.com` for
-   *  sandbox). Recued persists this onto `connection.config.base_url`
-   *  at enrollment so REST + SOQL + CometD long-poll calls land at the
-   *  right host. Other vendors don't emit this field; helpers + handlers
-   *  treat it as optional throughout. */
-  instance_url?: string;
-  /** Pipedrive returns the per-company API host as `api_domain`; normalize it
-   *  onto the existing `instance_url` persistence channel. */
-  api_domain?: string;
+  /** Retained for the provider-declared runtime-base decoder. Keeping the raw
+   * object (rather than opportunistically copying URL-looking fields) lets the
+   * registry decide whether `instance_url` / `api_domain` has any authority. */
+  raw: Readonly<Record<string, unknown>>;
 }
 
 const parseTokenResponse = (raw: unknown): VendorTokenResponse => {
@@ -143,19 +127,13 @@ const parseTokenResponse = (raw: unknown): VendorTokenResponse => {
       'token endpoint missing access_token',
     );
   }
-  const out: VendorTokenResponse = { access_token: obj.access_token };
+  const out: VendorTokenResponse = { access_token: obj.access_token, raw: obj };
   if (typeof obj.refresh_token === 'string' && obj.refresh_token.length > 0) {
     out.refresh_token = obj.refresh_token;
   }
   if (typeof obj.expires_in === 'number') out.expires_in = obj.expires_in;
   if (typeof obj.token_type === 'string') out.token_type = obj.token_type;
   if (typeof obj.scope === 'string' && obj.scope.length > 0) out.scope = obj.scope;
-  if (typeof obj.instance_url === 'string' && obj.instance_url.length > 0) {
-    out.instance_url = obj.instance_url;
-  }
-  if (typeof obj.api_domain === 'string' && obj.api_domain.length > 0) {
-    out.api_domain = obj.api_domain;
-  }
   return out;
 };
 
@@ -295,7 +273,21 @@ export const completeVendorOAuth = async (
         `token exchange refused: ${e.message} — credentials not sent to the redirect target`,
       );
     }
-    throw e;
+    if (e instanceof ResponseBodyTooLargeError) {
+      throw new VendorOAuthError(
+        'token_response_invalid',
+        502,
+        `token endpoint response exceeded the ${e.maxBytes}-byte limit`,
+      );
+    }
+    const isAbort = e instanceof Error && e.name === 'AbortError';
+    throw new VendorOAuthError(
+      'token_exchange_failed',
+      isAbort ? 504 : 502,
+      isAbort
+        ? 'token exchange timed out while waiting for the vendor response'
+        : `token exchange failed: ${e instanceof Error ? e.message : String(e)}`,
+    );
   }
   if (!tokenRes.ok) {
     const text = await tokenRes.text().catch(() => '');
@@ -305,7 +297,17 @@ export const completeVendorOAuth = async (
       `token exchange failed (${tokenRes.status}): ${text.slice(0, 200)}`,
     );
   }
-  const parsed = parseTokenResponse(await tokenRes.json());
+  let tokenBody: unknown;
+  try {
+    tokenBody = await tokenRes.json();
+  } catch (e) {
+    throw new VendorOAuthError(
+      'token_response_invalid',
+      502,
+      `token endpoint returned malformed JSON: ${(e as Error).message}`,
+    );
+  }
+  const parsed = parseTokenResponse(tokenBody);
   if (!parsed.refresh_token) {
     throw new VendorOAuthError(
       'missing_refresh_token',
@@ -325,12 +327,31 @@ export const completeVendorOAuth = async (
     );
   }
 
+  // A token response can name the API host that will receive the bearer token
+  // minted beside it. That is credential-destination authority, so only a
+  // provider-declared field is honored, and it must resolve to an allowlisted
+  // HTTPS origin. Providers such as QuickBooks compose their base from trusted
+  // registry constants instead; an unexpected response field stays inert.
+  const runtimeBase = resolveVendorOAuthRuntimeBase(opts.provider, parsed.raw);
+  if (runtimeBase.status === 'missing') {
+    throw new VendorOAuthError(
+      'token_response_invalid',
+      502,
+      `token endpoint response missing required ${runtimeBase.field}`,
+    );
+  }
+  if (runtimeBase.status === 'invalid') {
+    throw new VendorOAuthError(
+      'token_response_invalid',
+      502,
+      `token endpoint returned invalid ${runtimeBase.field}: ${runtimeBase.reason}`,
+    );
+  }
+
   return {
     refresh_token: parsed.refresh_token,
     granted_scopes,
-    ...(parsed.instance_url || parsed.api_domain
-      ? { instance_url: parsed.instance_url ?? parsed.api_domain }
-      : {}),
+    ...(runtimeBase.status === 'valid' ? { instance_url: runtimeBase.base_url } : {}),
   };
 };
 

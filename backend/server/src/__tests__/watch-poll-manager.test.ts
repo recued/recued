@@ -467,6 +467,44 @@ describe('watch poll-manager', () => {
       manager.recompute();
       expect(manager.setEnabled('nope/nope/nope', false)).toBeNull();
     });
+
+    it('reports a timer poll whose failure cannot be persisted without an unhandled rejection', async () => {
+      const accountingFailure = new Error('watch error store unavailable');
+      const warnings: string[] = [];
+      const failingStore: WatchStore = {
+        ...store,
+        recordPollError: () => { throw accountingFailure; },
+      };
+      const manager = makeManager({
+        store: failingStore,
+        log: (_level, message) => warnings.push(message),
+      });
+      manager.recompute();
+      pollOutcomes.push({ ok: false, kind: 'error', reason: 'provider unavailable' });
+
+      await timers.fireLatest();
+
+      expect(warnings).toEqual([
+        `watch '${KEY}' background poll rejected: watch error store unavailable`,
+      ]);
+      expect(manager.inFlight()).toBe(false);
+      await manager.stop();
+    });
+
+    it('keeps pollNow failure ownership with its caller without a rejected cleanup chain', async () => {
+      const accountingFailure = new Error('watch error store unavailable');
+      const failingStore: WatchStore = {
+        ...store,
+        recordPollError: () => { throw accountingFailure; },
+      };
+      const manager = makeManager({ store: failingStore });
+      manager.recompute();
+      pollOutcomes.push({ ok: false, kind: 'error', reason: 'provider unavailable' });
+
+      await expect(manager.pollNow(KEY)).rejects.toBe(accountingFailure);
+      expect(manager.inFlight()).toBe(false);
+      await manager.stop();
+    });
   });
 
   describe('codex folds — in-flight staleness + commit-before-emit', () => {

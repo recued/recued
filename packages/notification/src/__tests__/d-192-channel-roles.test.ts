@@ -38,8 +38,8 @@ const allOn = (): NotificationSettings => {
   return s;
 };
 
-describe('D-192 — every combination of the three axes is occupied', () => {
-  it('places each channel in its own quadrant, and none of them is a boolean', () => {
+describe('D-192 — the three capability axes stay independent', () => {
+  it('places each channel by capability rather than one messenger boolean', () => {
     // ⚠ This table IS the model. If a future edit collapses two axes into one, this
     // is what says no — and it says it by naming the vendor that would break.
     expect(CHANNEL_ROLES).toMatchObject({
@@ -52,17 +52,16 @@ describe('D-192 — every combination of the three axes is occupied', () => {
       email: { notification: true, approval: true, messenger: false },
       slack: { notification: true, approval: true, messenger: true },
       telegram: { notification: true, approval: true, messenger: true },
-      // Presses but no messages (no Gateway) — the mirror image of WhatsApp.
-      discord: { notification: true, approval: true, messenger: false },
-      // Messages but no unprompted reach (Meta's 24h window) — the mirror of Discord.
+      // Local Gateway supplies messages as well as component interactions.
+      discord: { notification: true, approval: true, messenger: true },
+      // Messages but no reliable unprompted reach (Meta's 24h window).
       whatsapp: { notification: false, approval: false, messenger: true },
     });
   });
 
-  it('gives discord and email IDENTICAL roles by completely different routes', () => {
-    // The clearest proof that ROLES and CAPABILITY are orthogonal and both needed:
-    // same triple, and yet one renders inline buttons while the other sends a link.
-    expect(CHANNEL_ROLES.discord).toEqual(CHANNEL_ROLES.email);
+  it('makes Discord a full chat peer while email remains a landing-page channel', () => {
+    expect(CHANNEL_ROLES.discord).toEqual(CHANNEL_ROLES.slack);
+    expect(CHANNEL_ROLES.email.messenger).toBe(false);
   });
 
   it('derives every chat transport’s roles from its own declaration', () => {
@@ -81,10 +80,28 @@ describe('D-192 — the gates check SUPPORT before the toggle (fail-closed)', ()
     // toggle can only ever turn OFF what the channel could already do.
     const on = allOn();
 
-    // Discord: alert + approve, never a conversation.
+    // Discord: alert + approve in either mode. The conversation axis is the one
+    // thing in the registry that moves WITH the mode — Gateway carries ordinary
+    // messages, the Interactions webhook carries only button presses.
     expect(channelNotifyEnabled(on, 'discord')).toBe(true);
     expect(channelApprovalEnabled(on, 'discord')).toBe(true);
+    expect(channelMessengerEnabled(on, 'discord', 'socket')).toBe(true);
+    expect(channelMessengerEnabled(on, 'discord', 'webhook')).toBe(false);
+    // No mode in hand ⇒ the floor, not the ceiling. A caller without the
+    // connection cannot PROVE this row is conversational, and an optimistic
+    // answer here is how a webhook row gets offered a toggle it cannot honour.
     expect(channelMessengerEnabled(on, 'discord')).toBe(false);
+
+    // The mode argument is inert for every vendor whose roles do not move, so
+    // it cannot become a new way to get a wrong answer for Slack or Telegram.
+    for (const mode of ['socket', 'webhook'] as const) {
+      expect(channelMessengerEnabled(on, 'slack', mode)).toBe(true);
+    }
+    for (const mode of ['poll', 'webhook'] as const) {
+      expect(channelMessengerEnabled(on, 'telegram', mode)).toBe(true);
+    }
+    expect(channelMessengerEnabled(on, 'slack')).toBe(true);
+    expect(channelMessengerEnabled(on, 'telegram')).toBe(true);
 
     // WhatsApp: the exact inverse — a conversation, never an unprompted word.
     expect(channelNotifyEnabled(on, 'whatsapp')).toBe(false);
@@ -152,9 +169,9 @@ describe('D-192 — the declaration cannot lie', () => {
   it('never lets a vendor claim a messenger role it cannot serve', () => {
     // The turn gates on this declaration now, rather than on `parseInbound` happening
     // to return null. So a vendor claiming `messenger: true` is claiming its transport
-    // really does deliver plain user messages — pin the two shipped exceptions, since
-    // getting either wrong silently kills (or silently opens) the chat surface.
-    expect(getMessengerVendorDeclaration('discord')?.roles.messenger).toBe(false);
+    // really does deliver plain user messages. Pin Discord's newly-live Gateway
+    // capability and WhatsApp's conversation-only posture.
+    expect(getMessengerVendorDeclaration('discord')?.roles.messenger).toBe(true);
     expect(getMessengerVendorDeclaration('whatsapp')?.roles.messenger).toBe(true);
     expect(getMessengerVendorDeclaration('whatsapp')?.roles.notification).toBe(false);
   });

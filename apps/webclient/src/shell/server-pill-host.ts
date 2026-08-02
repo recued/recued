@@ -28,8 +28,11 @@ import {
   type ServerPillHandle,
 } from '@recued/ui-shared/server-pill';
 
-import type { WebclientConnectionStatus } from '../realtime/connection-status.js';
-import { humanizeRpcError } from './rpc-error-copy.js';
+import {
+  WEBCLIENT_HEARTBEAT_STALE_MS,
+  type WebclientConnectionStatus,
+} from '../realtime/connection-status.js';
+import { classifyRpcError } from './rpc-error-copy.js';
 
 /** D-188 — supervisor modes that actually RESPAWN the process on a restart
  *  handoff. `native` (bare process) + `dev` (npx tsx) do NOT — a restart there
@@ -60,6 +63,15 @@ export const SERVER_PILL_STYLES_MARKER = 'data-recued-server-pill-styles';
  *  so its `server-pill*` classes are scoped under THIS instead of attr'd
  *  directly, keeping them from leaking page-wide). */
 export const SERVER_PILL_HOST_ATTR = 'data-recued-webclient-server-pill-host';
+export const SERVER_CONTROL_POPOVER_ATTR =
+  'data-recued-webclient-server-control-popover';
+export const SERVER_CONTROL_TITLE_ATTR =
+  'data-recued-webclient-server-control-title';
+export const SERVER_CONTROL_STATUS_ATTR =
+  'data-recued-webclient-server-control-status';
+
+const SERVER_CONTROL_TITLE_ID = 'recued-webclient-server-control-title';
+const SERVER_CONTROL_STATUS_ID = 'recued-webclient-server-control-status';
 
 /** Account-dialog styles for the pill, scoped under {@link SERVER_PILL_HOST_ATTR}.
  *  Keeps the status quiet and near-monochrome; the
@@ -107,13 +119,15 @@ export const SERVER_PILL_STYLES = `
   border-left: 2px solid var(--accent, #0e7490);
   border-right: 2px solid var(--accent, #0e7490);
 }
-/* D-188 — the pill becomes a clickable status + control surface. The
-   popover mirrors the attention popover: an absolutely-positioned frame
-   anchored under the pill, near-monochrome with one accent + one danger. */
+/* D-188 — the pill becomes a clickable status + control surface. Inside the
+   scroll-bounded Account dialog the controls expand inline under the pill;
+   an absolute frame would be clipped at phone widths. */
 [${SERVER_PILL_HOST_ATTR}] .server-pill-anchor {
   position: relative;
-  display: inline-flex;
-  align-items: center;
+  display: flex;
+  width: 100%;
+  flex-direction: column;
+  align-items: stretch;
 }
 [${SERVER_PILL_HOST_ATTR}] .server-pill[data-action] { cursor: pointer; }
 [${SERVER_PILL_HOST_ATTR}] .server-pill[data-action]:hover {
@@ -125,10 +139,9 @@ export const SERVER_PILL_STYLES = `
   outline-offset: 2px;
 }
 [${SERVER_PILL_HOST_ATTR}] .server-control-popover-frame {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  width: min(248px, calc(100vw - 32px));
+  position: static;
+  width: 100%;
+  margin-top: 8px;
   z-index: 60;
   border: 1px solid var(--border-strong, #d4d4d8);
   border-radius: 8px;
@@ -141,11 +154,20 @@ export const SERVER_PILL_STYLES = `
   box-sizing: border-box;
 }
 [${SERVER_PILL_HOST_ATTR}] .server-control-title { font-weight: 650; font-size: 12px; }
+[${SERVER_PILL_HOST_ATTR}] .server-control-title:focus {
+  outline: 2px solid var(--accent, #0e7490);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
 [${SERVER_PILL_HOST_ATTR}] .server-control-status {
   color: var(--fg-muted, #71717a);
   font-size: 12px;
 }
-[${SERVER_PILL_HOST_ATTR}] .server-control-actions { display: flex; gap: 8px; }
+[${SERVER_PILL_HOST_ATTR}] .server-control-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 [${SERVER_PILL_HOST_ATTR}] .server-control-btn {
   flex: 1 1 auto;
   min-height: 44px;
@@ -229,15 +251,100 @@ export interface MountWebclientServerPillOptions {
    *  restart just exits the process and stays down — a footgun. The crash-halt
    *  state surfaces it as the honest recovery action. */
   runRequestRestart?: () => Promise<{ accepted: boolean }>;
+  /** Reports whether a fresh heartbeat-backed control target exists. Socket
+   * state alone is not sufficient because reconnect deliberately drops the
+   * cached heartbeat before the next server frame. */
+  onControlAvailabilityChange?: (available: boolean) => void;
+  /** Reports the stronger boundary used to close an unresolved historical
+   * receipt: a stable, fresh heartbeat exists and no server-control RPC is
+   * still in flight. */
+  onCurrentStateAvailabilityChange?: (available: boolean) => void;
+}
+
+export type ServerControlAction = 'pause' | 'resume' | 'restart';
+
+export type ServerControlActionReceiptPhase =
+  | 'pending'
+  | 'accepted'
+  | 'confirmed'
+  | 'reconnected'
+  | 'superseded'
+  | 'failed'
+  | 'unconfirmed';
+
+/** Privacy-safe projection of one deliberate server-control result. This is
+ * the only part of a receipt that may cross from Account back to Attention. */
+export interface ServerControlActionOutcome {
+  readonly action: ServerControlAction;
+  readonly phase: ServerControlActionReceiptPhase;
+  readonly currentState?: 'running' | 'paused' | 'restarting';
+}
+
+/** Privacy-safe projection of the server's current execution state from one
+ * fresh heartbeat. This is deliberately separate from an action receipt: it
+ * establishes what is true now without claiming an earlier request caused it. */
+export interface ServerControlCurrentStateObservation {
+  readonly state: 'running' | 'paused';
+}
+
+/** Outcomes that still need a live server re-review before the person can
+ * safely treat the control request as settled. `confirmed` and `superseded`
+ * already carry an authoritative current-state boundary; every other phase
+ * remains indeterminate or unsuccessful. */
+export const isUnresolvedServerControlActionOutcome = (
+  outcome: ServerControlActionOutcome,
+): boolean => outcome.phase === 'pending'
+  || outcome.phase === 'accepted'
+  || outcome.phase === 'reconnected'
+  || outcome.phase === 'failed'
+  || outcome.phase === 'unconfirmed';
+
+/** Ephemeral, credential-free result from one deliberate server-control
+ * action. It is kept only while the Account diagnosis owns the handoff. */
+export interface ServerControlActionReceipt
+  extends ServerControlActionOutcome {
+  /** Presentation-safe, layout-bounded error copy from the shared RPC
+   * classifier. */
+  readonly detail?: string;
+}
+
+export interface ServerControlDiagnosisHandoff {
+  /** Ephemeral diagnosis identity. Reopening the same handoff keeps its latest
+   * receipt live; a different owner can never inherit it. */
+  readonly ownerId: string;
+  /** Receives action progress and later authoritative reconciliation, even
+   * after the inline controls have returned to the diagnosis. */
+  readonly onReceipt: (receipt: ServerControlActionReceipt) => void;
+  /** Returns focus after Escape, outside click, or connection loss. */
+  readonly onReturn: () => void;
 }
 
 export interface WebclientServerPillMount {
   /** Feed a fresh heartbeat snapshot (from the bootstrap's `server_heartbeat`
    *  demux). Re-renders — shown only if currently `connected`. */
   noteSnapshot(snapshot: ServerHeartbeatSnapshot): void;
+  /** Deliberately open the real server-control surface and focus its stable
+   * heading. The optional handoff receives action receipts and focus return. */
+  openControls(
+    handoff?: ServerControlDiagnosisHandoff,
+  ): 'opened' | 'unavailable';
+  /** Read the current stable heartbeat-backed execution state. Returns null
+   * while stale, transitional, crash-halted, disconnected, or while an action
+   * is awaiting a response or a post-action heartbeat. */
+  readCurrentState(): ServerControlCurrentStateObservation | null;
+  /** Close a visible control surface during parent teardown or handoff reset. */
+  closeControls(): void;
   /** Detach the status subscription + remove the pill. Idempotent. */
   dispose(): void;
 }
+
+const SERVER_CONTROL_RECEIPT_DETAIL_MAX = 320;
+
+const receiptDetail = (copy: string): string => {
+  const normalized = copy.trim();
+  if (normalized.length <= SERVER_CONTROL_RECEIPT_DETAIL_MAX) return normalized;
+  return `${normalized.slice(0, SERVER_CONTROL_RECEIPT_DETAIL_MAX - 1).trimEnd()}…`;
+};
 
 export const mountWebclientServerPill = (
   opts: MountWebclientServerPillOptions,
@@ -246,6 +353,7 @@ export const mountWebclientServerPill = (
   const runRequestRestart = opts.runRequestRestart;
   const controllable = runSetPaused !== undefined;
   let latest: ServerHeartbeatSnapshot | null = null;
+  let latestReceivedAt: number | null = null;
   let disposed = false;
 
   // The controllable variant keeps a structural anchor mounted even before a
@@ -278,7 +386,22 @@ export const mountWebclientServerPill = (
   let confirming: null | 'pause' | 'restart' = null;
   let restarting = false;
   let busy = false;
+  let busyAction: ServerControlAction | null = null;
   let error: string | null = null;
+  let handoffReturn: (() => void) | null = null;
+  let handoffReceiptObserver:
+    | ((receipt: ServerControlActionReceipt) => void)
+    | null = null;
+  let handoffOwnerId: string | null = null;
+  let handoffGeneration = 0;
+  let actionReceipt: ServerControlActionReceipt | null = null;
+  let restartSawDisconnect = false;
+  let restartBaselineServerId: string | null = null;
+  let restartBaselineUptimeS: number | null = null;
+  let lastReportedControlAvailability: boolean | null = null;
+  let lastReportedCurrentStateAvailability: boolean | null = null;
+  let heartbeatSequence = 0;
+  let currentStateRequiresHeartbeatAfter = 0;
 
   const crashHalted = (): boolean => latest?.crash_halt_active === true;
   const paused = (): boolean => latest?.paused === true;
@@ -288,18 +411,210 @@ export const mountWebclientServerPill = (
     runRequestRestart !== undefined
     && SUPERVISED_MODES.has(latest?.supervisor_mode ?? '');
 
+  const freshHeartbeatTargetAvailable = (): boolean => {
+    if (
+      latest === null
+      || latest.server_id === null
+      || latest.server_id.trim().length === 0
+      || latest.last_seen_at <= 0
+      || !Number.isFinite(latest.last_seen_at)
+      || latestReceivedAt === null
+    ) return false;
+    let currentTime: number;
+    try {
+      currentTime = (opts.now ?? Date.now)();
+    } catch {
+      return false;
+    }
+    const age = currentTime - latestReceivedAt;
+    return Number.isFinite(currentTime)
+      && age >= 0
+      && age < WEBCLIENT_HEARTBEAT_STALE_MS;
+  };
+
+  const controlsAvailable = (): boolean => !disposed
+    && controllable
+    && opts.status() === 'connected'
+    && freshHeartbeatTargetAvailable();
+
+  const currentStateAvailable = (): boolean => {
+    if (
+      !controlsAvailable()
+      || busy
+      || restarting
+      || latest === null
+      || heartbeatSequence <= currentStateRequiresHeartbeatAfter
+      || crashHalted()
+      || (
+        latest.lifecycle_state !== undefined
+        && latest.lifecycle_state !== 'running'
+      )
+    ) return false;
+    return true;
+  };
+
+  const reportControlAvailability = (): void => {
+    const available = controlsAvailable();
+    if (available === lastReportedControlAvailability) return;
+    lastReportedControlAvailability = available;
+    try {
+      opts.onControlAvailabilityChange?.(available);
+    } catch {
+      // Presentation observers cannot affect the server-control state machine.
+    }
+  };
+
+  const reportCurrentStateAvailability = (): void => {
+    const available = currentStateAvailable();
+    if (available === lastReportedCurrentStateAvailability) return;
+    lastReportedCurrentStateAvailability = available;
+    try {
+      opts.onCurrentStateAvailabilityChange?.(available);
+    } catch {
+      // Presentation observers cannot affect the server-control state machine.
+    }
+  };
+
+  const reportAvailabilities = (): void => {
+    reportControlAvailability();
+    reportCurrentStateAvailability();
+  };
+
+  const queryPopoverElement = (selector: string): HTMLElement | null => {
+    if (popoverHost === null) return null;
+    const query = (popoverHost as unknown as {
+      querySelector?: (value: string) => HTMLElement | null;
+    }).querySelector;
+    if (typeof query !== 'function') return null;
+    try {
+      return query.call(popoverHost, selector);
+    } catch {
+      return null;
+    }
+  };
+
+  const focusControlElement = (element: HTMLElement | null): void => {
+    const focus = (element as { focus?: () => void } | null)?.focus;
+    if (typeof focus !== 'function' || element === null) return;
+    try {
+      focus.call(element);
+    } catch {
+      // Detached and reduced fake DOMs keep focus best-effort.
+    }
+  };
+
+  const focusControlTitle = (): void => {
+    focusControlElement(queryPopoverElement(`[${SERVER_CONTROL_TITLE_ATTR}]`));
+  };
+
+  const focusPill = (): void => {
+    const query = (pillHost as unknown as {
+      querySelector?: (value: string) => HTMLElement | null;
+    }).querySelector;
+    if (typeof query !== 'function') return;
+    try {
+      focusControlElement(query.call(pillHost, '.server-pill[data-action]'));
+    } catch {
+      // Reduced fake DOMs do not parse the shared pill's innerHTML.
+    }
+  };
+
+  const resetActionReceipt = (clearObserver: boolean): void => {
+    handoffGeneration += 1;
+    actionReceipt = null;
+    restartSawDisconnect = false;
+    restartBaselineServerId = null;
+    restartBaselineUptimeS = null;
+    if (clearObserver) {
+      handoffReceiptObserver = null;
+      handoffOwnerId = null;
+    }
+  };
+
+  const publishActionReceipt = (
+    receipt: ServerControlActionReceipt,
+    generation: number,
+  ): void => {
+    if (disposed || generation !== handoffGeneration) return;
+    actionReceipt = { ...receipt };
+    try {
+      handoffReceiptObserver?.({ ...receipt });
+    } catch {
+      // The diagnosis observer is presentation-only and may already be gone.
+    }
+  };
+
+  const knownState = (): 'running' | 'paused' | undefined =>
+    latest === null ? undefined : latest.paused === true ? 'paused' : 'running';
+
+  const reconcileActionReceipt = (snapshot: ServerHeartbeatSnapshot): void => {
+    const receipt = actionReceipt;
+    if (receipt === null) return;
+    const generation = handoffGeneration;
+    if (
+      (receipt.action === 'pause' || receipt.action === 'resume')
+      && receipt.phase === 'confirmed'
+      && typeof snapshot.paused === 'boolean'
+    ) {
+      const expectedPaused = receipt.action === 'pause';
+      if (snapshot.paused !== expectedPaused) {
+        publishActionReceipt({
+          action: receipt.action,
+          phase: 'superseded',
+          currentState: snapshot.paused ? 'paused' : 'running',
+        }, generation);
+      }
+      return;
+    }
+    if (
+      receipt.action !== 'restart'
+      || !restartSawDisconnect
+      || (
+        receipt.phase !== 'accepted'
+        && receipt.phase !== 'reconnected'
+      )
+    ) return;
+    const restarted =
+      restartBaselineServerId !== null
+      && snapshot.server_id === restartBaselineServerId
+      && restartBaselineUptimeS !== null
+      && typeof snapshot.uptime_s === 'number'
+      && Number.isFinite(snapshot.uptime_s)
+      && snapshot.uptime_s >= 0
+      && snapshot.uptime_s < restartBaselineUptimeS;
+    publishActionReceipt({
+      action: 'restart',
+      phase: restarted ? 'confirmed' : 'reconnected',
+      currentState: snapshot.paused === true ? 'paused' : 'running',
+    }, generation);
+  };
+
   // `action` + `label` are a fixed enum (no injection); every button disables
   // while a rpc is in flight so a double-click can't fire twice.
   const button = (action: string, label: string, cls = ''): string =>
     `<button type="button" class="server-control-btn${cls}" data-action="${action}"`
     + `${busy ? ' disabled aria-busy="true"' : ''}>${label}</button>`;
 
-  const renderPopover = (): void => {
+  const renderPopover = (preferredAction?: string): void => {
     if (disposed || popoverHost === null) return;
     if (!open || opts.status() !== 'connected' || latest === null) {
       popoverHost.innerHTML = '';
       return;
     }
+    const activeElement = (opts.host.ownerDocument as unknown as {
+      activeElement?: EventTarget | null;
+    }).activeElement ?? null;
+    let focusWasInside = false;
+    try {
+      focusWasInside = activeElement !== null
+        && popoverHost.contains(activeElement as Node);
+    } catch {
+      focusWasInside = false;
+    }
+    const focusedAction = focusWasInside
+      ? (activeElement as { getAttribute?: (name: string) => string | null })
+        .getAttribute?.('data-action') ?? null
+      : null;
     // A restart-confirm armed under a supervisor must auto-disarm if a later
     // snapshot no longer reports one — so the gate can never go stale.
     if (confirming === 'restart' && !canRestart()) confirming = null;
@@ -310,7 +625,18 @@ export const mountWebclientServerPill = (
     let detail: string;
     let detailCls = '';
     let actions: string;
-    if (restarting) {
+    if (busy && busyAction !== null) {
+      const action = busyAction === 'pause'
+        ? 'Pause'
+        : busyAction === 'resume'
+          ? 'Resume'
+          : 'Restart';
+      detail = `${action} is still awaiting a server response. Review the live status; controls stay unavailable until it settles.`;
+      actions = paused()
+        ? button('resume', 'Resume', ' server-control-btn--resume') + restart
+        : button('pause-request', 'Pause server', ' server-control-btn--pause')
+          + restart;
+    } else if (restarting) {
       detail = 'Restarting — reconnecting…';
       actions = '';
     } else if (confirming === 'pause') {
@@ -336,43 +662,110 @@ export const mountWebclientServerPill = (
       actions = button('pause-request', 'Pause server', ' server-control-btn--pause') + restart;
     }
     popoverHost.innerHTML =
-      `<div class="server-control-popover-frame" role="dialog" aria-label="Server controls">`
-      + `<div class="server-control-title">Server</div>`
-      + `<div class="server-control-status${detailCls}">${detail}</div>`
+      `<div class="server-control-popover-frame" ${SERVER_CONTROL_POPOVER_ATTR}`
+      + ` role="dialog" aria-labelledby="${SERVER_CONTROL_TITLE_ID}"`
+      + ` aria-describedby="${SERVER_CONTROL_STATUS_ID}">`
+      + `<div class="server-control-title" id="${SERVER_CONTROL_TITLE_ID}"`
+      + ` ${SERVER_CONTROL_TITLE_ATTR} tabindex="-1">Active server controls</div>`
+      + `<div class="server-control-status${detailCls}" id="${SERVER_CONTROL_STATUS_ID}"`
+      + ` ${SERVER_CONTROL_STATUS_ATTR}>${detail}</div>`
       + errorHtml
       + (actions ? `<div class="server-control-actions">${actions}</div>` : '')
       + `</div>`;
+    if (focusWasInside) {
+      focusControlElement(
+        (preferredAction === undefined
+          ? null
+          : queryPopoverElement(`[data-action="${preferredAction}"]`))
+        // Reconstructed disabled buttons cannot retain DOM focus reliably.
+        // During the RPC, land on the stable title; the completion render then
+        // advances to the exact resulting action without falling to <body>.
+        ?? (focusedAction === null || busy
+          ? null
+          : queryPopoverElement(`[data-action="${focusedAction}"]`))
+        ?? queryPopoverElement(`[${SERVER_CONTROL_TITLE_ATTR}]`),
+      );
+    }
   };
 
   const closePopover = (): void => {
     if (!open) return;
+    const returnFromHandoff = handoffReturn;
+    handoffReturn = null;
     open = false;
     confirming = null;
     restarting = false;
     error = null;
     renderPopover();
+    reportCurrentStateAvailability();
+    try {
+      returnFromHandoff?.();
+    } catch {
+      // The Account diagnosis may already have retired during parent teardown.
+    }
   };
 
   const doSetPaused = async (active: boolean): Promise<void> => {
     if (busy || runSetPaused === undefined) return;
+    const action: ServerControlAction = active ? 'pause' : 'resume';
+    const generation = handoffGeneration;
     busy = true;
+    busyAction = action;
+    currentStateRequiresHeartbeatAfter = heartbeatSequence;
     error = null;
+    publishActionReceipt({ action, phase: 'pending' }, generation);
     renderPopover();
+    reportCurrentStateAvailability();
     try {
       await runSetPaused(active);
-      // Optimistic: reflect the new state immediately (the next heartbeat
-      // confirms). Keep the popover OPEN so the user sees the flipped action
-      // (and can undo); they close it via outside-click / Escape / re-click.
-      if (latest) latest = { ...latest, paused: active };
       busy = false;
-      confirming = null;
+      busyAction = null;
+      currentStateRequiresHeartbeatAfter = heartbeatSequence;
+      if (disposed) return;
+      // The successful server response is authoritative for this request.
+      // Reflect it immediately; a later heartbeat may still supersede it.
+      if (latest) latest = { ...latest, paused: active };
       pill.update();
-      renderPopover();
+      // A retired handoff must not paint its completion, error, or focus into
+      // a newer diagnosis. The global live state above still reflects a
+      // successfully completed server action.
+      if (generation !== handoffGeneration) {
+        renderPopover();
+        reportCurrentStateAvailability();
+        return;
+      }
+      confirming = null;
+      publishActionReceipt({
+        action,
+        phase: 'confirmed',
+        currentState: active ? 'paused' : 'running',
+      }, generation);
+      renderPopover(active ? 'resume' : 'pause-request');
+      reportCurrentStateAvailability();
     } catch (err) {
       busy = false;
+      busyAction = null;
+      currentStateRequiresHeartbeatAfter = heartbeatSequence;
+      if (disposed) return;
+      if (generation !== handoffGeneration) {
+        renderPopover();
+        reportCurrentStateAvailability();
+        return;
+      }
       confirming = null;
-      error = humanizeRpcError(err);
-      renderPopover();
+      const classified = classifyRpcError(err);
+      error = classified.copy;
+      const currentState = knownState();
+      publishActionReceipt({
+        action,
+        phase: classified.connectionCaused || classified.suppressible
+          ? 'unconfirmed'
+          : 'failed',
+        ...(currentState === undefined ? {} : { currentState }),
+        detail: receiptDetail(classified.copy),
+      }, generation);
+      renderPopover(active ? 'pause-request' : 'resume');
+      reportCurrentStateAvailability();
     }
   };
 
@@ -385,29 +778,100 @@ export const mountWebclientServerPill = (
       if (confirming === 'restart') { confirming = null; renderPopover(); }
       return;
     }
+    const generation = handoffGeneration;
+    restartSawDisconnect = false;
+    restartBaselineServerId =
+      typeof latest?.server_id === 'string' && latest.server_id.length > 0
+        ? latest.server_id
+        : null;
+    restartBaselineUptimeS =
+      typeof latest?.uptime_s === 'number' && Number.isFinite(latest.uptime_s)
+        ? latest.uptime_s
+        : null;
     busy = true;
+    busyAction = 'restart';
+    currentStateRequiresHeartbeatAfter = heartbeatSequence;
     error = null;
+    publishActionReceipt({
+      action: 'restart',
+      phase: 'pending',
+    }, generation);
     renderPopover();
+    reportCurrentStateAvailability();
     try {
       const res = await runRequestRestart();
       busy = false;
+      busyAction = null;
+      currentStateRequiresHeartbeatAfter = heartbeatSequence;
+      if (disposed) return;
+      if (generation !== handoffGeneration) {
+        renderPopover();
+        reportCurrentStateAvailability();
+        return;
+      }
       confirming = null;
       if (res && res.accepted === false) {
         // The server is already draining (e.g. a restart/restore in flight).
         error = 'A restart is already in progress.';
-        renderPopover();
+        const currentState = knownState();
+        publishActionReceipt({
+          action: 'restart',
+          phase: 'failed',
+          ...(currentState === undefined ? {} : { currentState }),
+          detail: error,
+        }, generation);
+        renderPopover('restart-request');
+        reportCurrentStateAvailability();
         return;
       }
       // Drain + supervisor handoff is underway → the WS drops next. Show a
       // transient note until the disconnect hides the pill (the global status
       // announcer then owns the reconnecting signal).
       restarting = true;
+      publishActionReceipt({
+        action: 'restart',
+        phase: 'accepted',
+        currentState: 'restarting',
+      }, generation);
+      // Usually the accepted response precedes the disconnect. Keep the
+      // inverse ordering honest too: if this tab already reconnected and saw
+      // a fresh heartbeat, reconcile it now instead of waiting for another.
+      if (restartSawDisconnect && latest !== null) {
+        reconcileActionReceipt(latest);
+        if (
+          actionReceipt?.action === 'restart'
+          && (
+            actionReceipt.phase === 'confirmed'
+            || actionReceipt.phase === 'reconnected'
+          )
+        ) restarting = false;
+      }
       renderPopover();
+      reportCurrentStateAvailability();
     } catch (err) {
       busy = false;
+      busyAction = null;
+      currentStateRequiresHeartbeatAfter = heartbeatSequence;
+      if (disposed) return;
+      if (generation !== handoffGeneration) {
+        renderPopover();
+        reportCurrentStateAvailability();
+        return;
+      }
       confirming = null;
-      error = humanizeRpcError(err);
-      renderPopover();
+      const classified = classifyRpcError(err);
+      error = classified.copy;
+      const currentState = knownState();
+      publishActionReceipt({
+        action: 'restart',
+        phase: classified.connectionCaused || classified.suppressible
+          ? 'unconfirmed'
+          : 'failed',
+        ...(currentState === undefined ? {} : { currentState }),
+        detail: receiptDetail(classified.copy),
+      }, generation);
+      renderPopover('restart-request');
+      reportCurrentStateAvailability();
     }
   };
 
@@ -417,12 +881,12 @@ export const mountWebclientServerPill = (
     if (!el) return;
     event.preventDefault();
     switch (el.getAttribute('data-action')) {
-      case 'pause-request': confirming = 'pause'; renderPopover(); break;
-      case 'pause-cancel': confirming = null; renderPopover(); break;
+      case 'pause-request': confirming = 'pause'; renderPopover('pause-confirm'); break;
+      case 'pause-cancel': confirming = null; renderPopover('pause-request'); break;
       case 'pause-confirm': void doSetPaused(true); break;
       case 'resume': void doSetPaused(false); break;
-      case 'restart-request': confirming = 'restart'; renderPopover(); break;
-      case 'restart-cancel': confirming = null; renderPopover(); break;
+      case 'restart-request': confirming = 'restart'; renderPopover('restart-confirm'); break;
+      case 'restart-cancel': confirming = null; renderPopover('restart-request'); break;
       case 'restart-confirm': void doRestart(); break;
       default: break;
     }
@@ -431,11 +895,14 @@ export const mountWebclientServerPill = (
   // The shared pill's onClick toggles the popover (clickable variant only).
   const onPillClick = (): void => {
     if (open) { closePopover(); return; }
+    handoffReturn = null;
+    resetActionReceipt(true);
     open = true;
     confirming = null;
     restarting = false;
     error = null;
     renderPopover();
+    focusControlTitle();
   };
 
   // Capture-phase so it runs before the pill's bubble-phase open handler — a
@@ -448,7 +915,12 @@ export const mountWebclientServerPill = (
     closePopover();
   };
   const onKeyDown = (event: KeyboardEvent): void => {
-    if (open && event.key === 'Escape') closePopover();
+    if (!open || event.key !== 'Escape') return;
+    const returnToDiagnosis = handoffReturn !== null;
+    event.preventDefault();
+    event.stopPropagation();
+    closePopover();
+    if (!returnToDiagnosis) focusPill();
   };
 
   const pill: ServerPillHandle = mountServerPill({
@@ -469,6 +941,7 @@ export const mountWebclientServerPill = (
     }
   };
   syncHostVisibility();
+  reportAvailabilities();
 
   if (controllable && popoverHost !== null) {
     const doc = opts.host.ownerDocument;
@@ -482,25 +955,87 @@ export const mountWebclientServerPill = (
     // Drop the cached snapshot when leaving `connected` so a reconnect can't
     // flash a stale pill before the first fresh beat lands; also close the
     // popover (the pill is about to hide).
-    if (status !== 'connected') { latest = null; closePopover(); }
+    if (status !== 'connected') {
+      if (
+        actionReceipt?.action === 'restart'
+        && (
+          actionReceipt.phase === 'pending'
+          || actionReceipt.phase === 'accepted'
+        )
+      ) restartSawDisconnect = true;
+      latest = null;
+      latestReceivedAt = null;
+      closePopover();
+    }
     pill.update();
     syncHostVisibility();
     renderPopover();
+    reportAvailabilities();
   });
 
   return {
     noteSnapshot(snapshot) {
       if (disposed) return;
+      let receivedAt: number | null = null;
+      try {
+        const candidate = (opts.now ?? Date.now)();
+        if (Number.isFinite(candidate)) receivedAt = candidate;
+      } catch {
+        // A broken test/embed clock cannot promote a snapshot to current.
+      }
+      heartbeatSequence += 1;
       latest = snapshot;
+      latestReceivedAt = receivedAt;
+      reconcileActionReceipt(snapshot);
       pill.update();
       syncHostVisibility();
+      reportAvailabilities();
       // Reflect a heartbeat-driven pause change (e.g. paused from another
       // device, or a crash-loop) in an open popover.
       if (open) renderPopover();
     },
+    openControls(handoff) {
+      if (!controlsAvailable() || popoverHost === null) return 'unavailable';
+      const ownerId = handoff?.ownerId.trim() ?? '';
+      const sameReceiptOwner =
+        ownerId.length > 0
+        && ownerId === handoffOwnerId
+        && actionReceipt !== null;
+      if (!sameReceiptOwner) resetActionReceipt(true);
+      handoffOwnerId = ownerId.length > 0 ? ownerId : null;
+      handoffReturn = handoff?.onReturn ?? null;
+      handoffReceiptObserver = handoff?.onReceipt ?? null;
+      if (sameReceiptOwner && actionReceipt !== null) {
+        try {
+          handoffReceiptObserver?.({ ...actionReceipt });
+        } catch {
+          // Presentation observers cannot prevent the controls from opening.
+        }
+      }
+      open = true;
+      confirming = null;
+      restarting = false;
+      error = null;
+      renderPopover();
+      reportCurrentStateAvailability();
+      focusControlTitle();
+      return 'opened';
+    },
+    readCurrentState() {
+      if (!currentStateAvailable() || latest === null) return null;
+      return { state: latest.paused === true ? 'paused' : 'running' };
+    },
+    closeControls() {
+      closePopover();
+      handoffReturn = null;
+      resetActionReceipt(true);
+    },
     dispose() {
       if (disposed) return;
+      handoffReturn = null;
+      resetActionReceipt(true);
       disposed = true;
+      reportAvailabilities();
       unsub();
       if (controllable && popoverHost !== null) {
         const doc = opts.host.ownerDocument;

@@ -176,6 +176,32 @@ describe('createHealthLoop — interval floor + stop', () => {
     expect(store.get('ollama_home')?.last_health_at).toBeUndefined();
   });
 
+  it('stop waits for an active health check but suppresses its late write', async () => {
+    vi.useFakeTimers();
+    let release: () => void = () => {};
+    const loop = createHealthLoop(
+      spec(),
+      makeCtx({
+        runCheck: () => new Promise((resolve) => {
+          release = () => resolve({ passed: true });
+        }),
+      }),
+    );
+    loop.start();
+    vi.advanceTimersByTime(SERVICE_HEALTH_CHECK_INTERVAL_MS_FLOOR);
+
+    let stopped = false;
+    const stopping = loop.stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    release();
+    await stopping;
+    expect(store.get('ollama_home')).toBeNull();
+    expect(emitted).toEqual([]);
+    expect(stopped).toBe(true);
+  });
+
   it('start on an already-running loop is idempotent', () => {
     vi.useFakeTimers();
     const setTimeoutSpy = vi.fn<HealthLoopContext['setTimeout']>((fn, ms) =>
@@ -198,7 +224,7 @@ describe('createHealthLoopRegistry', () => {
     reg.add(spec({ slug: 'b' }));
     expect(reg.has('a')).toBe(true);
     expect(reg.has('b')).toBe(true);
-    reg.stopAll();
+    await reg.stopAll();
     expect(reg.has('a')).toBe(false);
     expect(reg.has('b')).toBe(false);
   });
@@ -214,9 +240,23 @@ describe('createHealthLoopRegistry', () => {
     const reg = createHealthLoopRegistry(makeCtx());
     reg.add(spec({ slug: 'a' }));
     reg.add(spec({ slug: 'b' }));
-    reg.remove('a');
+    await reg.remove('a');
     expect(reg.has('a')).toBe(false);
     expect(reg.has('b')).toBe(true);
-    reg.stopAll();
+    await reg.stopAll();
+  });
+
+  it('does not admit a new loop after stopAll closes the registry', async () => {
+    vi.useFakeTimers();
+    const setTimeoutSpy = vi.fn<HealthLoopContext['setTimeout']>((fn, ms) =>
+      globalThis.setTimeout(fn, ms),
+    );
+    const reg = createHealthLoopRegistry(makeCtx({ setTimeout: setTimeoutSpy }));
+    await reg.stopAll();
+
+    reg.add(spec({ slug: 'late' }));
+
+    expect(reg.has('late')).toBe(false);
+    expect(setTimeoutSpy).not.toHaveBeenCalled();
   });
 });

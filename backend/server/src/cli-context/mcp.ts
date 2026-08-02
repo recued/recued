@@ -11,6 +11,7 @@ import {
 import type { Checkpoint, Commit } from '@recued/contracts';
 import {
   D165_CONTRACT_SCHEMA,
+  isMcpInboundTokenActive,
   isMcpInboundTokenToolAuthorized,
   setVendorAliasRegistryResolver,
 } from '@recued/contracts';
@@ -25,6 +26,12 @@ import { createManifestRegistry } from '../manifest-loader.js';
 import { createRecipeStore } from '../recipe-store.js';
 import { createRecordsStore } from '../records/index.js';
 import { createSQLiteCollection } from '../sqlite-collection.js';
+import {
+  MCP_ACTION_TABLE,
+  createMcpActionStore,
+  createSqliteMcpActionCompareAndSet,
+  type McpActionRecord,
+} from '../mcp-action-store.js';
 import { ensureAuditIndexes } from '../audit-indexes.js';
 import {
   ensureCheckpointSchema,
@@ -136,6 +143,10 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     createSQLiteCollection<Checkpoint>(db, 'checkpoints'),
   );
   ensureCheckpointSchema(db);
+  const mcpActionStore = createMcpActionStore(
+    createSQLiteCollection<McpActionRecord>(db, MCP_ACTION_TABLE),
+    { compareAndSet: createSqliteMcpActionCompareAndSet(db) },
+  );
 
   const bundleStore = createBundleStore(db);
   const serverBundleStore = createServerBundleStore(dbPath);
@@ -366,6 +377,7 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     enrichmentStore,
     commitStore,
     checkpointStore,
+    mcpActionStore,
     annotationStore,
     // D-182 §10 step 8 / R1 (Fix 2) — the merged convention-family vendor registry
     // source, so the agent path's R1 pre-pass binds pack-composition CRM/acct vendors.
@@ -465,6 +477,16 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     ...(tokenRecord
       ? {
           mcpTokenId: tokenRecord.token_id,
+          mcpPrincipalActive: () => {
+            try {
+              const current = chatBundle.inboundTokenStore.getTokenById(
+                tokenRecord.token_id,
+              );
+              return current !== null && isMcpInboundTokenActive(current, Date.now());
+            } catch {
+              return false;
+            }
+          },
           ...(tokenRecord.contract_id !== undefined && tokenRecord.contract_id !== null
             ? { boundContractId: tokenRecord.contract_id, boundContractActive: true }
             : {}),

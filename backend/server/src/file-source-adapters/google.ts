@@ -53,6 +53,7 @@ import type {
   FileSourceListFn,
   FileSourceListOutcome,
 } from '../file-source-sync.js';
+import { readProviderStringContinuation } from '../provider-pagination-guard.js';
 import {
   drainIdKeyedDelta,
   shapeDeltaOutcome,
@@ -65,6 +66,7 @@ import type {
   FileFetch,
   FileSourceLeafDeps,
 } from './index.js';
+import { fetchFileSourceApi } from './http-json.js';
 import { drainPagedList, type PagedListDrain, type PagedListPage } from './paged-list.js';
 
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
@@ -122,7 +124,7 @@ const googleErrorMessage = (text: string): string => {
 };
 
 const googleGet = async (fetchImpl: FileFetch, url: string, token: string): Promise<unknown> => {
-  const res = await fetchImpl(url, {
+  const res = await fetchFileSourceApi(fetchImpl, url, {
     method: 'GET',
     headers: { authorization: `Bearer ${token}` },
   });
@@ -160,8 +162,10 @@ const parseFilesPage = (res: unknown): DriveFilesPage => {
   if (!Array.isArray(obj.files)) {
     throw new GoogleError(0, 'drive files.list response has no files array');
   }
-  const next = obj.nextPageToken;
-  const nextPageToken = typeof next === 'string' && next.length > 0 ? next : undefined;
+  const nextPageToken = readProviderStringContinuation(
+    obj.nextPageToken,
+    'Google Drive files.list',
+  );
   return {
     files: obj.files,
     incompleteSearch: obj.incompleteSearch === true,
@@ -198,10 +202,14 @@ const parseChangesPage = (res: unknown): DeltaPage => {
   if (!Array.isArray(obj.changes)) {
     throw new GoogleError(0, 'drive changes.list response has no changes array');
   }
-  const nextRaw = obj.nextPageToken;
-  const startRaw = obj.newStartPageToken;
-  const nextRef = typeof nextRaw === 'string' && nextRaw.length > 0 ? nextRaw : undefined;
-  const watermark = typeof startRaw === 'string' && startRaw.length > 0 ? startRaw : undefined;
+  const nextRef = readProviderStringContinuation(
+    obj.nextPageToken,
+    'Google Drive changes.list',
+  );
+  const watermark = readProviderStringContinuation(
+    obj.newStartPageToken,
+    'Google Drive changes.list watermark',
+  );
   return {
     items: obj.changes,
     ...(nextRef !== undefined ? { nextRef } : {}),

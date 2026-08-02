@@ -80,6 +80,14 @@ export interface WorkEntityResolver {
    *  row matches. Returns `null` when no row exists or the row is
    *  tombstoned (the store's `read*` methods exclude tombstones). */
   readEntity(kind: WorkEntityKind, id: string): WorkEntity | null;
+  /** Read one mirrored entity by its stable Source-native identity. This is
+   *  the lookup half of an AI-facing qualified id; it applies the same
+   *  tombstone/orphan visibility rules as `readEntity`. */
+  readEntityBySourceIdentity(
+    kind: WorkEntityKind,
+    source_id: string,
+    source_record_id: string,
+  ): WorkEntity | null;
   /** Sources for one kind (or all kinds when `kind` is omitted).
    *  Returns the registry rows in registration order. PA11 — surface
    *  carries the `enabled` field; Settings UI consumes it directly.
@@ -190,6 +198,14 @@ export const createWorkEntityResolver = (
   store: WorkEntityStore,
   deps: WorkEntityResolverDeps = {},
 ): WorkEntityResolver => {
+  const visibleEntity = (row: WorkEntity | null): WorkEntity | null => {
+    if (row === null || row.deleted_at !== undefined) return null;
+    if (row.sync_state !== 'live' && row.sync_state !== 'stale_unreachable') {
+      return null;
+    }
+    return row;
+  };
+
   const listByKind: WorkEntityResolver['listByKind'] = (kind, query) => {
     requireWorkEntityKind(kind);
     return store.listByKind(kind, query);
@@ -220,14 +236,20 @@ export const createWorkEntityResolver = (
     // rows. Callers needing audit-visibility (PA9 producers,
     // future Memory reads) bypass the resolver and call
     // `store.readByKind` directly.
-    const row = store.readByKind(kind, id);
-    if (row === null) return null;
-    if (row.deleted_at !== undefined) return null;
-    if (row.sync_state !== 'live' && row.sync_state !== 'stale_unreachable') {
-      return null;
-    }
-    return row;
+    return visibleEntity(store.readByKind(kind, id));
   };
+
+  const readEntityBySourceIdentity:
+    WorkEntityResolver['readEntityBySourceIdentity'] = (
+      kind,
+      source_id,
+      source_record_id,
+    ) => {
+      requireWorkEntityKind(kind);
+      return visibleEntity(
+        store.readBySourceIdentity(kind, source_id, source_record_id),
+      );
+    };
 
   const listSources: WorkEntityResolver['listSources'] = (kind) =>
     store.listSources(kind);
@@ -329,6 +351,7 @@ export const createWorkEntityResolver = (
     listByKind,
     listByKindScoped,
     readEntity,
+    readEntityBySourceIdentity,
     listSources,
     setSourceEnabled,
     setSourceMcpExposed,

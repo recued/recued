@@ -43,8 +43,7 @@ import {
 } from '../instance-store.js';
 import type { CollectionRegistry } from '../registry.js';
 import {
-  pauseCollectionSync,
-  resumeCollectionSync,
+  createCollectionSyncController,
   syncDeferredWhileLocked,
 } from '../vault-gated-sync.js';
 
@@ -217,6 +216,17 @@ export const composeCalendarStack = (
   const watcherCursors = createCalendarWatcherCursorStore(db);
 
   const live = new Map<string, CalendarCollection>();
+  let closed = false;
+  let disposePromise: Promise<void> | null = null;
+
+  const onSyncEdgeError = (message: string, err: unknown): void =>
+    log('warn', `calendar-stack: ${message}`, {
+      err: err instanceof Error ? err.message : String(err),
+    });
+  const syncController = createCollectionSyncController(
+    () => live.values(),
+    onSyncEdgeError,
+  );
 
   const buildCollectionConfig = (
     row: CollectionInstanceRecord,
@@ -236,6 +246,7 @@ export const composeCalendarStack = (
   };
 
   const startLive = async (row: CollectionInstanceRecord): Promise<void> => {
+    if (closed) return;
     if (live.has(row.slug)) return;
     const factory = adapters.get(row.adapter_type);
     if (!factory) {
@@ -320,7 +331,7 @@ export const composeCalendarStack = (
     }
   };
 
-  const stopLive = async (slug: string): Promise<void> => {
+  const stopLive = async (slug: string, failOnError = false): Promise<void> => {
     const collection = live.get(slug);
     if (!collection) return;
     live.delete(slug);
@@ -335,6 +346,7 @@ export const composeCalendarStack = (
       log('warn', `calendar-stack: close failed for '${slug}'`, {
         err: err instanceof Error ? err.message : String(err),
       });
+      if (failOnError) throw err;
     }
   };
 
@@ -385,6 +397,7 @@ export const composeCalendarStack = (
     ...(bundle.fetcher ? { fetcher: bundle.fetcher } : {}),
     ...(bundle.now ? { now: bundle.now } : {}),
     onEnrolled: async (row) => {
+      if (closed) return;
       // enroll rpc hands us the public `CollectionInstanceRow` (no
       // `config`); pull the full record out of the store to reach
       // the adapter config.
@@ -395,6 +408,7 @@ export const composeCalendarStack = (
   };
 
   const startAll = async (): Promise<void> => {
+    if (closed) return;
     const rows = instances.list('calendar');
     for (const row of rows) {
       try { await startLive(row); }
@@ -404,29 +418,37 @@ export const composeCalendarStack = (
     }
   };
 
-  const disposeAll = async (): Promise<void> => {
-    const slugs = [...live.keys()];
-    for (const slug of slugs) {
-      await stopLive(slug);
-    }
+  const disposeAll = (): Promise<void> => {
+    if (disposePromise) return disposePromise;
+    closed = true;
+    disposePromise = syncController.dispose().then(async () => {
+      const stops = [...live.keys()].map((slug) => stopLive(slug, true));
+      const results = await Promise.allSettled(stops);
+      const failures = results
+        .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+        .map((result) => result.reason);
+      if (failures.length > 0) {
+        throw new AggregateError(failures, 'calendar-stack: one or more collections failed to stop');
+      }
+    });
+    return disposePromise;
   };
 
   // R21.1 parity — vault-gated pause/resume of the live poll loops (driven by
   // the vault-state edges in compose-collection-context). Shared with the mail
   // stack via `vault-gated-sync`.
-  const onSyncEdgeError = (message: string, err: unknown): void =>
-    log('warn', `calendar-stack: ${message}`, {
-      err: err instanceof Error ? err.message : String(err),
-    });
   const resumeSync = (): Promise<void> =>
-    resumeCollectionSync(live.values(), onSyncEdgeError);
+    syncController.resume();
   const pauseSync = (): Promise<void> =>
-    pauseCollectionSync(live.values(), onSyncEdgeError);
+    syncController.pause();
 
   if (options.autoStart) {
-    // Fire-and-forget — constructor callers that opt into autoStart
-    // are responsible for logging the returned promise.
-    void startAll();
+    // Fire-and-forget constructor option; contain + report boot failures.
+    void startAll().catch((err) => {
+      log('error', 'calendar-stack: autoStart failed', {
+        err: err instanceof Error ? err.message : String(err),
+      });
+    });
   }
 
   return {

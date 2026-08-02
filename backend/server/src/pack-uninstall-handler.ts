@@ -4,12 +4,10 @@
  *  pack. Reads the bundled manifest off disk (same `community/packs/`
  *  scan path as `packs.list`), then drops in reverse-install order:
  *
- *    1. Body-content MCP visibility grants — forward-compat slot. The
- *       server bin does not wire the body-grants substrate today
- *       (engine's `grantBodyVisibility` callback is unwired in
- *       `install-bulk-pack-handler.ts`), so this is currently a no-op
- *       returning `removed.body_grants = []`. When the substrate lands,
- *       wire it here without an rpc signature bump.
+ *    1. Body-content MCP visibility grants — the production composition wires
+ *       the shared grant store through install, rollback, runtime reads, and
+ *       uninstall. This step revokes every grant persisted for the pack and
+ *       reports the removed keys in `removed.body_grants`.
  *    2. Pack-owned recipes — `recipeStore.listForPack(<slug>)` walks
  *       the per-pair recipe rows and returns the recipe_ids whose
  *       `pack_slug` column matches the uninstalling slug. Each id

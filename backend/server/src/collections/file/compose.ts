@@ -119,6 +119,8 @@ export const composeFileStack = (
 
   const liveAdapters = new Map<string, FileAdapterInstance>();
   const lifecycleTails = new Map<string, Promise<void>>();
+  let closed = false;
+  let disposePromise: Promise<void> | null = null;
 
   /** Enroll, delete, boot-start, and manual resync can arrive concurrently.
    *  Serialize lifecycle mutations per slug so two resyncs cannot both observe
@@ -142,6 +144,7 @@ export const composeFileStack = (
   const startLiveAdapterUnlocked = async (
     row: Pick<CollectionInstanceRow, 'slug'>,
   ): Promise<void> => {
+    if (closed) return;
     if (liveAdapters.has(row.slug)) return;
 
     // Lifecycle callbacks carry snapshots across awaits. Re-read the row so a
@@ -155,6 +158,7 @@ export const composeFileStack = (
     const config = stored.config;
 
     const markStartDegraded = (): void => {
+      if (closed) return;
       try {
         instances.updateAuthState('file', row.slug, { auth_state: 'degraded' });
       } catch (err) {
@@ -195,12 +199,13 @@ export const composeFileStack = (
         config,
         caps,
         onDegraded: (err) => {
+          if (closed) return;
           log('error', `file-stack: adapter runtime degraded for '${row.slug}'`, {
             err: err instanceof Error ? err.message : String(err),
           });
           markStartDegraded();
         },
-        onEvent: (event) => onEvent(row.slug, event),
+        onEvent: (event) => closed ? undefined : onEvent(row.slug, event),
         log,
       });
     } catch (err) {
@@ -229,12 +234,23 @@ export const composeFileStack = (
     try {
       await instance.start();
     } catch (err) {
+      if (closed) {
+        try { await instance.stop(); } catch { /* shutdown containment */ }
+        return;
+      }
       log('error', `file-stack: adapter.start failed for '${row.slug}'`, {
         err: err instanceof Error ? err.message : String(err),
       });
       markStartDegraded();
       await backfillRecorder.finish('failed');
       throw err;
+    }
+
+    if (closed) {
+      // disposeAll may have closed admission while an initial scan was in
+      // flight. Do not publish the adapter or write backfill state afterward.
+      try { await instance.stop(); } catch { /* shutdown containment */ }
+      return;
     }
 
     // D-124 Phase 2.1 — `instance.start()` resolves only after the
@@ -299,7 +315,9 @@ export const composeFileStack = (
    *  A failed stop aborts replacement, avoiding an untracked duplicate. */
   const resyncLiveAdapter = (row: CollectionInstanceRow): Promise<void> =>
     serializeLifecycle(row.slug, async () => {
+      if (closed) return;
       await stopLiveAdapterUnlocked(row.slug, true);
+      if (closed) return;
       await startLiveAdapterUnlocked({
         slug: row.slug,
       });
@@ -321,12 +339,13 @@ export const composeFileStack = (
   const enrollDeps: EnrollDeps = {
     instances,
     adapters,
-    onEnrolled: (row) => startLiveAdapter(row),
-    onDeleted: (slug) => stopLiveAdapter(slug),
-    onResync: (row) => resyncLiveAdapter(row),
+    onEnrolled: (row) => closed ? Promise.resolve() : startLiveAdapter(row),
+    onDeleted: (slug) => closed ? Promise.resolve() : stopLiveAdapter(slug),
+    onResync: (row) => closed ? Promise.resolve() : resyncLiveAdapter(row),
   };
 
   const startAll = async (): Promise<void> => {
+    if (closed) return;
     const rows = instances.list('file');
     for (const row of rows) {
       try {
@@ -338,11 +357,25 @@ export const composeFileStack = (
     }
   };
 
-  const disposeAll = async (): Promise<void> => {
-    const slugs = [...liveAdapters.keys()];
-    for (const slug of slugs) {
-      await stopLiveAdapter(slug);
-    }
+  const disposeAll = (): Promise<void> => {
+    if (disposePromise) return disposePromise;
+    // Close admission before taking either snapshot. Already-queued resyncs
+    // remain in lifecycleTails and observe `closed` before replacement starts.
+    closed = true;
+    const slugs = new Set([...liveAdapters.keys(), ...lifecycleTails.keys()]);
+    const drains = [...slugs].map((slug) => serializeLifecycle(
+      slug,
+      () => stopLiveAdapterUnlocked(slug, true),
+    ));
+    disposePromise = Promise.allSettled(drains).then((results) => {
+      const errors = results
+        .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+        .map((result) => result.reason);
+      if (errors.length > 0) {
+        throw new AggregateError(errors, 'file-stack: one or more adapters failed to stop');
+      }
+    });
+    return disposePromise;
   };
 
   return {

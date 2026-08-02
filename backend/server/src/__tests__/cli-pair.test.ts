@@ -4,7 +4,7 @@
  *  enumeration ordering, the `?code=` deeplink + `--no-url-prefill`
  *  toggle, and the recovery-key first-pair note. */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { cmdPair } from '../commands/pair.js';
 import {
   enumerateServerUrls,
@@ -12,6 +12,9 @@ import {
   resolvePublicIp,
   collectLanInterfaces,
   PUBLIC_IP_CACHE_TTL_MS,
+  IPIFY_RESPONSE_MAX_BYTES,
+  fetchIpify,
+  fetchPublicIpv4,
 } from '../cli/url-enumerate.js';
 import { createPairingManager } from '../pairing.js';
 import { mkdtempSync, writeFileSync, readFileSync } from 'node:fs';
@@ -245,6 +248,49 @@ describe('resolvePublicIp', () => {
     const stored = JSON.parse(readFileSync(cachePath, 'utf-8')) as Record<string, unknown>;
     expect(stored.other_key).toBe('untouched');
     expect((stored.public_ip as { ip: string }).ip).toBe('203.0.113.99');
+  });
+});
+
+describe('public IP probe lifecycle', () => {
+  it('refuses a cross-origin redirect and degrades to null', async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchSpy = vi.fn<typeof fetch>(async () => new Response(null, {
+      status: 307,
+      headers: { location: 'https://collector.invalid/ip' },
+    }));
+    globalThis.fetch = fetchSpy;
+    try {
+      await expect(fetchIpify()).resolves.toBeNull();
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy.mock.calls[0]?.[1]).toMatchObject({ redirect: 'manual' });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('rejects oversized IP service responses', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn<typeof fetch>(async () => new Response('', {
+      headers: { 'content-length': String(IPIFY_RESPONSE_MAX_BYTES + 1) },
+    }));
+    try {
+      await expect(fetchPublicIpv4()).resolves.toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('rejects address-like text that is not a valid IP address', async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn<typeof fetch>(async () => new Response(
+      JSON.stringify({ ip: '999.999.999.999' }),
+      { headers: { 'content-type': 'application/json' } },
+    ));
+    try {
+      await expect(fetchIpify()).resolves.toBeNull();
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 });
 

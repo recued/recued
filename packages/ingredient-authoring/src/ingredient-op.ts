@@ -22,6 +22,8 @@
  *  identity questions; deliberately does NOT wire enrollment"). Minting is
  *  reversible while nothing reads it; wiring it is not. */
 
+import { INGREDIENT_GRANT_PREFIX } from '@recued/contracts';
+
 import { canonicalHash } from './canonical-hash.js';
 
 /** The namespace for an ingredient op: `ingredient.<label>_<hash8>`.
@@ -40,7 +42,7 @@ import { canonicalHash } from './canonical-hash.js';
  *  existing vocabulary with **no extension at all** — which is what "no new
  *  authorization vocabulary" is supposed to feel like. Pinned by
  *  `d-228-ingredient-op-id.test.ts`. */
-export const INGREDIENT_OP_PREFIX = 'ingredient.';
+export const INGREDIENT_OP_PREFIX = INGREDIENT_GRANT_PREFIX;
 
 /** How much of the hash rides in the id. 8 hex = 32 bits — the same budget
  *  `mcp-pack.ts` uses, for the same reason: these disambiguate ids within one

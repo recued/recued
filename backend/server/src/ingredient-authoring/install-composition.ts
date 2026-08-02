@@ -47,15 +47,18 @@
  *
  *  Spec: D-170 § N.14, N.16; the install rpc surface is N.15. */
 
+import { isDeepStrictEqual } from 'node:util';
+
 import {
   decomposeComposition,
-  stampGeneratedMcpCatalog,
+  stampPackOwnedManifest,
   validateComposition,
   validatePack,
   type CompositionValidationIssue,
   type DecomposedArtifacts,
   type PackDecomposition,
 } from '@recued/ingredient-authoring';
+import { validateIngredient } from '@recued/ingredients/validate';
 import {
   validateRecipe,
   resolveConnectionAgnosticRecipe,
@@ -83,7 +86,6 @@ import {
   CATALOG_VENDOR_SLUGS,
   CONNECTION_VENDOR_ENTITIES,
   assertEngagementRegistryInvariants,
-  GENERATED_PACK_PUBLISHER,
 } from '@recued/contracts';
 import type {
   AuthoringValidationIssue,
@@ -1997,10 +1999,12 @@ const prepareComposedPack = (
   if (decomposedBody === undefined) {
     return { ok: false, result: { ok: false, code: 'unexpected', message: 'composition decomposed to no body', issues } };
   }
-  // D-225 — restamp a GENERATED pack's catalog with the publisher that minted
-  // it. `decomposeComposition` stamps every body with `DEFAULT_AUTHOR`
-  // (`recued-core`), so without this the catalog carries a first-party author
-  // and legacy slash-form op ids.
+  // Restamp every NON-first-party pack body with the verified publisher that
+  // owns the pack. `decomposeComposition` cannot know marketplace provenance,
+  // so its portable output carries `DEFAULT_AUTHOR` (`recued-core`) and legacy
+  // slash-form ids. Persisting that output for a third party lets two publishers
+  // with the same public slug share grant identities and makes the installed
+  // body falsely look first-party.
   //
   // ⚠ NOT a reserved-capability hole — `publisherMayDeclare` reads the PACK
   // MANIFEST's publisher (always `recued-local`), never the catalog's author.
@@ -2008,25 +2012,59 @@ const prepareComposedPack = (
   // slash-form id makes `isGeneratedPackOpEntry` miss and § 9.6's
   // owner-default-only treatment silently does not apply.
   //
-  // ⚠ Deliberately narrow: it fires only for `recued-local`, so no existing
-  // pack's stored author or op ids move. The general case — ANY third-party
-  // composition pack's catalog also inheriting `recued-core` — is the same bug
-  // with a wider blast radius, and is recorded in the spec rather than fixed
-  // here under a D-225 commit.
-  const body = publisher === GENERATED_PACK_PUBLISHER
-    ? stampGeneratedMcpCatalog(decomposedBody)
-    : decomposedBody;
+  // First-party output stays byte-compatible. Every other publisher receives
+  // `<publisher>.<pack>.<operation>` ids, including `recued-local` generated
+  // MCP packs and ordinary marketplace compositions.
+  const body = publisher === DEFAULT_AUTHOR
+    ? decomposedBody
+    : stampPackOwnedManifest(decomposedBody, {
+        publisher,
+        pack_slug: String(manifest.slug),
+      });
+  // Validation before decomposition proved the portable body. Re-run it after
+  // the authority-bearing restamp so this exact persisted body, not merely its
+  // pre-provenance precursor, passes the universal catalog gate.
+  // The portable-body warnings are already present in `issues`; retain only
+  // post-stamp errors here so review copy is not duplicated on every install.
+  const stampedErrors = validateIngredient(body).issues
+    .filter((issue) => issue.severity === 'error')
+    .map(toIssue);
+  issues.push(...stampedErrors);
+  if (stampedErrors.length > 0) {
+    return {
+      ok: false,
+      result: {
+        ok: false,
+        code: 'validation_failed',
+        message: 'pack-owned manifest failed validation after publisher stamping',
+        issues,
+      },
+    };
+  }
   const bodyVersion = body.version ?? 1; // decomposer always emits 1 (see above)
   const packSlug = String(manifest.slug);
   const packVersion = typeof manifest.version === 'number' ? manifest.version : 1;
 
-  if (slugConflict(deps, body.slug)) {
+  const existingLocalBody = deps.localManifestStore.getManifest(body.slug);
+  const existingOwnership = ingredientOwnership(deps.contractStore, body.slug);
+  // The local manifest store persists JSON, which omits object properties whose
+  // value is `undefined`. Compare the candidate in that same storage shape so a
+  // byte-equivalent shared body is not mistaken for a rewrite merely because
+  // the freshly decomposed object still carries optional `undefined` keys.
+  const persistedBodyShape = JSON.parse(JSON.stringify(body)) as IngredientManifest;
+  const anotherPackWouldRewriteSharedBody = existingLocalBody !== null
+    && existingOwnership.pack_slug !== undefined
+    && existingOwnership.pack_slug !== packSlug
+    && !isDeepStrictEqual(existingLocalBody, persistedBodyShape);
+  if (slugConflict(deps, body.slug) || anotherPackWouldRewriteSharedBody) {
     return {
       ok: false,
       result: {
         ok: false,
         code: 'slug_conflict',
-        message: `slug '${body.slug}' already names an installed ingredient that was not locally authored — choose a different slug or save-as-new`,
+        message: anotherPackWouldRewriteSharedBody
+          ? `slug '${body.slug}' is owned by another installed pack with a different body — choose a distinct composition slug`
+          : `slug '${body.slug}' already names an installed ingredient that was not locally authored — choose a different slug or save-as-new`,
         issues,
       },
     };
@@ -2036,7 +2074,7 @@ const prepareComposedPack = (
   // absorbed and erased when the pack is uninstalled). A different PACK holding
   // the slug is allowed (refcount sharing); a reinstall by THIS same pack is the
   // normal update path.
-  const owner = ingredientOwnership(deps.contractStore, body.slug);
+  const owner = existingOwnership;
   if (owner.installed && owner.pack_slug === undefined) {
     return {
       ok: false,

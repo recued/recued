@@ -1,0 +1,16 @@
+{
+  "_extract": {
+    "note": "paths-only extract of the pinned official Quo OpenAPI (crossCheckCatalogOpenApi reads only paths); the mutable vendor URL is hash-locked by the pack declaration",
+    "url": "https://openphone-public-api-prod.s3.us-west-2.amazonaws.com/public/openphone-public-api-v1-prod.json",
+    "sha256": "492dee55a369738b8e0b65df14bee83cfadcc9da112d3adbe9f61d66a7092d47",
+    "fetched_at": "2026-08-02"
+  },
+  "paths": {
+    "/v1/tasks": {
+      "get": {}
+    },
+    "/v1/tasks/{taskId}": {
+      "get": {}
+    }
+  }
+}

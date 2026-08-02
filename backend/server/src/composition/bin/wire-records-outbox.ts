@@ -80,10 +80,10 @@ export const composeRecordsOutbox = (input: ComposeRecordsOutboxInput): void => 
       candidate.binding_digest === subscriber.binding_digest
       && candidate.trigger_index === subscriber.trigger_index);
   };
-  const tick = (): void => {
+  const tick = (): Promise<void> | void => {
     if (running) return;
     running = true;
-    void drainRecordsOutboxOnce(input.recordsStore, {
+    return drainRecordsOutboxOnce(input.recordsStore, {
       admit,
       deliver: async ({ event, subscriber, mutation_context }) => {
         const namespace = input.recordsStore.getNamespace(event.owner);
@@ -112,7 +112,7 @@ export const composeRecordsOutbox = (input: ComposeRecordsOutboxInput): void => 
           throw new Error(first?.message ?? 'Records watcher execution failed');
         }
       },
-    }).catch((error) => {
+    }).then(() => undefined).catch((error) => {
       console.warn('[records-outbox] drain failed', error);
     }).finally(() => { running = false; });
   };

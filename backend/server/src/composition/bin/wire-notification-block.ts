@@ -69,6 +69,7 @@ import {
 } from '../../batch-approval.js';
 import type { SessionGrantResolver } from '../../session-grant-resolver.js';
 import type { QualityDelegationSignalStore } from '../../storage/quality-delegation-signal-store.js';
+import type { McpActionStore } from '../../mcp-action-store.js';
 import { createInDoubtAnnotationWriter } from '../../in-doubt-annotation-writer.js';
 import { registerSagaReconciliation } from '../../saga-server-wiring.js';
 import { registerPickResolution } from '../../pick-server-wiring.js';
@@ -92,6 +93,7 @@ export interface ComposeNotificationBlockDeps {
   db: Database.Database;
   auditLog: AuditLogStore;
   checkpointStore: CheckpointStore;
+  mcpActionStore?: McpActionStore;
   annotationStore: AnnotationStore;
   eventBus: EventBus;
   /** Lazy accessor for `executeDeps`. Construction runs BEFORE
@@ -526,6 +528,9 @@ export const composeNotificationBlock = (
   const baseResumer = createPreflightResumer({
     getExecuteDeps,
     auditLog,
+    ...(deps.mcpActionStore !== undefined
+      ? { mcpActionStore: deps.mcpActionStore }
+      : {}),
     // D-202 Slice 1b — record the owner's approve/deny on a quality-relevant ask
     // as a reject-driven learner signal. Absent ⇒ no signal (dbless / no
     // contract store), byte-identical to pre-1b.

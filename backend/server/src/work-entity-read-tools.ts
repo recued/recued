@@ -59,14 +59,26 @@
 import type {
   ChatDispatchContext,
   ChatDispatchResult,
+  IngredientManifest,
   RecipeDefinition,
+  SourceRegistration,
   WorkEntity,
   WorkEntityKind,
   WorkEntitySourceFreshness,
 } from '@recued/contracts';
-import { WORK_ENTITY_KIND_SET, WORK_ENTITY_KINDS } from '@recued/contracts';
+import {
+  WORK_ENTITY_LIST_HYDRATION_MAX_ROWS_PER_CYCLE,
+  parseQualifiedWorkEntityId,
+  qualifyWorkEntityId,
+  QualifiedWorkEntityIdError,
+  WORK_ENTITY_KIND_SET,
+  WORK_ENTITY_KINDS,
+} from '@recued/contracts';
 
 import { getByDotPath } from './source-mirror/fetch.js';
+import { runGatedCatalogOperation } from './source-mirror/fetch.js';
+import { resolveConfigArgBindings } from './work-entity-config-args.js';
+import { resolvePersistDependencyListArgs } from './source-dependency-resolver.js';
 import {
   classifyWorkEntitySourceFreshness,
   planWorkEntityWildQueryReads,
@@ -290,12 +302,16 @@ type EscalationAdmission =
 const admitEscalation = (
   deps: WorkEntityReadToolsDeps,
   ctx: ChatDispatchContext,
-  prepared: Pick<WorkEntityTargetedReadPrepared, 'catalogSlug' | 'manifest' | 'readOp'>,
+  prepared: {
+    catalogSlug: string;
+    manifest: IngredientManifest;
+    operation: string;
+  },
 ): EscalationAdmission => {
   const admission = admitSourceCatalogEscalation(deps.getOpAdmissionGate?.(), ctx, {
     catalogSlug: prepared.catalogSlug,
     manifest: prepared.manifest,
-    operation: prepared.readOp.opKey,
+    operation: prepared.operation,
   });
   if (admission.admitted) return { admitted: true };
   const refusal = admission.refusal;
@@ -322,6 +338,10 @@ const admitEscalation = (
  *  accessor: 'preview' text is a bounded excerpt, never the complete
  *  body. */
 export interface WorkEntityToolItem {
+  /** Versioned Source-qualified id. Pass it unchanged to `work.read` or the
+   *  matching provider operation. A generic `data.<kind>` mutation can also
+   *  consume it when a local mirrored row exists; read-through rows have no
+   *  local mutation target. */
   id: string;
   kind: WorkEntityKind;
   source_id: string;
@@ -498,6 +518,24 @@ const projectItem = (
   return item;
 };
 
+const qualifiedIdForEntity = (entity: WorkEntity): string =>
+  qualifyWorkEntityId({
+    kind: entity._kind,
+    source_id: entity.source_id,
+    ...(entity.source_record_id !== undefined
+      ? { source_record_id: entity.source_record_id }
+      : {}),
+    local_id: entity.id,
+  });
+
+const qualifyItem = (
+  entity: WorkEntity,
+  item: WorkEntityToolItem,
+): WorkEntityToolItem => ({
+  ...item,
+  id: qualifiedIdForEntity(entity),
+});
+
 /** Overlay the vendor-current projection onto a lean item. Only the
  *  kind's DECLARED-projectable canonical fields overlay (defined
  *  values win); canonical long-body columns are never overlaid — the
@@ -510,25 +548,38 @@ const overlayLive = (
   liveLong: WorkEntityLongText | null,
 ): WorkEntityToolItem => {
   const out: WorkEntityToolItem = { ...item, live: true };
-  if (projected.kind === 'task') {
-    const w = projected.write;
-    if (w.title !== undefined) out.title = w.title;
-    if (w.done !== undefined) out.done = w.done;
-    if (w.state !== undefined) out.state = w.state;
-    if (w.priority !== undefined) out.priority = w.priority;
-    if (w.due_at !== undefined) out.due_at = w.due_at;
-    if (w.progress !== undefined) out.progress = w.progress;
-    if (w.completed_at !== undefined) out.completed_at = w.completed_at;
-  } else if (projected.kind === 'project') {
-    const w = projected.write;
-    if (w.title !== undefined) out.title = w.title;
-    if (w.state !== undefined) out.state = w.state;
-    if (w.target_completion_at !== undefined) {
-      out.target_completion_at = w.target_completion_at;
+  switch (projected.kind) {
+    case 'task': {
+      const w = projected.write;
+      if (w.title !== undefined) out.title = w.title;
+      if (w.done !== undefined) out.done = w.done;
+      if (w.state !== undefined) out.state = w.state;
+      if (w.priority !== undefined) out.priority = w.priority;
+      if (w.due_at !== undefined) out.due_at = w.due_at;
+      if (w.progress !== undefined) out.progress = w.progress;
+      if (w.completed_at !== undefined) out.completed_at = w.completed_at;
+      break;
     }
-  } else {
-    const w = projected.write;
-    if (w.title !== undefined) out.title = w.title;
+    case 'project': {
+      const w = projected.write;
+      if (w.title !== undefined) out.title = w.title;
+      if (w.state !== undefined) out.state = w.state;
+      if (w.target_completion_at !== undefined) {
+        out.target_completion_at = w.target_completion_at;
+      }
+      break;
+    }
+    case 'note': {
+      const w = projected.write;
+      if (w.title !== undefined) out.title = w.title;
+      break;
+    }
+    default: {
+      // Adding a declarable Source kind must also implement its live-read
+      // overlay. Never silently inherit note/project semantics.
+      const exhaustive: never = projected;
+      return exhaustive;
+    }
   }
   if (liveLong !== null) out.long_text = liveLong;
   return out;
@@ -559,7 +610,7 @@ const extractLiveLongText = (
   const preview = declaration.projection.preview;
   if (preview === undefined) return null;
   const declaresCompleteBody =
-    declaration.read_resolution?.remote_when.includes('complete_body_required') ?? false;
+    declaration.read_resolution?.remote_when?.includes('complete_body_required') ?? false;
   for (const [field, spec] of Object.entries(preview)) {
     const value = getByDotPath(raw, spec.field);
     if (typeof value === 'string' && value.length > 0) {
@@ -654,6 +705,305 @@ const readLive = async (
 // work.search
 // ────────────────────────────────────────────────────────────────
 
+const projectedPreviewLongText = (
+  projected: ProjectedWorkEntityUpsert,
+): WorkEntityLongText | null => {
+  const blob = projected.write.source_extension_blob;
+  if (blob === undefined || blob === null || typeof blob !== 'object' || Array.isArray(blob)) {
+    return null;
+  }
+  const preview = blob.preview;
+  if (preview === undefined || preview === null || typeof preview !== 'object' || Array.isArray(preview)) {
+    return null;
+  }
+  for (const [field, value] of Object.entries(preview as Record<string, unknown>)) {
+    if (typeof value === 'string' && value.length > 0) {
+      return { field, text: value, fidelity: 'preview' };
+    }
+  }
+  return null;
+};
+
+const clampListLongText = (
+  value: WorkEntityLongText | null,
+): (WorkEntityLongText & { truncated?: boolean }) | null => {
+  if (value === null || value.text.length <= LIST_LONG_TEXT_CLAMP) return value;
+  return { ...value, text: value.text.slice(0, LIST_LONG_TEXT_CLAMP), truncated: true };
+};
+
+/** Project a vendor response directly to the public tool shape. No store write,
+ *  local id, sync state, or warehouse event exists on this path. */
+const projectReadThroughItem = (
+  projected: ProjectedWorkEntityUpsert,
+  now: number,
+  opts: { clampLongText: boolean; longOverride?: WorkEntityLongText | null },
+): WorkEntityToolItem => {
+  const write = projected.write;
+  const item: WorkEntityToolItem = {
+    id: qualifyWorkEntityId({
+      kind: projected.kind,
+      source_id: write.source_id,
+      source_record_id: write.source_record_id,
+      local_id: write.source_record_id,
+    }),
+    kind: projected.kind,
+    source_id: write.source_id,
+    updated_at: write.source_updated_at ?? now,
+    live: true,
+  };
+  switch (projected.kind) {
+    case 'task': {
+      const task = projected.write;
+      item.title = task.title;
+      item.done = task.done ?? false;
+      if (task.state !== undefined) item.state = task.state;
+      if (task.progress !== undefined) item.progress = task.progress;
+      if (task.due_at !== undefined) item.due_at = task.due_at;
+      if (task.priority !== undefined) item.priority = task.priority;
+      if (task.completed_at !== undefined) item.completed_at = task.completed_at;
+      break;
+    }
+    case 'project': {
+      const project = projected.write;
+      item.title = project.title;
+      item.state = project.state ?? 'active';
+      if (project.target_completion_at !== undefined) {
+        item.target_completion_at = project.target_completion_at;
+      }
+      break;
+    }
+    case 'note':
+      if (projected.write.title !== undefined) item.title = projected.write.title;
+      break;
+    default: {
+      // Read-through is a first-class landing posture. A new kind is not
+      // complete until its public transient projection is explicit here.
+      const exhaustive: never = projected;
+      return exhaustive;
+    }
+  }
+  const long = opts.longOverride === undefined
+    ? projectedPreviewLongText(projected)
+    : opts.longOverride ?? projectedPreviewLongText(projected);
+  const bounded = opts.clampLongText ? clampListLongText(long) : long;
+  if (bounded !== null) item.long_text = bounded;
+  return item;
+};
+
+interface ReadThroughListPrepared {
+  source_id: string;
+  connection_name: string;
+  declaration: KernelWorkEntitySourceDeclaration;
+  manifest: IngredientManifest;
+  catalogSlug: string;
+  operation: string;
+  resultPath: string;
+  args: Record<string, unknown>;
+}
+
+const prepareReadThroughList = (
+  targeted: WorkEntityTargetedReadDeps,
+  source_id: string,
+):
+  | { ok: true; prepared: ReadThroughListPrepared }
+  | { ok: false; kind: 'config'; reason: string } => {
+  const fail = (reason: string) => ({ ok: false as const, kind: 'config' as const, reason });
+  const resolved = targeted.resolveDeclaration(source_id);
+  if (resolved === null) return fail(`source '${source_id}' has no work-entity Source declaration`);
+  const { declaration, connection_name, connection_config } = resolved;
+  if (declaration.sync.posture !== 'read_through') {
+    return fail(`source '${source_id}' is not declared read_through`);
+  }
+  const profile = targeted.fetchDeps.profiles.get(connection_name);
+  if (profile === null) {
+    return fail(`connection '${connection_name}' has no operation profile (not enrolled?)`);
+  }
+  const catalogSlug = profile.catalog_slug;
+  if (catalogSlug === undefined || catalogSlug.length === 0) {
+    return fail(`connection '${connection_name}' carries no catalog binding`);
+  }
+  const manifest = targeted.fetchDeps.executorConfig.manifests.get(catalogSlug) ?? null;
+  if (manifest === null) return fail(`catalog manifest '${catalogSlug}' is not installed`);
+  const operation = declaration.ops.list;
+  if (operation === undefined || operation === null || operation.length === 0) {
+    return fail(`source '${source_id}' declares no list operation`);
+  }
+  const opRow = manifest.operations?.[operation];
+  if (opRow === undefined) return fail(`catalog '${catalogSlug}' declares no '${operation}' operation`);
+  if (opRow.risk_tier !== 'read') {
+    return fail(`declaration list op '${operation}' is '${opRow.risk_tier}', not read-tier`);
+  }
+  const resultPath = opRow.result_path ?? manifest.surfaces?.api?.result_path;
+  if (resultPath === undefined || resultPath.length === 0) {
+    return fail(`catalog '${catalogSlug}' declares no result_path for '${operation}'`);
+  }
+  const configArgs = resolveConfigArgBindings(
+    declaration.op_arg_bindings?.list,
+    connection_config,
+  );
+  if (!configArgs.ok) {
+    return fail(
+      `list operation needs arg '${configArgs.arg}' from connection config `
+      + `'${configArgs.config_key}', which is unset`,
+    );
+  }
+  const hasPersistListDependency = (declaration.source_dependencies ?? []).some(
+    (dependency) =>
+      dependency.resolve === 'persist'
+      && dependency.binds.some((binding) => binding.op === 'list'),
+  );
+  let dependencyArgs: Record<string, unknown> = {};
+  if (hasPersistListDependency) {
+    if (targeted.dependencyStore === undefined) {
+      return fail('a persist list dependency is declared but no dependency selection store is wired');
+    }
+    const resolvedDependencies = resolvePersistDependencyListArgs(
+      targeted.dependencyStore,
+      source_id,
+      declaration,
+    );
+    if (!resolvedDependencies.ok) return fail(resolvedDependencies.reason);
+    dependencyArgs = resolvedDependencies.listArgs;
+  }
+  return {
+    ok: true,
+    prepared: {
+      source_id,
+      connection_name,
+      declaration,
+      manifest,
+      catalogSlug,
+      operation,
+      resultPath,
+      args: { ...configArgs.args, ...dependencyArgs },
+    },
+  };
+};
+
+type ReadThroughListOutcome =
+  | { ok: true; items: WorkEntityToolItem[]; truncated: boolean; row_error?: string }
+  | { ok: false; kind: WorkEntityEscalationError['kind']; reason: string };
+
+const runReadThroughList = async (
+  deps: WorkEntityReadToolsDeps,
+  targeted: WorkEntityTargetedReadDeps,
+  source: SourceRegistration,
+  ctx: ChatDispatchContext,
+  now: number,
+): Promise<ReadThroughListOutcome> => {
+  const prepared = prepareReadThroughList(targeted, source.id);
+  if (!prepared.ok) return prepared;
+  const p = prepared.prepared;
+  const admission = admitEscalation(deps, ctx, {
+    catalogSlug: p.catalogSlug,
+    manifest: p.manifest,
+    operation: p.operation,
+  });
+  if (!admission.admitted) return { ok: false, kind: 'policy', reason: admission.reason };
+  const origin = escalationOrigin(ctx);
+  const run = targeted.runOperation ?? runGatedCatalogOperation;
+  const invoked = await run(targeted.fetchDeps, {
+    connection_name: p.connection_name,
+    manifest: p.manifest,
+    catalogSlug: p.catalogSlug,
+    operationKey: p.operation,
+    args: p.args,
+    auditRecipe: SOURCE_READ_RECIPE,
+    stepId: 'source_list',
+    askReason: 'an on-demand Source read has no approval queue; grant the read operation first',
+    ...origin,
+  });
+  if (!invoked.ok) return invoked;
+  const rawRows = getByDotPath(invoked.raw, `result.${p.resultPath}`);
+  if (!Array.isArray(rawRows)) {
+    return {
+      ok: false,
+      kind: 'error',
+      reason: `'${p.operation}' returned no record array at 'result.${p.resultPath}'`,
+    };
+  }
+  const declaredCap = p.declaration.read_resolution.wild_query.max_remote_records;
+  const cap = p.declaration.sync.list_rows === 'reference'
+    ? Math.min(declaredCap, WORK_ENTITY_LIST_HYDRATION_MAX_ROWS_PER_CYCLE)
+    : declaredCap;
+  const rows = rawRows.slice(0, cap);
+  const truncated = rawRows.length > cap || invoked.audit?.truncated === true;
+
+  let hydration: WorkEntityTargetedReadPrepared | null = null;
+  if (p.declaration.sync.list_rows === 'reference') {
+    const readPrepared = prepareWorkEntitySourceTargetedRead(targeted, { source_id: source.id });
+    if (!readPrepared.ok) return readPrepared;
+    const readAdmission = admitEscalation(deps, ctx, {
+      catalogSlug: readPrepared.prepared.catalogSlug,
+      manifest: readPrepared.prepared.manifest,
+      operation: readPrepared.prepared.readOp.opKey,
+    });
+    if (!readAdmission.admitted) {
+      return { ok: false, kind: 'policy', reason: readAdmission.reason };
+    }
+    hydration = readPrepared.prepared;
+  }
+
+  const items: WorkEntityToolItem[] = [];
+  let rowError: string | undefined;
+  for (const listed of rows) {
+    if (listed === null || typeof listed !== 'object' || Array.isArray(listed)) {
+      rowError ??= 'list response contains a non-record row';
+      continue;
+    }
+    const listedRecord = listed as Record<string, unknown>;
+    const rawId = getByDotPath(listedRecord, p.declaration.remote.id);
+    const source_record_id = typeof rawId === 'string'
+      ? rawId
+      : typeof rawId === 'number' ? String(rawId) : '';
+    if (source_record_id.length === 0) {
+      rowError ??= `a list row carries no id at '${p.declaration.remote.id}'`;
+      continue;
+    }
+    let record = listedRecord;
+    if (hydration !== null) {
+      const hydrated = await runWorkEntitySourceTargetedRead(targeted, {
+        prepared: hydration,
+        source_record_id,
+        stepId: TARGETED_READ_STEP_ID,
+        auditRecipe: SOURCE_READ_RECIPE,
+        ...origin,
+      });
+      if (!hydrated.ok) {
+        rowError ??= hydrated.reason;
+        continue;
+      }
+      const hydratedId = getByDotPath(hydrated.record, p.declaration.remote.id);
+      const hydratedKey = typeof hydratedId === 'string'
+        ? hydratedId
+        : typeof hydratedId === 'number' ? String(hydratedId) : '';
+      if (hydratedKey !== source_record_id) {
+        rowError ??= `targeted hydration returned '${hydratedKey || '<no id>'}', expected '${source_record_id}'`;
+        continue;
+      }
+      record = hydrated.record;
+    }
+    const projected = projectWorkEntitySourceRow({
+      declaration: p.declaration,
+      source_id: source.id,
+      connection_name: p.connection_name,
+      source_record_id,
+      raw: record,
+    });
+    if (!projected.ok) {
+      rowError ??= projected.reason;
+      continue;
+    }
+    items.push(projectReadThroughItem(projected.upsert, now, { clampLongText: true }));
+  }
+  return {
+    ok: true,
+    items,
+    truncated,
+    ...(rowError !== undefined ? { row_error: rowError } : {}),
+  };
+};
+
 export const runWorkEntitySearchTool = async (
   deps: WorkEntityReadToolsDeps,
   rawArgs: unknown,
@@ -703,6 +1053,12 @@ export const runWorkEntitySearchTool = async (
   const resolver = deps.getResolver();
   if (!resolver) return executionError('work-entity resolver unavailable');
   const external = ctx.channel === 'mcp_wire';
+  const registrations = resolver.listSources(kind);
+  const targeted = deps.getTargetedReadDeps();
+  let limitations: Array<{ source_id: string; limitations: string[] }> = [];
+  let narrow: { cap: string; detail: string } | undefined;
+  const escalationErrors: WorkEntityEscalationError[] = [];
+  const escalatedReads: Array<{ source_id: string; record_ids: string[] }> = [];
 
   // External doors see only owner-opted-in Sources (mcp_exposed —
   // default OFF). Disabled Sources are excluded from the row read by
@@ -711,9 +1067,12 @@ export const runWorkEntitySearchTool = async (
   let exposed: ReadonlySet<string> | null = null;
   let hidden_sources = 0;
   if (external) {
-    const sources = resolver.listSources(kind);
-    exposed = new Set(sources.filter((s) => s.mcp_exposed).map((s) => s.id));
-    hidden_sources = sources
+    exposed = new Set(
+      registrations
+        .filter((s) => s.enabled !== false && s.mcp_exposed)
+        .map((s) => s.id),
+    );
+    hidden_sources = registrations
       .filter((s) => s.enabled !== false && !s.mcp_exposed).length;
     if (source_id !== undefined && !exposed.has(source_id)) {
       return notExposedRejection(source_id);
@@ -729,10 +1088,20 @@ export const runWorkEntitySearchTool = async (
     if (e instanceof WorkEntityResolverError) return invalidArgs(e.message);
     return executionError(errMessage(e));
   }
+  // A read-through declaration is a hard no-materialization boundary. Filter
+  // any residue defensively (the boot migration purges it) so an interrupted
+  // migration cannot duplicate or serve retained rows.
+  const readThroughIds = new Set(
+    registrations
+      .filter((source) => source.sync_posture === 'read_through')
+      .map((source) => source.id),
+  );
+  rows = rows.filter((row) => !readThroughIds.has(row.source_id));
+
   // No silent caps: a scan that filled the store ceiling MAY have more
   // rows beyond it — `total` is then a floor, and the result says so
   // (the D-190 `truncated` honesty precedent).
-  const scan_truncated = rows.length >= DISCOVERY_SCAN_CAP;
+  let scan_truncated = rows.length >= DISCOVERY_SCAN_CAP;
   if (exposed !== null) {
     const allow = exposed;
     rows = rows.filter((r) => allow.has(r.source_id));
@@ -749,9 +1118,90 @@ export const runWorkEntitySearchTool = async (
     });
   }
 
-  const total = rows.length;
-  const page = rows.slice(0, limit);
-  let items = page.map((r) => projectItem(r, { clampLongText: true }));
+  // Read-through Sources join the same polymorphic result, but their rows are
+  // fetched and projected transiently. The declaration cap applies before any
+  // invoke fan-out; over-cap asks for a Source scope instead of guessing which
+  // high-security system to query.
+  const readThroughSources = registrations.filter((source) =>
+    source.sync_posture === 'read_through'
+    && source.enabled !== false
+    && (source_id === undefined || source.id === source_id)
+    && (exposed === null || exposed.has(source.id))
+  );
+  let readThroughItems: WorkEntityToolItem[] = [];
+  if (readThroughSources.length > 0) {
+    const maxSources = Math.min(
+      ...readThroughSources.map((source) =>
+        describeSource(targeted, source.id).policy?.wild_query.max_sources ?? 3),
+    );
+    if (readThroughSources.length > maxSources) {
+      narrow = {
+        cap: 'max_sources',
+        detail:
+          `the query would read ${readThroughSources.length} live Sources; the cap is `
+          + `${maxSources} — retry with source_id to choose fewer Sources`,
+      };
+    } else if (targeted === undefined) {
+      for (const source of readThroughSources) {
+        escalationErrors.push({
+          source_id: source.id,
+          kind: 'config',
+          reason: 'read-through substrate not wired',
+        });
+      }
+    } else {
+      const now = (deps.now ?? Date.now)();
+      for (const source of readThroughSources) {
+        const live = await runReadThroughList(deps, targeted, source, ctx, now);
+        if (!live.ok) {
+          escalationErrors.push({ source_id: source.id, kind: live.kind, reason: live.reason });
+          continue;
+        }
+        if (live.truncated) scan_truncated = true;
+        if (live.row_error !== undefined) {
+          escalationErrors.push({
+            source_id: source.id,
+            kind: 'projection',
+            reason: live.row_error,
+          });
+        }
+        readThroughItems.push(...live.items);
+      }
+    }
+  }
+  if (done !== undefined) {
+    readThroughItems = readThroughItems.filter((item) => item.done === done);
+  }
+  if (query !== undefined) {
+    readThroughItems = readThroughItems.filter((item) =>
+      item.title?.toLowerCase().includes(query) === true
+      || item.long_text?.text.toLowerCase().includes(query) === true
+    );
+  }
+
+  const candidates: Array<
+    | { kind: 'local'; updated_at: number; row: WorkEntity }
+    | { kind: 'read_through'; updated_at: number; item: WorkEntityToolItem }
+  > = [
+    ...rows.map((row) => ({ kind: 'local' as const, updated_at: row.updated_at, row })),
+    ...readThroughItems.map((item) => ({
+      kind: 'read_through' as const,
+      updated_at: item.updated_at,
+      item,
+    })),
+  ];
+  candidates.sort((a, b) => b.updated_at - a.updated_at);
+  const total = candidates.length;
+  const pageCandidates = candidates.slice(0, limit);
+  const page = pageCandidates
+    .filter((candidate): candidate is Extract<(typeof candidates)[number], { kind: 'local' }> =>
+      candidate.kind === 'local')
+    .map((candidate) => candidate.row);
+  let items = pageCandidates.map((candidate) =>
+    candidate.kind === 'local'
+      ? projectItem(candidate.row, { clampLongText: true })
+      : candidate.item
+  );
 
   // Freshness verdicts for the query's scope — same filter composition
   // as the rows (the CRUD handler precedent). Null = sync substrate
@@ -765,13 +1215,7 @@ export const runWorkEntitySearchTool = async (
     freshness = freshness.filter((f) => allow.has(f.source_id));
   }
 
-  let limitations: Array<{ source_id: string; limitations: string[] }> = [];
-  let narrow: { cap: string; detail: string } | undefined;
-  const escalationErrors: WorkEntityEscalationError[] = [];
-  const escalatedReads: Array<{ source_id: string; record_ids: string[] }> = [];
-
   if ((needs.detail || needs.current) && freshness !== null && page.length > 0) {
-    const targeted = deps.getTargetedReadDeps();
     const verdictBySource = new Map(freshness.map((f) => [f.source_id, f]));
     // One wild-query input per Source the PAGE actually draws from —
     // escalating rows the answer will not include would waste the cap.
@@ -828,7 +1272,11 @@ export const runWorkEntitySearchTool = async (
         // invoke (prepare is pure config resolution, so a refusal
         // keeps the zero-invoke property). Mirrors the door's own
         // dispatch order: resolve the binding, then admit.
-        const admission = admitEscalation(deps, ctx, prep.prepared);
+        const admission = admitEscalation(deps, ctx, {
+          catalogSlug: prep.prepared.catalogSlug,
+          manifest: prep.prepared.manifest,
+          operation: prep.prepared.readOp.opKey,
+        });
         if (!admission.admitted) {
           escalationErrors.push({
             source_id: read.source_id,
@@ -866,16 +1314,31 @@ export const runWorkEntitySearchTool = async (
     }
   }
 
+  const rowByLocalId = new Map(page.map((row) => [row.id, row]));
+  const qualifyLocalId = (localId: string): string => {
+    const row = rowByLocalId.get(localId);
+    return row === undefined ? localId : qualifiedIdForEntity(row);
+  };
   return {
     ok: true,
     result: {
-      entities: items,
+      entities: items.map((item) => {
+        const row = rowByLocalId.get(item.id);
+        return row === undefined ? item : qualifyItem(row, item);
+      }),
       total,
       ...(scan_truncated ? { scan_truncated } : {}),
       ...(freshness !== null ? { source_freshness: freshness } : {}),
       ...(limitations.length > 0 ? { limitations } : {}),
       ...(narrow !== undefined ? { narrow } : {}),
-      ...(escalatedReads.length > 0 ? { escalated: escalatedReads } : {}),
+      ...(escalatedReads.length > 0
+        ? {
+            escalated: escalatedReads.map((entry) => ({
+              ...entry,
+              record_ids: entry.record_ids.map(qualifyLocalId),
+            })),
+          }
+        : {}),
       ...(escalationErrors.length > 0 ? { escalation_errors: escalationErrors } : {}),
       ...(external && hidden_sources > 0 ? { hidden_sources } : {}),
     },
@@ -945,8 +1408,118 @@ export const runWorkEntityReadTool = async (
 
   let entity: WorkEntity | null;
   try {
-    entity = resolver.readEntity(kind, id);
+    const qualified = parseQualifiedWorkEntityId(id);
+    if (qualified !== null && qualified.kind !== kind) {
+      return invalidArgs(
+        `QUALIFIED_ID_KIND_MISMATCH: work.read requested '${kind}', but the id is for `
+          + `'${qualified.kind}'. Retry with kind '${qualified.kind}' and the same id.`,
+      );
+    }
+    if (qualified?.identity === 'source') {
+      const registration = resolver
+        .listSources(kind)
+        .find((source) => source.id === qualified.source_id);
+      if (registration?.sync_posture === 'read_through') {
+        if (registration.enabled === false) {
+          return invalidArgs(
+            `source '${registration.id}' is disabled in Settings → Work Entities`,
+          );
+        }
+        if (ctx.channel === 'mcp_wire' && !registration.mcp_exposed) {
+          return { ok: true, result: { entity: null, found: false } };
+        }
+        const now = (deps.now ?? Date.now)();
+        const freshness = classifyWorkEntitySourceFreshness(registration, null, now);
+        const targeted = deps.getTargetedReadDeps();
+        const plan: WorkEntityReadPlan = {
+          action: 'remote',
+          reasons: ['current_remote_required'],
+        };
+        if (targeted === undefined) {
+          return executionError(
+            `read-through source '${registration.id}' could not be read: targeted-read substrate not wired`,
+          );
+        }
+        const prep = prepareWorkEntitySourceTargetedRead(targeted, {
+          source_id: registration.id,
+        });
+        if (!prep.ok) {
+          return executionError(
+            `read-through source '${registration.id}' could not be read: ${prep.reason}`,
+          );
+        }
+        const admission = admitEscalation(deps, ctx, {
+          catalogSlug: prep.prepared.catalogSlug,
+          manifest: prep.prepared.manifest,
+          operation: prep.prepared.readOp.opKey,
+        });
+        if (!admission.admitted) {
+          return executionError(
+            `read-through source '${registration.id}' could not be read: ${admission.reason}`,
+          );
+        }
+        const live = await readLive(
+          targeted,
+          prep.prepared,
+          qualified.record_id,
+          escalationOrigin(ctx),
+        );
+        if (!live.ok) {
+          return executionError(
+            `read-through source '${registration.id}' could not be read: ${live.reason}`,
+          );
+        }
+        if (live.projected === null) {
+          return executionError(
+            `read-through source '${registration.id}' returned a record that failed canonical projection`,
+          );
+        }
+        return {
+          ok: true,
+          result: {
+            entity: projectReadThroughItem(live.projected, now, {
+              clampLongText: false,
+              longOverride: live.long,
+            }),
+            found: true,
+            source_freshness: freshness,
+            plan,
+            live_read_at: now,
+          },
+        };
+      }
+    } else if (qualified?.identity === 'local') {
+      const registration = resolver
+        .listSources(kind)
+        .find((source) => source.id === qualified.source_id);
+      if (registration?.sync_posture === 'read_through') {
+        return invalidArgs(
+          `QUALIFIED_ID_LOCAL_ONLY: source '${registration.id}' is read_through and has no `
+          + 'local row id. Retry with work.search and pass its source-qualified id unchanged.',
+        );
+      }
+    }
+    entity = qualified === null
+      ? resolver.readEntity(kind, id)
+      : qualified.identity === 'source'
+        ? resolver.readEntityBySourceIdentity(
+            kind,
+            qualified.source_id,
+            qualified.record_id,
+          )
+        : resolver.readEntity(kind, qualified.record_id);
+    if (
+      qualified?.identity === 'local'
+      && entity !== null
+      && entity.source_id !== qualified.source_id
+    ) {
+      return invalidArgs(
+        `SOURCE_MISMATCH: the id names source '${qualified.source_id}', but the row belongs `
+          + `to '${entity.source_id}'. Retry with 'work.search' and pass the returned id unchanged.`,
+      );
+    }
   } catch (e) {
+    if (e instanceof QualifiedWorkEntityIdError) return invalidArgs(e.message);
     if (e instanceof WorkEntityResolverError) return invalidArgs(e.message);
     return executionError(errMessage(e));
   }
@@ -999,7 +1572,7 @@ export const runWorkEntityReadTool = async (
     has_read_op: described.has_read_op,
   });
 
-  const item = projectItem(row, { clampLongText: false });
+  const item = qualifyItem(row, projectItem(row, { clampLongText: false }));
   const base = {
     entity: item,
     found: true as const,
@@ -1037,7 +1610,11 @@ export const runWorkEntityReadTool = async (
   if (!prep.ok) return degrade(prep.kind, prep.reason);
   // THE ADMISSION SEAM — after prepare, before the vendor invoke
   // (the door-dispatch order: resolve the binding, then admit).
-  const admission = admitEscalation(deps, ctx, prep.prepared);
+  const admission = admitEscalation(deps, ctx, {
+    catalogSlug: prep.prepared.catalogSlug,
+    manifest: prep.prepared.manifest,
+    operation: prep.prepared.readOp.opKey,
+  });
   if (!admission.admitted) return degrade('policy', admission.reason);
   const live = await readLive(targeted, prep.prepared, source_record_id, readOrigin);
   if (!live.ok) return degrade(live.kind, live.reason);

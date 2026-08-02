@@ -211,23 +211,45 @@ export const createWebhookCollection = (
   let state: CollectionState = 'idle';
   let lastIndexedAt = 0;
   let errorCount24h = 0;
+  let inFlightIngests = 0;
+  let closed = false;
+  let stopInFlight: Promise<void> | null = null;
+  const drainWaiters = new Set<() => void>();
+
+  const waitForIngestDrain = (): Promise<void> => {
+    if (inFlightIngests === 0) return Promise.resolve();
+    return new Promise<void>((resolve) => { drainWaiters.add(resolve); });
+  };
+
+  const finishIngest = (): void => {
+    inFlightIngests -= 1;
+    if (inFlightIngests !== 0) return;
+    for (const resolve of drainWaiters) resolve();
+    drainWaiters.clear();
+  };
 
   const sync: CollectionSyncAdapter = {
     async start() {
+      const stopping = stopInFlight;
+      if (stopping) await stopping;
+      if (closed) return;
       accepting = true;
       state = 'connected';
     },
-    async stop() {
+    stop() {
       accepting = false;
       state = 'disconnected';
+      if (stopInFlight) return stopInFlight;
+      let active: Promise<void>;
+      active = waitForIngestDrain().finally(() => {
+        if (stopInFlight === active) stopInFlight = null;
+      });
+      stopInFlight = active;
+      return active;
     },
   };
 
-  const ingest = async (input: WebhookIngestInput): Promise<WebhookIngestResult> => {
-    if (!accepting) {
-      return { ok: false, status: 503, code: 'not_accepting', message: 'webhook collection is not accepting deliveries' };
-    }
-
+  const ingestAccepted = async (input: WebhookIngestInput): Promise<WebhookIngestResult> => {
     const cfg = opts.config();
     const max = cfg.max_body_bytes ?? DEFAULT_WEBHOOK_MAX_BODY_BYTES;
     if (input.body.length > max) {
@@ -344,6 +366,20 @@ export const createWebhookCollection = (
     } catch { /* best-effort */ }
   };
 
+  const ingest = async (input: WebhookIngestInput): Promise<WebhookIngestResult> => {
+    // Admission and the counter move synchronously, before the first await, so
+    // stop() cannot observe zero while an accepted delivery is about to begin.
+    if (!accepting) {
+      return { ok: false, status: 503, code: 'not_accepting', message: 'webhook collection is not accepting deliveries' };
+    }
+    inFlightIngests += 1;
+    try {
+      return await ingestAccepted(input);
+    } finally {
+      finishIngest();
+    }
+  };
+
   const health = (): CollectionHealth => ({
     platform: 'webhook',
     slug,
@@ -367,7 +403,10 @@ export const createWebhookCollection = (
     search: (query: CollectionSearchQuery): CollectionSearchMatch[] => table.search(query),
     health,
     runRetention,
-    async close() { await sync.stop(); },
+    async close() {
+      closed = true;
+      await sync.stop();
+    },
     ingest,
     accepting: () => accepting,
     config: () => opts.config(),

@@ -309,9 +309,9 @@ export interface BulkPackManifest {
    *  credential method (`auth`). Version-agnostic (v1 file-source packs + v2 app
    *  packs both use it). Community packs bind a compiled-in vendor leaf by slug
    *  or fall back to the generic BYO form — they may NOT declare descriptors.
-   *  Until D-166's install planner lands, first-party descriptors are also
-   *  seeded at compile time (`CONNECTION_REQUIREMENT_SEED`); this manifest field
-   *  is the pack-carried form the seed migrates to. */
+   *  The install planner reads this pack-carried form directly. A legacy
+   *  compile-time fallback remains only for consumers loading pre-migration
+   *  manifests with this field absent. */
   connection_requirements?: ConnectionRequirement[];
   /** D-223 — pre-fills for the generic connection form, declarable by ANY
    *  publisher. A hint sets a VALUE on a visible, editable field; it never sets

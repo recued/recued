@@ -14,6 +14,7 @@
  *
  *  Spec: D-163 § N.5 / N.6 / A.5. */
 
+import type { ChannelRoles } from './channel-roles.js';
 import {
   MESSENGER_VENDOR_DECLARATIONS,
   MESSENGER_VENDOR_SLUGS,
@@ -206,10 +207,10 @@ interface NotificationSettingsRowBase {
  *  carry a conversation (Discord) and a channel that cannot be reached unprompted
  *  (WhatsApp) both had to be described in prose instead of declared.
  *
- *  The three are genuinely INDEPENDENT — every combination is occupied:
+ *  The three are genuinely INDEPENDENT — several useful combinations are occupied:
  *    - `bridge`   — notify only
  *    - `email`    — notify + approve (via a landing page), never a conversation
- *    - `discord`  — notify + approve, never a conversation (no Gateway → no messages)
+ *    - `discord`  — all three in local Gateway mode; webhook mode is approvals-only
  *    - `whatsapp` — conversation only (Meta's 24h window blocks the unprompted half)
  *    - `slack` / `telegram` / `ui` — all three
  *
@@ -250,14 +251,11 @@ export interface NotificationBridgeModeRow {
  *  ⚠ One consistency rule ties them together, enforced by a boot check in
  *  `@recued/notification`: a `notify-only` channel MUST declare `approval: false`.
  *  You cannot approve where you cannot render. */
-export interface ChannelRoles {
-  /** Recued can alert you here, unprompted. */
-  notification: boolean;
-  /** Recued can ask you here, unprompted, and get an answer back. */
-  approval: boolean;
-  /** You can talk to Recued here — a chat turn. */
-  messenger: boolean;
-}
+export {
+  CHANNEL_ROLE_AXES,
+  type ChannelRoleAxis,
+  type ChannelRoles,
+} from './channel-roles.js';
 
 /** D-169 P1 — one paired bridge's render row for the per-bridge sub-row
  *  group under the channel-level Browser Bridge toggle. */

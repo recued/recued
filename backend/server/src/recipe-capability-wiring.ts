@@ -17,9 +17,72 @@
  *  tens of packs — the rebuild cost is noise; a stale map would mint a door
  *  whose grants name bindings that no longer exist. */
 
+import type { RecipeDefinition } from '@recued/contracts';
+
+import { resolveCanonicalRecipeForDispatch } from './dispatch-canonical-resolve.js';
 import type { OpResolver } from './derive-recipe-capability.js';
 import type { ExecuteHandlerDeps } from './execute-handler.js';
 import { buildPackOpResolution } from './pack-inventory.js';
+
+export type DoorRecipeResolution =
+  | {
+      readonly ok: true;
+      readonly recipe: RecipeDefinition;
+      /** Concrete ingredient → canonical pack op lookup from the SAME inventory snapshot
+       *  that lowered `recipe`. Using it avoids one live pack scan per recipe step and
+       *  prevents the closure from observing a different install set than lowering. */
+      readonly resolveOp?: OpResolver;
+    }
+  | { readonly ok: false; readonly reason: string };
+
+/** Resolve the exact concrete recipe form `handleExecute` will dispatch under one saved
+ * install config. Doors derive authority from this form, not from an earlier authored
+ * op-step representation whose implicit account binding is not visible yet. */
+export type DoorRecipeResolver = (
+  recipe: RecipeDefinition,
+  config: Record<string, unknown>,
+) => DoorRecipeResolution;
+
+const resolverFromPackSnapshot = (
+  resolution: ReturnType<typeof buildPackOpResolution>,
+): OpResolver =>
+  (ingredientSlug, operation) => {
+    const opIds: string[] = [];
+    for (const [packRef, binding] of resolution) {
+      if (binding.catalog_slug === ingredientSlug && binding.operations.has(operation)) {
+        opIds.push(`${packRef}.${operation}`);
+      }
+    }
+    return opIds;
+  };
+
+export const composeDoorRecipeResolver = (
+  executeDeps: Pick<
+    ExecuteHandlerDeps,
+    'connectionOperationProfiles' | 'contractScan' | 'executorConfig'
+  >,
+): DoorRecipeResolver =>
+  (recipe, config) => {
+    const packs = executeDeps.contractScan === undefined
+      ? undefined
+      : buildPackOpResolution(
+          () => executeDeps.contractScan!('installed_pack', []),
+          (slug) => executeDeps.executorConfig.manifests.get(slug) ?? null,
+        );
+    const resolved = resolveCanonicalRecipeForDispatch(recipe, {
+      profiles: executeDeps.connectionOperationProfiles ?? { get: () => null },
+      manifests: executeDeps.executorConfig.manifests,
+      config,
+      ...(packs === undefined ? {} : { packs }),
+    });
+    return resolved.ok
+      ? {
+          ok: true,
+          recipe: resolved.recipe,
+          ...(packs === undefined ? {} : { resolveOp: resolverFromPackSnapshot(packs) }),
+        }
+      : { ok: false, reason: resolved.reason };
+  };
 
 /** Map an ingredient step's (catalog slug, `input.operation`) back to the
  *  canonical op id(s) it dispatches — so a derived closure names GRANTS, not
@@ -38,13 +101,7 @@ export const composeRecipeOpResolver = (
       () => contractScan('installed_pack', []),
       (slug) => manifests.get(slug) ?? null,
     );
-    const opIds: string[] = [];
-    for (const [packRef, binding] of resolution) {
-      if (binding.catalog_slug === ingredientSlug && binding.operations.has(operation)) {
-        opIds.push(`${packRef}.${operation}`);
-      }
-    }
-    return opIds;
+    return resolverFromPackSnapshot(resolution)(ingredientSlug, operation);
   };
 };
 
@@ -73,6 +130,37 @@ export const composeRecipeOpRiskResolver = (
       return manifest?.operations?.[operation]?.risk_tier;
     }
     return undefined;
+  };
+};
+
+/** Resolve a concrete ingredient's installed execution kind for public-door cost policy. */
+export const composeRecipeIngredientKindResolver = (
+  executeDeps: Pick<ExecuteHandlerDeps, 'executorConfig'>,
+): ((ingredientSlug: string) => string | undefined) =>
+  (ingredientSlug) => executeDeps.executorConfig.manifests.get(ingredientSlug)?.kind;
+
+/** Resolve a non-kernel canonical op's installed catalog kind. Kernel ops are classified
+ *  directly from the closed registry by the cost analyzer. */
+export const composeRecipeOpKindsResolver = (
+  executeDeps: Pick<ExecuteHandlerDeps, 'contractScan' | 'executorConfig'>,
+): (() => ReadonlyMap<string, string>) | undefined => {
+  const contractScan = executeDeps.contractScan;
+  if (!contractScan) return undefined;
+  return () => {
+    const manifests = executeDeps.executorConfig.manifests;
+    const resolution = buildPackOpResolution(
+      () => contractScan('installed_pack', []),
+      (slug) => manifests.get(slug) ?? null,
+    );
+    const kinds = new Map<string, string>();
+    for (const [packRef, binding] of resolution) {
+      const kind = manifests.get(binding.catalog_slug)?.kind;
+      if (kind === undefined) continue;
+      for (const operation of binding.operations) {
+        kinds.set(`${packRef}.${operation}`, kind);
+      }
+    }
+    return kinds;
   };
 };
 

@@ -238,6 +238,44 @@ export const runWorkEntitySourceSync = async (
   const now = deps.now ?? ((): number => Date.now());
   const runFetch = deps.runFetch ?? runSourceMirrorFetch;
   const { source_id, connection_name, declaration } = input;
+  if (declaration.sync.posture === 'read_through') {
+    return {
+      ok: false,
+      kind: 'config',
+      reason:
+        `source '${source_id}' is read_through — generic reads invoke it on demand; `
+        + 'a mirror sync cycle must not run',
+    };
+  }
+  const expectedContractHash = workEntitySourceContractHash(declaration);
+  /** A scheduled task captures a declaration, but pack updates and connection
+   *  teardown can reconcile while that task is awaiting provider I/O. The
+   *  registry posture + sync-state contract hash are the live authority. Check
+   *  both before the cycle starts and after every await; a superseded closure
+   *  must return without touching the replacement state or materializing rows. */
+  const supersededReason = (): string | null => {
+    const currentPosture = mirror.getSourceSyncPosture(source_id);
+    if (currentPosture !== 'records') {
+      return currentPosture === null
+        ? `source '${source_id}' is no longer registered for records sync`
+        : `source '${source_id}' now has '${currentPosture}' posture, not 'records'`;
+    }
+    const currentState = syncState.get(source_id);
+    if (currentState === null) {
+      return `source '${source_id}' has no current records sync-state authority`;
+    }
+    if (currentState.contract_hash !== expectedContractHash) {
+      return `source '${source_id}' declaration changed while this sync task was in flight`;
+    }
+    return null;
+  };
+  const superseded = (reason: string): WorkEntitySourceSyncResult => ({
+    ok: false,
+    kind: 'config',
+    reason: `${reason}; the superseded cycle made no further writes`,
+  });
+  const initialSuperseded = supersededReason();
+  if (initialSuperseded !== null) return superseded(initialSuperseded);
   const vendor = input.vendor ?? null;
   const edgeDeps = deps.edgeResolution ?? {};
   // Edge reconciliation is per-FOLD work, and deliberately NOT gated
@@ -353,6 +391,8 @@ export const runWorkEntitySourceSync = async (
             + ' — the container selection cannot resolve',
         }
       : { ok: true as const, listArgs: {} };
+  const dependencySuperseded = supersededReason();
+  if (dependencySuperseded !== null) return superseded(dependencySuperseded);
   if (!depArgs.ok) {
     return failCycle('config', 'config', `source '${source_id}': ${depArgs.reason}`);
   }
@@ -404,6 +444,8 @@ export const runWorkEntitySourceSync = async (
     auditRecipe: SOURCE_SYNC_RECIPE,
     stepId: 'source_sync',
   });
+  const fetchSuperseded = supersededReason();
+  if (fetchSuperseded !== null) return superseded(fetchSuperseded);
   if (!outcome.ok) {
     return failCycle(outcome.kind, `fetch_${outcome.kind}`, outcome.reason);
   }
@@ -511,6 +553,8 @@ export const runWorkEntitySourceSync = async (
           auditRecipe: SOURCE_SYNC_RECIPE,
         },
       );
+      const hydrationSuperseded = supersededReason();
+      if (hydrationSuperseded !== null) return superseded(hydrationSuperseded);
       if (!read.ok) {
         if (read.kind === 'policy' || read.kind === 'config') {
           hydrationAbort = { kind: read.kind, reason: `${source_record_id}: ${read.reason}` };
@@ -865,7 +909,8 @@ export const wireWorkEntitySourceSync = (
   const reconcile = (row: ConnectionRow | null, connection_name: string): void => {
     const desired = row === null
       ? []
-      : desiredWorkEntitySourcesFor(row, resolveCatalogManifest);
+      : desiredWorkEntitySourcesFor(row, resolveCatalogManifest)
+          .filter((d) => d.sync_posture === 'records');
     // P5 — the vendor rides each task's input so edge resolution can
     // consult platform links + the `crm_alias` registry.
     const vendor = row === null ? null : connectionVendorOf(row);

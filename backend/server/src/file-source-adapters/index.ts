@@ -86,7 +86,13 @@ export interface FileFetchResponse {
  *  S3 leaf can delegate to it. */
 export type FileFetch = (
   url: string,
-  init: { method: string; headers: Record<string, string>; body?: string | Uint8Array },
+  init: {
+    method: string;
+    headers: Record<string, string>;
+    body?: string | Uint8Array;
+    signal?: AbortSignal;
+    redirect?: RequestRedirect;
+  },
 ) => Promise<FileFetchResponse>;
 
 /** The leaf's fully-resolved deps (`fetchImpl` defaulted by the factory). */
@@ -111,6 +117,8 @@ export const defaultFileFetch: FileFetch = (url, init) =>
     method: init.method,
     headers: init.headers,
     ...(init.body !== undefined ? { body: init.body as BodyInit } : {}),
+    ...(init.signal !== undefined ? { signal: init.signal } : {}),
+    ...(init.redirect !== undefined ? { redirect: init.redirect } : {}),
   });
 
 /** Build the per-vendor `FileSourceListFn` resolver the D-192 file-source

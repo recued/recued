@@ -97,6 +97,12 @@ describe('validatePublisherHandle', () => {
   it('§5 — rejects the reserved core handle', () => {
     expect(codes(validatePublisherHandle('core'))).toContain('handle_reserved');
   });
+
+  it('rejects grant-identity publisher handles used by dotted pack stamps', () => {
+    for (const handle of ['data', 'enrichment', 'primitive', 'ingredient']) {
+      expect(codes(validatePublisherHandle(handle)), handle).toContain('handle_reserved');
+    }
+  });
 });
 
 // ── Text content ──

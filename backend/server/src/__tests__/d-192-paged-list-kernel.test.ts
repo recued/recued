@@ -70,6 +70,17 @@ describe('drainPagedList', () => {
     expect(refs).toEqual(['START', 'P2', 'P3']); // followed each nextRef, stopped at the terminal
   });
 
+  it('rejects a repeated nextRef before fetching the same page forever', async () => {
+    const { deps, refs } = depsFor({
+      START: { entries: [], hasMore: true, nextRef: 'P2' },
+      P2: { entries: [], hasMore: true, nextRef: 'P2' },
+    });
+    await expect(drainPagedList(deps, 'START')).rejects.toThrow(
+      'paged-list drain pagination repeated a page reference',
+    );
+    expect(refs).toEqual(['START', 'P2']);
+  });
+
   it('an empty terminal page ⇒ complete, no entries (a legitimately empty walk)', async () => {
     const { deps } = depsFor({ START: { entries: [], hasMore: false } });
     const drain = await drainPagedList(deps, 'START');

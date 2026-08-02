@@ -56,16 +56,10 @@ const fakeIssueResponse = (overrides?: Partial<{
 const okFetch = (
   responseBuilder?: () => unknown,
 ): ReturnType<typeof vi.fn> => {
-  return vi.fn(async () => ({
-    ok: true,
-    status: 200,
-    async text() {
-      return '';
-    },
-    async json() {
-      return responseBuilder ? responseBuilder() : fakeIssueResponse();
-    },
-  })) as unknown as ReturnType<typeof vi.fn>;
+  return vi.fn(async () => {
+    const payload = responseBuilder ? responseBuilder() : fakeIssueResponse();
+    return new Response(JSON.stringify(payload), { status: 200 });
+  }) as unknown as ReturnType<typeof vi.fn>;
 };
 
 const build = (
@@ -223,8 +217,10 @@ describe('createRecuedAcmeClientFromRefs — success path', () => {
     // Bearer + JSON body verified via the fetch arg.
     const [url, init] = fetchSpy.mock.calls[0]!;
     expect(url).toBe(`${CLOUD_BASE}/v1/acme/issue-cert`);
-    const headers = (init as RequestInit).headers as Record<string, string>;
-    expect(headers.Authorization).toBe('Bearer TOK');
+    const headers = new Headers((init as RequestInit).headers);
+    expect(headers.get('authorization')).toBe('Bearer TOK');
+    expect((init as RequestInit).redirect).toBe('error');
+    expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
     const body = JSON.parse((init as RequestInit).body as string);
     expect(body.publisher_id).toBe('PUB_ID');
     expect(body.handle).toBe('alice');
@@ -262,10 +258,10 @@ describe('createRecuedAcmeClientFromRefs — success path', () => {
     token = 'TOK_B';
     await issuer.issueCert({ handle: 'alice', domain: 'alice.recued.net', csr_pem: 'CSR2' });
     expect(fetchSpy).toHaveBeenCalledTimes(2);
-    const headers1 = (fetchSpy.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
-    const headers2 = (fetchSpy.mock.calls[1]![1] as RequestInit).headers as Record<string, string>;
-    expect(headers1.Authorization).toBe('Bearer TOK_A');
-    expect(headers2.Authorization).toBe('Bearer TOK_B');
+    const headers1 = new Headers((fetchSpy.mock.calls[0]![1] as RequestInit).headers);
+    const headers2 = new Headers((fetchSpy.mock.calls[1]![1] as RequestInit).headers);
+    expect(headers1.get('authorization')).toBe('Bearer TOK_A');
+    expect(headers2.get('authorization')).toBe('Bearer TOK_B');
   });
 
   it('awaits an async ProAuthResolver (binding entitlement mint path)', async () => {
@@ -281,8 +277,8 @@ describe('createRecuedAcmeClientFromRefs — success path', () => {
 
     await issuer.issueCert({ handle: 'alice', domain: 'alice.recued.net', csr_pem: 'CSR' });
 
-    const headers = (fetchSpy.mock.calls[0]![1] as RequestInit).headers as Record<string, string>;
-    expect(headers.Authorization).toBe('Bearer ENTITLEMENT_CLAIM');
+    const headers = new Headers((fetchSpy.mock.calls[0]![1] as RequestInit).headers);
+    expect(headers.get('authorization')).toBe('Bearer ENTITLEMENT_CLAIM');
   });
 });
 
@@ -350,6 +346,70 @@ describe('createRecuedAcmeClientFromRefs — cloud errors', () => {
       }),
     ).rejects.toThrow(/acme_csr_contains_private_key/);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it('cancels and rejects a lengthless response above the 1 MiB ACME ceiling', async () => {
+    const cancel = vi.fn();
+    const oversizedFetch = vi.fn(async () => new Response(
+      new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(new Uint8Array(1024 * 1024));
+          controller.enqueue(new Uint8Array([1]));
+        },
+        cancel,
+      }),
+      { status: 200 },
+    ));
+    const { options } = build({
+      fetch: oversizedFetch as unknown as typeof fetch,
+    });
+    const issuer = createRecuedAcmeClientFromRefs(options);
+
+    await expect(
+      issuer.issueCert({ handle: 'alice', domain: 'alice.recued.net', csr_pem: 'CSR' }),
+    ).rejects.toMatchObject({
+      name: 'ResponseBodyTooLargeError',
+      maxBytes: 1024 * 1024,
+    });
+    await Promise.resolve();
+    expect(cancel).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps the 30-second deadline active while reading the cloud body', async () => {
+    vi.useFakeTimers();
+    try {
+      let capturedSignal: AbortSignal | undefined;
+      const stalledFetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+        if (!(init?.signal instanceof AbortSignal)) {
+          throw new Error('ACME request was dispatched without a deadline signal');
+        }
+        capturedSignal = init.signal;
+        let streamController: ReadableStreamDefaultController<Uint8Array> | undefined;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) { streamController = controller; },
+        });
+        init.signal.addEventListener('abort', () => {
+          streamController?.error(new DOMException('aborted', 'AbortError'));
+        }, { once: true });
+        return new Response(body, { status: 200 });
+      });
+      const { options } = build({
+        fetch: stalledFetch as unknown as typeof fetch,
+      });
+      const issuer = createRecuedAcmeClientFromRefs(options);
+      const pending = issuer.issueCert({
+        handle: 'alice',
+        domain: 'alice.recued.net',
+        csr_pem: 'CSR',
+      });
+      const rejected = expect(pending).rejects.toMatchObject({ name: 'AbortError' });
+
+      await vi.advanceTimersByTimeAsync(30_001);
+      await rejected;
+      expect(capturedSignal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

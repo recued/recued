@@ -14,6 +14,11 @@
 
 import type { AdapterKey, LLMProvider, LLMSlot } from '../types.js';
 import { LLMError } from '../types.js';
+import {
+  LLMProviderResponseTooLargeError,
+  readBoundedProviderJson,
+  readBoundedProviderText,
+} from '../provider-http.js';
 
 export interface TranscriptionRequest {
   /** Raw audio bytes. */
@@ -91,9 +96,20 @@ const callTranscription = async (
   const controller = new AbortController();
   const timer = timeoutMs !== null ? setTimeout(() => controller.abort(), timeoutMs) : null;
   try {
-    const response = await fetchImpl(url, { ...init, signal: controller.signal });
+    const response = await fetchImpl(url, {
+      ...init,
+      signal: controller.signal,
+      // Multipart and JSON provider bodies carry BYOK credentials. They are
+      // not safely replayable, so no redirect is an acceptable response.
+      redirect: 'error',
+    });
     if (!response.ok) {
-      const body = await response.text().catch(() => '');
+      let body = '';
+      try {
+        body = await readBoundedProviderText(response);
+      } catch (e) {
+        if ((e as Error).name === 'AbortError') throw e;
+      }
       const retryable = response.status === 429 || response.status >= 500 || response.status === 401 || response.status === 403;
       throw new LLMError(
         'AI_LLM_UNAVAILABLE',
@@ -103,10 +119,15 @@ const callTranscription = async (
       );
     }
     try {
-      return await response.json();
+      return await readBoundedProviderJson(response);
     } catch (e) {
       if ((e as Error).name === 'AbortError') throw e;
-      throw new LLMError('AI_RESPONSE_PARSE_FAILED', 'Transcription returned malformed JSON');
+      throw new LLMError(
+        'AI_RESPONSE_PARSE_FAILED',
+        e instanceof LLMProviderResponseTooLargeError
+          ? e.message
+          : 'Transcription returned malformed JSON',
+      );
     }
   } catch (e) {
     if (e instanceof LLMError) throw e;

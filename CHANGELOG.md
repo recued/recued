@@ -7,6 +7,53 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.8.2 — 2026-08-02
+
+The bulk of this release is a hardening pass over every surface that accepts
+work from outside the server, and a matching pass over failures that used to
+pass silently.
+
+### Security
+
+- **Every inbound work path now has an explicit ceiling.** The pair/RPC
+  WebSocket enforces per-client and global in-flight limits plus a maximum
+  payload size; the MCP HTTP transport, trigger dispatch, webhook dispatch and
+  reception intake each bound their own concurrent work. Public doors enforce
+  per-token concurrency tiers, anonymous recipe cost is capped, paired recipe
+  pressure is bounded, and form limits are enforced per source. Previously a
+  single client — buggy or hostile — could enqueue without limit.
+- Door dispatch authority is resolved once and pinned, and every authority axis
+  is diffed rather than spot-checked.
+- OAuth provider runtime origins are pinned.
+- Providers reject malformed pagination state instead of continuing from it.
+
+### Added
+
+- **Server receipts reach the webclient.** Server-side action outcomes are
+  carried into Attention, unresolved receipts can be reviewed and reconciled,
+  and diagnosis hands off to the server controls that can act on it — so a
+  failure that happened while nobody was looking is visible and actionable
+  rather than lost.
+- Work-entity sources gain a read-through posture, qualified source id routing,
+  and required landing adapters; first-party task sources move into packs, so a
+  source is declared the same way whether it ships with the server or with a
+  pack (D-192).
+- MCP persists approval continuations, so an approval that outlives the
+  connection can still be resumed.
+
+### Fixed
+
+- Failures that were previously swallowed now surface: vault resume, watch
+  polling, scheduler background work, and file/MCP credential-refresh
+  persistence all report rather than fail quietly.
+- IMAP reconnects drain instead of accumulating; vault sync edges are
+  serialized; every listener branch is closed on shutdown.
+- A resumed audit entry keeps its original start time.
+- The release manifest is published at every known channel path, not only the
+  declared ones. An edge-channel server resolves to stable when no edge channel
+  is declared, but still fetches `/edge/manifest.json` — so a stable-only
+  release previously 404'd every edge server's update check.
+
 ## 26.8.1 — 2026-08-01
 
 ### Security

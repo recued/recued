@@ -59,9 +59,14 @@
  *
  *  Spec: D-207 §5.1b / §5.1d / §5.2; D-209 §1.4. */
 
-import { opGrantEntry, type ContractDefinition } from '@recued/contracts';
+import {
+  opGrantEntry,
+  type ContractDefinition,
+  type DoorExecutionPolicy,
+} from '@recued/contracts';
 
 import type { RecipeCapability } from './derive-recipe-capability.js';
+import { DEFAULT_RECEPTION_DOOR_EXECUTION_POLICY } from './reception-recipe-cost-policy.js';
 import type { ContractDefinitionStore } from './storage/contract-definition-store.js';
 import type { ContractGrantEntryStore } from './storage/contract-grant-entry-store.js';
 
@@ -93,21 +98,87 @@ const DOOR_MINT_PROFILES = {
 
 export type MintableDoorType = keyof typeof DOOR_MINT_PROFILES;
 
-/** The op diff between a door's STORED capability and a freshly derived one.
+/** The authority diff between a door's STORED capability and a freshly derived one.
  *
  *  This — not a content hash — decides whether to re-prompt the owner. Returns what was
  *  ADDED and REMOVED so the caller can render the diff as the consent prompt itself,
  *  rather than a bare "something changed, approve again?" that trains the owner to click
- *  through without reading. */
+ *  through without reading.
+ *
+ *  ⛔ A capability is ALL THREE persisted scope axes, not just its operations. The
+ *  snapshot's tool gate reads `ingredient_ids`, and contract scope matching reads
+ *  `connection_names`. Reusing a door after either one moved leaves the old scope linked
+ *  to the new recipe: the next dispatch then hard-denies (or keeps a stale account pin)
+ *  even though bind reported `unchanged`. Operation ids remain unprefixed for the existing
+ *  owner copy; the other axes are named explicitly so the consent list cannot make an
+ *  ingredient or account change look like an operation. */
 export const doorCapabilityChanged = (
   stored: ContractDefinition | null,
   derived: RecipeCapability,
+  desiredExecutionPolicy?: DoorExecutionPolicy,
 ): { readonly changed: boolean; readonly added: string[]; readonly removed: string[] } => {
-  const before = new Set(stored?.scope?.operation_ids ?? []);
-  const after = new Set(derived.operation_ids);
-  const added = [...after].filter((op) => !before.has(op)).sort();
-  const removed = [...before].filter((op) => !after.has(op)).sort();
-  return { changed: added.length > 0 || removed.length > 0, added, removed };
+  const added: string[] = [];
+  const removed: string[] = [];
+  const diffAxis = (
+    beforeValues: readonly string[],
+    afterValues: readonly string[],
+    label: (value: string) => string,
+  ): void => {
+    const before = new Set(beforeValues);
+    const after = new Set(afterValues);
+    for (const value of after) {
+      if (!before.has(value)) added.push(label(value));
+    }
+    for (const value of before) {
+      if (!after.has(value)) removed.push(label(value));
+    }
+  };
+
+  diffAxis(
+    stored?.scope?.operation_ids ?? [],
+    derived.operation_ids,
+    (operation) => operation,
+  );
+  diffAxis(
+    stored?.scope?.ingredient_ids ?? [],
+    derived.ingredient_ids,
+    (ingredient) => `ingredient:${ingredient}`,
+  );
+  diffAxis(
+    stored?.scope?.connection_names ?? [],
+    derived.connection_names,
+    (connection) => `connection:${connection}`,
+  );
+
+  let executionPolicyChanged = false;
+  if (desiredExecutionPolicy !== undefined) {
+    const before = stored?.door_execution_policy;
+    if (before === undefined) {
+      // A legacy/missing policy is unbounded for this purpose. Adding the fixed step ceiling
+      // is a narrowing and therefore needs no owner prompt; AI is a distinct positive opt-in.
+      executionPolicyChanged = true;
+      if (desiredExecutionPolicy.allow_ai) added.push('cost:ai');
+    } else {
+      if (before.allow_ai !== desiredExecutionPolicy.allow_ai) {
+        executionPolicyChanged = true;
+        (desiredExecutionPolicy.allow_ai ? added : removed).push('cost:ai');
+      }
+      if (before.max_steps !== desiredExecutionPolicy.max_steps) {
+        executionPolicyChanged = true;
+        const label = `cost:max-steps:${desiredExecutionPolicy.max_steps}`;
+        if (before.max_steps < desiredExecutionPolicy.max_steps) added.push(label);
+        else removed.push(`cost:max-steps:${before.max_steps}`);
+      }
+    }
+  }
+
+  added.sort();
+  removed.sort();
+  return {
+    changed: added.length > 0 || removed.length > 0 || executionPolicyChanged,
+    added,
+    removed,
+  };
 };
 
 /** Mint a fresh door contract + its grant rows. Returns the minted `contract_id`, which
@@ -119,11 +190,17 @@ export const mintDoorContract = (
     readonly recipeId: string;
     readonly capability: RecipeCapability;
     readonly mintedBy: string;
+    /** Reception only. Omit for the fail-closed no-AI default; webhook doors do not consume
+     *  this policy because their machine-trigger cost posture is separate. */
+    readonly doorExecutionPolicy?: DoorExecutionPolicy;
   },
   deps: MintDoorDeps,
 ): { readonly contract_id: string } => {
   const ts = deps.now();
   const profile = DOOR_MINT_PROFILES[input.door];
+  const doorExecutionPolicy = input.door === 'reception'
+    ? input.doorExecutionPolicy ?? DEFAULT_RECEPTION_DOOR_EXECUTION_POLICY
+    : undefined;
 
   const def = deps.definitionStore.mint({
     minted_by: input.mintedBy,
@@ -137,6 +214,9 @@ export const mintDoorContract = (
       ingredient_ids: [...input.capability.ingredient_ids],
       connection_names: [...input.capability.connection_names],
     },
+    ...(doorExecutionPolicy === undefined
+      ? {}
+      : { door_execution_policy: doorExecutionPolicy }),
     // Load-bearing (note 2) — this is what makes the door deny-by-default.
     door_types: [input.door],
     // D-209 #1 — the per-door-class ceiling; landed only for the doors whose

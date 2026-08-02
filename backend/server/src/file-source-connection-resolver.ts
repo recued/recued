@@ -50,6 +50,8 @@ export interface FileSourceConnectionResolverDeps {
   keyProvider: Parameters<EncodeAuthForStorage>[2];
   fetchImpl?: typeof fetch;
   now?: () => number;
+  /** Advisory signal when a refreshed credential could not be persisted. */
+  onPersistFailure?: EnsureFreshAuthDeps['onPersistFailure'];
 }
 
 export interface ResolvedFileSourceConnection {
@@ -118,6 +120,7 @@ export const createFileSourceConnectionResolver = (
     persistAuth: buildPersistAuth(deps, now),
     ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
     now,
+    ...(deps.onPersistFailure ? { onPersistFailure: deps.onPersistFailure } : {}),
   });
   return async (
     connection_name: string,

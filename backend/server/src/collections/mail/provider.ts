@@ -669,14 +669,13 @@ interface AttemptScope { noted?: MailSyncFailureKind }
 
 /** ⛔ `AsyncLocalStorage`, NOT a module-level "current attempt".
  *
- *  Poll ticks can OVERLAP: the providers' `defaultScheduler` is
- *  `setInterval(() => { void cb().catch(…) })`, which never awaits the previous
- *  tick, so any tick slower than the 30 s interval runs alongside its successor.
- *  With one shared `noted` variable that silently corrupts the report — tick A
- *  hits a 403 and sets it, tick B finishes clean and CONSUMES A's note (reporting
- *  B as failed), then A finishes to find the slot cleared and reports itself
- *  HEALTHY. The attempt that actually failed would claim success, which is the
- *  exact false-healthy this substrate exists to remove.
+ *  Production provider pollers are now serial, but outcome isolation must not
+ *  depend on that scheduling detail: injected schedulers, a resync edge, or a
+ *  direct provider call can still overlap attempts. With one shared `noted`
+ *  variable, tick A can hit a 403 and set it while tick B finishes clean and
+ *  CONSUMES A's note (reporting B as failed); A then finds the slot cleared and
+ *  reports itself HEALTHY. The attempt that actually failed would claim
+ *  success, which is the exact false-healthy this substrate exists to remove.
  *
  *  ALS scopes correctly across every `await` inside an attempt, so a note lands
  *  on the attempt that made it. Same reasoning, same mechanism as

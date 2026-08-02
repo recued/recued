@@ -91,7 +91,7 @@ let fallbackCircuitStores: TestCircuitStore[] = [];
 
 const makeSchedulerHandle = (id: string): TestSchedulerHandle => ({
   id,
-  start: vi.fn(),
+  start: vi.fn().mockResolvedValue(undefined),
   stop: vi.fn().mockResolvedValue(undefined),
   pause: vi.fn(),
   inFlight: vi.fn(() => false),
@@ -349,6 +349,25 @@ describe('per-scheduler boot side effects', () => {
       onFired: expect.any(Function),
     });
     expect(autoRunHandles[0]?.start).toHaveBeenCalledOnce();
+  });
+
+  it('reports a rejected detached auto-run start', async () => {
+    const failure = new Error('auto-run hydration failed');
+    vi.mocked(createServerAutoRunScheduler).mockImplementationOnce(() => {
+      const handle = makeAutoRunHandle() as unknown as TestSchedulerHandle;
+      handle.start.mockRejectedValueOnce(failure);
+      return handle as unknown as ServerAutoRunHandle;
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    bootAutoRunScheduler(makeContext());
+    await Promise.resolve();
+
+    expect(errorSpy).toHaveBeenCalledOnce();
+    expect(errorSpy).toHaveBeenCalledWith(
+      '[auto-run] scheduler start failed',
+      failure,
+    );
   });
 
   it('housekeeping boot registers stop only and constructs no schedulers', () => {

@@ -59,6 +59,9 @@ export interface ContactStoreBundle {
   remergePromptStore: ServerRemergePromptStore | undefined;
   contactMergeCycleObserver: ContactMergeCycleObserver | undefined;
   upstreamMergeStore: UpstreamMergeStore | undefined;
+  /** Completion of the one-shot boot backfill. Rejections are contained, but
+   *  shutdown must await settlement before closing SQLite. */
+  backfillDone: Promise<void> | undefined;
 }
 
 export const composeContactStore = (
@@ -72,6 +75,7 @@ export const composeContactStore = (
       remergePromptStore: undefined,
       contactMergeCycleObserver: undefined,
       upstreamMergeStore: undefined,
+      backfillDone: undefined,
     };
   }
 
@@ -160,15 +164,19 @@ export const composeContactStore = (
   // canonical email); subsequent boots only bump interaction_count
   // on contacts that survived prior runs. Errors swallowed so a
   // corrupt warehouse row never blocks startup.
-  void backfillContacts(db, store).catch(() => {
-    // Best-effort — the broadcast bus (Phase 6) surfaces per-batch
-    // progress + per-row errors; a console breadcrumb is enough.
-  });
+  const backfillDone = backfillContacts(db, store).then(
+    () => undefined,
+    () => {
+      // Best-effort — the broadcast bus (Phase 6) surfaces per-batch
+      // progress + per-row errors; a console breadcrumb is enough.
+    },
+  );
 
   return {
     contactStore: store,
     remergePromptStore,
     contactMergeCycleObserver: observer,
     upstreamMergeStore,
+    backfillDone,
   };
 };

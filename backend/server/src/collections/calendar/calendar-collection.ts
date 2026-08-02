@@ -234,7 +234,9 @@ export const createCalendarCollection = (
   let lastIndexedAt = 0;
   let localErrorCount = 0;
   let stopSync: (() => Promise<void>) | undefined;
-  let starting = false;
+  let startInFlight: Promise<void> | null = null;
+  let syncGeneration = 0;
+  let closed = false;
 
   const bumpError = (msg: string, err: unknown): void => {
     localErrorCount++;
@@ -284,82 +286,140 @@ export const createCalendarCollection = (
     }
   };
 
-  const sync: CollectionSyncAdapter = {
-    async start() {
-      if (starting || stopSync) return;
-      starting = true;
-      state = stateName('syncing');
-      try {
-        await provider.connect();
-      } catch (err) {
-        state = stateName('error');
-        bumpError('calendar provider connect failed', err);
-        starting = false;
-        throw err;
-      }
-      // D-124 Phase 2.4 — record one sync-level `collection_backfill`
-      // activity row at drain completion. `recordImport(start_at)`
-      // tags the underlying calendar event date so `data.timeline()`
-      // event-axis queries can later show the imported window
-      // (e.g. earliest → latest event of the user's 5-year history).
-      // `recordFailure()` captures per-event ingest failures (the
-      // provider's payload was malformed, retention rejected the
-      // body, etc.) without aborting the drain.
-      const backfillRecorder = createBackfillAuditRecorder({
-        auditLog: opts.auditLog,
-        platform: 'calendar',
-        slug,
-        now: nowOf,
-        log,
+  const isCurrentGeneration = (generation: number): boolean =>
+    !closed && syncGeneration === generation;
+
+  const runSyncStart = async (generation: number): Promise<void> => {
+    state = stateName('syncing');
+    try {
+      await provider.connect();
+    } catch (err) {
+      if (!isCurrentGeneration(generation)) return;
+      state = stateName('error');
+      bumpError('calendar provider connect failed', err);
+      throw err;
+    }
+    if (!isCurrentGeneration(generation)) return;
+
+    // D-124 Phase 2.4 — record one sync-level `collection_backfill`
+    // activity row at drain completion. `recordImport(start_at)`
+    // tags the underlying calendar event date so `data.timeline()`
+    // event-axis queries can later show the imported window
+    // (e.g. earliest → latest event of the user's 5-year history).
+    // `recordFailure()` captures per-event ingest failures (the
+    // provider's payload was malformed, retention rejected the
+    // body, etc.) without aborting the drain.
+    const backfillRecorder = createBackfillAuditRecorder({
+      auditLog: opts.auditLog,
+      platform: 'calendar',
+      slug,
+      now: nowOf,
+      log,
+    });
+    try {
+      await provider.initialScan({
+        backfill_days: opts.config().backfill_days,
+        expansion_future_days: opts.config().expansion_future_days,
+        expansion_past_days: opts.config().expansion_past_days,
+        onEvent: async (payload) => {
+          if (!isCurrentGeneration(generation)) return false;
+          const before = localErrorCount;
+          try { await upsertPayload(payload); } catch (err) {
+            bumpError(`calendar initialScan ingest failed`, err);
+          }
+          if (!isCurrentGeneration(generation)) return false;
+          if (localErrorCount > before) backfillRecorder.recordFailure();
+          else backfillRecorder.recordImport(payload.event.start_at);
+          return true;
+        },
       });
-      try {
-        await provider.initialScan({
-          backfill_days: opts.config().backfill_days,
-          expansion_future_days: opts.config().expansion_future_days,
-          expansion_past_days: opts.config().expansion_past_days,
-          onEvent: async (payload) => {
-            const before = localErrorCount;
-            try { await upsertPayload(payload); } catch (err) {
-              bumpError(`calendar initialScan ingest failed`, err);
-            }
-            if (localErrorCount > before) backfillRecorder.recordFailure();
-            else backfillRecorder.recordImport(payload.event.start_at);
-            return true;
-          },
-        });
-        // D-124 Phase 2.1 — flip the denormalized backfill bool
-        // exactly once when the provider's initial drain resolves.
-        // The provider's cursor (gcal nextSyncToken / graph
-        // calendarView range / caldav etagStore) is now stable;
-        // future restarts re-enter this code path but the write is
-        // idempotent. Threaded as optional so legacy in-memory test
-        // harnesses keep working without an instance row.
-        try { opts.instances?.markBackfillComplete('calendar', slug); }
-        catch (err) { bumpError('calendar markBackfillComplete failed', err); }
-        await backfillRecorder.finish();
-      } catch (err) {
-        bumpError('calendar initialScan failed', err);
-        await backfillRecorder.finish('failed');
+      if (!isCurrentGeneration(generation)) return;
+      // D-124 Phase 2.1 — flip the denormalized backfill bool
+      // exactly once when the provider's initial drain resolves.
+      // The provider's cursor (gcal nextSyncToken / graph
+      // calendarView range / caldav etagStore) is now stable;
+      // future restarts re-enter this code path but the write is
+      // idempotent. Threaded as optional so legacy in-memory test
+      // harnesses keep working without an instance row.
+      try { opts.instances?.markBackfillComplete('calendar', slug); }
+      catch (err) { bumpError('calendar markBackfillComplete failed', err); }
+      await backfillRecorder.finish();
+    } catch (err) {
+      if (!isCurrentGeneration(generation)) return;
+      bumpError('calendar initialScan failed', err);
+      await backfillRecorder.finish('failed');
+    }
+    if (!isCurrentGeneration(generation)) return;
+    try {
+      const stop = await provider.startSync(async (event) => {
+        if (!isCurrentGeneration(generation)) return;
+        await onSyncEvent(event);
+      });
+      if (!isCurrentGeneration(generation)) {
+        try { await stop(); } catch { /* stale start teardown */ }
+        return;
       }
-      try {
-        stopSync = await provider.startSync(onSyncEvent);
-        state = stateName('connected');
-        lastIndexedAt = nowOf();
-      } catch (err) {
-        state = stateName('error');
-        bumpError('calendar startSync failed', err);
-      } finally {
-        starting = false;
-      }
+      stopSync = stop;
+      state = stateName('connected');
+      lastIndexedAt = nowOf();
+    } catch (err) {
+      if (!isCurrentGeneration(generation)) return;
+      state = stateName('error');
+      bumpError('calendar startSync failed', err);
+    }
+  };
+
+  const sync: CollectionSyncAdapter = {
+    start() {
+      if (closed || stopSync) return Promise.resolve();
+      if (startInFlight) return startInFlight;
+      const generation = syncGeneration;
+      let active: Promise<void>;
+      active = runSyncStart(generation).finally(() => {
+        if (startInFlight === active) startInFlight = null;
+      });
+      startInFlight = active;
+      return active;
     },
     async stop() {
+      // Invalidate initial-scan and live-sync callbacks before the first await.
+      syncGeneration += 1;
       state = stateName('disconnected');
+      const activeStart = startInFlight;
+      const stops: Promise<void>[] = [];
+      const failures: unknown[] = [];
       if (stopSync) {
         const s = stopSync;
         stopSync = undefined;
-        try { await s(); } catch (err) { bumpError('calendar stopSync failed', err); }
+        try {
+          stops.push(Promise.resolve(s()).catch((err) => {
+            bumpError('calendar stopSync failed', err);
+            failures.push(err);
+          }));
+        } catch (err) {
+          bumpError('calendar stopSync failed', err);
+          failures.push(err);
+        }
       }
-      try { await provider.close(); } catch (err) { bumpError('calendar close failed', err); }
+      const closeProvider = async (): Promise<void> => {
+        try {
+          await provider.close();
+        } catch (err) {
+          bumpError('calendar close failed', err);
+          failures.push(err);
+        }
+      };
+      stops.push(closeProvider());
+      if (activeStart) stops.push(activeStart.catch(() => undefined));
+      await Promise.all(stops);
+      // `close()` is also the cancellation signal for a slow provider connect
+      // or initial scan. If that operation acquired a socket after the first
+      // close raced past it, seal the late-open window once the owned start has
+      // settled (mail's collection lifecycle has the same final fence).
+      if (activeStart) await closeProvider();
+      if (failures.length > 0) {
+        throw new AggregateError(failures, 'calendar collection failed to stop');
+      }
     },
   };
 
@@ -418,7 +478,10 @@ export const createCalendarCollection = (
     search: (_query: CollectionSearchQuery): CollectionSearchMatch[] => [],
     health,
     runRetention,
-    async close() { await sync.stop(); },
+    async close() {
+      closed = true;
+      await sync.stop();
+    },
     table,
     provider,
     applyVerifiedUpsert,

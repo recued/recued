@@ -25,7 +25,7 @@ export interface StartListenerExposureRuntimeOptions {
   >;
   readonly runtime: Omit<
     StartPostListenerRuntimeOptions,
-    'server' | 'lanAdvertisedAddress' | 'webclientServed' | 'actualPort' | 'eventTriggerDispatcher' | 'watchManager' | 'runUpdateBootReconcile'
+    'server' | 'lanAdvertisedAddress' | 'webclientServed' | 'actualPort' | 'eventTriggerDispatcher' | 'watchManager' | 'messengerIngressSupervisor' | 'runUpdateBootReconcile'
   >;
   readonly publishWsHandleForLockout: (
     wsHandle: ComposeListenersResult['serverHandlerSet']['wsHandle'],
@@ -72,6 +72,7 @@ export const startListenerExposureRuntime = async (
     eventTriggerDispatcher: listeners.eventTriggerDispatcher,
     // Poll-manager / G6 — same posture for the watch manager.
     watchManager: listeners.watchManager,
+    messengerIngressSupervisor: listeners.messengerIngressSupervisor,
     // D-178 slice 4b — on-boot update reconcile thunk; the post-housekeeping
     // tail runs it after markBooted.
     runUpdateBootReconcile: listeners.runUpdateBootReconcile,

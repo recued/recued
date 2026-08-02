@@ -10,7 +10,7 @@ import type {
   SourceRegistration,
   WorkEntitySourceFreshness,
 } from '@recued/contracts';
-import { RECUED_BUILTIN_SOURCE_ID } from '@recued/contracts';
+import { qualifyWorkEntityId, RECUED_BUILTIN_SOURCE_ID } from '@recued/contracts';
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -42,7 +42,10 @@ import {
 } from '../work-entity-read-tools.js';
 import { createWorkEntityResolver } from '../work-entity-resolver.js';
 import type { KernelWorkEntitySourceDeclaration } from '../work-entity-source-boot.js';
-import type { WorkEntityTargetedReadDeps } from '../work-entity-write-executor.js';
+import {
+  prepareWorkEntitySourceTargetedRead,
+  type WorkEntityTargetedReadDeps,
+} from '../work-entity-write-executor.js';
 
 const NOW = 1_700_000_000_000;
 const CONNECTION = 'acme';
@@ -54,6 +57,7 @@ const MCP_CTX: ChatDispatchContext = { channel: 'mcp_wire', mcp_token_id: 't1' }
 let db: Database.Database;
 let store: WorkEntityStore;
 let syncState: WorkEntitySourceSyncStateStore;
+const qualifiedIdsByLocalId = new Map<string, string>();
 
 interface SearchResult {
   entities: WorkEntityToolItem[];
@@ -113,6 +117,7 @@ const profile: ConnectionOperationProfile = {
 };
 
 beforeEach(() => {
+  qualifiedIdsByLocalId.clear();
   db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   ensureWorkEntitySchema(db);
@@ -154,9 +159,15 @@ const expectRemotePlan = (plan: WorkEntityReadPlan | undefined): Extract<WorkEnt
 };
 
 const entityById = (result: SearchResult, id: string): WorkEntityToolItem => {
-  const entity = result.entities.find((row) => row.id === id);
+  const entity = result.entities.find((row) => row.id === qualifiedIdsByLocalId.get(id));
   if (entity === undefined) throw new Error(`missing entity ${id}`);
   return entity;
+};
+
+const qualifiedIdFor = (localId: string): string => {
+  const qualified = qualifiedIdsByLocalId.get(localId);
+  if (qualified === undefined) throw new Error(`missing qualified id for ${localId}`);
+  return qualified;
 };
 
 const registerSource = (
@@ -228,6 +239,14 @@ const seedTask = (input: {
     write.source_extension_blob = input.source_extension_blob;
   }
   store.writeTask(write, input.updated_at ?? NOW);
+  qualifiedIdsByLocalId.set(input.id, qualifyWorkEntityId({
+    kind: 'task',
+    source_id: input.source_id,
+    ...(input.source_record_id !== undefined
+      ? { source_record_id: input.source_record_id }
+      : {}),
+    local_id: input.id,
+  }));
 };
 
 const seedNote = (input: {
@@ -254,6 +273,14 @@ const seedNote = (input: {
       ? { source_extension_blob: input.source_extension_blob }
       : {}),
   }, input.updated_at ?? NOW);
+  qualifiedIdsByLocalId.set(input.id, qualifyWorkEntityId({
+    kind: 'note',
+    source_id: input.source_id,
+    ...(input.source_record_id !== undefined
+      ? { source_record_id: input.source_record_id }
+      : {}),
+    local_id: input.id,
+  }));
 };
 
 /** A scriptable op-admission gate for the escalation seam. Defaults
@@ -298,7 +325,7 @@ const readToolsDeps = (
 });
 
 const workEntityPolicy = (
-  remote_when: KernelWorkEntitySourceDeclaration['read_resolution']['remote_when'],
+  remote_when: NonNullable<KernelWorkEntitySourceDeclaration['read_resolution']['remote_when']>,
   wild_query: Partial<KernelWorkEntitySourceDeclaration['read_resolution']['wild_query']> = {},
 ): KernelWorkEntitySourceDeclaration['read_resolution'] => ({
   default: 'local_rich_meta',
@@ -538,13 +565,13 @@ describe('work.search', () => {
     );
     expect(full.total).toBe(2);
     expect(full.entities.map((entity) => entity.id).sort()).toEqual([
-      'search-preview-local-row',
-      'search-title-local-row',
-    ]);
+      qualifiedIdFor('search-preview-local-row'),
+      qualifiedIdFor('search-title-local-row'),
+    ].sort());
 
     const titleRow = entityById(full, 'search-title-local-row');
     expect(titleRow).toMatchObject({
-      id: 'search-title-local-row',
+      id: qualifiedIdFor('search-title-local-row'),
       kind: 'task',
       source_id: connectionSource,
       title: 'needle title local row',
@@ -580,7 +607,7 @@ describe('work.search', () => {
       ),
     );
     expect(doneFalse.entities.map((entity) => entity.id)).toEqual([
-      'search-title-local-row',
+      qualifiedIdFor('search-title-local-row'),
     ]);
 
     const doneTrue = okResult<SearchResult>(
@@ -591,7 +618,7 @@ describe('work.search', () => {
       ),
     );
     expect(doneTrue.entities.map((entity) => entity.id)).toEqual([
-      'search-preview-local-row',
+      qualifiedIdFor('search-preview-local-row'),
     ]);
 
     const scoped = okResult<SearchResult>(
@@ -603,7 +630,7 @@ describe('work.search', () => {
     );
     expect(scoped.total).toBe(1);
     expect(scoped.entities.map((entity) => entity.id)).toEqual([
-      'search-title-local-row',
+      qualifiedIdFor('search-title-local-row'),
     ]);
   });
 
@@ -688,7 +715,7 @@ describe('work.search', () => {
       await runWorkEntitySearchTool(readToolsDeps(), { kind: 'task', limit: 10 }, MCP_CTX),
     );
     expect(external.entities.map((entity) => entity.id)).toEqual([
-      'search-mcp-exposed-row',
+      qualifiedIdFor('search-mcp-exposed-row'),
     ]);
     expect(external.hidden_sources).toBe(1);
 
@@ -711,7 +738,7 @@ describe('work.search', () => {
       ),
     );
     expect(ownerScoped.entities.map((entity) => entity.id)).toEqual([
-      'search-mcp-hidden-row',
+      qualifiedIdFor('search-mcp-hidden-row'),
     ]);
     expect('hidden_sources' in ownerScoped).toBe(false);
   });
@@ -796,9 +823,9 @@ describe('work.search', () => {
     );
 
     expect(out.escalated).toEqual([
-      { source_id: completeSource, record_ids: ['search-live-complete-row'] },
-      { source_id: previewSource, record_ids: ['search-live-preview-row'] },
-      { source_id: longSource, record_ids: ['search-live-long-row'] },
+      { source_id: completeSource, record_ids: [qualifiedIdFor('search-live-complete-row')] },
+      { source_id: previewSource, record_ids: [qualifiedIdFor('search-live-preview-row')] },
+      { source_id: longSource, record_ids: [qualifiedIdFor('search-live-long-row')] },
     ]);
     expect(targeted.invocations).toHaveLength(3);
     for (const invocation of targeted.invocations) {
@@ -1087,7 +1114,7 @@ describe('work.search', () => {
     // vendor read ran and the live overlay landed.
     expect(out.escalation_errors ?? []).toHaveLength(0);
     expect(out.escalated).toEqual([
-      { source_id: source, record_ids: ['search-external-admitted-row'] },
+      { source_id: source, record_ids: [qualifiedIdFor('search-external-admitted-row')] },
     ]);
     expect(entityById(out, 'search-external-admitted-row').title).toBe(
       'vendor admitted title new',
@@ -1354,7 +1381,7 @@ describe('work.search', () => {
     );
 
     expect(out.escalated).toEqual([
-      { source_id: source, record_ids: ['search-chat-threaded-row'] },
+      { source_id: source, record_ids: [qualifiedIdFor('search-chat-threaded-row')] },
     ]);
     expect(targeted.invocations).toHaveLength(1);
     expect(targeted.invocations[0]?.execution_source).toBe(chatSource);
@@ -1368,6 +1395,32 @@ describe('work.search', () => {
 });
 
 describe('work.read', () => {
+  it('refuses a legacy declaration whose read slot points at a write-tier op', () => {
+    const source = 'hubspot.acme.task';
+    const dangerousManifest = {
+      ...manifestFake,
+      operations: {
+        ...manifestFake.operations,
+        'task.read': op('task.read', 'write', 'record'),
+      },
+    } as unknown as IngredientManifest;
+    const prepared = prepareWorkEntitySourceTargetedRead({
+      fetchDeps: {
+        executorConfig: {
+          manifests: { get: (slug: string) => slug === CATALOG ? dangerousManifest : null },
+        },
+        profiles: { get: (name: string) => name === CONNECTION ? profile : null },
+      } as unknown as SourceMirrorFetchDeps,
+      resolveDeclaration: (source_id) => source_id === source
+        ? { declaration: taskDeclaration(), connection_name: CONNECTION }
+        : null,
+    }, { source_id: source });
+
+    expect(prepared).toMatchObject({ ok: false, kind: 'config' });
+    if (prepared.ok) throw new Error('expected read-tier refusal');
+    expect(prepared.reason).toContain('not read-tier');
+  });
+
   it('plans local, current, detail, and no-read-op fidelities honestly', async () => {
     const richSource = 'hubspot.read-rich.task';
     const currentSource = 'hubspot.read-current.task';
@@ -1446,9 +1499,26 @@ describe('work.read', () => {
       ),
     );
     expect(rich.entity?.title).toBe('local rich title');
+    expect(rich.entity?.id).toBe(qualifiedIdFor('read-rich-row'));
     const richPlan = expectLocalPlan(rich.plan);
     expect(richPlan.fresh).toBe(false);
     expect(richPlan.limitations).toEqual(['source_stale']);
+
+    const qualifiedRead = okResult<ReadResult>(
+      await runWorkEntityReadTool(
+        readToolsDeps({ targeted: targeted.deps }),
+        { kind: 'task', id: qualifiedIdFor('read-rich-row') },
+        OWNER_CTX,
+      ),
+    );
+    expect(qualifiedRead).toMatchObject({
+      found: true,
+      entity: {
+        id: qualifiedIdFor('read-rich-row'),
+        source_id: richSource,
+        title: 'local rich title',
+      },
+    });
 
     const current = okResult<ReadResult>(
       await runWorkEntityReadTool(

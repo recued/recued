@@ -10,7 +10,11 @@
 
 import { describe, expect, it, vi } from 'vitest';
 
-import type { ContractDefinition } from '@recued/contracts';
+import type {
+  ContractDefinition,
+  DoorExecutionPolicy,
+  RecipeDefinition,
+} from '@recued/contracts';
 
 import { createReceptionRecipeRunner } from '../reception-recipe-runner.js';
 import type { ContractDefinitionStore } from '../storage/contract-definition-store.js';
@@ -18,21 +22,45 @@ import type { ReceptionIntakeRecipePairStore } from '../storage/reception-intake
 
 const NOW = () => 1_000;
 
+const completed = {
+  success: true,
+  output: { render: [{ type: 'text', data: 'ok' }], sidebar: [] },
+  errors: [],
+};
+
+const deferred = <T>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((accept) => {
+    resolve = accept;
+  });
+  return { promise, resolve };
+};
+
 const harness = (opts?: {
   contract_id?: string | null;
   revoked?: boolean;
   execute?: unknown;
+  maxConcurrentRunsGlobal?: number;
+  maxConcurrentRunsPerEndpoint?: number;
   /** The installed dish's `config_overlay` — what `reception-door-bind` derived the door's
    *  capability from. `undefined` models a recipe with no install config at all. */
   config?: Record<string, unknown>;
+  recipe?: RecipeDefinition | null;
+  policy?: DoorExecutionPolicy | null;
+  scope?: ContractDefinition['scope'];
+  door_types?: ContractDefinition['door_types'];
+  enforceAuthority?: boolean;
 }) => {
   const contractId = opts?.contract_id === undefined ? 'door_1' : opts.contract_id;
   const def = {
     contract_id: 'door_1',
     status: 'active',
     minted_at: NOW(),
-    door_types: ['reception'],
-    scope: { operation_ids: ['core.mail.send'], ingredient_ids: ['mail-send'] },
+    door_types: opts?.door_types ?? ['reception'],
+    scope: opts?.scope ?? { operation_ids: ['core.mail.send'], ingredient_ids: ['mail-send'] },
+    ...(opts?.policy === null
+      ? {}
+      : { door_execution_policy: opts?.policy ?? { max_steps: 64, allow_ai: false } }),
     ...(opts?.revoked === true ? { revoked_at: NOW() } : {}),
   } as unknown as ContractDefinition;
 
@@ -46,7 +74,7 @@ const harness = (opts?: {
   } as unknown as ReceptionIntakeRecipePairStore;
 
   const handleExecute = vi.fn(async () =>
-    opts?.execute ?? { success: true, output: { render: [{ type: 'text', data: 'ok' }], sidebar: [] }, errors: [] },
+    opts?.execute ?? completed,
   );
   // Inject the REAL runner with a spied handleExecute so we assert what it HANDS THE GATE,
   // not a re-implementation of the gate.
@@ -54,7 +82,38 @@ const harness = (opts?: {
   // The SAME resolution `reception-door-bind` mints the door from. A harness that let these
   // two diverge could not catch the bug this dep exists to close.
   const resolveConfig = vi.fn((_recipeId: string) => opts?.config);
-  return { definitionStore, pairStore, executeDeps, handleExecute, resolveConfig, now: NOW };
+  const resolveRecipe = vi.fn((_recipeId: string) => opts?.recipe === undefined
+    ? ({
+        prefetch_steps: [],
+        steps: [{ id: 'normalize', transform: 'default' }],
+        trigger_steps: [],
+      } as unknown as RecipeDefinition)
+    : opts.recipe);
+  return {
+    definitionStore,
+    pairStore,
+    executeDeps,
+    handleExecute,
+    resolveConfig,
+    resolveRecipe,
+    resolveIngredientKind: () => 'http',
+    ...(opts?.enforceAuthority === true
+      ? {
+          resolveDoorRecipe: (value: RecipeDefinition) => ({ ok: true as const, recipe: value }),
+          resolveOp: (slug: string, operation: string) =>
+            slug === 'crm-catalog' && operation === 'deal.search'
+              ? ['recued-core.crm.deal.search']
+              : [],
+        }
+      : {}),
+    now: NOW,
+    ...(opts?.maxConcurrentRunsGlobal === undefined
+      ? {}
+      : { maxConcurrentRunsGlobal: opts.maxConcurrentRunsGlobal }),
+    ...(opts?.maxConcurrentRunsPerEndpoint === undefined
+      ? {}
+      : { maxConcurrentRunsPerEndpoint: opts.maxConcurrentRunsPerEndpoint }),
+  };
 };
 
 /** The runner imports `handleExecute` directly, so spy at the module boundary. */
@@ -73,6 +132,12 @@ const run = (h: ReturnType<typeof harness>) =>
     submission_id: 'sub_1',
     submission: { email: 'v@example.com', note: 'hi' },
   });
+
+const runInput = (endpoint_id: string, submission_id: string) => ({
+  endpoint_id,
+  submission_id,
+  submission: { email: 'v@example.com', note: 'hi' },
+});
 
 describe('D-207 slice 1c — the runner goes THROUGH the gate, not around it', () => {
   it('dispatches through handleExecute with an ANONYMOUS source carrying the door contract', async () => {
@@ -192,12 +257,151 @@ describe('D-207 slice 1c — outcomes', () => {
     expect(h.handleExecute).not.toHaveBeenCalled();
   });
 
-  it('a REVOKED door runs with an EMPTY allowlist — the live kill-switch', async () => {
+  it('a REVOKED door stops the whole run before any runner-owned or engine effect', async () => {
     const h = harness({ revoked: true });
-    await run(h);
-    const [, req] = h.handleExecute.mock.calls[0] as unknown as [unknown, { contract_snapshot: { allowed_tools: string[] } }];
-    // allowed_tools collapses to [] => every dispatch denies (`tool_not_in_contract`), over
-    // a form that is ALREADY public and already taking traffic.
-    expect(req.contract_snapshot.allowed_tools).toEqual([]);
+    await expect(run(h)).resolves.toMatchObject({
+      kind: 'failed',
+      errors: [expect.stringContaining('no longer active')],
+    });
+    expect(h.handleExecute).not.toHaveBeenCalled();
+  });
+
+  it('a contract for another door class cannot back a reception run', async () => {
+    const h = harness({ door_types: ['webhook'] });
+    await expect(run(h)).resolves.toMatchObject({ kind: 'failed' });
+    expect(h.handleExecute).not.toHaveBeenCalled();
+  });
+
+  it('a legacy door with no execution policy fails before the engine runs', async () => {
+    const h = harness({ policy: null });
+    await expect(run(h)).resolves.toMatchObject({
+      kind: 'failed',
+      errors: [expect.stringContaining('re-bind this form')],
+    });
+    expect(h.handleExecute).not.toHaveBeenCalled();
+  });
+
+  it('AI fails before dispatch unless the persisted door records the owner opt-in', async () => {
+    const aiRecipe = {
+      prefetch_steps: [],
+      steps: [{ id: 'generate', op: 'core.ai.generate' }],
+      trigger_steps: [],
+    } as unknown as RecipeDefinition;
+    const denied = harness({ recipe: aiRecipe });
+    await expect(run(denied)).resolves.toMatchObject({
+      kind: 'failed',
+      errors: [expect.stringContaining('AI-cost opt-in')],
+    });
+    expect(denied.handleExecute).not.toHaveBeenCalled();
+
+    const admitted = harness({
+      recipe: aiRecipe,
+      policy: { max_steps: 64, allow_ai: true },
+    });
+    await expect(run(admitted)).resolves.toMatchObject({ kind: 'completed' });
+    expect(admitted.handleExecute).toHaveBeenCalledTimes(1);
+  });
+
+  it('runtime recipe drift to foreach fails before dispatch even under a live policy', async () => {
+    const h = harness({
+      recipe: {
+        prefetch_steps: [],
+        steps: [{ id: 'fanout', ingredient: 'mail-send', foreach: '{{context.items}}' }],
+        trigger_steps: [],
+      } as unknown as RecipeDefinition,
+    });
+    await expect(run(h)).resolves.toMatchObject({
+      kind: 'failed',
+      errors: [expect.stringContaining('unbounded foreach')],
+    });
+    expect(h.handleExecute).not.toHaveBeenCalled();
+  });
+
+  it('account drift fails before execution under the still-pinned prior door', async () => {
+    const h = harness({
+      enforceAuthority: true,
+      config: { crm: 'acct-new' },
+      scope: {
+        operation_ids: ['recued-core.crm.deal.search'],
+        ingredient_ids: ['crm-catalog'],
+        connection_names: ['acct-old'],
+      },
+      recipe: {
+        prefetch_steps: [],
+        steps: [{
+          id: 'read',
+          ingredient: 'crm-catalog',
+          connection: '{{config.crm}}',
+          input: { operation: 'deal.search', args: {} },
+        }],
+        trigger_steps: [],
+      } as unknown as RecipeDefinition,
+    });
+
+    await expect(run(h)).resolves.toMatchObject({
+      kind: 'failed',
+      errors: [expect.stringContaining('authority changed')],
+    });
+    expect(h.handleExecute).not.toHaveBeenCalled();
+  });
+});
+
+describe('D-207 public-run concurrency pressure', () => {
+  it('singleflights one durable submission and releases it after settlement', async () => {
+    const pending = deferred<unknown>();
+    const h = harness({
+      execute: pending.promise,
+      maxConcurrentRunsGlobal: 1,
+      maxConcurrentRunsPerEndpoint: 1,
+    });
+    const runner = createReceptionRecipeRunner(h);
+    const input = runInput('ep1', 'sub_shared');
+
+    const first = runner.run(input);
+    const duplicate = runner.run(input);
+    expect(duplicate).toBe(first);
+    expect(h.handleExecute).toHaveBeenCalledTimes(1);
+
+    pending.resolve(completed);
+    await expect(Promise.all([first, duplicate])).resolves.toHaveLength(2);
+
+    // Singleflight is live-only. A later source-driven replay re-enters the
+    // durable run id and lets handleExecute apply its normal replay semantics.
+    await expect(runner.run(input)).resolves.toMatchObject({ kind: 'completed' });
+    expect(h.handleExecute).toHaveBeenCalledTimes(2);
+  });
+
+  it('fails fast at per-endpoint and global ceilings, then reuses released slots', async () => {
+    const pending = deferred<unknown>();
+    const h = harness({
+      execute: pending.promise,
+      maxConcurrentRunsGlobal: 2,
+      maxConcurrentRunsPerEndpoint: 1,
+    });
+    const runner = createReceptionRecipeRunner(h);
+
+    const endpointOne = runner.run(runInput('ep1', 'sub_1'));
+    const endpointOverflow = runner.run(runInput('ep1', 'sub_2'));
+    expect(h.handleExecute).toHaveBeenCalledTimes(1);
+    await expect(endpointOverflow).rejects.toMatchObject({
+      code: 'reception_recipe_concurrency_limited',
+      scope: 'endpoint',
+    });
+
+    const endpointTwo = runner.run(runInput('ep2', 'sub_3'));
+    const globalOverflow = runner.run(runInput('ep3', 'sub_4'));
+    expect(h.handleExecute).toHaveBeenCalledTimes(2);
+    await expect(globalOverflow).rejects.toMatchObject({
+      code: 'reception_recipe_concurrency_limited',
+      scope: 'global',
+    });
+
+    pending.resolve(completed);
+    await Promise.all([endpointOne, endpointTwo]);
+
+    await expect(runner.run(runInput('ep3', 'sub_4'))).resolves.toMatchObject({
+      kind: 'completed',
+    });
+    expect(h.handleExecute).toHaveBeenCalledTimes(3);
   });
 });

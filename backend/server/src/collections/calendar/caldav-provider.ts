@@ -49,6 +49,7 @@ import {
   CalendarAdapterError,
   type CanonicalEvent,
 } from '@recued/contracts';
+import { makeBoundedOriginHttpFetcher } from '../../bounded-origin-http-fetcher.js';
 
 import type {
   CalendarProvider,
@@ -68,6 +69,17 @@ import type {
   CalendarAdapterFactory,
 } from './adapter-registry.js';
 import type { HttpFetcher } from '../mail/oauth.js';
+import {
+  startDrainingInterval,
+  type ProviderPollScheduler,
+  type ProviderPollStop,
+} from '../draining-interval.js';
+
+/** CalDAV REPORT responses can include event bodies, so retain the provider
+ * ceiling used by mail/calendar APIs while keeping it finite. */
+const defaultCalDavFetcher: HttpFetcher = makeBoundedOriginHttpFetcher({
+  maxResponseBytes: 32 * 1024 * 1024,
+});
 
 // ────────────────────────────────────────────────────────────────
 // Config
@@ -110,7 +122,7 @@ export interface CreateCalDavProviderOptions {
   etagStore: CalDavEtagStore;
   now?: () => number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
-  scheduler?: (cb: () => Promise<void>, intervalMs: number) => () => void;
+  scheduler?: ProviderPollScheduler;
 }
 
 /** Persistent per-event ETag cache. Keyed by `(calendar_id, href)` ↦
@@ -931,24 +943,42 @@ const calendarIdFromHref = (href: string): string =>
 export const createCalDavProvider = (
   opts: CreateCalDavProviderOptions,
 ): CalendarProvider => {
-  const fetcher: HttpFetcher =
-    opts.fetcher ??
-    (async (url, init) => {
-      const res = await fetch(url, init);
-      return {
-        status: res.status,
-        ok: res.ok,
-        json: () => res.json(),
-        text: () => res.text(),
-      };
-    });
+  const fetcher = opts.fetcher ?? defaultCalDavFetcher;
   const nowOf = (): number => opts.now?.() ?? Date.now();
+
+  const endpointUrl = (raw: string, label: string): URL => {
+    let parsed: URL;
+    try {
+      parsed = new URL(raw);
+    } catch (cause) {
+      throw new CalendarAdapterError(
+        'io_error',
+        `caldav ${label}: invalid endpoint URL`,
+        cause,
+      );
+    }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      throw new CalendarAdapterError(
+        'io_error',
+        `caldav ${label}: endpoint must use http or https`,
+      );
+    }
+    return parsed;
+  };
+  const serverBase = endpointUrl(opts.config.server_url, 'server_url');
+  const trustedOrigins = new Set([
+    serverBase.origin,
+    endpointUrl(opts.config.calendar_home_url, 'calendar_home_url').origin,
+    ...(opts.config.scheduling_outbox_url
+      ? [endpointUrl(opts.config.scheduling_outbox_url, 'scheduling_outbox_url').origin]
+      : []),
+  ]);
 
   let lastSuccessfulSyncAt = 0;
   let errorCount24h = 0;
   let pendingQueueSize = 0;
   let pendingSeriesExpansions = 0;
-  let pollStop: (() => void) | null = null;
+  let pollStop: ProviderPollStop | null = null;
 
   const authHeader = basicAuthHeader(
     opts.config.username,
@@ -1023,14 +1053,27 @@ export const createCalDavProvider = (
   };
 
   const absolute = (calendarHref: string, eventHref: string): string => {
-    if (eventHref.startsWith('http://') || eventHref.startsWith('https://')) {
-      return eventHref;
+    let resolved: URL;
+    try {
+      const calendarBase = new URL(calendarHref, `${serverBase.origin}/`);
+      resolved = new URL(eventHref, calendarBase);
+    } catch (cause) {
+      throw new CalendarAdapterError(
+        'io_error',
+        'caldav response contained an invalid resource href',
+        cause,
+      );
     }
-    // Event hrefs are absolute paths — join with the server origin.
-    const base = new URL(opts.config.server_url);
-    if (eventHref.startsWith('/')) return `${base.origin}${eventHref}`;
-    // Relative path — join with the calendar href.
-    return new URL(eventHref, `${base.origin}${calendarHref}`).toString();
+    // Calendar and event hrefs are provider-controlled response data. Never
+    // let one turn the stored Basic credential into an arbitrary-origin
+    // request. Explicitly authored endpoint origins remain valid.
+    if (!trustedOrigins.has(resolved.origin)) {
+      throw new CalendarAdapterError(
+        'io_error',
+        `caldav response refused resource origin '${resolved.origin}'`,
+      );
+    }
+    return resolved.toString();
   };
 
   const fetchEventIcs = async (
@@ -1198,16 +1241,12 @@ export const createCalDavProvider = (
     }
   };
 
-  const defaultScheduler = (
-    cb: () => Promise<void>,
-    intervalMs: number,
-  ): (() => void) => {
-    const handle = setInterval(() => {
-      void cb().catch((err) => markError('caldav poll tick failed', err));
-    }, intervalMs);
-    handle.unref?.();
-    return () => clearInterval(handle);
-  };
+  const defaultScheduler: ProviderPollScheduler = (cb, intervalMs) =>
+    startDrainingInterval({
+      tick: cb,
+      intervalMs,
+      onError: (err) => markError('caldav poll tick failed', err),
+    });
 
   // ── write-back ──────────────────────────────────────────────
   const serialiseDateTime = (at: number, isAllDay: boolean): string => {
@@ -1532,18 +1571,16 @@ export const createCalDavProvider = (
       await runSyncTick(cb);
       pollStop = scheduler(() => runSyncTick(cb), intervalMs);
       return async () => {
-        if (pollStop) {
-          pollStop();
-          pollStop = null;
-        }
+        const stop = pollStop;
+        pollStop = null;
+        await stop?.();
       };
     },
 
     async close() {
-      if (pollStop) {
-        pollStop();
-        pollStop = null;
-      }
+      const stop = pollStop;
+      pollStop = null;
+      await stop?.();
     },
 
     health(): CalendarProviderHealth {
@@ -1833,7 +1870,7 @@ export interface CreateCalDavAdapterFactoryOptions {
   fetcher?: HttpFetcher;
   now?: () => number;
   log?: (level: 'info' | 'warn' | 'error', msg: string, data?: unknown) => void;
-  scheduler?: (cb: () => Promise<void>, intervalMs: number) => () => void;
+  scheduler?: ProviderPollScheduler;
 }
 
 const parseCalDavConfig = (
@@ -1886,17 +1923,7 @@ const probeCalDavCaps = async (
   password: string,
   opts: CreateCalDavAdapterFactoryOptions,
 ): Promise<ProbedCalendarCaps> => {
-  const fetcher: HttpFetcher =
-    opts.fetcher ??
-    (async (url, init) => {
-      const res = await fetch(url, init);
-      return {
-        status: res.status,
-        ok: res.ok,
-        json: () => res.json(),
-        text: () => res.text(),
-      };
-    });
+  const fetcher = opts.fetcher ?? defaultCalDavFetcher;
   const authHeader = basicAuthHeader(cfg.username, password);
   const res = await fetcher(cfg.calendar_home_url, {
     method: 'PROPFIND',
@@ -2002,17 +2029,7 @@ const wrapLazyAuth = (
   getPassword: () => Promise<string>,
   username: string,
 ): HttpFetcher => {
-  const inner: HttpFetcher =
-    base ??
-    (async (url, init) => {
-      const res = await fetch(url, init);
-      return {
-        status: res.status,
-        ok: res.ok,
-        json: () => res.json(),
-        text: () => res.text(),
-      };
-    });
+  const inner = base ?? defaultCalDavFetcher;
   return async (url, init) => {
     const headers: Record<string, string> = { ...(init?.headers ?? {}) };
     const current = headers.Authorization;

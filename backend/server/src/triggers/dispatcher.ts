@@ -251,7 +251,18 @@ export const createEventTriggerDispatcher = (
     }
   };
 
-  const queue = createTriggerDispatchQueue({ processEvent: onEvent });
+  const queue = createTriggerDispatchQueue({
+    processEvent: onEvent,
+    onOverflow: ({ dropped_events, retained_keys, max_keys }) => {
+      // First drop is immediately actionable; thereafter rate-limit the warning
+      // so an event storm cannot turn the safety fence into a log flood.
+      if (dropped_events !== 1 && dropped_events % 100 !== 0) return;
+      console.warn(
+        `[event-triggers] dispatch pressure: refused ${dropped_events} event(s); `
+          + `${retained_keys}/${max_keys} distinct record keys retained`,
+      );
+    },
+  });
 
   const rebuild = (): void => {
     for (const sub of subscriptions) {

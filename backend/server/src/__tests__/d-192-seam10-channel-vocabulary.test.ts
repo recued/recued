@@ -99,7 +99,7 @@ describe('D-192 seam 10 — one registry, every channel vocabulary', () => {
         expect(MESSENGER_RECIPIENT_RESOLVERS[vendor]).toBeTypeOf('function');
         // Only a `webhook` ingress needs a descriptor — a `socket` / `poll` vendor
         // (Discord's Gateway) arrives by another path and is correctly absent here.
-        if (getMessengerVendorDeclaration(vendor)?.ingress.mode === 'webhook') {
+        if (getMessengerVendorDeclaration(vendor)?.ingress.supported_modes.includes('webhook')) {
           expect(MESSENGER_WEBHOOK_DESCRIPTOR_LEAVES[vendor]).toBeTypeOf('function');
         }
       },
@@ -111,7 +111,7 @@ describe('D-192 seam 10 — one registry, every channel vocabulary', () => {
       // dispatcher at all, so it is required for a webhook ingress.
       for (const vendor of MESSENGER_VENDOR_SLUGS) {
         const ingress = getMessengerVendorDeclaration(vendor)?.ingress;
-        if (ingress?.mode !== 'webhook') continue;
+        if (!ingress?.supported_modes.includes('webhook')) continue;
         expect(ingress.id_field).toBeTruthy();
         expect(ingress.secret_field).toBeTruthy();
       }

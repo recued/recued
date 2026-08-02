@@ -395,6 +395,99 @@ describe('GcalProvider — initialScan', () => {
     expect(tokens[0][1]).toBe('tok-1');
   });
 
+  it('rejects a repeated nextPageToken before refetching it forever', async () => {
+    const store = seedStore();
+    const { fetcher, calls } = makeRouter([
+      calendarListRoute([{ id: 'primary', summary: 'Primary' }]),
+      {
+        match: (u) => u.includes('/calendars/primary/events'),
+        response: {
+          status: 200,
+          body: { items: [], nextPageToken: 'P2' },
+        },
+      },
+    ]);
+    const provider = createGcalProvider({
+      slug: 'work',
+      config: mkConfig(),
+      accountStore: store,
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    await expect(provider.initialScan({
+      backfill_days: 7,
+      expansion_future_days: 30,
+      expansion_past_days: 7,
+      onEvent: async () => true,
+    })).rejects.toThrow('repeated a page reference');
+    expect(calls.filter((call) => call.url.includes('/calendars/primary/events')))
+      .toHaveLength(2);
+  });
+
+  it('rejects a non-string nextPageToken instead of persisting terminal sync state', async () => {
+    const store = seedStore();
+    const { fetcher } = makeRouter([
+      calendarListRoute([{ id: 'primary', summary: 'Primary' }]),
+      {
+        match: (u) => u.includes('/calendars/primary/events'),
+        response: {
+          status: 200,
+          body: { items: [], nextPageToken: 0, nextSyncToken: 'must-not-land' },
+        },
+      },
+    ]);
+    const provider = createGcalProvider({
+      slug: 'work',
+      config: mkConfig(),
+      accountStore: store,
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    await expect(provider.initialScan({
+      backfill_days: 7,
+      expansion_future_days: 30,
+      expansion_past_days: 7,
+      onEvent: async () => true,
+    })).rejects.toThrow('non-string continuation');
+    expect(Array.from(store.data.keys()).some((key) => key.startsWith('gcal.work.sync_token.')))
+      .toBe(false);
+  });
+
+  it('rejects a non-string terminal sync token instead of poisoning durable state', async () => {
+    const store = seedStore();
+    const { fetcher } = makeRouter([
+      calendarListRoute([{ id: 'primary', summary: 'Primary' }]),
+      {
+        match: (u) => u.includes('/calendars/primary/events'),
+        response: {
+          status: 200,
+          body: { items: [], nextSyncToken: 0 },
+        },
+      },
+    ]);
+    const provider = createGcalProvider({
+      slug: 'work',
+      config: mkConfig(),
+      accountStore: store,
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+    await expect(provider.initialScan({
+      backfill_days: 7,
+      expansion_future_days: 30,
+      expansion_past_days: 7,
+      onEvent: async () => true,
+    })).rejects.toThrow('non-string continuation');
+    expect(Array.from(store.data.keys()).some((key) => key.startsWith('gcal.work.sync_token.')))
+      .toBe(false);
+  });
+
   it('aborts when onEvent returns false and does not persist syncToken', async () => {
     const store = seedStore();
     const events: GcalEvent[] = [

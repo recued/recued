@@ -49,6 +49,7 @@ import { parseImportScopeConfig, resolveBearerAccessToken, type ImportScope } fr
 
 import type { FileSourceListFn, FileSourceListOutcome } from '../file-source-sync.js';
 import type { FileConnectionCredential, FileSourceLeafDeps } from './index.js';
+import { fetchFileSourceApi } from './http-json.js';
 
 // Exported so the D-192 remote byte-fetch resolver re-resolves a block's fresh
 // ~1h-signed url against the SAME base + pinned version (one source of truth).
@@ -311,7 +312,7 @@ export const buildNotionFileSourceLeaf = (
       init.body = JSON.stringify(body);
     }
     for (let attempt = 0; ; attempt += 1) {
-      const res = await deps.fetchImpl(url, init);
+      const res = await fetchFileSourceApi(deps.fetchImpl, url, init);
       if (res.ok) return res.json();
       if ((res.status === 429 || res.status === 529) && attempt < MAX_RETRIES) {
         const ra = Number(res.headers.get('retry-after'));

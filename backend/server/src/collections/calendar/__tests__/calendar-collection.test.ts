@@ -55,8 +55,13 @@ const baseEvent = (overrides: Partial<CanonicalEvent> = {}): CanonicalEvent => (
 
 interface StubControl {
   initialEvents: ProviderEventPayload[];
+  connectWait?: Promise<void>;
+  connectCount: number;
+  closeCount: number;
+  connected: boolean;
+  initialScanWait?: Promise<void>;
   pushSyncEvent: (event: CalendarSyncEvent) => Promise<void>;
-  fail: { connect?: boolean; initialScan?: boolean; startSync?: boolean };
+  fail: { connect?: boolean; initialScan?: boolean; startSync?: boolean; close?: boolean };
   health: { last: number; errors: number; queue: number; pending: number };
 }
 
@@ -66,9 +71,15 @@ const makeStubProvider = (control: StubControl): CalendarProvider => {
   return {
     kind: 'gcal',
     slug: 'work',
-    async connect() { if (control.fail.connect) throw new Error('boom'); },
+    async connect() {
+      control.connectCount += 1;
+      await control.connectWait;
+      if (control.fail.connect) throw new Error('boom');
+      control.connected = true;
+    },
     async initialScan(opts) {
       if (control.fail.initialScan) throw new Error('scan boom');
+      await control.initialScanWait;
       for (const payload of control.initialEvents) {
         const keep = await opts.onEvent(payload);
         if (!keep) break;
@@ -79,7 +90,12 @@ const makeStubProvider = (control: StubControl): CalendarProvider => {
       cb = callback;
       return async () => { cb = null; };
     },
-    async close() { cb = null; },
+    async close() {
+      control.closeCount += 1;
+      control.connected = false;
+      cb = null;
+      if (control.fail.close) throw new Error('close boom');
+    },
     health: () => ({
       last_successful_sync_at: control.health.last,
       error_count_24h: control.health.errors,
@@ -126,6 +142,9 @@ const newHarness = (
   bus.subscribe('**', (e) => { events.push(e); });
   const control: StubControl = {
     initialEvents: [],
+    connectCount: 0,
+    closeCount: 0,
+    connected: false,
     pushSyncEvent: async () => {/* set by stub */},
     fail: {},
     health: { last: 0, errors: 0, queue: 0, pending: 0 },
@@ -196,6 +215,55 @@ describe('CalendarCollection — initial scan', () => {
     h = newHarness();
     await h.collection.sync.start();
     await h.collection.sync.start(); // should noop without throwing
+  });
+
+  it('close invalidates an in-flight initial scan before live sync starts', async () => {
+    h = newHarness();
+    let release!: () => void;
+    h.control.initialScanWait = new Promise<void>((resolve) => { release = resolve; });
+    const starting = h.collection.sync.start();
+    await Promise.resolve();
+
+    const closing = h.collection.close();
+    release();
+    await Promise.all([starting, closing]);
+    await h.control.pushSyncEvent({
+      kind: 'created',
+      source_id: 'late',
+      payload: { event: baseEvent({ source_id: 'late' }), description_bytes: 0 },
+    });
+
+    expect(h.collection.table.eventCount()).toBe(0);
+    await h.collection.sync.start();
+    expect(h.collection.table.eventCount()).toBe(0);
+  });
+
+  it('close seals a provider that finishes connecting after the first close', async () => {
+    h = newHarness();
+    let releaseConnect!: () => void;
+    h.control.connectWait = new Promise<void>((resolve) => { releaseConnect = resolve; });
+
+    const starting = h.collection.sync.start();
+    expect(h.control.connectCount).toBe(1);
+    const closing = h.collection.close();
+    await Promise.resolve();
+    expect(h.control.closeCount).toBe(1);
+
+    releaseConnect();
+    await Promise.all([starting, closing]);
+
+    expect(h.control.connected).toBe(false);
+    expect(h.control.closeCount).toBe(2);
+  });
+
+  it('close reports a provider teardown failure', async () => {
+    h = newHarness();
+    await h.collection.sync.start();
+    h.control.fail.close = true;
+
+    await expect(h.collection.close()).rejects.toThrow(/failed to stop/);
+
+    h.control.fail.close = false;
   });
 });
 

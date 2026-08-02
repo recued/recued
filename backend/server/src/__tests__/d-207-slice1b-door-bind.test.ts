@@ -46,7 +46,16 @@ const harness = () => {
   } as unknown as ReceptionIntakeRecipePairStore;
   pairs.set('ep1', { contract_id: null });   // an existing, door-less pair
   return { definitionStore, grantEntryStore, pairStore, defs, grants, pairs,
-    now: NOW, resolveConfig: () => ({ stripe: 'acct-1' }) };
+    now: NOW,
+    resolveConfig: () => ({ stripe: 'acct-1', stripe2: 'acct-2' }),
+    resolveIngredientKind: (slug: string) => slug.startsWith('ai-') ? 'ai' : 'http',
+    resolveOpKinds: () => new Map([
+      ['vendor.ai.generate', 'ai'],
+      ['x.charge', 'http'],
+      ['x.create', 'http'],
+      ['x.list', 'http'],
+    ]),
+  };
 };
 
 const bind = (h: ReturnType<typeof harness>, steps: Record<string, unknown>[], confirmed?: boolean) =>
@@ -57,6 +66,53 @@ const bind = (h: ReturnType<typeof harness>, steps: Record<string, unknown>[], c
   );
 
 describe('D-207 — the bind REFUSES what it cannot honestly describe', () => {
+  it('refuses when the real dispatch lowering cannot resolve the saved account binding', () => {
+    const h = {
+      ...harness(),
+      resolveDoorRecipe: () => ({ ok: false as const, reason: 'connection slot is unset' }),
+    };
+    const r = bind(h, [{ id: 'read', op: 'deal.search' }]);
+    expect(r).toMatchObject({
+      kind: 'refused',
+      refusal: { reason: 'dispatch_unresolvable', step_id: '<recipe>' },
+    });
+    expect(h.defs.size).toBe(0);
+  });
+
+  it('mints from the concrete dispatch form and pins its implicit account', () => {
+    const h = {
+      ...harness(),
+      resolveDoorRecipe: () => ({
+        ok: true as const,
+        recipe: recipe([{
+          id: 'read',
+          ingredient: 'crm-catalog',
+          connection: '{{config.stripe}}',
+          input: { operation: 'deal.search', args: {} },
+        }]),
+      }),
+      resolveOp: (slug: string, operation: string) =>
+        slug === 'crm-catalog' && operation === 'deal.search'
+          ? ['recued-core.crm.deal.search']
+          : [],
+    };
+    const pending = bind(h, [{ id: 'read', op: 'deal.search' }]);
+    expect(pending).toMatchObject({
+      kind: 'needs_consent',
+      capability: {
+        operation_ids: ['recued-core.crm.deal.search'],
+        ingredient_ids: ['crm-catalog'],
+        connection_names: ['acct-1'],
+      },
+    });
+
+    const bound = bind(h, [{ id: 'read', op: 'deal.search' }], true);
+    expect(bound.kind).toBe('bound');
+    if (bound.kind === 'bound') {
+      expect(h.defs.get(bound.contract_id)?.scope.connection_names).toEqual(['acct-1']);
+    }
+  });
+
   it('refuses a dynamic-dispatch recipe — no honest capability list can exist', () => {
     const h = harness();
     const r = bind(h, [{ id: 'd', ingredient: '{{config.slug}}' }]);
@@ -71,6 +127,30 @@ describe('D-207 — the bind REFUSES what it cannot honestly describe', () => {
     const h = harness();
     const r = bind(h, [{ id: 'c', op: 'x.create', connection: '{{step.pick}}' }]);
     expect(r.kind).toBe('refused');
+    expect(h.defs.size).toBe(0);
+  });
+
+  it('refuses recipes above the anonymous per-run step ceiling', () => {
+    const h = harness();
+    const steps = Array.from({ length: 65 }, (_, index) => ({
+      id: `s${index}`,
+      transform: 'default',
+    }));
+    const r = bind(h, steps);
+    expect(r).toMatchObject({
+      kind: 'refused',
+      refusal: { reason: 'cost_step_limit', steps: 65, max_steps: 64 },
+    });
+    expect(h.defs.size).toBe(0);
+  });
+
+  it('refuses runtime foreach fan-out instead of pretending one step is one call', () => {
+    const h = harness();
+    const r = bind(h, [{ id: 'fanout', ingredient: 'mail-send', foreach: '{{context.rows}}' }]);
+    expect(r).toMatchObject({
+      kind: 'refused',
+      refusal: { reason: 'cost_dynamic_fanout', step_id: 'fanout' },
+    });
     expect(h.defs.size).toBe(0);
   });
 });
@@ -93,6 +173,30 @@ describe('D-207 — widening ASKS; narrowing does not', () => {
     expect(h.pairs.get('ep1')?.contract_id).toBe(r.contract_id);
     // and the dispatch hop finds it
     expect(resolveReceptionDoorContractId('ep1', h)).toBe(r.contract_id);
+    expect(h.defs.get(r.contract_id)?.door_execution_policy).toEqual({
+      max_steps: 64,
+      allow_ai: false,
+    });
+  });
+
+  it('AI is a separate explicit cost opt-in persisted on the confirmed door', () => {
+    const h = harness();
+    const pending = bind(h, [{ id: 'generate', op: 'core.ai.generate' }]);
+    expect(pending.kind).toBe('needs_consent');
+    if (pending.kind === 'needs_consent') {
+      expect(pending.added).toContain('core.ai.generate');
+      expect(pending.added).toContain('cost:ai');
+    }
+    expect(h.defs.size).toBe(0);
+
+    const bound = bind(h, [{ id: 'generate', op: 'core.ai.generate' }], true);
+    expect(bound.kind).toBe('bound');
+    if (bound.kind === 'bound') {
+      expect(h.defs.get(bound.contract_id)?.door_execution_policy).toEqual({
+        max_steps: 64,
+        allow_ai: true,
+      });
+    }
   });
 
   it('re-bind with the SAME ops is SILENT — no prompt, no re-mint', () => {
@@ -113,6 +217,28 @@ describe('D-207 — widening ASKS; narrowing does not', () => {
     const r = bind(h, [{ id: 'a', op: 'core.mail.send' }, { id: 'b', op: 'x.charge' }]);
     expect(r.kind).toBe('needs_consent');
     if (r.kind === 'needs_consent') expect(r.added).toEqual(['x.charge']);
+  });
+
+  it('a changed ingredient re-asks even when the operation closure is unchanged', () => {
+    const h = harness();
+    bind(h, [{ id: 'a', ingredient: 'old-catalog' }], true);
+    const r = bind(h, [{ id: 'a', ingredient: 'new-catalog' }]);
+    expect(r.kind).toBe('needs_consent');
+    if (r.kind === 'needs_consent') {
+      expect(r.added).toEqual(['ingredient:new-catalog']);
+      expect(r.removed).toEqual(['ingredient:old-catalog']);
+    }
+  });
+
+  it('a changed connection re-asks instead of retaining the old account scope', () => {
+    const h = harness();
+    bind(h, [{ id: 'a', op: 'x.list', connection: '{{config.stripe}}' }], true);
+    const r = bind(h, [{ id: 'a', op: 'x.list', connection: '{{config.stripe2}}' }]);
+    expect(r.kind).toBe('needs_consent');
+    if (r.kind === 'needs_consent') {
+      expect(r.added).toEqual(['connection:acct-2']);
+      expect(r.removed).toEqual(['connection:acct-1']);
+    }
   });
 
   it('a NARROWING does not ask — removing an op is already safe', () => {

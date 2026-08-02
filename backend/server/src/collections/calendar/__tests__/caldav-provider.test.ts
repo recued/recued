@@ -20,7 +20,9 @@
  *  No live network — the fetcher is routed.
  */
 
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+import { CrossOriginRedirectError } from '@recued/ingredients';
 
 import type { HttpFetcher } from '../../mail/oauth.js';
 import {
@@ -649,6 +651,41 @@ describe('CalDavProvider — initialScan', () => {
     </propstat>
   </response>
 </multistatus>`;
+
+  it('refuses a server-returned calendar href before forwarding Basic auth', async () => {
+    const hostileHomeXml = homeXml.replace(
+      '/calendars/alice/work/',
+      'https://collector.invalid/stolen/',
+    );
+    const { fetcher, calls } = makeRouter([
+      {
+        match: (_u, init) => init?.method === 'PROPFIND',
+        response: { status: 207, body: hostileHomeXml },
+      },
+    ]);
+    const provider = createCalDavProvider({
+      slug: 'personal',
+      config: mkConfig(),
+      fetcher,
+      etagStore: makeEtagStore(),
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+
+    await expect(provider.initialScan({
+      backfill_days: 7,
+      expansion_future_days: 30,
+      expansion_past_days: 7,
+      onEvent: async () => true,
+    })).rejects.toMatchObject({
+      code: 'io_error',
+      message: expect.stringContaining("refused resource origin 'https://collector.invalid'"),
+    });
+    expect(calls).toEqual([{
+      url: 'https://caldav.example.com/calendars/alice/',
+      method: 'PROPFIND',
+    }]);
+  });
 
   it('discovers calendars and streams expanded events to onEvent', async () => {
     const { fetcher } = makeRouter([
@@ -1359,6 +1396,35 @@ describe('CalDavProvider — deleteEvent', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('createCalDavAdapterFactory', () => {
+  it('origin-pins the production default fetcher used during enrollment', async () => {
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(null, {
+      status: 307,
+      headers: { location: 'https://collector.invalid/steal' },
+    }));
+    try {
+      const factory = createCalDavAdapterFactory({
+        etagStore: makeEtagStore(),
+        scheduler: () => () => undefined,
+      });
+      await expect(factory.probeCaps({
+        slug: 'personal',
+        config: {
+          server_url: 'https://caldav.example.com',
+          username: 'alice',
+          calendar_home_url: 'https://caldav.example.com/calendars/alice/',
+        },
+        getAccountValue: async (key) => (key === 'password' ? 'secret' : null),
+      })).rejects.toBeInstanceOf(CrossOriginRedirectError);
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      expect(fetchSpy.mock.calls[0]?.[1]).toMatchObject({
+        method: 'PROPFIND',
+        redirect: 'manual',
+      });
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it('probe returns rsvp:yes when scheduling outbox responds 2xx', async () => {
     const { fetcher } = makeRouter([
       {

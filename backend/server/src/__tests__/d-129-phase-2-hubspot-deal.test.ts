@@ -248,6 +248,50 @@ describe('D-129 P2 — searchHubSpotObjects pagination', () => {
     expect(ids).toEqual(['a', 'b', 'c']);
     expect(seenCursors).toEqual([undefined, 'cursor-1', 'cursor-2']);
   });
+
+  it('rejects a repeated paging.next.after cursor before refetching it forever', async () => {
+    let calls = 0;
+    const fetcher = async (): Promise<Response> => {
+      calls += 1;
+      return new Response(JSON.stringify({
+        results: [],
+        paging: { next: { after: 'cursor-repeat' } },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const consume = async (): Promise<void> => {
+      for await (const _row of searchHubSpotObjects(
+        sampleHubSpotConnection(),
+        { objectType: 'deals', properties: ['dealname'], modifiedSince: 0, limit: 100 },
+        { fetcher: fetcher as typeof fetch, refreshAuth: async () => sampleAuth() },
+      )) {
+        // exhaust
+      }
+    };
+    await expect(consume()).rejects.toThrow('repeated a page reference');
+    expect(calls).toBe(2);
+  });
+
+  it('rejects a non-string paging.next.after instead of treating the walk as exhausted', async () => {
+    let calls = 0;
+    const fetcher = async (): Promise<Response> => {
+      calls += 1;
+      return new Response(JSON.stringify({
+        results: [],
+        paging: { next: { after: 0 } },
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    };
+    const consume = async (): Promise<void> => {
+      for await (const _row of searchHubSpotObjects(
+        sampleHubSpotConnection(),
+        { objectType: 'deals', properties: ['dealname'], modifiedSince: 0, limit: 100 },
+        { fetcher: fetcher as typeof fetch, refreshAuth: async () => sampleAuth() },
+      )) {
+        // exhaust
+      }
+    };
+    await expect(consume()).rejects.toThrow('non-string continuation');
+    expect(calls).toBe(1);
+  });
 });
 
 describe('D-129 P2 — searchHubSpotObjects 401 refresh round-trip', () => {

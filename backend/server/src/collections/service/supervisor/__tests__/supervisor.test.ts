@@ -378,4 +378,33 @@ describe('supervisor.shutdown', () => {
     await shutdownPromise;
     expect(supervisor.trackedSlugs()).toEqual([]);
   });
+
+  it('closes start admission before waiting for children to exit', async () => {
+    supervisor = createSupervisor(makeCtx());
+    await supervisor.start(baseSpec());
+    const shutdownPromise = supervisor.shutdown();
+
+    const late = await supervisor.start({ ...baseSpec(), slug: 'late' });
+
+    expect(late).toMatchObject({
+      state: 'failed',
+      pid: null,
+      detail: 'service supervisor is shut down',
+    });
+    expect(spawnMock.children).toHaveLength(1);
+    await shutdownPromise;
+  });
+
+  it('does not write state or audit when a child exits during shutdown', async () => {
+    supervisor = createSupervisor(makeCtx());
+    await supervisor.start(baseSpec());
+    const stateWrite = vi.spyOn(store, 'upsert');
+    stateWrite.mockClear();
+    emitted.length = 0;
+
+    await supervisor.shutdown();
+
+    expect(stateWrite).not.toHaveBeenCalled();
+    expect(emitted).toEqual([]);
+  });
 });

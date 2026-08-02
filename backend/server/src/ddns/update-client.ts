@@ -26,6 +26,10 @@ import {
   type DdnsPauseErrorCode,
 } from '@recued/contracts';
 import { canonicalJSONStringify } from '@recued/crypto';
+import {
+  makeBoundedOriginHttpFetcher,
+  type BoundedHttpFetcher,
+} from '../bounded-origin-http-fetcher.js';
 
 export type DdnsUpdateResult =
   | { ok: true; data: DdnsUpdateResponse }
@@ -72,6 +76,10 @@ export interface DdnsUpdateClientOptions {
   signPayload: (canonical: string) => string;
   /** Fetch override (tests). Defaults to global `fetch`. */
   fetch?: typeof fetch;
+  /** One deadline spanning headers and body consumption. */
+  timeoutMs?: number;
+  /** Response ceiling (bytes). Defaults to the shared provider API limit. */
+  maxResponseBytes?: number;
 }
 
 const trimTrailingSlash = (url: string): string => url.replace(/\/+$/, '');
@@ -121,7 +129,13 @@ export const createDdnsUpdateClient = (
   options: DdnsUpdateClientOptions,
 ): DdnsUpdateClient => {
   const baseUrl = trimTrailingSlash(options.cloud_base_url);
-  const fetchImpl: typeof fetch = options.fetch ?? fetch;
+  const fetchImpl = makeBoundedOriginHttpFetcher({
+    ...(options.fetch !== undefined ? { fetchImpl: options.fetch } : {}),
+    ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    ...(options.maxResponseBytes !== undefined
+      ? { maxResponseBytes: options.maxResponseBytes }
+      : {}),
+  });
 
   const update = async (
     args: DdnsUpdateClientArgs,
@@ -159,7 +173,7 @@ export const createDdnsUpdateClient = (
       signature,
     };
 
-    let response: Response;
+    let response: Awaited<ReturnType<BoundedHttpFetcher>>;
     try {
       response = await fetchImpl(`${baseUrl}/v1/ddns/update`, {
         method: 'POST',
@@ -241,7 +255,7 @@ export const createDdnsUpdateClient = (
       signature,
     };
 
-    let response: Response;
+    let response: Awaited<ReturnType<BoundedHttpFetcher>>;
     try {
       response = await fetchImpl(`${baseUrl}/v1/ddns/pause`, {
         method: 'POST',

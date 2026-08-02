@@ -25,6 +25,10 @@ import { join } from 'node:path';
 
 import { SERVICE_CWD_SUBDIR } from '@recued/contracts';
 import { osFreeBytes } from '../../storage/disk-free.js';
+import {
+  startDrainingInterval,
+  type ProviderPollStop,
+} from '../draining-interval.js';
 import type { ServiceInstanceStateStore } from './service-state-table.js';
 
 // ────────────────────────────────────────────────────────────────
@@ -79,7 +83,7 @@ export interface ServiceQuotaTracker {
   /** Start the periodic sampling loop. Iterates `enrolledSlugs()`
    *  every `intervalMs`, refreshing each cwd's du. Returns a stop
    *  function the composition root invokes during drain. */
-  startSampler(opts: StartSamplerOptions): () => void;
+  startSampler(opts: StartSamplerOptions): ProviderPollStop;
 }
 
 export interface StartSamplerOptions {
@@ -152,16 +156,22 @@ export const createServiceQuotaTracker = (
   opts: CreateServiceQuotaTrackerOptions,
 ): ServiceQuotaTracker => {
   const { dataPath, store, now = () => Date.now() } = opts;
+  let acceptingWrites = true;
 
   const cwdFor = (slug: string): string =>
     join(dataPath, SERVICE_CWD_SUBDIR, slug);
 
   const sampleNow = async (slug: string): Promise<number> => {
     const bytes = await directorySize(cwdFor(slug));
-    store.upsert(slug, {
-      quota_bytes_cached: bytes,
-      quota_bytes_sampled_at: now(),
-    });
+    // The sampler's stop hook closes write admission synchronously. A du walk
+    // may outlive the lifecycle step timeout, but it must never write through a
+    // warehouse handle that the later close_db step has already closed.
+    if (acceptingWrites) {
+      store.upsert(slug, {
+        quota_bytes_cached: bytes,
+        quota_bytes_sampled_at: now(),
+      });
+    }
     return bytes;
   };
 
@@ -207,16 +217,11 @@ export const createServiceQuotaTracker = (
     return { ok: true };
   };
 
-  const startSampler = (samplerOpts: StartSamplerOptions): (() => void) => {
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-
+  const startSampler = (samplerOpts: StartSamplerOptions): ProviderPollStop => {
     const tick = async (): Promise<void> => {
-      if (stopped) return;
       const slugs = samplerOpts.enrolledSlugs();
       // Serialised on purpose — see file header.
       for (const slug of slugs) {
-        if (stopped) return;
         try {
           await sampleNow(slug);
         } catch {
@@ -224,23 +229,17 @@ export const createServiceQuotaTracker = (
           // simply doesn't refresh this tick.
         }
       }
-      if (!stopped) {
-        timer = setTimeout(() => {
-          void tick();
-        }, samplerOpts.intervalMs);
-        // Don't keep the event loop alive on the sampler alone —
-        // the server's main listener is what should hold it open.
-        if (typeof timer.unref === 'function') timer.unref();
-      }
     };
-
-    // First sample fires immediately so the cache primes before
-    // the first invoke arrives.
-    void tick();
-
-    return (): void => {
-      stopped = true;
-      if (timer !== null) clearTimeout(timer);
+    const stop = startDrainingInterval({
+      tick,
+      intervalMs: samplerOpts.intervalMs,
+      // Prime the cache before the first invoke arrives. The returned stop
+      // hook tracks this pass as well as later interval passes.
+      fireImmediate: true,
+    });
+    return (): Promise<void> => {
+      acceptingWrites = false;
+      return stop();
     };
   };
 

@@ -58,7 +58,10 @@ describe("createBackgroundServiceRegistry registerInterval basic mechanics", () 
     registry.registerInterval({ name: "interval", intervalMs: 1250, tick });
 
     expect(setIntervalSpy).toHaveBeenCalledOnce();
-    expect(setIntervalSpy).toHaveBeenCalledWith(tick, 1250);
+    expect(setIntervalSpy).toHaveBeenCalledWith(expect.any(Function), 1250);
+    const registeredTick = setIntervalSpy.mock.calls[0]![0] as () => void;
+    registeredTick();
+    expect(tick).toHaveBeenCalledOnce();
   });
 
   it("calls timer.unref once when present", () => {
@@ -162,6 +165,23 @@ describe("createBackgroundServiceRegistry stop closure behavior", () => {
     );
   });
 
+  it("keeps repeated stop calls idempotent", async () => {
+    const registry = createBackgroundServiceRegistry();
+    const onStop = vi.fn();
+    const clearIntervalSpy = vi.spyOn(global, "clearInterval");
+    const stop = registry.registerInterval({
+      name: "interval",
+      intervalMs: 1250,
+      tick: vi.fn(),
+      onStop,
+    });
+
+    await Promise.all([Promise.resolve(stop()), Promise.resolve(stop())]);
+
+    expect(clearIntervalSpy).toHaveBeenCalledOnce();
+    expect(onStop).toHaveBeenCalledOnce();
+  });
+
   it("catches onStop errors and logs a warning", () => {
     const registry = createBackgroundServiceRegistry();
     const err = new Error("onStop failed");
@@ -186,7 +206,7 @@ describe("createBackgroundServiceRegistry stop closure behavior", () => {
   });
 });
 
-describe("createBackgroundServiceRegistry stopAll ordering + error tolerance", () => {
+describe("createBackgroundServiceRegistry stopAll fan-out + error reporting", () => {
   it("resolves without throwing for an empty registry", async () => {
     const registry = createBackgroundServiceRegistry();
 
@@ -243,7 +263,7 @@ describe("createBackgroundServiceRegistry stopAll ordering + error tolerance", (
     expect(events).toEqual(["start", "end", "settled"]);
   });
 
-  it("logs thrown stop errors and continues iterating", async () => {
+  it("logs thrown stop errors, closes siblings, and surfaces the failure", async () => {
     const registry = createBackgroundServiceRegistry();
     const err = new Error("stop failed");
     const events: string[] = [];
@@ -257,7 +277,7 @@ describe("createBackgroundServiceRegistry stopAll ordering + error tolerance", (
         throw err;
       },
     });
-    await registry.stopAll();
+    await expect(registry.stopAll()).rejects.toThrow(AggregateError);
 
     expect(events).toEqual(["broken", "alpha"]);
     expect(console.warn).toHaveBeenCalledWith("[background-service] broken stop failed", err);
@@ -277,7 +297,7 @@ describe("createBackgroundServiceRegistry stopAll ordering + error tolerance", (
       },
     });
     registry.register({ name: "gamma", kind: "scheduler", stop: () => { events.push("gamma"); } });
-    await registry.stopAll();
+    await expect(registry.stopAll()).rejects.toThrow(AggregateError);
 
     expect(events).toEqual(["gamma", "broken", "alpha"]);
     expect(console.warn).toHaveBeenCalledOnce();
@@ -299,11 +319,65 @@ describe("createBackgroundServiceRegistry stopAll ordering + error tolerance", (
     });
     await registry.stopAll();
 
-    expect(events).toEqual(["async:start", "async:end", "sync"]);
+    expect(events).toEqual(["async:start", "sync", "async:end"]);
   });
 });
 
 describe("createBackgroundServiceRegistry registerInterval integrated with stopAll", () => {
+  it("awaits every started async tick before shutdown resolves", async () => {
+    const registry = createBackgroundServiceRegistry();
+    const releases: Array<() => void> = [];
+    const tick = vi.fn(() => new Promise<void>((resolve) => {
+      releases.push(resolve);
+    }));
+    registry.registerInterval({
+      name: "async-drain",
+      intervalMs: 1000,
+      tick,
+      fireImmediate: true,
+    });
+    vi.advanceTimersByTime(1000);
+
+    let stopped = false;
+    const stopping = registry.stopAll({ kind: "timer" }).then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+
+    expect(tick).toHaveBeenCalledTimes(2);
+    expect(stopped).toBe(false);
+    releases[1]!();
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    releases[0]!();
+    await stopping;
+    expect(stopped).toBe(true);
+  });
+
+  it("runs onStop only after an active async tick has drained", async () => {
+    const registry = createBackgroundServiceRegistry();
+    const events: string[] = [];
+    let release: () => void = () => {};
+    registry.registerInterval({
+      name: "ordered-drain",
+      intervalMs: 1000,
+      fireImmediate: true,
+      tick: async () => {
+        events.push("tick:start");
+        await new Promise<void>((resolve) => { release = resolve; });
+        events.push("tick:end");
+      },
+      onStop: () => { events.push("onStop"); },
+    });
+
+    const stopping = registry.stopAll({ kind: "timer" });
+    expect(events).toEqual(["tick:start"]);
+    release();
+    await stopping;
+
+    expect(events).toEqual(["tick:start", "tick:end", "onStop"]);
+  });
+
   it("clears all registered interval timers through stopAll", async () => {
     const registry = createBackgroundServiceRegistry();
     const firstTick = vi.fn();
@@ -533,7 +607,7 @@ describe("stopAll with filter", () => {
     expect(events).toEqual(["timer-C", "timer-B", "timer-A"]);
   });
 
-  it("logs matched stop errors, continues, and leaves unmatched services untouched", async () => {
+  it("logs matched stop errors, closes siblings, and surfaces the failure", async () => {
     const registry = createBackgroundServiceRegistry();
     const err = new Error("timer stop failed");
     const events: string[] = [];
@@ -556,7 +630,7 @@ describe("stopAll with filter", () => {
       },
     });
     registry.register({ name: "timer-gamma", kind: "timer", stop: () => { events.push("timer-gamma"); } });
-    await registry.stopAll({ kind: "timer" });
+    await expect(registry.stopAll({ kind: "timer" })).rejects.toThrow(AggregateError);
 
     expect(events).toEqual(["timer-gamma", "timer-broken", "timer-alpha"]);
     expect(console.warn).toHaveBeenCalledWith("[background-service] timer-broken stop failed", err);

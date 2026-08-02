@@ -130,6 +130,10 @@ describe('D-130 P1 — getVendorProvider for salesforce', () => {
     expect(p.oauth.token_endpoint).toBe(SALESFORCE_OAUTH_TOKEN_URL_PRODUCTION);
     expect(p.oauth.sandbox_authorize_url).toBe(SALESFORCE_OAUTH_AUTHORIZE_URL_SANDBOX);
     expect(p.oauth.sandbox_token_endpoint).toBe(SALESFORCE_OAUTH_TOKEN_URL_SANDBOX);
+    expect(p.oauth.runtime_base).toEqual({
+      token_response_field: 'instance_url',
+      allowed_hostname_suffixes: ['salesforce.com'],
+    });
   });
 });
 

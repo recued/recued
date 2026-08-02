@@ -12,7 +12,11 @@ import {
 } from '../collections/file/adapters/s3/index.js';
 import { probeAdapter } from '../collections/file/adapter-registry.js';
 import { canonicalQuery, encodeRfc3986, signRequest } from '../collections/file/adapters/s3/sig.js';
-import { createS3Client } from '../collections/file/adapters/s3/client.js';
+import {
+  S3_CONTROL_RESPONSE_MAX_BYTES,
+  S3_REQUEST_TIMEOUT_MS,
+  createS3Client,
+} from '../collections/file/adapters/s3/client.js';
 
 interface FakeObject {
   body: Uint8Array;
@@ -250,6 +254,116 @@ describe('S3 SigV4 query encoding — RFC 3986 wire⟷signature parity (D-192 CO
   });
 });
 
+describe('S3 client response lifecycle', () => {
+  const config = {
+    access_key: 'AKID',
+    secret_key: 'SEC',
+    region: 'us-east-1',
+    bucket: 'mybucket',
+  };
+
+  it('enforces getObject maxBytes on a length-less response stream', async () => {
+    let cancelled = false;
+    const fetcher: S3Fetch = async () => {
+      const body = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          controller.enqueue(new Uint8Array(6));
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      return {
+        ok: true,
+        status: 200,
+        headers: new Headers(),
+        body,
+        arrayBuffer: async () => { throw new Error('must not buffer the whole object'); },
+        text: async () => '',
+      };
+    };
+    const client = createS3Client({ config, fetcher, now: sharedFixedNow });
+
+    await expect(client.getObject('large.bin', 10)).rejects.toMatchObject({
+      code: 'EntityTooLarge',
+      status: 413,
+    });
+    await vi.waitFor(() => expect(cancelled).toBe(true));
+  });
+
+  it('bounds and releases an oversized ListObjects response', async () => {
+    let cancelled = false;
+    let textCalled = false;
+    const body = new ReadableStream<Uint8Array>({
+      cancel() {
+        cancelled = true;
+      },
+    });
+    const fetcher: S3Fetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        'content-length': String(S3_CONTROL_RESPONSE_MAX_BYTES + 1),
+      }),
+      body,
+      arrayBuffer: async () => new ArrayBuffer(0),
+      text: async () => {
+        textCalled = true;
+        return '';
+      },
+    });
+    const client = createS3Client({ config, fetcher, now: sharedFixedNow });
+
+    await expect(client.listObjects()).rejects.toMatchObject({
+      code: 'EntityTooLarge',
+      status: 413,
+    });
+    expect(textCalled).toBe(false);
+    expect(cancelled).toBe(true);
+  });
+
+  it('keeps an abortable deadline active while getObject body stalls', async () => {
+    vi.useFakeTimers();
+    try {
+      let signal: AbortSignal | undefined;
+      const fetcher: S3Fetch = async (_url, init) => {
+        signal = init.signal;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            const abort = (): void => {
+              const error = new Error('aborted');
+              error.name = 'AbortError';
+              controller.error(error);
+            };
+            if (signal?.aborted) abort();
+            else signal?.addEventListener('abort', abort, { once: true });
+          },
+        });
+        return {
+          ok: true,
+          status: 200,
+          headers: new Headers(),
+          body,
+          arrayBuffer: async () => new ArrayBuffer(0),
+          text: async () => '',
+        };
+      };
+      const client = createS3Client({ config, fetcher, now: sharedFixedNow });
+      const pending = client.getObject('stalled.bin', 10);
+      const rejected = expect(pending).rejects.toMatchObject({
+        code: 'RequestTimeout',
+        status: 504,
+      });
+
+      await vi.advanceTimersByTimeAsync(S3_REQUEST_TIMEOUT_MS);
+      await rejected;
+      expect(signal?.aborted).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
 describe('S3 adapter probe (Phase 7 / D-110)', () => {
   const baseConfig = {
     access_key: 'AKID',
@@ -305,6 +419,41 @@ describe('S3 adapter probe (Phase 7 / D-110)', () => {
 });
 
 describe('S3 adapter lifecycle (Phase 7 / D-110)', () => {
+  it('applies the 5 MiB v1 ceiling to reads as well as writes', async () => {
+    let arrayBufferCalled = false;
+    const fetcher: S3Fetch = async () => ({
+      ok: true,
+      status: 200,
+      headers: new Headers({
+        'content-length': String(5 * 1024 * 1024 + 1),
+      }),
+      async arrayBuffer() {
+        arrayBufferCalled = true;
+        return new ArrayBuffer(0);
+      },
+      async text() {
+        return '';
+      },
+    });
+    const factory = createS3AdapterFactory({ fetcher, now: sharedFixedNow });
+    const adapter = factory.create({
+      slug: 's3-test',
+      config: {
+        access_key: 'K',
+        secret_key: 'S',
+        region: 'us-east-1',
+        bucket: 'mybucket',
+        notifications_enabled: true,
+      },
+      onEvent: () => {},
+    });
+
+    await expect((adapter as never as {
+      readRecord(k: string): Promise<Uint8Array>;
+    }).readRecord('oversized.bin')).rejects.toMatchObject({ code: 'too_large' });
+    expect(arrayBufferCalled).toBe(false);
+  });
+
   it('write + read + delete + list cycle', async () => {
     const fetcher = fakeBucket('mybucket', true);
     const factory = createS3AdapterFactory({ fetcher, now: sharedFixedNow });

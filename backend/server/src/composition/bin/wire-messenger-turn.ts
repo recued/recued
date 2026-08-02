@@ -63,7 +63,7 @@
  *  Spec: D-160 § N.5 / A.5 / A.8 step 6; D-148
  *  § P9 / A.13; D-163 § N.5 / A.1. */
 
-import { getMessengerVendorDeclaration } from '@recued/contracts';
+import { messengerConnectionRefusesTurn } from '../../messenger-connection-roles.js';
 import { mkdirSync } from 'node:fs';
 import { unlink } from 'node:fs/promises';
 import {
@@ -295,17 +295,13 @@ export const composeMessengerTurnIngest = (
       return false;
     }
 
-    // D-192 — the vendor's DECLARED messenger role, checked BEFORE the payload.
-    //
-    // Discord carries no plain user messages at all (its Interactions webhook
-    // delivers button presses; messages live on the Gateway, which we do not run), so
-    // there is nothing here for a turn to run on. That was ALREADY true by accident —
-    // `parseInbound` returns null, so the next line would refuse it anyway — but "by
-    // accident" is the problem: it was a fact about the vendor, enforced only by a
-    // leaf's return value, invisible to the registry and to the Settings UI. It is a
-    // declaration now, so a vendor states what it is FOR and the shared code reads it.
-    if (getMessengerVendorDeclaration(vendor)?.roles.messenger !== true) {
-      log?.('info', `messenger turn skipped (${vendor}) — vendor declares no messenger role`, {
+    // D-192 — the DECLARED messenger role, checked BEFORE the payload, and read
+    // for the mode this connection actually runs. Discord's Gateway carries
+    // ordinary messages while its Interactions webhook carries only button
+    // presses, so the same vendor is conversational in one mode and not the
+    // other; the transport parser still rejects non-message shapes below.
+    if (messengerConnectionRefusesTurn(connectionStore, vendor, connection_name)) {
+      log?.('info', `messenger turn skipped (${vendor}) — connection declares no messenger role`, {
         connection_name,
       });
       return false;

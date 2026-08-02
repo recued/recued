@@ -95,6 +95,7 @@ import type { ChatInboundTokenStore } from './storage/chat-inbound-token-store.j
 import type { McpBodyVisibilityStore } from './storage/mcp-body-visibility-store.js';
 import type { WebhookConsumerStore } from './storage/webhook-consumer-store.js';
 import type { WsClient } from './ws-server.js';
+import { makeBoundedOriginHttpFetcher } from './bounded-origin-http-fetcher.js';
 import {
   classifyRecordsMigrationRecipe,
   installRecordsPackAtomic,
@@ -1660,18 +1661,39 @@ export const handlePacksInstall = async (
 // which likewise installs the on-disk version (the pin is its fallback only).
 // ───────────────────────────────────────────────────────────────────────────
 
-/** Install seam 5c — server-side marketplace fetches get a bounded timeout so a
- *  hung connection can't leave the install RPC pending forever (mirrors the
- *  `AbortSignal.timeout` pattern in `daemon.ts`). On timeout the fetch aborts →
- *  the marketplace client throws → it is mapped to a result-body failure. Tests
- *  inject their own `marketplaceFetch`, so only the production default is wrapped. */
-const MARKETPLACE_FETCH_TIMEOUT_MS = 10_000;
+/** Server-side marketplace metadata stays small; bound the full response
+ * lifecycle so a broken CDN cannot wedge an install or buffer unbounded JSON. */
+export const MARKETPLACE_FETCH_TIMEOUT_MS = 10_000;
+export const MARKETPLACE_RESPONSE_MAX_BYTES = 8 * 1024 * 1024;
 
-const defaultMarketplaceFetch: typeof globalThis.fetch = (input, init) =>
-  globalThis.fetch(input, {
-    ...init,
-    signal: init?.signal ?? AbortSignal.timeout(MARKETPLACE_FETCH_TIMEOUT_MS),
+const boundedMarketplaceFetch = makeBoundedOriginHttpFetcher({
+  timeoutMs: MARKETPLACE_FETCH_TIMEOUT_MS,
+  maxResponseBytes: MARKETPLACE_RESPONSE_MAX_BYTES,
+});
+
+export const defaultMarketplaceFetch: typeof globalThis.fetch = async (input, init) => {
+  if (typeof input !== 'string' && !(input instanceof URL)) {
+    throw new TypeError('marketplace fetch requires a URL input');
+  }
+  const url = String(input);
+  if (init?.body !== undefined && typeof init.body !== 'string') {
+    throw new TypeError('marketplace fetch supports only string request bodies');
+  }
+  let headers: Record<string, string> | undefined;
+  if (init?.headers !== undefined) {
+    const copied: Record<string, string> = {};
+    new Headers(init.headers).forEach((value, name) => {
+      copied[name] = value;
+    });
+    headers = copied;
+  }
+  const response = await boundedMarketplaceFetch(url, {
+    ...(init?.method !== undefined ? { method: init.method } : {}),
+    ...(headers !== undefined ? { headers } : {}),
+    ...(typeof init?.body === 'string' ? { body: init.body } : {}),
   });
+  return response as unknown as Response;
+};
 
 type PacksInstallBySlugArgs = {
   slug: string;

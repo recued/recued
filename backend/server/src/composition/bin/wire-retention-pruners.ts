@@ -131,7 +131,14 @@ export const composeRetentionPruners = (
     deps.backgroundServices.registerInterval({
       name: 'audit-prune',
       intervalMs,
-      tick: () => { void retention.runSafe(); },
+      tick: async () => {
+        try {
+          await retention.runSafe();
+        } catch {
+          // `runSafe` is expected to contain its own errors; retain the
+          // pruner's best-effort contract if an implementation regresses.
+        }
+      },
       fireImmediate: true,
     });
   }
@@ -218,12 +225,14 @@ export const composeRetentionPruners = (
     deps.backgroundServices.registerInterval({
       name: 'execution-case-sources-prune',
       intervalMs: DAY_MS,
-      tick: () => {
-        void pruner
-          .pruneSourcesOlderThan(nowOf() - EXECUTION_CASE_SOURCE_RETENTION_MS)
-          .catch(() => {
-            // Best-effort — a prune failure must not crash the server.
-          });
+      tick: async () => {
+        try {
+          await pruner.pruneSourcesOlderThan(
+            nowOf() - EXECUTION_CASE_SOURCE_RETENTION_MS,
+          );
+        } catch {
+          // Best-effort — a prune failure must not crash the server.
+        }
       },
       fireImmediate: true,
     });
@@ -277,7 +286,13 @@ export const composeRetentionPruners = (
     deps.backgroundServices.registerInterval({
       name: 'checkpoint-stale-prune',
       intervalMs: HOUR_MS,
-      tick: () => { void retention.runSafe(); },
+      tick: async () => {
+        try {
+          await retention.runSafe();
+        } catch {
+          // Best-effort retention must not reject the timer lifecycle.
+        }
+      },
       fireImmediate: true,
     });
   }
@@ -298,15 +313,13 @@ export const composeRetentionPruners = (
     deps.backgroundServices.registerInterval({
       name: 'handled-ask-prune',
       intervalMs: HOUR_MS,
-      tick: () => {
-        void (async () => {
-          try {
-            await block.pruneHandledAsks(nowOf() - HANDLED_ASK_RETENTION_MS);
-          } catch {
-            // Best-effort — a prune failure must not crash the server
-            // (mirrors the sweeps above).
-          }
-        })();
+      tick: async () => {
+        try {
+          await block.pruneHandledAsks(nowOf() - HANDLED_ASK_RETENTION_MS);
+        } catch {
+          // Best-effort — a prune failure must not crash the server
+          // (mirrors the sweeps above).
+        }
       },
       fireImmediate: true,
     });

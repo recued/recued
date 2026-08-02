@@ -8727,6 +8727,10 @@ export const mountConnectionsEnrollPanel = (
         || clearedOAuthError
         || clearedCredentialCorrection
         || previousProjection !== oauthCredentialProjectionKey(state.dialog.values)
+        // Messenger mode swaps the provider checklist and credential shape.
+        // The whole form re-renders, so restore the select that initiated the
+        // change instead of dropping keyboard focus onto the document body.
+        || schemaBeforeEdit?.onboarding?.selectorKey === key
       ) focusGuideTarget(`[data-conn-field="${key}"]`);
       return;
     }

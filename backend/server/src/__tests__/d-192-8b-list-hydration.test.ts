@@ -167,9 +167,9 @@ const persistDependencyDeclaration = (): KernelWorkEntitySourceDeclaration =>
 const manifestFake = {
   slug: 'azure',
   operations: {
-    'workitem.list': { result_path: 'workItems' },
-    'workitem.read': {},
-    'project.list': { result_path: 'projects' },
+    'workitem.list': { risk_tier: 'read', result_path: 'workItems' },
+    'workitem.read': { risk_tier: 'read' },
+    'project.list': { risk_tier: 'read', result_path: 'projects' },
   },
   surfaces: { api: { result_path: 'workItems' } },
 } as unknown as IngredientManifest;
@@ -299,7 +299,7 @@ const seedSyncState = (
     degraded: false,
     field_health_blob: null,
     list_complete: true,
-    stale_after_ms: declaration.sync.stale_after_ms,
+    stale_after_ms: declaration.sync.stale_after_ms!,
   });
 };
 

@@ -32,6 +32,8 @@ import type {
   VendorReconciler,
 } from '../housekeeping/reconciliation/vendor-reconciler.js';
 import type { VendorMergeClient } from '../data/vendor-merge.js';
+import type { WireSalesforceCometDLifecycleInput } from '../data/salesforce/cometd-lifecycle.js';
+import type { SalesforceCometDEvent } from '../data/salesforce/webhook-processor.js';
 
 type ComposerImport = {
   compose: typeof ComposeVendorSubstrate;
@@ -113,6 +115,7 @@ const buildDeps = (
   contactStore: undefined,
   upstreamMergeStore: undefined,
   upstreamMergeRegistry: undefined,
+  auditLog: undefined,
   warehouseBus: warehouseBus(),
   eventBus: eventBus(),
   ...overrides,
@@ -175,6 +178,11 @@ const installComposerCoreMocks = (
   overrides: {
     decodedAuth?: ConnectionAuth;
     freshAuth?: ConnectionAuth;
+    runtimeBase?:
+      | { status: 'not_expected' }
+      | { status: 'valid'; field: 'instance_url'; base_url: string }
+      | { status: 'missing'; field: 'instance_url' }
+      | { status: 'invalid'; field: 'instance_url'; reason: string };
   } = {},
 ) => {
   const decodedAuth = overrides.decodedAuth ?? { type: 'bearer', token: 'decoded-token' };
@@ -185,14 +193,17 @@ const installComposerCoreMocks = (
 
   const decodeAuthFromStorageMock = vi.fn(async () => decodedAuth);
   const encodeAuthForStorageMock = vi.fn(async () => 'encoded-fresh-auth');
-  const refreshOAuth2Mock = vi.fn(async () => freshAuth);
+  const refreshOAuth2Mock = vi.fn(async () => ({
+    auth: freshAuth,
+    runtime_base: overrides.runtimeBase ?? { status: 'not_expected' as const },
+  }));
 
   vi.doMock('../connection-handler.js', () => ({
     decodeAuthFromStorage: decodeAuthFromStorageMock,
     encodeAuthForStorage: encodeAuthForStorageMock,
   }));
   vi.doMock('@recued/ingredients', () => ({
-    refreshOAuth2: refreshOAuth2Mock,
+    refreshOAuth2WithMetadata: refreshOAuth2Mock,
   }));
 
   return {
@@ -395,7 +406,10 @@ const installSalesforceInternalMocks = () => {
     ) => typeof engagementSubstrate
   >(() => engagementSubstrate);
   const createInMemoryReplayIdTrackerMock = vi.fn(() => replayIdTracker);
-  const wireSalesforceCometDLifecycleMock = vi.fn();
+  const cometDLifecycle = { stopAll: vi.fn(async () => {}) };
+  const wireSalesforceCometDLifecycleMock = vi.fn(
+    (_input: WireSalesforceCometDLifecycleInput) => cometDLifecycle,
+  );
   const createWebhookFunnelMock = vi.fn(() => funnel);
   const createSalesforceMergeClientMock = vi.fn((objectType) =>
     objectType === 'salesforce:lead' ? leadMergeClient : accountMergeClient,
@@ -434,6 +448,7 @@ const installSalesforceInternalMocks = () => {
 
   return {
     replayIdTracker,
+    cometDLifecycle,
     reconcilers,
     engagementSubstrate,
     funnel,
@@ -710,6 +725,92 @@ describe('composeVendorSubstrate substrate construction', () => {
     });
   });
 
+  it('refreshAuth atomically carries a validated Salesforce instance change into config_json', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const store = connectionStore();
+    store.upsert(rowInput({
+      config_json: JSON.stringify({
+        vendor: 'salesforce',
+        base_url: 'https://old.my.salesforce.com',
+        cadence: '6h',
+      }),
+    }));
+    const upsertSpy = vi.spyOn(store, 'upsert');
+    const { compose, refreshOAuth2Mock } = await importComposerWithRegistry([], {
+      runtimeBase: {
+        status: 'valid',
+        field: 'instance_url',
+        base_url: 'https://new.my.salesforce.com',
+      },
+    });
+
+    const bundle = await compose(buildDeps({ connectionStore: store }));
+    await bundle.refreshAuth(connectionRecord({
+      config: {
+        vendor: 'salesforce',
+        base_url: 'https://old.my.salesforce.com',
+        cadence: '6h',
+      },
+      auth: refreshableAuth(),
+    }));
+
+    expect(refreshOAuth2Mock.mock.calls[0]?.[3]).toMatchObject({ vendor: 'salesforce' });
+    const config = JSON.parse(upsertSpy.mock.calls[0]![0].config_json) as Record<string, unknown>;
+    expect(config).toEqual({
+      vendor: 'salesforce',
+      base_url: 'https://new.my.salesforce.com',
+      cadence: '6h',
+    });
+  });
+
+  it('refreshAuth audits an ignored Salesforce instance without losing rotated auth', async () => {
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const store = connectionStore();
+    store.upsert(rowInput({
+      config_json: JSON.stringify({
+        vendor: 'salesforce',
+        base_url: 'https://known.my.salesforce.com',
+      }),
+    }));
+    const logActivity = vi.fn(async () => undefined);
+    const upsertSpy = vi.spyOn(store, 'upsert');
+    const { compose } = await importComposerWithRegistry([], {
+      runtimeBase: {
+        status: 'invalid',
+        field: 'instance_url',
+        reason: 'host is outside the provider allowlist',
+      },
+    });
+
+    const bundle = await compose(buildDeps({
+      connectionStore: store,
+      auditLog: { logActivity },
+    }));
+    await bundle.refreshAuth(connectionRecord({
+      config: {
+        vendor: 'salesforce',
+        base_url: 'https://known.my.salesforce.com',
+      },
+      auth: refreshableAuth(),
+    }));
+
+    const persisted = upsertSpy.mock.calls[0]![0];
+    expect(JSON.parse(persisted.config_json).base_url)
+      .toBe('https://known.my.salesforce.com');
+    expect(persisted.auth_ciphertext).toBe('encoded-fresh-auth');
+    expect(logActivity).toHaveBeenCalledWith(expect.objectContaining({
+      timestamp: NOW,
+      action: 'connection_runtime_base_refresh_ignored',
+      detail: JSON.stringify({
+        kind: 'api',
+        vendor: 'salesforce',
+        status: 'invalid',
+        field: 'instance_url',
+        reason: 'host is outside the provider allowlist',
+      }),
+    }));
+  });
+
   it('refreshAuth omits every absent optional row field from the upsert shape', async () => {
     vi.spyOn(Date, 'now').mockReturnValue(NOW);
     const store = connectionStore();
@@ -779,6 +880,52 @@ describe('composeVendorSubstrate registry iteration', () => {
     const bundle = await compose(buildDeps());
 
     expect(bundle.registerSalesforceCallEntity).toBe(registerSalesforceCallEntity);
+  });
+
+  it('aggregates vendor drains in reverse order and coalesces repeated stop calls', async () => {
+    let releaseSalesforce!: () => void;
+    const hubspotStop = vi.fn(async () => {});
+    const salesforceStop = vi.fn(() =>
+      new Promise<void>((resolve) => {
+        releaseSalesforce = resolve;
+      }));
+    const { compose } = await importComposerWithActualRegistry({
+      hubspotBundle: { stop: hubspotStop },
+      salesforceBundle: { stop: salesforceStop },
+    });
+    const bundle = await compose(buildDeps());
+
+    const first = bundle.stop!();
+    const second = bundle.stop!();
+    expect(second).toBe(first);
+    expect(salesforceStop).toHaveBeenCalledTimes(1);
+    expect(hubspotStop).toHaveBeenCalledTimes(1);
+    expect(salesforceStop.mock.invocationCallOrder[0]).toBeLessThan(
+      hubspotStop.mock.invocationCallOrder[0]!,
+    );
+
+    releaseSalesforce();
+    await first;
+  });
+
+  it('attempts every vendor drain before surfacing aggregate failure', async () => {
+    const hubspotStop = vi.fn(async () => {
+      throw new Error('hubspot-stop-failed');
+    });
+    const salesforceStop = vi.fn(async () => {
+      throw new Error('salesforce-stop-failed');
+    });
+    const { compose } = await importComposerWithActualRegistry({
+      hubspotBundle: { stop: hubspotStop },
+      salesforceBundle: { stop: salesforceStop },
+    });
+    const bundle = await compose(buildDeps());
+
+    await expect(bundle.stop!()).rejects.toThrow(
+      'one or more vendor background services failed to stop',
+    );
+    expect(hubspotStop).toHaveBeenCalledTimes(1);
+    expect(salesforceStop).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -852,6 +999,36 @@ describe('composeVendorSubstrate upstream-merge boot recovery sweep', () => {
         eventBus: bus,
       }),
     );
+  });
+
+  it('publishes a stop hook that waits for the admitted recovery sweep', async () => {
+    let releaseSweep!: () => void;
+    const runUpstreamMergeRecoverySweepMock = vi.fn(() =>
+      new Promise<void>((resolve) => {
+        releaseSweep = resolve;
+      }));
+    vi.resetModules();
+    vi.doMock('../upstream-merge-handler.js', () => ({
+      runUpstreamMergeRecoverySweep: runUpstreamMergeRecoverySweepMock,
+    }));
+    const { compose } = await importComposerWithRegistry();
+    const bundle = await compose(buildDeps({
+      upstreamMergeStore: upstreamMergeStore(),
+      upstreamMergeRegistry: new Map(),
+      contactStore: contactStore(),
+    }));
+
+    expect(bundle.stop).toEqual(expect.any(Function));
+    let stopped = false;
+    const stopping = bundle.stop!().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    releaseSweep();
+    await stopping;
+    expect(stopped).toBe(true);
   });
 
   it.each([
@@ -1072,7 +1249,7 @@ describe('bootSalesforce behavior', () => {
       config_json: '{"vendor":"salesforce","base_url":"https://sf.example.test"}',
     }));
 
-    await boot.bootSalesforce(buildVendorBootDeps({
+    const bundle = await boot.bootSalesforce(buildVendorBootDeps({
       connectionStore: store,
       enrichmentStore: enrichments,
       warehouseBus: bus,
@@ -1086,14 +1263,24 @@ describe('bootSalesforce behavior', () => {
       }),
     );
     expect(boot.wireSalesforceCometDLifecycleMock).toHaveBeenCalledTimes(1);
+    expect(bundle.stop).toEqual(expect.any(Function));
+    await bundle.stop!();
+    expect(boot.cometDLifecycle.stopAll).toHaveBeenCalledTimes(1);
     const lifecycleInput = boot.wireSalesforceCometDLifecycleMock.mock.calls[0]![0];
     expect(lifecycleInput.replayIdTracker).toBe(boot.replayIdTracker);
-    await lifecycleInput.onEvent({ event: 'payload' }, 'sf');
+    const event: SalesforceCometDEvent = {
+      channel: '/topic/RecuedOpportunityFeed',
+      data: {
+        event: { type: 'updated', replayId: 42 },
+        sobject: { Id: '006A0000005XYZAB' },
+      },
+    };
+    await lifecycleInput.onEvent(event, 'sf');
     expect(boot.funnel.handle).toHaveBeenCalledWith(
       expect.objectContaining({
         vendor: 'salesforce',
         connection_name: 'sf',
-        payload: { event: 'payload' },
+        payload: event,
         headers: {},
         rawBody: expect.any(Buffer),
       }),

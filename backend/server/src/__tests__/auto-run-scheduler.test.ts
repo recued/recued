@@ -226,6 +226,35 @@ describe('ServerAutoRunHandle — roster build', () => {
     await handle.refreshRoster();
     expect(handle.roster.has('owner-armed')).toBe(false);
   });
+
+  it('rolls back a failed start so the same handle can be retried', async () => {
+    const failure = new Error('recipe store unavailable');
+    let unavailable = true;
+    let listCalls = 0;
+    const recipeStore: RecipeStore = {
+      ...mkRecipeStore([]),
+      listStored: () => {
+        listCalls += 1;
+        if (unavailable) throw failure;
+        return [];
+      },
+    };
+    const db = new Database(':memory:');
+    const handle = createServerAutoRunScheduler({
+      recipeStore,
+      execute: mkExecutor([true]).execute,
+      circuitStore: createCircuitBreakerStore(db),
+      now: () => 0,
+      setTimer: () => 1,
+      clearTimer: () => {},
+    });
+
+    await expect(handle.start()).rejects.toBe(failure);
+    unavailable = false;
+    await expect(handle.start()).resolves.toBeUndefined();
+    expect(listCalls).toBe(2);
+    await handle.stop();
+  });
 });
 
 // ────────────────────────────────────────────────────────────────
@@ -615,6 +644,110 @@ describe('ServerAutoRunHandle — setTimer lifecycle', () => {
     expect(timers.pendingCount()).toBeGreaterThan(0);
     await handle.stop();
     expect(timers.pendingCount()).toBe(0);
+  });
+
+  it('contains and reports a failed initial background tick', async () => {
+    const failure = new Error('circuit store unavailable');
+    const onBackgroundError = vi.fn();
+    const circuitStore: CircuitBreakerStore = {
+      list: () => [],
+      get: () => null,
+      set: () => { throw failure; },
+      clear: () => {},
+    };
+    handle = createServerAutoRunScheduler({
+      recipeStore: mkRecipeStore([makeReactiveRecipe('r')]),
+      execute: mkExecutor([true]).execute,
+      circuitStore,
+      now: () => 0,
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+      onBackgroundError,
+    });
+
+    await handle.start();
+    await flush();
+    await flush();
+    expect(onBackgroundError).toHaveBeenCalledOnce();
+    expect(onBackgroundError).toHaveBeenCalledWith(
+      'initial background tick failed',
+      failure,
+    );
+    expect(handle.inFlight()).toBe(false);
+    await handle.stop();
+  });
+
+  it('contains and reports a failed timer-driven fire', async () => {
+    const failure = new Error('timer persistence unavailable');
+    const onBackgroundError = vi.fn();
+    let writes = 0;
+    const circuitStore: CircuitBreakerStore = {
+      list: () => [],
+      get: () => null,
+      set: () => {
+        writes += 1;
+        if (writes > 1) throw failure;
+      },
+      clear: () => {},
+    };
+    let clock = 0;
+    handle = createServerAutoRunScheduler({
+      recipeStore: mkRecipeStore([makeReactiveRecipe('r', 30 * SEC)]),
+      execute: mkExecutor([true, true]).execute,
+      circuitStore,
+      now: () => clock,
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+      onBackgroundError,
+    });
+
+    await handle.start();
+    await flush();
+    await flush();
+    expect(writes).toBe(1);
+
+    clock = 100_000;
+    await timers.fireAll();
+    expect(onBackgroundError).toHaveBeenCalledOnce();
+    expect(onBackgroundError).toHaveBeenCalledWith(
+      'timer fire failed for recipe r',
+      failure,
+    );
+    expect(handle.inFlight()).toBe(false);
+    await handle.stop();
+  });
+
+  it('does not settle stop until outcome persistence has finished', async () => {
+    const events: string[] = [];
+    let handle!: ServerAutoRunHandle;
+    let stopping!: Promise<void>;
+    let inFlightDuringPersist = false;
+    const circuitStore: CircuitBreakerStore = {
+      list: () => [],
+      get: () => null,
+      clear: () => {},
+      set: () => {
+        inFlightDuringPersist = handle.inFlight();
+        stopping = handle.stop().then(() => { events.push('stopped'); });
+        events.push('persisted');
+      },
+    };
+    handle = createServerAutoRunScheduler({
+      recipeStore: mkRecipeStore([makeReactiveRecipe('r')]),
+      execute: mkExecutor([true]).execute,
+      circuitStore,
+      now: () => 0,
+      setTimer: timers.setTimer,
+      clearTimer: timers.clearTimer,
+    });
+    await handle.refreshRoster();
+
+    await handle.tick();
+
+    expect(inFlightDuringPersist).toBe(true);
+    expect(events).toEqual(['persisted']);
+    await stopping;
+    expect(events).toEqual(['persisted', 'stopped']);
   });
 
   it('firing a timer dispatches the recipe + rearms the next one', async () => {

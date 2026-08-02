@@ -184,6 +184,17 @@ describe('composeMcpHttpTransport verifier', () => {
     expect(await bundle.mcpHttpDeps.verifier(STRUCTURED)).toBe(true);
     expect(verify).toHaveBeenCalledWith(TOKEN_ID, BEARER);
     expect(clientTokens.touch).toHaveBeenCalledWith(TOKEN_ID);
+    expect(bundle.mcpHttpDeps.resolveConcurrencyLimit(STRUCTURED)).toBeUndefined();
+  });
+
+  it('projects an inbound door token authored concurrency tier', async () => {
+    const record = makeInboundTokenRecord({ concurrency_tier: 5 });
+    const inboundTokenStore = makeInboundTokenStore(record);
+    const bundle = composeDefined({ inboundTokenStore });
+
+    expect(await bundle.mcpHttpDeps.verifier(INBOUND_BEARER)).toBe(true);
+    expect(bundle.mcpHttpDeps.resolveConcurrencyLimit(INBOUND_BEARER)).toBe(5);
+    expect(inboundTokenStore.verifyBearer).toHaveBeenCalledTimes(2);
   });
 
   it.each([

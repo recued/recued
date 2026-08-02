@@ -35,7 +35,9 @@ import {
   WORK_ENTITY_CONTRACT_SOURCE_SURFACES,
   WORK_ENTITY_CONTRACT_SOURCE_TRANSPORT,
   WORK_ENTITY_DATE_CANONICAL_FIELDS,
-  WORK_ENTITY_SOURCE_DECLARABLE_KIND_SET,
+  WORK_ENTITY_SOURCE_DECLARABLE_KINDS,
+  getWorkEntitySourceLandingContract,
+  isWorkEntityKind,
   WORK_ENTITY_SYNC_MODES,
   WORK_ENTITY_SYNC_DEPTHS,
   WORK_ENTITY_TOMBSTONE_KINDS,
@@ -194,9 +196,20 @@ export const validateWorkEntitySources = (m: Record<string, unknown>, add: AddFn
         'commitment is reserved — commitments require the separate stricter commitment_evidence declaration kind, never work_entity_sources');
       continue;
     }
-    if (!isNonEmptyString(d.kind) || !WORK_ENTITY_SOURCE_DECLARABLE_KIND_SET.has(d.kind)) {
+    if (!isNonEmptyString(d.kind)) {
       add('error', 'WORK_ENTITY_SOURCES_KIND_INVALID', `${p}.kind`,
-        'kind must be one of task|note|project');
+        `kind must be one of ${WORK_ENTITY_SOURCE_DECLARABLE_KINDS.join('|')}`);
+      continue;
+    }
+    const landingContract = getWorkEntitySourceLandingContract(d.kind);
+    if (landingContract === null) {
+      if (isWorkEntityKind(d.kind)) {
+        add('error', 'WORK_ENTITY_SOURCES_LANDING_ADAPTER_REQUIRED', `${p}.kind`,
+          `work-entity kind '${d.kind}' has no runtime Source landing adapter — implement its canonical/transient projection, storage/read routing, tombstone semantics, and qualified-id routing before enabling pack declarations`);
+      } else {
+        add('error', 'WORK_ENTITY_SOURCES_KIND_INVALID', `${p}.kind`,
+          `kind must be one of ${WORK_ENTITY_SOURCE_DECLARABLE_KINDS.join('|')}`);
+      }
       continue;
     }
     const kind = d.kind as WorkEntitySourceDeclarableKind;
@@ -364,6 +377,18 @@ export const validateWorkEntitySources = (m: Record<string, unknown>, add: AddFn
               ? `operation '${opName}' must have a synchronously-dispatchable execution binding — a realtime webhook/queue/push subscription cannot back a Source op, whatever proves it`
               : `operation '${opName}' must have a ${expectedBindingKind} execution binding to match the '${csKindResolved}' contract_source — every Source op must be provable against the one pinned schema document`);
         }
+        // `list` / `read` are invoked through generic read surfaces (and list
+        // also by the mirror scheduler). Their slot name is not authority: bind
+        // only to a catalog operation whose reviewed risk is actually READ.
+        // Otherwise a caller granted some provider write could trigger that
+        // side effect by asking an apparently read-only `work.search` question.
+        if (slot === 'list' || slot === 'read') {
+          const operation = operations?.[opName];
+          if (!isObjectRecord(operation) || operation.risk_tier !== 'read') {
+            add('error', 'WORK_ENTITY_SOURCES_OP_INVALID', sp,
+              `ops.${slot} operation '${opName}' must be read-tier — generic Source reads never dispatch a write/admin/destructive operation`);
+          }
+        }
         declaredOps.set(slot as WorkEntityOpSlot, opName);
       }
       for (const requiredSlot of ['list', 'read'] as const) {
@@ -494,9 +519,19 @@ export const validateWorkEntitySources = (m: Record<string, unknown>, add: AddFn
     // ── sync ──
     const sync = d.sync;
     let mode: string | undefined;
+    let sourcePosture: 'records' | 'read_through' = 'records';
     if (!isObjectRecord(sync)) {
       add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync`, 'sync is required');
     } else {
+      if (sync.posture !== undefined) {
+        if (!isNonEmptyString(sync.posture)
+            || !(landingContract.postures as readonly string[]).includes(sync.posture)) {
+          add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync.posture`,
+            `sync.posture must be one of ${landingContract.postures.join('|')} supported by the '${kind}' landing adapter when present`);
+        } else {
+          sourcePosture = sync.posture as 'records' | 'read_through';
+        }
+      }
       if (!isNonEmptyString(sync.mode) || !(WORK_ENTITY_SYNC_MODES as readonly string[]).includes(sync.mode)) {
         add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync.mode`,
           'sync.mode must be read_only|read_write — write_only is not a valid work-entity Source mode');
@@ -507,21 +542,47 @@ export const validateWorkEntitySources = (m: Record<string, unknown>, add: AddFn
         add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync.depth`,
           "sync.depth must be 'meta' — the full mode was dropped (D-192 fork F3); the declared extended-vendor field is the only wider lane");
       }
-      if (!isNonEmptyString(sync.tombstones)
-          || !(WORK_ENTITY_TOMBSTONE_KINDS as readonly string[]).includes(sync.tombstones)) {
-        add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync.tombstones`,
-          `sync.tombstones must be one of ${WORK_ENTITY_TOMBSTONE_KINDS.join('|')} — tombstone semantics are mandatory`);
-      } else if (sync.tombstones === 'native' && !isNonEmptyString(sync.tombstone_field)) {
-        add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync.tombstone_field`,
-          "tombstones 'native' requires sync.tombstone_field — the remote field marking a vendor-side deletion (P3 runner reads it)");
-      } else if (sync.tombstones === 'missing_means_deleted' && sync.list_scope !== 'complete_authoritative') {
-        add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync.list_scope`,
-          "tombstones 'missing_means_deleted' requires sync.list_scope 'complete_authoritative' — a filtered list must never drive absence-based deletes");
-      }
-      if (sync.list_scope !== undefined
-          && (!isNonEmptyString(sync.list_scope) || !(WORK_ENTITY_LIST_SCOPES as readonly string[]).includes(sync.list_scope))) {
-        add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync.list_scope`,
-          `sync.list_scope must be one of ${WORK_ENTITY_LIST_SCOPES.join('|')} when present`);
+      if (sourcePosture === 'records') {
+        if (!isNonEmptyString(sync.tombstones)
+            || !(WORK_ENTITY_TOMBSTONE_KINDS as readonly string[]).includes(sync.tombstones)) {
+          add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync.tombstones`,
+            `sync.tombstones must be one of ${WORK_ENTITY_TOMBSTONE_KINDS.join('|')} — tombstone semantics are mandatory for records posture`);
+        } else if (sync.tombstones === 'native' && !isNonEmptyString(sync.tombstone_field)) {
+          add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync.tombstone_field`,
+            "tombstones 'native' requires sync.tombstone_field — the remote field marking a vendor-side deletion (P3 runner reads it)");
+        } else if (sync.tombstones === 'missing_means_deleted' && sync.list_scope !== 'complete_authoritative') {
+          add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync.list_scope`,
+            "tombstones 'missing_means_deleted' requires sync.list_scope 'complete_authoritative' — a filtered list must never drive absence-based deletes");
+        }
+        if (sync.list_scope !== undefined
+            && (!isNonEmptyString(sync.list_scope) || !(WORK_ENTITY_LIST_SCOPES as readonly string[]).includes(sync.list_scope))) {
+          add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync.list_scope`,
+            `sync.list_scope must be one of ${WORK_ENTITY_LIST_SCOPES.join('|')} when present`);
+        }
+        if (!isPositiveInt(sync.stale_after_ms)) {
+          add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync.stale_after_ms`,
+            'sync.stale_after_ms must be a positive integer — the stale-source threshold is mandatory for records posture');
+        }
+        if (sync.cursor !== undefined) {
+          const cursor = sync.cursor;
+          if (!isObjectRecord(cursor)
+              || !isNonEmptyString(cursor.kind)
+              || !(WORK_ENTITY_CURSOR_KINDS as readonly string[]).includes(cursor.kind)
+              || !isNonEmptyString(cursor.arg)
+              || !isNonEmptyString(cursor.remote_field)) {
+            add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync.cursor`,
+              `sync.cursor must declare kind (${WORK_ENTITY_CURSOR_KINDS.join('|')}), arg, and remote_field`);
+          }
+        }
+      } else {
+        for (const mirrorOnly of [
+          'cursor', 'tombstones', 'tombstone_field', 'list_scope', 'stale_after_ms',
+        ] as const) {
+          if (sync[mirrorOnly] !== undefined) {
+            add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync.${mirrorOnly}`,
+              `sync.${mirrorOnly} is mirror-only and must be omitted when sync.posture is 'read_through'`);
+          }
+        }
       }
       // ── list_rows (D-192 CORE #8b) ──
       // 'reference' = identity-only list rows; every listed row hydrates
@@ -540,21 +601,6 @@ export const validateWorkEntitySources = (m: Record<string, unknown>, add: AddFn
         if (readBinding === undefined || !isNonEmptyString(readBinding.id_arg)) {
           add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync.list_rows`,
             "sync.list_rows 'reference' requires op_bindings.read.id_arg — every listed row hydrates through the read op before projection, and the executor cannot name the vendor record without the binding");
-        }
-      }
-      if (!isPositiveInt(sync.stale_after_ms)) {
-        add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync.stale_after_ms`,
-          'sync.stale_after_ms must be a positive integer — the stale-source threshold is mandatory');
-      }
-      if (sync.cursor !== undefined) {
-        const cursor = sync.cursor;
-        if (!isObjectRecord(cursor)
-            || !isNonEmptyString(cursor.kind)
-            || !(WORK_ENTITY_CURSOR_KINDS as readonly string[]).includes(cursor.kind)
-            || !isNonEmptyString(cursor.arg)
-            || !isNonEmptyString(cursor.remote_field)) {
-          add('error', 'WORK_ENTITY_SOURCES_SYNC_INVALID', `${p}.sync.cursor`,
-            `sync.cursor must declare kind (${WORK_ENTITY_CURSOR_KINDS.join('|')}), arg, and remote_field`);
         }
       }
     }
@@ -591,12 +637,18 @@ export const validateWorkEntitySources = (m: Record<string, unknown>, add: AddFn
       add('error', 'WORK_ENTITY_SOURCES_READ_RESOLUTION_INVALID', `${p}.read_resolution`,
         'read_resolution is required');
     } else {
-      if (rr.default !== 'local_rich_meta') {
+      const expectedDefault = sourcePosture === 'read_through' ? 'source' : 'local_rich_meta';
+      if (rr.default !== expectedDefault) {
         add('error', 'WORK_ENTITY_SOURCES_READ_RESOLUTION_INVALID', `${p}.read_resolution.default`,
-          "read_resolution.default must be 'local_rich_meta'");
+          `read_resolution.default must be '${expectedDefault}' when sync.posture is '${sourcePosture}'`);
       }
       const remoteWhen = rr.remote_when;
-      if (!Array.isArray(remoteWhen) || remoteWhen.length === 0
+      if (sourcePosture === 'read_through') {
+        if (remoteWhen !== undefined) {
+          add('error', 'WORK_ENTITY_SOURCES_READ_RESOLUTION_INVALID', `${p}.read_resolution.remote_when`,
+            "read_resolution.remote_when is mirror-only and must be omitted when the default is already 'source'");
+        }
+      } else if (!Array.isArray(remoteWhen) || remoteWhen.length === 0
           || !remoteWhen.every((r) => isNonEmptyString(r) && WORK_ENTITY_REMOTE_WHEN_REASON_SET.has(r))) {
         add('error', 'WORK_ENTITY_SOURCES_READ_RESOLUTION_INVALID', `${p}.read_resolution.remote_when`,
           'read_resolution.remote_when must be a non-empty array of known escalation reasons');

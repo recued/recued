@@ -469,6 +469,7 @@ interface FakeImapState {
   folders: Map<string, FakeImapFolder>;
   clients: FakeImapClient[];
   fetchError?: unknown;
+  nextConnectWait?: Promise<void>;
   mailboxOpenFailures: Map<string, unknown[]>;
 }
 
@@ -482,6 +483,9 @@ class FakeImapClient extends EventEmitter implements ImapClient {
   }
 
   async connect(): Promise<void> {
+    const wait = this.state.nextConnectWait;
+    this.state.nextConnectWait = undefined;
+    await wait;
     this.usable = true;
   }
 
@@ -590,6 +594,43 @@ const newImapHarness = (opts: {
 };
 
 describe('ImapProvider per-attempt sync outcomes', () => {
+  it('reopens reconnect admission after a close and reconnect cycle', async () => {
+    const h = newImapHarness();
+    await h.provider.connect();
+    await h.provider.startSync(async () => undefined);
+    await h.provider.close();
+
+    await h.provider.connect();
+    await h.provider.startSync(async () => undefined);
+    expect(h.state.clients).toHaveLength(2);
+    h.state.clients[1].emit('close');
+    await waitFor(() => h.state.clients.length === 3);
+
+    expect(h.state.clients[2].path).toBe('INBOX');
+  });
+
+  it('close waits for and seals a reconnect whose connect finishes late', async () => {
+    const h = newImapHarness();
+    await h.provider.connect();
+    await h.provider.startSync(async () => undefined);
+    const reconnectConnect = deferred<void>();
+    h.state.nextConnectWait = reconnectConnect.promise;
+
+    h.state.clients[0].emit('close');
+    await waitFor(() => h.state.clients.length === 2);
+    const lateClient = h.state.clients[1]!;
+    let closed = false;
+    const closing = h.provider.close().then(() => { closed = true; });
+    await Promise.resolve();
+
+    expect(closed).toBe(false);
+    reconnectConnect.resolve();
+    await closing;
+
+    expect(lateClient.usable).toBe(false);
+    expect(h.state.clients).toHaveLength(2);
+  });
+
   it("reports a failed poll when an IDLE 'exists' fetch throws", async () => {
     const h = newImapHarness({
       seed: { INBOX: [{ uid: 1, source: rfc822(1), internalDate: new Date() }] },

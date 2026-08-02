@@ -202,6 +202,31 @@ describe('composeCalendarStack — lifecycle', () => {
     expect(harness.hooks.close).toBe(1);
   });
 
+  it('disposeAll is coalesced and permanently closes start/resume admission', async () => {
+    enrollRow(harness, 'work', 'gcal');
+    await harness.stack.startAll();
+    const first = harness.stack.disposeAll();
+    const second = harness.stack.disposeAll();
+    expect(second).toBe(first);
+    await first;
+
+    const row = enrollRow(harness, 'late', 'gcal');
+    await harness.stack.enrollDeps.onEnrolled?.({
+      slug: row.slug,
+      platform: 'calendar',
+      adapter_type: row.adapter_type,
+      caps: row.caps as CalendarCollectionCaps,
+      auth_state: row.auth_state,
+      last_synced_at: row.last_synced_at,
+    });
+    await harness.stack.startAll();
+    await harness.stack.resumeSync();
+
+    expect(harness.stack.listLive()).toEqual([]);
+    expect(harness.hooks.factoryCreated).toBe(1);
+    expect(harness.hooks.startSyncCount).toBe(1);
+  });
+
   it('enrollDeps.onEnrolled spins up a live collection after a fresh enroll', async () => {
     const row = enrollRow(harness, 'work');
     expect(harness.stack.listLive()).toHaveLength(0);

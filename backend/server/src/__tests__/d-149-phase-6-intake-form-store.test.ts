@@ -272,6 +272,70 @@ describe('D-149 P6 § A.5.3 — FormSubmissionStore', () => {
     expect(empty).toBe(0);
   });
 
+  it('readSourceWindowUsage isolates visitors on the same form', () => {
+    const db = buildDb();
+    const store = createReceptionFormSubmissionStore(db);
+    for (const [submission_id, source_ip_hash] of [
+      ['sub-a-1', 'hash-a'],
+      ['sub-a-2', 'hash-a'],
+      ['sub-b-1', 'hash-b'],
+    ] as const) {
+      store.insert({
+        submission_id,
+        endpoint_id: 'ep-1',
+        form_definition_id: 'fd_test',
+        submitted_at: NOW,
+        source_ip_hash,
+        visitor_email_encrypted: null,
+        submission_blob_encrypted: 'AQID',
+        schema_version: 1,
+        processing_outcome: 'pending',
+      });
+    }
+
+    expect(store.readSourceWindowUsage({
+      endpoint_id: 'ep-1',
+      source_ip_hash: 'hash-a',
+      window_start_at: NOW - 1,
+      now: NOW,
+    })).toEqual({ count: 2, oldest_submitted_at: NOW });
+    expect(store.readSourceWindowUsage({
+      endpoint_id: 'ep-1',
+      source_ip_hash: 'hash-b',
+      window_start_at: NOW - 1,
+      now: NOW,
+    })).toEqual({ count: 1, oldest_submitted_at: NOW });
+  });
+
+  it('insertIfSourceAvailable atomically refuses a source past its rolling cap', () => {
+    const db = buildDb();
+    const store = createReceptionFormSubmissionStore(db);
+    const input = (submission_id: string, source_ip_hash: string) => ({
+      submission_id,
+      endpoint_id: 'ep-1',
+      form_definition_id: 'fd_test',
+      submitted_at: NOW,
+      source_ip_hash,
+      visitor_email_encrypted: null,
+      submission_blob_encrypted: 'AQID',
+      schema_version: 1,
+      processing_outcome: 'pending',
+      max_submissions_per_window: 1,
+      window_start_at: NOW - 60_000,
+      now: NOW,
+    });
+
+    expect(store.insertIfSourceAvailable(input('sub-a-1', 'hash-a')))
+      .toHaveProperty('row');
+    expect(store.insertIfSourceAvailable(input('sub-a-2', 'hash-a')))
+      .toEqual({
+        conflict: 'source_rate_limit',
+        retry_after_at: NOW + 60_000,
+      });
+    expect(store.insertIfSourceAvailable(input('sub-b-1', 'hash-b')))
+      .toHaveProperty('row');
+  });
+
   it('spam-tagged submissions are NOT returned by listPendingForEndpoint', () => {
     const db = buildDb();
     const store = createReceptionFormSubmissionStore(db);

@@ -289,6 +289,48 @@ describe('GmailProvider — initialScan', () => {
     await provider.close();
   });
 
+  it('rejects a repeated nextPageToken before refetching it forever', async () => {
+    h = newHarness({
+      routes: [
+        {
+          match: (u) => u.includes('/profile'),
+          response: { status: 200, body: { historyId: '1' } },
+        },
+        {
+          match: (u) => u.includes('/messages?'),
+          response: { status: 200, body: { messages: [], nextPageToken: 'P2' } },
+        },
+      ],
+    });
+    await h.provider.connect();
+    await expect(h.provider.initialScan({
+      backfill_days: 7,
+      onMessage: async () => true,
+    })).rejects.toThrow('repeated a page reference');
+    expect(h.calls.filter((url) => url.includes('/messages?'))).toHaveLength(2);
+  });
+
+  it('rejects a non-string nextPageToken instead of treating a partial list as exhausted', async () => {
+    h = newHarness({
+      routes: [
+        {
+          match: (u) => u.includes('/profile'),
+          response: { status: 200, body: { historyId: '1' } },
+        },
+        {
+          match: (u) => u.includes('/messages?'),
+          response: { status: 200, body: { messages: [], nextPageToken: 0 } },
+        },
+      ],
+    });
+    await h.provider.connect();
+    await expect(h.provider.initialScan({
+      backfill_days: 7,
+      onMessage: async () => true,
+    })).rejects.toThrow('non-string continuation');
+    expect(h.calls.filter((url) => url.includes('/messages?'))).toHaveLength(1);
+  });
+
   it('retries once on 401 with force-refreshed token', async () => {
     let attempts = 0;
     const raw = makeRfc822Base64Url({ subject: 's' });

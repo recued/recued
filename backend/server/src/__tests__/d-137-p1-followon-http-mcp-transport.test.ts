@@ -43,6 +43,16 @@ const buildReq = ({ url = '/mcp', method = 'POST', headers = {}, body = '' }: Bu
 
 const json = (res: FakeRes): unknown => JSON.parse(res.body ?? 'null');
 
+const deferred = <T>() => {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => { resolve = res; });
+  return { promise, resolve };
+};
+
+const flush = async (): Promise<void> => {
+  await new Promise<void>((resolve) => { setImmediate(resolve); });
+};
+
 describe('createMcpHttpDispatch', () => {
   it('returns successfully on `initialize` (deps-independent path)', async () => {
     const dispatch = createMcpHttpDispatch({} as McpDeps);
@@ -197,6 +207,49 @@ describe('createServerHandlerSet — mcp role wiring', () => {
     expect(res.statusCode).toBe(200);
     expect(seen).toEqual(['admin-token']);
 
+    handlerSet.close();
+  });
+
+  it('forwards the token concurrency tier into live HTTP admission', async () => {
+    const blocked = deferred<unknown>();
+    let dispatchCalls = 0;
+    const resolved: string[] = [];
+    const handlerSet = createServerHandlerSet({
+      mcpHttpDeps: {
+        verifier: (tok) => tok === 'tiered-token',
+        resolveConcurrencyLimit: (token) => {
+          resolved.push(token);
+          return 1;
+        },
+        dispatch: async () => {
+          dispatchCalls += 1;
+          return blocked.promise;
+        },
+      },
+    });
+    const fire = (id: number) => {
+      const res = new FakeRes();
+      const pending = handlerSet.handlers.mcp!(
+        buildReq({
+          body: JSON.stringify({ jsonrpc: '2.0', id, method: 'tools/list' }),
+          headers: { authorization: 'Bearer tiered-token' },
+        }),
+        res as unknown as ServerResponse,
+      );
+      return { pending, res };
+    };
+
+    const first = fire(1);
+    await flush();
+    const overflow = fire(2);
+    await flush();
+    blocked.resolve({ jsonrpc: '2.0', id: 1, result: {} });
+    await Promise.all([first.pending, overflow.pending]);
+
+    expect(first.res.statusCode).toBe(200);
+    expect(overflow.res.statusCode).toBe(503);
+    expect(dispatchCalls).toBe(1);
+    expect(resolved).toEqual(['tiered-token', 'tiered-token']);
     handlerSet.close();
   });
 });

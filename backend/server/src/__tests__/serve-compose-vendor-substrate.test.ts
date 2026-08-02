@@ -59,33 +59,42 @@ beforeEach(() => {
 
 describe('composeVendorSubstrateContext', () => {
   it('does not compose vendor substrate without the connection store', async () => {
+    const backgroundServices = { register: vi.fn() };
     const result = await composeVendorSubstrateContext({
       app: makeApp({ connectionStoreRef: undefined }),
       upstreamMergeRegistry: undefined,
       eventBus: { tag: 'event-bus' } as unknown as EventBus,
+      backgroundServices: backgroundServices as never,
     });
 
     expect(result).toBeUndefined();
     expect(vendorMocks.composeVendorSubstrate).not.toHaveBeenCalled();
+    expect(backgroundServices.register).not.toHaveBeenCalled();
   });
 
   it('delegates the existing vendor inputs and returns publishable refs', async () => {
     const app = makeApp();
     const upstreamMergeRegistry = new Map() as UpstreamMergeRegistry;
+    const auditLog = { logActivity: vi.fn(async () => undefined) };
     const eventBus = { tag: 'event-bus' };
     const lookupConnection = vi.fn();
     const refreshAuth = vi.fn();
     const registerSalesforceCallEntity = vi.fn();
+    const stop = vi.fn(async () => {});
+    const backgroundServices = { register: vi.fn() };
     vendorMocks.composeVendorSubstrate.mockResolvedValue({
       lookupConnection,
       refreshAuth,
       registerSalesforceCallEntity,
+      stop,
     });
 
     const result = await composeVendorSubstrateContext({
       app,
       upstreamMergeRegistry,
+      auditLog,
       eventBus: eventBus as unknown as EventBus,
+      backgroundServices: backgroundServices as never,
     });
 
     expect(vendorMocks.composeVendorSubstrate).toHaveBeenCalledTimes(1);
@@ -97,8 +106,14 @@ describe('composeVendorSubstrateContext', () => {
       contactStore: app.contactStoreRef,
       upstreamMergeStore: app.upstreamMergeStoreRef,
       upstreamMergeRegistry,
+      auditLog,
       warehouseBus: app.warehouseBus,
       eventBus,
+    });
+    expect(backgroundServices.register).toHaveBeenCalledWith({
+      name: 'vendor-substrate',
+      kind: 'emitter',
+      stop,
     });
     expect(result).toEqual({
       apiConnectionLookup: lookupConnection,
@@ -108,6 +123,7 @@ describe('composeVendorSubstrateContext', () => {
   });
 
   it('omits the Salesforce call-entity hook when the vendor bundle omits it', async () => {
+    const backgroundServices = { register: vi.fn() };
     vendorMocks.composeVendorSubstrate.mockResolvedValue({
       lookupConnection: vi.fn(),
       refreshAuth: vi.fn(),
@@ -117,10 +133,12 @@ describe('composeVendorSubstrateContext', () => {
       app: makeApp(),
       upstreamMergeRegistry: undefined,
       eventBus: { tag: 'event-bus' } as unknown as EventBus,
+      backgroundServices: backgroundServices as never,
     });
 
     expect(result).toBeDefined();
     expect('registerSalesforceCallEntity' in result!).toBe(false);
+    expect(backgroundServices.register).not.toHaveBeenCalled();
   });
 });
 

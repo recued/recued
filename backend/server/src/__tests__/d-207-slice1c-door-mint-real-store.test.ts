@@ -103,6 +103,7 @@ describe('D-207 slice 1c — the door mints through the REAL schema-validated st
     // member instead of rejecting it would leave `door_types` absent — which reads as a
     // WILDCARD door, which is PERMISSIVE. That failure would have been silent and worse.
     expect(stored?.door_types).toEqual(['reception']);
+    expect(stored?.door_execution_policy).toEqual({ max_steps: 64, allow_ai: false });
   });
 
   it('and it is a RECEPTION door: it backs reception and NOTHING else', () => {

@@ -56,7 +56,13 @@ import {
 import type { ExecuteHandlerDeps } from './execute-handler.js';
 import { handleExecute } from './execute-handler.js';
 import { captureQualityDelegationSignal } from './quality-delegation-signal-capture.js';
-import { denyRawOp, resumeRawOp } from './raw-op-dispatch.js';
+import {
+  denyRawOp,
+  resumeRawOp,
+  type RawOpResumeOutcome,
+} from './raw-op-dispatch.js';
+import { projectRunResultForAgent } from './run-result-agent-projection.js';
+import type { McpActionStore } from './mcp-action-store.js';
 import { RUN_INGREDIENT_RECIPE } from './run-ingredient-recipe.js';
 import type { QualityDelegationSignalStore } from './storage/quality-delegation-signal-store.js';
 import type { ExecuteRequest, ExecuteResponse } from './types.js';
@@ -77,6 +83,9 @@ export interface CreatePreflightResumerDeps {
    *  guard — a row in terminal state means the run already completed
    *  on a prior attempt; the resumer no-ops. */
   auditLog: AuditLogStore;
+  /** Storage is available before executeDeps is late-bound, so denial can
+   * settle a continuation even during boot recovery. */
+  mcpActionStore?: McpActionStore;
   /** D-202 Slice 1b — the durable quality VERDICT store. When wired, a resolved
    *  QUALITY-relevant ask (`Checkpoint.quality_relevant`) records one
    *  `QualityDelegationSignal` (approve → `quality_good`, deny → `quality_bad`)
@@ -85,6 +94,119 @@ export interface CreatePreflightResumerDeps {
    *  recorded and the approve/deny path is byte-identical to pre-1b. */
   qualityDelegationSignalStore?: QualityDelegationSignalStore;
 }
+
+/** Async-action persistence must never change whether an approved effect runs.
+ * A failed continuation receipt is observable degradation, not dispatch
+ * authority, so every write is best-effort and loudly logged. */
+const updateMcpAction = async (
+  store: McpActionStore | undefined,
+  runId: string,
+  operation: (store: McpActionStore) => Promise<unknown>,
+): Promise<void> => {
+  if (store === undefined) return;
+  try {
+    await operation(store);
+  } catch (error) {
+    console.warn(
+      `[preflight-resumer] MCP action update failed for run_id=${runId}: `
+        + (error instanceof Error ? error.message : String(error)),
+    );
+  }
+};
+
+const settleRawMcpAction = async (
+  store: McpActionStore | undefined,
+  checkpoint: Checkpoint,
+  outcome: RawOpResumeOutcome,
+): Promise<void> => {
+  await updateMcpAction(store, checkpoint.run_id, async (actions) => {
+    switch (outcome.kind) {
+      case 'completed':
+        await actions.finish(checkpoint.run_id, {
+          status: 'completed',
+          status_message: 'The approved operation completed.',
+          result: outcome.result,
+        });
+        return;
+      case 'failed':
+        await actions.finish(checkpoint.run_id, {
+          status: 'failed',
+          status_message: outcome.message,
+          result: {
+            status: 'failed',
+            code: outcome.code,
+            message: outcome.message,
+          },
+        });
+        return;
+      case 'in_doubt':
+        await actions.finish(checkpoint.run_id, {
+          status: 'in_doubt',
+          status_message: outcome.message,
+          result: {
+            status: 'in_doubt',
+            code: outcome.code,
+            message: outcome.message,
+          },
+        });
+        return;
+      case 'skipped':
+        // A concurrent winner owns settlement. A consumed checkpoint with no
+        // terminal receipt means a prior process may have crossed the provider
+        // boundary and crashed before recording the outcome: never call it safe
+        // to retry.
+        if (outcome.reason === 'resume_already_in_flight') return;
+        await actions.finish(checkpoint.run_id, {
+          status: 'in_doubt',
+          status_message:
+            'The approval checkpoint was already consumed, but no final result was retained. Inspect Recued Logs before retrying.',
+          result: {
+            status: 'in_doubt',
+            code: outcome.reason,
+            message:
+              'The approval checkpoint was already consumed, but the final provider outcome is unavailable.',
+          },
+        });
+    }
+  });
+};
+
+const settleRecipeMcpAction = async (
+  store: McpActionStore | undefined,
+  auditLog: AuditLogStore,
+  checkpoint: Checkpoint,
+  response: ExecuteResponse,
+): Promise<void> => {
+  await updateMcpAction(store, checkpoint.run_id, async (actions) => {
+    if (response.awaiting_approval === true) {
+      const anchor = await auditLog.get(checkpoint.run_id);
+      await actions.markAwaiting(
+        checkpoint.run_id,
+        anchor?.commit_status === 'awaiting_approval'
+          ? anchor.checkpoint_id
+          : undefined,
+        'The resumed action reached another owner-approval gate.',
+      );
+      return;
+    }
+    const projected = projectRunResultForAgent(response);
+    if (response.run_terminated !== undefined) {
+      await actions.finish(checkpoint.run_id, {
+        status: 'cancelled',
+        status_message: 'The owner cancelled the resumed action.',
+        result: projected,
+      });
+      return;
+    }
+    await actions.finish(checkpoint.run_id, {
+      status: response.success ? 'completed' : 'failed',
+      status_message: response.success
+        ? 'The approved action completed.'
+        : 'The approved action resumed but did not complete successfully.',
+      result: projected,
+    });
+  });
+};
 
 /** Internal: a terminal `commit_status` value means the run finished.
  *  The resumer / deny path treats this as the idempotency signal — a
@@ -221,6 +343,8 @@ export const computeArgEditsDiff = (
 export const createPreflightResumer = (
   deps: CreatePreflightResumerDeps,
 ): PreflightResumer => {
+  const actionStoreFor = (executeDeps?: ExecuteHandlerDeps): McpActionStore | undefined =>
+    executeDeps?.mcpActionStore ?? deps.mcpActionStore;
   /** At-entry idempotency check. Returns `proceed` only when the
    *  paused anchor is still `'awaiting_approval'` AND the audit row's
    *  `checkpoint_id` matches the one the leaf handed us. Every other
@@ -423,11 +547,16 @@ export const createPreflightResumer = (
     error: RecipeError;
   }): Promise<void> => {
     const { checkpoint, anchor } = input;
+    const finishedAt = Date.now();
     const entry = buildAuditEntry({
       recipe_id: anchor.recipe_id,
       recipe_hash: input.recipe_hash,
       commit_status: 'failed',
-      duration_ms: Math.max(0, Date.now() - anchor.started_at),
+      duration_ms: Math.max(0, finishedAt - anchor.started_at),
+      // Use the same clock sample as duration_ms. Sampling again inside
+      // buildAuditEntry can cross a millisecond boundary and shift the
+      // replacement row's started_at, breaking paused-run continuity.
+      now: finishedAt,
       errors: [input.error],
       config_snapshot: { ...anchor.config_snapshot },
       trigger_url: anchor.trigger_url ?? null,
@@ -479,11 +608,17 @@ export const createPreflightResumer = (
               + `run_id=${checkpoint.run_id} (transient; next boot will retry)`,
           );
         }
-        await resumeRawOp(executeDeps, checkpoint, {
+        await updateMcpAction(
+          actionStoreFor(executeDeps),
+          checkpoint.run_id,
+          (actions) => actions.markRunning(checkpoint.run_id),
+        );
+        const outcome = await resumeRawOp(executeDeps, checkpoint, {
           ...(context.session_grant !== undefined
             ? { session_grant: context.session_grant }
             : {}),
         });
+        await settleRawMcpAction(actionStoreFor(executeDeps), checkpoint, outcome);
         return;
       }
       const decision = await decide(checkpoint);
@@ -522,6 +657,11 @@ export const createPreflightResumer = (
           `[preflight-resumer] resumeRun: executeDeps not yet published — run_id=${checkpoint.run_id} (transient; next boot will retry)`,
         );
       }
+      await updateMcpAction(
+        actionStoreFor(executeDeps),
+        checkpoint.run_id,
+        (actions) => actions.markRunning(checkpoint.run_id),
+      );
       // R2 step 6 — inline-run snapshot integrity. The checkpoint's
       // `recipe_snapshot` is a PRE-ENGINE deep copy of the resolved recipe
       // the paused run executed, captured at the same state the anchor's
@@ -529,18 +669,55 @@ export const createPreflightResumer = (
       // in-place `output` alias normalization) — so an untampered pair
       // hashes equal. A mismatch means the on-disk checkpoint was tampered
       // with (or corrupted) while paused — re-instantiating it would
-      // dispatch a recipe the user never approved. Fail closed: skip
-      // (no-op return consumes the checkpoint; the user re-runs).
+      // dispatch a recipe the user never approved. Fail closed and replace
+      // the awaiting anchor with a terminal audit row before the answer leaf
+      // consumes the checkpoint; the user must re-run.
       if (checkpoint.recipe_snapshot !== undefined) {
         const snapshotHash = hashRecipe(
           checkpoint.recipe_snapshot as unknown as RecipeDefinition,
         );
         if (snapshotHash !== decision.anchor.recipe_hash) {
+          const integrityError: RecipeError = {
+            error_id:
+              `checkpoint-integrity-${Date.now().toString(36)}-`
+              + checkpoint.run_id,
+            code: 'RECIPE_VALIDATION_FAILED',
+            message:
+              'The saved resume checkpoint no longer matches the approved recipe.',
+            severity: 'fatal',
+            source: {
+              recipe_id: decision.anchor.recipe_id,
+              step_id: checkpoint.gated_step_id ?? null,
+              ingredient_slug: context.tool_slug ?? null,
+            },
+            details: { reason: 'checkpoint_integrity_failed' },
+            timestamp: new Date().toISOString(),
+            retryable: false,
+          };
           console.warn(
             `[preflight-resumer] resumeRun refused: checkpoint recipe_snapshot hash `
               + `'${snapshotHash}' does not match the paused anchor's recipe_hash `
               + `'${decision.anchor.recipe_hash}' (run_id=${checkpoint.run_id}) — `
               + `tampered/corrupt checkpoint; re-run the recipe`,
+          );
+          await appendFailedAnchor({
+            checkpoint,
+            anchor: decision.anchor,
+            recipe_hash: decision.anchor.recipe_hash,
+            error: integrityError,
+          });
+          await updateMcpAction(
+            actionStoreFor(executeDeps),
+            checkpoint.run_id,
+            (actions) => actions.finish(checkpoint.run_id, {
+              status: 'failed',
+              status_message: 'The saved resume checkpoint failed its integrity check.',
+              result: {
+                status: 'failed',
+                code: 'checkpoint_integrity_failed',
+                message: integrityError.message,
+              },
+            }),
           );
           return;
         }
@@ -569,12 +746,48 @@ export const createPreflightResumer = (
           expectedPredecessor === undefined
           || checkpoint.predecessor_commit_id !== expectedPredecessor
         ) {
+          const provenanceError: RecipeError = {
+            error_id:
+              `checkpoint-provenance-${Date.now().toString(36)}-`
+              + checkpoint.run_id,
+            code: 'RECIPE_VALIDATION_FAILED',
+            message:
+              'The saved compensation provenance no longer matches the approved action.',
+            severity: 'fatal',
+            source: {
+              recipe_id: decision.anchor.recipe_id,
+              step_id: checkpoint.gated_step_id ?? null,
+              ingredient_slug: context.tool_slug ?? null,
+            },
+            details: { reason: 'checkpoint_provenance_failed' },
+            timestamp: new Date().toISOString(),
+            retryable: false,
+          };
           console.warn(
             `[preflight-resumer] resumeRun refused: checkpoint predecessor_commit_id `
               + `'${checkpoint.predecessor_commit_id}' is not bound by the hash-verified `
               + `recipe_snapshot (expected '${expectedPredecessor ?? '<none>'}' from the `
               + `compensation recipe id) — forged/corrupt compensation provenance `
               + `(run_id=${checkpoint.run_id}); re-run the recipe`,
+          );
+          await appendFailedAnchor({
+            checkpoint,
+            anchor: decision.anchor,
+            recipe_hash: decision.anchor.recipe_hash,
+            error: provenanceError,
+          });
+          await updateMcpAction(
+            actionStoreFor(executeDeps),
+            checkpoint.run_id,
+            (actions) => actions.finish(checkpoint.run_id, {
+              status: 'failed',
+              status_message: 'The saved compensation checkpoint failed its integrity check.',
+              result: {
+                status: 'failed',
+                code: 'checkpoint_provenance_failed',
+                message: provenanceError.message,
+              },
+            }),
           );
           return;
         }
@@ -698,6 +911,19 @@ export const createPreflightResumer = (
               + `${authority.reason}: ${authority.detail} `
               + `(run_id=${checkpoint.run_id})`,
           );
+          await updateMcpAction(
+            actionStoreFor(executeDeps),
+            checkpoint.run_id,
+            (actions) => actions.finish(checkpoint.run_id, {
+              status: 'failed',
+              status_message: authorityError.message,
+              result: {
+                status: 'failed',
+                code: authorityError.code,
+                message: authorityError.message,
+              },
+            }),
+          );
           return;
         }
         resumeAnchor = { ...decision.anchor };
@@ -720,13 +946,34 @@ export const createPreflightResumer = (
       // above keeps the retry idempotent (a partially-successful run
       // that crashed before checkpoint deletion will appear terminal
       // on retry and walk away).
-      let response: ExecuteResponse | undefined;
-      response = await handleExecute(executeDeps, request, internal);
+      let response: ExecuteResponse;
+      try {
+        response = await handleExecute(executeDeps, request, internal);
+      } catch (error) {
+        // The established answer-retry path still owns recovery. Put the action
+        // back into a waiting state so a transient host failure never reads as a
+        // terminal provider failure or invites the MCP caller to resend.
+        await updateMcpAction(
+          actionStoreFor(executeDeps),
+          checkpoint.run_id,
+          (actions) => actions.markAwaiting(
+            checkpoint.run_id,
+            checkpoint.checkpoint_id,
+            'Resume was interrupted before a terminal result; Recued will retry from the durable checkpoint.',
+          ),
+        );
+        throw error;
+      }
       // If the resumed run paused again (a second gate downstream),
       // the host has already written a fresh `'awaiting_approval'` row
       // + minted its own checkpoint. Nothing more to do — the new
       // anchor and checkpoint are the resume-of-resume target.
-      void response;
+      await settleRecipeMcpAction(
+        actionStoreFor(executeDeps),
+        deps.auditLog,
+        checkpoint,
+        response,
+      );
     },
 
     async denyRun(
@@ -738,6 +985,17 @@ export const createPreflightResumer = (
       // (the answer handler's trailing `delete` consumes the checkpoint).
       if (checkpoint.raw_op !== undefined) {
         await denyRawOp(checkpoint);
+        const actionStore = actionStoreFor(deps.getExecuteDeps());
+        await updateMcpAction(actionStore, checkpoint.run_id, (actions) =>
+          actions.finish(checkpoint.run_id, {
+            status: 'denied',
+            status_message: 'The owner denied the pending operation.',
+            result: {
+              status: 'denied',
+              denied: true,
+              message: 'The owner denied the pending operation; no provider call was dispatched.',
+            },
+          }));
         return;
       }
       const decision = await decide(checkpoint);
@@ -824,6 +1082,17 @@ export const createPreflightResumer = (
         recipe_hash,
         error: denyError,
       });
+      const actionStore = actionStoreFor(deps.getExecuteDeps());
+      await updateMcpAction(actionStore, checkpoint.run_id, (actions) =>
+        actions.finish(checkpoint.run_id, {
+          status: 'denied',
+          status_message: 'The owner denied the pending action.',
+          result: {
+            status: 'denied',
+            denied: true,
+            message: denyError.message,
+          },
+        }));
     },
   };
 };
