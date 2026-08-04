@@ -384,6 +384,8 @@ export interface ContractGrantsPanelMount {
   refresh(): Promise<void>;
   /** Resolves after the most recent load settles. */
   whenLoaded(): Promise<void>;
+  /** True while a grant cell write or its authoritative reconcile is pending. */
+  hasInFlightWork(): boolean;
   /** Tear down both roots. Idempotent. */
   dispose(): void;
 }
@@ -437,6 +439,7 @@ export const mountContractGrantsPanel = (
   let operationFilterDraft = '';
   let operationFilter = '';
   let operationFilterTimer: ReturnType<typeof setTimeout> | null = null;
+  const renderedCellToggles = new Map<string, HTMLInputElement>();
 
   const opsRoot = doc.createElement('div');
   opsRoot.setAttribute(CONTRACT_GRANTS_HOST_ATTR, '');
@@ -548,7 +551,18 @@ export const mountContractGrantsPanel = (
     box.setAttribute('data-effective', eff);
     box.className = 'cg-cell-box';
     box.checked = eff === 'on';
-    if (inFlight || cliInert) box.setAttribute('disabled', '');
+    if (inFlight) {
+      // Keep the owner in the tab order while the write reconciles. A native
+      // disabled checkbox drops focus as soon as this render replaces the
+      // initiating node; aria-disabled communicates the lock without severing
+      // keyboard ownership. Defensive change handling prevents a second Space
+      // press from visually drifting away from the authoritative state.
+      box.setAttribute('aria-disabled', 'true');
+      box.setAttribute('aria-busy', 'true');
+      box.addEventListener('change', () => {
+        box.checked = eff === 'on';
+      });
+    } else if (cliInert) box.setAttribute('disabled', '');
     else
       box.addEventListener('change', () => {
         void runToggle(entry.entry_key);
@@ -584,6 +598,7 @@ export const mountContractGrantsPanel = (
     source.textContent = explicit ? 'set' : 'default';
     rowLabel.appendChild(source);
 
+    renderedCellToggles.set(entry.entry_key, box);
     parent.appendChild(rowLabel);
   };
 
@@ -692,6 +707,14 @@ export const mountContractGrantsPanel = (
 
   const render = (): void => {
     if (disposed) return;
+    const activeElement = (
+      doc as unknown as { activeElement?: HTMLElement | null }
+    ).activeElement ?? null;
+    const focusedEntry = activeElement?.hasAttribute?.(
+      CONTRACT_GRANTS_CELL_TOGGLE_ATTR,
+    ) === true
+      ? activeElement.getAttribute('data-entry')
+      : null;
     const totalOps = entriesOfKinds(OPS_KINDS).length;
     const matchingOps = visibleEntriesOfKinds(OPS_KINDS).length;
     operationFilterStatus.textContent = operationFilterDraft.trim().toLowerCase()
@@ -700,6 +723,7 @@ export const mountContractGrantsPanel = (
       : operationFilter.length > 0
         ? `${matchingOps} of ${totalOps} operations`
         : `${totalOps} operations`;
+    renderedCellToggles.clear();
     renderInto(
       opsResults,
       OPS_KINDS,
@@ -712,6 +736,16 @@ export const mountContractGrantsPanel = (
       ENTITIES_KINDS,
       'No collections or topics are available on this server yet.',
     );
+    if (focusedEntry !== null) {
+      const replacement = renderedCellToggles.get(focusedEntry);
+      if (replacement !== undefined && !replacement.disabled) {
+        try {
+          replacement.focus({ preventScroll: true });
+        } catch {
+          // Reduced/fake DOMs keep focus restoration best-effort.
+        }
+      }
+    }
   };
 
   const applyOperationFilter = (): void => {
@@ -907,6 +941,7 @@ export const mountContractGrantsPanel = (
     toggleEntry: (entryKey) => runToggle(entryKey),
     refresh: () => doRefresh(),
     whenLoaded: () => pendingLoad,
+    hasInFlightWork: () => pendingCells.size > 0,
     dispose: () => {
       if (disposed) return;
       disposed = true;
@@ -1023,7 +1058,8 @@ export const CONTRACT_GRANTS_PANEL_STYLES = `
 [${CONTRACT_GRANTS_HOST_ATTR}] .cg-cell-box {
   cursor: pointer;
 }
-[${CONTRACT_GRANTS_HOST_ATTR}] .cg-cell-box[disabled] {
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-cell-box[disabled],
+[${CONTRACT_GRANTS_HOST_ATTR}] .cg-cell-box[aria-disabled='true'] {
   opacity: 0.6;
   cursor: default;
 }

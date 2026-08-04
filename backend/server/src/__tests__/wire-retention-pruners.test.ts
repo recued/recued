@@ -13,6 +13,7 @@ type RegisteredInterval = {
 
 const makeBackgroundServices = () => ({
   registerInterval: vi.fn(),
+  register: vi.fn(),
 });
 
 const makeRuntimeConfig = (value: number | Error = 3600) => ({
@@ -89,6 +90,32 @@ describe('composeRetentionPruners per-pruner gating', () => {
     expect(registrations[0].name).toBe('correction-events-prune');
   });
 
+  it('registers callback retention only when both mailbox and token stores are present', () => {
+    const mailbox = {
+      list: vi.fn(async () => []),
+      read: vi.fn(),
+      compareAndSet: vi.fn(),
+    };
+    const tokenStore = {
+      getTokenById: vi.fn(() => null),
+      drainAuthorityChanges: vi.fn(async () => undefined),
+    };
+
+    expect(composeWithDeps({ mcpRecipeCallbackStore: mailbox })).toHaveLength(0);
+    expect(composeWithDeps({ mcpRecipeCallbackTokenStore: tokenStore })).toHaveLength(0);
+    const registrations = composeWithDeps({
+      mcpRecipeCallbackStore: mailbox,
+      mcpRecipeCallbackTokenStore: tokenStore,
+    });
+
+    expect(registrations).toHaveLength(1);
+    expect(registrations[0]).toMatchObject({
+      name: 'mcp-recipe-callback-prune',
+      intervalMs: 3_600_000,
+      fireImmediate: true,
+    });
+  });
+
   it('registers all pruners in audit, s2s, correction order', () => {
     const registrations = composeWithDeps({
       auditRetention: makeAuditRetention(),
@@ -101,6 +128,64 @@ describe('composeRetentionPruners per-pruner gating', () => {
       's2s-preview-prune',
       'correction-events-prune',
     ]);
+  });
+});
+
+describe('composeRetentionPruners MCP recipe callback retention', () => {
+  it('runs the real mailbox sweep with the injected clock and contains failures', async () => {
+    const mailbox = {
+      list: vi.fn(async () => []),
+      read: vi.fn(),
+      compareAndSet: vi.fn(),
+    };
+    const tokenStore = {
+      getTokenById: vi.fn(() => null),
+      drainAuthorityChanges: vi.fn(async () => undefined),
+    };
+    const registrations = composeWithDeps({
+      mcpRecipeCallbackStore: mailbox,
+      mcpRecipeCallbackTokenStore: tokenStore,
+      now: () => 999_000,
+    });
+
+    await expect(registrations[0]!.tick()).resolves.toBeUndefined();
+    expect(mailbox.list).toHaveBeenCalledWith('mcp.recipe-callback');
+
+    mailbox.list.mockRejectedValueOnce(new Error('shared store unavailable'));
+    await expect(registrations[0]!.tick()).resolves.toBeUndefined();
+  });
+
+  it('registers a shutdown drain for authority-triggered cleanup', async () => {
+    const backgroundServices = makeBackgroundServices();
+    const tokenStore = {
+      getTokenById: vi.fn(() => null),
+      drainAuthorityChanges: vi.fn(async () => undefined),
+    };
+    composeRetentionPruners({
+      backgroundServices: backgroundServices as any,
+      runtimeConfig: makeRuntimeConfig() as any,
+      auditRetention: undefined,
+      s2sPreviewStore: undefined,
+      correctionEventsStore: undefined,
+      mcpRecipeCallbackStore: {
+        list: vi.fn(async () => []),
+        read: vi.fn(),
+        compareAndSet: vi.fn(),
+      },
+      mcpRecipeCallbackTokenStore: tokenStore,
+    });
+
+    expect(backgroundServices.register).toHaveBeenCalledWith(
+      expect.objectContaining({
+        name: 'mcp-recipe-callback-authority-drain',
+        kind: 'emitter',
+      }),
+    );
+    const service = backgroundServices.register.mock.calls[0]![0] as {
+      stop: () => Promise<void> | void;
+    };
+    await service.stop();
+    expect(tokenStore.drainAuthorityChanges).toHaveBeenCalledOnce();
   });
 });
 

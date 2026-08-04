@@ -1084,19 +1084,26 @@ const renderProviderForm = (
         variant: 'primary',
         size: 'sm',
         action: 'accounts-oauth-connect',
-        disabled: state.saving || !canSubmit,
+        // A started write is handler-fenced but remains focusable. Replacing
+        // the clicked button with a native-disabled node would strand keyboard
+        // focus on <body> during the provider round trip.
+        disabled: !canSubmit,
+        ariaDisabled: state.saving,
+        ariaBusy: state.saving,
       })
     : button({
         label: submitLabel,
         variant: 'primary',
         size: 'sm',
         action: 'accounts-submit-form',
-        disabled: state.saving || !canSubmit,
+        disabled: !canSubmit,
+        ariaDisabled: state.saving,
+        ariaBusy: state.saving,
       });
 
   return `
     <div class="accounts-form${isOAuth ? ' accounts-form--oauth' : ''}">
-      <h2 class="accounts-form-title">${formVerb} ${e(provider.label)}</h2>
+      <h2 class="accounts-form-title" data-accounts-form-heading tabindex="-1">${formVerb} ${e(provider.label)}</h2>
       <p class="accounts-form-desc">${e(provider.description)}</p>
       ${state.formError !== null ? inlineError(state.formError) : ''}
       ${isOAuth ? '<p class="accounts-form-section-title">Connection details</p>' : ''}
@@ -1121,7 +1128,7 @@ const renderProviderPicker = (lane: AccountLane): string => {
     : `Choose a ${lane.label.toLowerCase()} provider`;
   return `
   <div class="accounts-picker">
-    <h2 class="accounts-picker-title">${e(title)}</h2>
+    <h2 class="accounts-picker-title" data-accounts-picker-heading tabindex="-1">${e(title)}</h2>
     <div class="accounts-picker-grid">
       ${lane.providers
         .map(
@@ -1466,7 +1473,7 @@ const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
   const lifecycle = lane.id !== 'mail';
   return `
     <div class="accounts-detail">
-      <h2 class="accounts-detail-title">${e(row.slug)}</h2>
+      <h2 class="accounts-detail-title" data-accounts-detail-heading tabindex="-1">${e(row.slug)}</h2>
       <dl class="accounts-detail-grid">
         <dt>Provider</dt><dd>${e(providerLabelFor(lane, row.adapterType))}</dd>
         <dt>Status</dt><dd><span class="accounts-status" data-state="${e(status.state)}">${e(status.label)}</span></dd>
@@ -1482,7 +1489,8 @@ const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
                 size: 'sm',
                 action: 'accounts-resync',
                 data: { slug: row.slug },
-                disabled: busyKey('resync'),
+                ariaDisabled: busyKey('resync'),
+                ariaBusy: busyKey('resync'),
               })
             : ''
         }
@@ -1495,7 +1503,8 @@ const renderDetail = (lane: AccountLane, state: AccountsPanelState): string => {
                 size: 'sm',
                 action: 'accounts-reauth',
                 data: { slug: row.slug },
-                disabled: busyKey('reauth'),
+                ariaDisabled: busyKey('reauth'),
+                ariaBusy: busyKey('reauth'),
               })
             : ''
         }
@@ -1618,7 +1627,8 @@ const renderAccountsDeleteConfirm = (state: AccountsPanelState): string => {
   return `
     <div class="accounts-delete-backdrop" data-accounts-delete-backdrop>
       <div class="accounts-delete-confirm" role="dialog" aria-modal="true"
-           aria-label="Remove account ${e(dc.slug)}">
+           aria-label="Remove account ${e(dc.slug)}"
+           data-accounts-delete-dialog tabindex="-1">
         <h3 class="accounts-delete-title">Remove ${e(dc.slug)}?</h3>
         <p class="accounts-delete-body">
           Recued stops syncing this ${e(dc.providerLabel)} account and forgets its
@@ -1630,7 +1640,7 @@ const renderAccountsDeleteConfirm = (state: AccountsPanelState): string => {
             label: 'Cancel',
             size: 'sm',
             action: 'accounts-delete-cancel',
-            disabled: dc.deleting,
+            ariaDisabled: dc.deleting,
           })}
           ${button({
             label: dc.deleting ? 'Removing…' : 'Remove',
@@ -1638,7 +1648,8 @@ const renderAccountsDeleteConfirm = (state: AccountsPanelState): string => {
             variant: 'danger',
             action: 'accounts-delete-confirm',
             data: { slug: dc.slug },
-            disabled: dc.deleting,
+            ariaDisabled: dc.deleting,
+            ariaBusy: dc.deleting,
           })}
         </div>
       </div>

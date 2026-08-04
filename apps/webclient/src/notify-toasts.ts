@@ -23,8 +23,9 @@
  *  href risk can't arise here.
  *
  *  ── Render model: DOM nodes, not innerHTML ──────────────────────────────
- *  `createElement` + `textContent` on every change — unsanitised notify text
- *  is never parsed as HTML.
+ *  `createElement` + `textContent` for every new card — unsanitised notify
+ *  text is never parsed as HTML. Cards are keyed and retained until their own
+ *  dismissal, so an arriving notice cannot detach a focused older action.
  *
  *  ── Timers are injectable (DD) ──────────────────────────────────────────
  *  Auto-dismiss uses `setTimer` / `clearTimer` seams (default
@@ -75,7 +76,7 @@ export interface MountNotifyToastsOptions {
 
 export interface NotifyToastsMount {
   /** Currently-visible toasts in display order (newest last appended;
-   *  rendered newest-on-top — see `render`). */
+   *  inserted newest-on-top in the DOM). */
   getToasts(): ReadonlyArray<NotifyToast>;
   /** Dismiss a toast by id (cancels its auto-dismiss timer). No-op on an
    *  unknown / already-dismissed id. */
@@ -148,6 +149,7 @@ export const mountNotifyToasts = (
   let disposed = false;
   let seq = 0;
   const toasts: InternalToast[] = [];
+  const cards = new Map<string, HTMLElement>();
 
   const container = doc.createElement('div');
   container.setAttribute(NOTIFY_TOASTS_HOST_ATTR, '');
@@ -160,8 +162,16 @@ export const mountNotifyToasts = (
   container.className = 'notify-toasts';
   opts.host.appendChild(container);
 
-  const clearChildren = (): void => {
-    while (container.firstChild) container.removeChild(container.firstChild);
+  const focusedToastId = (): string | null => {
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    if (
+      active === undefined
+      || active === null
+      || typeof active.closest !== 'function'
+      || !container.contains(active)
+    ) return null;
+    const card = active.closest(`[${NOTIFY_TOAST_ATTR}]`);
+    return card?.getAttribute(NOTIFY_TOAST_ATTR) ?? null;
   };
 
   const renderToast = (t: InternalToast): HTMLElement => {
@@ -196,13 +206,39 @@ export const mountNotifyToasts = (
     return card;
   };
 
-  const render = (): void => {
-    if (disposed) return;
-    clearChildren();
-    // Newest on top: render in reverse insertion order.
-    for (let i = toasts.length - 1; i >= 0; i -= 1) {
-      container.appendChild(renderToast(toasts[i]!));
-    }
+  const removeToastCard = (id: string): void => {
+    const card = cards.get(id);
+    if (card === undefined) return;
+    cards.delete(id);
+    card.remove();
+  };
+
+  const prependToastCard = (toast: InternalToast): HTMLElement => {
+    const card = renderToast(toast);
+    cards.set(toast.id, card);
+    container.insertBefore(card, container.firstChild);
+    return card;
+  };
+
+  const focusToastDismiss = (card: HTMLElement): void => {
+    const dismiss = Array.from(card.children).find((candidate) =>
+      candidate.hasAttribute(NOTIFY_TOAST_DISMISS_ATTR)) as HTMLElement | undefined;
+    dismiss?.focus?.({ preventScroll: true });
+  };
+
+  const armAutoDismiss = (toast: InternalToast): void => {
+    toast.timer = setTimer(() => {
+      toast.timer = null;
+      if (disposed || !toasts.includes(toast)) return;
+      // Do not remove the control a keyboard owner is actively using. A full
+      // fresh interval after focus leaves keeps the policy deterministic
+      // without requiring pointer/focus bookkeeping or a ticking clock.
+      if (focusedToastId() === toast.id) {
+        armAutoDismiss(toast);
+        return;
+      }
+      dismiss_(toast.id);
+    }, durationMs);
   };
 
   // Named with a trailing underscore so the dismiss button handler + the
@@ -211,9 +247,19 @@ export const mountNotifyToasts = (
     if (disposed) return;
     const idx = toasts.findIndex((t) => t.id === id);
     if (idx < 0) return;
+    const focusOwned = focusedToastId() === id;
+    // DOM order is newest-first while `toasts` is oldest-first. Prefer the
+    // next card below the dismissed one visually, then the nearest card above.
+    const focusSuccessor = focusOwned
+      ? toasts[idx - 1] ?? toasts[idx + 1]
+      : undefined;
     const [removed] = toasts.splice(idx, 1);
     if (removed && removed.timer !== null) clearTimer(removed.timer);
-    render();
+    removeToastCard(id);
+    if (focusSuccessor !== undefined) {
+      const successorCard = cards.get(focusSuccessor.id);
+      if (successorCard !== undefined) focusToastDismiss(successorCard);
+    }
   };
 
   const push = (title: string | undefined, text: string): void => {
@@ -228,23 +274,38 @@ export const mountNotifyToasts = (
     // Evict oldest beyond the cap BEFORE appending the new one, cancelling
     // their timers. The feed keeps the full record, so eviction is a
     // display bound, not data loss.
+    const focusedId = focusedToastId();
+    let evictedFocusedToast = false;
     while (toasts.length >= maxVisible) {
-      const [evicted] = toasts.splice(0, 1);
-      if (evicted && evicted.timer !== null) clearTimer(evicted.timer);
+      const nonFocusedIndex = toasts.findIndex((candidate) =>
+        candidate.id !== focusedId);
+      const [evicted] = toasts.splice(
+        nonFocusedIndex < 0 ? 0 : nonFocusedIndex,
+        1,
+      );
+      if (evicted) {
+        if (evicted.id === focusedId) evictedFocusedToast = true;
+        if (evicted.timer !== null) clearTimer(evicted.timer);
+        removeToastCard(evicted.id);
+      }
     }
     if (durationMs > 0) {
-      toast.timer = setTimer(() => dismiss_(id), durationMs);
+      armAutoDismiss(toast);
     }
     toasts.push(toast);
-    render();
+    const card = prependToastCard(toast);
+    // With maxVisible=1 there is no non-focused eviction candidate. Keep
+    // keyboard ownership inside the toast layer by handing the retired
+    // control directly to the only surviving Dismiss action.
+    if (evictedFocusedToast) focusToastDismiss(card);
   };
 
   const unsubscribe = opts.subscribe('notification.notify', (event) => {
     if (disposed) return;
     // Defense-in-depth: the runtime subscriber only kind-narrows frames, so
     // a malformed / version-skewed notify with a non-string `text` is
-    // dropped — pushing it would schedule a timer + throw in render,
-    // wedging this default-on overlay. A non-string title degrades to
+    // dropped — pushing it would schedule a timer + throw while creating the
+    // card, wedging this default-on overlay. A non-string title degrades to
     // no-title (via `nonBlankTitle`); guarded here too for clarity.
     if (typeof event.text !== 'string') return;
     push(typeof event.title === 'string' ? event.title : undefined, event.text);
@@ -264,6 +325,7 @@ export const mountNotifyToasts = (
         if (t.timer !== null) clearTimer(t.timer);
       }
       toasts.length = 0;
+      cards.clear();
       try {
         unsubscribe();
       } catch {

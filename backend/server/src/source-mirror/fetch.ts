@@ -285,6 +285,10 @@ export type GatedCatalogOperationOutcome =
       ok: false;
       kind: 'config' | 'policy' | 'error' | 'unavailable';
       reason: string;
+      /** A provider's typed absence signal. Keep this deliberately narrow:
+       * callers may use it as positive proof that a targeted read found no
+       * record, while every untyped or other failure stays inconclusive. */
+      error_code?: 'API_NOT_FOUND';
     };
 
 export type RunGatedCatalogOperationFn = (
@@ -397,7 +401,23 @@ export const runGatedCatalogOperation: RunGatedCatalogOperationFn = async (
     }
     const msg = e instanceof Error ? e.message : String(e);
     const denied = captured?.outcome === 'failed' && captured.failure_mode !== 'error';
-    return { ok: false, kind: denied ? 'policy' : 'error', reason: msg };
+    // The connection adapters already classify a provider 404 as the typed
+    // `API_NOT_FOUND` IngredientError. Preserve only that closed signal across
+    // this outcome seam: callers can prove absence without guessing from error
+    // copy or mistaking an auth, timeout, or 5xx failure for a 404.
+    const errorCode =
+      !denied
+      && typeof e === 'object'
+      && e !== null
+      && (e as { code?: unknown }).code === 'API_NOT_FOUND'
+        ? 'API_NOT_FOUND' as const
+        : undefined;
+    return {
+      ok: false,
+      kind: denied ? 'policy' : 'error',
+      reason: msg,
+      ...(errorCode !== undefined ? { error_code: errorCode } : {}),
+    };
   }
 };
 

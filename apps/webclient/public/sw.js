@@ -67,7 +67,17 @@
 // filename behind a cache-first SW → the cache name is the only lever). ⚠ MUST
 // match `WEBCLIENT_SHELL_CACHE_NAME` in `src/runtime/service-worker.ts` — a
 // parity test enforces it.
-const CACHE_NAME = 'webclient-shell-v7';
+// v8 (2026-08-03) — a live drive spent a full session one reload behind. The
+// shell is cache-first with a FIXED bundle filename, so every reload serves the
+// cached bundle and only refetches for the NEXT launch; across a day of
+// client-side fixes the browser was never running the code being tested, and a
+// press reported as dead could not be told apart from a press against last
+// week's bundle. A real-browser Playwright click proved the press itself works
+// (`e2e/pack-use-click.spec.ts`), which leaves the served bytes as the variable.
+// Bumping evicts v7 on activate — the cache name is the only lever a fixed
+// filename leaves. ⚠ MUST match `WEBCLIENT_SHELL_CACHE_NAME`; a parity test
+// enforces it.
+const CACHE_NAME = 'webclient-shell-v8';
 
 /** Pre-cache list — the app shell. Network-only for everything else.
  *  Adding a new shell asset requires an entry here + a `CACHE_NAME`

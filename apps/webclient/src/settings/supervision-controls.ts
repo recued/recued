@@ -123,7 +123,8 @@ const opKey = (ingredient_slug: string, op: string): string =>
  *  refs are also handled for non-composition packs. */
 const packIngredientSlugs = (pack: PackListEntry): Set<string> => {
   const slugs = new Set<string>();
-  for (const ref of pack.manifest.contents ?? []) {
+  // Supervision applies to an INSTALLED pack's ingredients; no manifest ⇒ none.
+  for (const ref of pack.manifest?.contents ?? []) {
     if (ref.type === 'ingredient') {
       if (ref.slug) slugs.add(ref.slug);
       if (ref.ingredient_id) slugs.add(ref.ingredient_id);

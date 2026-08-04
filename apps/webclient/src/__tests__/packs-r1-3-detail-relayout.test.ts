@@ -12,17 +12,24 @@
  *  Self-contained fake-DOM harness, cribbed from the sibling packs-panel
  *  suites. */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import {
   PACKS_DETAIL_BACK_ATTR,
   PACKS_DETAIL_REPO_LINK_ATTR,
+  PACKS_DETAIL_RECIPES_ERROR_ATTR,
+  PACKS_DETAIL_RECIPES_RETRY_ATTR,
+  PACKS_DETAIL_RECIPES_STATUS_ATTR,
   PACKS_DETAIL_SECTION_ATTR,
   PACKS_DETAIL_TAB_ATTR,
   PACKS_DETAIL_TAB_PANEL_ATTR,
   PACKS_DETAIL_TABS_ATTR,
   PACKS_DIALOG_ATTR,
+  PACKS_DIALOG_CANCEL_BTN_ATTR,
+  PACKS_DIALOG_PERMISSION_ATTR,
   PACKS_ROW_DELETE_BTN_ATTR,
+  PACKS_ROW_DELETE_CANCEL_BTN_ATTR,
+  PACKS_ROW_DELETE_CONFIRM_BTN_ATTR,
   PACKS_ROW_DELETE_FOUNDATION_WARN_ATTR,
   PACKS_ROW_INSTALL_BTN_ATTR,
   mountPacksPanel,
@@ -46,6 +53,7 @@ interface FakeElement {
   className: string;
   id: string;
   type: string;
+  tabIndex: number;
   children: FakeElement[];
   parent: FakeElement | null;
   attrs: Map<string, string>;
@@ -57,13 +65,19 @@ interface FakeElement {
   appendChild(el: FakeElement): FakeElement;
   removeChild(el: FakeElement): FakeElement;
   readonly firstChild: FakeElement | null;
+  contains(el: FakeElement): boolean;
   remove(): void;
   addEventListener(name: string, fn: (ev: unknown) => void): void;
   removeEventListener(name: string, fn: (ev: unknown) => void): void;
+  focus(options?: FocusOptions): void;
   click(): void;
+  keydown(key: string): void;
 }
 
-const makeFakeElement = (tagName: string): FakeElement => {
+const makeFakeElement = (
+  tagName: string,
+  onFocus: (element: FakeElement) => void = () => {},
+): FakeElement => {
   const listeners = new Map<string, Array<(ev: unknown) => void>>();
   const attrs = new Map<string, string>();
   const children: FakeElement[] = [];
@@ -75,6 +89,7 @@ const makeFakeElement = (tagName: string): FakeElement => {
     className: '',
     id: '',
     type: '',
+    tabIndex: 0,
     children,
     parent: null,
     attrs,
@@ -98,6 +113,8 @@ const makeFakeElement = (tagName: string): FakeElement => {
     get firstChild() {
       return children[0] ?? null;
     },
+    contains: (candidate) =>
+      candidate === el || children.some((child) => child.contains(candidate)),
     remove: () => {
       if (el.parent) el.parent.removeChild(el);
     },
@@ -112,17 +129,33 @@ const makeFakeElement = (tagName: string): FakeElement => {
       const idx = arr.indexOf(fn);
       if (idx >= 0) arr.splice(idx, 1);
     },
+    focus: () => onFocus(el),
     click: () => {
+      onFocus(el);
       const arr = listeners.get('click') ?? [];
       for (const fn of arr) fn({ target: el });
+    },
+    keydown: (key) => {
+      const arr = listeners.get('keydown') ?? [];
+      for (const fn of arr) {
+        fn({ key, preventDefault: () => undefined, target: el });
+      }
     },
   };
   return el;
 };
 
-const makeFakeDocument = () => ({
-  createElement: (tag: string) => makeFakeElement(tag),
-});
+const makeFakeDocument = () => {
+  let activeElement: FakeElement | null = null;
+  return {
+    get activeElement() {
+      return activeElement;
+    },
+    createElement: (tag: string) => makeFakeElement(tag, (element) => {
+      activeElement = element;
+    }),
+  };
+};
 
 const findByAttr = (root: FakeElement, attr: string): FakeElement | null => {
   if (root.hasAttribute(attr)) return root;
@@ -193,6 +226,10 @@ const entry = (overrides: Partial<PackListEntry> = {}): PackListEntry => {
     installed: false,
     requires: [...manifest.requires],
     recipe_count: manifest.recipes.length,
+    recipe_refs: manifest.recipes.map((r) => ({ slug: r.slug, version: r.version })),
+    body_visibility_grant_keys: [...(manifest.mcp_body_visibility_grants ?? [])],
+    ...(typeof manifest.service_kind === 'string' ? { service_kind: manifest.service_kind } : {}),
+    ...(typeof manifest.repo === 'string' ? { repo: manifest.repo } : {}),
     body_visibility_grant_count:
       manifest.mcp_body_visibility_grants?.length ?? 0,
     manifest,
@@ -239,11 +276,12 @@ const connectionManifest = (
 interface SetupOptions {
   runConnectionList?: boolean;
   initialSlug?: string;
+  runRecipeList?: () => Promise<{ recipes: readonly never[] }>;
 }
 
 const setupMount = (packs: PackListEntry[], opts: SetupOptions = {}) => {
   const doc = makeFakeDocument();
-  const host = makeFakeElement('div');
+  const host = doc.createElement('div');
   const runList: PacksListCaller = async () => ({ packs });
   // The panel is now the DETAIL only (the browse list moved to the surface).
   // Auto-open the first pack's detail so the detail assertions + seams reach
@@ -267,9 +305,16 @@ const setupMount = (packs: PackListEntry[], opts: SetupOptions = {}) => {
     ...(opts.runConnectionList === true
       ? { runConnectionList: async () => ({ connections: [] }) }
       : {}),
+    ...(opts.runRecipeList !== undefined
+      ? { runRecipeList: opts.runRecipeList }
+      : {}),
     ...(autoSlug !== undefined ? { initialSlug: autoSlug } : {}),
   });
-  return { host, mount };
+  return { host, mount, document: doc };
+};
+
+const flush = async (turns = 12): Promise<void> => {
+  for (let i = 0; i < turns; i += 1) await Promise.resolve();
 };
 
 // ──────────────────────────────────────────────────────────────────
@@ -288,11 +333,12 @@ describe('Packs R1.3 — detail section layout', () => {
         id: tab.getAttribute(PACKS_DETAIL_TAB_ATTR),
         label: tab.textContent,
         selected: tab.getAttribute('aria-selected'),
+        tabIndex: tab.tabIndex,
       })),
     ).toEqual([
-      { id: 'detail', label: 'Detail', selected: 'true' },
-      { id: 'permissions', label: 'Permissions', selected: 'false' },
-      { id: 'access', label: 'Access', selected: 'false' },
+      { id: 'detail', label: 'Detail', selected: 'true', tabIndex: 0 },
+      { id: 'permissions', label: 'Permissions', selected: 'false', tabIndex: -1 },
+      { id: 'access', label: 'Access', selected: 'false', tabIndex: -1 },
     ]);
     expect(
       findByAttr(host, PACKS_DETAIL_TAB_PANEL_ATTR)?.getAttribute(
@@ -323,6 +369,32 @@ describe('Packs R1.3 — detail section layout', () => {
         (s) => s.getAttribute(PACKS_DETAIL_SECTION_ATTR),
       ),
     ).toEqual(['identity', 'access']);
+  });
+
+  it('uses one tab stop and activates management tabs with arrow/Home/End keys', async () => {
+    const { host, mount, document } = setupMount([entry()]);
+    await mount.whenLoaded();
+    const detail = findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'detail')!;
+    detail.focus();
+
+    detail.keydown('ArrowRight');
+    const permissions = findByAttrValue(
+      host,
+      PACKS_DETAIL_TAB_ATTR,
+      'permissions',
+    )!;
+    expect(permissions.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(permissions);
+
+    permissions.keydown('End');
+    const access = findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'access')!;
+    expect(access.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(access);
+
+    access.keydown('Home');
+    const restoredDetail = findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'detail')!;
+    expect(restoredDetail.getAttribute('aria-selected')).toBe('true');
+    expect(document.activeElement).toBe(restoredDetail);
   });
 
   it('IDENTITY carries name, slug · publisher · version facts, and the actions', async () => {
@@ -420,18 +492,163 @@ describe('Packs R1.3 — detail section layout', () => {
     expect(collectTextContent(slot)).toContain('not set up');
   });
 
-  it('opening Install from the detail renders the consent dialog after Identity', async () => {
-    const { host, mount } = setupMount([entry()]);
+  it('moves focus into Install consent and restores its detail opener on Cancel', async () => {
+    const { host, mount, document } = setupMount([entry()]);
     await mount.whenLoaded();
     mount.clickSelectPack('test-pack');
-    mount.clickInstall('test-pack');
+    const opener = findByAttrValue(
+      host,
+      PACKS_ROW_INSTALL_BTN_ATTR,
+      'test-pack',
+    )!;
+    opener.click();
 
     expect(mount.getDialogOpenFor()).toBe('test-pack');
-    expect(findByAttr(host, PACKS_DIALOG_ATTR)).not.toBeNull();
+    const dialog = findByAttr(host, PACKS_DIALOG_ATTR)!;
+    expect(document.activeElement).toBe(dialog);
+    findByAttr(host, PACKS_DIALOG_CANCEL_BTN_ATTR)!.click();
+    expect(document.activeElement).toBe(
+      findByAttrValue(host, PACKS_ROW_INSTALL_BTN_ATTR, 'test-pack'),
+    );
+
+    // Re-open so Back still proves the dialog is discarded with navigation.
+    mount.clickInstall('test-pack');
     // Back still returns to the list with the dialog discarded.
     mount.clickBackToList();
     expect(mount.getDialogOpenFor()).toBeNull();
     expect(findByAttr(host, PACKS_DETAIL_BACK_ATTR)).toBeNull();
+  });
+
+  it('preserves the focused permission through a consent repaint', async () => {
+    const manifest = baseManifest({
+      requires: ['install_bulk_pack', 'read_mail'],
+    });
+    const { host, mount, document } = setupMount([
+      entry({ manifest, requires: [...manifest.requires] }),
+    ]);
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    const permission = findByAttrValue(
+      host,
+      PACKS_DIALOG_PERMISSION_ATTR,
+      'read_mail',
+    )!;
+    permission.focus();
+
+    mount.togglePermission('read_mail');
+    expect(document.activeElement).toBe(
+      findByAttrValue(host, PACKS_DIALOG_PERMISSION_ATTR, 'read_mail'),
+    );
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────
+// Pack-app recipe roster recovery
+// ──────────────────────────────────────────────────────────────────
+
+describe('Packs detail — recipe roster recovery', () => {
+  it('stops after one failed read and keeps retry single-flight and keyboard-owned', async () => {
+    let resolveRetry!: (value: { recipes: readonly never[] }) => void;
+    const retryResult = new Promise<{ recipes: readonly never[] }>((resolve) => {
+      resolveRetry = resolve;
+    });
+    const runRecipeList = vi.fn()
+      .mockRejectedValueOnce(new Error('Recipe inventory is temporarily unavailable.'))
+      .mockReturnValueOnce(retryResult);
+    const { host, mount, document } = setupMount([entry({ installed: true })], {
+      runRecipeList,
+    });
+    await mount.whenLoaded();
+    await flush();
+
+    expect(runRecipeList).toHaveBeenCalledTimes(1);
+    expect(findByAttr(host, PACKS_DETAIL_RECIPES_STATUS_ATTR)).toBeNull();
+    expect(findByAttr(host, PACKS_DETAIL_RECIPES_ERROR_ATTR)?.textContent)
+      .toContain('Recipe inventory is temporarily unavailable.');
+
+    const retry = findByAttr(host, PACKS_DETAIL_RECIPES_RETRY_ATTR)!;
+    retry.focus();
+    retry.click();
+    const busyRetry = findByAttr(host, PACKS_DETAIL_RECIPES_RETRY_ATTR)!;
+    expect(runRecipeList).toHaveBeenCalledTimes(2);
+    expect(busyRetry.getAttribute('aria-disabled')).toBe('true');
+    expect(busyRetry.getAttribute('aria-busy')).toBe('true');
+    expect(busyRetry.disabled).toBe(false);
+    expect(document.activeElement).toBe(busyRetry);
+
+    // aria-disabled keeps the control focusable; the transition guard, not the
+    // native disabled bit, is what makes duplicate activation a no-op.
+    busyRetry.click();
+    expect(runRecipeList).toHaveBeenCalledTimes(2);
+
+    resolveRetry({ recipes: [] });
+    await flush();
+    expect(findByAttr(host, PACKS_DETAIL_RECIPES_ERROR_ATTR)).toBeNull();
+    expect(findByAttr(host, PACKS_DETAIL_RECIPES_RETRY_ATTR)).toBeNull();
+    expect(document.activeElement).toBe(
+      findByAttrValue(host, PACKS_DETAIL_TAB_ATTR, 'detail'),
+    );
+  });
+
+  it('does not reclaim retry focus after the person moves elsewhere', async () => {
+    let resolveRetry!: (value: { recipes: readonly never[] }) => void;
+    const retryResult = new Promise<{ recipes: readonly never[] }>((resolve) => {
+      resolveRetry = resolve;
+    });
+    const runRecipeList = vi.fn()
+      .mockRejectedValueOnce(new Error('Recipe inventory unavailable.'))
+      .mockReturnValueOnce(retryResult);
+    const { host, mount, document } = setupMount([entry({ installed: true })], {
+      runRecipeList,
+    });
+    await mount.whenLoaded();
+    await flush();
+
+    findByAttr(host, PACKS_DETAIL_RECIPES_RETRY_ATTR)!.click();
+    const back = findByAttr(host, PACKS_DETAIL_BACK_ATTR)!;
+    back.focus();
+    resolveRetry({ recipes: [] });
+    await flush();
+
+    expect(document.activeElement).toBe(findByAttr(host, PACKS_DETAIL_BACK_ATTR));
+    expect(runRecipeList).toHaveBeenCalledTimes(2);
+  });
+
+  it('drops an older in-flight recipe response after a roster refresh', async () => {
+    let rejectOld!: (reason: Error) => void;
+    const oldResult = new Promise<{ recipes: readonly never[] }>(
+      (_resolve, reject) => {
+        rejectOld = reject;
+      },
+    );
+    let resolveFresh!: (value: { recipes: readonly never[] }) => void;
+    const freshResult = new Promise<{ recipes: readonly never[] }>((resolve) => {
+      resolveFresh = resolve;
+    });
+    const runRecipeList = vi.fn()
+      .mockReturnValueOnce(oldResult)
+      .mockReturnValueOnce(freshResult);
+    const { host, mount } = setupMount([entry({ installed: true })], {
+      runRecipeList,
+    });
+    await mount.whenLoaded();
+    await flush();
+    expect(runRecipeList).toHaveBeenCalledTimes(1);
+
+    mount.refresh();
+    await mount.whenLoaded();
+    await flush();
+    expect(runRecipeList).toHaveBeenCalledTimes(2);
+
+    resolveFresh({ recipes: [] });
+    await flush();
+    // The superseded request settles last. Its error must not replace the
+    // successful fresh inventory with a Retry surface.
+    rejectOld(new Error('stale recipe read failed'));
+    await flush();
+    expect(findByAttr(host, PACKS_DETAIL_RECIPES_STATUS_ATTR)).toBeNull();
+    expect(findByAttr(host, PACKS_DETAIL_RECIPES_ERROR_ATTR)).toBeNull();
+    expect(findByAttr(host, PACKS_DETAIL_RECIPES_RETRY_ATTR)).toBeNull();
   });
 });
 
@@ -440,6 +657,36 @@ describe('Packs R1.3 — detail section layout', () => {
 // ──────────────────────────────────────────────────────────────────
 
 describe('Packs R1.3 — Delta 6 (advanced toggle removed)', () => {
+  it('transfers keyboard ownership from Delete to Confirm and back on Cancel', async () => {
+    const { host, mount, document } = setupMount([
+      entry({ installed: true }),
+    ]);
+    await mount.whenLoaded();
+
+    const deleteButton = findByAttrValue(
+      host,
+      PACKS_ROW_DELETE_BTN_ATTR,
+      'test-pack',
+    )!;
+    deleteButton.click();
+    const confirmButton = findByAttrValue(
+      host,
+      PACKS_ROW_DELETE_CONFIRM_BTN_ATTR,
+      'test-pack',
+    )!;
+    expect(document.activeElement).toBe(confirmButton);
+
+    const cancelButton = findByAttrValue(
+      host,
+      PACKS_ROW_DELETE_CANCEL_BTN_ATTR,
+      'test-pack',
+    )!;
+    cancelButton.click();
+    expect(document.activeElement).toBe(
+      findByAttrValue(host, PACKS_ROW_DELETE_BTN_ATTR, 'test-pack'),
+    );
+  });
+
   it('foundation packs expose Delete directly and arm with the boot warning', async () => {
     const { host, mount } = setupMount([
       entry({

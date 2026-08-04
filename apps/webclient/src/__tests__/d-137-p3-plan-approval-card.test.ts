@@ -66,8 +66,11 @@ interface FakeEl {
 
 interface FakeDoc {
   styleElements: FakeEl[];
+  listeners: Map<string, Array<(event?: unknown) => void>>;
   head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl };
   createElement(tag: string): FakeEl;
+  addEventListener(type: string, fn: (event?: unknown) => void): void;
+  removeEventListener(type: string, fn: (event?: unknown) => void): void;
 }
 
 const makeFakeEl = (tag: string): FakeEl => {
@@ -124,12 +127,14 @@ const makeFakeEl = (tag: string): FakeEl => {
 
 const makeFakeDocument = (): FakeDoc => {
   const styleElements: FakeEl[] = [];
+  const listeners = new Map<string, Array<(event?: unknown) => void>>();
   const matchSelector = (sel: string): { tag: string; attr: string } | null => {
     const m = sel.match(/^([\w-]+)\[([\w-]+)\]$/);
     return m === null ? null : { tag: m[1]!.toUpperCase(), attr: m[2]! };
   };
   return {
     styleElements,
+    listeners,
     head: {
       querySelector(sel) {
         const parsed = matchSelector(sel);
@@ -146,6 +151,17 @@ const makeFakeDocument = (): FakeDoc => {
       },
     },
     createElement: (tag) => makeFakeEl(tag),
+    addEventListener(type, fn) {
+      const list = listeners.get(type) ?? [];
+      list.push(fn);
+      listeners.set(type, list);
+    },
+    removeEventListener(type, fn) {
+      const list = listeners.get(type);
+      if (list === undefined) return;
+      const index = list.indexOf(fn);
+      if (index >= 0) list.splice(index, 1);
+    },
   };
 };
 
@@ -975,7 +991,7 @@ describe('D-137 P3 plan-approval chat route', () => {
     h.route.dispose();
   });
 
-  it('approves through rpc, disables both buttons while pending, and flips optimistically', async () => {
+  it('approves once while keeping the pending action focusable', async () => {
     const approve = deferred<{ plan: ChatPlanProposal }>();
     const h = mountChatRoute({
       approvePlan: () => approve.promise,
@@ -989,13 +1005,32 @@ describe('D-137 P3 plan-approval chat route', () => {
     expect(h.connSpy).toHaveBeenCalledWith('chat.plan.approve', {
       plan_id: 'plan_approve',
     });
-    expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.disabled).toBe(true);
-    expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_CANCEL_ATTR)[0]!.disabled).toBe(true);
-    expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.textContent)
-      .toBe('Approving…');
+    const pendingApprove = collectByAttr(
+      h.root,
+      CHAT_ROUTE_PLAN_APPROVE_ATTR,
+    )[0]!;
+    const pendingCancel = collectByAttr(
+      h.root,
+      CHAT_ROUTE_PLAN_CANCEL_ATTR,
+    )[0]!;
+    expect(pendingApprove.disabled).toBe(false);
+    expect(pendingCancel.disabled).toBe(false);
+    expect(pendingApprove.getAttribute('aria-disabled')).toBe('true');
+    expect(pendingCancel.getAttribute('aria-disabled')).toBe('true');
+    expect(pendingApprove.getAttribute('aria-busy')).toBe('true');
+    expect(pendingCancel.getAttribute('aria-busy')).toBeNull();
+    expect(pendingApprove.textContent).toBe('Approving…');
     expect(requirePlanCard(h.root, 'plan_approve').getAttribute('aria-busy'))
       .toBe('true');
     expect(h.route.hasInFlightWork()).toBe(true);
+    pendingApprove.click();
+    pendingCancel.click();
+    expect(
+      h.connSpy.mock.calls.filter(([method]) => method === 'chat.plan.approve'),
+    ).toHaveLength(1);
+    expect(
+      h.connSpy.mock.calls.filter(([method]) => method === 'chat.plan.cancel'),
+    ).toHaveLength(0);
 
     approve.resolve({
       plan: chatPlan({
@@ -1857,10 +1892,28 @@ describe('D-137 P3 plan-approval chat route', () => {
       .toBe('Cancelling…');
     expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.textContent)
       .toBe('Approve once');
-    expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_CANCEL_ATTR)[0]!.disabled)
-      .toBe(true);
-    expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.disabled)
-      .toBe(true);
+    const pendingCancel = collectByAttr(
+      h.root,
+      CHAT_ROUTE_PLAN_CANCEL_ATTR,
+    )[0]!;
+    const pendingApprove = collectByAttr(
+      h.root,
+      CHAT_ROUTE_PLAN_APPROVE_ATTR,
+    )[0]!;
+    expect(pendingCancel.disabled).toBe(false);
+    expect(pendingApprove.disabled).toBe(false);
+    expect(pendingCancel.getAttribute('aria-disabled')).toBe('true');
+    expect(pendingApprove.getAttribute('aria-disabled')).toBe('true');
+    expect(pendingCancel.getAttribute('aria-busy')).toBe('true');
+    expect(pendingApprove.getAttribute('aria-busy')).toBeNull();
+    pendingCancel.click();
+    pendingApprove.click();
+    expect(
+      h.connSpy.mock.calls.filter(([method]) => method === 'chat.plan.cancel'),
+    ).toHaveLength(1);
+    expect(
+      h.connSpy.mock.calls.filter(([method]) => method === 'chat.plan.approve'),
+    ).toHaveLength(0);
     expect(
       allText(requirePlanCard(h.root, 'plan_cancel_pending')),
     ).toContain('Cancelling this proposal…');
@@ -2013,8 +2066,14 @@ describe('D-137 P3 plan-approval chat route', () => {
 
     collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.click();
     await tick();
-    expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.disabled).toBe(true);
-    expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_CANCEL_ATTR)[0]!.disabled).toBe(true);
+    expect(collectByAttr(
+      h.root,
+      CHAT_ROUTE_PLAN_APPROVE_ATTR,
+    )[0]!.getAttribute('aria-disabled')).toBe('true');
+    expect(collectByAttr(
+      h.root,
+      CHAT_ROUTE_PLAN_CANCEL_ATTR,
+    )[0]!.getAttribute('aria-disabled')).toBe('true');
 
     approve.reject(new Error('plan already resolved'));
 
@@ -2028,6 +2087,14 @@ describe('D-137 P3 plan-approval chat route', () => {
     );
     expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_APPROVE_ATTR)[0]!.disabled).toBe(false);
     expect(collectByAttr(h.root, CHAT_ROUTE_PLAN_CANCEL_ATTR)[0]!.disabled).toBe(false);
+    expect(collectByAttr(
+      h.root,
+      CHAT_ROUTE_PLAN_APPROVE_ATTR,
+    )[0]!.getAttribute('aria-disabled')).toBeNull();
+    expect(collectByAttr(
+      h.root,
+      CHAT_ROUTE_PLAN_CANCEL_ATTR,
+    )[0]!.getAttribute('aria-disabled')).toBeNull();
 
     h.route.dispose();
   });

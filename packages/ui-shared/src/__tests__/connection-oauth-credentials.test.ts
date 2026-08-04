@@ -6,7 +6,15 @@ import {
   isConnectionOAuthLockedField,
 } from '../connections/oauth-credentials.js';
 
+/** A form that is past the naming step. `name` / `display_name` joined the
+ *  readiness checklist (they are required for the owner to finish, even though
+ *  the authorize call does not read them), so a fixture that omits them now
+ *  fails on NAMING before it reaches the credential assertions each of these
+ *  tests is actually about. Supplying them keeps every test testing what it
+ *  named itself for; the naming gate has its own tests below. */
 const oauthValues = (overrides: Record<string, string> = {}): Record<string, string> => ({
+  name: 'acme',
+  display_name: 'Acme',
   'auth.type': 'oauth2_refresh',
   ...overrides,
 });
@@ -61,6 +69,9 @@ describe('provider OAuth credential readiness', () => {
       issue: { fieldKey: 'auth.client_secret' },
     });
     expect(missingSecret?.requirements).toEqual([
+      // The checklist now opens with what the owner types first.
+      { fieldKey: 'name', label: 'Name', status: 'complete' },
+      { fieldKey: 'display_name', label: 'Display name', status: 'complete' },
       { fieldKey: 'auth.client_id', label: 'Client ID', status: 'complete' },
       { fieldKey: 'auth.client_secret', label: 'Client secret', status: 'missing' },
     ]);
@@ -86,7 +97,9 @@ describe('provider OAuth credential readiness', () => {
       ready: false,
       issue: { fieldKey: 'auth.token_endpoint' },
     });
-    expect(missingEndpoint?.requirements[1]).toEqual({
+    // Addressed BY KEY, not by index — this asserted `[1]` and broke the moment
+    // the list grew, which says nothing about client secrets.
+    expect(missingEndpoint?.requirements.find((r) => r.fieldKey === 'auth.client_secret')).toEqual({
       fieldKey: 'auth.client_secret',
       label: 'Client secret',
       status: 'optional',
@@ -109,7 +122,7 @@ describe('provider OAuth credential readiness', () => {
         message: expect.stringContaining('complete HTTPS URL'),
       },
     });
-    expect(unsafeEndpoint?.requirements[2]).toEqual({
+    expect(unsafeEndpoint?.requirements.find((r) => r.fieldKey === 'auth.token_endpoint')).toEqual({
       fieldKey: 'auth.token_endpoint',
       label: 'Token endpoint',
       status: 'invalid',
@@ -191,5 +204,33 @@ describe('provider OAuth credential readiness', () => {
     const serialized = JSON.stringify(readiness);
     expect(serialized).not.toContain('sentinel-client-id');
     expect(serialized).not.toContain('sentinel-client-secret');
+  });
+});
+
+describe('the checklist names what the OWNER must enter, not what the rpc reads', () => {
+  it('lists name + display name, and blocks on them FIRST', () => {
+    const readiness = connectionOAuthCredentialReadiness({
+      vendor: null,
+      kind: 'api',
+      values: { 'auth.type': 'oauth2_refresh' },
+    });
+    const keys = readiness?.requirements.map((r) => r.fieldKey);
+    expect(keys?.slice(0, 2)).toEqual(['name', 'display_name']);
+    // Gating, not merely listed — `ready` derives from `issue`, so a listed-but-
+    // ungated requirement would still let the heading read "Ready to authorize".
+    expect(readiness?.ready).toBe(false);
+    expect(readiness?.issue?.fieldKey).toBe('name');
+  });
+
+  it('clears them once entered, and moves on to the credentials', () => {
+    const readiness = connectionOAuthCredentialReadiness({
+      vendor: null,
+      kind: 'api',
+      values: { name: 'acme', display_name: 'Acme', 'auth.type': 'oauth2_refresh' },
+    });
+    expect(readiness?.requirements.find((r) => r.fieldKey === 'name')?.status).toBe('complete');
+    expect(readiness?.requirements.find((r) => r.fieldKey === 'display_name')?.status).toBe('complete');
+    // The next unmet thing is a credential, which is what the list used to open on.
+    expect(readiness?.issue?.fieldKey).toBe('auth.client_id');
   });
 });

@@ -808,6 +808,13 @@ export const installRecordsPackAtomic = async (
 
       recordPackInventory(deps.contractStore, {
         pack_slug: internalPackId,
+        // ⛔ The row is KEYED by the generated catalog id, and that is deliberate
+        // (grants, recipes and migration adoption all hang off it). But it meant
+        // the authored slug appeared nowhere on the row, so a dependent pack's
+        // Tier-P op — `recued-core.billable-hours.entry.get` — had no
+        // `<publisher>.<authored-slug>` pack_ref to resolve against and its
+        // install failed closed. Carry the authored name alongside the key.
+        authored_pack_slug: owner.pack_slug,
         publisher: owner.publisher,
         pack_version: input.manifest.version,
         contents: input.by_ref_contents ?? [],

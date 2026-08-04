@@ -39,7 +39,12 @@ import type {
 } from '@recued/contracts';
 import { NOTIFICATION_CHANNEL_NAMES } from '@recued/contracts';
 import type { ResolvedTableEditDescriptor } from '@recued/contracts';
-import { describeCron, isResolvedRecordColumnsDescriptor, resolveRecipeBundleInstallPack } from '@recued/contracts';
+import {
+  describeCron,
+  isResolvedRecordColumnsDescriptor,
+  parseRecipeBundleKey,
+  resolveRecipeBundleInstallPack,
+} from '@recued/contracts';
 import {
   formatValue,
   renderAiAnalysisBlock,
@@ -151,7 +156,11 @@ import {
   type ResultFileArtifact,
 } from './recipe-result-panel.js';
 import {
+  captureResultFilterActionFocus,
+  captureResultTableEditSubmitFocus,
   readResultTableEditCellInput,
+  restoreResultFilterActionFocus,
+  restoreResultTableEditSubmitFocus,
   syncResultTableEditChrome,
   wireResultTableEditRefPickers,
 } from './result-table-edit-host.js';
@@ -196,6 +205,8 @@ export const RECIPES_ROUTE_FILTER_CHIP_ATTR = 'data-recued-recipes-filter-chip';
 export const RECIPES_ROUTE_NO_MATCHES_ATTR = 'data-recued-recipes-no-matches';
 export const RECIPES_ROUTE_COUNT_ATTR = 'data-recued-recipes-count';
 export const RECIPES_ROUTE_PAGER_ATTR = 'data-recued-recipes-pager';
+export const RECIPES_ROUTE_PAGER_CONTROL_ATTR =
+  'data-recued-recipes-pager-control';
 export const RECIPES_ROUTE_RECIPE_TRIGGER_ATTR = 'data-recued-recipe-trigger';
 export const RECIPES_ROUTE_RECIPE_PACKS_ATTR = 'data-recued-recipe-packs';
 export const RECIPES_ROUTE_RECIPE_SEARCH_ATTR = 'data-recued-recipe-search';
@@ -203,6 +214,10 @@ const RECIPES_PAGE_SIZE = 24;
 /** The per-card "Run" button (the trigger). The Run MODAL it opens is the
  *  shared `@recued/ui-shared` RunModal (its own `RUN_MODAL_*` hooks). */
 export const RECIPES_ROUTE_RUN_BUTTON_ATTR = 'data-recued-recipes-run-button';
+export const RECIPES_ROUTE_CONFIG_ERROR_ATTR =
+  'data-recued-recipes-config-error';
+export const RECIPES_ROUTE_AUTO_RUN_ERROR_ATTR =
+  'data-recued-recipes-auto-run-error';
 export const RECIPES_ROUTE_SOURCE_ERROR_ATTR =
   'data-recued-recipes-source-error';
 export const RECIPES_ROUTE_UNAVAILABLE_ATTR =
@@ -242,6 +257,9 @@ export const RECIPES_ROUTE_AUTOMATION_SUMMARY_ATTR =
 // ── R24 list -> detail surface ──────────────────────────────────────
 /** The durable detail view container (value = the selected recipe_id). */
 export const RECIPES_ROUTE_DETAIL_ATTR = 'data-recued-recipes-detail';
+/** The focus target for list -> detail navigation and detail repaints. */
+export const RECIPES_ROUTE_DETAIL_HEADING_ATTR =
+  'data-recued-recipes-detail-heading';
 /** The "<- Recipes" back-to-list link on the detail. */
 export const RECIPES_ROUTE_BACK_ATTR = 'data-recued-recipes-back';
 /** The per-card "from pack X" provenance label (delta 3) + the detail's
@@ -271,11 +289,20 @@ export const RECIPES_ROUTE_RELATED_ROW_ATTR =
 /** Exact BulkPackManifest carrier for the selected recipe bundle. */
 export const RECIPES_ROUTE_BUNDLE_PACK_ATTR =
   'data-recued-recipes-bundle-pack';
+/** Recovery status + retry control for the selected bundle carrier's
+ * per-pack membership artifact. */
+export const RECIPES_ROUTE_BUNDLE_STATUS_ATTR =
+  'data-recued-recipes-bundle-status';
+export const RECIPES_ROUTE_BUNDLE_RETRY_ATTR =
+  'data-recued-recipes-bundle-retry';
 
 // `RECIPES_ROUTE_ACTION_ATTR`, `…RESULT_ACTION_SELECT_ATTR` and
 // `…RESULT_FILE_MODE_ATTR` moved to `recipe-result-panel.ts` (the panel emits
 // them; this route matches on them) and are imported above.
 const RECIPES_ROUTE_RECIPE_ID_ATTR = 'data-recipe-id';
+
+const relatedActionFocusKey = (action: string | null): string | null =>
+  action?.startsWith('toggle-auto-run:') === true ? 'toggle-auto-run' : action;
 const SHARED_ACTION_ATTR = 'data-action';
 
 export type RecipesListCaller = () => Promise<{
@@ -393,6 +420,9 @@ export type RecipeConfigSetCaller = (args: {
   publisher_id?: string;
   config_overlay: Record<string, unknown>;
 }) => Promise<{ config_overlay: Record<string, unknown> }>;
+export type RecipesPackRecipeRefsCaller = (
+  slug: string,
+) => Promise<Array<{ slug: string; version: number }>>;
 
 export interface BootstrapRecipesRouteOptions {
   root: HTMLElement;
@@ -432,10 +462,17 @@ export interface BootstrapRecipesRouteOptions {
     scope?: Readonly<Record<string, string>>,
   ) => RefPicker.RefPickerSearchCaller;
   /** Soft marketplace projections used to verify the workflow pack named by
-   *  `recipe_bundle`. Both are required; failures hide the CTA. */
+   *  `recipe_bundle`. Both are required; catalog failures keep the CTA closed. */
   recipeCatalogCaller?: () => Promise<CatalogResult<CatalogRecipeRow>>;
   packCatalogCaller?: () => Promise<CatalogResult<CatalogPackRow>>;
+  /** On-demand membership from the selected pack's install artifact. Omit in
+   *  production to use the public marketplace fetcher; injected by tests and
+   *  private-mirror hosts that already own the catalog transport. */
+  packRecipeRefsCaller?: RecipesPackRecipeRefsCaller;
   initialRecipeId?: string;
+  /** Keep the shell router's cached hash aligned with in-page detail changes
+   *  made through History.replaceState (which emits no hashchange). */
+  onHashSync?: (hash: string) => void;
   subscribe?: BroadcastSubscriber['on'];
 }
 
@@ -520,6 +557,12 @@ export interface RecipesRoute {
   setRunTargetValue(key: string, value: string): void;
   confirmRun(): Promise<void>;
   closeRunModal(): void;
+  /** Foreground recipe commands whose terminal outcome still belongs here. */
+  hasInFlightWork(): boolean;
+  inFlightWorkPrompt(): string | null;
+  /** Owner-entered result rows that would be discarded with this route. */
+  hasUnsavedChanges(): boolean;
+  unsavedChangesPrompt(): string | null;
   dispose(): void;
 }
 
@@ -584,7 +627,8 @@ const RECIPES_ROUTE_STYLES = `
   border-color: var(--danger);
   color: var(--danger);
 }
-[${RECIPES_ROUTE_HOST_ATTR}] .recipes-button:disabled {
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-button:disabled,
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-button[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: .65;
 }
@@ -1038,6 +1082,28 @@ const RECIPES_ROUTE_STYLES = `
 [${RECIPES_ROUTE_HOST_ATTR}] .recipes-related-heading .recipes-detail-section-title {
   margin: 0;
 }
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-bundle-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  padding: 9px 10px;
+  color: var(--fg-muted);
+  font-size: 12px;
+  line-height: 1.4;
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-bundle-status[role="alert"] {
+  border-color: var(--danger);
+  color: var(--danger);
+}
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-bundle-status p {
+  margin: 0;
+  flex: 1 1 300px;
+}
 [${RECIPES_ROUTE_RELATED_ROW_ATTR}] {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1067,6 +1133,14 @@ const RECIPES_ROUTE_STYLES = `
   justify-content: flex-end;
   gap: 6px;
 }
+[${RECIPES_ROUTE_HOST_ATTR}] .recipes-config-error {
+  margin: 0;
+  color: var(--danger);
+  font-size: 12px;
+}
+[${RECIPES_ROUTE_RELATED_ROW_ATTR}] .recipes-config-error {
+  grid-column: 1 / -1;
+}
 @media (max-width: 720px) {
   [${RECIPES_ROUTE_RELATED_ROW_ATTR}] {
     grid-template-columns: 1fr;
@@ -1079,6 +1153,12 @@ const RECIPES_ROUTE_STYLES = `
 
 const errMessage = (err: unknown): string =>
   humanizeRpcError(err);
+
+const recipeConfigLoadError = (err: unknown): string => {
+  const detail = errMessage(err).trim();
+  const sentence = /[.!?]$/.test(detail) ? detail : `${detail}.`;
+  return `Couldn't load config: ${sentence} Try Config again.`;
+};
 
 const recipeDisplayName = (entry: ServerRecipeListEntry): string =>
   entry.recipe.metadata?.name?.trim() || entry.recipe_id;
@@ -1581,9 +1661,9 @@ const renderRecipeSection = (
     </div>
     ${totalPages > 1
       ? `<nav class="recipes-pager" ${RECIPES_ROUTE_PAGER_ATTR} aria-label="Installed recipes pages">
-          <button type="button" class="recipes-button" ${RECIPES_ROUTE_ACTION_ATTR}="recipe-page" data-page="${safePage - 1}"${safePage === 1 ? ' disabled' : ''}>‹ Previous</button>
+          <button type="button" class="recipes-button" ${RECIPES_ROUTE_ACTION_ATTR}="recipe-page" ${RECIPES_ROUTE_PAGER_CONTROL_ATTR}="previous" data-page="${safePage - 1}"${safePage === 1 ? ' disabled' : ''}>‹ Previous</button>
           <span>Page ${safePage} of ${totalPages}</span>
-          <button type="button" class="recipes-button" ${RECIPES_ROUTE_ACTION_ATTR}="recipe-page" data-page="${safePage + 1}"${safePage === totalPages ? ' disabled' : ''}>Next ›</button>
+          <button type="button" class="recipes-button" ${RECIPES_ROUTE_ACTION_ATTR}="recipe-page" ${RECIPES_ROUTE_PAGER_CONTROL_ATTR}="next" data-page="${safePage + 1}"${safePage === totalPages ? ' disabled' : ''}>Next ›</button>
         </nav>`
       : ''}
   `;
@@ -1714,6 +1794,20 @@ interface RelatedBundlePack {
   fullyInstalled: boolean;
 }
 
+interface BundleCarrierReadStatus {
+  slug: string;
+  status: 'loading' | 'error';
+  retrying: boolean;
+}
+
+interface BundleCarrierDescriptor {
+  target: CatalogRecipeRow;
+  pack: CatalogPackRow;
+  slug: string;
+  cacheKey: string;
+  readKey: string;
+}
+
 const relatedBundlePackFor = (
   selected: ServerRecipeListEntry,
   installed: ReadonlyArray<ServerRecipeListEntry>,
@@ -1762,11 +1856,16 @@ const renderRelatedRecipeRow = (
   canConfig: boolean,
   canAutoRunUpdate: boolean,
   autoRunBusy: ReadonlySet<string>,
+  autoRunErrors: ReadonlyMap<string, string>,
+  configBusyRecipeId: string | null,
+  configErrors: ReadonlyMap<string, string>,
 ): string => {
   const name = recipeDisplayName(entry);
   const automationText = recipeAutomationSummaryText(automation, entry.recipe_id);
   const autoRun = recipeAutoRun(automation, entry.recipe_id);
   const hasVariables = Object.keys(entry.recipe.variables ?? {}).length > 0;
+  const configError = configErrors.get(entry.recipe_id);
+  const autoRunError = autoRunErrors.get(entry.recipe_id);
   const targetRunnability = runnability?.get(entry.recipe_id);
   const actionKind = classifyRecipeAction(entry.recipe);
   const canRun =
@@ -1783,15 +1882,25 @@ const renderRelatedRecipeRow = (
     || (entry.recipe.trigger_steps?.length ?? 0) > 0;
   const autoRunToggle = autoRun !== undefined && canAutoRunUpdate
     ? (() => {
+        const busy = autoRunBusy.has(entry.recipe_id);
         const nextEnabled = !autoRun.enabled || autoRun.auto_disabled;
-        const label = !autoRun.enabled
+        const actionLabel = !autoRun.enabled
           ? 'Resume auto-run'
           : autoRun.auto_disabled
             ? 'Re-arm auto-run'
             : 'Pause auto-run';
+        const label = busy
+          ? actionLabel === 'Resume auto-run'
+            ? 'Resuming auto-run…'
+            : actionLabel === 'Re-arm auto-run'
+              ? 'Re-arming auto-run…'
+              : 'Pausing auto-run…'
+          : actionLabel;
         return `<button type="button" class="recipes-button"
           ${RECIPES_ROUTE_ACTION_ATTR}="toggle-auto-run:${nextEnabled ? 'on' : 'off'}"
-          ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${autoRunBusy.has(entry.recipe_id) ? ' disabled' : ''}>${e(label)}</button>`;
+          ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${busy
+            ? ' aria-disabled="true" aria-busy="true"'
+            : ''}>${e(label)}</button>`;
       })()
     : '';
   return `
@@ -1812,7 +1921,9 @@ const renderRelatedRecipeRow = (
         ${canConfig && hasVariables
           ? `<button type="button" class="recipes-button"
           ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe-config"
-          ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Config</button>`
+          ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${configBusyRecipeId === entry.recipe_id
+            ? ' aria-disabled="true" aria-busy="true"'
+            : ''}>${configBusyRecipeId === entry.recipe_id ? 'Loading config…' : 'Config'}</button>`
           : ''}
         ${canSchedule ? `<button type="button" class="recipes-button"
           ${RECIPES_ROUTE_ACTION_ATTR}="open-schedule"
@@ -1825,6 +1936,12 @@ const renderRelatedRecipeRow = (
           href="${serializeShellRoute('logs', 'recipe', entry.recipe_id)}"
           ${RECIPES_ROUTE_RUNS_LINK_ATTR}>Logs</a>
       </div>
+      ${configError === undefined
+        ? ''
+        : `<p role="alert" class="recipes-config-error" ${RECIPES_ROUTE_CONFIG_ERROR_ATTR}="${e(entry.recipe_id)}">${e(configError)}</p>`}
+      ${autoRunError === undefined
+        ? ''
+        : `<p role="alert" class="recipes-config-error" ${RECIPES_ROUTE_AUTO_RUN_ERROR_ATTR}="${e(entry.recipe_id)}">${e(autoRunError)}</p>`}
     </li>
   `;
 };
@@ -1834,6 +1951,7 @@ const renderRelatedRecipesSection = (
   installed: ReadonlyArray<ServerRecipeListEntry>,
   recipeCatalog: ReadonlyArray<CatalogRecipeRow>,
   packCatalog: ReadonlyArray<CatalogPackRow>,
+  carrierRead: BundleCarrierReadStatus | null,
   automation: RecipesAutomationData,
   runnability: ReadonlyMap<string, RecipeRunnabilityEntry> | null,
   canExecute: boolean,
@@ -1841,6 +1959,9 @@ const renderRelatedRecipesSection = (
   canConfig: boolean,
   canAutoRunUpdate: boolean,
   autoRunBusy: ReadonlySet<string>,
+  autoRunErrors: ReadonlyMap<string, string>,
+  configBusyRecipeId: string | null,
+  configErrors: ReadonlyMap<string, string>,
 ): string => {
   const related = relatedRecipesFor(selected, installed);
   const bundlePack = relatedBundlePackFor(
@@ -1849,7 +1970,29 @@ const renderRelatedRecipesSection = (
     recipeCatalog,
     packCatalog,
   );
-  if (related.length === 0 && bundlePack === null) return '';
+  if (related.length === 0 && bundlePack === null && carrierRead === null) return '';
+  const carrierStatus = carrierRead === null
+    ? ''
+    : carrierRead.status === 'loading'
+      ? `<div class="recipes-bundle-status" role="status" aria-live="polite"
+          ${RECIPES_ROUTE_BUNDLE_STATUS_ATTR}="${e(carrierRead.slug)}">
+          <p>${carrierRead.retrying
+            ? 'Retrying workflow pack contents…'
+            : 'Checking workflow pack contents…'}</p>
+          ${carrierRead.retrying
+            ? `<button type="button" class="recipes-button"
+                ${RECIPES_ROUTE_ACTION_ATTR}="retry-bundle-carrier"
+                ${RECIPES_ROUTE_BUNDLE_RETRY_ATTR}="${e(carrierRead.slug)}"
+                aria-disabled="true" aria-busy="true">Retrying…</button>`
+            : ''}
+        </div>`
+      : `<div class="recipes-bundle-status" role="alert"
+          ${RECIPES_ROUTE_BUNDLE_STATUS_ATTR}="${e(carrierRead.slug)}">
+          <p>Couldn’t verify this recipe’s workflow pack contents. The installed recipe remains usable; retry to restore the pack handoff.</p>
+          <button type="button" class="recipes-button"
+            ${RECIPES_ROUTE_ACTION_ATTR}="retry-bundle-carrier"
+            ${RECIPES_ROUTE_BUNDLE_RETRY_ATTR}="${e(carrierRead.slug)}">Retry workflow pack</button>
+        </div>`;
   return `
     <section class="recipes-detail-section" ${RECIPES_ROUTE_RELATED_ATTR}="${e(recipeBundleKey(selected) ?? '')}">
       <div class="recipes-related-heading">
@@ -1861,6 +2004,7 @@ const renderRelatedRecipesSection = (
             : `Install complete workflow (${bundlePack.recipeCount})`}</a>`}
       </div>
       ${bundlePack === null ? '' : `<p class="recipes-detail-note">${e(bundlePack.name)} is the bundled install pack for this recipe. Pack detail shows the full contents and grants before install.</p>`}
+      ${carrierStatus}
       ${related.length === 0 ? '' : `<ul class="recipes-related-list" role="list">
         ${related.map((entry) => renderRelatedRecipeRow(
           entry,
@@ -1871,6 +2015,9 @@ const renderRelatedRecipesSection = (
           canConfig,
           canAutoRunUpdate,
           autoRunBusy,
+          autoRunErrors,
+          configBusyRecipeId,
+          configErrors,
         )).join('')}
       </ul>`}
     </section>
@@ -1887,6 +2034,7 @@ const renderRecipeDetail = (
   installed: ReadonlyArray<ServerRecipeListEntry>,
   recipeCatalog: ReadonlyArray<CatalogRecipeRow>,
   packCatalog: ReadonlyArray<CatalogPackRow>,
+  carrierRead: BundleCarrierReadStatus | null,
   connections: ReadonlyArray<ConnectionView> | null,
   packs: ReadonlyArray<RecordsUsagePack> | null,
   runnability: ReadonlyMap<string, RecipeRunnabilityEntry> | null,
@@ -1897,6 +2045,9 @@ const renderRecipeDetail = (
   canConfig: boolean,
   canAutoRunUpdate: boolean,
   autoRunBusy: ReadonlySet<string>,
+  autoRunErrors: ReadonlyMap<string, string>,
+  configBusyRecipeId: string | null,
+  configErrors: ReadonlyMap<string, string>,
   resultPanel: RecipesResultPanelSnapshot | null,
   resultActionRegistry: ResultActionRegistry,
   resultFilterStates: ReadonlyMap<string, RecipesResultFilterState>,
@@ -1918,11 +2069,13 @@ const renderRecipeDetail = (
   const canRunDefaultsDirectly = defaultPrimitiveOnly
     && canExecute
     && runnability?.get(entry.recipe_id)?.status !== 'blocked';
+  const configError = configErrors.get(entry.recipe_id);
   return `
     <div ${RECIPES_ROUTE_DETAIL_ATTR}="${e(entry.recipe_id)}">
       <a class="recipes-inline-link" href="#recipes" ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe-list" ${RECIPES_ROUTE_BACK_ATTR}>← Recipes</a>
       <header class="recipes-detail-header">
-        <h1 class="recipes-detail-title">
+        <h1 class="recipes-detail-title"
+          ${RECIPES_ROUTE_DETAIL_HEADING_ATTR}="${e(entry.recipe_id)}" tabindex="-1">
           <span class="recipes-detail-name">${e(name)}</span>
           <span class="recipe-card-badge recipe-card-badge--${e(triggerKind)}">${e(triggerKind)}</span>
         </h1>
@@ -1931,7 +2084,9 @@ const renderRecipeDetail = (
           <button type="button" class="recipes-button recipes-button--primary"
             ${RECIPES_ROUTE_RUN_BUTTON_ATTR}="${e(entry.recipe_id)}"
             ${RECIPES_ROUTE_ACTION_ATTR}="${canRunDefaultsDirectly ? 'run-defaults' : 'open-run'}"
-            ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${defaultRunBusy ? ' disabled' : ''}>${defaultRunBusy ? 'Running…' : 'Run'}</button>
+            ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${defaultRunBusy
+              ? ' aria-disabled="true" aria-busy="true"'
+              : ''}>${defaultRunBusy ? 'Running…' : 'Run'}</button>
           ${defaultPrimitiveOnly ? `<button type="button" class="recipes-button"
             ${RECIPES_ROUTE_ACTION_ATTR}="open-run"
             ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Run with overrides</button>` : ''}
@@ -1941,7 +2096,9 @@ const renderRecipeDetail = (
           ${canConfig && Object.keys(entry.recipe.variables ?? {}).length > 0
             ? `<button type="button" class="recipes-button"
             ${RECIPES_ROUTE_ACTION_ATTR}="open-recipe-config"
-            ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}">Config</button>`
+            ${RECIPES_ROUTE_RECIPE_ID_ATTR}="${e(entry.recipe_id)}"${configBusyRecipeId === entry.recipe_id
+              ? ' aria-disabled="true" aria-busy="true"'
+              : ''}>${configBusyRecipeId === entry.recipe_id ? 'Loading config…' : 'Config'}</button>`
             : ''}
           <a class="recipes-button"
             href="${serializeShellRoute('kitchen', 'recipe', entry.recipe_id)}"
@@ -1950,6 +2107,9 @@ const renderRecipeDetail = (
         ${defaultRunError !== null
           ? `<p role="alert" class="recipes-result-file-error">${e(defaultRunError)}</p>`
           : ''}
+        ${configError === undefined
+          ? ''
+          : `<p role="alert" class="recipes-config-error" ${RECIPES_ROUTE_CONFIG_ERROR_ATTR}="${e(entry.recipe_id)}">${e(configError)}</p>`}
       </header>
       ${renderDishesSection(automation, entry.recipe_id)}
       <section class="recipes-detail-section">
@@ -1984,6 +2144,7 @@ const renderRecipeDetail = (
         installed,
         recipeCatalog,
         packCatalog,
+        carrierRead,
         automation,
         runnability,
         canExecute,
@@ -1991,6 +2152,9 @@ const renderRecipeDetail = (
         canConfig,
         canAutoRunUpdate,
         autoRunBusy,
+        autoRunErrors,
+        configBusyRecipeId,
+        configErrors,
       )}
       <section class="recipes-detail-section">
         <details ${RECIPES_ROUTE_DEFINITION_ATTR}>
@@ -2043,12 +2207,28 @@ export const bootstrapRecipesRoute = (
    *  to the meta catalog — carrying it there was the only reason the catalog's
    *  server-side read had to touch all 927 pack manifests. 56 distinct carriers
    *  serve 382 bundled recipes, so it is fetched for the SELECTED recipe's
-   *  carrier only, cached, and folded into the pack snapshot on arrival. The
-   *  render stays synchronous; the data shows up and re-renders. */
-  const carrierRefsFetched = new Set<string>();
+   *  carrier only, cached by immutable pack version, and folded into each new
+   *  pack snapshot. Reads remain retryable: `[]` means the artifact could not
+   *  be verified, not that the one-shot attempt should poison the route. */
+  const carrierRefsCache = new Map<
+    string,
+    Array<{ slug: string; version: number }>
+  >();
+  const carrierRefsFlights = new Map<string, Promise<void>>();
+  const carrierRefsReadStates = new Map<string, BundleCarrierReadStatus>();
   let pendingBundleCatalogPromise: Promise<void> | null = null;
   // R24 delta 1 — the durable detail selection. `null` = the list view.
   let selectedRecipeId: string | null = opts.initialRecipeId ?? null;
+  // Recipe ids can repeat across separate list -> detail visits. Async work
+  // belongs to the exact visit that started it, not merely to a matching id
+  // that happened to be reopened before the earlier response arrived.
+  let detailVisitGeneration = 0;
+  // Navigation focus survives the route's whole-shell repaints. Pending keys
+  // own the first list/detail handoff; after that, only a semantic target that
+  // still owns focus is restored, so async enrichment cannot steal focus back
+  // after the owner has moved to another control.
+  let pendingDetailFocusRecipeId: string | null = null;
+  let pendingListCardFocusRecipeId: string | null = null;
   // Installed-recipes filter (client-side, persists across re-renders).
   let recipeFilter: RecipeListFilter = {
     query: '',
@@ -2082,6 +2262,8 @@ export const bootstrapRecipesRoute = (
   let runModalRecipeId: string | null = null;
   // D-179 — the recipe install-config editor (the shared config overlay).
   let recipeConfigHandle: ConfigEditorOverlayHandle | null = null;
+  let configBusyRecipeId: string | null = null;
+  let configErrors = new Map<string, string>();
   // Read-only automation status (the per-recipe summary line on the detail).
   let automationData: RecipesAutomationData = {
     dishes: null,
@@ -2091,6 +2273,7 @@ export const bootstrapRecipesRoute = (
     autoRun: null,
   };
   let autoRunBusy = new Set<string>();
+  let autoRunErrors = new Map<string, string>();
   let resultPanel: RecipesResultPanelSnapshot | null = null;
   let resultGridStates = new Map<string, OutputTableEditState>();
   let resultGridRefPickers: RefPicker.RefPickerHandle[] = [];
@@ -2109,22 +2292,174 @@ export const bootstrapRecipesRoute = (
   >();
   let pendingLoadPromise: Promise<void> = Promise.resolve();
 
+  const hasResultGridSaveInFlight = (): boolean =>
+    [...resultGridStates.values()].some((state) => state.busy);
+
+  const hasResultFilterInFlight = (): boolean =>
+    [...resultFilterStates.values()].some((state) => state.busy);
+
+  const hasUnsavedResultGridChanges = (): boolean =>
+    anyTableEditDirty(resultGridStates);
+
+  const hasRecipeInFlightWork = (): boolean =>
+    defaultRunBusy
+    || autoRunBusy.size > 0
+    || hasResultGridSaveInFlight()
+    || hasResultFilterInFlight()
+    || recipeConfigHandle?.hasInFlightWork() === true
+    || childRunModal?.hasInFlightWork() === true;
+
   const syncRecipeHash = (): void => {
     const history = doc.defaultView?.history;
     if (history?.replaceState === undefined) return;
+    const hash = serializeShellRoute('recipes', selectedRecipeId ?? undefined);
     try {
-      history.replaceState(
-        null,
-        '',
-        serializeShellRoute('recipes', selectedRecipeId ?? undefined),
-      );
+      history.replaceState(null, '', hash);
+      opts.onHashSync?.(hash);
     } catch {
       // Non-fatal — addressability degrades to in-page-only.
     }
   };
 
+  const carrierCacheKey = (pack: CatalogPackRow): string =>
+    `${pack.publisher_id}/${pack.slug}@${pack.version}`;
+
+  /** Resolve only the unique, publisher-matching carrier whose slug-addressed
+   * artifact is safe to read. The final membership resolution still runs the
+   * shared fail-closed contract after the artifact arrives. */
+  const selectedBundleCarrier = (): BundleCarrierDescriptor | null => {
+    if (selectedRecipeId === null || !bundleCatalogLoaded) return null;
+    const selected = recipes.find((entry) => entry.recipe_id === selectedRecipeId);
+    if (selected === undefined) return null;
+    const bundleKey = recipeBundleKey(selected);
+    if (bundleKey === null) return null;
+    const target = bundleRecipeCatalog.find((row) =>
+      row.recipe_id === selected.recipe_id
+      && row.publisher_id === selected.publisher_id
+      && row.recipe_bundle === bundleKey,
+    );
+    if (target === undefined) return null;
+    const parsed = parseRecipeBundleKey(bundleKey);
+    if (parsed === null || parsed.publisher !== selected.publisher_id) return null;
+    const candidates = bundlePackCatalog.filter((pack) =>
+      pack.slug === parsed.bundle_slug,
+    );
+    if (candidates.length !== 1) return null;
+    const pack = candidates[0]!;
+    if (pack.publisher_id !== parsed.publisher) return null;
+    const cacheKey = carrierCacheKey(pack);
+    return {
+      target,
+      pack,
+      slug: pack.slug,
+      cacheKey,
+      readKey: `${bundleCatalogGeneration}:${cacheKey}`,
+    };
+  };
+
+  const selectedCarrierReadStatus = (): BundleCarrierReadStatus | null => {
+    const carrier = selectedBundleCarrier();
+    if (carrier === null || carrier.pack.recipe_refs.length > 0) return null;
+    return carrierRefsReadStates.get(carrier.readKey) ?? null;
+  };
+
   const render = (): void => {
     if (disposed) return;
+    const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    const focusedResultFilterAction = captureResultFilterActionFocus(activeElement);
+    const focusedResultGridSubmitKey = captureResultTableEditSubmitFocus(activeElement);
+    const focusedDetailRecipeId = activeElement?.getAttribute?.(
+      RECIPES_ROUTE_DETAIL_HEADING_ATTR,
+    ) ?? null;
+    const focusedDefaultRunRecipeId = activeElement?.getAttribute?.(
+      RECIPES_ROUTE_ACTION_ATTR,
+    ) === 'run-defaults'
+      ? activeElement.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR)
+      : null;
+    const focusedConfigRecipeId = activeElement?.getAttribute?.(
+      RECIPES_ROUTE_ACTION_ATTR,
+    ) === 'open-recipe-config'
+      ? activeElement.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR)
+      : null;
+    const focusedBundleSlug = activeElement?.getAttribute?.(
+      RECIPES_ROUTE_BUNDLE_RETRY_ATTR,
+    ) ?? activeElement?.getAttribute?.(RECIPES_ROUTE_BUNDLE_PACK_ATTR) ?? null;
+    const focusedRelatedRow = activeElement?.closest?.(
+      `[${RECIPES_ROUTE_RELATED_ROW_ATTR}]`,
+    ) as HTMLElement | null | undefined;
+    const focusedRelatedRecipeId = focusedRelatedRow?.getAttribute?.(
+      RECIPES_ROUTE_RELATED_ROW_ATTR,
+    ) ?? null;
+    let focusedRelatedControl: {
+      recipeId: string;
+      kind: 'action' | 'automation' | 'logs';
+      action: string | null;
+    } | null = null;
+    if (
+      focusedRelatedRecipeId !== null
+      && activeElement !== null
+      && activeElement !== undefined
+    ) {
+      const action = relatedActionFocusKey(activeElement.getAttribute?.(
+        RECIPES_ROUTE_ACTION_ATTR,
+      ) ?? null);
+      if (action !== null) {
+        focusedRelatedControl = {
+          recipeId: focusedRelatedRecipeId,
+          kind: 'action',
+          action,
+        };
+      } else if (
+        activeElement.hasAttribute?.(RECIPES_ROUTE_AUTOMATION_LINK_ATTR) === true
+      ) {
+        focusedRelatedControl = {
+          recipeId: focusedRelatedRecipeId,
+          kind: 'automation',
+          action: null,
+        };
+      } else if (
+        activeElement.hasAttribute?.(RECIPES_ROUTE_RUNS_LINK_ATTR) === true
+      ) {
+        focusedRelatedControl = {
+          recipeId: focusedRelatedRecipeId,
+          kind: 'logs',
+          action: null,
+        };
+      }
+    }
+    const focusedListCardRecipeId = activeElement?.getAttribute?.(
+      RECIPES_ROUTE_RECIPE_CARD_ATTR,
+    ) ?? null;
+    const focusedSearch = activeElement?.hasAttribute?.(
+      RECIPES_ROUTE_SEARCH_ATTR,
+    ) === true
+      ? activeElement as HTMLInputElement
+      : null;
+    const focusedSearchSelection = focusedSearch === null
+      ? null
+      : {
+          start: focusedSearch.selectionStart,
+          end: focusedSearch.selectionEnd,
+          direction: focusedSearch.selectionDirection,
+        };
+    const focusedFilterChip = activeElement?.hasAttribute?.(
+      RECIPES_ROUTE_FILTER_CHIP_ATTR,
+    ) === true
+      ? {
+          kind: activeElement.getAttribute('data-filter-kind'),
+          value: activeElement.getAttribute('data-filter-value'),
+        }
+      : null;
+    const focusedPagerDirectionRaw = activeElement?.getAttribute?.(
+      RECIPES_ROUTE_PAGER_CONTROL_ATTR,
+    );
+    const focusedPagerDirection = focusedPagerDirectionRaw === 'previous'
+      || focusedPagerDirectionRaw === 'next'
+        ? focusedPagerDirectionRaw
+        : null;
+    const focusedRefresh = activeElement?.getAttribute?.(
+      RECIPES_ROUTE_ACTION_ATTR,
+    ) === 'refresh';
     for (const picker of resultGridRefPickers.splice(0)) picker.destroy();
     const selected = selectedRecipeId !== null
       ? recipes.find((r) => r.recipe_id === selectedRecipeId) ?? null
@@ -2150,6 +2485,7 @@ export const bootstrapRecipesRoute = (
         recipes,
         bundleRecipeCatalog,
         bundlePackCatalog,
+        selectedCarrierReadStatus(),
         connections,
         packs,
         runnability,
@@ -2161,6 +2497,9 @@ export const bootstrapRecipesRoute = (
         opts.recipeConfigGetCaller !== undefined && opts.recipeConfigSetCaller !== undefined,
         opts.autoRunUpdateCaller !== undefined,
         autoRunBusy,
+        autoRunErrors,
+        configBusyRecipeId,
+        configErrors,
         shownPanel,
         resultActionRegistry,
         resultFilterStates,
@@ -2192,6 +2531,90 @@ export const bootstrapRecipesRoute = (
           },
         });
       }
+      if (restoreResultTableEditSubmitFocus(routeRoot, focusedResultGridSubmitKey)) {
+        return;
+      }
+      if (restoreResultFilterActionFocus(routeRoot, focusedResultFilterAction)) {
+        return;
+      }
+      const focusedConfig = focusedConfigRecipeId === null
+        ? null
+        : Array.from(routeRoot.querySelectorAll(
+            `[${RECIPES_ROUTE_ACTION_ATTR}="open-recipe-config"]`,
+          )).find((candidate) =>
+            candidate.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR)
+              === focusedConfigRecipeId) as HTMLElement | null | undefined;
+      if (focusedConfig !== null && focusedConfig !== undefined) {
+        focusedConfig.focus?.({ preventScroll: true });
+        return;
+      }
+      if (focusedBundleSlug !== null) {
+        const replacement = routeRoot.querySelector?.(
+          `[${RECIPES_ROUTE_BUNDLE_RETRY_ATTR}="${focusedBundleSlug}"]`,
+        ) as HTMLElement | null | undefined
+          ?? routeRoot.querySelector?.(
+            `[${RECIPES_ROUTE_BUNDLE_PACK_ATTR}="${focusedBundleSlug}"]`,
+          ) as HTMLElement | null | undefined;
+        if (replacement !== null && replacement !== undefined) {
+          replacement.focus?.({ preventScroll: true });
+          return;
+        }
+      }
+      if (pendingDetailFocusRecipeId === null && focusedRelatedControl !== null) {
+        const relatedRow = Array.from(routeRoot.querySelectorAll(
+          `[${RECIPES_ROUTE_RELATED_ROW_ATTR}]`,
+        )).find((candidate) =>
+          candidate.getAttribute(RECIPES_ROUTE_RELATED_ROW_ATTR)
+            === focusedRelatedControl.recipeId);
+        const replacement = focusedRelatedControl.kind === 'action'
+          ? Array.from(relatedRow?.querySelectorAll?.(
+              `[${RECIPES_ROUTE_ACTION_ATTR}]`,
+            ) ?? []).find((candidate) =>
+              relatedActionFocusKey(
+                candidate.getAttribute(RECIPES_ROUTE_ACTION_ATTR),
+              )
+              === focusedRelatedControl.action)
+          : relatedRow?.querySelector?.(
+              focusedRelatedControl.kind === 'automation'
+                ? `[${RECIPES_ROUTE_AUTOMATION_LINK_ATTR}]`
+                : `[${RECIPES_ROUTE_RUNS_LINK_ATTR}]`,
+            );
+        if (replacement !== null && replacement !== undefined) {
+          (replacement as HTMLElement).focus?.({ preventScroll: true });
+          return;
+        }
+      }
+      const defaultRun = focusedDefaultRunRecipeId === selected.recipe_id
+        ? routeRoot.querySelector?.(
+            `[${RECIPES_ROUTE_RUN_BUTTON_ATTR}]`,
+          ) as HTMLElement | null | undefined
+        : null;
+      if (
+        defaultRun?.getAttribute?.(RECIPES_ROUTE_ACTION_ATTR) === 'run-defaults'
+        && defaultRun.getAttribute(RECIPES_ROUTE_RECIPE_ID_ATTR)
+          === focusedDefaultRunRecipeId
+      ) {
+        defaultRun.focus?.({ preventScroll: true });
+        return;
+      }
+      const detailFocusRecipeId = pendingDetailFocusRecipeId
+        ?? focusedDetailRecipeId;
+      if (
+        detailFocusRecipeId !== null
+        && detailFocusRecipeId === selected.recipe_id
+      ) {
+        const isNavigation = pendingDetailFocusRecipeId === detailFocusRecipeId;
+        if (isNavigation) pendingDetailFocusRecipeId = null;
+        const heading = routeRoot.querySelector?.(
+          `[${RECIPES_ROUTE_DETAIL_HEADING_ATTR}="${detailFocusRecipeId}"]`,
+        ) as HTMLElement | null | undefined;
+        if (
+          heading?.getAttribute?.(RECIPES_ROUTE_DETAIL_HEADING_ATTR)
+            === detailFocusRecipeId
+        ) {
+          heading.focus?.({ preventScroll: !isNavigation });
+        }
+      }
       return;
     }
     resultActions = new Map();
@@ -2205,12 +2628,13 @@ export const bootstrapRecipesRoute = (
     recipePage = Math.max(1, Math.min(recipePage, totalRecipePages));
     routeRoot.innerHTML = `
       <header class="recipes-header">
-        <h1 class="recipes-title" ${RECIPES_ROUTE_HEADING_ATTR}>Recipes</h1>
+        <h1 class="recipes-title" ${RECIPES_ROUTE_HEADING_ATTR} tabindex="-1">Recipes</h1>
       </header>
       <div class="recipes-actions">
         <button type="button" class="recipes-button"
-          ${RECIPES_ROUTE_ACTION_ATTR}="refresh">
-          Refresh
+          ${RECIPES_ROUTE_ACTION_ATTR}="refresh"
+          aria-disabled="${String(loading)}" aria-busy="${String(loading)}">
+          ${loading ? 'Refreshing…' : 'Refresh'}
         </button>
         <a class="recipes-inline-link" href="${serializeShellRoute('kitchen', 'pack')}" ${RECIPES_ROUTE_KITCHEN_LINK_ATTR}>Author in Kitchen</a>
         <a class="recipes-inline-link" href="#packs">Manage packs</a>
@@ -2230,6 +2654,88 @@ export const bootstrapRecipesRoute = (
         )}
       </section>
     `;
+    const listFocusRecipeId = pendingListCardFocusRecipeId
+      ?? focusedListCardRecipeId;
+    if (listFocusRecipeId !== null) {
+      const isNavigation = pendingListCardFocusRecipeId === listFocusRecipeId;
+      if (isNavigation) pendingListCardFocusRecipeId = null;
+      const card = routeRoot.querySelector?.(
+        `[${RECIPES_ROUTE_RECIPE_CARD_ATTR}="${listFocusRecipeId}"]`,
+      ) as HTMLElement | null | undefined;
+      if (
+        card?.getAttribute?.(RECIPES_ROUTE_RECIPE_CARD_ATTR)
+          === listFocusRecipeId
+      ) {
+        card.focus?.({ preventScroll: !isNavigation });
+      } else if (isNavigation) {
+        const heading = routeRoot.querySelector?.(
+          `[${RECIPES_ROUTE_HEADING_ATTR}]`,
+        ) as HTMLElement | null | undefined;
+        heading?.focus?.({ preventScroll: true });
+      }
+    } else if (focusedSearchSelection !== null) {
+      const search = routeRoot.querySelector?.(
+        `[${RECIPES_ROUTE_SEARCH_ATTR}]`,
+      ) as HTMLInputElement | null | undefined;
+      search?.focus?.({ preventScroll: true });
+      if (
+        focusedSearchSelection.start !== null
+        && focusedSearchSelection.end !== null
+      ) {
+        search?.setSelectionRange?.(
+          focusedSearchSelection.start,
+          focusedSearchSelection.end,
+          focusedSearchSelection.direction ?? undefined,
+        );
+      }
+    } else if (
+      focusedFilterChip !== null
+      && focusedFilterChip.kind !== null
+      && focusedFilterChip.value !== null
+    ) {
+      const chip = routeRoot.querySelector?.(
+        `[${RECIPES_ROUTE_FILTER_CHIP_ATTR}]`
+        + `[data-filter-kind="${focusedFilterChip.kind}"]`
+        + `[data-filter-value="${focusedFilterChip.value}"]`,
+      ) as HTMLElement | null | undefined;
+      if (
+        chip?.getAttribute?.('data-filter-kind') === focusedFilterChip.kind
+        && chip.getAttribute('data-filter-value') === focusedFilterChip.value
+      ) {
+        chip.focus?.({ preventScroll: true });
+      }
+    } else if (focusedPagerDirection !== null) {
+      const findEnabledPagerControl = (
+        direction: 'previous' | 'next',
+      ): HTMLElement | null | undefined => {
+        const control = routeRoot.querySelector?.(
+          `[${RECIPES_ROUTE_PAGER_CONTROL_ATTR}="${direction}"]`,
+        ) as HTMLElement | null | undefined;
+        return control?.hasAttribute?.('disabled') === true ? null : control;
+      };
+      const opposite = focusedPagerDirection === 'previous'
+        ? 'next'
+        : 'previous';
+      const control = findEnabledPagerControl(focusedPagerDirection)
+        ?? findEnabledPagerControl(opposite);
+      if (control !== null && control !== undefined) {
+        control.focus?.({ preventScroll: true });
+      } else {
+        const firstCard = routeRoot.querySelector?.(
+          `[${RECIPES_ROUTE_RECIPE_CARD_ATTR}]`,
+        ) as HTMLElement | null | undefined;
+        const heading = routeRoot.querySelector?.(
+          `[${RECIPES_ROUTE_HEADING_ATTR}]`,
+        ) as HTMLElement | null | undefined;
+        const fallback = firstCard ?? heading;
+        fallback?.focus?.({ preventScroll: true });
+      }
+    } else if (focusedRefresh) {
+      const refresh = routeRoot.querySelector?.(
+        `[${RECIPES_ROUTE_ACTION_ATTR}="refresh"]`,
+      ) as HTMLElement | null | undefined;
+      refresh?.focus?.({ preventScroll: true });
+    }
   };
 
   const resetResultFilterStates = (result: ServerExecuteResponse | null): void => {
@@ -2242,6 +2748,7 @@ export const bootstrapRecipesRoute = (
         next.set(outputFilterKey(result.recipe_id, descriptor), {
           ...initialOutputFilterState(descriptor),
           busy: false,
+          busy_action: null,
           error: null,
         });
       }
@@ -2264,6 +2771,7 @@ export const bootstrapRecipesRoute = (
         state: resultFilterStates.get(key) ?? {
           ...initialOutputFilterState(descriptor),
           busy: false,
+          busy_action: null,
           error: null,
         },
       };
@@ -2271,26 +2779,80 @@ export const bootstrapRecipesRoute = (
     return null;
   };
 
-  /** Top up the SELECTED recipe's carrier pack with its real membership.
-   *  Idempotent and best-effort: a failure leaves the row's empty refs in place,
-   *  which makes bundle resolution refuse — the same fail-closed answer a
-   *  malformed manifest has always produced. */
-  const ensureCarrierRefs = async (): Promise<void> => {
-    if (selectedRecipeId === null || !bundleCatalogLoaded) return;
-    const row = bundleRecipeCatalog.find((r) => r.recipe_id === selectedRecipeId);
-    const key = row?.recipe_bundle;
-    if (key === undefined) return;
-    const slug = key.slice(key.indexOf('/') + 1);
-    const carrier = bundlePackCatalog.find((p) => p.slug === slug);
-    if (carrier === undefined || carrier.recipe_refs.length > 0) return;
-    if (carrierRefsFetched.has(slug)) return;
-    carrierRefsFetched.add(slug);
-    const myGeneration = bundleCatalogGeneration;
-    const refs = await fetchPackRecipeRefs(slug);
-    if (disposed || myGeneration !== bundleCatalogGeneration || refs.length === 0) return;
-    bundlePackCatalog = bundlePackCatalog.map((p) =>
-      (p.slug === slug ? { ...p, recipe_refs: refs } : p));
+  /** Top up the selected recipe's unique carrier with verified membership.
+   *
+   *  A missing/invalid response remains fail-closed, but now renders an honest
+   *  retry instead of becoming a mount-lifetime tombstone. Concurrent opens and
+   *  repeated retry clicks share one read per catalog generation + pack version.
+   *  A successful immutable-version result is cached and folded back into later
+   *  catalog refreshes, so Refresh cannot make a working handoff disappear. */
+  const ensureCarrierRefs = async (retrying = false): Promise<void> => {
+    const carrier = selectedBundleCarrier();
+    if (carrier === null || carrier.pack.recipe_refs.length > 0) return;
+    const existing = carrierRefsFlights.get(carrier.readKey);
+    if (existing !== undefined) {
+      await existing;
+      return;
+    }
+
+    carrierRefsReadStates.set(carrier.readKey, {
+      slug: carrier.slug,
+      status: 'loading',
+      retrying,
+    });
     render();
+    const myGeneration = bundleCatalogGeneration;
+    const caller = opts.packRecipeRefsCaller ?? fetchPackRecipeRefs;
+    const promise = (async (): Promise<void> => {
+      let refs: Array<{ slug: string; version: number }> = [];
+      try {
+        refs = await caller(carrier.slug);
+      } catch {
+        // Custom/private-mirror callers have the same never-break-detail
+        // contract as the default fetcher, even if they accidentally throw.
+      }
+      if (disposed || myGeneration !== bundleCatalogGeneration) return;
+
+      const nextPackCatalog = bundlePackCatalog.map((pack) =>
+        pack.slug === carrier.pack.slug
+          && pack.publisher_id === carrier.pack.publisher_id
+          && pack.version === carrier.pack.version
+          ? { ...pack, recipe_refs: refs }
+          : pack,
+      );
+      const resolution = refs.length === 0
+        ? { status: 'none' as const }
+        : resolveRecipeBundleInstallPack(
+            carrier.target,
+            bundleRecipeCatalog,
+            nextPackCatalog,
+          );
+      if (
+        resolution.status !== 'resolved'
+        || resolution.pack.slug !== carrier.slug
+      ) {
+        carrierRefsReadStates.set(carrier.readKey, {
+          slug: carrier.slug,
+          status: 'error',
+          retrying: false,
+        });
+        render();
+        return;
+      }
+
+      carrierRefsCache.set(carrier.cacheKey, [...refs]);
+      carrierRefsReadStates.delete(carrier.readKey);
+      bundlePackCatalog = nextPackCatalog;
+      render();
+    })();
+    carrierRefsFlights.set(carrier.readKey, promise);
+    try {
+      await promise;
+    } finally {
+      if (carrierRefsFlights.get(carrier.readKey) === promise) {
+        carrierRefsFlights.delete(carrier.readKey);
+      }
+    }
   };
 
   const loadBundleCatalog = (force = false): Promise<void> => {
@@ -2306,6 +2868,7 @@ export const bootstrapRecipesRoute = (
     }
 
     bundleCatalogGeneration += 1;
+    carrierRefsReadStates.clear();
     const myGeneration = bundleCatalogGeneration;
     const promise = (async (): Promise<void> => {
       const [bundleRecipesResult, bundlePacksResult] = await Promise.allSettled([
@@ -2320,7 +2883,11 @@ export const bootstrapRecipesRoute = (
         && bundlePacksResult.value.status === 'ok'
       ) {
         bundleRecipeCatalog = [...bundleRecipesResult.value.rows];
-        bundlePackCatalog = [...bundlePacksResult.value.rows];
+        bundlePackCatalog = bundlePacksResult.value.rows.map((pack) => {
+          if (pack.recipe_refs.length > 0) return pack;
+          const cached = carrierRefsCache.get(carrierCacheKey(pack));
+          return cached === undefined ? pack : { ...pack, recipe_refs: [...cached] };
+        });
         bundleCatalogLoaded = true;
       } else {
         bundleRecipeCatalog = [];
@@ -2328,7 +2895,7 @@ export const bootstrapRecipesRoute = (
         bundleCatalogLoaded = false;
       }
       render();
-      void ensureCarrierRefs();
+      await ensureCarrierRefs();
     })();
     pendingBundleCatalogPromise = promise;
     void promise.finally(() => {
@@ -2471,6 +3038,8 @@ export const bootstrapRecipesRoute = (
       && selectedRecipeId !== null
       && !recipes.some((r) => r.recipe_id === selectedRecipeId)
     ) {
+      detailVisitGeneration += 1;
+      configBusyRecipeId = null;
       selectedRecipeId = null;
       syncRecipeHash();
     }
@@ -2544,7 +3113,11 @@ export const bootstrapRecipesRoute = (
 
   const openRecipe = (recipe_id: string): void => {
     if (!recipes.some((r) => r.recipe_id === recipe_id)) return;
+    pendingDetailFocusRecipeId = recipe_id;
+    pendingListCardFocusRecipeId = null;
     if (selectedRecipeId !== recipe_id) {
+      detailVisitGeneration += 1;
+      configBusyRecipeId = null;
       resultPanel = null;
       resetResultFilterStates(null);
       // Grid state belongs to the PANEL, and the paging guard reads this map
@@ -2573,6 +3146,30 @@ export const bootstrapRecipesRoute = (
   };
 
   const closeDetail = (): void => {
+    if (
+      defaultRunBusy
+      || autoRunBusy.size > 0
+      || hasResultGridSaveInFlight()
+      || hasResultFilterInFlight()
+    ) {
+      const confirm = doc.defaultView?.confirm;
+      if (
+        confirm !== undefined
+        && !confirm('A recipe action is still in progress. Leave this recipe anyway?')
+      ) return;
+    } else if (hasUnsavedResultGridChanges()) {
+      const confirm = doc.defaultView?.confirm;
+      if (
+        confirm !== undefined
+        && !confirm(
+          'This recipe result has unsaved table changes. Leave this recipe anyway?',
+        )
+      ) return;
+    }
+    pendingListCardFocusRecipeId = selectedRecipeId;
+    pendingDetailFocusRecipeId = null;
+    detailVisitGeneration += 1;
+    configBusyRecipeId = null;
     selectedRecipeId = null;
     resultPanel = null;
     resetResultFilterStates(null);
@@ -2593,6 +3190,10 @@ export const bootstrapRecipesRoute = (
    *  raw config editor. */
   const runRecipeDefaults = async (recipeId: string): Promise<void> => {
     if (defaultRunBusy || selectedRecipeId !== recipeId) return;
+    const visitAtDispatch = detailVisitGeneration;
+    const stillOwnsVisit = (): boolean => !disposed
+      && selectedRecipeId === recipeId
+      && detailVisitGeneration === visitAtDispatch;
     const execute = opts.recipeExecuteCaller;
     if (execute === undefined) {
       defaultRunError = 'Running is not available on this server yet.';
@@ -2605,7 +3206,7 @@ export const bootstrapRecipesRoute = (
     render();
     try {
       const result = await execute({ recipe_id: recipeId, config: {} });
-      if (selectedRecipeId !== recipeId) return;
+      if (!stillOwnsVisit()) return;
       const previous = withoutRenderedRecipe(
         panelAtDispatch ?? undefined,
         result.recipe_id,
@@ -2625,9 +3226,9 @@ export const bootstrapRecipesRoute = (
       resultFileVerified = new Set();
       resultFileGeneration += 1;
     } catch (error) {
-      if (selectedRecipeId === recipeId) defaultRunError = errMessage(error);
+      if (stillOwnsVisit()) defaultRunError = errMessage(error);
     } finally {
-      if (selectedRecipeId === recipeId) {
+      if (stillOwnsVisit()) {
         defaultRunBusy = false;
         render();
       }
@@ -2645,6 +3246,11 @@ export const bootstrapRecipesRoute = (
     // One modal at a time — a re-open while a run modal is up is a no-op.
     if (childRunModal !== null) return;
     const routeRecipeIdAtOpen = selectedRecipeId;
+    const activeBeforeOpen = doc.activeElement as HTMLElement | null | undefined;
+    const detailRunReturnRecipeId = routeRecipeIdAtOpen === recipe_id
+      && activeBeforeOpen?.getAttribute?.(RECIPES_ROUTE_RUN_BUTTON_ATTR) === recipe_id
+        ? recipe_id
+        : null;
     const resolvedOrigin = origin
       ?? (routeRecipeIdAtOpen === recipe_id ? 'recipe-detail' : 'related-recipes');
     const activePanelAtOpen =
@@ -2693,6 +3299,20 @@ export const bootstrapRecipesRoute = (
       onClose: () => {
         childRunModal = null;
         runModalRecipeId = null;
+        if (
+          detailRunReturnRecipeId !== null
+          && selectedRecipeId === detailRunReturnRecipeId
+        ) {
+          const replacement = routeRoot.querySelector?.(
+            `[${RECIPES_ROUTE_RUN_BUTTON_ATTR}]`,
+          ) as HTMLElement | null | undefined;
+          if (
+            replacement?.getAttribute?.(RECIPES_ROUTE_RUN_BUTTON_ATTR)
+              === detailRunReturnRecipeId
+          ) {
+            replacement.focus?.({ preventScroll: true });
+          }
+        }
       },
       onRan: (result) => {
         if (
@@ -2757,26 +3377,50 @@ export const bootstrapRecipesRoute = (
     const getCaller = opts.recipeConfigGetCaller;
     const setCaller = opts.recipeConfigSetCaller;
     if (getCaller === undefined || setCaller === undefined || doc === undefined) return;
-    if (recipeConfigHandle !== null) return; // one at a time
+    if (recipeConfigHandle !== null || configBusyRecipeId !== null) return;
     const entry = recipes.find((row) => row.recipe_id === recipe_id);
     if (entry === undefined) return;
+    const routeRecipeIdAtDispatch = selectedRecipeId;
+    const visitAtDispatch = detailVisitGeneration;
+    const stillOwnsVisit = (): boolean => !disposed
+      && selectedRecipeId === routeRecipeIdAtDispatch
+      && detailVisitGeneration === visitAtDispatch;
+    const nextErrors = new Map(configErrors);
+    nextErrors.delete(recipe_id);
+    configErrors = nextErrors;
+    configBusyRecipeId = recipe_id;
+    render();
     let current: Record<string, unknown>;
     try {
       current = (await getCaller({ recipe_id })).config_overlay;
-    } catch {
+    } catch (error) {
       // A read failure must NOT open an empty editor — saving that empty
       // overlay would CLEAR the recipe's real install config. Abort; a
       // retry (re-click Config) re-reads.
+      if (stillOwnsVisit() && configBusyRecipeId === recipe_id) {
+        configBusyRecipeId = null;
+        const next = new Map(configErrors);
+        next.set(recipe_id, recipeConfigLoadError(error));
+        configErrors = next;
+        render();
+      }
       return;
     }
-    if (recipeConfigHandle !== null) return; // re-entrancy guard across the await
-    const configRecordRefSearch = recordRefSearchFor(entry.recipe);
+    if (!stillOwnsVisit() || configBusyRecipeId !== recipe_id) return;
+    configBusyRecipeId = null;
+    const liveEntry = recipes.find((row) => row.recipe_id === recipe_id);
+    const stillOwned = stillOwnsVisit()
+      && liveEntry !== undefined
+      && recipeConfigHandle === null;
+    render();
+    if (!stillOwned || liveEntry === undefined) return;
+    const configRecordRefSearch = recordRefSearchFor(liveEntry.recipe);
     recipeConfigHandle = wireConfigEditorOverlay({
       document: doc,
-      title: entry.recipe.metadata?.name ?? recipe_id,
+      title: liveEntry.recipe.metadata?.name ?? recipe_id,
       copy: 'These values apply to every run of this recipe. A single run can still override them.',
       confirmLabel: 'Save',
-      variables: entry.recipe.variables ?? {},
+      variables: liveEntry.recipe.variables ?? {},
       currentOverlay: current,
       ...(opts.fileRefSearchCaller !== undefined
         ? { fileRefSearch: opts.fileRefSearchCaller }
@@ -2788,12 +3432,15 @@ export const bootstrapRecipesRoute = (
       ...(configRecordRefSearch !== undefined
         ? { recordRefSearch: configRecordRefSearch }
         : {}),
-      onConfirm: (config) => {
-        void setCaller({
+      confirmingLabel: 'Saving…',
+      confirmFailureCopy:
+        "Couldn't save config. Your edits are still here. Try again.",
+      onConfirm: async (config) => {
+        await setCaller({
           recipe_id,
-          publisher_id: entry.publisher_id,
+          publisher_id: liveEntry.publisher_id,
           config_overlay: config,
-        }).catch(() => { /* best-effort; a failure leaves the prior config */ });
+        });
       },
       onClose: () => { recipeConfigHandle = null; },
     });
@@ -2802,6 +3449,9 @@ export const bootstrapRecipesRoute = (
   const toggleAutoRun = async (recipe_id: string, enabled: boolean): Promise<void> => {
     const update = opts.autoRunUpdateCaller;
     if (update === undefined || autoRunBusy.has(recipe_id)) return;
+    const nextErrors = new Map(autoRunErrors);
+    nextErrors.delete(recipe_id);
+    autoRunErrors = nextErrors;
     autoRunBusy = new Set(autoRunBusy).add(recipe_id);
     render();
     try {
@@ -2814,9 +3464,10 @@ export const bootstrapRecipesRoute = (
           entry,
         ],
       };
-    } catch {
-      // The dedicated Automation route owns detailed mutation errors. Here the
-      // control is a convenience; failure leaves the prior status intact.
+    } catch (error) {
+      const next = new Map(autoRunErrors);
+      next.set(recipe_id, `Couldn’t update auto-run: ${errMessage(error)}`);
+      autoRunErrors = next;
     } finally {
       const next = new Set(autoRunBusy);
       next.delete(recipe_id);
@@ -2873,6 +3524,7 @@ export const bootstrapRecipesRoute = (
         value,
       ),
       busy: false,
+      busy_action: null,
       error: null,
     });
     if (repaint) render();
@@ -3004,6 +3656,7 @@ export const bootstrapRecipesRoute = (
     resultFilterStates = new Map(resultFilterStates).set(filterKey, {
       ...active.state,
       busy: true,
+      busy_action: mode,
       error: null,
     });
     render();
@@ -3038,6 +3691,7 @@ export const bootstrapRecipesRoute = (
       resultFilterStates = new Map(resultFilterStates).set(filterKey, {
         ...active.state,
         busy: false,
+        busy_action: null,
         error: errMessage(error),
       });
       render();
@@ -3174,7 +3828,11 @@ export const bootstrapRecipesRoute = (
       return;
     }
     if (action === 'refresh') {
-      startRefresh();
+      if (!loading) startRefresh();
+      return;
+    }
+    if (action === 'retry-bundle-carrier') {
+      void ensureCarrierRefs(true);
       return;
     }
     if (action === 'filter-set') {
@@ -3363,24 +4021,16 @@ export const bootstrapRecipesRoute = (
       return;
     }
     // Installed-recipes search filters the in-memory list BEFORE markup is
-    // emitted. Re-focus the replacement input so the bounded repaint keeps
-    // the typing flow continuous while mounting at most one page of cards.
+    // emitted. `render` carries the focused search + selection across the
+    // bounded repaint while mounting at most one page of cards.
     if (
       target0 !== null
       && typeof target0.hasAttribute === 'function'
       && target0.hasAttribute(RECIPES_ROUTE_SEARCH_ATTR)
     ) {
-      const caret = (target0 as HTMLInputElement).selectionStart;
       recipeFilter = { ...recipeFilter, query: target0.value ?? '' };
       recipePage = 1;
       render();
-      const nextSearch = routeRoot.querySelector?.(
-        `[${RECIPES_ROUTE_SEARCH_ATTR}]`,
-      ) as HTMLInputElement | null;
-      nextSearch?.focus?.();
-      if (caret !== null && caret !== undefined) {
-        nextSearch?.setSelectionRange?.(caret, caret);
-      }
     }
     // Run-modal inputs are owned by the shared RunModal's own delegation.
   };
@@ -3477,6 +4127,16 @@ export const bootstrapRecipesRoute = (
     },
     confirmRun: () => childRunModal?.confirmRun() ?? Promise.resolve(),
     closeRunModal,
+    hasInFlightWork: hasRecipeInFlightWork,
+    inFlightWorkPrompt: () =>
+      hasRecipeInFlightWork()
+        ? 'A recipe action is still in progress. Leave Recipes anyway?'
+        : null,
+    hasUnsavedChanges: hasUnsavedResultGridChanges,
+    unsavedChangesPrompt: () =>
+      hasUnsavedResultGridChanges()
+        ? 'This recipe result has unsaved table changes. Leave Recipes anyway?'
+        : null,
     dispose: () => {
       if (disposed) return;
       disposed = true;

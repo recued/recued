@@ -175,7 +175,7 @@ export const WEBCLIENT_POLISH_STYLES = `
   font-weight: 600;
   transition: background-color 120ms ease, border-color 120ms ease, transform 120ms ease;
 }
-[data-recued-webclient-shell] [data-recued-webclient-content] .rx-btn:hover:not(:disabled) {
+[data-recued-webclient-shell] [data-recued-webclient-content] .rx-btn:hover:not(:disabled):not([aria-disabled="true"]) {
   transform: translateY(-1px);
 }
 [data-recued-webclient-shell] [data-recued-webclient-content] .rx-btn-link {

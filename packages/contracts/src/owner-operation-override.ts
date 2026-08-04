@@ -89,6 +89,15 @@ export interface OwnerOperationIngredientView {
   ingredient_id: string;
   name: string;
   operations: OwnerOperationSpecView[];
+  /** The AUTHORED slug of the pack that installed this ingredient, when the
+   *  server could resolve one from its inventory.
+   *
+   *  ⛔ Without this the Permissions tab had to GUESS pack membership from the
+   *  manifest's composition slugs, and a Records pack registers its catalog under
+   *  a content-addressed `records-<hash>` id that matches no name any author
+   *  wrote — so the guess missed and the tab rendered empty. Ownership is a fact
+   *  the inventory already holds; it should never have been inferred client-side. */
+  pack_slug?: string;
 }
 
 /** Project every loaded manifest into the D-211 operation inventory.

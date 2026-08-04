@@ -211,6 +211,15 @@ export interface CalendarCollectionTable {
   /** FTS5 search over summary + description + location. */
   search(query: CalendarSearchQuery): CalendarSearchMatch[];
 
+  /** Metadata-only exact participant aggregate. Matches any supplied canonical
+   * or merged email as organizer/attendee, excludes cancelled events, and
+   * buckets by whether the event has ended at `as_of`. One event is counted
+   * once even when two aliases appear on the same event. */
+  summarizeParticipant(
+    emails: readonly string[],
+    as_of: number,
+  ): CalendarParticipantRelationshipCounts;
+
   /** Sum of `size_bytes` across every row — primes the collection
    *  gate at boot. */
   totalBytes(): number;
@@ -259,6 +268,12 @@ export interface CalendarCollectionTable {
 
   readonly tableName: string;
   readonly ftsName: string;
+}
+
+export interface CalendarParticipantRelationshipCounts {
+  active_count: number;
+  historical_count: number;
+  observed_count: number;
 }
 
 export interface CreateCalendarTableOptions {
@@ -500,6 +515,22 @@ export const createCalendarTable = (
     `SELECT COUNT(*) AS n FROM ${tableName}
       WHERE start_at < ? AND end_at > ? AND status != 'cancelled'`,
   );
+  const summarizeParticipantStmt = db.prepare(
+    `SELECT
+       SUM(CASE WHEN end_at > ? THEN 1 ELSE 0 END) AS active_count,
+       SUM(CASE WHEN end_at <= ? THEN 1 ELSE 0 END) AS historical_count,
+       COUNT(*) AS observed_count
+     FROM ${tableName}
+     WHERE status != 'cancelled'
+       AND (
+         LOWER(COALESCE(organizer, '')) IN (SELECT value FROM json_each(?))
+         OR EXISTS (
+           SELECT 1 FROM json_each(${tableName}.record_payload, '$.attendees') AS attendee
+            WHERE LOWER(COALESCE(json_extract(attendee.value, '$.email'), ''))
+              IN (SELECT value FROM json_each(?))
+         )
+       )`,
+  );
 
   const upsert = (input: CalendarUpsertInput): CalendarRowSnapshot | null => {
     validateUpsert(input);
@@ -738,6 +769,34 @@ export const createCalendarTable = (
     return row.n;
   };
 
+  const summarizeParticipant: CalendarCollectionTable['summarizeParticipant'] = (
+    emails,
+    as_of,
+  ) => {
+    const canonical = [...new Set(
+      emails.map((email) => email.trim().toLowerCase()).filter((email) => email.length > 0),
+    )];
+    if (canonical.length === 0 || !Number.isFinite(as_of)) {
+      return { active_count: 0, historical_count: 0, observed_count: 0 };
+    }
+    const identifiersJson = JSON.stringify(canonical);
+    const row = summarizeParticipantStmt.get(
+      as_of,
+      as_of,
+      identifiersJson,
+      identifiersJson,
+    ) as {
+      active_count: number | null;
+      historical_count: number | null;
+      observed_count: number;
+    };
+    return {
+      active_count: row.active_count ?? 0,
+      historical_count: row.historical_count ?? 0,
+      observed_count: row.observed_count,
+    };
+  };
+
   const pruneOlderThan = (
     cutoff: number,
   ): {
@@ -780,6 +839,7 @@ export const createCalendarTable = (
     list,
     listSnapshots,
     search,
+    summarizeParticipant,
     totalBytes,
     referencedBlobHashes,
     eventCount,

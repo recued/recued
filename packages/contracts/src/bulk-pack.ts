@@ -1000,11 +1000,56 @@ export interface PackListEntry {
    *  Surfaces as a "Body content access" callout in the install dialog
    *  per D-139 P6.B's outsized-privacy-cost framing. */
   body_visibility_grant_count: number;
-  /** Forwarded manifest — install dialog calls `packs.install` with
-   *  this value as the `manifest` argument. Keeping the manifest on the
-   *  list response avoids a second `packs.fetch` round-trip; bundled-
-   *  only packs at v1 means the manifest is already on disk + small. */
-  manifest: BulkPackManifest;
+  /** Every recipe the manifest ships — slug + pinned version, in manifest order.
+   *
+   *  🔑 Added when `manifest` became installed-only. `computePackRecipeCollisions`
+   *  needs the recipe refs of every pack — installed or not — to mark a Discover
+   *  row "also in pack-x" before the owner installs it. Reading them off the
+   *  manifest meant shipping the manifest. These are the two fields that let the
+   *  collision + overlap projections keep working on the slim response, and they
+   *  cost bytes in the hundreds rather than the tens of thousands. */
+  recipe_refs: ReadonlyArray<{ slug: string; version: number }>;
+  /** The manifest's `mcp_body_visibility_grants` keys verbatim (empty when it
+   *  declares none) — the twin of {@link recipe_slugs}, for
+   *  `computePackGrantOverlap`, whose second pass deliberately spans uninstalled
+   *  packs so the install dialog can warn about an overlap before committing.
+   *
+   *  ⚠ Distinct from {@link body_visibility_grant_count}, which stays because the
+   *  install-dialog copy renders a count in its heading. The array is authority;
+   *  the count is presentation. */
+  body_visibility_grant_keys: ReadonlyArray<string>;
+  /** `manifest.service_kind`, lifted. Renders the service-kind badge on a
+   *  DISCOVER row, which by definition has no manifest. */
+  service_kind?: string;
+  /** `manifest.repo`, lifted — the detail's author-repo link, also shown for
+   *  packs that are not installed. */
+  repo?: string;
+  /** Forwarded manifest — the install dialog calls `packs.install` with this
+   *  value as the `manifest` argument, and the installed-pack management
+   *  surfaces (access controls, owner operations, grant overlap, collisions,
+   *  supervision) read it directly.
+   *
+   *  ⛔ **OPTIONAL, and only present when `installed` is true.** It used to be
+   *  unconditional, on a reason this comment stated outright: *"bundled-only
+   *  packs at v1 means the manifest is already on disk + small."* That was true
+   *  when it was written and is not true now. At **954** bundled packs a
+   *  `packs.list` carrying every manifest serializes to **44.6 MB** — for a list
+   *  whose own fields (slug / name / description / version / installed / requires
+   *  / counts) come to **~1 MB**. A 43× payload for a list view, pushed over the
+   *  pair WebSocket and parsed by the browser on every Packs route load.
+   *
+   *  🔑 The split is by INSTALL STATE because that is exactly where the need
+   *  divides: the management surfaces only ever act on installed packs, so they
+   *  keep the manifest they already relied on. A Discover row renders from the
+   *  projected fields alone. The one consumer that needs an UNINSTALLED pack's
+   *  manifest is the install dialog — and it needs exactly one, at the moment
+   *  the user opens it, which is what `packs.manifest` serves.
+   *
+   *  ⚠ Consumers must treat `undefined` as "not installed, fetch if you truly
+   *  need it", never as "empty manifest" — a `?? {}` here would silently make
+   *  every uninstalled pack look like it declares no recipes, no grants and no
+   *  operations. */
+  manifest?: BulkPackManifest;
 }
 
 /** One installed pack's identity + version, read from the `installed_pack`

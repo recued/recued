@@ -12,8 +12,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   PACKS_SURFACE_ADD_ERROR_ATTR,
   PACKS_SURFACE_DETAIL_ATTR,
+  PACKS_SURFACE_INSTALLED_ONLY_ERROR_ATTR,
   PACKS_SURFACE_LIST_ATTR,
   mountPacksSurface,
+  PACKS_SURFACE_INSTALLED_ONLY_ATTR,
   type PacksSurfaceDetailHandle,
 } from '../packs/packs-surface.js';
 
@@ -22,6 +24,8 @@ interface FakeEl {
   tagName: string;
   className: string;
   textContent: string;
+  scrollTop: number;
+  scrollLeft: number;
   type: string;
   value: string;
   hidden: boolean;
@@ -30,21 +34,29 @@ interface FakeEl {
   parent: FakeEl | null;
   listeners: Map<string, Array<(ev: unknown) => void>>;
   setAttribute(k: string, v: string): void;
+  removeAttribute(k: string): void;
   getAttribute(k: string): string | null;
   hasAttribute(k: string): boolean;
   appendChild(c: FakeEl): FakeEl;
   removeChild(c: FakeEl): FakeEl;
   addEventListener(t: string, fn: (ev: unknown) => void): void;
   removeEventListener(t: string, fn: (ev: unknown) => void): void;
+  contains(candidate: FakeEl): boolean;
+  focus(): void;
   click(): void;
   remove(): void;
 }
 
-const makeEl = (tag: string): FakeEl => {
+const makeEl = (
+  tag: string,
+  onFocus: (element: FakeEl) => void = () => {},
+): FakeEl => {
   const el: FakeEl = {
     tagName: tag.toUpperCase(),
     className: '',
     textContent: '',
+    scrollTop: 0,
+    scrollLeft: 0,
     type: '',
     value: '',
     hidden: false,
@@ -53,6 +65,7 @@ const makeEl = (tag: string): FakeEl => {
     parent: null,
     listeners: new Map(),
     setAttribute: (k, v) => el.attrs.set(k, v),
+    removeAttribute: (k) => { el.attrs.delete(k); },
     getAttribute: (k) => el.attrs.get(k) ?? null,
     hasAttribute: (k) => el.attrs.has(k),
     appendChild: (c) => {
@@ -78,6 +91,9 @@ const makeEl = (tag: string): FakeEl => {
       const i = a.indexOf(fn);
       if (i >= 0) a.splice(i, 1);
     },
+    contains: (candidate) =>
+      candidate === el || el.children.some((child) => child.contains(candidate)),
+    focus: () => onFocus(el),
     click: () => {
       for (const fn of el.listeners.get('click') ?? []) fn({ target: el });
     },
@@ -90,7 +106,11 @@ const makeEl = (tag: string): FakeEl => {
 
 const fakeDoc = () => {
   const styles: FakeEl[] = [];
+  let activeElement: FakeEl | null = null;
   return {
+    get activeElement() {
+      return activeElement;
+    },
     head: {
       querySelector: () => null, // never dedup styles in the fake
       appendChild: (el: FakeEl) => {
@@ -98,7 +118,9 @@ const fakeDoc = () => {
         return el;
       },
     },
-    createElement: (tag: string) => makeEl(tag),
+    createElement: (tag: string) => makeEl(tag, (element) => {
+      activeElement = element;
+    }),
   };
 };
 
@@ -137,28 +159,60 @@ const makeFakeDetail = (
 };
 
 interface Harness {
+  doc: ReturnType<typeof fakeDoc>;
   root: FakeEl;
+  listControl: FakeEl;
   navCalls: Array<string | null>;
   listDisposed: () => boolean;
   detail: ReturnType<typeof makeFakeDetail>;
   listOnSelect: (slug: string) => void;
   surface: ReturnType<typeof mountPacksSurface>;
+  installedOnlyCalls: boolean[];
 }
 
-const setup = (opts: { initialSlug?: string; enableAdd?: boolean } = {}): Harness => {
+const setup = (
+  opts: {
+    initialSlug?: string;
+    enableAdd?: boolean;
+    installedOnly?: boolean;
+    installedOnlySetter?: (on: boolean) => Promise<void>;
+    /** Capture the callback the surface registers for the list's OWN
+     *  installed-first default, so a test can fire it like the real list does. */
+    captureInstalledOnlyNotifier?: (fire: (on: boolean) => void) => void;
+  } = {},
+): Harness => {
   const doc = fakeDoc();
-  const root = makeEl('div');
+  const root = doc.createElement('div');
   const navCalls: Array<string | null> = [];
   let listDisposed = false;
   let listOnSelect: (slug: string) => void = () => undefined;
+  let listControl!: FakeEl;
+  const installedOnlyCalls: boolean[] = [];
   let detail!: ReturnType<typeof makeFakeDetail>;
 
   const surface = mountPacksSurface({
     root: root as unknown as HTMLElement,
     document: doc as unknown as Document,
-    mountList: (_host, onSelect) => {
+    mountList: (host, onSelect) => {
       listOnSelect = onSelect;
-      return { dispose: () => { listDisposed = true; } };
+      listControl = doc.createElement('button');
+      host.appendChild(listControl as unknown as Node);
+      return {
+        dispose: () => { listDisposed = true; },
+        // Opt-in, mirroring the real contract: a list that cannot honour the
+        // filter simply does not offer one.
+        ...(opts.installedOnly === true || opts.installedOnlySetter !== undefined
+          ? {
+              setInstalledOnly: async (on: boolean) => {
+                installedOnlyCalls.push(on);
+                await opts.installedOnlySetter?.(on);
+              },
+              onInstalledOnlyChange: (cb: (on: boolean) => void) => {
+                opts.captureInstalledOnlyNotifier?.(cb);
+              },
+            }
+          : {}),
+      };
     },
     mountDetail: (_host, onSelectSlug) => {
       detail = makeFakeDetail(onSelectSlug);
@@ -170,12 +224,15 @@ const setup = (opts: { initialSlug?: string; enableAdd?: boolean } = {}): Harnes
   });
 
   return {
+    doc,
     root,
+    listControl,
     navCalls,
     listDisposed: () => listDisposed,
     detail,
     listOnSelect: (slug) => listOnSelect(slug),
     surface,
+    installedOnlyCalls,
   };
 };
 
@@ -213,6 +270,91 @@ describe('mountPacksSurface — list↔detail composition', () => {
     expect(h.navCalls).toEqual(['pack-a', null]);
   });
 
+  it('focuses the detail host, then restores the exact list opener on Back', async () => {
+    const h = setup();
+    h.listControl.focus();
+    h.root.scrollTop = 640;
+    h.root.scrollLeft = 12;
+
+    h.listOnSelect('pack-a');
+    await Promise.resolve();
+    expect(h.doc.activeElement).toBe(detailHost(h.root));
+    expect(h.root.scrollTop).toBe(0);
+    expect(h.root.scrollLeft).toBe(0);
+
+    h.surface.backToList();
+    expect(h.doc.activeElement).toBe(h.listControl);
+    expect(h.root.scrollTop).toBe(640);
+    expect(h.root.scrollLeft).toBe(12);
+  });
+
+  it('restores the selected card by identity when the hidden list replaces it', async () => {
+    const h = setup();
+    h.listControl.setAttribute('data-recued-discover-card', '');
+    h.listControl.setAttribute('data-id', 'pack-a');
+    h.listControl.focus();
+    const listHost = h.listControl.parent!;
+
+    h.listOnSelect('pack-a');
+    await Promise.resolve();
+    h.listControl.remove();
+    const replacement = h.doc.createElement('div');
+    replacement.setAttribute('data-recued-discover-card', '');
+    replacement.setAttribute('data-id', 'pack-a');
+    listHost.appendChild(replacement);
+
+    h.surface.backToList();
+    expect(h.doc.activeElement).toBe(replacement);
+  });
+
+  it('restores a replaced card action by pack identity when it stays actionable', async () => {
+    const h = setup();
+    h.listControl.setAttribute('data-recued-discover-action', '');
+    h.listControl.setAttribute('data-id', 'pack-a');
+    h.listControl.focus();
+    const listHost = h.listControl.parent!;
+
+    h.listOnSelect('pack-a');
+    await Promise.resolve();
+    h.listControl.remove();
+    const replacement = h.doc.createElement('button');
+    replacement.setAttribute('data-recued-discover-action', '');
+    replacement.setAttribute('data-id', 'pack-a');
+    listHost.appendChild(replacement);
+
+    h.surface.backToList();
+    expect(h.doc.activeElement).toBe(replacement);
+  });
+
+  it('falls back to the pack card when its replaced action becomes a status', async () => {
+    const h = setup();
+    const listHost = h.listControl.parent!;
+    h.listControl.remove();
+    const card = h.doc.createElement('div');
+    card.setAttribute('data-recued-discover-card', '');
+    card.setAttribute('data-id', 'pack-a');
+    h.listControl.setAttribute('data-recued-discover-action', '');
+    h.listControl.setAttribute('data-id', 'pack-a');
+    card.appendChild(h.listControl);
+    listHost.appendChild(card);
+    h.listControl.focus();
+
+    h.listOnSelect('pack-a');
+    await Promise.resolve();
+    card.remove();
+    const replacementCard = h.doc.createElement('div');
+    replacementCard.setAttribute('data-recued-discover-card', '');
+    replacementCard.setAttribute('data-id', 'pack-a');
+    const installed = h.doc.createElement('span');
+    installed.setAttribute('data-recued-discover-action', '');
+    installed.setAttribute('data-id', 'pack-a');
+    replacementCard.appendChild(installed);
+    listHost.appendChild(replacementCard);
+
+    h.surface.backToList();
+    expect(h.doc.activeElement).toBe(replacementCard);
+  });
+
   it('re-opening the SAME pack after Back works (backToList clears the panel selection too)', () => {
     const h = setup();
     h.listOnSelect('pack-a');
@@ -225,11 +367,13 @@ describe('mountPacksSurface — list↔detail composition', () => {
     expect(detailHost(h.root).hidden).toBe(false);
   });
 
-  it('a deep-link (initialSlug) opens the detail on mount WITHOUT firing onNavigate', () => {
+  it('a deep-link opens and focuses the detail WITHOUT firing onNavigate', async () => {
     const h = setup({ initialSlug: 'pack-b' });
+    await Promise.resolve();
     expect(h.surface.activeSlug()).toBe('pack-b');
     expect(detailHost(h.root).hidden).toBe(false);
     expect(listView(h.root).hidden).toBe(true);
+    expect(h.doc.activeElement).toBe(detailHost(h.root));
     // Hash already matches the deep-link — no replaceState churn on mount.
     expect(h.navCalls).toEqual([]);
   });
@@ -277,5 +421,115 @@ describe('mountPacksSurface — Add by slug / URL header', () => {
   it('no Add header when enableAdd is unset', () => {
     const h = setup();
     expect(findByAttr(h.root, 'data-recued-packs-surface-add-input')).toBeNull();
+  });
+});
+
+describe('the installed-only filter — what replaced the retired Installed tab', () => {
+  it('toggles the list source and reflects pressed state', async () => {
+    const h = setup({ installedOnly: true });
+    const btn = findByAttr(h.root, PACKS_SURFACE_INSTALLED_ONLY_ATTR);
+    expect(btn).not.toBeNull();
+    expect(btn!.getAttribute('aria-pressed')).toBe('false');
+
+    (btn as unknown as FakeEl).click();
+    await vi.waitFor(() => {
+      expect(btn!.getAttribute('aria-busy')).toBeNull();
+    });
+    expect(h.installedOnlyCalls).toEqual([true]);
+    expect(btn!.getAttribute('aria-pressed')).toBe('true');
+
+    (btn as unknown as FakeEl).click();
+    await vi.waitFor(() => {
+      expect(btn!.getAttribute('aria-busy')).toBeNull();
+    });
+    // Toggles BACK — a one-way filter would strand the user in their own packs
+    // with no route back to the catalogue.
+    expect(h.installedOnlyCalls).toEqual([true, false]);
+    expect(btn!.getAttribute('aria-pressed')).toBe('false');
+  });
+
+  it('stays focusable and guards re-entry while the source swaps', async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const h = setup({ installedOnlySetter: () => pending });
+    const btn = findByAttr(h.root, PACKS_SURFACE_INSTALLED_ONLY_ATTR)!;
+
+    btn.click();
+    expect(btn.getAttribute('aria-disabled')).toBe('true');
+    expect(btn.getAttribute('aria-busy')).toBe('true');
+    expect(btn.hasAttribute('disabled')).toBe(false);
+    btn.click();
+    expect(h.installedOnlyCalls).toEqual([true]);
+
+    release();
+    await pending;
+    await vi.waitFor(() => {
+      expect(btn.getAttribute('aria-disabled')).toBeNull();
+      expect(btn.getAttribute('aria-busy')).toBeNull();
+    });
+  });
+
+  it('rolls back the pressed state and reports a failed source swap', async () => {
+    const h = setup({
+      installedOnlySetter: async () => {
+        throw new Error('refresh failed');
+      },
+    });
+    const btn = findByAttr(h.root, PACKS_SURFACE_INSTALLED_ONLY_ATTR)!;
+
+    btn.click();
+    await vi.waitFor(() => {
+      expect(btn.getAttribute('aria-pressed')).toBe('false');
+      expect(btn.getAttribute('aria-busy')).toBeNull();
+    });
+    const error = findByAttr(
+      h.root,
+      PACKS_SURFACE_INSTALLED_ONLY_ERROR_ATTR,
+    )!;
+    expect(error.hidden).toBe(false);
+    expect(error.textContent).toContain('Try again');
+  });
+
+  it('⛔ does NOT render when the list cannot honour it', () => {
+    // The negative control. A toggle that renders against a list with no
+    // `setInstalledOnly` would look live and do nothing — worse than absent.
+    const h = setup();
+    expect(findByAttr(h.root, PACKS_SURFACE_INSTALLED_ONLY_ATTR)).toBeNull();
+    expect(findByAttr(h.root, PACKS_SURFACE_INSTALLED_ONLY_ERROR_ATTR)).toBeNull();
+  });
+});
+
+/** The list decides the installed-first default for itself, after its roster
+ *  lands. The surface owns the control, so it has to be TOLD — otherwise the
+ *  list filters while the toggle reads "off", and the user's first press turns
+ *  the filter OFF while appearing to turn it on. */
+describe('packs surface — the toggle reflects the list-chosen default', () => {
+  it('renders pressed when the list reports installed-first', () => {
+    let fire: ((on: boolean) => void) | null = null;
+    const h = setup({
+      installedOnly: true,
+      captureInstalledOnlyNotifier: (cb) => { fire = cb; },
+    });
+    const toggle = findByAttr(h.root, PACKS_SURFACE_INSTALLED_ONLY_ATTR)!;
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+
+    // The roster landed and the list turned itself on.
+    fire!(true);
+    expect(toggle.getAttribute('aria-pressed')).toBe('true');
+
+    // 🔑 And the control is now coherent: pressing it turns the filter OFF.
+    // Before the mirror this press sent `true` — re-asserting a filter that was
+    // already on, which is why it looked like the button did nothing.
+    toggle.click();
+    expect(h.installedOnlyCalls).toEqual([false]);
+    h.surface.dispose();
+  });
+
+  it('a server with nothing installed leaves the toggle unpressed', () => {
+    // Negative control — the notifier only fires when the list actually flips.
+    const h = setup({ installedOnly: true, captureInstalledOnlyNotifier: () => undefined });
+    const toggle = findByAttr(h.root, PACKS_SURFACE_INSTALLED_ONLY_ATTR)!;
+    expect(toggle.getAttribute('aria-pressed')).toBe('false');
+    h.surface.dispose();
   });
 });

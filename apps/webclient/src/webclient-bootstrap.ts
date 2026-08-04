@@ -203,6 +203,7 @@ import {
 } from './shell/server-switch-work-tracker.js';
 import {
   mountAccountMenu,
+  ACCOUNT_MENU_TRIGGER_ATTR,
   ACCOUNT_MENU_STYLES,
   ACCOUNT_MENU_STYLES_MARKER,
   type AccountMenuMount,
@@ -231,8 +232,10 @@ import {
 } from './shell/recovery-intent-landing.js';
 import {
   createRecoveryIntentContinuationStore,
+  createRecoveryIntentDeferredCheckStore,
   type RecoveryIntentContinuation,
   type RecoveryIntentContinuationStorage,
+  type RecoveryIntentDeferredCheck,
   type RecoveryIntentReviewVerification,
 } from './shell/recovery-intent-continuation.js';
 import {
@@ -531,6 +534,7 @@ import {
   type AttentionInactiveConnectionRecoveryHint,
   type AttentionRecoveryExcursionReturn,
   type AttentionRecoveryIntentContinuation,
+  type AttentionRecoveryIntentExpiryHandoff,
   type AttentionRecoveryIntentInterruption,
   type AttentionRecoveryIntentRemediation,
   type AttentionRecoveryIntentReviewTarget,
@@ -603,6 +607,7 @@ import type {
   WebhooksRetentionPruneCaller,
 } from './connections/webhooks-panel.js';
 import type {
+  ConnectionsCompleteVendorOAuthCaller,
   ConnectionsEnrollListCaller,
   ConnectionsEnrollCaller,
   ConnectionsRotateCredentialsCaller,
@@ -625,6 +630,12 @@ import type {
   ConnectionsTakeVendorOAuthResultCaller,
   ConnectionsSuggestSetupCaller,
 } from './settings/connections-enroll-panel.js';
+import type {
+  ConnectionsGrantGroupCaller,
+  ConnectionsListCaller,
+  ConnectionsListGroupsCaller,
+  ConnectionsRevokeGroupCaller,
+} from './settings/connections-grant-panel.js';
 import type {
   PermissionsListOverridesCaller,
   PermissionsDeleteOverrideCaller,
@@ -845,8 +856,8 @@ export const WEBCLIENT_SHELL_CONTENT_ATTR =
  * Wiring: `New chat` → `#chat/new`; `Chats` → `#chat` (the history home is the
  * empty-hash default landing, §D.L1 Step 5). `Create` is an ACTION seat that opens the shared
  * Create overlay (the same 4-kind capture as the L1 composer button — it
- * absorbed the retired `#compose` route), `Account` → `#settings` (an Account
- * Settings subview until shell-routing deep-links it). `Packs` is its own
+ * absorbed the retired `#compose` route), `Account` → `#settings/account`.
+ * `Packs` is its own
  * `#packs` route (D-187 §6 follow-on — the browse → detail surface over the
  * catalog ∪ installed roster), promoted out of Settings. `home`/`kitchen`/`approvals` are
  * deliberately absent: the cockpit was
@@ -920,7 +931,12 @@ const WEBCLIENT_DRAWER_SECTIONS: ReadonlyArray<WebclientDrawerSection> = [
     pinnedBottom: true,
     items: [
       { id: 'settings', label: 'Settings', route: 'settings', highlight: true },
-      { id: 'account', label: 'Account', route: 'settings' },
+      {
+        id: 'account',
+        label: 'Account',
+        route: 'settings',
+        segments: ['account'],
+      },
     ],
   },
 ];
@@ -1430,6 +1446,7 @@ const createWebclientShell = (opts: {
   // ── Open / close state (declared before the render loop so each seat's
   //    close-on-navigate handler can close it) ─────────────────────────
   let drawerOpen = false;
+  let activeDrawerRoute = opts.activeRoute;
   const setDrawerOpen = (
     open: boolean,
     behavior?: { readonly returnFocus?: boolean },
@@ -1457,9 +1474,14 @@ const createWebclientShell = (opts: {
       body.removeAttribute('inert');
     }
     if (open) {
-      // Move focus into the menu (its first seat) so keyboard + screen-reader
-      // users land inside the freshly-opened drawer.
-      focusShellElement(highlightLinks[0]?.link ?? closeBtn);
+      // Start at the current destination so opening navigation does not make
+      // keyboard users traverse the whole menu again. Routes without a drawer
+      // seat retain the stable first-link fallback.
+      focusShellElement(
+        highlightLinks.find((item) => item.route === activeDrawerRoute)?.link
+          ?? highlightLinks[0]?.link
+          ?? closeBtn,
+      );
     } else if (behavior?.returnFocus === true) {
       // Closed via ✕ / Escape / backdrop / nav-link — hand focus back to the
       // ☰ trigger (a stable, visible landing). A closed drawer's seats go
@@ -1480,15 +1502,15 @@ const createWebclientShell = (opts: {
       if (item.action === 'create') {
         // An ACTION seat (Create) — a button that opens the shared Create
         // overlay instead of navigating. Checked BEFORE the stub branch because
-        // an action seat also carries `route: null`. The overlay portals over
-        // everything (z-index above the drawer), so close the drawer WITHOUT
-        // yanking focus (the overlay claims focus on open + restores it itself).
+        // an action seat also carries `route: null`. Close onto the stable ☰
+        // trigger BEFORE opening the portal: its focus trap captures that visible
+        // opener, so closing Create cannot restore focus to an off-canvas seat.
         const button = doc.createElement('button');
         button.setAttribute('type', 'button');
         button.setAttribute(WEBCLIENT_SHELL_DRAWER_ACTION_ATTR, item.id);
         button.addEventListener('click', () => {
+          setDrawerOpen(false, { returnFocus: true });
           opts.onCreateSeat?.();
-          setDrawerOpen(false, { returnFocus: false });
         });
         if (item.glyph !== undefined) {
           const glyph = doc.createElement('span');
@@ -1612,6 +1634,7 @@ const createWebclientShell = (opts: {
   docEvents.addEventListener?.('keydown', onDocKeydown);
 
   const setActiveRoute = (route: WebclientRouteId): void => {
+    activeDrawerRoute = route;
     for (const item of highlightLinks) {
       if (item.route === route) {
         item.link.setAttribute('aria-current', 'page');
@@ -2858,6 +2881,14 @@ export const bootstrapWebclient = async (
   };
   let accountMenu: AccountMenuMount | null = null;
   let approvalAttentionPopover: ApprovalAttentionPopoverMount | null = null;
+  const recoveryIntentNow = (): number => {
+    try {
+      const value = (options.now ?? Date.now)();
+      return Number.isSafeInteger(value) && value >= 0 ? value : Date.now();
+    } catch {
+      return Date.now();
+    }
+  };
   const recoveryIntentContinuationStore =
     createRecoveryIntentContinuationStore({
       document: doc,
@@ -2866,11 +2897,101 @@ export const bootstrapWebclient = async (
         : {}),
       ...(options.now !== undefined ? { now: options.now } : {}),
     });
+  const recoveryIntentDeferredCheckStore =
+    createRecoveryIntentDeferredCheckStore({
+      document: doc,
+      ...(options.recoveryIntentContinuationStorage !== undefined
+        ? { storage: options.recoveryIntentContinuationStorage }
+        : {}),
+      ...(options.now !== undefined ? { now: options.now } : {}),
+    });
+  let bootRecoveryIntentDeferredCheck: RecoveryIntentDeferredCheck | null =
+    bootProfileId === null
+      ? null
+      : recoveryIntentDeferredCheckStore.readForProfile(bootProfileId);
+  if (
+    bootRecoveryIntentDeferredCheck !== null
+    && (
+      recoveryReturnArrival !== undefined
+      || resolveRoute(bootRecoveryIntentDeferredCheck.landingHash)
+        !== parseRouteFromHash(bootRecoveryIntentDeferredCheck.landingHash)
+    )
+  ) {
+    recoveryIntentDeferredCheckStore.clear();
+    bootRecoveryIntentDeferredCheck = null;
+  }
+  let bootDeferredCheckExpired =
+    bootRecoveryIntentDeferredCheck !== null
+    && recoveryIntentNow() >= bootRecoveryIntentDeferredCheck.expiresAt;
+  if (
+    bootDeferredCheckExpired
+    && bootRecoveryIntentDeferredCheck?.diagnosisOutcome
+      === 'recheck_started'
+  ) {
+    // A reload consumes an in-flight post-diagnosis recheck. It becomes a
+    // closure-only area result before routes or reconnect observers mount;
+    // the one-shot check is never replayed after boot.
+    bootRecoveryIntentDeferredCheck =
+      recoveryIntentDeferredCheckStore.recordDiagnosisRecheckFailure(
+        bootRecoveryIntentDeferredCheck,
+        'area',
+      );
+    if (bootRecoveryIntentDeferredCheck === null) {
+      recoveryIntentDeferredCheckStore.clear();
+      bootDeferredCheckExpired = false;
+    }
+  }
+  if (
+    bootDeferredCheckExpired
+    && bootRecoveryIntentDeferredCheck !== null
+    && bootRecoveryIntentDeferredCheck.attemptCount >= 2
+    && bootRecoveryIntentDeferredCheck.diagnosisTarget === null
+  ) {
+    // A second broad-area attempt that survives only as an in-flight marker
+    // was interrupted by this reload. Close the retry loop before any route
+    // read or reconnect observer can run; persist only its broad diagnosis
+    // owner, never the interrupted response or error.
+    bootRecoveryIntentDeferredCheck =
+      recoveryIntentDeferredCheckStore.recordReviewFailure(
+        bootRecoveryIntentDeferredCheck,
+        'area',
+      );
+    if (bootRecoveryIntentDeferredCheck === null) {
+      recoveryIntentDeferredCheckStore.clear();
+      bootDeferredCheckExpired = false;
+    }
+  }
   let recoveryIntentContinuationMarker: RecoveryIntentContinuation | null =
     bootProfileId === null
       ? null
       : recoveryIntentContinuationStore.readForProfile(bootProfileId);
-  if (bootProfileId === null) recoveryIntentContinuationStore.retire();
+  if (bootProfileId === null) {
+    recoveryIntentContinuationStore.retire();
+  }
+  if (bootDeferredCheckExpired && bootRecoveryIntentDeferredCheck !== null) {
+    const belongsToCurrentParent =
+      recoveryIntentContinuationMarker !== null
+      && recoveryIntentContinuationMarker.profileId
+        === bootRecoveryIntentDeferredCheck.profileId
+      && recoveryIntentContinuationMarker.landingHash
+        === bootRecoveryIntentDeferredCheck.landingHash
+      && recoveryIntentContinuationMarker.pausedAt
+        === bootRecoveryIntentDeferredCheck.pausedAt;
+    if (
+      recoveryIntentContinuationMarker !== null
+      && !belongsToCurrentParent
+    ) {
+      // A stale expiry notice must never retire a newer exact return. Keep the
+      // current parent authoritative and discard only the mismatched quiet key.
+      recoveryIntentDeferredCheckStore.clear();
+      bootRecoveryIntentDeferredCheck = null;
+      bootDeferredCheckExpired = false;
+    } else {
+      recoveryIntentContinuationStore.retire();
+      recoveryIntentContinuationMarker = null;
+    }
+  }
+  if (bootProfileId === null) recoveryIntentDeferredCheckStore.clear();
   if (
     recoveryIntentContinuationMarker !== null
     && (
@@ -2882,7 +3003,9 @@ export const bootstrapWebclient = async (
     // A fresh recovery arrival supersedes an older paused landing. Likewise, a
     // feature-gated route that no longer mounts cannot retain a dead action.
     recoveryIntentContinuationStore.retire();
+    recoveryIntentDeferredCheckStore.clear();
     recoveryIntentContinuationMarker = null;
+    bootRecoveryIntentDeferredCheck = null;
   }
   let bootRecoveryIntentReviewVerification:
     RecoveryIntentReviewVerification | null =
@@ -2904,6 +3027,24 @@ export const bootstrapWebclient = async (
         bootRecoveryIntentReviewVerification.reviewTarget,
         'reload',
       );
+  }
+  if (
+    bootRecoveryIntentDeferredCheck !== null
+    && !bootDeferredCheckExpired
+    && (
+      recoveryIntentContinuationMarker === null
+      || bootRecoveryIntentReviewVerification?.state !== 'ready'
+      || bootRecoveryIntentReviewVerification.reviewTarget !== 'server'
+      || bootRecoveryIntentDeferredCheck.profileId
+        !== recoveryIntentContinuationMarker.profileId
+      || bootRecoveryIntentDeferredCheck.landingHash
+        !== recoveryIntentContinuationMarker.landingHash
+      || bootRecoveryIntentDeferredCheck.pausedAt
+        !== recoveryIntentContinuationMarker.pausedAt
+    )
+  ) {
+    recoveryIntentDeferredCheckStore.clear();
+    bootRecoveryIntentDeferredCheck = null;
   }
   const reviewVerificationPhase = (
     verification: RecoveryIntentReviewVerification,
@@ -2930,6 +3071,65 @@ export const bootstrapWebclient = async (
   let recoveryIntentContinuationInterruptionReason:
     AttentionRecoveryIntentInterruption | null =
       bootRecoveryIntentReviewVerification?.lastInterruption ?? null;
+  let recoveryIntentDeferredCheck: RecoveryIntentDeferredCheck | null =
+    bootDeferredCheckExpired ? null : bootRecoveryIntentDeferredCheck;
+  let recoveryIntentExpiredDeferredCheck: RecoveryIntentDeferredCheck | null =
+    bootDeferredCheckExpired ? bootRecoveryIntentDeferredCheck : null;
+  let recoveryIntentExpiryHandoff:
+    AttentionRecoveryIntentExpiryHandoff | null =
+      bootDeferredCheckExpired && bootRecoveryIntentDeferredCheck !== null
+        ? {
+            serverProfileId: bootRecoveryIntentDeferredCheck.profileId,
+            serverProfileLabel: bootProfileLabel,
+            landingHash: bootRecoveryIntentDeferredCheck.landingHash,
+            areaLabel: serverSwitchLandingAreaLabel(
+              bootRecoveryIntentDeferredCheck.landingHash,
+            ),
+            deferredAt: bootRecoveryIntentDeferredCheck.deferredAt,
+            expiredAt: bootRecoveryIntentDeferredCheck.expiresAt,
+            phase: bootRecoveryIntentDeferredCheck.diagnosisOutcome
+              === 'choose'
+              ? 'outcome'
+              : bootRecoveryIntentDeferredCheck.diagnosisOutcome
+                  === 'recheck_started'
+                ? 'rechecking'
+                : bootRecoveryIntentDeferredCheck.diagnosisOutcome
+                    === 'area_unconfirmed'
+                  || bootRecoveryIntentDeferredCheck.diagnosisOutcome
+                    === 'server_unavailable'
+                  ? 'closure'
+                  : bootRecoveryIntentDeferredCheck.diagnosisTarget !== null
+                    ? 'handoff'
+                    : bootRecoveryIntentDeferredCheck.attemptCount === 0
+                      ? 'ready'
+                      : 'retry',
+            ...(bootRecoveryIntentDeferredCheck.diagnosisOutcome
+                === 'area_unconfirmed'
+              || bootRecoveryIntentDeferredCheck.diagnosisOutcome
+                === 'server_unavailable'
+              ? {
+                  closureTarget:
+                    bootRecoveryIntentDeferredCheck.diagnosisOutcome
+                      === 'server_unavailable'
+                      ? 'server' as const
+                      : 'area' as const,
+                }
+              : bootRecoveryIntentDeferredCheck.diagnosisTarget !== null
+                  && bootRecoveryIntentDeferredCheck.diagnosisOutcome === null
+              ? {
+                  diagnosisTarget:
+                    bootRecoveryIntentDeferredCheck.diagnosisTarget,
+                }
+              : bootRecoveryIntentDeferredCheck.diagnosisOutcome !== null
+                  || bootRecoveryIntentDeferredCheck.attemptCount === 0
+                ? {}
+                : { retryReason: 'interrupted' as const }),
+            ...(bootRecoveryIntentDeferredCheck.diagnosisOutcome === 'choose'
+                && connectionStatus.status() !== 'connected'
+              ? { checkBlocker: 'server' as const }
+              : {}),
+          }
+        : null;
   // Receipt outcomes are deliberately memory-only. Durable recovery markers
   // restore the saved route and bounded verification posture, never a server
   // action result from a previous page lifetime.
@@ -2966,6 +3166,16 @@ export const bootstrapWebclient = async (
         && serverCurrentState !== null
       ? { serverCurrentState }
       : {}),
+    ...(phase === 'verification_ready'
+        && recoveryIntentDeferredCheck !== null
+        && recoveryIntentDeferredCheck.profileId === marker.profileId
+        && recoveryIntentDeferredCheck.landingHash === marker.landingHash
+        && recoveryIntentDeferredCheck.pausedAt === marker.pausedAt
+      ? {
+          deferredAt: recoveryIntentDeferredCheck.deferredAt,
+          expiresAt: recoveryIntentDeferredCheck.expiresAt,
+        }
+      : {}),
   });
   let recoveryIntentContinuation = recoveryIntentContinuationMarker === null
     ? null
@@ -2978,8 +3188,15 @@ export const bootstrapWebclient = async (
   let recoveryIntentContinuationExpiryTimer:
     | ReturnType<typeof globalThis.setTimeout>
     | null = null;
+  let recoveryIntentExpiryHandoffTimer:
+    | ReturnType<typeof globalThis.setTimeout>
+    | null = null;
   let recoveryIntentContinuationRunGeneration = 0;
   let recoveryIntentContinuationRunInFlight = false;
+  let recoveryIntentExpiryReviewGeneration = 0;
+  let recoveryIntentExpiryReviewInFlight = false;
+  let recoveryIntentOrientation:
+    ReturnType<typeof mountRecoveryIntentOrientation> | null = null;
   let recoveryIntentRetryOnReconnect = false;
   let recoveryIntentConnectionDiagnosisSequence = 0;
   const serverControlActionOutcomesMatch = (
@@ -3004,7 +3221,15 @@ export const bootstrapWebclient = async (
     | (PendingRecoveryIntentConnectionDiagnosisBase & {
         readonly source: 'unresolved_receipt';
         readonly priorServerOutcome: ServerControlActionOutcome;
-      });
+      })
+    | {
+        readonly source: 'expired_area_review';
+        readonly id: string;
+        readonly profileId: string;
+        readonly landingHash: string;
+        readonly deferredAt: number;
+        readonly expiredAt: number;
+      };
   let pendingRecoveryIntentConnectionDiagnosis:
     PendingRecoveryIntentConnectionDiagnosis | null = null;
   const clearRecoveryIntentConnectionDiagnosis = (): void => {
@@ -3068,19 +3293,177 @@ export const bootstrapWebclient = async (
     globalThis.clearTimeout(recoveryIntentContinuationExpiryTimer);
     recoveryIntentContinuationExpiryTimer = null;
   };
+  const cancelRecoveryIntentExpiryHandoff = (): void => {
+    if (recoveryIntentExpiryHandoffTimer === null) return;
+    globalThis.clearTimeout(recoveryIntentExpiryHandoffTimer);
+    recoveryIntentExpiryHandoffTimer = null;
+  };
+  const clearRecoveryIntentExpiryHandoff = (): void => {
+    recoveryIntentExpiryReviewGeneration += 1;
+    recoveryIntentExpiryReviewInFlight = false;
+    cancelRecoveryIntentExpiryHandoff();
+    recoveryIntentDeferredCheckStore.clear();
+    recoveryIntentDeferredCheck = null;
+    recoveryIntentExpiredDeferredCheck = null;
+    recoveryIntentExpiryHandoff = null;
+    if (pendingRecoveryIntentConnectionDiagnosis?.source
+      === 'expired_area_review') {
+      pendingRecoveryIntentConnectionDiagnosis = null;
+      serverPill?.closeControls();
+      accountMenu?.clearConnectionDiagnosis();
+    }
+    approvalAttentionPopover?.setRecoveryIntentExpiryHandoff(null);
+  };
+  const setRecoveryIntentExpiryHandoffState = (
+    phase: AttentionRecoveryIntentExpiryHandoff['phase'],
+    retryReason?: NonNullable<
+      AttentionRecoveryIntentExpiryHandoff['retryReason']
+    >,
+    diagnosisTarget?: NonNullable<
+      AttentionRecoveryIntentExpiryHandoff['diagnosisTarget']
+    >,
+    closureTarget?: NonNullable<
+      AttentionRecoveryIntentExpiryHandoff['closureTarget']
+    >,
+    checkBlocker?: NonNullable<
+      AttentionRecoveryIntentExpiryHandoff['checkBlocker']
+    >,
+  ): void => {
+    const current = recoveryIntentExpiryHandoff;
+    if (current === null) return;
+    const {
+      retryReason: _priorRetryReason,
+      diagnosisTarget: _priorDiagnosisTarget,
+      closureTarget: _priorClosureTarget,
+      checkBlocker: _priorCheckBlocker,
+      ...base
+    } = current;
+    void _priorRetryReason;
+    void _priorDiagnosisTarget;
+    void _priorClosureTarget;
+    void _priorCheckBlocker;
+    recoveryIntentExpiryHandoff = {
+      ...base,
+      phase,
+      ...(phase === 'retry' && retryReason !== undefined
+        ? { retryReason }
+        : {}),
+      ...(phase === 'handoff' && diagnosisTarget !== undefined
+        ? { diagnosisTarget }
+        : {}),
+      ...(phase === 'closure' && closureTarget !== undefined
+        ? { closureTarget }
+        : {}),
+      ...(phase === 'outcome' && checkBlocker !== undefined
+        ? { checkBlocker }
+        : {}),
+    };
+    approvalAttentionPopover?.setRecoveryIntentExpiryHandoff(
+      recoveryIntentExpiryHandoff,
+    );
+  };
+  const recordRecoveryIntentExpiryReviewFailure = (
+    diagnosisTarget: 'area' | 'server',
+    retryReason: NonNullable<
+      AttentionRecoveryIntentExpiryHandoff['retryReason']
+    >,
+  ): void => {
+    const deferred = recoveryIntentExpiredDeferredCheck;
+    if (deferred === null) {
+      clearRecoveryIntentExpiryHandoff();
+      return;
+    }
+    const failed = recoveryIntentDeferredCheckStore.recordReviewFailure(
+      deferred,
+      diagnosisTarget,
+    );
+    if (failed === null) {
+      clearRecoveryIntentExpiryHandoff();
+      return;
+    }
+    recoveryIntentExpiredDeferredCheck = failed;
+    if (failed.diagnosisTarget !== null) {
+      setRecoveryIntentExpiryHandoffState(
+        'handoff',
+        undefined,
+        failed.diagnosisTarget,
+      );
+      return;
+    }
+    setRecoveryIntentExpiryHandoffState('retry', retryReason);
+  };
+  const recordRecoveryIntentDiagnosisRecheckFailure = (
+    target: 'area' | 'server',
+  ): void => {
+    const deferred = recoveryIntentExpiredDeferredCheck;
+    if (deferred === null) {
+      clearRecoveryIntentExpiryHandoff();
+      return;
+    }
+    const failed =
+      recoveryIntentDeferredCheckStore.recordDiagnosisRecheckFailure(
+        deferred,
+        target,
+      );
+    if (failed === null) {
+      clearRecoveryIntentExpiryHandoff();
+      return;
+    }
+    recoveryIntentExpiredDeferredCheck = failed;
+    setRecoveryIntentExpiryHandoffState(
+      'closure',
+      undefined,
+      undefined,
+      target,
+    );
+  };
+  const interruptRecoveryIntentExpiryReviewForNavigation = (
+    destinationHash: string,
+  ): void => {
+    if (
+      !recoveryIntentExpiryReviewInFlight
+      || (
+        recoveryIntentExpiryHandoff?.phase !== 'checking'
+        && recoveryIntentExpiryHandoff?.phase !== 'rechecking'
+      )
+      || pendingRecoveryReturnAction?.landingHash === destinationHash
+    ) return;
+    recoveryIntentExpiryReviewGeneration += 1;
+    recoveryIntentExpiryReviewInFlight = false;
+    if (recoveryIntentExpiryHandoff?.phase === 'rechecking') {
+      recordRecoveryIntentDiagnosisRecheckFailure('area');
+    } else {
+      recordRecoveryIntentExpiryReviewFailure('area', 'interrupted');
+    }
+  };
+  const scheduleRecoveryIntentExpiryHandoff = (): void => {
+    cancelRecoveryIntentExpiryHandoff();
+    const deferred = recoveryIntentExpiredDeferredCheck;
+    if (deferred === null || recoveryIntentExpiryHandoff === null) return;
+    const delay = Math.max(
+      0,
+      deferred.handoffExpiresAt - recoveryIntentNow(),
+    );
+    recoveryIntentExpiryHandoffTimer = globalThis.setTimeout(() => {
+      recoveryIntentExpiryHandoffTimer = null;
+      if (
+        recoveryIntentExpiredDeferredCheck?.deferredAt
+          !== deferred.deferredAt
+        || recoveryIntentExpiryHandoff?.expiredAt !== deferred.expiresAt
+      ) return;
+      recoveryIntentDeferredCheckStore.clear();
+      recoveryIntentExpiryReviewGeneration += 1;
+      recoveryIntentExpiryReviewInFlight = false;
+      recoveryIntentExpiredDeferredCheck = null;
+      recoveryIntentExpiryHandoff = null;
+      approvalAttentionPopover?.setRecoveryIntentExpiryHandoff(null);
+    }, delay);
+  };
   const scheduleRecoveryIntentContinuationExpiry = (): void => {
     cancelRecoveryIntentContinuationExpiry();
     const marker = recoveryIntentContinuationMarker;
     if (marker === null) return;
-    let currentTime: number;
-    try {
-      const candidate = (options.now ?? Date.now)();
-      currentTime = Number.isSafeInteger(candidate) && candidate >= 0
-        ? candidate
-        : Date.now();
-    } catch {
-      currentTime = Date.now();
-    }
+    const currentTime = recoveryIntentNow();
     const delay = Math.max(0, marker.expiresAt - currentTime);
     recoveryIntentContinuationExpiryTimer = globalThis.setTimeout(() => {
       recoveryIntentContinuationExpiryTimer = null;
@@ -3090,6 +3473,12 @@ export const bootstrapWebclient = async (
       recoveryIntentLandingHash = null;
       clearRecoveryIntentConnectionDiagnosis();
       detachRecoveryIntentOwnershipListeners();
+      const deferred = recoveryIntentDeferredCheck !== null
+        && recoveryIntentDeferredCheck.profileId === marker.profileId
+        && recoveryIntentDeferredCheck.landingHash === marker.landingHash
+        && recoveryIntentDeferredCheck.pausedAt === marker.pausedAt
+        ? recoveryIntentDeferredCheck
+        : null;
       recoveryIntentContinuationStore.retire();
       recoveryIntentContinuationMarker = null;
       recoveryIntentContinuation = null;
@@ -3098,11 +3487,65 @@ export const bootstrapWebclient = async (
       recoveryIntentContinuationReviewTarget = null;
       recoveryIntentReviewVerificationTarget = null;
       recoveryIntentContinuationInterruptionReason = null;
+      recoveryIntentDeferredCheck = null;
       recoveryIntentServerControlOutcome = null;
       recoveryIntentServerCurrentState = null;
       recoveryIntentRetryOnReconnect = false;
       recoveryIntentFailureCount = 0;
-      approvalAttentionPopover?.setRecoveryIntentContinuation(null);
+      if (
+        deferred === null
+        || recoveryIntentNow() >= deferred.handoffExpiresAt
+      ) {
+        recoveryIntentDeferredCheckStore.clear();
+        recoveryIntentExpiredDeferredCheck = null;
+        recoveryIntentExpiryHandoff = null;
+        approvalAttentionPopover?.setRecoveryIntentContinuation(null);
+        return;
+      }
+      recoveryIntentExpiredDeferredCheck = deferred;
+      recoveryIntentExpiryHandoff = {
+        serverProfileId: deferred.profileId,
+        serverProfileLabel: bootProfileLabel,
+        landingHash: deferred.landingHash,
+        areaLabel: serverSwitchLandingAreaLabel(deferred.landingHash),
+        deferredAt: deferred.deferredAt,
+        expiredAt: deferred.expiresAt,
+        phase: deferred.diagnosisOutcome === 'choose'
+          ? 'outcome'
+          : deferred.diagnosisOutcome === 'recheck_started'
+            ? 'rechecking'
+            : deferred.diagnosisOutcome === 'area_unconfirmed'
+              || deferred.diagnosisOutcome === 'server_unavailable'
+              ? 'closure'
+              : deferred.diagnosisTarget !== null
+                ? 'handoff'
+                : deferred.attemptCount === 0
+                  ? 'ready'
+                  : 'retry',
+        ...(deferred.diagnosisOutcome === 'area_unconfirmed'
+            || deferred.diagnosisOutcome === 'server_unavailable'
+          ? {
+              closureTarget: deferred.diagnosisOutcome
+                === 'server_unavailable'
+                ? 'server' as const
+                : 'area' as const,
+            }
+          : deferred.diagnosisTarget !== null
+              && deferred.diagnosisOutcome === null
+          ? { diagnosisTarget: deferred.diagnosisTarget }
+          : deferred.diagnosisOutcome !== null
+              || deferred.attemptCount === 0
+            ? {}
+            : { retryReason: 'interrupted' as const }),
+        ...(deferred.diagnosisOutcome === 'choose'
+            && connectionStatus.status() !== 'connected'
+          ? { checkBlocker: 'server' as const }
+          : {}),
+      };
+      approvalAttentionPopover?.setRecoveryIntentExpiryHandoff(
+        recoveryIntentExpiryHandoff,
+      );
+      scheduleRecoveryIntentExpiryHandoff();
     }, delay);
   };
   const setRecoveryIntentContinuationState = (
@@ -3114,6 +3557,13 @@ export const bootstrapWebclient = async (
     serverCurrentState: ServerControlCurrentStateObservation | null = null,
   ): void => {
     const marker = recoveryIntentContinuationMarker;
+    if (
+      phase !== 'verification_ready'
+      && recoveryIntentDeferredCheck !== null
+    ) {
+      recoveryIntentDeferredCheckStore.clear();
+      recoveryIntentDeferredCheck = null;
+    }
     const nextServerControlOutcome =
       phase === 'awaiting_review_outcome' && reviewTarget === 'server'
         ? serverControlOutcome
@@ -3172,6 +3622,7 @@ export const bootstrapWebclient = async (
     // not a new recovery attempt and must not erase an in-tab failure cap.
     if (!changed) return;
     clearRecoveryIntentConnectionDiagnosis();
+    clearRecoveryIntentExpiryHandoff();
     recoveryIntentContinuationRunGeneration += 1;
     recoveryIntentContinuationRunInFlight = false;
     recoveryIntentContinuationPhase = 'ready';
@@ -3204,6 +3655,7 @@ export const bootstrapWebclient = async (
     cancelRecoveryIntentContinuationExpiry();
     detachRecoveryIntentOwnershipListeners();
     recoveryIntentContinuationStore.retire();
+    clearRecoveryIntentExpiryHandoff();
     recoveryIntentContinuationMarker = null;
     recoveryIntentContinuation = null;
     recoveryIntentContinuationPhase = 'ready';
@@ -3225,6 +3677,8 @@ export const bootstrapWebclient = async (
     recoveryIntentReviewVerificationTarget = null;
     recoveryIntentContinuationInterruptionReason = null;
     recoveryIntentContinuationStore.clearReviewVerification();
+    recoveryIntentDeferredCheckStore.clear();
+    recoveryIntentDeferredCheck = null;
   };
   function interruptRecoveryIntentReviewVerification(
     reason: AttentionRecoveryIntentInterruption,
@@ -3270,8 +3724,81 @@ export const bootstrapWebclient = async (
   let keepRecoveryIntentReviewBlocked: (
     continuation: AttentionRecoveryIntentContinuation,
   ) => 'started' | 'missing' | 'unavailable' = () => 'unavailable';
+  let deferRecoveryIntentVerification: (
+    continuation: AttentionRecoveryIntentContinuation,
+  ) => 'started' | 'missing' | 'unavailable' = () => 'unavailable';
+  let reviewRecoveryIntentExpiryHandoff: (
+    handoff: AttentionRecoveryIntentExpiryHandoff,
+  ) => 'started' | 'missing' | 'unavailable' = () => 'unavailable';
+  const recoveryIntentExpiryRetryReasonForStatus = (): NonNullable<
+    AttentionRecoveryIntentExpiryHandoff['retryReason']
+  > => {
+    const status = connectionStatus.status();
+    if (status === 'offline') return 'offline';
+    if (status === 'reconnecting') return 'interrupted';
+    return 'unavailable';
+  };
   const detachRecoveryIntentReviewVerificationStatus =
     connectionStatus.onStatus((status) => {
+      if (
+        status !== 'connected'
+        && recoveryIntentExpiryReviewInFlight
+        && (
+          recoveryIntentExpiryHandoff?.phase === 'checking'
+          || recoveryIntentExpiryHandoff?.phase === 'rechecking'
+        )
+      ) {
+        // A connection gap makes the broad route read indeterminate. Preserve
+        // one manual retry or stop at the durable two-attempt server handoff;
+        // never replay either when the socket reconnects.
+        recoveryIntentExpiryReviewGeneration += 1;
+        recoveryIntentExpiryReviewInFlight = false;
+        if (recoveryIntentExpiryHandoff.phase === 'rechecking') {
+          recordRecoveryIntentDiagnosisRecheckFailure('server');
+        } else {
+          recordRecoveryIntentExpiryReviewFailure(
+            'server',
+            recoveryIntentExpiryRetryReasonForStatus(),
+          );
+        }
+      } else if (
+        status !== 'connected'
+        && recoveryIntentExpiryHandoff?.phase === 'outcome'
+        && recoveryIntentExpiryHandoff.checkBlocker !== 'server'
+      ) {
+        // A known blocker disables the one-shot choice without consuming it.
+        setRecoveryIntentExpiryHandoffState(
+          'outcome',
+          undefined,
+          undefined,
+          undefined,
+          'server',
+        );
+      } else if (
+        status === 'connected'
+        && recoveryIntentExpiryHandoff?.phase === 'outcome'
+        && recoveryIntentExpiryHandoff.checkBlocker === 'server'
+      ) {
+        // Reconnect only enables the explicit choice; it never dispatches it.
+        setRecoveryIntentExpiryHandoffState('outcome');
+      } else if (
+        status === 'offline'
+        && recoveryIntentExpiryHandoff?.phase === 'retry'
+        && recoveryIntentExpiryHandoff.retryReason !== 'offline'
+      ) {
+        // A retry can outlive the reconnect grace period. Once reachability is
+        // known to be lost, replace a generic interruption with honest offline
+        // guidance without starting the saved read.
+        setRecoveryIntentExpiryHandoffState('retry', 'offline');
+      } else if (
+        status === 'connected'
+        && recoveryIntentExpiryHandoff?.phase === 'retry'
+        && recoveryIntentExpiryHandoff.retryReason === 'offline'
+      ) {
+        // Reconnect removes the blocker, not the retry obligation. The owner
+        // still decides when the route performs its next authoritative read.
+        setRecoveryIntentExpiryHandoffState('retry', 'interrupted');
+      }
       if (
         status !== 'connected'
         && recoveryIntentContinuationPhase === 'checking'
@@ -3352,6 +3879,7 @@ export const bootstrapWebclient = async (
     attachRecoveryIntentOwnershipListeners();
   }
   scheduleRecoveryIntentContinuationExpiry();
+  scheduleRecoveryIntentExpiryHandoff();
   const inactiveProfileRecoveryDiscovery =
     createBrowserInactiveProfileRecoveryDiscovery({
       document: doc,
@@ -3813,7 +4341,9 @@ export const bootstrapWebclient = async (
       const chatDraft = mountedRouteHandle.getRecoveryDraft?.() ?? null;
       const hasChatDraft = chatDraft !== null
         && chatDraft.text.trim().length > 0;
-      const hasUnsavedChanges = mountedRouteHandle.hasUnsavedChanges?.() === true;
+      const hasUnsavedChanges =
+        drawerCreateOverlay?.hasUnsavedChanges() === true
+        || mountedRouteHandle.hasUnsavedChanges?.() === true;
       const routeHasInFlightWork = (
         mountedRouteHandle.hasRouteInFlightWork
         ?? mountedRouteHandle.hasInFlightWork
@@ -4441,6 +4971,10 @@ export const bootstrapWebclient = async (
       // third step linked to Settings ▸ Server, every panel of which is rpc-
       // driven and therefore unreachable during the outage that raised it.
       onRecoveryAction: () => accountMenu?.open(),
+      focusAfterActionRetires: () =>
+        appShell.accountHost.querySelector<HTMLElement>(
+          `[${ACCOUNT_MENU_TRIGGER_ATTR}]`,
+        ),
     });
     // Account menu — the topbar's rightmost control, and the answer to
     // "where do I go when my server stops answering".
@@ -4491,6 +5025,15 @@ export const bootstrapWebclient = async (
                 );
               approvalAttentionPopover?.setRecoveryIntentContinuation(
                 recoveryIntentContinuation,
+              );
+            }
+            if (recoveryIntentExpiryHandoff !== null) {
+              recoveryIntentExpiryHandoff = {
+                ...recoveryIntentExpiryHandoff,
+                serverProfileLabel: bootProfileLabel,
+              };
+              approvalAttentionPopover?.setRecoveryIntentExpiryHandoff(
+                recoveryIntentExpiryHandoff,
               );
             }
             approvalAttentionPopover?.setConnectionRecoveryProfileLabel(
@@ -4564,6 +5107,59 @@ export const bootstrapWebclient = async (
             const pending = pendingRecoveryIntentConnectionDiagnosis;
             if (pending === null || diagnosis.id !== pending.id) return;
             pendingRecoveryIntentConnectionDiagnosis = null;
+            if (pending.source === 'expired_area_review') {
+              const deferred = recoveryIntentExpiredDeferredCheck;
+              const current = recoveryIntentExpiryHandoff;
+              const stillMatches = deferred !== null
+                && current !== null
+                && current.phase === 'handoff'
+                && current.diagnosisTarget === 'server'
+                && diagnosis.kind === 'expired_area_review'
+                && diagnosis.profileId === pending.profileId
+                && deferred.profileId === pending.profileId
+                && deferred.landingHash === pending.landingHash
+                && deferred.deferredAt === pending.deferredAt
+                && deferred.expiresAt === pending.expiredAt
+                && deferred.diagnosisTarget === 'server';
+              if (!stillMatches) return;
+              if (disposition === 'return') {
+                // Account can finish diagnosis, but it cannot infer that the
+                // route recovered. Persist one intent-free choice and hand it
+                // back to Attention: one fresh broad-area check or closure.
+                const outcome = recoveryIntentDeferredCheckStore
+                  .recordDiagnosisOutcome(deferred);
+                if (outcome === null) {
+                  clearRecoveryIntentExpiryHandoff();
+                  return;
+                }
+                recoveryIntentExpiredDeferredCheck = outcome;
+                setRecoveryIntentExpiryHandoffState(
+                  'outcome',
+                  undefined,
+                  undefined,
+                  undefined,
+                  connectionStatus.status() === 'connected'
+                    ? undefined
+                    : 'server',
+                );
+                void Promise.resolve().then(() => {
+                  const currentOutcome = recoveryIntentExpiredDeferredCheck;
+                  if (
+                    currentOutcome?.diagnosisOutcome !== 'choose'
+                    || recoveryIntentExpiryHandoff?.phase !== 'outcome'
+                  ) return;
+                  approvalAttentionPopover?.open();
+                });
+              } else {
+                // Merely closing Account keeps the quiet diagnosis reminder.
+                // Republish because the initiating Attention click consumed
+                // its local copy while Account temporarily owned focus.
+                approvalAttentionPopover?.setRecoveryIntentExpiryHandoff(
+                  current,
+                );
+              }
+              return;
+            }
             if (disposition !== 'return') return;
             const marker = recoveryIntentContinuationMarker;
             const markerStillMatches =
@@ -6184,6 +6780,34 @@ export const bootstrapWebclient = async (
   // first all-session snapshot, replays racing events over that read, and
   // reconciles again on reconnect. Created once so both the bell and
   // #approvals share one truthful map across route swaps.
+  // D-165 follow-on, RESTORED after R13 — the operation-group grant callers.
+  // The rpc family never went away; only its consumer did. Gated on the same
+  // flag as the enroll panel: the two are one lane, and a grant surface with no
+  // enrol surface has nothing to grant against.
+  // ⛔ REUSES the enroll panel's list caller rather than issuing its own
+  // `{ kind: 'api' }` read (which is what the pre-R13 wiring did). That read
+  // would bypass `connectionListReadInFlight`, the turn-dedupe that exists to
+  // "coalesce shell + route reads started in this mount turn" — so mounting the
+  // grant panel would double every Connections-route connection read.
+  //
+  // 🔑 Safe because the panel filters for itself: `isGrantCandidate`
+  // (`connections-grant-panel.ts:216`) keeps only `kind === 'api'`. The server
+  // filter was never load-bearing.
+  const connectionsGrantListCaller: ConnectionsListCaller | undefined =
+    connectionsEnrollListCaller as ConnectionsListCaller | undefined;
+  const connectionsListGroupsCaller: ConnectionsListGroupsCaller | undefined =
+    options.enableConnectionsEnrollPanel === false
+      ? undefined
+      : ((args) => rpcConn.call('collection.connection.listOperationGroups', args)) as ConnectionsListGroupsCaller;
+  const connectionsGrantGroupCaller: ConnectionsGrantGroupCaller | undefined =
+    options.enableConnectionsEnrollPanel === false
+      ? undefined
+      : ((args) => rpcConn.call('collection.connection.grantOperationGroup', args)) as ConnectionsGrantGroupCaller;
+  const connectionsRevokeGroupCaller: ConnectionsRevokeGroupCaller | undefined =
+    options.enableConnectionsEnrollPanel === false
+      ? undefined
+      : ((args) => rpcConn.call('collection.connection.revokeOperationGroup', args)) as ConnectionsRevokeGroupCaller;
+
   const pendingChatPlansStore: PendingChatPlansStore | null =
     options.enableApprovalsRoute === false
       ? null
@@ -6227,12 +6851,26 @@ export const bootstrapWebclient = async (
                   recoveryIntentContinuation,
               }
             : {}),
+          ...(recoveryIntentExpiryHandoff !== null
+            ? {
+                initialRecoveryIntentExpiryHandoff:
+                  recoveryIntentExpiryHandoff,
+              }
+            : {}),
           onResumeRecoveryIntentContinuation: (continuation) =>
             resumeRecoveryIntentContinuation(continuation),
           onResolveRecoveryIntentReview: (continuation) =>
             resumeRecoveryIntentContinuation(continuation, 'review_resolved'),
           onKeepRecoveryIntentReviewBlocked: (continuation) =>
             keepRecoveryIntentReviewBlocked(continuation),
+          onDeferRecoveryIntentVerification: (continuation) =>
+            deferRecoveryIntentVerification(continuation),
+          onReviewRecoveryIntentExpiryHandoff: (handoff) =>
+            reviewRecoveryIntentExpiryHandoff(handoff),
+          onDismissRecoveryIntentExpiryHandoff: () => {
+            clearRecoveryIntentExpiryHandoff();
+            recoveryIntentOrientation?.clear();
+          },
           onReviewRecoveryIntentContinuation: (continuation) =>
             reviewRecoveryIntentContinuation(continuation),
           ...(accountMenu !== null
@@ -6834,6 +7472,17 @@ export const bootstrapWebclient = async (
     options.enableConnectionsEnrollPanel === false
       ? undefined
       : (args) => rpcConn.call('collection.connection.startVendorOAuth', args);
+  // R26.2 Option B — the pure code-exchange rpc. Wired unconditionally with the
+  // enroll panel: the PANEL decides whether to use it (loopback only), so the
+  // cloud path is untouched for every other origin.
+  const connectionsCompleteVendorOAuthCaller:
+    | ConnectionsCompleteVendorOAuthCaller
+    | undefined =
+    options.enableConnectionsEnrollPanel === false
+      ? undefined
+      : ((args) =>
+          rpcConn.call('collection.connection.completeVendorOAuth', args)
+        ) as ConnectionsCompleteVendorOAuthCaller;
   const connectionsTakeVendorOAuthResultCaller:
     | ConnectionsTakeVendorOAuthResultCaller
     | undefined =
@@ -7604,9 +8253,12 @@ export const bootstrapWebclient = async (
   // Default ON; tests pass `enableAccountBindingPanel: false` when they do not
   // exercise the section. The status/pro reads are pair-RPCs and degrade to
   // inline error chips on pre-D-175 servers. R27 wires the session read so the
-  // recued.com card can surface "Signed in as …" + a Sign out action; the read
-  // is a single GET to the auth Worker on panel open that returns
-  // `{authenticated:false}` for self-hosters with no account (no error chip).
+  // recued.com card can surface "Signed in as …" + a Sign out action. ⛔ That
+  // read is a cross-origin GET to the auth Worker and the panel GATES it on the
+  // server holding an account binding (plus the user-initiated Connect press):
+  // the Settings route mounts every section eagerly, so an ungated read turned
+  // opening ANY settings surface into a recued.com call on a self-hosted server
+  // with no account. See `account-binding-panel.ts`.
   const accountBindingAuthClient =
     options.enableAccountBindingPanel === false
       ? null
@@ -7726,6 +8378,9 @@ export const bootstrapWebclient = async (
     unsavedChangesPrompt?: () => string | null;
     /** User-started source work whose outcome is not known yet. */
     hasInFlightWork?: () => boolean;
+    /** Opt-in route-leave copy for in-flight work that must retain its owner.
+     * Absent/null leaves ordinary tracked background work navigable. */
+    inFlightWorkPrompt?: () => string | null;
     /** Native mount-only work before the boot-scoped tracker is composed. */
     hasRouteInFlightWork?: () => boolean;
     /** Same-surface deep links can opt into an in-place transition. This is
@@ -8128,6 +8783,18 @@ export const bootstrapWebclient = async (
           if (status === 'connected') listener();
         }),
         ...(options.now !== undefined ? { now: options.now } : {}),
+        // Others — the operation-group grant surface, beneath the enroll form.
+        ...(connectionsGrantListCaller !== undefined
+          && connectionsListGroupsCaller !== undefined
+          && connectionsGrantGroupCaller !== undefined
+          && connectionsRevokeGroupCaller !== undefined
+          ? {
+              connectionsListCaller: connectionsGrantListCaller,
+              connectionsListGroupsCaller,
+              connectionsGrantGroupCaller,
+              connectionsRevokeGroupCaller,
+            }
+          : {}),
         // Others — the generic connection.* REACH enroll panel.
         ...(connectionsEnrollListCaller !== undefined
           && connectionsEnrollCaller !== undefined
@@ -8225,6 +8892,13 @@ export const bootstrapWebclient = async (
           : {}),
         ...(connectionsMailListCaller !== undefined
           ? { connectionsMailListCaller }
+          : {}),
+        ...(connectionsCompleteVendorOAuthCaller !== undefined
+          ? {
+              connectionsCompleteVendorOAuthCaller: switchWorkTracker.track(
+                connectionsCompleteVendorOAuthCaller,
+              ),
+            }
           : {}),
         ...(connectionsStartVendorOAuthCaller !== undefined
           && connectionsTakeVendorOAuthResultCaller !== undefined
@@ -8423,6 +9097,23 @@ export const bootstrapWebclient = async (
           if (prefill?.context !== undefined) {
             packsRunModal.setContextValues(prefill.context);
           }
+          // ⛔⛔ ATTACH IT. `wireRunModal` BUILDS the overlay and never mounts it
+          // — "the host appends it to `document.body` (or its own portal)". The
+          // other five hosts do; this one did not, so every Pack Use press wired
+          // a modal into nothing, showed nothing, and then LATCHED: the
+          // `packsRunModal !== null` guard above turned every later press on
+          // every button into a silent no-op for the rest of the session.
+          //
+          // That is why it read as "the buttons are not clickable" — the click
+          // handler ran correctly every time, all the way to a modal that was
+          // never on screen.
+          //
+          // Portal to body so a route repaint cannot wipe an open run; the
+          // fake-doc tests have no `body`, so they fall back to the route root
+          // (same shape as the recipes route).
+          const packsModalPortal = (doc as { body?: HTMLElement }).body
+            ?? appShell.contentRoot;
+          packsModalPortal.appendChild(packsRunModal.element);
         },
         ...(supervisionListCaller !== undefined ? { supervisionListCaller } : {}),
         ...(supervisionSetCaller !== undefined
@@ -8578,7 +9269,8 @@ export const bootstrapWebclient = async (
           fileReadCaller: (args) => rpcConn.call('data.file.read', args),
           // D-195 optional workflow install: these lightweight public
           // projections prove the directly named BulkPackManifest carries all
-          // current recipe_bundle members. Failure only hides the CTA.
+          // current recipe_bundle members. Catalog failure keeps the CTA
+          // closed; a carrier-artifact failure is retryable in the detail.
           recipeCatalogCaller: () => fetchRecipeCatalog(),
           packCatalogCaller: () => fetchPackCatalog(),
           // Tool exposure is per-(recipe × contract) and lives in #contracts —
@@ -8587,6 +9279,11 @@ export const bootstrapWebclient = async (
           ...(hashSource !== null && initialRecipeId !== undefined
             ? { initialRecipeId }
             : {}),
+          // Recipe list/detail navigation uses replaceState, so it must update
+          // the router cache explicitly just like Packs and Automation do.
+          onHashSync: (hash) => {
+            activeHash = hash;
+          },
           subscribe: subscriber.on,
         });
       let recipeDiscover: ReturnType<typeof mountRecipeDiscovery> | null = null;
@@ -8761,6 +9458,12 @@ export const bootstrapWebclient = async (
                     dataEntityVerificationAddress.verificationRelationship,
                 }
               : {}),
+        // Data changes tabs and opens/closes details with replaceState, so no
+        // hashchange reaches the shell. Keep the router cache aligned or a
+        // later navigation back to the pre-detail hash is dropped as a no-op.
+        onHashSync: (hash) => {
+          activeHash = hash;
+        },
         subscribe: subscriber.on,
       }));
     }
@@ -8887,6 +9590,11 @@ export const bootstrapWebclient = async (
               : logsSegment !== undefined
                 ? { initialRunId: logsSegment }
               : {}),
+        // Run selection uses replaceState so the History table can keep its
+        // scroll/load state. Tell the shell which run the mount now owns.
+        onHashSync: (hash) => {
+          activeHash = hash;
+        },
         ...(options.now !== undefined ? { now: options.now } : {}),
         subscribe: subscriber.on,
       }));
@@ -10108,6 +10816,7 @@ export const bootstrapWebclient = async (
     hasUnsavedChanges?: () => boolean;
     unsavedChangesPrompt?: () => string | null;
     hasInFlightWork?: () => boolean;
+    inFlightWorkPrompt?: () => string | null;
     hasRouteInFlightWork?: () => boolean;
     navigateDeepLink?: (hash: string) => boolean;
     getRecoveryDraft?: () => ChatRouteRecoveryDraft | null;
@@ -10116,9 +10825,10 @@ export const bootstrapWebclient = async (
   recoveryIntentLandingHash = deferredRecoveryReturnArrival?.landingHash
     ?? recoveryIntentContinuationMarker?.landingHash
     ?? null;
-  const recoveryIntentOrientation =
+  recoveryIntentOrientation =
     deferredRecoveryReturnArrival !== undefined
       || recoveryIntentContinuationMarker !== null
+      || recoveryIntentExpiredDeferredCheck !== null
       ? mountRecoveryIntentOrientation({
           root: appShell.contentRoot,
           statusHost: appShell.connectionHost,
@@ -10192,6 +10902,380 @@ export const bootstrapWebclient = async (
       route: activeRoute,
     });
     return true;
+  };
+
+  reviewRecoveryIntentExpiryHandoff = (requested) => {
+    const matchesLineage = (): boolean => {
+      const current = recoveryIntentExpiryHandoff;
+      const deferred = recoveryIntentExpiredDeferredCheck;
+      return current !== null
+        && deferred !== null
+        && recoveryIntentContinuationMarker === null
+        && bootProfileId !== null
+        && requested.serverProfileId === bootProfileId
+        && current.serverProfileId === requested.serverProfileId
+        && current.landingHash === requested.landingHash
+        && current.deferredAt === requested.deferredAt
+        && current.expiredAt === requested.expiredAt
+        && deferred.profileId === requested.serverProfileId
+        && deferred.landingHash === requested.landingHash
+        && deferred.deferredAt === requested.deferredAt
+        && deferred.expiresAt === requested.expiredAt;
+    };
+    if (!matchesLineage()) {
+      clearRecoveryIntentExpiryHandoff();
+      return 'missing';
+    }
+    if (
+      recoveryIntentExpiryHandoff?.phase !== requested.phase
+      || (recoveryIntentExpiryHandoff.retryReason ?? null)
+        !== (requested.retryReason ?? null)
+      || (recoveryIntentExpiryHandoff.diagnosisTarget ?? null)
+        !== (requested.diagnosisTarget ?? null)
+      || (recoveryIntentExpiryHandoff.closureTarget ?? null)
+        !== (requested.closureTarget ?? null)
+      || (recoveryIntentExpiryHandoff.checkBlocker ?? null)
+        !== (requested.checkBlocker ?? null)
+      || recoveryIntentExpiryReviewInFlight
+      || pendingRecoveryReturnAction !== null
+    ) return 'unavailable';
+
+    const restoreQuietHandoff = (): void => {
+      if (!matchesLineage() || recoveryIntentExpiryHandoff === null) return;
+      approvalAttentionPopover?.setRecoveryIntentExpiryHandoff(
+        recoveryIntentExpiryHandoff,
+      );
+      approvalAttentionPopover?.open();
+    };
+    const publishHandoffAfterAttentionAction = (): void => {
+      // `started` closes and clears the popover's captured item after this
+      // callback returns. Republish the live checking/retry/handoff state on
+      // the next microtask so the quiet bell remains truthful while the route
+      // owns work.
+      void Promise.resolve().then(() => {
+        if (!matchesLineage() || recoveryIntentExpiryHandoff === null) return;
+        approvalAttentionPopover?.setRecoveryIntentExpiryHandoff(
+          recoveryIntentExpiryHandoff,
+        );
+      });
+    };
+    const restoreQuietHandoffAfterAttentionAction = (): void => {
+      // An injected hash source may run its leave guard synchronously inside
+      // this click callback. Reopen after the popover has processed `started`
+      // so a declined dirty-route transition cannot immediately close it again.
+      void Promise.resolve().then(restoreQuietHandoff);
+    };
+    const orientClosureWithoutRecheck = (): void => {
+      if (
+        !matchesLineage()
+        || recoveryIntentExpiryHandoff?.phase !== 'closure'
+      ) return;
+      // The route can perform its ordinary mount read. This reminder starts
+      // no recovery-owned check and remains until explicit closure.
+      focusRecoveryReturnLanding('review');
+      publishHandoffAfterAttentionAction();
+    };
+    if (requested.phase === 'closure') {
+      const selectedHash = hashSource?.getHash() ?? activeHash;
+      if (selectedHash !== requested.landingHash) {
+        pendingRecoveryReturnAction = {
+          landingHash: requested.landingHash,
+          onArrival: () => {
+            void Promise.resolve().then(orientClosureWithoutRecheck);
+          },
+          onDeclined: restoreQuietHandoffAfterAttentionAction,
+        };
+        navigateHash(requested.landingHash);
+      } else {
+        void Promise.resolve().then(orientClosureWithoutRecheck);
+      }
+      return 'started';
+    }
+    if (requested.phase === 'handoff') {
+      if (requested.diagnosisTarget === 'area') {
+        const finishAreaDiagnosis = (): void => {
+          if (
+            !matchesLineage()
+            || recoveryIntentExpiryHandoff?.phase !== 'handoff'
+            || recoveryIntentExpiryHandoff.diagnosisTarget !== 'area'
+          ) return;
+          // This is orientation, not another saved-check retry. The route may
+          // perform its ordinary mount read, but this handoff dispatches no
+          // additional recovery read and never restores the expired intent.
+          clearRecoveryIntentExpiryHandoff();
+          focusRecoveryReturnLanding('review');
+        };
+        const selectedHash = hashSource?.getHash() ?? activeHash;
+        if (selectedHash !== requested.landingHash) {
+          pendingRecoveryReturnAction = {
+            landingHash: requested.landingHash,
+            onArrival: () => {
+              void Promise.resolve().then(finishAreaDiagnosis);
+            },
+            onDeclined: restoreQuietHandoffAfterAttentionAction,
+          };
+          navigateHash(requested.landingHash);
+        } else {
+          // Let the popover close and return focus first, then place focus on
+          // the route-owned status/error target without a transient bell hop.
+          void Promise.resolve().then(finishAreaDiagnosis);
+        }
+        return 'started';
+      }
+      if (
+        requested.diagnosisTarget !== 'server'
+        || accountMenu === null
+        || !accountMenu.canOpenConnectionDiagnosis(
+          requested.serverProfileId,
+        )
+      ) return 'unavailable';
+      const diagnosisId = [
+        'expired-area-review',
+        requested.expiredAt,
+        ++recoveryIntentConnectionDiagnosisSequence,
+      ].join(':');
+      pendingRecoveryIntentConnectionDiagnosis = {
+        source: 'expired_area_review',
+        id: diagnosisId,
+        profileId: requested.serverProfileId,
+        landingHash: requested.landingHash,
+        deferredAt: requested.deferredAt,
+        expiredAt: requested.expiredAt,
+      };
+      void Promise.resolve().then(() => {
+        const pending = pendingRecoveryIntentConnectionDiagnosis;
+        if (
+          pending?.source !== 'expired_area_review'
+          || pending.id !== diagnosisId
+          || !matchesLineage()
+          || recoveryIntentExpiryHandoff?.phase !== 'handoff'
+          || recoveryIntentExpiryHandoff.diagnosisTarget !== 'server'
+          || accountMenu === null
+        ) {
+          if (pending?.id === diagnosisId) {
+            pendingRecoveryIntentConnectionDiagnosis = null;
+            restoreQuietHandoff();
+          }
+          return;
+        }
+        const opened = accountMenu.openConnectionDiagnosis({
+          id: diagnosisId,
+          profileId: requested.serverProfileId,
+          profileLabel: recoveryIntentExpiryHandoff.serverProfileLabel,
+          areaLabel: requested.areaLabel,
+          kind: 'expired_area_review',
+        });
+        if (opened === 'opened') return;
+        if (pendingRecoveryIntentConnectionDiagnosis?.id === diagnosisId) {
+          pendingRecoveryIntentConnectionDiagnosis = null;
+        }
+        restoreQuietHandoff();
+      });
+      return 'started';
+    }
+    const markDiagnosisRecheckStarted = (): boolean => {
+      const deferred = recoveryIntentExpiredDeferredCheck;
+      if (deferred === null) return false;
+      const started = recoveryIntentDeferredCheckStore
+        .markDiagnosisRecheckStarted(deferred);
+      if (started === null) return false;
+      recoveryIntentExpiredDeferredCheck = started;
+      return true;
+    };
+    const landForDiagnosisRecheck = (
+      handle: RecoveryContextProbe,
+      routeJustMounted: boolean,
+    ): void => {
+      if (!matchesLineage() || !markDiagnosisRecheckStarted()) {
+        clearRecoveryIntentExpiryHandoff();
+        return;
+      }
+      if (connectionStatus.status() !== 'connected') {
+        recordRecoveryIntentDiagnosisRecheckFailure('server');
+        publishHandoffAfterAttentionAction();
+        return;
+      }
+      const generation = ++recoveryIntentExpiryReviewGeneration;
+      recoveryIntentExpiryReviewInFlight = true;
+      setRecoveryIntentExpiryHandoffState('rechecking');
+      publishHandoffAfterAttentionAction();
+      void (async (): Promise<void> => {
+        let freshness: Awaited<ReturnType<typeof reconcileRecoveryContext>>;
+        if (!routeJustMounted && handle.retryRecoveryContext === undefined) {
+          await Promise.resolve();
+          freshness = 'mounted_only';
+        } else {
+          try {
+            if (!routeJustMounted) await handle.retryRecoveryContext?.();
+            freshness = await reconcileRecoveryContext(handle);
+          } catch {
+            freshness = 'unavailable';
+          }
+        }
+        if (
+          disposed
+          || generation !== recoveryIntentExpiryReviewGeneration
+          || !matchesLineage()
+        ) return;
+        recoveryIntentExpiryReviewInFlight = false;
+        const currentHash = hashSource?.getHash() ?? activeHash;
+        const routeStillActive = !(
+          mountedRouteHandle !== handle
+          || currentHash !== requested.landingHash
+          || parseRouteFromHash(currentHash) !== activeRoute
+        );
+        if (!routeStillActive) {
+          recordRecoveryIntentDiagnosisRecheckFailure('area');
+          return;
+        }
+        if (freshness !== 'current') {
+          recordRecoveryIntentDiagnosisRecheckFailure(
+            connectionStatus.status() === 'connected' ? 'area' : 'server',
+          );
+          focusRecoveryReturnLanding('review');
+          return;
+        }
+        clearRecoveryIntentExpiryHandoff();
+        focusRecoveryReturnLanding('review');
+      })();
+    };
+    if (requested.phase === 'outcome') {
+      if (
+        requested.checkBlocker === 'server'
+        || connectionStatus.status() !== 'connected'
+      ) {
+        // Known downtime cannot spend the one-shot choice. Keep it disabled
+        // until reconnect, which only removes the blocker.
+        setRecoveryIntentExpiryHandoffState(
+          'outcome',
+          undefined,
+          undefined,
+          undefined,
+          'server',
+        );
+        return 'unavailable';
+      }
+      const selectedHash = hashSource?.getHash() ?? activeHash;
+      if (selectedHash !== requested.landingHash) {
+        pendingRecoveryReturnAction = {
+          landingHash: requested.landingHash,
+          onArrival: (handle) => landForDiagnosisRecheck(handle, true),
+          onDeclined: restoreQuietHandoffAfterAttentionAction,
+        };
+        navigateHash(requested.landingHash);
+        return 'started';
+      }
+      landForDiagnosisRecheck(mountedRouteHandle, false);
+      return 'started';
+    }
+    const markReviewStarted = (): boolean => {
+      const deferred = recoveryIntentExpiredDeferredCheck;
+      if (deferred === null) return false;
+      const started = recoveryIntentDeferredCheckStore.markReviewStarted(
+        deferred,
+      );
+      if (started === null) return false;
+      recoveryIntentExpiredDeferredCheck = started;
+      return true;
+    };
+    const landForBroadReview = (
+      handle: RecoveryContextProbe,
+      routeJustMounted: boolean,
+    ): void => {
+      if (!matchesLineage() || !markReviewStarted()) {
+        clearRecoveryIntentExpiryHandoff();
+        return;
+      }
+      if (connectionStatus.status() !== 'connected') {
+        recordRecoveryIntentExpiryReviewFailure(
+          'server',
+          recoveryIntentExpiryRetryReasonForStatus(),
+        );
+        publishHandoffAfterAttentionAction();
+        return;
+      }
+      const generation = ++recoveryIntentExpiryReviewGeneration;
+      recoveryIntentExpiryReviewInFlight = true;
+      setRecoveryIntentExpiryHandoffState('checking');
+      publishHandoffAfterAttentionAction();
+      void (async (): Promise<void> => {
+        let freshness: Awaited<ReturnType<typeof reconcileRecoveryContext>>;
+        if (!routeJustMounted && handle.retryRecoveryContext === undefined) {
+          // A settled mount is not evidence of a fresh deliberate review. A
+          // route without a retry seam remains reviewable but cannot close the
+          // saved retry by inference.
+          await Promise.resolve();
+          freshness = 'mounted_only';
+        } else {
+          try {
+            // Mounting the broad route already starts its current read. An
+            // existing mount must dispatch the route's explicit retry seam.
+            if (!routeJustMounted) await handle.retryRecoveryContext?.();
+            freshness = await reconcileRecoveryContext(handle);
+          } catch {
+            freshness = 'unavailable';
+          }
+        }
+        if (
+          disposed
+          || generation !== recoveryIntentExpiryReviewGeneration
+          || !matchesLineage()
+        ) return;
+        recoveryIntentExpiryReviewInFlight = false;
+        const currentHash = hashSource?.getHash() ?? activeHash;
+        const routeStillActive = !(
+          mountedRouteHandle !== handle
+          || currentHash !== requested.landingHash
+          || parseRouteFromHash(currentHash) !== activeRoute
+        );
+        if (!routeStillActive) {
+          recordRecoveryIntentExpiryReviewFailure(
+            'area',
+            'interrupted',
+          );
+          return;
+        }
+        if (freshness !== 'current') {
+          const connected = connectionStatus.status() === 'connected';
+          recordRecoveryIntentExpiryReviewFailure(
+            connected ? 'area' : 'server',
+            connected
+              ? 'unavailable'
+              : recoveryIntentExpiryRetryReasonForStatus(),
+          );
+          focusRecoveryReturnLanding('review');
+          return;
+        }
+        clearRecoveryIntentExpiryHandoff();
+        focusRecoveryReturnLanding('review');
+      })();
+    };
+
+    if (connectionStatus.status() !== 'connected') {
+      if (!markReviewStarted()) {
+        clearRecoveryIntentExpiryHandoff();
+        return 'missing';
+      }
+      recordRecoveryIntentExpiryReviewFailure(
+        'server',
+        recoveryIntentExpiryRetryReasonForStatus(),
+      );
+      publishHandoffAfterAttentionAction();
+      return 'started';
+    }
+
+    const selectedHash = hashSource?.getHash() ?? activeHash;
+    if (selectedHash !== requested.landingHash) {
+      pendingRecoveryReturnAction = {
+        landingHash: requested.landingHash,
+        onArrival: (handle) => landForBroadReview(handle, true),
+        onDeclined: restoreQuietHandoffAfterAttentionAction,
+      };
+      navigateHash(requested.landingHash);
+      return 'started';
+    }
+    landForBroadReview(mountedRouteHandle, false);
+    return 'started';
   };
 
   if (
@@ -10956,6 +12040,51 @@ export const bootstrapWebclient = async (
     return 'started';
   };
 
+  deferRecoveryIntentVerification = (requested) => {
+    const marker = recoveryIntentContinuationMarker;
+    if (
+      marker === null
+      || bootProfileId === null
+      || marker.profileId !== bootProfileId
+      || requested.serverProfileId !== marker.profileId
+      || requested.landingHash !== marker.landingHash
+      || requested.intent !== marker.intent
+    ) {
+      retireRecoveryIntentContinuation();
+      return 'missing';
+    }
+    if (
+      requested.phase !== 'verification_ready'
+      || requested.remediation !== 'escalated'
+      || requested.reviewTarget !== 'server'
+      || recoveryIntentContinuationPhase !== 'verification_ready'
+      || recoveryIntentContinuationRemediation !== 'escalated'
+      || recoveryIntentContinuationReviewTarget !== 'server'
+      || recoveryIntentReviewVerificationTarget !== 'server'
+      || recoveryIntentContinuationInterruptionReason !== null
+      || (requested.deferredAt ?? null)
+        !== (recoveryIntentDeferredCheck?.deferredAt ?? null)
+      || (requested.expiresAt ?? null)
+        !== (recoveryIntentDeferredCheck?.expiresAt ?? null)
+      || recoveryIntentContinuationRunInFlight
+      || pendingRecoveryReturnAction !== null
+    ) return 'unavailable';
+
+    const deferred = recoveryIntentDeferredCheckStore.defer(marker);
+    if (deferred === null) return 'unavailable';
+    recoveryIntentDeferredCheck = deferred;
+    recoveryIntentContinuation = recoveryIntentContinuationPresentation(
+      marker,
+    );
+    approvalAttentionPopover?.setRecoveryIntentContinuation(
+      recoveryIntentContinuation,
+    );
+    // The parent and unfinished-check markers remain byte-for-byte unchanged.
+    // A third intent-free marker only quiets their presentation and preserves
+    // a bounded broad-area handoff after expiry; no route or request starts.
+    return 'started';
+  };
+
   const finishPendingRecoveryReturnAction = (hash: string): void => {
     const pending = pendingRecoveryReturnAction;
     if (pending === null || pending.landingHash !== hash) return;
@@ -11180,7 +12309,10 @@ export const bootstrapWebclient = async (
           next === activeRoute
           && shouldRemountForSameRoute(next, activeHash, hash);
         if (next === activeRoute && !remountForDeepLink) {
-          if (hash !== activeHash) markRecoveryReturnDeparted();
+          if (hash !== activeHash) {
+            interruptRecoveryIntentExpiryReviewForNavigation(hash);
+            markRecoveryReturnDeparted();
+          }
           finishPendingRecoveryReturnAction(hash);
           return;
         }
@@ -11188,20 +12320,45 @@ export const bootstrapWebclient = async (
           remountForDeepLink
           && mountedRouteHandle.navigateDeepLink?.(hash) === true
         ) {
+          interruptRecoveryIntentExpiryReviewForNavigation(hash);
           markRecoveryReturnDeparted();
           activeHash = hash;
           finishPendingRecoveryReturnAction(hash);
           return;
         }
-        // Leave guard — a route with unsaved work (Kitchen editors or a Chat
-        // draft) gets a chance to keep the user. Declining restores the URL by
+        // Leave guards — route-owned in-flight work may opt in with contextual
+        // copy, and unsaved work (Kitchen editors, Settings drafts, or Chat)
+        // always gets a chance to keep the user. Declining restores the URL by
         // SETTING the hash (a new entry) — replaceState would DESTROY the
         // history entry a Back/Forward decline traversed to, decaying the back
         // stack entry by entry. The resulting hashchange re-dispatch no-ops
         // here (same route, same hash). Environments without confirm (tests)
         // proceed.
-        if (mountedRouteHandle.hasUnsavedChanges?.() === true) {
-          const view = doc?.defaultView;
+        const view = doc?.defaultView;
+        const declineRouteLeave = (): void => {
+          const declinedRecoveryReturn = pendingRecoveryReturnAction;
+          pendingRecoveryReturnAction = null;
+          declinedRecoveryReturn?.onDeclined();
+          if (view?.location !== undefined) {
+            view.location.hash = activeHash;
+          } else if (view?.history?.replaceState !== undefined) {
+            view.history.replaceState(null, '', activeHash);
+          }
+        };
+        const inFlightPrompt =
+          mountedRouteHandle.inFlightWorkPrompt?.()?.trim() ?? '';
+        if (
+          inFlightPrompt.length > 0
+          && mountedRouteHandle.hasInFlightWork?.() === true
+        ) {
+          const proceed = typeof view?.confirm === 'function'
+            ? view.confirm(inFlightPrompt)
+            : true;
+          if (!proceed) {
+            declineRouteLeave();
+            return;
+          }
+        } else if (mountedRouteHandle.hasUnsavedChanges?.() === true) {
           const routePrompt =
             mountedRouteHandle.unsavedChangesPrompt?.()?.trim();
           const proceed =
@@ -11213,17 +12370,11 @@ export const bootstrapWebclient = async (
                 )
               : true;
           if (!proceed) {
-            const declinedRecoveryReturn = pendingRecoveryReturnAction;
-            pendingRecoveryReturnAction = null;
-            declinedRecoveryReturn?.onDeclined();
-            if (view?.location !== undefined) {
-              view.location.hash = activeHash;
-            } else if (view?.history?.replaceState !== undefined) {
-              view.history.replaceState(null, '', activeHash);
-            }
+            declineRouteLeave();
             return;
           }
         }
+        interruptRecoveryIntentExpiryReviewForNavigation(hash);
         markRecoveryReturnDeparted();
         mountedRouteHandle.dispose();
         activeRoute = next;
@@ -11235,12 +12386,24 @@ export const bootstrapWebclient = async (
     : (): void => undefined;
 
   // Tab-close twin of the leave guard: while the mounted route holds unsaved
-  // work, closing/reloading the tab asks first. One shell-level listener over
-  // the current route handle (routes never register their own).
+  // work, or persistent Attention chrome owns an unresolved decision,
+  // closing/reloading the tab asks first. Routes never register their own
+  // listeners.
   const onBeforeUnload = (event: BeforeUnloadEvent): void => {
+    const guardedInFlightPrompt =
+      mountedRouteHandle.inFlightWorkPrompt?.()?.trim() ?? '';
     if (
       !intentionalServerSwitchReload
-      && mountedRouteHandle.hasUnsavedChanges?.() === true
+      && (
+        approvalAttentionPopover?.hasInFlightWork() === true
+        || drawerCreateOverlay?.hasUnsavedChanges() === true
+        || drawerCreateOverlay?.hasInFlightWork() === true
+        || mountedRouteHandle.hasUnsavedChanges?.() === true
+        || (
+          guardedInFlightPrompt.length > 0
+          && mountedRouteHandle.hasInFlightWork?.() === true
+        )
+      )
     ) {
       event.preventDefault();
       // Chrome requires a set returnValue for the native prompt.
@@ -11315,10 +12478,13 @@ export const bootstrapWebclient = async (
       for (const lease of [...chatTurnLeases]) releaseChatTurnLease(lease);
       settledChatTurnIds.clear();
       recoveryIntentContinuationRunInFlight = false;
+      recoveryIntentExpiryReviewGeneration += 1;
+      recoveryIntentExpiryReviewInFlight = false;
       detachRecoveryIntentReviewVerificationStatus();
       detachRecoveryIntentContinuationReconnect();
       detachRecoveryIntentOwnershipListeners();
       cancelRecoveryIntentContinuationExpiry();
+      cancelRecoveryIntentExpiryHandoff();
       recoveryIntentOrientation?.dispose();
       mountedRouteHandle.dispose();
       foundationalOAuthContinuity.dispose();

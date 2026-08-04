@@ -93,6 +93,92 @@ describe('renderAttentionSlot', () => {
     expect(html).toContain('3 items need your attention');
   });
 
+  it('keeps saved-for-later items discoverable without raising the badge', () => {
+    const quiet = renderAttentionSlot({ blockingCount: 0, quietCount: 1 });
+    expect(quiet).toContain('top-bar-attention--idle');
+    expect(quiet).toContain('top-bar-attention--saved');
+    expect(quiet).not.toContain('top-bar-attention-badge');
+    expect(quiet).toContain(
+      'No items need your attention; 1 item saved for later',
+    );
+
+    const ready = renderAttentionSlot({
+      blockingCount: 0,
+      quietCount: 1,
+      quietStatus: 'ready',
+    });
+    expect(ready).toContain('top-bar-attention--ready');
+    expect(ready).toContain('top-bar-attention-quiet-indicator');
+    expect(ready).not.toContain('top-bar-attention-badge');
+    expect(ready).toContain(
+      'No items need your attention; 1 saved item ready to review',
+    );
+
+    const checking = renderAttentionSlot({
+      blockingCount: 0,
+      quietCount: 1,
+      quietStatus: 'checking',
+    });
+    expect(checking).toContain('top-bar-attention--checking');
+    expect(checking).toContain('top-bar-attention-quiet-indicator');
+    expect(checking).not.toContain('top-bar-attention-badge');
+    expect(checking).toContain(
+      'No items need your attention; 1 saved review is being checked',
+    );
+
+    const retry = renderAttentionSlot({
+      blockingCount: 0,
+      quietCount: 1,
+      quietStatus: 'retry',
+    });
+    expect(retry).toContain('top-bar-attention--retry');
+    expect(retry).toContain('top-bar-attention-quiet-indicator');
+    expect(retry).not.toContain('top-bar-attention-badge');
+    expect(retry).toContain(
+      'No items need your attention; 1 saved review needs retry',
+    );
+
+    const diagnosis = renderAttentionSlot({
+      blockingCount: 0,
+      quietCount: 1,
+      quietStatus: 'diagnosis',
+    });
+    expect(diagnosis).toContain('top-bar-attention--diagnosis');
+    expect(diagnosis).toContain('top-bar-attention-quiet-indicator');
+    expect(diagnosis).not.toContain('top-bar-attention-badge');
+    expect(diagnosis).toContain(
+      'No items need your attention; 1 saved review needs diagnosis',
+    );
+
+    const decision = renderAttentionSlot({
+      blockingCount: 0,
+      quietCount: 1,
+      quietStatus: 'decision',
+    });
+    expect(decision).toContain('top-bar-attention--decision');
+    expect(decision).not.toContain('top-bar-attention-badge');
+    expect(decision).toContain(
+      'No items need your attention; 1 saved review needs a decision',
+    );
+
+    const closure = renderAttentionSlot({
+      blockingCount: 0,
+      quietCount: 1,
+      quietStatus: 'closure',
+    });
+    expect(closure).toContain('top-bar-attention--closure');
+    expect(closure).not.toContain('top-bar-attention-badge');
+    expect(closure).toContain(
+      'No items need your attention; 1 saved review needs closure',
+    );
+
+    const mixed = renderAttentionSlot({ blockingCount: 2, quietCount: 3 });
+    expect(mixed).toContain('>2<');
+    expect(mixed).toContain(
+      '2 items need your attention; 3 items saved for later',
+    );
+  });
+
   it('uses singular phrasing when count is exactly 1', () => {
     const html = renderAttentionSlot({ blockingCount: 1 });
     expect(html).toContain('1 item needs your attention');

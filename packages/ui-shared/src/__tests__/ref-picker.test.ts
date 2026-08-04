@@ -406,6 +406,44 @@ describe('ref-picker wire', () => {
     expect(input.value).toBe('Beta digest');
   });
 
+  it('does not move or commit the picker while an IME composition is active', async () => {
+    const { root, input, results } = buildShell();
+    const onChange = vi.fn();
+    wireRefPicker(asParent(root), {
+      search: syncSearch,
+      config: CONFIG,
+      onChange,
+      minChars: 0,
+      schedule: syncSchedule,
+    });
+    input.value = '';
+    dispatch(input, 'input', {});
+    await flush();
+    const composingArrow = dispatch(input, 'keydown', {
+      key: 'ArrowDown',
+      isComposing: true,
+    });
+    expect(composingArrow.defaultPrevented).toBe(false);
+    expect(input.getAttribute('aria-activedescendant')).toBeNull();
+    dispatch(input, 'keydown', { key: 'ArrowDown' });
+    expect(input.getAttribute('aria-activedescendant')).not.toBeNull();
+
+    const composingEnter = dispatch(input, 'keydown', {
+      key: 'Enter',
+      isComposing: true,
+    });
+    expect(composingEnter.defaultPrevented).toBe(false);
+    expect(onChange).not.toHaveBeenCalled();
+    expect(input.value).toBe('');
+    expect(results.getAttribute('hidden')).toBeNull();
+
+    dispatch(input, 'keydown', { key: 'Enter' });
+    expect(onChange).toHaveBeenCalledWith({
+      id: 'r-alpha',
+      label: 'Alpha report',
+    });
+  });
+
   it('Enter with nothing highlighted commits the top match', async () => {
     const { root, input } = buildShell();
     const onChange = vi.fn();
@@ -584,6 +622,28 @@ describe('ref-picker wire', () => {
     dispatch(input, 'input', {});
     // No listener left → the value the test set is untouched by the picker.
     expect(input.value).toBe('after destroy');
+  });
+
+  it('setQuery restores uncommitted text without changing the selected value', async () => {
+    const { root, input } = buildShell();
+    const onChange = vi.fn();
+    const search = vi.fn(syncSearch);
+    const handle = wireRefPicker(asParent(root), {
+      search,
+      config: CONFIG,
+      onChange,
+      initialValue: { id: 'r-alpha', label: 'Alpha report' },
+      schedule: syncSchedule,
+    });
+
+    handle.setQuery('gamma');
+    await flush();
+
+    expect(handle.getQuery()).toBe('gamma');
+    expect(input.value).toBe('gamma');
+    expect(handle.getValue()).toEqual({ id: 'r-alpha', label: 'Alpha report' });
+    expect(search).toHaveBeenCalledWith('gamma');
+    expect(onChange).not.toHaveBeenCalled();
   });
 
   it('drops a stale async result when a newer query has superseded it', async () => {
@@ -781,7 +841,7 @@ const querySelector = (root: FakeNode, selector: string): FakeNode | null => {
 const dispatch = (
   target: FakeNode,
   type: string,
-  props: { key?: string },
+  props: { key?: string; isComposing?: boolean },
 ): {
   defaultPrevented: boolean;
   propagationStopped: boolean;
@@ -789,6 +849,7 @@ const dispatch = (
   const event = {
     target,
     key: props.key,
+    isComposing: props.isComposing,
     defaultPrevented: false,
     propagationStopped: false,
     preventDefault() {

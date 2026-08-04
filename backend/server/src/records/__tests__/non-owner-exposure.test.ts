@@ -73,6 +73,14 @@ describe('D-221 non-owner Records recipe exposure', () => {
     });
     expect(() => assertRecordsNonOwnerRecipeExposure(lowered, 'mcp', recordsInventory))
       .not.toThrow();
+
+    // Bulk-pack recipes may omit the optional empty phase in their stored JSON.
+    // Exposure classification must treat that as an empty phase, not throw at
+    // the MCP boundary before the host-owned refusal can be checked.
+    const compact = recipe();
+    delete (compact as Partial<RecipeDefinition>).prefetch_steps;
+    expect(() => assertRecordsNonOwnerRecipeExposure(compact, 'mcp', recordsInventory))
+      .not.toThrow();
   });
 
   it.each([

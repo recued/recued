@@ -58,11 +58,20 @@ import {
   handleInboundTokenList,
   handleInboundTokenRevoke,
   handleInboundTokenToolCatalog,
+  handleInboundTokenUpdateContract,
   handleInboundTokenUpdateGrants,
   makeChatHandlers,
   type ChatRpcDeps,
 } from '../chat-handler.js';
 import type { ChatBroadcastEmitter } from '../chat-orchestrator.js';
+import {
+  enqueueMcpRecipeCallback,
+  sweepMcpRecipeCallbackRetention,
+} from '../mcp-recipe-callback.js';
+import {
+  createSharedStore,
+  type SharedStore,
+} from '../storage/shared-store.js';
 
 const selfSignature: RecuedServerSignature = {
   server_kind: 'recued',
@@ -73,6 +82,7 @@ const selfSignature: RecuedServerSignature = {
 interface TestRig {
   deps: ChatRpcDeps;
   inboundTokenStore: ChatInboundTokenStore;
+  callbackStore: SharedStore;
   broadcastedEvents: Array<{
     kind: string;
     op?: string;
@@ -87,7 +97,23 @@ const setup = (): TestRig => {
   ensureChatSchema(db);
   ensureChatInboundTokenSchema(db);
   const store = createChatStore(db);
-  const inboundTokenStore = createChatInboundTokenStore(db);
+  const callbackStore = createSharedStore({
+    db,
+    // Callback values are CAS-inline by contract, so this test never calls a
+    // blob method; the production SharedStore logic and schema remain real.
+    blobs: {} as never,
+    now: () => 10_000,
+  });
+  let inboundTokenStore: ChatInboundTokenStore;
+  inboundTokenStore = createChatInboundTokenStore(db, {
+    onAuthorityChanged: (token_id) =>
+      sweepMcpRecipeCallbackRetention({
+        store: callbackStore,
+        inboundTokenStore,
+        token_id,
+        now: () => 10_000,
+      }).then(() => undefined),
+  });
   const broadcastedEvents: TestRig['broadcastedEvents'] = [];
   const broadcast: ChatBroadcastEmitter = {
     emit: (event) => broadcastedEvents.push(event as TestRig['broadcastedEvents'][number]),
@@ -120,9 +146,62 @@ const setup = (): TestRig => {
       now: () => 10_000,
     },
     inboundTokenStore,
+    callbackStore,
     broadcastedEvents,
     auditRows,
   };
+};
+
+const CALLBACK_TOOL = 'recued-core/callback-query';
+
+const issueCallbackToken = async (rig: TestRig) =>
+  handleInboundTokenIssue(rig.deps, validIssuanceArgs({
+    contract_id: 'ct_callbacks',
+    grants: {
+      [CALLBACK_TOOL]: true,
+      'recued-core/retained-query': true,
+    },
+  }));
+
+const queueCallback = async (
+  rig: TestRig,
+  token_id: string,
+  query_tool = CALLBACK_TOOL,
+): Promise<void> => {
+  const result = await enqueueMcpRecipeCallback(
+    {
+      store: rig.callbackStore,
+      inboundTokenStore: rig.inboundTokenStore,
+      isContractLive: () => true,
+      permitsMcpDoor: () => true,
+      now: () => 10_000,
+      newCallbackRef: () => `mcpcb_${query_tool === CALLBACK_TOOL ? 'callback1' : 'retained1'}`,
+    },
+    {
+      destination_contract_id: 'ct_callbacks',
+      topic: query_tool === CALLBACK_TOOL ? 'mail.callback' : 'mail.retained',
+      query_tool,
+      arguments: { record_id: 'mail:lifecycle' },
+      ttl_seconds: 3600,
+      source_recipe_id: 'mail-callback-watch',
+    },
+  );
+  expect(result.queued_to).toBe(1);
+  const rows = await rig.callbackStore.list(`mcp.recipe-callback.${token_id}`);
+  const values = await Promise.all(
+    rows.map(async (row) => (await rig.callbackStore.read(row.key))?.value),
+  );
+  expect(values).toEqual(expect.arrayContaining([
+    expect.objectContaining({ target_token_id: token_id, query_tool }),
+  ]));
+};
+
+const callbackValues = async (
+  rig: TestRig,
+  token_id: string,
+): Promise<unknown[]> => {
+  const rows = await rig.callbackStore.list(`mcp.recipe-callback.${token_id}`);
+  return Promise.all(rows.map(async (row) => (await rig.callbackStore.read(row.key))?.value));
 };
 
 const validIssuanceArgs = (
@@ -576,6 +655,84 @@ describe('D-137 P5 follow-on — chat.inbound_token.delete', () => {
     const result = await handleInboundTokenDelete(rig.deps, { token_id: 'nope' });
     expect(result.deleted).toBe(false);
     expect(rig.broadcastedEvents).toEqual([]);
+  });
+});
+
+describe('MCP callback mailbox follows inbound-token authority lifecycle', () => {
+  let rig: TestRig;
+  beforeEach(() => {
+    rig = setup();
+  });
+
+  it('selectively scrubs callbacks whose query grant was removed', async () => {
+    const issued = await issueCallbackToken(rig);
+    await queueCallback(rig, issued.record.token_id);
+    await queueCallback(rig, issued.record.token_id, 'recued-core/retained-query');
+
+    await handleInboundTokenUpdateGrants(rig.deps, {
+      token_id: issued.record.token_id,
+      grants: { 'recued-core/retained-query': true },
+    });
+
+    const values = await callbackValues(rig, issued.record.token_id);
+    expect(values).toHaveLength(2);
+    expect(values).toEqual(expect.arrayContaining([
+      expect.objectContaining({ retired: true }),
+      expect.objectContaining({ query_tool: 'recued-core/retained-query' }),
+    ]));
+    expect(JSON.stringify(values.filter(
+      (value) => (value as { retired?: unknown }).retired === true,
+    ))).not.toContain('mail:lifecycle');
+  });
+
+  it('scrubs callbacks immediately on contract rebind and revoke', async () => {
+    const rebound = await issueCallbackToken(rig);
+    await queueCallback(rig, rebound.record.token_id);
+    await handleInboundTokenUpdateContract(rig.deps, {
+      token_id: rebound.record.token_id,
+      contract_id: 'ct_rebound',
+    });
+    expect(await callbackValues(rig, rebound.record.token_id)).toEqual([
+      expect.objectContaining({ retired: true }),
+    ]);
+
+    const secondRig = setup();
+    const revoked = await issueCallbackToken(secondRig);
+    await queueCallback(secondRig, revoked.record.token_id);
+    await handleInboundTokenRevoke(secondRig.deps, {
+      token_id: revoked.record.token_id,
+    });
+    expect(await callbackValues(secondRig, revoked.record.token_id)).toEqual([
+      expect.objectContaining({ retired: true }),
+    ]);
+  });
+
+  it('retries orphan cleanup through an idempotent hard-delete call', async () => {
+    const issued = await issueCallbackToken(rig);
+    await queueCallback(rig, issued.record.token_id);
+    expect(rig.inboundTokenStore.deleteToken(issued.record.token_id)).toBe(true);
+
+    await expect(handleInboundTokenDelete(rig.deps, {
+      token_id: issued.record.token_id,
+    })).resolves.toEqual({ deleted: false });
+
+    expect(await callbackValues(rig, issued.record.token_id)).toEqual([
+      expect.objectContaining({ retired: true }),
+    ]);
+  });
+
+  it('does not roll back token revocation when callback retention is unavailable', async () => {
+    const issued = await issueCallbackToken(rig);
+    rig.callbackStore.list = async () => {
+      throw new Error('shared store unavailable');
+    };
+    const result = await handleInboundTokenRevoke(
+      rig.deps,
+      { token_id: issued.record.token_id },
+    );
+
+    expect(result.revoked).toBe(true);
+    expect(result.token.revoked_at).toBe(10_000);
   });
 });
 

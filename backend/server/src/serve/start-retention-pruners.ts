@@ -15,6 +15,8 @@ import type {
 import type {
   ExecutionCaseCompiler,
 } from '../execution-case-compiler.js';
+import type { SharedStore } from '../storage/shared-store.js';
+import type { ChatInboundTokenStore } from '../storage/chat-inbound-token-store.js';
 
 export interface StartRetentionPrunersOptions {
   readonly backgroundServices: BackgroundServiceRegistry;
@@ -22,6 +24,12 @@ export interface StartRetentionPrunersOptions {
   readonly auditRetention: AuditRetention | undefined;
   readonly s2sPreviewStore: S2SPreviewStore | undefined;
   readonly correctionEventsStore: CorrectionEventsStore | undefined;
+  readonly mcpRecipeCallbackStore?:
+    | Pick<SharedStore, 'list' | 'read' | 'compareAndSet'>
+    | undefined;
+  readonly mcpRecipeCallbackTokenStore?:
+    | Pick<ChatInboundTokenStore, 'getTokenById' | 'drainAuthorityChanges'>
+    | undefined;
   /** D-219 — the capture-only argument buffer's age sweep. */
   readonly executionCaseArgumentStore?:
     | Pick<ExecutionCaseArgumentStore, 'pruneOlderThan'>

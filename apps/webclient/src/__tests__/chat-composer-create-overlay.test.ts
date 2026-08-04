@@ -26,7 +26,10 @@ import {
   CHAT_ROUTE_CREATE_OVERLAY_ATTR,
   type ChatRouteConn,
 } from '../chat/bootstrap-chat-route.js';
-import { COMPOSE_ROUTE_TARGET_CHIP_ATTR } from '../compose/compose-route.js';
+import {
+  COMPOSE_ROUTE_FIELD_ATTR,
+  COMPOSE_ROUTE_TARGET_CHIP_ATTR,
+} from '../compose/compose-route.js';
 
 // ── fake DOM ──────────────────────────────────────────────────────
 
@@ -46,6 +49,7 @@ interface FakeEl {
   setAttribute(k: string, v: string): void;
   getAttribute(k: string): string | null;
   hasAttribute(k: string): boolean;
+  removeAttribute(k: string): void;
   appendChild(c: FakeEl): FakeEl;
   removeChild(c: FakeEl): FakeEl;
   remove(): void;
@@ -81,6 +85,7 @@ const makeEl = (tag: string): FakeEl => {
     setAttribute: (k, v) => el.attrs.set(k, v),
     getAttribute: (k) => el.attrs.get(k) ?? null,
     hasAttribute: (k) => el.attrs.has(k),
+    removeAttribute: (k) => el.attrs.delete(k),
     appendChild: (c) => {
       c.parent = el;
       el.children.push(c);
@@ -338,6 +343,26 @@ describe('Shell-frame Step 4 — composer buttons + Create overlay', () => {
     btn.click();
     btn.click();
     expect(collectByAttr(doc.body, CHAT_ROUTE_CREATE_OVERLAY_ATTR)).toHaveLength(1);
+    route.dispose();
+  });
+
+  it('reports an open Create draft through the Chat leave-guard seam', async () => {
+    const { doc, root, route } = mount(true);
+    await tick();
+    createButton(root)?.click();
+    const overlay = collectByAttr(doc.body, CHAT_ROUTE_CREATE_OVERLAY_ATTR)[0]!;
+    const email = collectByAttr(overlay, COMPOSE_ROUTE_FIELD_ATTR).find(
+      (field) => field.getAttribute(COMPOSE_ROUTE_FIELD_ATTR) === 'email',
+    )!;
+
+    expect(route.hasUnsavedChanges()).toBe(false);
+    expect(route.unsavedChangesPrompt()).toBeNull();
+    email.value = 'unfinished@example.test';
+    expect(route.hasUnsavedChanges()).toBe(true);
+    expect(route.unsavedChangesPrompt()).toBe(
+      'Discard this unfinished Create item?',
+    );
+
     route.dispose();
   });
 

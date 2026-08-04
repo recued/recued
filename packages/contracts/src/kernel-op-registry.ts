@@ -191,6 +191,7 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
 
   // ── contact — the personal contact graph.
   op('core.contact.resolve', 'contact', 'contact-resolve', 'read'),
+  op('core.contact.business-context', 'contact', 'contact-business-context', 'read'),
   op('core.contact.upsert', 'contact', 'contact-upsert', 'write'),
   // D-187 slice 3b — NATIVE verb-op for the `recued_contactEngagementsList` MCP tool
   // (contact-rooted engagement evidence; D-139). No backing ingredient. OWNER-default-only
@@ -200,6 +201,16 @@ export const KERNEL_OP_REGISTRY: readonly KernelOpEntry[] = [
   // ── notification — the alert-dispatch surface; backed by the anti-shadow
   //    `core-notification-send` slug (bare `notification-send` is the alias).
   op('core.notification.send', 'notification', 'core-notification-send', 'write'),
+  // A bounded, coalescing hint with a flat pointer/settings envelope to a
+  // contract-bound MCP client. The transport adds no query result; the client
+  // must call `query_tool` through the ordinary live token/contract gates, and
+  // this op grants no read authority itself.
+  op(
+    'core.notification.recipe-callback',
+    'notification',
+    'core-notification-recipe-callback',
+    'write',
+  ),
 
   // ── work-entity — the note / task / commitment / project / booking entity CRUD.
   op('core.work-entity.note.create', 'work-entity', 'note-create', 'write'),

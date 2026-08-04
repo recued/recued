@@ -98,6 +98,27 @@ export interface ConnectionField {
   hidden?: boolean;
   /** True → field is allowed to be empty without blocking submit. */
   optional?: boolean;
+  /** True → the value is REQUIRED for the connection to work, but the OWNER
+   *  does not type it: an in-app flow supplies it.
+   *
+   *  ⛔ Exists because `optional` conflated two different questions and the form
+   *  only ever asked the first one. `optional` is about SUBMIT VALIDITY ("may
+   *  this be empty?"); the `*` an owner reads is about THEIR OBLIGATION ("must I
+   *  find and type this?"). Deriving the asterisk straight from `optional` makes
+   *  those the same claim, and for `auth.refresh_token` they are opposites: the
+   *  connection cannot work without one (so it may not be empty), yet
+   *  `applyVendorOAuthResultValues` writes it from the OAuth dance's result
+   *  (`vendors/index.ts`), so the owner must NOT go hunting for one.
+   *
+   *  The old form asked them to. A required secret marked `*` reads as "obtain
+   *  this yourself", and the blocking message — "Refresh Token is required." —
+   *  named the obligation without ever naming the action that satisfies it.
+   *
+   *  So: `autofilled` suppresses the owner-obligation asterisk and switches the
+   *  blocking message to the action. It does NOT relax validation — an empty
+   *  value still blocks submit, because saving a connection that can never mint
+   *  an access token is worse than a confusing label. */
+  autofilled?: boolean;
   /** Visibility predicate. Returning false hides the field from the
    *  rendered form AND excludes its value from the rpc payload (so
    *  switching `auth.type` from `bearer` to `basic` doesn't smuggle

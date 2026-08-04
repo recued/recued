@@ -552,10 +552,12 @@ export const createGcalProvider = (
     const timeMax = new Date(now + scanOpts.expansion_future_days * 86_400_000)
       .toISOString();
     let aborted = false;
+    const failures: unknown[] = [];
     for (const cal of calendars) {
       if (aborted) break;
       let pageToken: string | undefined;
       let lastSyncToken: string | undefined;
+      let calendarFailed = false;
       const pagination = new ProviderPaginationGuard('Google calendar initial scan');
       do {
         pagination.claim(pageToken ?? '');
@@ -580,6 +582,8 @@ export const createGcalProvider = (
             }
           } catch (err) {
             markError(`gcal canonicalize failed id=${event.id}`, err);
+            failures.push(err);
+            calendarFailed = true;
           }
         }
         pageToken = readProviderStringContinuation(
@@ -596,9 +600,12 @@ export const createGcalProvider = (
       // Persist the sync token only when the full page chain completed
       // — a mid-page abort leaves the token unset so the next tick
       // re-scans the window and picks up the rest.
-      if (!aborted && lastSyncToken) {
+      if (!aborted && !calendarFailed && lastSyncToken) {
         await opts.accountStore.set(syncTokenKey(cal.id), lastSyncToken);
       }
+    }
+    if (!aborted && failures.length > 0) {
+      throw new AggregateError(failures, 'Google calendar initial scan was incomplete');
     }
   };
 
@@ -623,6 +630,7 @@ export const createGcalProvider = (
         let pageToken: string | undefined;
         let lastSyncToken: string | undefined;
         let retry = false;
+        let deliveryFailed = false;
         const pagination = new ProviderPaginationGuard('Google calendar sync');
         do {
           pagination.claim(pageToken ?? '');
@@ -680,6 +688,7 @@ export const createGcalProvider = (
               lastSuccessfulSyncAt = nowOf();
             } catch (err) {
               markError(`gcal dispatch failed id=${event.id}`, err);
+              deliveryFailed = true;
             } finally {
               pendingQueueSize = Math.max(0, pendingQueueSize - 1);
             }
@@ -698,7 +707,10 @@ export const createGcalProvider = (
         } while (pageToken);
 
         if (retry) continue;
-        if (lastSyncToken) {
+        // A callback rejection means the collection did not durably ingest the
+        // event. Retain the prior syncToken so Google replays this complete
+        // range on the next tick; collection upserts/deletes are idempotent.
+        if (!deliveryFailed && lastSyncToken) {
           await opts.accountStore.set(syncTokenKey(cal.id), lastSyncToken);
         }
         break;

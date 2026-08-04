@@ -3,13 +3,13 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://www.mongodb.com/docs/api/doc/atlas-admin-api-v2.json",
-      "bytes": 4590007,
-      "sha256": "5040b0d3973e891f9e9048f6c305ed54977d0d69153ad073b232a39d90a50c77",
+      "bytes": 4632047,
+      "sha256": "3189596ea9271ba6d4334e4f833f65e8ce6bb7336ae4eeebc3e270d9be983f91",
       "openapi": "3.0.1",
       "title": "MongoDB Atlas Administration API",
       "api_version": "2.0",
-      "x_xgen_sha": "89206a87add1aa585b794d67231df3ad3d651d27",
-      "official_path_count": 306,
+      "x_xgen_sha": "fc3d0cd3ee15dbeb0d36ecc03631786d41036a9d",
+      "official_path_count": 308,
       "retrieved_on": "2026-07-20",
       "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract.",
       "declared_server": [
@@ -18,21 +18,21 @@
         }
       ]
     },
-    "official_operation_count": 487,
-    "admitted_operation_count": 429,
+    "official_operation_count": 490,
+    "admitted_operation_count": 432,
     "deprecated_operation_count": 58,
     "official_method_counts": {
       "DELETE": 72,
-      "GET": 241,
+      "GET": 243,
       "PATCH": 62,
-      "POST": 103,
+      "POST": 104,
       "PUT": 9
     },
     "admitted_method_counts": {
       "DELETE": 65,
-      "GET": 214,
+      "GET": 216,
       "PATCH": 52,
-      "POST": 91,
+      "POST": 92,
       "PUT": 7
     },
     "official_tag_counts": {
@@ -61,7 +61,7 @@
       "Flex Restore Jobs": 3,
       "Flex Snapshots": 3,
       "Global Clusters": 5,
-      "Invoices": 9,
+      "Invoices": 12,
       "LDAP Configuration": 5,
       "Legacy Backup": 11,
       "Maintenance Windows": 5,
@@ -115,7 +115,7 @@
       "Flex Restore Jobs": 3,
       "Flex Snapshots": 3,
       "Global Clusters": 5,
-      "Invoices": 9,
+      "Invoices": 12,
       "LDAP Configuration": 5,
       "Maintenance Windows": 5,
       "MongoDB Cloud Users": 16,
@@ -141,7 +141,7 @@
       "X.509 Authentication": 3
     },
     "pack_operation_counts": {
-      "mongodb-atlas-organizations-projects": 61,
+      "mongodb-atlas-organizations-projects": 64,
       "mongodb-atlas-credentials-access": 52,
       "mongodb-atlas-identity-governance": 51,
       "mongodb-atlas-clusters-compute": 49,
@@ -151,26 +151,26 @@
       "mongodb-atlas-search-streams": 64
     },
     "composition_bytes": {
-      "mongodb-atlas-organizations-projects": 141252,
+      "mongodb-atlas-organizations-projects": 148072,
       "mongodb-atlas-credentials-access": 115835,
       "mongodb-atlas-identity-governance": 115112,
       "mongodb-atlas-clusters-compute": 110818,
       "mongodb-atlas-networking-integrations": 82742,
       "mongodb-atlas-backups-archive": 128172,
-      "mongodb-atlas-observability": 167906,
-      "mongodb-atlas-search-streams": 152043
+      "mongodb-atlas-observability": 168258,
+      "mongodb-atlas-search-streams": 152646
     },
     "body_mode_counts": {
-      "none": 291,
-      "raw_json": 138
+      "none": 293,
+      "raw_json": 139
     },
     "body_shape_counts": {
       "array": 6,
-      "object": 132
+      "object": 133
     },
     "success_status_counts": {
-      "200": 333,
-      "201": 22,
+      "200": 335,
+      "201": 23,
       "202": 16,
       "204": 58
     },
@@ -188,24 +188,24 @@
       "application/vnd.atlas.2024-11-13+json": 19,
       "application/vnd.atlas.2025-02-19+json": 16,
       "application/vnd.atlas.2025-03-12+gzip": 1,
-      "application/vnd.atlas.2025-03-12+json": 50
+      "application/vnd.atlas.2025-03-12+json": 53
     },
     "risk_counts": {
-      "admin": 99,
+      "admin": 100,
       "destructive": 110,
-      "read": 220
+      "read": 222
     },
     "approval_counts": {
-      "always": 209,
-      "never": 220
+      "always": 210,
+      "never": 222
     },
     "idempotency_counts": {
       "idempotent": 124,
-      "non_idempotent": 87,
-      "safe": 218
+      "non_idempotent": 88,
+      "safe": 220
     },
     "pagination": {
-      "automatic_operation_count": 71,
+      "automatic_operation_count": 72,
       "contract_gap_count": 1,
       "automatic_operation_keys": [
         "GET /api/atlas/v2/clusters",
@@ -271,6 +271,7 @@
         "GET /api/atlas/v2/orgs/{orgId}/groups",
         "GET /api/atlas/v2/orgs/{orgId}/invoices",
         "GET /api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/lineItems:search",
+        "GET /api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports",
         "GET /api/atlas/v2/orgs/{orgId}/serviceAccounts",
         "GET /api/atlas/v2/orgs/{orgId}/serviceAccounts/{clientId}/accessList",
         "GET /api/atlas/v2/orgs/{orgId}/serviceAccounts/{clientId}/groups",
@@ -296,7 +297,7 @@
     "auth": {
       "selected": "OAuth2 service-account bearer access token supplied only by the enrolled mongodb_atlas connection",
       "official_documentation_model": "OAuth2 client-credentials service accounts recommended; one-hour bearer access token; legacy HTTP Digest API keys also documented but unsupported by this pack",
-      "oauth_or_digest_operation_count": 428,
+      "oauth_or_digest_operation_count": 431,
       "no_auth_requirement_operation_count": 1,
       "no_auth_requirement_operation_keys": [
         "GET /api/atlas/v2/unauth/controlPlaneIPAddresses"
@@ -308,8 +309,8 @@
     "authority_notes": {
       "exact_path_parameter_contract": true,
       "operation_id_uniqueness": true,
-      "versioned_accept_media_operation_count": 429,
-      "versioned_content_type_operation_count": 138,
+      "versioned_accept_media_operation_count": 432,
+      "versioned_content_type_operation_count": 139,
       "dynamic_header_parameters": [
         "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}:Use-Effective-Fields-Replication-Specs",
         "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}:Use-Effective-Instance-Fields",
@@ -319,7 +320,7 @@
         "POST /api/atlas/v2/groups/{groupId}/clusters:Use-Effective-Fields-Replication-Specs",
         "POST /api/atlas/v2/groups/{groupId}/clusters:Use-Effective-Instance-Fields"
       ],
-      "canonical_response_query_omission_count": 779,
+      "canonical_response_query_omission_count": 784,
       "exact_decimal_string_parameters": [
         "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/snapshots:oplogInc",
         "GET /api/atlas/v2/groups/{groupId}/clusters/{clusterName}/backup/snapshots:oplogTs",
@@ -443,7 +444,7 @@
       ],
       "optional_request_body_count": 2,
       "array_request_body_count": 6,
-      "unsafe_integer_response_union_operation_count": 132
+      "unsafe_integer_response_union_operation_count": 133
     },
     "source_decision": {
       "admitted": false,
@@ -892,7 +893,7 @@
         "approval": "never"
       }
     ],
-    "operation_ids_sha256": "1915456ab4da33cfb341a1ba450d031ebbc48da0d96af4357239ae270262d10a"
+    "operation_ids_sha256": "cb21f2c895b62a023bc0fc667e4e923bfeb4bff74573a6477ac55f2e61b43d08"
   },
   "official_operations": [
     {
@@ -14133,6 +14134,97 @@
       "exclusion_reason": null,
       "pack": "mongodb-atlas-organizations-projects",
       "op": "invoices.search_org_invoice_line_items"
+    },
+    {
+      "key": "GET /api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports",
+      "method": "GET",
+      "path": "/api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports",
+      "operation_id": "listOrgInvoiceReports",
+      "tag": "Invoices",
+      "summary": "Return All Invoice Reports for One Invoice",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-organizations-projects",
+      "op": "invoices.list_org_invoice_reports"
+    },
+    {
+      "key": "POST /api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports",
+      "method": "POST",
+      "path": "/api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports",
+      "operation_id": "createOrgInvoiceReport",
+      "tag": "Invoices",
+      "summary": "Create One Invoice Report",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "201",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-organizations-projects",
+      "op": "invoices.create_org_invoice_report"
+    },
+    {
+      "key": "GET /api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports/{reportId}",
+      "method": "GET",
+      "path": "/api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports/{reportId}",
+      "operation_id": "getOrgInvoiceReport",
+      "tag": "Invoices",
+      "summary": "Return One Invoice Report",
+      "deprecated": false,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "mongodb-atlas-organizations-projects",
+      "op": "invoices.get_org_invoice_report"
     },
     {
       "key": "GET /api/atlas/v2/orgs/{orgId}/liveMigrations/availableProjects",
@@ -29658,6 +29750,21 @@
           "dropped_pattern": false,
           "integer_as_decimal_string": false,
           "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
         }
       ],
       "request_media": [],
@@ -29705,6 +29812,21 @@
           "admitted_key": "groupId",
           "admitted_type": "string",
           "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
           "authority": "official_openapi_parameter",
           "dropped_pattern": false,
           "integer_as_decimal_string": false,
@@ -29786,6 +29908,21 @@
           "admitted_key": "clusterName",
           "admitted_type": "string",
           "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
           "authority": "official_openapi_parameter",
           "dropped_pattern": false,
           "integer_as_decimal_string": false,
@@ -45609,6 +45746,242 @@
         }
       ]
     },
+    "GET /api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports": {
+      "key": "GET /api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports",
+      "operation_id": "listOrgInvoiceReports",
+      "pack": "mongodb-atlas-organizations-projects",
+      "op": "invoices.list_org_invoice_reports",
+      "method": "GET",
+      "path": "/api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports",
+      "wire_path": "/api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports",
+      "tag": "Invoices",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "orgId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "orgId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "invoiceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "invoiceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "envelope",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "includeCount",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": "query.includeCount",
+          "admitted_type": "boolean",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "itemsPerPage",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pageNum",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "query",
+          "wire_name": "pretty",
+          "required": false,
+          "official_types": [
+            "boolean"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "omitted_to_lock_canonical_response_shape",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": "results",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "itemsPerPage",
+          "value": 500,
+          "max": 500
+        },
+        "param": {
+          "placement": "query",
+          "param": "pageNum"
+        },
+        "start": 1,
+        "increment": "page"
+      },
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "GET /api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports/{reportId}": {
+      "key": "GET /api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports/{reportId}",
+      "operation_id": "getOrgInvoiceReport",
+      "pack": "mongodb-atlas-organizations-projects",
+      "op": "invoices.get_org_invoice_report",
+      "method": "GET",
+      "path": "/api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports/{reportId}",
+      "wire_path": "/api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports/{reportId}",
+      "tag": "Invoices",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "orgId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "orgId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "invoiceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "invoiceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "reportId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "reportId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
     "GET /api/atlas/v2/orgs/{orgId}/invoices/pending": {
       "key": "GET /api/atlas/v2/orgs/{orgId}/invoices/pending",
       "operation_id": "listOrgInvoicePending",
@@ -60754,6 +61127,76 @@
         "application/vnd.atlas.2023-01-01+json"
       ],
       "selected_response_media": "application/vnd.atlas.2023-01-01+json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "ServiceAccounts": []
+        },
+        {
+          "DigestAuth": []
+        }
+      ]
+    },
+    "POST /api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports": {
+      "key": "POST /api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports",
+      "operation_id": "createOrgInvoiceReport",
+      "pack": "mongodb-atlas-organizations-projects",
+      "op": "invoices.create_org_invoice_report",
+      "method": "POST",
+      "path": "/api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports",
+      "wire_path": "/api/atlas/v2/orgs/{orgId}/invoices/{invoiceId}/reports",
+      "tag": "Invoices",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "orgId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "orgId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        },
+        {
+          "in": "path",
+          "wire_name": "invoiceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "invoiceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "array_scalarized": false
+        }
+      ],
+      "request_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "201",
+      "response_media": [
+        "application/vnd.atlas.2025-03-12+json"
+      ],
+      "selected_response_media": "application/vnd.atlas.2025-03-12+json",
       "result_path": null,
       "pagination": null,
       "pagination_contract_gap": null,

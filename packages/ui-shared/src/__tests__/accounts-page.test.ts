@@ -476,6 +476,7 @@ describe('renderAccountsPanel', () => {
 
     expect(html).toContain('First sync pending');
     expect(html).toContain('Waiting for first sync');
+    expect(html).toContain('data-accounts-detail-heading tabindex="-1"');
     expect(html).not.toContain('>never<');
   });
 
@@ -512,6 +513,33 @@ describe('renderAccountsPanel', () => {
     expect(file).not.toContain('data-action="accounts-reauth"');
   });
 
+  it('keeps busy account lifecycle actions focusable and announces their work', () => {
+    const html = renderAccountsPanel({
+      state: base({
+        lane: 'calendar',
+        stage: 'detail',
+        detailSlug: 'work',
+        rows: [{
+          slug: 'work',
+          adapterType: 'gcal',
+          authState: 'expired',
+          reauthAvailable: true,
+        }],
+        rowBusy: new Set(['resync:work', 'reauth:work']),
+      }),
+    });
+
+    for (const action of ['accounts-resync', 'accounts-reauth']) {
+      const lifecycle = html.match(
+        new RegExp(`<button[^>]*data-action="${action}"[^>]*>[^<]+</button>`),
+      )?.[0];
+      expect(lifecycle).toBeDefined();
+      expect(lifecycle).toContain('aria-disabled="true"');
+      expect(lifecycle).toContain('aria-busy="true"');
+      expect(lifecycle).not.toMatch(/\sdisabled(?:\s|>)/);
+    }
+  });
+
   it('renders the IMAP form on the form stage', () => {
     const html = renderAccountsPanel({
       state: base({ stage: 'form', providerId: 'imap', values: seedAccountFormValues(imap()) }),
@@ -519,8 +547,34 @@ describe('renderAccountsPanel', () => {
     expect(html).toContain('data-action="accounts-submit-form"');
     expect(html).toContain('data-acct-field="host"');
     expect(html).toContain('data-acct-field="folders"');
-    expect(html).toContain('<h2 class="accounts-form-title">Connect IMAP / SMTP</h2>');
+    expect(html).toContain(
+      '<h2 class="accounts-form-title" data-accounts-form-heading tabindex="-1">Connect IMAP / SMTP</h2>',
+    );
     expect(html).toContain('Connect account');
+  });
+
+  it('keeps a busy IMAP submit focusable while fencing another activation', () => {
+    const html = renderAccountsPanel({
+      state: base({
+        stage: 'form',
+        providerId: 'imap',
+        saving: true,
+        values: {
+          ...seedAccountFormValues(imap()),
+          name: 'fastmail',
+          host: 'imap.fastmail.com',
+          username: 'me@example.com',
+          password: 'app-password',
+        },
+      }),
+    });
+    const submit = html.match(
+      /<button[^>]*data-action="accounts-submit-form"[^>]*>Connecting…<\/button>/,
+    )?.[0];
+    expect(submit).toBeDefined();
+    expect(submit).toContain('aria-disabled="true"');
+    expect(submit).toContain('aria-busy="true"');
+    expect(submit).not.toMatch(/\sdisabled(?:\s|>)/);
   });
 
   it('renders a Connect button (not a field-submit) for the Gmail OAuth form', () => {
@@ -576,7 +630,9 @@ describe('renderAccountsPanel', () => {
     expect(html).toContain('data-provider="s3"');
     expect(html).toContain('Local folder');
     expect(html).toContain('S3 bucket');
-    expect(html).toContain('<h2 class="accounts-picker-title">Choose a file source</h2>');
+    expect(html).toContain(
+      '<h2 class="accounts-picker-title" data-accounts-picker-heading tabindex="-1">Choose a file source</h2>',
+    );
   });
 
   // ── Operator redirect-URI hint (Setup-instruction UX) ──

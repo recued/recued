@@ -113,6 +113,25 @@ export const isWorkEntitySourceStale = (
   || freshness.state === 'degraded'
   || freshness.state === 'never_synced';
 
+/** The ids of every registered Source that materializes NO canonical rows.
+ *
+ *  A `read_through` declaration is a hard no-materialization boundary: it
+ *  schedules no poller and persists no `data_<kind>` row, so ANY local row
+ *  carrying its id is residue from an interrupted posture migration (the boot
+ *  migration purges it — `work-entity-source-boot`). Every surface that reads
+ *  the local store directly must subtract this set, or an interrupted
+ *  migration serves rows the declaration says do not exist. `work.search`
+ *  established the posture; the recipe-callable ops and the CRUD rpc share it
+ *  through this helper so a fourth reader cannot silently diverge. */
+export const readThroughSourceIds = (
+  sources: readonly Pick<SourceRegistration, 'id' | 'sync_posture'>[],
+): ReadonlySet<string> =>
+  new Set(
+    sources
+      .filter((source) => source.sync_posture === 'read_through')
+      .map((source) => source.id),
+  );
+
 // ────────────────────────────────────────────────────────────────
 // 2 — per-read plan
 // ────────────────────────────────────────────────────────────────

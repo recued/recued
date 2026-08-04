@@ -74,6 +74,7 @@ const mockedModulePaths = [
   '../connection-handler.js',
   '../shared-handler.js',
   '../collections/collection-handler.js',
+  '../contact-business-context.js',
   '../contact-handler.js',
   '../mail-thread-handler.js',
   '../mail-body-read-handler.js',
@@ -457,6 +458,27 @@ const importComposerWithKernelMocks = async () => {
       alternatives: [],
       contact: { email: 'ada@example.test' },
     })),
+    resolveContactBusinessContext: vi.fn(async () => ({
+      as_of: NOW,
+      known_before_at: NOW,
+      identity: {
+        coverage: 'partial',
+        resolved: true,
+        known_before: true,
+        authoritative: true,
+        company_known: false,
+        same_company: false,
+        same_company_contact_count: 0,
+      },
+      deals: { active_count: 0, historical_count: 0, observed_count: 0, coverage: 'not_configured' },
+      tasks: { active_count: 0, historical_count: 0, observed_count: 0, coverage: 'unavailable' },
+      calendar: { active_count: 0, historical_count: 0, observed_count: 0, coverage: 'unavailable' },
+      bookings: { active_count: 0, historical_count: 0, observed_count: 0, coverage: 'unavailable' },
+      projects: { active_count: 0, historical_count: 0, observed_count: 0, coverage: 'unavailable' },
+      level: 'known',
+      active_families: [],
+      historical_families: [],
+    })),
     handleMailThreadRead: vi.fn(async () => ({ messages: [] })),
     handleLinkCreate: vi.fn(async () => ({ ok: true })),
     handleAnnotationCreate: vi.fn(async () => ({ annotation: { id: 'annotation-1' } })),
@@ -508,6 +530,9 @@ const importComposerWithKernelMocks = async () => {
   vi.doMock('../contact-handler.js', () => ({
     handleContactUpsert: mocks.handleContactUpsert,
     handleContactResolve: mocks.handleContactResolve,
+  }));
+  vi.doMock('../contact-business-context.js', () => ({
+    resolveContactBusinessContext: mocks.resolveContactBusinessContext,
   }));
   vi.doMock('../mail-thread-handler.js', () => ({
     handleMailThreadRead: mocks.handleMailThreadRead,
@@ -917,6 +942,7 @@ describe('composeExecutorConfig kernel dispatcher shape', () => {
       'formResponseSetState',
       'contactUpsert',
       'contactResolve',
+      'contactBusinessContext',
       ...annotationKernelKeys,
       'timelineRead',
       ...enrichmentKernelKeys,
@@ -1036,10 +1062,24 @@ describe('composeExecutorConfig kernel dispatcher shape', () => {
     });
     const kernel = kernelOf(config);
 
-    expectPresentFunctions(kernel, ['contactUpsert', 'contactResolve']);
+    expectPresentFunctions(kernel, [
+      'contactUpsert',
+      'contactResolve',
+      'contactBusinessContext',
+    ]);
     expectPresentFunctions(kernel, annotationKernelKeys);
     expectPresentFunctions(kernel, enrichmentKernelKeys);
     expect(kernel.taskCreate).toBe(work.taskCreate);
+  });
+
+  it('wires the read-only business context without enabling contact writes or general resolve', async () => {
+    const { config } = await composeWith({
+      businessContextContactStore: contactStore(),
+    });
+    const kernel = kernelOf(config);
+
+    expectPresentFunctions(kernel, ['contactBusinessContext']);
+    expectAbsent(kernel, ['contactUpsert', 'contactResolve']);
   });
 
   it('gates the customer-access lifecycle dispatcher group on all seller lifecycle stores', async () => {
@@ -1185,9 +1225,23 @@ describe('composeExecutorConfig kernel dispatcher shape', () => {
 describe('composeExecutorConfig kernel dynamic imports', () => {
   it('resolves every non-reconciler handler import and forwards the expected deps', async () => {
     const { compose, mocks } = await importComposerWithKernelMocks();
+    const businessContextWorkEntities = {} as NonNullable<
+      ComposeExecutorConfigDeps['businessContextWorkEntityStore']
+    >;
+    const businessContextCalendars = {} as NonNullable<
+      ComposeExecutorConfigDeps['businessContextCalendars']
+    >;
+    const businessContextCrmMirror = {} as NonNullable<
+      ComposeExecutorConfigDeps['businessContextCrmMirrorStore']
+    >;
+    const getBoundCrmSources = vi.fn(() => []);
     const deps = buildDeps({
       sharedStore: sharedStore(),
       contactStore: contactStore(),
+      businessContextWorkEntityStore: businessContextWorkEntities,
+      businessContextCalendars,
+      businessContextCrmMirrorStore: businessContextCrmMirror,
+      getBoundCrmSources,
       annotationDeps: annotationDeps(),
       db: makeDb(),
       annotationStore: annotationStore(),
@@ -1213,6 +1267,11 @@ describe('composeExecutorConfig kernel dynamic imports', () => {
       last_interaction: NOW,
     });
     await kernel.contactResolve?.({ email: 'ada@example.test' });
+    await kernel.contactBusinessContext?.({
+      email: 'ada@example.test',
+      as_of: NOW,
+      known_before_at: NOW,
+    });
     await kernel.mailThreadRead?.({ slug: 'work', thread_id: 'thread-1' });
     await kernel.linkCreate?.({
       from_collection: 'data.mail',
@@ -1280,6 +1339,16 @@ describe('composeExecutorConfig kernel dynamic imports', () => {
     expect(mocks.handleContactResolve).toHaveBeenCalledWith(
       { store: deps.contactStore },
       { email: 'ada@example.test' },
+    );
+    expect(mocks.resolveContactBusinessContext).toHaveBeenCalledWith(
+      {
+        contacts: deps.contactStore,
+        workEntities: businessContextWorkEntities,
+        calendars: businessContextCalendars,
+        crmMirror: businessContextCrmMirror,
+        getBoundCrmSources,
+      },
+      { email: 'ada@example.test', as_of: NOW, known_before_at: NOW },
     );
     expect(mocks.handleLinkCreate).toHaveBeenCalledWith(
       // D-177 N.11 rule 1 — link writes stamp the 'engine' surface too

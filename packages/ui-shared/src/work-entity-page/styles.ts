@@ -11,6 +11,8 @@
  *  composition to work without further config.
  */
 
+import { WORK_ENTITY_DIALOG_DISCARD_GUARD_ATTR } from './dialog.js';
+
 export const WORK_ENTITY_PAGE_STYLES = `
 .work-entity-page {
   display: flex;
@@ -162,6 +164,10 @@ export const WORK_ENTITY_PAGE_STYLES = `
 .work-entity-list-row-button:hover {
   border-color: var(--rx-accent, var(--accent));
 }
+.work-entity-list-row-button[aria-busy="true"] {
+  cursor: wait;
+  border-color: var(--rx-accent, var(--accent));
+}
 .work-entity-list-row-primary {
   font-weight: 500;
   font-size: 14px;
@@ -177,6 +183,11 @@ export const WORK_ENTITY_PAGE_STYLES = `
   flex-wrap: wrap;
   font-size: 12px;
   color: var(--rx-muted, var(--fg-muted));
+}
+.work-entity-list-row-opening {
+  margin-left: auto;
+  color: var(--rx-accent, var(--accent));
+  font-weight: 600;
 }
 .work-entity-list-row-source {
   background: var(--surface-sunk);
@@ -373,5 +384,34 @@ export const WORK_ENTITY_PAGE_STYLES = `
   padding: 8px 12px;
   color: var(--danger);
   font-size: 13px;
+}
+[${WORK_ENTITY_DIALOG_DISCARD_GUARD_ATTR}] {
+  display: grid;
+  gap: 10px;
+  margin: 16px;
+  padding: 14px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: var(--danger-weak);
+}
+[${WORK_ENTITY_DIALOG_DISCARD_GUARD_ATTR}] h3,
+[${WORK_ENTITY_DIALOG_DISCARD_GUARD_ATTR}] p {
+  margin: 0;
+}
+.work-entity-dialog-discard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.work-entity-dialog-discard-actions button {
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid var(--rx-divider, var(--border));
+  border-radius: 6px;
+  background: var(--rx-input-bg, var(--surface));
+  color: var(--rx-fg, var(--fg));
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
 }
 `;

@@ -116,6 +116,8 @@ export const ARCHIVE_RESTORE_REALM_KEY_ATTR =
   'data-recued-archive-restore-realm-key';
 export const ARCHIVE_RESTORE_COMMIT_BTN_ATTR =
   'data-recued-archive-restore-commit';
+export const ARCHIVE_RESTORE_COMMITTED_ATTR =
+  'data-recued-archive-restore-committed';
 // M4b.2 — restore-via-upload (no-SSH migrate): a file picker on restore-entry +
 // a progress bar on the upload view.
 export const ARCHIVE_RESTORE_UPLOAD_INPUT_ATTR =
@@ -134,6 +136,7 @@ export const ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR =
 export const ARCHIVE_BACKUP_CANCEL_BTN_ATTR =
   'data-recued-archive-backup-cancel';
 export const ARCHIVE_BACKUP_RESULT_ATTR = 'data-recued-archive-backup-result';
+export const ARCHIVE_BACKUP_BUSY_ATTR = 'data-recued-archive-backup-busy';
 
 // ════════════════════════════════════════════════════════════════
 // Caller seams + handle
@@ -410,7 +413,8 @@ const COPY = {
     '— enter your recovery key (if you haven’t) and Preview.',
   restore_upload_failed: 'Upload failed:',
   preview_cta: 'Preview backup',
-  restore_busy: 'Reading the backup…',
+  restore_preview_busy: 'Reading the backup…',
+  restore_commit_busy: 'Restoring the backup…',
   restore_arm_label:
     'I understand this REPLACES all current data on this server with the snapshot.',
   restore_arm_label_cross:
@@ -748,6 +752,7 @@ export const mountArchiveBackupPanel = (
   let restoreRealm: ArchiveRealmRelation | null = null;
   let restoreSchemaCompat: ArchiveSchemaCompat | null = null;
   let restoreArmed = false;
+  let restoreBusyText: string = COPY.restore_preview_busy;
   // M4b.2 restore-via-upload.
   let restoreUploadProgress = { sent: 0, total: 0 };
   let restoreUploadCancel: (() => void) | null = null;
@@ -794,28 +799,58 @@ export const mountArchiveBackupPanel = (
     }
   };
 
+  const controlHasFocus = (attr: string): boolean => {
+    const active = (doc as Document & { activeElement?: Element | null })
+      .activeElement;
+    return active?.hasAttribute?.(attr) === true;
+  };
+
+  const focusControl = (attr: string): void => {
+    const target = wrapper.querySelector?.(
+      `[${attr}]`,
+    ) as HTMLElement | null | undefined;
+    target?.focus?.();
+  };
+
   // M4 — kick off a browser download of the completed export over `/ws/download`.
   // Re-entrancy-guarded (one in-flight); resolves to a `download_done` / failure
   // note that the export-done view renders.
+  const currentDownloadFocusAttr = (): string | undefined =>
+    controlHasFocus(ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)
+      ? ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR
+      : controlHasFocus(ARCHIVE_BACKUP_CANCEL_BTN_ATTR)
+        ? ARCHIVE_BACKUP_CANCEL_BTN_ATTR
+        : undefined;
+
   const startDownload = (): void => {
     const fn = opts.archiveDownload;
     if (!fn || !exportPath || downloading) return;
+    const returnFromDownload = controlHasFocus(ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR);
     downloading = true;
     downloadNote = null;
     render();
+    if (returnFromDownload) focusControl(ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR);
     downloadCancel = fn({
       name: basename(exportPath),
       onError: (message) => {
         downloadCancel = null;
         downloading = false;
         downloadNote = { tone: 'bad', text: [COPY.download_failed, message].join(' ') };
-        if (!disposed) render();
+        if (!disposed) {
+          const returnToAction = currentDownloadFocusAttr();
+          render();
+          if (returnToAction !== undefined) focusControl(returnToAction);
+        }
       },
       onDone: () => {
         downloadCancel = null;
         downloading = false;
         downloadNote = { tone: 'ok', text: COPY.download_done };
-        if (!disposed) render();
+        if (!disposed) {
+          const returnToAction = currentDownloadFocusAttr();
+          render();
+          if (returnToAction !== undefined) focusControl(returnToAction);
+        }
       },
     });
   };
@@ -825,29 +860,49 @@ export const mountArchiveBackupPanel = (
   // so the user's next Preview / commit resolves the staged archive). The upload
   // itself needs no recovery key — only the later import does — so this never
   // gates on the mnemonic. Re-entrancy-guarded (one upload at a time).
+  const currentUploadFocusAttr = (): string | undefined =>
+    controlHasFocus(ARCHIVE_RESTORE_UPLOAD_PROGRESS_ATTR)
+      ? ARCHIVE_RESTORE_UPLOAD_PROGRESS_ATTR
+      : controlHasFocus(ARCHIVE_BACKUP_CANCEL_BTN_ATTR)
+        ? ARCHIVE_BACKUP_CANCEL_BTN_ATTR
+        : undefined;
+
   const startUpload = (file: ArchiveUploadFile): void => {
     const fn = opts.archiveUpload;
     if (!fn || restoreUploadCancel !== null) return;
+    const returnFromPicker = controlHasFocus(ARCHIVE_RESTORE_UPLOAD_INPUT_ATTR);
     clearResult();
     restoreUploadProgress = { sent: 0, total: file.size };
     restoreUploadLabel = file.name;
-    setView('restore-uploading');
+    setView(
+      'restore-uploading',
+      returnFromPicker ? ARCHIVE_RESTORE_UPLOAD_PROGRESS_ATTR : undefined,
+    );
     restoreUploadCancel = fn({
       file,
       onProgress: (sent, total) => {
         restoreUploadProgress = { sent, total };
-        if (!disposed && view === 'restore-uploading') render();
+        if (!disposed && view === 'restore-uploading') {
+          const returnToUpload = currentUploadFocusAttr();
+          render();
+          if (returnToUpload !== undefined) focusControl(returnToUpload);
+        }
       },
       onError: (message) => {
         restoreUploadCancel = null;
         if (disposed) return;
+        const returnFromUpload = currentUploadFocusAttr();
         resultLine = [COPY.restore_upload_failed, message].join(' ');
         resultTone = 'bad';
-        setView('restore-entry');
+        setView(
+          'restore-entry',
+          returnFromUpload ? ARCHIVE_RESTORE_UPLOAD_INPUT_ATTR : undefined,
+        );
       },
       onDone: (result) => {
         restoreUploadCancel = null;
         if (disposed) return;
+        const returnFromUpload = currentUploadFocusAttr();
         // The staged basename becomes the import path; surface a friendly note
         // referencing the user's original filename, then drop back to entry so
         // they can enter the key (if needed) and Preview.
@@ -858,12 +913,22 @@ export const mountArchiveBackupPanel = (
           COPY.restore_upload_done_suffix,
         ].join(' ');
         resultTone = 'neutral';
-        setView('restore-entry');
+        setView(
+          'restore-entry',
+          returnFromUpload
+            ? isValidRecoveryKey(normalizeRecoveryKey(restoreMnemonic))
+              ? ARCHIVE_RESTORE_PREVIEW_BTN_ATTR
+              : ARCHIVE_RESTORE_MNEMONIC_ATTR
+            : undefined,
+        );
       },
     });
   };
 
-  const setView = (next: ArchiveBackupView): void => {
+  const setView = (
+    next: ArchiveBackupView,
+    focusAfterRenderAttr?: string,
+  ): void => {
     if (disposed) return;
     // Leaving the running view always stops the poll loop.
     if (view === 'export-running' && next !== 'export-running') cancelPoll();
@@ -880,6 +945,9 @@ export const mountArchiveBackupPanel = (
     view = next;
     wrapper.setAttribute(ARCHIVE_BACKUP_VIEW_ATTR, view);
     render();
+    if (focusAfterRenderAttr !== undefined) {
+      focusControl(focusAfterRenderAttr);
+    }
   };
 
   const clearResult = (): void => {
@@ -906,6 +974,7 @@ export const mountArchiveBackupPanel = (
     restoreRealm = null;
     restoreSchemaCompat = null;
     restoreArmed = false;
+    restoreBusyText = COPY.restore_preview_busy;
     cancelUpload();
     restoreUploadProgress = { sent: 0, total: 0 };
     restoreUploadLabel = '';
@@ -913,6 +982,11 @@ export const mountArchiveBackupPanel = (
   };
 
   // ── Export ─────────────────────────────────────────────────────
+  const exportErrorActionAttr = (): string =>
+    exportJobId !== null && currentResumeExportStart() !== null
+      ? ARCHIVE_BACKUP_RECHECK_BTN_ATTR
+      : ARCHIVE_BACKUP_CANCEL_BTN_ATTR;
+
   const runPollCycle = async (): Promise<void> => {
     if (disposed || exportJobId === null || view !== 'export-running') return;
     let status: ArchiveJobStatus;
@@ -930,7 +1004,11 @@ export const mountArchiveBackupPanel = (
         resultLine = `${COPY.export_failed} ${messageOf(err)}`;
         resultTone = 'bad';
       }
-      setView('export-error');
+      const returnFromProgress = controlHasFocus(ARCHIVE_BACKUP_PROGRESS_ATTR);
+      setView(
+        'export-error',
+        returnFromProgress ? exportErrorActionAttr() : undefined,
+      );
       return;
     }
     if (disposed || view !== 'export-running') return;
@@ -943,7 +1021,15 @@ export const mountArchiveBackupPanel = (
       exportExpiresAt =
         typeof status.expires_at === 'number' ? status.expires_at : null;
       notifyExportSettled();
-      setView('export-done');
+      const returnFromProgress = controlHasFocus(ARCHIVE_BACKUP_PROGRESS_ATTR);
+      setView(
+        'export-done',
+        returnFromProgress
+          ? opts.archiveDownload && exportPath
+            ? ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR
+            : ARCHIVE_BACKUP_CANCEL_BTN_ATTR
+          : undefined,
+      );
       return;
     }
     if (status.state === 'error') {
@@ -952,27 +1038,38 @@ export const mountArchiveBackupPanel = (
         : COPY.export_failed;
       resultTone = 'bad';
       notifyExportSettled();
-      setView('export-error');
+      const returnFromProgress = controlHasFocus(ARCHIVE_BACKUP_PROGRESS_ATTR);
+      setView(
+        'export-error',
+        returnFromProgress ? exportErrorActionAttr() : undefined,
+      );
       return;
     }
     // running — re-render the bar + schedule the next cycle.
+    const returnToProgress = controlHasFocus(ARCHIVE_BACKUP_PROGRESS_ATTR);
     render();
+    if (returnToProgress) focusControl(ARCHIVE_BACKUP_PROGRESS_ATTR);
     cancelPoll();
     pollCancel = scheduler.schedule(() => void runPollCycle(), pollIntervalMs);
   };
 
   const startExport = async (): Promise<void> => {
     if (disposed || view !== 'export-entry') return;
+    const returnFromRun = controlHasFocus(ARCHIVE_BACKUP_RUN_BTN_ATTR);
     const key = normalizeRecoveryKey(exportMnemonic);
     if (!isValidRecoveryKey(key)) {
       resultLine = COPY.invalid_key;
       resultTone = 'bad';
       render();
+      if (returnFromRun) focusControl(ARCHIVE_BACKUP_MNEMONIC_ATTR);
       return;
     }
     clearResult();
     exportProgress = { pct: 0, bytes: 0 };
-    setView('export-running');
+    setView(
+      'export-running',
+      returnFromRun ? ARCHIVE_BACKUP_PROGRESS_ATTR : undefined,
+    );
     let jobId: string;
     try {
       const res = await opts.runExport({
@@ -990,7 +1087,11 @@ export const mountArchiveBackupPanel = (
         ? COPY.key_mismatch
         : `${COPY.export_failed} ${messageOf(err)}`;
       resultTone = 'bad';
-      setView('export-error');
+      const returnFromProgress = controlHasFocus(ARCHIVE_BACKUP_PROGRESS_ATTR);
+      setView(
+        'export-error',
+        returnFromProgress ? ARCHIVE_BACKUP_CANCEL_BTN_ATTR : undefined,
+      );
       return;
     }
     // Export is running server-side; the key is no longer needed.
@@ -1003,22 +1104,29 @@ export const mountArchiveBackupPanel = (
   // ── Restore ────────────────────────────────────────────────────
   const startPreview = async (): Promise<void> => {
     if (disposed || view !== 'restore-entry') return;
+    const returnFromPreview = controlHasFocus(ARCHIVE_RESTORE_PREVIEW_BTN_ATTR);
     const path = restorePath.trim();
     const key = normalizeRecoveryKey(restoreMnemonic);
     if (path === '') {
       resultLine = COPY.missing_path;
       resultTone = 'bad';
       render();
+      if (returnFromPreview) focusControl(ARCHIVE_RESTORE_PATH_ATTR);
       return;
     }
     if (!isValidRecoveryKey(key)) {
       resultLine = COPY.invalid_key;
       resultTone = 'bad';
       render();
+      if (returnFromPreview) focusControl(ARCHIVE_RESTORE_MNEMONIC_ATTR);
       return;
     }
     clearResult();
-    setView('restore-busy');
+    restoreBusyText = COPY.restore_preview_busy;
+    setView(
+      'restore-busy',
+      returnFromPreview ? ARCHIVE_BACKUP_BUSY_ATTR : undefined,
+    );
     try {
       const res = await opts.runImport({ path, recoveryKey: key, dry_run: true });
       if (disposed) return;
@@ -1027,18 +1135,36 @@ export const mountArchiveBackupPanel = (
       restoreSchemaCompat = res.schema_compat ?? null;
       restoreCurrentRealmKey = '';
       restoreArmed = false;
-      setView('restore-preview');
+      const returnFromBusy = controlHasFocus(ARCHIVE_BACKUP_BUSY_ATTR);
+      setView(
+        'restore-preview',
+        returnFromBusy
+          ? restoreSchemaCompat?.status === 'archive_too_new'
+            ? ARCHIVE_BACKUP_CANCEL_BTN_ATTR
+            : ARCHIVE_RESTORE_ARM_ATTR
+          : undefined,
+      );
     } catch (err) {
       if (disposed) return;
       // dry_run failures are recoverable — return to entry with an inline
       // hint so the user can fix the key / path and retry. The key is wiped
       // (a wrong key must be re-typed).
       restoreMnemonic = '';
-      if (isWrongKeyError(err)) resultLine = COPY.key_mismatch;
-      else if (errorCodeOf(err) === 'bad_request') resultLine = COPY.invalid_key;
+      const wrongKey = isWrongKeyError(err);
+      const keyFailure = wrongKey || errorCodeOf(err) === 'bad_request';
+      if (wrongKey) resultLine = COPY.key_mismatch;
+      else if (keyFailure) resultLine = COPY.invalid_key;
       else resultLine = `${COPY.preview_failed} ${messageOf(err)}`;
       resultTone = 'bad';
-      setView('restore-entry');
+      const returnFromBusy = controlHasFocus(ARCHIVE_BACKUP_BUSY_ATTR);
+      setView(
+        'restore-entry',
+        returnFromBusy
+          ? keyFailure
+            ? ARCHIVE_RESTORE_MNEMONIC_ATTR
+            : ARCHIVE_RESTORE_PATH_ATTR
+          : undefined,
+      );
     }
   };
 
@@ -1046,8 +1172,16 @@ export const mountArchiveBackupPanel = (
    *  swap must additionally prove ownership of THIS server's realm. */
   const isCrossRealm = (): boolean => restoreRealm === 'cross';
 
+  const setRestoreArmed = (next: boolean): void => {
+    const returnToArm = controlHasFocus(ARCHIVE_RESTORE_ARM_ATTR);
+    restoreArmed = next;
+    render();
+    if (returnToArm) focusControl(ARCHIVE_RESTORE_ARM_ATTR);
+  };
+
   const commitRestore = async (): Promise<void> => {
     if (disposed || view !== 'restore-preview' || !restoreArmed) return;
+    const returnFromCommit = controlHasFocus(ARCHIVE_RESTORE_COMMIT_BTN_ATTR);
     const path = restorePath.trim();
     const key = normalizeRecoveryKey(restoreMnemonic);
     const cross = isCrossRealm();
@@ -1059,10 +1193,15 @@ export const mountArchiveBackupPanel = (
       resultLine = COPY.invalid_realm_key;
       resultTone = 'bad';
       render();
+      if (returnFromCommit) focusControl(ARCHIVE_RESTORE_REALM_KEY_ATTR);
       return;
     }
     clearResult();
-    setView('restore-busy');
+    restoreBusyText = COPY.restore_commit_busy;
+    setView(
+      'restore-busy',
+      returnFromCommit ? ARCHIVE_BACKUP_BUSY_ATTR : undefined,
+    );
     try {
       const result = await opts.runImport({
         path,
@@ -1093,16 +1232,24 @@ export const mountArchiveBackupPanel = (
       restoreMnemonic = '';
       restoreCurrentRealmKey = '';
       if (disposed) return;
-      setView('restore-committed');
+      const returnFromBusy = controlHasFocus(ARCHIVE_BACKUP_BUSY_ATTR);
+      setView(
+        'restore-committed',
+        returnFromBusy ? ARCHIVE_RESTORE_COMMITTED_ATTR : undefined,
+      );
     } catch (err) {
       restoreMnemonic = '';
       restoreCurrentRealmKey = '';
       if (disposed) return;
+      const returnFromBusy = controlHasFocus(ARCHIVE_BACKUP_BUSY_ATTR);
       // ★ The server restarts on commit, so the WS drops right after the
       // response. A transport-family rejection here means the response raced
       // the drain — the restore committed; treat it as success, NOT an error.
       if (isTransportDropError(err)) {
-        setView('restore-committed');
+        setView(
+          'restore-committed',
+          returnFromBusy ? ARCHIVE_RESTORE_COMMITTED_ATTR : undefined,
+        );
         return;
       }
       // Q2 pre-commit rejection: the current-realm key was absent/wrong, so the
@@ -1110,7 +1257,10 @@ export const mountArchiveBackupPanel = (
       if (isRealmMismatchError(err)) {
         resultLine = COPY.realm_mismatch;
         resultTone = 'bad';
-        setView('restore-error');
+        setView(
+          'restore-error',
+          returnFromBusy ? ARCHIVE_BACKUP_CANCEL_BTN_ATTR : undefined,
+        );
         return;
       }
       // M5 S3.0 backstop: the server refused a newer-schema archive (the preview
@@ -1119,7 +1269,10 @@ export const mountArchiveBackupPanel = (
       if (isSchemaTooNewError(err)) {
         resultLine = COPY.schema_too_new;
         resultTone = 'bad';
-        setView('restore-error');
+        setView(
+          'restore-error',
+          returnFromBusy ? ARCHIVE_BACKUP_CANCEL_BTN_ATTR : undefined,
+        );
         return;
       }
       // A genuine pre-commit rejection (wrong archive key / bad path) — the old
@@ -1128,7 +1281,10 @@ export const mountArchiveBackupPanel = (
         ? COPY.key_mismatch
         : `${COPY.restore_failed} ${messageOf(err)}`;
       resultTone = 'bad';
-      setView('restore-error');
+      setView(
+        'restore-error',
+        returnFromBusy ? ARCHIVE_BACKUP_CANCEL_BTN_ATTR : undefined,
+      );
     }
   };
 
@@ -1137,21 +1293,33 @@ export const mountArchiveBackupPanel = (
     if (disposed || opts.runPassportExport === undefined) return;
     // Only reachable from the menu — guard against double-fire mid-flight.
     if (view === 'passport-exporting') return;
+    const returnFromStart = controlHasFocus(ARCHIVE_PASSPORT_START_BTN_ATTR);
     clearResult();
     passportJson = null;
-    setView('passport-exporting');
+    setView(
+      'passport-exporting',
+      returnFromStart ? ARCHIVE_BACKUP_BUSY_ATTR : undefined,
+    );
     try {
       const res = await opts.runPassportExport({ profile: 'support_redacted' });
       if (disposed) return;
       passportJson = JSON.stringify(res.passport, null, 2);
       resultLine = COPY.passport_done;
       resultTone = 'ok';
-      setView('passport-done');
+      const returnFromBusy = controlHasFocus(ARCHIVE_BACKUP_BUSY_ATTR);
+      setView(
+        'passport-done',
+        returnFromBusy ? ARCHIVE_PASSPORT_DOWNLOAD_BTN_ATTR : undefined,
+      );
     } catch (err) {
       if (disposed) return;
       resultLine = `${COPY.passport_failed} ${messageOf(err)}`;
       resultTone = 'bad';
-      setView('passport-error');
+      const returnFromBusy = controlHasFocus(ARCHIVE_BACKUP_BUSY_ATTR);
+      setView(
+        'passport-error',
+        returnFromBusy ? ARCHIVE_BACKUP_CANCEL_BTN_ATTR : undefined,
+      );
     }
   };
 
@@ -1262,8 +1430,14 @@ export const mountArchiveBackupPanel = (
           ARCHIVE_BACKUP_RECHECK_BTN_ATTR,
           'primary',
           () => {
+            const returnFromRecheck = controlHasFocus(
+              ARCHIVE_BACKUP_RECHECK_BTN_ATTR,
+            );
             clearResult();
-            setView('export-running');
+            setView(
+              'export-running',
+              returnFromRecheck ? ARCHIVE_BACKUP_PROGRESS_ATTR : undefined,
+            );
             void runPollCycle();
           },
         ),
@@ -1278,7 +1452,7 @@ export const mountArchiveBackupPanel = (
         'primary',
         () => {
           resetFlowState();
-          setView('export-entry');
+          setView('export-entry', ARCHIVE_BACKUP_MNEMONIC_ATTR);
         },
       ),
     );
@@ -1289,7 +1463,12 @@ export const mountArchiveBackupPanel = (
         'secondary',
         () => {
           resetFlowState();
-          setView('restore-entry');
+          setView(
+            'restore-entry',
+            opts.archiveUpload
+              ? ARCHIVE_RESTORE_UPLOAD_INPUT_ATTR
+              : ARCHIVE_RESTORE_PATH_ATTR,
+          );
         },
       ),
     );
@@ -1358,7 +1537,7 @@ export const mountArchiveBackupPanel = (
     actions.appendChild(
       makeButton(COPY.cancel_cta, ARCHIVE_BACKUP_CANCEL_BTN_ATTR, 'secondary', () => {
         resetFlowState();
-        setView('menu');
+        setView('menu', ARCHIVE_BACKUP_START_BTN_ATTR);
       }),
     );
     block.appendChild(actions);
@@ -1380,6 +1559,8 @@ export const mountArchiveBackupPanel = (
     bar.setAttribute('aria-valuenow', String(exportProgress.pct));
     bar.setAttribute('aria-valuemin', '0');
     bar.setAttribute('aria-valuemax', '100');
+    bar.setAttribute('aria-label', COPY.export_running);
+    bar.setAttribute('tabindex', '-1');
     bar.className = 'archive-backup-progress';
     const fill = doc.createElement('div');
     fill.className = 'archive-backup-progress-fill';
@@ -1427,22 +1608,29 @@ export const mountArchiveBackupPanel = (
     const actions = doc.createElement('div');
     actions.className = 'archive-backup-actions';
     // Download to this device — only when the host wired the seam + a file
-    // exists. Disabled + relabeled while a download is in flight.
+    // exists. Keep the RPC owner focusable while the explicit re-entrancy guard
+    // blocks duplicate activation.
     if (opts.archiveDownload && exportPath) {
-      actions.appendChild(
-        makeButton(
-          downloading ? COPY.download_pending : COPY.download_cta,
-          ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR,
-          'primary',
-          () => startDownload(),
-          !downloading,
-        ),
+      const download = makeButton(
+        downloading ? COPY.download_pending : COPY.download_cta,
+        ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR,
+        'primary',
+        () => startDownload(),
       );
+      if (downloading) {
+        download.setAttribute('aria-disabled', 'true');
+        download.setAttribute('aria-busy', 'true');
+      }
+      actions.appendChild(download);
     }
     actions.appendChild(
       makeButton(COPY.back_cta, ARCHIVE_BACKUP_CANCEL_BTN_ATTR, 'secondary', () => {
+        const returnFromBack = controlHasFocus(ARCHIVE_BACKUP_CANCEL_BTN_ATTR);
         resetFlowState();
-        setView('menu');
+        setView(
+          'menu',
+          returnFromBack ? ARCHIVE_BACKUP_START_BTN_ATTR : undefined,
+        );
       }),
     );
     block.appendChild(actions);
@@ -1512,7 +1700,7 @@ export const mountArchiveBackupPanel = (
     actions.appendChild(
       makeButton(COPY.cancel_cta, ARCHIVE_BACKUP_CANCEL_BTN_ATTR, 'secondary', () => {
         resetFlowState();
-        setView('menu');
+        setView('menu', ARCHIVE_RESTORE_START_BTN_ATTR);
       }),
     );
     block.appendChild(actions);
@@ -1539,6 +1727,8 @@ export const mountArchiveBackupPanel = (
     bar.setAttribute('aria-valuenow', String(pct));
     bar.setAttribute('aria-valuemin', '0');
     bar.setAttribute('aria-valuemax', '100');
+    bar.setAttribute('aria-label', COPY.restore_uploading);
+    bar.setAttribute('tabindex', '-1');
     bar.className = 'archive-backup-progress';
     const fill = doc.createElement('div');
     fill.className = 'archive-backup-progress-fill';
@@ -1551,8 +1741,12 @@ export const mountArchiveBackupPanel = (
     actions.appendChild(
       makeButton(COPY.cancel_cta, ARCHIVE_BACKUP_CANCEL_BTN_ATTR, 'secondary', () => {
         // Abort the upload + drop back to entry (key + path preserved).
+        const returnFromCancel = controlHasFocus(ARCHIVE_BACKUP_CANCEL_BTN_ATTR);
         cancelUpload();
-        setView('restore-entry');
+        setView(
+          'restore-entry',
+          returnFromCancel ? ARCHIVE_RESTORE_UPLOAD_INPUT_ATTR : undefined,
+        );
       }),
     );
     block.appendChild(actions);
@@ -1668,8 +1862,7 @@ export const mountArchiveBackupPanel = (
         restoreArmed,
         cross ? COPY.restore_arm_confirm_cross : COPY.restore_arm_confirm,
         (next) => {
-          restoreArmed = next;
-          render();
+          setRestoreArmed(next);
         },
       ),
     );
@@ -1703,17 +1896,21 @@ export const mountArchiveBackupPanel = (
 
   const renderBusy = (block: HTMLElement, text: string): void => {
     const busy = doc.createElement('p');
+    busy.setAttribute(ARCHIVE_BACKUP_BUSY_ATTR, '');
     busy.className = 'archive-backup-body';
     busy.setAttribute('role', 'status');
+    busy.setAttribute('tabindex', '-1');
     busy.textContent = text;
     block.appendChild(busy);
   };
 
   const renderCommitted = (block: HTMLElement): void => {
     const msg = doc.createElement('p');
+    msg.setAttribute(ARCHIVE_RESTORE_COMMITTED_ATTR, '');
     msg.className = 'archive-backup-result';
     msg.setAttribute('data-tone', 'neutral');
     msg.setAttribute('role', 'status');
+    msg.setAttribute('tabindex', '-1');
     msg.textContent = COPY.restore_committed;
     block.appendChild(msg);
   };
@@ -1734,8 +1931,14 @@ export const mountArchiveBackupPanel = (
           ARCHIVE_BACKUP_RECHECK_BTN_ATTR,
           'primary',
           () => {
+            const returnFromRecheck = controlHasFocus(
+              ARCHIVE_BACKUP_RECHECK_BTN_ATTR,
+            );
             clearResult();
-            setView('export-running');
+            setView(
+              'export-running',
+              returnFromRecheck ? ARCHIVE_BACKUP_PROGRESS_ATTR : undefined,
+            );
             void runPollCycle();
           },
         ),
@@ -1743,12 +1946,20 @@ export const mountArchiveBackupPanel = (
     }
     actions.appendChild(
       makeButton(COPY.back_cta, ARCHIVE_BACKUP_CANCEL_BTN_ATTR, 'secondary', () => {
+        const returnFromBack = controlHasFocus(ARCHIVE_BACKUP_CANCEL_BTN_ATTR);
         const exportStillActive = view === 'export-error'
           && exportJobId !== null
           && currentResumeExportStart() !== null;
+        const returnTarget = view === 'passport-error'
+          ? ARCHIVE_PASSPORT_START_BTN_ATTR
+          : view === 'restore-error'
+            ? ARCHIVE_RESTORE_START_BTN_ATTR
+            : exportStillActive
+              ? ARCHIVE_BACKUP_RECHECK_BTN_ATTR
+              : ARCHIVE_BACKUP_START_BTN_ATTR;
         if (exportStillActive) clearResult();
         else resetFlowState();
-        setView('menu');
+        setView('menu', returnFromBack ? returnTarget : undefined);
       }),
     );
     block.appendChild(actions);
@@ -1779,8 +1990,12 @@ export const mountArchiveBackupPanel = (
     );
     actions.appendChild(
       makeButton(COPY.back_cta, ARCHIVE_BACKUP_CANCEL_BTN_ATTR, 'secondary', () => {
+        const returnFromBack = controlHasFocus(ARCHIVE_BACKUP_CANCEL_BTN_ATTR);
         resetFlowState();
-        setView('menu');
+        setView(
+          'menu',
+          returnFromBack ? ARCHIVE_PASSPORT_START_BTN_ATTR : undefined,
+        );
       }),
     );
     block.appendChild(actions);
@@ -1820,7 +2035,7 @@ export const mountArchiveBackupPanel = (
         renderRestoreUploading(block);
         break;
       case 'restore-busy':
-        renderBusy(block, COPY.restore_busy);
+        renderBusy(block, restoreBusyText);
         break;
       case 'restore-preview':
         renderRestorePreview(block);
@@ -1936,8 +2151,8 @@ export const mountArchiveBackupPanel = (
     },
     setArmed: (value: boolean) => {
       if (disposed) return;
-      restoreArmed = value;
-      if (view === 'restore-preview') render();
+      if (view === 'restore-preview') setRestoreArmed(value);
+      else restoreArmed = value;
     },
     clickCommit: async () => {
       await commitRestore();

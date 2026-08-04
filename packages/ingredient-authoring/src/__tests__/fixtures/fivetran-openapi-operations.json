@@ -4,8 +4,8 @@
       "openapi": {
         "kind": "official_openapi",
         "url": "https://fivetran.com/assets-docs/openapi/file_v1.json",
-        "bytes": 3073143,
-        "sha256": "e3cb5322787580ad08049f2de9ea9ee5934810733b1dcc43e2f6b769a34c12af",
+        "bytes": 3126798,
+        "sha256": "8638aefbba4b806a28325ba7d44bcd158c38c49d2f5c7220d2e324ccde00fca3",
         "retrieved_on": "2026-07-20",
         "evidence": [
           "170 method/path operations",
@@ -16,7 +16,7 @@
         "openapi": "3.0.1",
         "title": "OpenAPI Definition",
         "api_version": "v1",
-        "official_path_count": 99,
+        "official_path_count": 102,
         "declared_server": [
           {
             "url": "https://api.fivetran.com"
@@ -35,8 +35,8 @@
       "getting_started": {
         "kind": "official_markdown_documentation",
         "url": "https://fivetran.com/docs/rest-api/getting-started.md",
-        "bytes": 14720,
-        "sha256": "ab4639153a280cb4cc721c742c298bad1a08d28fa7dfd6f3081bd9b087605e5d",
+        "bytes": 15554,
+        "sha256": "35e79245ff0f96cb964ecde2a3ab2bc4e017107fef27cfa5dfc634c379c5212a",
         "retrieved_on": "2026-07-20",
         "evidence": [
           "base URL https://api.fivetran.com/v1/",
@@ -71,21 +71,21 @@
         "mutability": "Mutable vendor documentation; the hash lock prevents silent rate-limit evidence drift."
       }
     },
-    "official_operation_count": 171,
-    "admitted_operation_count": 168,
+    "official_operation_count": 176,
+    "admitted_operation_count": 173,
     "deprecated_operation_count": 1,
     "transport_exclusion_count": 2,
     "official_method_counts": {
-      "DELETE": 29,
-      "GET": 68,
+      "DELETE": 30,
+      "GET": 70,
       "PATCH": 25,
-      "POST": 49
+      "POST": 51
     },
     "admitted_method_counts": {
-      "DELETE": 29,
-      "GET": 68,
+      "DELETE": 30,
+      "GET": 70,
       "PATCH": 24,
-      "POST": 47
+      "POST": 49
     },
     "official_tag_counts": {
       "Account Management": 1,
@@ -108,7 +108,7 @@
       "Team Management": 21,
       "Transformation Management": 10,
       "Transformation Projects Management": 6,
-      "User Management": 16,
+      "User Management": 21,
       "Webhook Management": 7
     },
     "admitted_tag_counts": {
@@ -132,57 +132,57 @@
       "Team Management": 21,
       "Transformation Management": 10,
       "Transformation Projects Management": 6,
-      "User Management": 16,
+      "User Management": 21,
       "Webhook Management": 7
     },
     "pack_operation_counts": {
       "fivetran-public-metadata": 1,
       "fivetran-connections-data-pipeline": 43,
-      "fivetran-identity-access": 45,
+      "fivetran-identity-access": 50,
       "fivetran-networking-deployment": 45,
       "fivetran-transformations-observability": 34
     },
     "composition_bytes": {
       "fivetran-public-metadata": 2176,
       "fivetran-connections-data-pipeline": 92753,
-      "fivetran-identity-access": 82354,
+      "fivetran-identity-access": 92233,
       "fivetran-networking-deployment": 85033,
       "fivetran-transformations-observability": 63495
     },
     "body_mode_counts": {
-      "none": 104,
-      "raw_json": 64
+      "none": 107,
+      "raw_json": 66
     },
     "success_status_counts": {
-      "200": 147,
-      "201": 21
+      "200": 151,
+      "201": 22
     },
     "empty_success_operation_count": 2,
     "accept_counts": {
-      "application/json": 149,
+      "application/json": 154,
       "application/json;version=2": 19
     },
     "effective_accept_counts": {
-      "application/json": 148,
+      "application/json": 153,
       "application/json;version=2": 19,
       "application/octet-stream": 1
     },
     "risk_counts": {
-      "admin": 35,
-      "destructive": 65,
-      "read": 68
+      "admin": 37,
+      "destructive": 66,
+      "read": 70
     },
     "approval_counts": {
-      "always": 100,
-      "never": 68
+      "always": 103,
+      "never": 70
     },
     "idempotency_counts": {
-      "idempotent": 29,
-      "non_idempotent": 71,
-      "safe": 68
+      "idempotent": 30,
+      "non_idempotent": 73,
+      "safe": 70
     },
     "pagination": {
-      "automatic_operation_count": 31,
+      "automatic_operation_count": 32,
       "manual_gap_count": 2,
       "automatic_operation_keys": [
         "GET /v1/connections",
@@ -213,6 +213,7 @@
         "GET /v1/transformations",
         "GET /v1/transformations/package-metadata",
         "GET /v1/users",
+        "GET /v1/users/api-keys",
         "GET /v1/users/{userId}/connections",
         "GET /v1/users/{userId}/groups",
         "GET /v1/webhooks"
@@ -222,12 +223,12 @@
         "GET /v1/external-secrets-managers/{esmId}/entities"
       ],
       "result_path_counts": {
-        "data.items": 33
+        "data.items": 34
       }
     },
     "auth": {
       "selected": "HTTP Basic supplied only by the enrolled fivetran connection: API key as username and API secret as password",
-      "basic_auth_operation_count": 167,
+      "basic_auth_operation_count": 172,
       "public_no_auth_operation_count": 1,
       "credential_fields_in_pack": 0
     },
@@ -235,10 +236,10 @@
       "exact_path_parameter_contract": true,
       "operation_id_uniqueness": true,
       "official_request_body_required_count": 0,
-      "effective_request_body_required_count": 64,
-      "exact_content_type_operation_count": 64,
-      "declared_accept_operation_count": 168,
-      "exact_accept_operation_count": 167,
+      "effective_request_body_required_count": 66,
+      "exact_content_type_operation_count": 66,
+      "declared_accept_operation_count": 173,
+      "exact_accept_operation_count": 172,
       "accept_override_operation_keys": [
         "GET /v1/connector-sdk/packages/{package_id}/download"
       ],
@@ -302,6 +303,8 @@
         "GET /v1/transformations/package-metadata:limit",
         "GET /v1/transformations:cursor",
         "GET /v1/transformations:limit",
+        "GET /v1/users/api-keys:cursor",
+        "GET /v1/users/api-keys:limit",
         "GET /v1/users/{userId}/connections:cursor",
         "GET /v1/users/{userId}/connections:limit",
         "GET /v1/users/{userId}/groups:cursor",
@@ -1526,11 +1529,52 @@
         "manual_pagination": null
       },
       {
+        "recipe_id": "list-api-keys-fivetran",
+        "operation_id": "list_api_keys",
+        "key": "GET /v1/users/api-keys",
+        "pack": "fivetran-identity-access",
+        "op": "user.list_api_keys",
+        "public": false,
+        "required_args": [],
+        "supplied_args": [],
+        "pagination": {
+          "style": "query_token",
+          "page_size": {
+            "placement": "query",
+            "param": "limit",
+            "value": 1000,
+            "max": 1000
+          },
+          "token_from": "data.next_cursor",
+          "token_to": {
+            "placement": "query",
+            "param": "cursor"
+          }
+        },
+        "manual_pagination": null
+      },
+      {
         "recipe_id": "user-details-fivetran",
         "operation_id": "user_details",
         "key": "GET /v1/users/{userId}",
         "pack": "fivetran-identity-access",
         "op": "user.user_details",
+        "public": false,
+        "required_args": [
+          "userId"
+        ],
+        "supplied_args": [
+          "userId"
+        ],
+        "pagination": null,
+        "manual_pagination": null
+      },
+      {
+        "recipe_id": "get-user-api-key-fivetran",
+        "operation_id": "get_user_api_key",
+        "key": "GET /v1/users/{userId}/api-keys",
+        "pack": "fivetran-identity-access",
+        "op": "user.get_user_api_key",
         "public": false,
         "required_args": [
           "userId"
@@ -1636,7 +1680,7 @@
         "manual_pagination": null
       }
     ],
-    "operation_ids_sha256": "e84ea3e34dad24758055508fadfcfc5bb7084f1b757720e88e95d68ae88543e8"
+    "operation_ids_sha256": "b38e89aa7e290d91684d883c27f8adb0d830ea09cc3e81199de998ccbd2aecb4"
   },
   "official_operations": [
     {
@@ -6981,6 +7025,40 @@
       "op": "user.create_user"
     },
     {
+      "key": "GET /v1/users/api-keys",
+      "method": "GET",
+      "path": "/v1/users/api-keys",
+      "operation_id": "list_api_keys",
+      "tag": "User Management",
+      "summary": "List All API Keys",
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "declared_accept": "application/json",
+      "accept": "application/json",
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "success_statuses": [
+        "200"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "response_capture": null,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "fivetran-identity-access",
+      "op": "user.list_api_keys"
+    },
+    {
       "key": "DELETE /v1/users/{id}",
       "method": "DELETE",
       "path": "/v1/users/{id}",
@@ -7085,6 +7163,150 @@
       "exclusion_reason": null,
       "pack": "fivetran-identity-access",
       "op": "user.modify_user"
+    },
+    {
+      "key": "GET /v1/users/{userId}/api-keys",
+      "method": "GET",
+      "path": "/v1/users/{userId}/api-keys",
+      "operation_id": "get_user_api_key",
+      "tag": "User Management",
+      "summary": "Retrieve User API Key",
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "declared_accept": "application/json",
+      "accept": "application/json",
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "success_statuses": [
+        "200"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "response_capture": null,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "fivetran-identity-access",
+      "op": "user.get_user_api_key"
+    },
+    {
+      "key": "POST /v1/users/{userId}/api-keys",
+      "method": "POST",
+      "path": "/v1/users/{userId}/api-keys",
+      "operation_id": "create_user_api_key",
+      "tag": "User Management",
+      "summary": "Create Service Account API Key",
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "declared_accept": "application/json",
+      "accept": "application/json",
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "201",
+      "success_statuses": [
+        "201"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "response_capture": null,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "fivetran-identity-access",
+      "op": "user.create_user_api_key"
+    },
+    {
+      "key": "DELETE /v1/users/{userId}/api-keys",
+      "method": "DELETE",
+      "path": "/v1/users/{userId}/api-keys",
+      "operation_id": "delete_user_api_keys",
+      "tag": "User Management",
+      "summary": "Delete API Keys",
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "declared_accept": "application/json",
+      "accept": "application/json",
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "success_statuses": [
+        "200"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "response_capture": null,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "fivetran-identity-access",
+      "op": "user.delete_user_api_keys"
+    },
+    {
+      "key": "POST /v1/users/{userId}/api-keys/rotate",
+      "method": "POST",
+      "path": "/v1/users/{userId}/api-keys/rotate",
+      "operation_id": "rotate_user_api_key",
+      "tag": "User Management",
+      "summary": "Rotate Service Account API Key",
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "declared_accept": "application/json",
+      "accept": "application/json",
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "success_statuses": [
+        "200"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "response_capture": null,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "fivetran-identity-access",
+      "op": "user.rotate_user_api_key"
     },
     {
       "key": "GET /v1/users/{userId}/connections",
@@ -9188,6 +9410,60 @@
             "string"
           ],
           "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        }
+      ],
+      "declared_accept": "application/json",
+      "accept": "application/json",
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "success_statuses": [
+        "200"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "result_path": null,
+      "pagination": null,
+      "manual_pagination": null,
+      "response_capture": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "DELETE /v1/users/{userId}/api-keys": {
+      "key": "DELETE /v1/users/{userId}/api-keys",
+      "operation_id": "delete_user_api_keys",
+      "pack": "fivetran-identity-access",
+      "op": "user.delete_user_api_keys",
+      "method": "DELETE",
+      "path": "/v1/users/{userId}/api-keys",
+      "tag": "User Management",
+      "public": false,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "userId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "userId",
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
@@ -13966,6 +14242,34 @@
           "authority": "official_openapi_parameter",
           "dropped_pattern": false,
           "integer_as_decimal_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "user_type",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.user_type",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "has_api_key",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.has_api_key",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
         }
       ],
       "declared_accept": "application/json",
@@ -14014,6 +14318,60 @@
       "op": "user.user_details",
       "method": "GET",
       "path": "/v1/users/{userId}",
+      "tag": "User Management",
+      "public": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "userId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "userId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        }
+      ],
+      "declared_accept": "application/json",
+      "accept": "application/json",
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "success_statuses": [
+        "200"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "result_path": null,
+      "pagination": null,
+      "manual_pagination": null,
+      "response_capture": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/users/{userId}/api-keys": {
+      "key": "GET /v1/users/{userId}/api-keys",
+      "operation_id": "get_user_api_key",
+      "pack": "fivetran-identity-access",
+      "op": "user.get_user_api_key",
+      "method": "GET",
+      "path": "/v1/users/{userId}/api-keys",
       "tag": "User Management",
       "public": false,
       "risk": "read",
@@ -14378,6 +14736,101 @@
       ],
       "result_path": null,
       "pagination": null,
+      "manual_pagination": null,
+      "response_capture": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/users/api-keys": {
+      "key": "GET /v1/users/api-keys",
+      "operation_id": "list_api_keys",
+      "pack": "fivetran-identity-access",
+      "op": "user.list_api_keys",
+      "method": "GET",
+      "path": "/v1/users/api-keys",
+      "tag": "User Management",
+      "public": false,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "query",
+          "wire_name": "cursor",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": null,
+          "admitted_type": null,
+          "serialization": "owned_by_automatic_pagination",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "user_type",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.user_type",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        }
+      ],
+      "declared_accept": "application/json",
+      "accept": "application/json",
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "success_statuses": [
+        "200"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "result_path": "data.items",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 1000,
+          "max": 1000
+        },
+        "token_from": "data.next_cursor",
+        "token_to": {
+          "placement": "query",
+          "param": "cursor"
+        }
+      },
       "manual_pagination": null,
       "response_capture": null,
       "sensitive_response": false,
@@ -18211,6 +18664,122 @@
       "success_status": "201",
       "success_statuses": [
         "201"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "result_path": null,
+      "pagination": null,
+      "manual_pagination": null,
+      "response_capture": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "POST /v1/users/{userId}/api-keys": {
+      "key": "POST /v1/users/{userId}/api-keys",
+      "operation_id": "create_user_api_key",
+      "pack": "fivetran-identity-access",
+      "op": "user.create_user_api_key",
+      "method": "POST",
+      "path": "/v1/users/{userId}/api-keys",
+      "tag": "User Management",
+      "public": false,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "userId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "userId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        }
+      ],
+      "declared_accept": "application/json",
+      "accept": "application/json",
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "201",
+      "success_statuses": [
+        "201"
+      ],
+      "empty_success_statuses": [],
+      "response_media": [
+        "application/json"
+      ],
+      "result_path": null,
+      "pagination": null,
+      "manual_pagination": null,
+      "response_capture": null,
+      "sensitive_response": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "POST /v1/users/{userId}/api-keys/rotate": {
+      "key": "POST /v1/users/{userId}/api-keys/rotate",
+      "operation_id": "rotate_user_api_key",
+      "pack": "fivetran-identity-access",
+      "op": "user.rotate_user_api_key",
+      "method": "POST",
+      "path": "/v1/users/{userId}/api-keys/rotate",
+      "tag": "User Management",
+      "public": false,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "userId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "userId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false
+        }
+      ],
+      "declared_accept": "application/json",
+      "accept": "application/json",
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "success_statuses": [
+        "200"
       ],
       "empty_success_statuses": [],
       "response_media": [

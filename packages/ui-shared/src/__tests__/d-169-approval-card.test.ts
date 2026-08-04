@@ -16,6 +16,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   renderApprovalCard,
   renderAskCard,
+  renderChatPlanCard,
   APPROVAL_CARD_ACTION_ATTR,
   APPROVAL_CARD_ATTR,
   APPROVAL_CARD_ERROR_ATTR,
@@ -29,6 +30,11 @@ import {
   ASK_CARD_ERROR_ATTR,
   ASK_CARD_SUMMARY_ATTR,
   type AskCardModel,
+  type AskCardOptions,
+  CHAT_PLAN_CARD_ACTION_ATTR,
+  CHAT_PLAN_CARD_ERROR_ATTR,
+  type ChatPlanCardModel,
+  type ChatPlanCardOptions,
 } from '../approval-card/card.js';
 
 // ── Interactive fake DOM ─────────────────────────────────────────────
@@ -43,49 +49,66 @@ interface FakeEl {
   children: FakeEl[];
   listeners: Map<string, Array<() => void>>;
   setAttribute(k: string, v: string): void;
+  removeAttribute(k: string): void;
   getAttribute(k: string): string | null;
   appendChild(c: FakeEl): FakeEl;
   addEventListener(type: string, fn: () => void): void;
+  focus(): void;
   click(): void;
 }
 
-const makeFakeDocument = (): { createElement(tag: string): FakeEl } => ({
-  createElement(tag: string): FakeEl {
-    const el: FakeEl = {
-      tagName: tag.toUpperCase(),
-      className: '',
-      textContent: '',
-      type: '',
-      disabled: false,
-      hidden: false,
-      attrs: new Map(),
-      children: [],
-      listeners: new Map(),
-      setAttribute(k, v) {
-        el.attrs.set(k, v);
-      },
-      getAttribute(k) {
-        return el.attrs.get(k) ?? null;
-      },
-      appendChild(c) {
-        el.children.push(c);
-        return c;
-      },
-      addEventListener(type, fn) {
-        const list = el.listeners.get(type) ?? [];
-        list.push(fn);
-        el.listeners.set(type, list);
-      },
-      click() {
-        // A disabled button fires no click — mirror real DOM so the
-        // in-flight guard test is meaningful.
-        if (el.disabled) return;
-        for (const fn of el.listeners.get('click') ?? []) fn();
-      },
-    };
-    return el;
-  },
-});
+interface FakeDoc {
+  activeElement: FakeEl | null;
+  createElement(tag: string): FakeEl;
+}
+
+const makeFakeDocument = (): FakeDoc => {
+  const doc: FakeDoc = {
+    activeElement: null,
+    createElement(tag: string): FakeEl {
+      const el: FakeEl = {
+        tagName: tag.toUpperCase(),
+        className: '',
+        textContent: '',
+        type: '',
+        disabled: false,
+        hidden: false,
+        attrs: new Map(),
+        children: [],
+        listeners: new Map(),
+        setAttribute(k, v) {
+          el.attrs.set(k, v);
+        },
+        removeAttribute(k) {
+          el.attrs.delete(k);
+        },
+        getAttribute(k) {
+          return el.attrs.get(k) ?? null;
+        },
+        appendChild(c) {
+          el.children.push(c);
+          return c;
+        },
+        addEventListener(type, fn) {
+          const list = el.listeners.get(type) ?? [];
+          list.push(fn);
+          el.listeners.set(type, list);
+        },
+        focus() {
+          doc.activeElement = el;
+        },
+        click() {
+          // A disabled button fires no click — mirror real DOM so the
+          // in-flight guard test is meaningful.
+          if (el.disabled) return;
+          for (const fn of el.listeners.get('click') ?? []) fn();
+        },
+      };
+      return el;
+    },
+  };
+  return doc;
+};
 
 // Depth-first collect every element carrying `attr`.
 const collectByAttr = (root: FakeEl, attr: string, out: FakeEl[] = []): FakeEl[] => {
@@ -108,12 +131,26 @@ const model = (over: Partial<AskCardModel> = {}): AskCardModel => ({
   ...over,
 });
 
-const render = (m: AskCardModel, onAnswer: (id: string) => void | Promise<void>) => {
+const renderWithDocument = (
+  m: AskCardModel,
+  onAnswer: (id: string) => void | Promise<void>,
+  options?: AskCardOptions,
+): { card: FakeEl; doc: FakeDoc } => {
   const doc = makeFakeDocument();
   // The card only uses the Document.createElement surface our fake provides.
-  const card = renderAskCard(doc as unknown as Document, m, { onAnswer });
-  return card as unknown as FakeEl;
+  const card = renderAskCard(
+    doc as unknown as Document,
+    m,
+    { onAnswer },
+    options,
+  );
+  return { card: card as unknown as FakeEl, doc };
 };
+
+const render = (
+  m: AskCardModel,
+  onAnswer: (id: string) => void | Promise<void>,
+): FakeEl => renderWithDocument(m, onAnswer).card;
 
 const approvalModel = (
   over: Partial<ApprovalCardModel> = {},
@@ -154,6 +191,44 @@ const approvalButton = (root: FakeEl, decision: string): FakeEl | undefined =>
   );
 const approvalError = (root: FakeEl): FakeEl | undefined =>
   collectByAttr(root, APPROVAL_CARD_ERROR_ATTR)[0];
+
+const chatPlanModel = (
+  over: Partial<ChatPlanCardModel> = {},
+): ChatPlanCardModel => ({
+  plan_id: 'plan-1',
+  tool: 'mail.send',
+  tier: 2,
+  args: { to: 'mary@example.com' },
+  payload_available: true,
+  ...over,
+});
+
+const renderChatPlanWithDocument = (
+  m: ChatPlanCardModel,
+  onResolve: (decision: 'approve' | 'reject') => void | Promise<void>,
+  options: ChatPlanCardOptions = {},
+): { card: FakeEl; doc: FakeDoc } => {
+  const doc = makeFakeDocument();
+  const card = renderChatPlanCard(
+    doc as unknown as Document,
+    m,
+    { onResolve },
+    options,
+  );
+  return { card: card as unknown as FakeEl, doc };
+};
+
+const chatPlanButtons = (root: FakeEl): FakeEl[] =>
+  collectByAttr(root, CHAT_PLAN_CARD_ACTION_ATTR);
+const chatPlanButton = (
+  root: FakeEl,
+  decision: string,
+): FakeEl | undefined =>
+  chatPlanButtons(root).find(
+    (button) => button.getAttribute(CHAT_PLAN_CARD_ACTION_ATTR) === decision,
+  );
+const chatPlanError = (root: FakeEl): FakeEl | undefined =>
+  collectByAttr(root, CHAT_PLAN_CARD_ERROR_ATTR)[0];
 
 describe('D-169 P2 Slice 3 — renderAskCard', () => {
   it('renders the title, body text, and one button per option', () => {
@@ -260,7 +335,12 @@ describe('D-169 P2 Slice 3 — renderAskCard', () => {
 
     buttons[0]!.click();
     expect(onAnswer).toHaveBeenCalledWith('yes');
-    expect(buttons.every((button) => button.disabled)).toBe(true);
+    expect(buttons.every((button) => button.disabled)).toBe(false);
+    expect(buttons.every(
+      (button) => button.getAttribute('aria-disabled') === 'true',
+    )).toBe(true);
+    expect(buttons[0]!.getAttribute('aria-busy')).toBe('true');
+    expect(buttons[0]!.textContent).toBe('Approving…');
     expect(buttons[1]!.className).toContain('rx-ask-card-btn--reject');
   });
 
@@ -272,18 +352,26 @@ describe('D-169 P2 Slice 3 — renderAskCard', () => {
     expect(onAnswer).toHaveBeenCalledWith('no');
   });
 
-  it('disables every button after the first click (in-flight guard)', () => {
+  it('keeps the chosen option focused while guarding every in-flight action', () => {
     const onAnswer = vi.fn(() => new Promise<void>(() => {})); // never settles
-    const card = render(model(), onAnswer);
+    const { card, doc } = renderWithDocument(model(), onAnswer);
     const buttons = optionButtons(card);
+    buttons[0].focus();
     buttons[0].click();
-    expect(buttons.every((b) => b.disabled)).toBe(true);
+    expect(buttons.every((b) => b.disabled)).toBe(false);
+    expect(buttons.every(
+      (button) => button.getAttribute('aria-disabled') === 'true',
+    )).toBe(true);
+    expect(buttons[0].getAttribute('aria-busy')).toBe('true');
+    expect(buttons[1].getAttribute('aria-busy')).toBeNull();
+    expect(buttons[0].textContent).toBe('Approving…');
+    expect(doc.activeElement).toBe(buttons[0]);
     // A second click on the other button is a no-op while in flight.
     buttons[1].click();
     expect(onAnswer).toHaveBeenCalledTimes(1);
   });
 
-  it('re-enables the buttons + shows the inline error when the submit rejects', async () => {
+  it('clears the action guards + shows the inline error when the submit rejects', async () => {
     let reject!: (e: unknown) => void;
     const onAnswer = vi.fn(
       () =>
@@ -291,31 +379,85 @@ describe('D-169 P2 Slice 3 — renderAskCard', () => {
           reject = rej;
         }),
     );
-    const card = render(model(), onAnswer);
+    const { card, doc } = renderWithDocument(model(), onAnswer);
     const buttons = optionButtons(card);
     const err = errorLine(card);
     expect(err?.hidden).toBe(true);
+    buttons[0].focus();
     buttons[0].click();
-    expect(buttons.every((b) => b.disabled)).toBe(true);
+    expect(buttons.every(
+      (button) => button.getAttribute('aria-disabled') === 'true',
+    )).toBe(true);
     reject(new Error('rpc failed'));
     await Promise.resolve();
     await Promise.resolve();
     expect(buttons.every((b) => b.disabled)).toBe(false);
+    expect(buttons.every(
+      (button) => button.getAttribute('aria-disabled') === null,
+    )).toBe(true);
+    expect(buttons[0].getAttribute('aria-busy')).toBeNull();
+    expect(buttons[0].textContent).toBe('Send');
     expect(err?.hidden).toBe(false);
+    expect(err?.getAttribute('role')).toBe('alert');
+    expect(doc.activeElement).toBe(buttons[0]);
     // After re-enabling, a fresh click submits again (retry path).
     buttons[0].click();
     expect(onAnswer).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps buttons disabled + error hidden on a successful submit', async () => {
+  it('does not reclaim failed-answer focus after the user moves elsewhere', async () => {
+    let reject!: (error: unknown) => void;
+    const onAnswer = vi.fn(
+      () => new Promise<void>((_resolve, rejectPromise) => {
+        reject = rejectPromise;
+      }),
+    );
+    const { card, doc } = renderWithDocument(model(), onAnswer);
+    const answer = optionButtons(card)[0]!;
+    answer.focus();
+    answer.click();
+
+    const elsewhere = doc.createElement('a');
+    elsewhere.focus();
+    reject(new Error('rpc failed'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(doc.activeElement).toBe(elsewhere);
+  });
+
+  it('keeps the actions guarded + error hidden on a successful submit', async () => {
     const onAnswer = vi.fn(() => Promise.resolve());
     const card = render(model(), onAnswer);
     const buttons = optionButtons(card);
     buttons[0].click();
     await Promise.resolve();
     await Promise.resolve();
-    expect(buttons.every((b) => b.disabled)).toBe(true);
+    expect(buttons.every((b) => b.disabled)).toBe(false);
+    expect(buttons.every(
+      (button) => button.getAttribute('aria-disabled') === 'true',
+    )).toBe(true);
+    expect(buttons[0].getAttribute('aria-busy')).toBe('true');
     expect(errorLine(card)?.hidden).toBe(true);
+  });
+
+  it('restores host-owned busy and failure state after a queue repaint', () => {
+    const { card } = renderWithDocument(model(), vi.fn(), {
+      busy: true,
+      busyOptionId: 'no',
+      errorMessage: 'The prior answer failed.',
+    });
+    const buttons = optionButtons(card);
+
+    expect(buttons.every((button) => button.disabled)).toBe(false);
+    expect(buttons.every(
+      (button) => button.getAttribute('aria-disabled') === 'true',
+    )).toBe(true);
+    expect(buttons[0].getAttribute('aria-busy')).toBeNull();
+    expect(buttons[1].getAttribute('aria-busy')).toBe('true');
+    expect(buttons[1].textContent).toBe('Rejecting…');
+    expect(errorLine(card)?.hidden).toBe(false);
+    expect(errorLine(card)?.textContent).toBe('The prior answer failed.');
   });
 
   it('sets text via textContent — server strings are inert (no child injection)', () => {
@@ -404,7 +546,12 @@ describe('D-174 — renderApprovalCard', () => {
     approvalButton(card, 'approve')!.click();
     expect(onResolve).toHaveBeenCalledTimes(1);
     expect(onResolve).toHaveBeenCalledWith('approve');
-    expect(approvalButtons(card).every((b) => b.disabled)).toBe(true);
+    expect(approvalButtons(card).every((b) => !b.disabled)).toBe(true);
+    expect(approvalButtons(card).every(
+      (b) => b.getAttribute('aria-disabled') === 'true',
+    )).toBe(true);
+    expect(approvalButton(card, 'approve')?.getAttribute('aria-busy')).toBe('true');
+    expect(approvalButton(card, 'approve')?.textContent).toBe('Approving…');
     approvalButton(card, 'reject')!.click();
     expect(onResolve).toHaveBeenCalledTimes(1);
   });
@@ -421,13 +568,22 @@ describe('D-174 — renderApprovalCard', () => {
     expect(approvalError(card)?.hidden).toBe(true);
 
     approvalButton(card, 'reject')!.click();
-    expect(approvalButtons(card).every((b) => b.disabled)).toBe(true);
+    expect(approvalButtons(card).every(
+      (b) => b.getAttribute('aria-disabled') === 'true',
+    )).toBe(true);
+    expect(approvalButton(card, 'reject')?.getAttribute('aria-busy')).toBe('true');
+    expect(approvalButton(card, 'reject')?.textContent).toBe('Rejecting…');
     reject(new Error('rpc failed'));
     await Promise.resolve();
     await Promise.resolve();
 
     expect(approvalButtons(card).every((b) => b.disabled)).toBe(false);
+    expect(approvalButtons(card).every(
+      (b) => b.getAttribute('aria-disabled') === null,
+    )).toBe(true);
+    expect(approvalButton(card, 'reject')?.textContent).toBe('Reject');
     expect(approvalError(card)?.hidden).toBe(false);
+    expect(approvalError(card)?.getAttribute('role')).toBe('alert');
   });
 
   it('keeps stale approvals disabled with a visible status reason', () => {
@@ -460,5 +616,81 @@ describe('D-174 — renderApprovalCard', () => {
     const texts = walk(card, []);
     expect(texts).toContain('<img src=x onerror=alert(1)>');
     expect(texts).toContain('{"html":"<script>alert(1)</script>"}');
+  });
+});
+
+describe('R20 — renderChatPlanCard', () => {
+  it('keeps the chosen decision focused and guards sibling actions while pending', () => {
+    const onResolve = vi.fn(() => new Promise<void>(() => {}));
+    const { card, doc } = renderChatPlanWithDocument(
+      chatPlanModel(),
+      onResolve,
+    );
+    const approve = chatPlanButton(card, 'approve')!;
+    const reject = chatPlanButton(card, 'reject')!;
+
+    approve.focus();
+    approve.click();
+
+    expect(onResolve).toHaveBeenCalledWith('approve');
+    expect(chatPlanButtons(card).every((button) => !button.disabled)).toBe(true);
+    expect(chatPlanButtons(card).every(
+      (button) => button.getAttribute('aria-disabled') === 'true',
+    )).toBe(true);
+    expect(approve.getAttribute('aria-busy')).toBe('true');
+    expect(approve.textContent).toBe('Approving…');
+    expect(reject.getAttribute('aria-busy')).toBeNull();
+    expect(doc.activeElement).toBe(approve);
+    reject.click();
+    expect(onResolve).toHaveBeenCalledTimes(1);
+  });
+
+  it('clears progress and preserves permanent payload guards after failure', async () => {
+    let rejectResolve: (error: unknown) => void = () => {};
+    const onResolve = vi.fn(
+      () => new Promise<never>((_resolve, reject) => {
+        rejectResolve = reject;
+      }),
+    );
+    const { card, doc } = renderChatPlanWithDocument(
+      chatPlanModel({ payload_available: false }),
+      onResolve,
+    );
+    const reject = chatPlanButton(card, 'reject')!;
+    const approve = chatPlanButton(card, 'approve')!;
+
+    reject.focus();
+    reject.click();
+    expect(reject.getAttribute('aria-busy')).toBe('true');
+    expect(reject.textContent).toBe('Rejecting…');
+    rejectResolve(new Error('offline'));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(reject.disabled).toBe(false);
+    expect(reject.getAttribute('aria-disabled')).toBeNull();
+    expect(reject.getAttribute('aria-busy')).toBeNull();
+    expect(reject.textContent).toBe('Reject');
+    expect(doc.activeElement).toBe(reject);
+    expect(approve.disabled).toBe(true);
+    expect(chatPlanError(card)?.hidden).toBe(false);
+    expect(chatPlanError(card)?.getAttribute('role')).toBe('alert');
+  });
+
+  it('restores host-owned exact progress after a queue repaint', () => {
+    const { card } = renderChatPlanWithDocument(
+      chatPlanModel(),
+      vi.fn(),
+      { busy: true, busyAction: 'reject' },
+    );
+    const approve = chatPlanButton(card, 'approve')!;
+    const reject = chatPlanButton(card, 'reject')!;
+
+    expect(chatPlanButtons(card).every((button) => !button.disabled)).toBe(true);
+    expect(approve.getAttribute('aria-disabled')).toBe('true');
+    expect(approve.getAttribute('aria-busy')).toBeNull();
+    expect(reject.getAttribute('aria-disabled')).toBe('true');
+    expect(reject.getAttribute('aria-busy')).toBe('true');
+    expect(reject.textContent).toBe('Rejecting…');
   });
 });

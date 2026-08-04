@@ -12,18 +12,35 @@
  *  (`requestRestart`) so nothing actually drains or exits the process. */
 
 import { afterEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readdirSync, rmSync, utimesSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { generateRecoveryKey, createServerBundle, generateServerKey } from '@recued/crypto';
 
-import { createArchiveRuntime } from '../archive/archive-runtime.js';
+import {
+  composeArchiveRpcDeps,
+  createArchiveRuntime,
+} from '../archive/archive-runtime.js';
 import { createKeyManager } from '../key-manager.js';
 import type { KeyManager } from '../key-manager.js';
 import { exportArchive } from '../archive/archive-export.js';
 import { ARCHIVE_FORMAT_VERSION } from '../archive/archive-format.js';
-import { EXPORT_TTL_MS } from '../archive/export-store.js';
+import {
+  EXPORT_TTL_MS,
+  exportsDir,
+  newExportPath,
+} from '../archive/export-store.js';
+import type { Lifecycle } from '../lifecycle/index.js';
 import { createClientTokenStore } from '../pairing/client-tokens.js';
 import { createRecoveryKeyCheckStore } from '../recovery-key-store.js';
 import { processRecoveryKey } from '../recovery-key-processor.js';
@@ -139,6 +156,30 @@ describe('archive online runtime', () => {
     const { deleted } = h.runtime.pruneExpiredExports();
     expect(deleted).toEqual([path]);
     expect(existsSync(path)).toBe(false);
+  });
+
+  it('runtime composition reclaims a hard-exit RPC export partial', () => {
+    h = newHarness();
+    mkdirSync(exportsDir(h.dir), { recursive: true });
+    const partial = `${newExportPath(h.dir, FIXED_NOW)}.partial`;
+    const userPartial = join(exportsDir(h.dir), 'operator-backup.recued.archive.partial');
+    writeFileSync(partial, 'interrupted authenticated ciphertext');
+    writeFileSync(userPartial, 'operator file');
+
+    const deps = composeArchiveRpcDeps({
+      db: h.db,
+      dbPath: h.dbPath,
+      configPath: null,
+      serverVersion: SERVER_VERSION,
+      now: () => FIXED_NOW,
+      // No lifecycle method runs during composition; a truthy shape is enough
+      // to drive the real boot-time cleanup seam under test.
+      lifecycle: {} as Lifecycle,
+    });
+
+    expect(deps).toBeDefined();
+    expect(existsSync(partial)).toBe(false);
+    expect(readFileSync(userPartial, 'utf8')).toBe('operator file');
   });
 
   it('preflightExport passes when disk has room', async () => {

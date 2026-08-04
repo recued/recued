@@ -53,6 +53,7 @@
  */
 
 import type { ContractStore } from './contract-store.js';
+import type { ConnectionStoreSqlite } from './connection-store.js';
 
 /** The contract.grant scope name (a `composite_keys` entry in the contract schema). */
 const GRANT_SCOPE = 'grant';
@@ -385,4 +386,22 @@ export const createContractGrantStore = (
       return [...packs].sort();
     },
   };
+};
+
+/** Couple name-keyed operation grants to the durable connection lifecycle.
+ * Connection rows are keyed by `(kind, name)`, so a same-name sibling keeps
+ * the shared grants alive; deleting the final row drops both grant owners and
+ * forces explicit consent before a same-name re-enrollment can dispatch. */
+export const wireConnectionGrantCleanup = (
+  connectionStore: Pick<ConnectionStoreSqlite, 'list' | 'addOnDelete'>,
+  grantStore: Pick<
+    ContractGrantStore,
+    'deleteAllUserGroupsForConnection' | 'deleteAllPackGroupsForConnection'
+  >,
+): void => {
+  connectionStore.addOnDelete((_kind, name) => {
+    if (connectionStore.list().some((row) => row.name === name)) return;
+    grantStore.deleteAllUserGroupsForConnection(name);
+    grantStore.deleteAllPackGroupsForConnection(name);
+  });
 };

@@ -60,6 +60,13 @@ import {
   type McpActionKind,
   type McpActionRecord,
 } from './mcp-action-store.js';
+import {
+  MCP_RECIPE_CALLBACK_CAPABILITY,
+  MCP_RECIPE_CALLBACK_NOTIFICATION_METHOD,
+  createMcpRecipeCallbackWatcher,
+  type McpRecipeCallbackNotificationParams,
+  type McpRecipeCallbackPointer,
+} from './mcp-recipe-callback.js';
 import type { VaultStore } from '@recued/storage';
 import type {
   ContractSnapshot,
@@ -1180,27 +1187,46 @@ export const buildMcpGrantCatalogLegacyEntries = (
 // MCP message handlers
 // ────────────────────────────────────────────────────────────────
 
-const handleInitialize = (deps: McpDeps): unknown => ({
-  protocolVersion: MCP_PROTOCOL_VERSION,
-  capabilities: {
-    tools: {},
+const handleInitialize = (deps: McpDeps): unknown => {
+  const recipeCallbacksAvailable =
+    deps.mcpRecipeCallbackNotifications === true
+    && deps.sharedStore !== undefined
+    && deps.mcpRecipeCallbackAuthorize !== undefined
+    && deps.mcpTokenId !== undefined;
+  const experimental = {
     ...(deps.mcpActionStore
       ? {
-          experimental: {
-            'com.recued/async-actions': {
-              version: 1,
-              queryTool: MCP_ACTION_STATUS_TOOL_NAME,
-              ...(deps.mcpActionNotifications === true
-                ? { notificationMethod: MCP_ACTION_NOTIFICATION_METHOD }
-                : {}),
-              notificationsAreHints: true,
-            },
+          'com.recued/async-actions': {
+            version: 1,
+            queryTool: MCP_ACTION_STATUS_TOOL_NAME,
+            ...(deps.mcpActionNotifications === true
+              ? { notificationMethod: MCP_ACTION_NOTIFICATION_METHOD }
+              : {}),
+            notificationsAreHints: true,
           },
         }
       : {}),
-  },
-  serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
-});
+    ...(recipeCallbacksAvailable
+      ? {
+          [MCP_RECIPE_CALLBACK_CAPABILITY]: {
+            version: 1,
+            notificationMethod: MCP_RECIPE_CALLBACK_NOTIFICATION_METHOD,
+            notificationsAreHints: true,
+            delivery: 'at_least_once',
+            callbackRefForDedupe: true,
+          },
+        }
+      : {}),
+  };
+  return {
+    protocolVersion: MCP_PROTOCOL_VERSION,
+    capabilities: {
+      tools: {},
+      ...(Object.keys(experimental).length > 0 ? { experimental } : {}),
+    },
+    serverInfo: { name: SERVER_NAME, version: SERVER_VERSION },
+  };
+};
 
 /** Per-call routing decision, also determines tool-description hint.
  *  Populated at `tools/list` time and consulted at `tools/call` time. */
@@ -1518,6 +1544,17 @@ export interface McpDeps extends ExecuteHandlerDeps {
   /** True only on a transport that can actually deliver unsolicited JSON-RPC
    * messages. Recued's current stateless HTTP POST transport is polling-only. */
   mcpActionNotifications?: boolean;
+  /** True only on a transport that can deliver unsolicited recipe callback
+   * notifications. Set by the stdio transport; stateless HTTP remains polling
+   * only and must never advertise this capability. */
+  mcpRecipeCallbackNotifications?: boolean;
+  /** Fresh authorization resolver for a queued callback pointer. Production
+   * re-reads the token, its contract binding/liveness, MCP door scope, and the
+   * exact query-tool grant before every delivery. The notification grants no
+   * authority; the later tools/call still passes through the normal gates. */
+  mcpRecipeCallbackAuthorize?: (pointer: McpRecipeCallbackPointer) => boolean;
+  /** Drain token-authority-triggered callback retirement before stdio exits. */
+  mcpShutdownDrain?: () => Promise<void> | void;
   /** D-166 P2 token↔contract binding — the minted `contract_id` the inbound
    *  token is bound to (from `McpInboundTokenRecord.contract_id`). When set,
    *  `buildMcpExecutionSource` stamps it as `ExecutionSource.contract_id` so the
@@ -3303,11 +3340,67 @@ export const createMcpHttpDispatch = (
  *  Returns a cleanup function. */
 export const startMCPServer = (deps: McpDeps): { close: () => void } => {
   const rl = createInterface({ input: process.stdin, terminal: false });
-  const stdioDeps: McpDeps = { ...deps, mcpActionNotifications: true };
+  const stdioDeps: McpDeps = {
+    ...deps,
+    mcpActionNotifications: true,
+    mcpRecipeCallbackNotifications: true,
+  };
 
   const send = (message: JsonRpcResponse | JsonRpcNotification): void => {
     process.stdout.write(JSON.stringify(message) + '\n');
   };
+
+  const sendRecipeCallback = (
+    params: McpRecipeCallbackNotificationParams,
+  ): Promise<void> => new Promise((resolve, reject) => {
+    process.stdout.write(
+      JSON.stringify({
+        jsonrpc: '2.0',
+        method: MCP_RECIPE_CALLBACK_NOTIFICATION_METHOD,
+        params,
+      }) + '\n',
+      (error) => {
+        if (error) reject(error);
+        else resolve();
+      },
+    );
+  });
+
+  // Recipe callbacks are durable coalescing pointers in the shared store. The
+  // watcher exists only for a contract-bearing stdio token with a fresh
+  // authorization resolver; stateless HTTP never advertises or starts it.
+  const recipeCallbackWatcher =
+    stdioDeps.sharedStore
+    && stdioDeps.mcpTokenId
+    && stdioDeps.mcpRecipeCallbackAuthorize
+      ? createMcpRecipeCallbackWatcher({
+          store: stdioDeps.sharedStore,
+          token_id: stdioDeps.mcpTokenId,
+          authorize: stdioDeps.mcpRecipeCallbackAuthorize,
+          send: sendRecipeCallback,
+        })
+      : undefined;
+  let recipeCallbackPollPromise: Promise<void> | undefined;
+  const pollRecipeCallbacks = async (): Promise<void> => {
+    if (!recipeCallbackWatcher) return;
+    if (recipeCallbackPollPromise) return recipeCallbackPollPromise;
+    recipeCallbackPollPromise = recipeCallbackWatcher.poll()
+      .catch((error) => {
+        console.error(
+          '[mcp] recipe-callback notification poll failed: '
+            + (error instanceof Error ? error.message : String(error)),
+        );
+      })
+      .finally(() => {
+        recipeCallbackPollPromise = undefined;
+      });
+    return recipeCallbackPollPromise;
+  };
+  const recipeCallbackPollTimer = recipeCallbackWatcher
+    ? setInterval(() => { void pollRecipeCallbacks(); }, 1_000)
+    : undefined;
+  recipeCallbackPollTimer?.unref();
+  if (recipeCallbackWatcher) void pollRecipeCallbacks();
 
   // The standalone stdio profile and the main server are separate processes
   // sharing WAL-backed SQLite. Subscribe catches same-process transitions;
@@ -3434,17 +3527,33 @@ export const startMCPServer = (deps: McpDeps): { close: () => void } => {
         sendActionStatus(record);
       }
       pendingActionNotifications.clear();
+      recipeCallbackWatcher?.setReady();
+      if (recipeCallbackWatcher) void pollRecipeCallbacks();
     }
   });
 
+  let closePromise: Promise<void> | undefined;
+  const drainAndClose = (): Promise<void> => {
+    if (closePromise) return closePromise;
+    if (actionPollTimer !== undefined) clearInterval(actionPollTimer);
+    if (recipeCallbackPollTimer !== undefined) clearInterval(recipeCallbackPollTimer);
+    unsubscribeAction?.();
+    closePromise = Promise.allSettled([
+      ...(recipeCallbackPollPromise ? [recipeCallbackPollPromise] : []),
+      ...(stdioDeps.mcpShutdownDrain
+        ? [Promise.resolve().then(() => stdioDeps.mcpShutdownDrain?.())]
+        : []),
+    ]).then(() => undefined);
+    return closePromise;
+  };
+
   rl.on('close', () => {
-    process.exit(0);
+    void drainAndClose().finally(() => process.exit(0));
   });
 
   return {
     close: () => {
-      if (actionPollTimer !== undefined) clearInterval(actionPollTimer);
-      unsubscribeAction?.();
+      void drainAndClose();
       rl.close();
     },
   };

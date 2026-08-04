@@ -243,8 +243,21 @@ export const createCalendarCollection = (
     log?.('warn', msg, { err: err instanceof Error ? err.message : String(err) });
   };
 
-  const upsertPayload = async (payload: ProviderEventPayload): Promise<void> => {
+  const upsertPayload = async (
+    payload: ProviderEventPayload,
+    shouldContinue: () => boolean = () => true,
+  ): Promise<void> => {
+    const assertActive = (): void => {
+      if (!shouldContinue()) {
+        throw new Error('calendar sync generation is no longer active');
+      }
+    };
+    assertActive();
     const split = await splitDescriptionForStorage(payload, blobs);
+    // Large descriptions cross an async blob boundary. Re-check ownership
+    // before the SQLite write so stop/lock cannot turn a stale callback into an
+    // acknowledgement that advances the provider checkpoint.
+    assertActive();
     const prev = table.upsert({
       event: payload.event,
       size_bytes: split.size_bytes,
@@ -257,6 +270,10 @@ export const createCalendarCollection = (
     if (prev) emitter.updated(recordId, prev.hot as unknown as Record<string, unknown>);
     else emitter.created(recordId);
     lastIndexedAt = nowOf();
+    // If stop raced the synchronous commit, reject anyway: replaying this
+    // idempotent upsert is safe, while allowing the retired provider generation
+    // to persist a newer cursor is not.
+    assertActive();
     if (opts.onEventUpserted) {
       try { opts.onEventUpserted(payload); }
       catch (err) { bumpError(`calendar onEventUpserted hook failed for ${payload.event.source_id}`, err); }
@@ -270,7 +287,10 @@ export const createCalendarCollection = (
     emitter.deleted(recordId, result.prior.hot as unknown as Record<string, unknown>);
   };
 
-  const onSyncEvent = async (event: CalendarSyncEvent): Promise<void> => {
+  const onSyncEvent = async (
+    event: CalendarSyncEvent,
+    shouldContinue: () => boolean,
+  ): Promise<void> => {
     try {
       if (event.kind === 'deleted') {
         deleteSource(event.source_id);
@@ -278,11 +298,19 @@ export const createCalendarCollection = (
       }
       if (!event.payload) {
         bumpError(`calendar sync ${event.kind} event missing payload`, null);
-        return;
+        throw new Error(
+          `calendar sync event '${event.source_id}' is missing its payload`,
+        );
       }
-      await upsertPayload(event.payload);
+      await upsertPayload(event.payload, shouldContinue);
     } catch (err) {
-      bumpError(`calendar sync ingest failed for ${event.source_id}`, err);
+      // A resolved callback is an acknowledgement to cursor-bearing providers.
+      // Keep the collection diagnostic but reject so gcal/Graph/CalDAV retain
+      // the event's checkpoint and retry it instead of silently skipping it.
+      if (event.payload !== undefined || event.kind === 'deleted') {
+        bumpError(`calendar sync ingest failed for ${event.source_id}`, err);
+      }
+      throw err;
     }
   };
 
@@ -323,13 +351,15 @@ export const createCalendarCollection = (
         expansion_past_days: opts.config().expansion_past_days,
         onEvent: async (payload) => {
           if (!isCurrentGeneration(generation)) return false;
-          const before = localErrorCount;
-          try { await upsertPayload(payload); } catch (err) {
+          try {
+            await upsertPayload(payload, () => isCurrentGeneration(generation));
+          } catch (err) {
             bumpError(`calendar initialScan ingest failed`, err);
+            backfillRecorder.recordFailure();
+            throw err;
           }
           if (!isCurrentGeneration(generation)) return false;
-          if (localErrorCount > before) backfillRecorder.recordFailure();
-          else backfillRecorder.recordImport(payload.event.start_at);
+          backfillRecorder.recordImport(payload.event.start_at);
           return true;
         },
       });
@@ -352,8 +382,10 @@ export const createCalendarCollection = (
     if (!isCurrentGeneration(generation)) return;
     try {
       const stop = await provider.startSync(async (event) => {
-        if (!isCurrentGeneration(generation)) return;
-        await onSyncEvent(event);
+        if (!isCurrentGeneration(generation)) {
+          throw new Error('calendar sync generation is no longer active');
+        }
+        await onSyncEvent(event, () => isCurrentGeneration(generation));
       });
       if (!isCurrentGeneration(generation)) {
         try { await stop(); } catch { /* stale start teardown */ }

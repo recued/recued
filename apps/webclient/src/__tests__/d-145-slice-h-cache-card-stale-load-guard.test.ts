@@ -549,6 +549,7 @@ describe('D-145 Slice H cache card - post-clear refresh interaction', () => {
     fakeHost.clickAction('housekeeping-cache-clear');
     fakeHost.clickAction('housekeeping-cache-clear-confirm');
     expect(mount.getState().clearing).toBe(true);
+    expect(mount.hasInFlightWork()).toBe(true);
 
     queue.pushDeferred(broadcastRefresh);
     queue.pushDeferred(chainedRefresh);
@@ -558,6 +559,7 @@ describe('D-145 Slice H cache card - post-clear refresh interaction', () => {
 
     await flush();
     expect(queue.calls).toHaveLength(3);
+    expect(mount.hasInFlightWork()).toBe(false);
     chainedRefresh.resolve(statsFor('post-clear-topic', 1));
     await mount.whenClearSettled();
     expectCacheStats(mount, fakeHost, 'post-clear-topic', 1);

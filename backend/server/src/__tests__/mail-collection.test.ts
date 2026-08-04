@@ -12,6 +12,7 @@ import {
 
 import { createBlobStore, type BlobStore } from '../storage/blob-store.js';
 import {
+  resolveMailMessageDirection,
   createMailCollection,
   type MailCollectionConfig,
 } from '../collections/mail/mail-collection.js';
@@ -33,6 +34,7 @@ const mkMessage = (overrides: Partial<CanonicalMessage> = {}): CanonicalMessage 
   subject: 'Q3 review',
   thread_id: 'T-1',
   folder_or_label: 'INBOX',
+  direction: 'inbound',
   is_read: false,
   has_attachments: false,
   received_at: 1_700_000_000_000,
@@ -201,11 +203,35 @@ describe('MailCollection — initial scan', () => {
       subject: 'hi',
       thread_id: 'T-9',
       folder: 'INBOX',
+      direction: 'inbound',
       is_read: true,
       has_attachments: true,
       labels: ['INBOX', 'IMPORTANT'],
       message_id: 'a',
     });
+  });
+
+  it('uses enrolled account headers only as a strong fallback for unknown provider direction', () => {
+    expect(resolveMailMessageDirection(mkMessage({
+      direction: 'unknown',
+      from: 'customer@example.test',
+      to: ['owner@example.test'],
+    }), 'OWNER@example.test')).toBe('inbound');
+    expect(resolveMailMessageDirection(mkMessage({
+      direction: 'unknown',
+      from: 'owner@example.test',
+      to: ['customer@example.test'],
+    }), 'owner@example.test')).toBe('outbound');
+    expect(resolveMailMessageDirection(mkMessage({
+      direction: 'unknown',
+      from: 'customer@example.test',
+      to: ['group@example.test'],
+    }), 'owner@example.test')).toBe('unknown');
+    expect(resolveMailMessageDirection(mkMessage({
+      direction: 'inbound',
+      from: 'owner@example.test',
+      to: ['owner@example.test'],
+    }), 'owner@example.test')).toBe('outbound');
   });
 
   it('stores bodies ≤ 64 KB inline (FTS-indexed)', async () => {
@@ -276,10 +302,11 @@ describe('MailCollection — live sync', () => {
     expect(h.collection.list({ platform: 'mail', slug: 'work' }).length).toBe(0);
   });
 
-  it('ignores events that claim created/updated with no message', async () => {
+  it('rejects created/updated events with no message so they cannot be acknowledged', async () => {
     h = newHarness();
     await h.collection.sync.start();
-    await h.stub.push({ kind: 'created', source_id: 'x' } as ProviderSyncEvent);
+    await expect(h.stub.push({ kind: 'created', source_id: 'x' } as ProviderSyncEvent))
+      .rejects.toThrow('missing its message payload');
     expect(h.collection.list({ platform: 'mail', slug: 'work' }).length).toBe(0);
   });
 });

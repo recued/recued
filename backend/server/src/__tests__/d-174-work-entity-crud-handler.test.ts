@@ -685,3 +685,42 @@ describe('D-174 makeWorkEntityCrudHandlers slice', () => {
     ]);
   });
 });
+
+// ────────────────────────────────────────────────────────────────
+// The rpc that backs the webclient's Work Entities surface reads the
+// canonical tables. A read_through Source keeps none, yet `sourceFreshness`
+// still reports it (state `'read_through'`) — so an unguarded list showed the
+// Source as present while listing none of its records, and any row an
+// interrupted posture migration left behind would have been served as real.
+// ────────────────────────────────────────────────────────────────
+
+describe('work_entity.list vs a read_through Source', () => {
+  const PEER_SOURCE = 'recued-peer.hq.task';
+
+  beforeEach(() => {
+    store.registerSource({
+      id: PEER_SOURCE,
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      source_label: 'Federated peer (task)',
+      write_capable: true,
+      mcp_exposed: false,
+      sync_posture: 'read_through',
+      registered_at: NOW,
+    });
+  });
+
+  it('refuses a read_through source_id rather than answering with an empty list', async () => {
+    await expect(
+      handleWorkEntityList(deps, { kind: 'task', source_id: PEER_SOURCE }),
+    ).rejects.toThrow(/read_through/);
+  });
+
+  it('drops rows an interrupted posture migration left in the canonical table', async () => {
+    store.writeTask({ source_id: PEER_SOURCE, title: 'migration residue' }, NOW);
+    const listed = await handleWorkEntityList(deps, { kind: 'task' });
+
+    expect(listed.entities.map((entity) => entity.source_id)).not.toContain(PEER_SOURCE);
+    expect(listed.total).toBe(listed.entities.length);
+  });
+});

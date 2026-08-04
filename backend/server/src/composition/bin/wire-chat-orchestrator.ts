@@ -192,11 +192,13 @@ import type { RecipeStore } from '../../recipe-store.js';
 import type { ServerExecutorConfig } from '../../server-executor.js';
 import type { PairedInstancesStore } from '../../paired-instances-store.js';
 import type { ExecuteHandlerDeps } from '../../execute-handler.js';
+import type { SharedStore } from '../../storage/shared-store.js';
 import { handleExecute } from '../../execute-handler.js';
 import {
   buildMcpGrantCatalogLegacyEntries,
   buildRecipeOpCoverage,
 } from '../../mcp-server.js';
+import { sweepMcpRecipeCallbackRetention } from '../../mcp-recipe-callback.js';
 
 /** Direct + late-bound dependencies the chat composer needs. */
 export interface ComposeChatOrchestratorDeps {
@@ -218,6 +220,8 @@ export interface ComposeChatOrchestratorDeps {
   emptyTabProbe: () => Promise<Set<WebChatTab>>;
   pairedInstances: PairedInstancesStore | undefined;
   annotationDeps?: AnnotationRpcDeps | undefined;
+  /** Existing durable shared store used by the recipe-callback mailbox. */
+  sharedStore?: Pick<SharedStore, 'list' | 'read' | 'compareAndSet'> | undefined;
   /** Late-bound late-resolution getters — see module doc. */
   getContactStore: () => ContactStore | undefined;
   getCollectionRegistry: () => CollectionRegistry | undefined;
@@ -303,6 +307,7 @@ export const composeChatOrchestrator = (
     llmAdapterRegistry,
     emptyTabProbe,
     pairedInstances,
+    sharedStore,
     getContactStore,
     getCollectionRegistry,
     getEnrichmentStore,
@@ -403,7 +408,19 @@ export const composeChatOrchestrator = (
   }
   const toolCatalogStore = createChatToolCatalogStore(db);
   const connectionMcpStore = createChatConnectionMcpStore(db);
-  const inboundTokenStore = createChatInboundTokenStore(db);
+  let inboundTokenStore: ChatInboundTokenStore;
+  inboundTokenStore = createChatInboundTokenStore(db, {
+    ...(sharedStore
+      ? {
+          onAuthorityChanged: (token_id: string) =>
+            sweepMcpRecipeCallbackRetention({
+              store: sharedStore,
+              inboundTokenStore,
+              token_id,
+            }).then(() => undefined),
+        }
+      : {}),
+  });
 
   // D-160 O-5 (light slice) — read view over the per-pair correction
   // stream (D-145 PB14) for the `correction-learning` middleware's

@@ -243,7 +243,7 @@
       "request-status-digest-dropbox-sign": 1,
       "request-evidence-brief-dropbox-sign": 1,
       "template-readiness-brief-dropbox-sign": 1,
-      "send-template-request-dropbox-sign": 1,
+      "send-template-request-dropbox-sign": 2,
       "remind-signer-dropbox-sign": 1,
       "update-signer-dropbox-sign": 1,
       "cancel-request-dropbox-sign": 1

@@ -483,6 +483,25 @@ describe('D-138 P2 — renderMergeReviewDialog (sequencing + empty / error state
     expect(rejectButtons).not.toBeNull();
   });
 
+  it('keeps the host-declared saving action focusable while locking its siblings', () => {
+    const html = renderMergeReviewDialog({
+      ...baseProps(pairItem),
+      saving: true,
+      saving_action: 'reject',
+    });
+    const reject = html.match(
+      /<button[^>]*data-action="contact-merge-reject"[^>]*>/,
+    )?.[0] ?? '';
+    const confirm = html.match(
+      /<button[^>]*data-action="contact-merge-confirm"[^>]*>/,
+    )?.[0] ?? '';
+    expect(reject).toContain('aria-disabled="true"');
+    expect(reject).toContain('aria-busy="true"');
+    expect(reject).not.toMatch(/\sdisabled(?:\s|>)/);
+    expect(confirm).toMatch(/\sdisabled(?:\s|>)/);
+    expect(html).toContain('Marking as different…');
+  });
+
   it('disables the survivor toggle / radio while saving (Codex finding)', () => {
     // Pair layout — the non-survivor "Set as survivor" toggle must
     // disable while a merge / reject rpc is in flight; otherwise the

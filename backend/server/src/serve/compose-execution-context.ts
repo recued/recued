@@ -40,6 +40,10 @@ import { resolveReceptionInboxFanoutModeFromStore } from '../ports/reception/han
 import { createPaidDocumentDirectCheckoutReviewAdmission } from '../paid-document-direct-checkout-review-admission.js';
 import { emitFormResponseCreatedEvents } from '../form-response-events.js';
 import { createScopedWebhookEventReader } from '../webhook-recipe-consumer.js';
+import {
+  deriveBoundCrmMirrorSources,
+  liveVendorRegistry,
+} from '../connection-convention-families.js';
 import type {
   AppContext,
   AppContextChatLateBoundGetters,
@@ -152,6 +156,7 @@ export interface ComposeExecutionContextOptions {
     | 'keys'
     | 'sharedStoreRef'
     | 'contactStoreRef'
+    | 'crmRecordMirrorStoreRef'
     | 'annotationDeps'
     | 'annotationStoreRef'
     | 'enrichmentStoreRef'
@@ -381,6 +386,13 @@ export const composeExecutionContext = async (
         )
       : undefined,
     contactStore: app.contactStoreRef,
+    businessContextWorkEntityStore: storage.workEntityStoreRef,
+    businessContextCrmMirrorStore: app.crmRecordMirrorStoreRef,
+    getBoundCrmSources: () => deriveBoundCrmMirrorSources(
+      'deal',
+      app.connectionStoreRef,
+      liveVendorRegistry(storage.localManifestStore),
+    ),
     annotationDeps: app.annotationDeps,
     db: storage.db,
     annotationStore: app.annotationStoreRef,

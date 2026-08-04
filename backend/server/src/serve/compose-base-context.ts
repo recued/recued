@@ -16,6 +16,7 @@ import {
 } from '../cli/boot-trace.js';
 import { getArg, parsePositionals } from '../cli/parse.js';
 import { resolveBindPort } from '../cli/resolve-bind-port.js';
+import { reconcileServerBundleSwapConfigBeforeLoad } from '../archive/server-bundle-swap.js';
 
 export interface BaseVaultQuotas {
   perPublisherBytes?: number;
@@ -69,12 +70,25 @@ export const composeBaseContext = (
   const dbPath = getArg(args, 'db') ?? env.DB_PATH ?? './recued-server.db';
   const distribution: Distribution =
     (env.RECUED_DISTRIBUTION as Distribution | undefined) ?? 'source';
-  const loadedConfig = loadConfig({
+  let loadedConfig = loadConfig({
     distribution,
     configPath: getArg(args, 'config'),
     argv: args,
     env,
   });
+  // A restore's database rename is the commit point for config as well. If the
+  // previous process died after that point but before publishing config, the
+  // first read above sees the still-live OLD file only to discover its canonical
+  // path. Finish the marker-directed config projection, then reload before any
+  // derived port/runtime setting escapes this composition boundary.
+  if (reconcileServerBundleSwapConfigBeforeLoad(dbPath, loadedConfig.source)) {
+    loadedConfig = loadConfig({
+      distribution,
+      configPath: getArg(args, 'config'),
+      argv: args,
+      env,
+    });
+  }
   // Effective bind port honours config.toml `bind_port` (CLI --port/--bind-port
   // > $PORT > config/preset). With no CLI/$PORT override this already equals
   // loadedConfig.bootstrap.bind_port, so the bootstrap snapshot matches the bound

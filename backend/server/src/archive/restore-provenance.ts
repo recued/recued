@@ -29,19 +29,16 @@
 
 import {
   existsSync,
-  mkdirSync,
   readFileSync,
-  renameSync,
   unlinkSync,
-  writeFileSync,
 } from 'node:fs';
-import { randomBytes } from 'node:crypto';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import type { ServerPassportProjection } from '@recued/contracts';
 
 import type { Ed25519Keypair } from '../keys/index.js';
 import { commitImportedPassport, type PassportAuditEmitter } from '../passport/index.js';
+import { fsyncDir, writeFileAtomicSync } from '../durable-fs.js';
 
 /** Marker filename in the server data dir. Dot-prefixed + `recued-`-namespaced
  *  so it reads as transient infra (like the instance lock), not user data. It
@@ -73,23 +70,12 @@ interface RestoreProvenanceMarker {
 export const restoreProvenanceMarkerPath = (dataPath: string): string =>
   join(dataPath, RESTORE_PROVENANCE_MARKER_FILE);
 
-/** Atomic small-file write (temp → rename), mirroring `archive-restore.ts`'s
- *  config-write discipline: a crash / ENOSPC mid-write strands at most a
- *  `.tmp-*` file, never a torn marker the boot reader would choke on. */
-const atomicWriteMarker = (destPath: string, data: Buffer): void => {
-  const dir = dirname(destPath);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const tmpPath = join(
-    dir,
-    `.tmp-${basename(destPath)}-${randomBytes(8).toString('hex')}`,
-  );
-  try {
-    writeFileSync(tmpPath, data);
-    renameSync(tmpPath, destPath);
-  } catch (err) {
-    try { unlinkSync(tmpPath); } catch { /* never landed — best effort */ }
-    throw err;
-  }
+/** Delete a marker durably. Marker absence is meaningful here: a power-loss
+ *  resurrection could otherwise record a prior restore's passport against the
+ *  current database on the next boot. */
+const clearMarker = (markerPath: string): void => {
+  unlinkSync(markerPath);
+  fsyncDir(dirname(markerPath));
 };
 
 /** STAGE — make the `dataPath` marker reflect THIS committed restore so the
@@ -115,7 +101,13 @@ const atomicWriteMarker = (destPath: string, data: Buffer): void => {
 export const stageRestoreProvenanceMarker = (
   dataPath: string,
   passportBytes: Buffer | undefined,
-  opts: { now?: () => number; warn?: (message: string) => void } = {},
+  opts: {
+    now?: () => number;
+    warn?: (message: string) => void;
+    /** Deterministic fault-injection seam; production uses the durable shared
+     *  atomic writer whose stranded temps are owned by the boot sweep. */
+    writeMarker?: (path: string, body: Buffer) => void;
+  } = {},
 ): void => {
   const warn = opts.warn ?? ((message) => console.warn(message));
   const markerPath = restoreProvenanceMarkerPath(dataPath);
@@ -146,7 +138,7 @@ export const stageRestoreProvenanceMarker = (
   // Clear any prior restore's marker FIRST, so a write failure / crash below
   // degrades to no provenance, never the prior archive's stale passport.
   try {
-    if (existsSync(markerPath)) unlinkSync(markerPath);
+    if (existsSync(markerPath)) clearMarker(markerPath);
   } catch (err) {
     warn(
       `[archive] restore-provenance stale-marker clear failed: ${(err as Error).message}`,
@@ -154,7 +146,7 @@ export const stageRestoreProvenanceMarker = (
   }
   if (!serialized) return;
   try {
-    atomicWriteMarker(markerPath, serialized);
+    (opts.writeMarker ?? writeFileAtomicSync)(markerPath, serialized);
   } catch (err) {
     warn(
       `[archive] restore-provenance marker write failed (no provenance recorded): ${(err as Error).message}`,
@@ -227,7 +219,7 @@ export const commitRestoreProvenanceAtBoot = async (
     );
   } finally {
     try {
-      unlinkSync(markerPath);
+      clearMarker(markerPath);
     } catch {
       /* best effort — a leftover marker only risks a duplicate no-op next boot */
     }

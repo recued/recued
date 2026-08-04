@@ -226,10 +226,42 @@ const renderPackUsage = (
     })
     .join('');
   return `
-    <div class="connections-pack-usage" data-conn-pack-usage="${e(connectionRowKey(conn.kind, conn.name))}">
+    <div class="connections-pack-usage" data-conn-pack-usage="${e(connectionRowKey(conn.kind, conn.name))}" tabindex="-1">
       <p class="connections-pack-usage-heading">Used by packs</p>
       <ul class="connections-pack-usage-list">${items}</ul>
     </div>
+  `;
+};
+
+/** A failed optional pack-context read is a degraded projection, not an empty
+ *  roster. Keep the connection list usable while making that distinction and
+ *  its explicit recovery action visible. The busy replacement remains
+ *  focusable; the webclient controller owns the single-flight guard. */
+const renderPackInventoryRecovery = (
+  recovery: ConnectionsPageProps['packInventoryRecovery'],
+): string => {
+  if (recovery === undefined) return '';
+  const retrying = recovery.phase === 'retrying';
+  return `
+    <section class="connections-credential-recovery connections-pack-inventory"
+      data-connections-pack-inventory="${recovery.phase}"
+      role="${retrying ? 'status' : 'alert'}"
+      aria-live="polite" aria-atomic="true" aria-busy="${retrying ? 'true' : 'false'}">
+      <div class="connections-pack-inventory-copy">
+        <strong>${retrying ? 'Restoring pack context' : 'Pack context unavailable'}</strong>
+        <span>${retrying
+          ? 'Refreshing pack usage and setup suggestions…'
+          : `Connections remain usable, but pack usage and setup suggestions may be incomplete. ${e(recovery.message)}`}</span>
+      </div>
+      <div class="connections-credential-recovery-action">
+        <button type="button"
+          class="rx-btn rx-btn-secondary rx-btn-xs btn btn-xs btn-secondary"
+          data-action="connections-retry-pack-context"
+          data-connections-pack-inventory-retry
+          aria-disabled="${retrying ? 'true' : 'false'}"
+          aria-busy="${retrying ? 'true' : 'false'}">${retrying ? 'Retrying…' : 'Retry'}</button>
+      </div>
+    </section>
   `;
 };
 
@@ -1217,6 +1249,7 @@ const renderListView = (props: ConnectionsPageProps): string => {
       props.postSafeStopRecoveries,
       props.postSafeStopProfileLabel,
     )}
+    ${renderPackInventoryRecovery(props.packInventoryRecovery)}
     ${empty}
     ${groupBlocks}
     <div class="connections-add-row">
@@ -1385,7 +1418,11 @@ const renderHeaderList = (
     disabled: saving || rows.length >= MAX_HEADER_AUTH_ENTRIES,
     data: { 'base-key': field.key },
   });
-  const required = field.optional ? '' : ' <span class="connections-field-required">*</span>';
+  // `autofilled` joins `optional` here: the `*` is a claim about what the
+  // OWNER must type, and an in-app flow supplies this one.
+  const required = field.optional || field.autofilled
+    ? ''
+    : ' <span class="connections-field-required">*</span>';
   const hint = field.help ? fieldHint(field.help) : '';
   return `
     <div class="connections-field-row connections-header-list" data-field-key="${e(field.key)}"${credentialRejected
@@ -1618,7 +1655,11 @@ const renderField = (
       data: { 'conn-field': field.key },
     });
   }
-  const required = field.optional ? '' : ' <span class="connections-field-required">*</span>';
+  // `autofilled` joins `optional` here: the `*` is a claim about what the
+  // OWNER must type, and an in-app flow supplies this one.
+  const required = field.optional || field.autofilled
+    ? ''
+    : ' <span class="connections-field-required">*</span>';
   const hint = field.help ? fieldHint(field.help) : '';
   // ⚠ Wording is deliberate. "Suggested by X" tells the owner where a value came
   // from; it must NOT read as "Recued checked this". A label that looks like
@@ -1843,7 +1884,12 @@ export const connectionFormValidationIssue = (
       return formValidationIssue(
         field.key,
         field.label,
-        `${field.label} is required.`,
+        // An autofilled field is still blocking, but telling the owner it "is
+        // required" names an obligation they cannot discharge by typing. Name
+        // the action that fills it instead.
+        field.autofilled
+          ? `${field.label}: click Authorize to obtain one.`
+          : `${field.label} is required.`,
       );
     }
   }
@@ -2235,6 +2281,25 @@ const renderVendorOAuth = (dialog: ConnectionsDialogState): string => {
   const grantedSummary = grantedScopes.length > 0
     ? `<p class="connections-oauth-scopes">Granted scopes (${grantedScopes.length}): ${e(grantedScopes.join(', '))}</p>`
     : '';
+  // The consent screen is the most expensive step in this form, and it persists
+  // NOTHING: the exchange patches `auth.refresh_token` into the DRAFT and stops.
+  // Three separate questions from the live drive — "is the connection saved?",
+  // "why would I probe when authorization just succeeded?", "does Cancel undo the
+  // authorization or just go back?" — are all the same missing sentence. Answer it
+  // beside the token that is not yet on disk, not in the privacy paragraph above.
+  const probeTarget = (dialog.values['config.base_url'] ?? '').trim();
+  const postAuthorizationNextStep = hasUsableToken
+    && tokenFromAuthorization
+    && !dialog.saving
+    ? `<p class="rx-msg rx-msg-warn connections-oauth-next-step" data-oauth-next-step role="status">
+        <strong>Not saved yet.</strong> Select <em>Save and probe</em> to store this
+        connection on your server. Authorizing proved the provider issued a token;
+        the probe is the separate check that the token actually reaches
+        ${probeTarget.length > 0 ? `<code>${e(probeTarget)}</code>` : 'the API'}
+        with the scopes you granted. Cancel discards this authorization and you
+        would have to consent again.
+      </p>`
+    : '';
   const errorBlock = dialog.oauthError
     ? `<p id="connections-oauth-error" class="rx-msg rx-msg-error connections-oauth-error" role="alert">${e(dialog.oauthError)}</p>`
     : '';
@@ -2320,8 +2385,11 @@ const renderVendorOAuth = (dialog: ConnectionsDialogState): string => {
           <strong>Exact callback URL</strong>
           <span>Register this unchanged in the provider app.</span>
         </div>
+        ${dialog.oauthCallbackAlternateUrl !== undefined
+          ? `<p class="connections-oauth-callback-alt">This URL is specific to the address you are using now. If you also open Recued at <code>${e(new URL(dialog.oauthCallbackAlternateUrl).origin)}</code>, register <code>${e(dialog.oauthCallbackAlternateUrl)}</code> as well ${'—'} the two paths differ, and only the one matching your current address will work.</p>`
+          : ''}
         <div class="connections-oauth-callback-value">
-          <code>${e(OAUTH_CLOUD_CALLBACK_URL)}</code>
+          <code>${e(dialog.oauthCallbackUrl ?? OAUTH_CLOUD_CALLBACK_URL)}</code>
           ${button({
             label: 'Copy',
             size: 'xs',
@@ -2333,6 +2401,7 @@ const renderVendorOAuth = (dialog: ConnectionsDialogState): string => {
       ${errorBlock}
       ${reauthorizationBlock}
       ${grantedSummary}
+      ${postAuthorizationNextStep}
       ${readiness.scopeCount > 0
         ? `<p class="connections-oauth-scope-count">${readiness.scopeCount} requested ${readiness.scopeCount === 1 ? 'scope' : 'scopes'} will be reviewed on the provider screen.</p>`
         : ''}
@@ -2465,9 +2534,9 @@ const renderConnectionSetupGuideHandoff = (
     ? `
       <li>
         <strong>Register Recued's exact callback URL</strong>
-        <p>Paste this as an allowed redirect or callback URI. Do not add a slash or substitute this tab's address.</p>
+        <p>Paste this as an allowed redirect or callback URI, exactly as shown ${'—'} do not add a trailing slash.</p>
         <div class="connections-setup-guide-copy-value">
-          <code id="connection-setup-guide-callback">${e(OAUTH_CLOUD_CALLBACK_URL)}</code>
+          <code id="connection-setup-guide-callback">${e(dialog.oauthCallbackUrl ?? OAUTH_CLOUD_CALLBACK_URL)}</code>
           ${button({
             label: 'Copy',
             size: 'xs',
@@ -3156,7 +3225,14 @@ const renderForm = (
         ? inlineError(dialog.error)
         : ''}
       <div class="connections-dialog-actions">
-        ${dialog.mode === 'create'
+        ${/* Back means "I picked the wrong kind" — it returns to the picker and
+              WIPES `values`. Once a provider consent has completed in this
+              session that is a strictly worse Cancel: same exit, same discard,
+              but phrased as navigation. Retire it there, leaving two buttons
+              whose difference is legible (save it / drop it). Gated on
+              `oauthGrantedScopes`, not on the token: a hand-pasted refresh
+              token consumed nothing external, so its Back stays. */''}
+        ${dialog.mode === 'create' && dialog.oauthGrantedScopes === null
           ? button({
               label: 'Back',
               size: 'sm',
@@ -3363,6 +3439,15 @@ export const CONNECTIONS_PAGE_STYLES = `
   justify-content: flex-end;
   gap: 6px;
 }
+.connections-pack-inventory {
+  border-color: var(--warn-border, #b8860b);
+  background: color-mix(in srgb, var(--warn-bg, #f6b73c) 8%, var(--bg));
+}
+.connections-pack-inventory-copy {
+  display: grid;
+  gap: 2px;
+}
+.connections-pack-inventory-copy span { color: var(--fg-muted); }
 @media (max-width: 560px) {
   .connections-credential-recovery {
     align-items: flex-start;

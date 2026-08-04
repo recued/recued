@@ -46,6 +46,7 @@ const makeStore = (): OAuthAccountStore & {
     async get(k) { return data.get(k) ?? null; },
     async set(k, v) { data.set(k, v); },
     async delete(k) { data.delete(k); },
+    async getAll() { return Object.fromEntries(data); },
   };
 };
 
@@ -337,12 +338,19 @@ describe('handleMailDelete', () => {
     expect(h.instances.get('mail', 'work')).not.toBeNull();
     expect(await readImapPassword(h.store, 'work')).toBe('pw');
     expect(await readImapSmtpPassword(h.store, 'work')).toBe('smtp-pw');
+    h.store.data.set(
+      'imap.work.pending_delivery.SU5CT1g.7.created',
+      '{"schema_version":1}',
+    );
+    h.store.data.set('imap.other.pending_delivery.SU5CT1g.7.created', 'keep');
 
     const result = await handleMailDelete(h.deps, { slug: 'work' });
     expect(result).toEqual({ ok: true });
     expect(h.instances.get('mail', 'work')).toBeNull();
     expect(await readImapPassword(h.store, 'work')).toBeNull();
     expect(await readImapSmtpPassword(h.store, 'work')).toBeNull();
+    expect(h.store.data.has('imap.work.pending_delivery.SU5CT1g.7.created')).toBe(false);
+    expect(h.store.data.get('imap.other.pending_delivery.SU5CT1g.7.created')).toBe('keep');
     expect(h.deleted).toEqual(['work']);
   });
 

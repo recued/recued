@@ -64,6 +64,7 @@ interface ElementLike {
 interface EventLike {
   target?: unknown;
   key?: string;
+  isComposing?: boolean;
   preventDefault?: () => void;
   stopPropagation?: () => void;
 }
@@ -210,6 +211,10 @@ export const wireRefPicker = (
 
   const onKeydown = (event: EventLike): void => {
     if (!isInput(event.target)) return;
+    // IMEs use Enter, Escape, and the arrow keys to navigate and commit their
+    // own candidate list. The picker must not move or select underneath that
+    // composition; the next non-composing keydown can operate normally.
+    if (event.isComposing === true) return;
     switch (event.key) {
       case 'ArrowDown':
         prevent(event);
@@ -359,6 +364,12 @@ export const wireRefPicker = (
         ? { id: state.selectedId, label: state.selectedLabel ?? '' }
         : null,
     getQuery: () => state.query,
+    setQuery: (query: string) => {
+      if (destroyed) return;
+      state = setQuery(state, query);
+      paint();
+      runSearch(query, true);
+    },
     setValue: (selection: RefPickerSelection | null) => {
       if (destroyed) return;
       if (selection === null) {

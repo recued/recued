@@ -53,7 +53,9 @@ import {
 } from '../shell/account-menu.js';
 import {
   SERVER_SWITCHER_ATTR,
+  SERVER_SWITCHER_ANNOUNCER_ATTR,
   SERVER_SWITCHER_ITEM_ATTR,
+  SERVER_SWITCHER_MENU_ATTR,
   SERVER_SWITCHER_RECENCY_ATTR,
   SERVER_SWITCHER_SWITCH_COMMIT_ATTR,
   SERVER_SWITCHER_SWITCH_CONFIRM_ATTR,
@@ -471,6 +473,57 @@ describe('mountAccountMenu', () => {
     findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
     expect(section.hasAttribute('hidden')).toBe(true);
     expect(title.textContent).toBe('');
+  });
+
+  it('orients an expired-area retry handoff without inventing a verification outcome', () => {
+    const onConnectionDiagnosisClosed = vi.fn();
+    const { dom, host, mount } = setup({ onConnectionDiagnosisClosed });
+    const diagnosis: AccountConnectionDiagnosis = {
+      id: 'expired-area-review:1700000000000:1',
+      profileId: 'p1',
+      profileLabel: 'Home server',
+      areaLabel: 'Contracts',
+      kind: 'expired_area_review',
+    };
+
+    expect(mount.openConnectionDiagnosis(diagnosis)).toBe('opened');
+    const section = findByAttr(
+      host,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_ATTR,
+    )!;
+    const title = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_TITLE_ATTR,
+    )!;
+    expect(title.textContent).toBe(
+      'Review home.example:8443 for Contracts',
+    );
+    expect(dom.activeElement()).toBe(title);
+    expect(subtreeText(section)).toContain(
+      'stopped after two unsuccessful current Contracts checks',
+    );
+    expect(subtreeText(section)).toContain(
+      'This review will not retry Contracts',
+    );
+    expect(subtreeText(section)).toContain(
+      'choose one fresh current-area check or close the review',
+    );
+    expect(subtreeText(section)).not.toContain(
+      'The latest check ended',
+    );
+    const returnButton = findByAttr(
+      section,
+      ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN_ATTR,
+    )!;
+    expect(returnButton.textContent).toBe('Choose check or close');
+    expect(returnButton.getAttribute('aria-label')).toContain(
+      'choose one current Contracts check or close the review',
+    );
+    returnButton.click();
+    expect(onConnectionDiagnosisClosed).toHaveBeenCalledWith(
+      diagnosis,
+      'return',
+    );
   });
 
   it('opens the exact active-server controls and returns to the outcome step', () => {
@@ -2381,7 +2434,26 @@ describe('mountAccountMenu', () => {
     expect(findByAttr(host, SERVER_SWITCHER_REMOVE_REVOKE_ATTR)).not.toBeNull();
   });
 
-  it('closes to the stable Account trigger after a successful removal', async () => {
+  it('keeps Account open on the surviving roster after removing another profile', async () => {
+    const onRemove = vi.fn(async () => undefined);
+    const { dom, host, mount } = setup({ onRemove });
+    findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)!.click();
+    findAllByAttr(host, SERVER_SWITCHER_REMOVE_ATTR)[1]!.click();
+    findByAttr(host, SERVER_SWITCHER_REMOVE_LOCAL_ATTR)!.click();
+
+    await flush();
+
+    expect(onRemove).toHaveBeenCalledWith('p2', 'local');
+    expect(mount.isOpen()).toBe(true);
+    expect(findAllByAttr(host, SERVER_SWITCHER_ITEM_ATTR)).toHaveLength(1);
+    expect(dom.activeElement()).toBe(
+      findByAttr(host, SERVER_SWITCHER_MENU_ATTR),
+    );
+    expect(findByAttr(host, SERVER_SWITCHER_ANNOUNCER_ATTR)?.textContent)
+      .toContain('no longer saved');
+  });
+
+  it('closes to the stable Account trigger after removing the active profile', async () => {
     const onRemove = vi.fn(async () => undefined);
     const { dom, host, mount } = setup({ onRemove });
     const trigger = findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)!;
@@ -2396,14 +2468,24 @@ describe('mountAccountMenu', () => {
     expect(dom.activeElement()).toBe(trigger);
   });
 
-  it('closes on Escape and on an outside click, staying open for an inside one', () => {
+  it('closes on Escape, outside click, and focus departure while staying open for inside focus', async () => {
     const { host, dom, mount } = setup();
     const trigger = findByAttr(host, ACCOUNT_MENU_TRIGGER_ATTR)!;
+    const popover = findByAttr(host, ACCOUNT_MENU_POPOVER_ATTR)!;
     trigger.click();
-    dom.fire('click', { target: findByAttr(host, ACCOUNT_MENU_POPOVER_ATTR)! });
+    dom.fire('click', { target: popover });
     expect(mount.isOpen()).toBe(true);
     dom.fire('click', { target: dom.create('div') });
     expect(mount.isOpen()).toBe(false);
+
+    trigger.click();
+    const outside = dom.create('button');
+    outside.focus();
+    dom.fire('focusin', { target: outside });
+    await flush();
+    expect(mount.isOpen()).toBe(false);
+    expect(dom.activeElement()).toBe(outside);
+
     trigger.click();
     dom.fire('keydown', { key: 'Escape' });
     expect(mount.isOpen()).toBe(false);
@@ -2420,10 +2502,12 @@ describe('mountAccountMenu', () => {
   it('dispose removes the nodes and every document listener, and is idempotent', () => {
     const { host, dom, mount } = setup();
     expect(dom.listenerCount('click')).toBe(1);
+    expect(dom.listenerCount('focusin')).toBe(1);
     expect(dom.listenerCount('keydown')).toBe(1);
     mount.dispose();
     mount.dispose();
     expect(dom.listenerCount('click')).toBe(0);
+    expect(dom.listenerCount('focusin')).toBe(0);
     expect(dom.listenerCount('keydown')).toBe(0);
     expect(findByAttr(host, ACCOUNT_MENU_ATTR)).toBeNull();
   });

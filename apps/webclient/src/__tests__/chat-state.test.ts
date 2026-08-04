@@ -296,6 +296,29 @@ describe('reduceChatThreadEvent', () => {
     expect(s.session?.model_routing).toEqual({ current: 'byok', overridden: true });
   });
 
+  it('preserves the exact slot from a model_pref broadcast', () => {
+    let s = initialChatThreadState();
+    s = hydrateThreadFromSnapshot(s, { ...mkSession('sess-1'), messages: [] });
+    s = reduceChatThreadEvent(s, {
+      kind: 'chat.session_changed',
+      session_id: 'sess-1',
+      field: 'model_pref',
+      value: {
+        current: 'byok',
+        model_hint: 'fast',
+        source_id: 'slot_2',
+        overridden: true,
+      },
+      cursor: 1,
+    } as unknown as ServerEvent);
+    expect(s.session?.model_routing).toEqual({
+      current: 'byok',
+      model_hint: 'fast',
+      source_id: 'slot_2',
+      overridden: true,
+    });
+  });
+
   it('D-167: chat.default_model_pref_changed re-renders an INHERITED open chat', () => {
     let s = initialChatThreadState();
     s = hydrateThreadFromSnapshot(s, {
@@ -306,10 +329,15 @@ describe('reduceChatThreadEvent', () => {
     s = reduceChatThreadEvent(s, {
       kind: 'chat.default_model_pref_changed',
       layer: 'free_pool',
+      source_id: 'free_pool',
       updated_at: 5,
       cursor: 1,
     } as unknown as ServerEvent);
-    expect(s.session?.model_routing).toEqual({ current: 'free_pool', overridden: false });
+    expect(s.session?.model_routing).toEqual({
+      current: 'free_pool',
+      source_id: 'free_pool',
+      overridden: false,
+    });
   });
 
   it('D-167: chat.default_model_pref_changed leaves an OVERRIDDEN chat untouched', () => {

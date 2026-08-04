@@ -1,7 +1,7 @@
 {
   "_extract": {
     "note": "paths and minimal parameter-shape extract of the pinned official Trello OpenAPI 3 document; covers all 59 Trello v2 bindings. The pack path_alias strips the runtime /1 server prefix before documentary comparison.",
-    "url": "https://dac-static.atlassian.com/cloud/trello/swagger.v3.json?_v=1.1132.0",
+    "url": "https://dac-static.atlassian.com/cloud/trello/swagger.v3.json?_v=1.1156.0",
     "sha256": "b50fca38c5ea62025f9778482f89f11ae3da0dd983d31ba49401c4422e450b19",
     "fetched_at": "2026-07-14",
     "openapi": "3.0.0",

@@ -40,6 +40,12 @@ export interface ButtonProps {
   id?: string;
   /** Disabled state. */
   disabled?: boolean;
+  /** Accessible disabled state. Unlike native `disabled`, this deliberately
+   *  keeps the control in the focus order; the owning handler must still fence
+   *  activation. Useful while an already-started action is busy. */
+  ariaDisabled?: boolean;
+  /** Announces an asynchronous action still in progress. */
+  ariaBusy?: boolean;
   /** Extra class tokens appended after the primitive classes. */
   extraClass?: string;
   /** Set to true to render label as raw HTML (e.g., when it contains
@@ -84,6 +90,8 @@ export const button = (props: ButtonProps): string => {
   if (props.id) attrs.push(`id="${e(props.id)}"`);
   if (props.action) attrs.push(`data-action="${e(props.action)}"`);
   if (props.disabled) attrs.push('disabled');
+  if (props.ariaDisabled) attrs.push('aria-disabled="true"');
+  if (props.ariaBusy) attrs.push('aria-busy="true"');
   if (props.title) attrs.push(`title="${e(props.title)}"`);
   if (props.ariaLabel) attrs.push(`aria-label="${e(props.ariaLabel)}"`);
   if (props.data) {
@@ -116,8 +124,8 @@ export const BUTTON_STYLES = `
   justify-content: center;
   gap: 6px;
 }
-.rx-btn:hover:not(:disabled) { background: var(--surface-sunk); }
-.rx-btn:disabled { cursor: not-allowed; opacity: 0.5; }
+.rx-btn:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--surface-sunk); }
+.rx-btn:disabled, .rx-btn[aria-disabled="true"] { cursor: not-allowed; opacity: 0.5; }
 
 .rx-btn-xs { padding: 4px 10px; font-size: 11px; }
 .rx-btn-sm { padding: 6px 12px; font-size: 12px; }
@@ -128,7 +136,7 @@ export const BUTTON_STYLES = `
   color: var(--on-accent);
   border-color: var(--accent);
 }
-.rx-btn-primary:hover:not(:disabled) {
+.rx-btn-primary:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--accent-dim, var(--accent));
   color: var(--on-accent);
 }
@@ -140,7 +148,7 @@ export const BUTTON_STYLES = `
   border-color: var(--danger);
   background: var(--surface);
 }
-.rx-btn-danger:hover:not(:disabled) { background: var(--danger-weak); }
+.rx-btn-danger:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--danger-weak); }
 
 /* "text" means text: quiet at rest (no border), so a repeated inline
  * destructive action (per-row Remove / Revoke) doesn't shout N times per
@@ -151,7 +159,7 @@ export const BUTTON_STYLES = `
   border-color: transparent;
   background: transparent;
 }
-.rx-btn-danger-text:hover:not(:disabled) {
+.rx-btn-danger-text:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--danger-weak);
   border-color: var(--danger);
 }
@@ -167,7 +175,7 @@ export const BUTTON_STYLES = `
   line-height: inherit;
   height: auto;
 }
-.rx-btn-link:hover:not(:disabled) { opacity: 0.8; background: none; }
+.rx-btn-link:hover:not(:disabled):not([aria-disabled="true"]) { opacity: 0.8; background: none; }
 
 .rx-btn-oauth {
   width: 100%;
@@ -177,7 +185,7 @@ export const BUTTON_STYLES = `
   background: var(--surface);
   color: var(--fg);
 }
-.rx-btn-oauth:hover:not(:disabled) {
+.rx-btn-oauth:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--surface-sunk);
   border-color: var(--border-strong, var(--border));
 }

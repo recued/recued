@@ -62,3 +62,30 @@ describe('resolveInstallDialogAccess', () => {
     expect(resolveInstallDialogAccess(undefined, model)).toBe('read');
   });
 });
+
+describe('installFailureCopy — the engine reason survives', () => {
+  it('appends the server message and strips its rpc prefix', () => {
+    // ⛔ The generic line alone is unactionable. The reason behind invoice-book's
+    // rejection named the recipe, the step, the op and the missing pack — and
+    // recovering it took a server-side probe a self-hoster cannot run.
+    const copy = installFailureCopy(
+      'validator_rejected',
+      "packs.install: recipe 'delete-billable-item': Tier-P op "
+      + "'recued-core.billable-hours.entry.get' (step 'entry') names pack "
+      + "'recued-core.billable-hours', which has no resolved catalog binding",
+    );
+    expect(copy).toContain('failed substrate validation');
+    expect(copy).toContain("recipe 'delete-billable-item'");
+    expect(copy).toContain('no resolved catalog binding');
+    expect(copy).not.toContain('packs.install:');
+  });
+
+  it('is unchanged when the engine sends no message', () => {
+    // Negative control — every existing caller and copy string must be intact.
+    expect(installFailureCopy('validator_rejected'))
+      .toBe('Install rejected: the manifest failed substrate validation.');
+    expect(installFailureCopy('validator_rejected', '   '))
+      .toBe('Install rejected: the manifest failed substrate validation.');
+    expect(installFailureCopy(undefined)).toBe('Install rejected: unknown failure.');
+  });
+});

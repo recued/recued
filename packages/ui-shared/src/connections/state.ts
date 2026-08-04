@@ -125,6 +125,19 @@ export interface ConnectionsPostSafeStopRecoveryState {
 }
 
 export interface ConnectionsDialogState {
+  /** The EXACT callback URL to register with the provider, resolved for THIS
+   *  PWA's origin (`oauthCallbackUrlForPwa`). Threaded in because this renderer
+   *  is pure and has no `window`.
+   *
+   *  ⚠ Absent ⇒ the cloud URL, which is correct for every NON-loopback PWA and
+   *  is what the form always printed. A loopback host that forgets to set it
+   *  regresses to telling the owner to register a URI the flow will not use. */
+  oauthCallbackUrl?: string;
+  /** The callback URL a DIFFERENT usable address would need, when one exists
+   *  (`alternateOAuthCallbackUrl`). Rendered as a "register this too" note,
+   *  because the loopback and cloud paths are not guessable from each other and
+   *  an owner who uses both addresses needs both registered. */
+  oauthCallbackAlternateUrl?: string;
   stage: ConnectionsDialogStage;
   /** Edit mode pins identity (kind, name) and pre-fills the form
    *  from an existing record's projection. The host hydrates the
@@ -410,6 +423,13 @@ export interface ConnectionsPageState {
    *  use its vendor + scope coverage). Optional + best-effort: the host hydrates
    *  it from `packs.list`; absent → no "Used by packs" section. */
   installedPackManifests?: readonly BulkPackManifest[];
+  /** A wired pack-context read failed or is being retried. Connections remain
+   *  usable, but the missing roster makes "Used by packs" and pack-authored
+   *  enrollment suggestions incomplete, so absence must not look authoritative. */
+  packInventoryRecovery?: {
+    phase: 'error' | 'retrying';
+    message: string;
+  };
   /** D-225 Slice 2 — per-MCP-connection generated-pack status, keyed by
    *  `connectionRowKey`. Hydrated from `collection.connection.mcpPackStatus`,
    *  which needs no probe (both sides are already at rest), so the host can

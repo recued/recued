@@ -61,6 +61,9 @@ export const FR_LENS_RECIPE_ATTR = 'data-recued-reception-response-recipe';
 export const FR_LENS_PICKER_ATTR = 'data-recued-reception-response-picker';
 export const FR_LENS_EMPTY_ATTR = 'data-recued-reception-response-empty';
 export const FR_LENS_ERROR_ATTR = 'data-recued-reception-response-error';
+export const FR_LENS_RETRY_ATTR = 'data-recued-reception-response-retry';
+export const FR_LENS_DETAIL_RETRY_ATTR =
+  'data-recued-reception-response-detail-retry';
 
 /** ⛔ Ported verbatim from the `#data` surface — the sentence an owner reads when nothing has
  *  been accepted yet. It names WHERE the missing thing actually is, which is the only useful
@@ -185,7 +188,7 @@ const renderPicker = (state: PickerState): string => {
     </section>`;
   }
   return `<section ${FR_LENS_PICKER_ATTR}="ready">
-    <h3>Run this response now</h3>
+    <h3 tabindex="-1">Run this response now</h3>
     <p>This is an explicit manual run. Review the prefilled routing context and recipe configuration before confirming; the acceptance event is not re-emitted.</p>
     ${state.matches.length === 0
       ? '<p>No saved automation matches this response yet. Create one in Kitchen first.</p>'
@@ -215,11 +218,12 @@ const renderDetail = (
   canRun: boolean,
 ): string => {
   const fields = formResponseFields(response);
+  const discovering = picker.status === 'loading';
   return `
     <section ${FR_LENS_DETAIL_ATTR}="${e(response.submission_id)}">
       <button type="button" ${FR_LENS_ACTION_ATTR}="close">← Back to form responses</button>
       <div class="reception-responses-header">
-        <h2>${e(formResponseVisitorLabel(response))}</h2>
+        <h2 tabindex="-1">${e(formResponseVisitorLabel(response))}</h2>
         <span class="reception-responses-pill">Accepted</span>
       </div>
       <dl class="reception-responses-meta">
@@ -238,7 +242,9 @@ const renderDetail = (
         <div class="reception-responses-automation-actions">
           <a href="${e(serializeShellRoute('kitchen', 'new', 'form-response', response.form_definition_id))}">Automate this form</a>
           ${canRun
-            ? `<button type="button" ${FR_LENS_ACTION_ATTR}="discover">Run this response</button>`
+            ? `<button type="button" ${FR_LENS_ACTION_ATTR}="discover"${discovering
+              ? ' aria-disabled="true" aria-busy="true"'
+              : ''}>${discovering ? 'Finding automations…' : 'Run this response'}</button>`
             : ''}
         </div>
       </div>
@@ -261,7 +267,7 @@ const renderList = (
   loadingMore: boolean,
 ): string => `
   <section>
-    <h2>Form responses <span class="reception-responses-pill">read-only</span></h2>
+    <h2 tabindex="-1">Form responses <span class="reception-responses-pill">read-only</span></h2>
     ${responses.length === 0
       ? `<p ${FR_LENS_EMPTY_ATTR}>${e(FR_LENS_EMPTY_COPY)}</p>`
       : `<ul class="reception-responses-list" role="list">${responses.map((response) => `
@@ -274,7 +280,7 @@ const renderList = (
             </button>
           </li>`).join('')}</ul>`}
     ${hasMore
-      ? `<button type="button" ${FR_LENS_ACTION_ATTR}="load-more"${loadingMore ? ' disabled' : ''}>${
+      ? `<button type="button" ${FR_LENS_ACTION_ATTR}="load-more" aria-disabled="${loadingMore ? 'true' : 'false'}">${
           loadingMore ? 'Loading…' : 'Load more'
         }</button>`
       : ''}
@@ -349,23 +355,135 @@ export const mountReceptionFormResponseLens = (
   let detailId: string | null = null;
   let detail: FormResponse | null = null;
   let loadingDetail = false;
+  let retryingDetail = false;
   let picker: PickerState = { status: 'idle' };
   let loading = true;
+  let retryingList = false;
   let error: string | null = null;
   let disposed = false;
   let generation = 0;
   let runModal: RunModal.RunModalHandle | null = null;
 
-  const render = (): void => {
+  type ResponseFocusTarget =
+    | { kind: 'discover' }
+    | { kind: 'detail-back' }
+    | { kind: 'detail-heading' }
+    | { kind: 'detail-retry' }
+    | { kind: 'list-heading' }
+    | { kind: 'list-retry' }
+    | { kind: 'load-more' }
+    | { kind: 'picker-heading' }
+    | { kind: 'picker-retry' }
+    | { kind: 'row'; submissionId: string };
+
+  const queryOne = (selector: string): HTMLElement | null => {
+    // The compact unit-test DOM stores `innerHTML` without parsing it. Browsers provide this
+    // query API; keeping it optional preserves those string-rendering tests.
+    const querySelector = (
+      root as HTMLElement & {
+        querySelector?: (selectors: string) => Element | null;
+      }
+    ).querySelector;
+    return typeof querySelector === 'function'
+      ? querySelector.call(root, selector) as HTMLElement | null
+      : null;
+  };
+
+  const responseFocusElement = (target: ResponseFocusTarget): HTMLElement | null => {
+    if (target.kind === 'discover') {
+      return queryOne(
+        `.reception-responses-automation-actions [${FR_LENS_ACTION_ATTR}="discover"]`,
+      );
+    }
+    if (target.kind === 'detail-back') {
+      return queryOne(`[${FR_LENS_ACTION_ATTR}="close"]`);
+    }
+    if (target.kind === 'detail-heading') {
+      return queryOne(`[${FR_LENS_DETAIL_ATTR}] h2`);
+    }
+    if (target.kind === 'detail-retry') {
+      return queryOne(`[${FR_LENS_DETAIL_RETRY_ATTR}]`);
+    }
+    if (target.kind === 'list-heading') {
+      return queryOne('section > h2');
+    }
+    if (target.kind === 'list-retry') {
+      return queryOne(`[${FR_LENS_RETRY_ATTR}]`);
+    }
+    if (target.kind === 'load-more') {
+      return queryOne(`[${FR_LENS_ACTION_ATTR}="load-more"]`);
+    }
+    if (target.kind === 'picker-heading') {
+      return queryOne(`[${FR_LENS_PICKER_ATTR}="ready"] h3`);
+    }
+    if (target.kind === 'picker-retry') {
+      return queryOne(
+        `[${FR_LENS_PICKER_ATTR}="error"] [${FR_LENS_ACTION_ATTR}="discover"]`,
+      );
+    }
+    const querySelectorAll = (
+      root as HTMLElement & {
+        querySelectorAll?: (selectors: string) => NodeListOf<Element>;
+      }
+    ).querySelectorAll;
+    const rows = typeof querySelectorAll === 'function'
+      ? Array.from(querySelectorAll.call(root, `[${FR_LENS_ACTION_ATTR}="open"]`))
+      : [];
+    const exact = rows.find(
+      (row) => row.getAttribute(FR_LENS_RECIPE_ATTR) === target.submissionId,
+    );
+    return (exact as HTMLElement | undefined) ?? queryOne('section > h2');
+  };
+
+  const ownsResponseFocus = (target: ResponseFocusTarget): boolean => {
+    const activeElement = (doc as Document & { activeElement?: Element | null }).activeElement;
+    return activeElement != null && activeElement === responseFocusElement(target);
+  };
+
+  const restoreResponseFocus = (target: ResponseFocusTarget | null): void => {
+    if (target === null) return;
+    responseFocusElement(target)?.focus?.({ preventScroll: true });
+  };
+
+  const activePaginationFocus = (): ResponseFocusTarget | null => {
+    const activeElement = (doc as Document & { activeElement?: Element | null }).activeElement;
+    if (activeElement == null) return null;
+    const contains = (
+      root as HTMLElement & { contains?: (other: Node | null) => boolean }
+    ).contains;
+    if (typeof contains === 'function' && !contains.call(root, activeElement)) return null;
+    const action = activeElement.getAttribute(FR_LENS_ACTION_ATTR);
+    if (action === 'load-more') return { kind: 'load-more' };
+    if (action !== 'open') return null;
+    const submissionId = activeElement.getAttribute(FR_LENS_RECIPE_ATTR);
+    return submissionId === null ? null : { kind: 'row', submissionId };
+  };
+
+  const render = (focus: ResponseFocusTarget | null = null): void => {
     if (disposed) return;
-    const errorBlock = error !== null
-      ? `<p ${FR_LENS_ERROR_ATTR} role="alert">${e(error)}</p>`
+    const listLoadFailed = error !== null
+      && detailId === null
+      && responses.length === 0;
+    const retryStateAttrs = retryingList
+      ? ' aria-disabled="true" aria-busy="true"'
       : '';
+    const retryLabel = retryingList ? 'Retrying…' : 'Retry';
+    const listRetry = `<button type="button" ${FR_LENS_ACTION_ATTR}="retry-list" ${FR_LENS_RETRY_ATTR}${retryStateAttrs}>${retryLabel}</button>`;
+    const detailRetryStateAttrs = retryingDetail
+      ? ' aria-disabled="true" aria-busy="true"'
+      : '';
+    const detailRetryLabel = retryingDetail ? 'Retrying…' : 'Retry';
+    const detailRetry = `<button type="button" ${FR_LENS_ACTION_ATTR}="retry-detail" ${FR_LENS_DETAIL_RETRY_ATTR}${detailRetryStateAttrs}>${detailRetryLabel}</button>`;
+    const errorBlock = error === null
+      ? ''
+      : listLoadFailed
+        ? `<div ${FR_LENS_ERROR_ATTR} role="${retryingList ? 'status' : 'alert'}">${e(error)} ${listRetry}</div>`
+        : `<p ${FR_LENS_ERROR_ATTR} role="${retryingDetail ? 'status' : 'alert'}">${e(error)}</p>`;
     let body: string;
     if (loading) {
       body = '<p>Loading form responses…</p>';
     } else if (detailId !== null) {
-      body = loadingDetail
+      body = loadingDetail && !retryingDetail
         ? `<section ${FR_LENS_DETAIL_ATTR}="${e(detailId)}">
              <button type="button" ${FR_LENS_ACTION_ATTR}="close">← Back to form responses</button>
              <p>Loading response…</p>
@@ -375,7 +493,8 @@ export const mountReceptionFormResponseLens = (
                <button type="button" ${FR_LENS_ACTION_ATTR}="close">← Back to form responses</button>
                <p>${error === null
                  ? 'This form response was not found.'
-                 : 'Could not load this form response. Return to the list and try again.'}</p>
+                 : 'Could not load this form response. Try again or return to the list.'}</p>
+               ${error === null ? '' : detailRetry}
              </section>`
           : renderDetail(detail, picker, canRun);
     } else if (error !== null && responses.length === 0) {
@@ -386,37 +505,54 @@ export const mountReceptionFormResponseLens = (
       body = renderList(responses, cursor !== null, loadingMore);
     }
     root.innerHTML = `<style>${RECEPTION_RESPONSES_STYLES}</style>${errorBlock}${body}`;
+    restoreResponseFocus(focus);
   };
 
-  const load = async (): Promise<void> => {
+  const load = async (retryFocus = false): Promise<void> => {
     const mine = ++generation;
+    const pendingFocus: ResponseFocusTarget | null = retryFocus
+      && ownsResponseFocus({ kind: 'list-retry' })
+        ? { kind: 'list-retry' }
+        : null;
     loading = true;
-    error = null;
-    render();
+    retryingList = retryFocus;
+    if (!retryFocus) error = null;
+    render(pendingFocus);
     try {
       const result = await opts.conn('form_response.list', {});
       if (disposed || mine !== generation) return;
+      const shouldAdvanceFocus = pendingFocus !== null
+        && ownsResponseFocus(pendingFocus);
       responses = result.responses;
       cursor = result.next_cursor ?? null;
       loading = false;
-      render();
+      retryingList = false;
+      error = null;
+      render(shouldAdvanceFocus ? { kind: 'list-heading' } : null);
     } catch (err) {
       if (disposed || mine !== generation) return;
+      const shouldRestoreFocus = pendingFocus !== null
+        && ownsResponseFocus(pendingFocus);
       loading = false;
+      retryingList = false;
       error = errMessage(err);
-      render();
+      render(shouldRestoreFocus ? pendingFocus : null);
     }
   };
 
   const loadMore = async (): Promise<void> => {
     if (cursor === null || loadingMore) return;
     loadingMore = true;
-    render();
+    error = null;
+    const pendingFocus: ResponseFocusTarget = { kind: 'load-more' };
+    let firstAppendedId: string | null = null;
+    render(pendingFocus);
     try {
       // ⛔ `before`, not `cursor` — the query's keyset field is EXCLUSIVE and named for what
       // it means. A wrong key here silently returns page 1 again (an infinite "Load more").
       const result = await opts.conn('form_response.list', { before: cursor });
       if (disposed) return;
+      firstAppendedId = result.responses[0]?.submission_id ?? null;
       responses = [...responses, ...result.responses];
       cursor = result.next_cursor ?? null;
     } catch (err) {
@@ -424,46 +560,84 @@ export const mountReceptionFormResponseLens = (
       error = errMessage(err);
     } finally {
       if (!disposed) {
+        const focus = activePaginationFocus();
         loadingMore = false;
-        render();
+        // Opening a row while pagination is in flight makes the detail renderer the new owner.
+        // Keep the appended cache, but do not rebuild that detail underneath the user's focus.
+        if (detailId === null) {
+          render(
+            focus?.kind === 'load-more' && cursor === null
+              ? { kind: 'row', submissionId: firstAppendedId ?? '' }
+              : focus,
+          );
+        }
       }
     }
   };
 
-  const open = async (submissionId: string): Promise<void> => {
+  const open = async (
+    submissionId: string,
+    focusDetail = false,
+    retryFocus = false,
+  ): Promise<void> => {
+    const pendingFocus: ResponseFocusTarget | null = retryFocus
+      ? ownsResponseFocus({ kind: 'detail-retry' })
+        ? { kind: 'detail-retry' }
+        : null
+      : focusDetail
+        ? { kind: 'detail-back' }
+        : null;
     detailId = submissionId;
     detail = null;
     picker = { status: 'idle' };
     loadingDetail = true;
-    error = null;
-    render();
+    retryingDetail = retryFocus;
+    if (!retryFocus) error = null;
+    render(pendingFocus);
     try {
       const result = await opts.conn('form_response.get', { submission_id: submissionId });
       if (disposed || detailId !== submissionId) return;
       detail = result.response ?? null;
+      error = null;
     } catch (err) {
       if (disposed || detailId !== submissionId) return;
       error = errMessage(err);
     } finally {
       if (!disposed && detailId === submissionId) {
+        const shouldAdvanceFocus = pendingFocus !== null
+          && ownsResponseFocus(pendingFocus);
         loadingDetail = false;
-        render();
+        retryingDetail = false;
+        render(
+          shouldAdvanceFocus
+            ? detail === null
+              ? error === null
+                ? { kind: 'detail-back' }
+                : pendingFocus
+              : { kind: 'detail-heading' }
+            : null,
+        );
       }
     }
   };
 
   const close = (): void => {
+    const returnId = detailId;
     detailId = null;
     detail = null;
+    loadingDetail = false;
+    retryingDetail = false;
     picker = { status: 'idle' };
-    render();
+    error = null;
+    render(returnId === null ? null : { kind: 'row', submissionId: returnId });
   };
 
   const discover = async (): Promise<void> => {
-    if (detail === null) return;
+    if (detail === null || picker.status === 'loading') return;
     const anchor = detail;
     picker = { status: 'loading' };
-    render();
+    const pendingFocus: ResponseFocusTarget = { kind: 'discover' };
+    render(pendingFocus);
     try {
       const result = await opts.conn('recipe.list');
       if (disposed || detail !== anchor) return;
@@ -478,7 +652,18 @@ export const mountReceptionFormResponseLens = (
       if (disposed || detail !== anchor) return;
       picker = { status: 'error', message: errMessage(err) };
     } finally {
-      if (!disposed && detail === anchor) render();
+      if (!disposed && detail === anchor) {
+        const shouldAdvanceFocus = ownsResponseFocus(pendingFocus);
+        render(
+          shouldAdvanceFocus
+            ? picker.status === 'ready'
+              ? { kind: 'picker-heading' }
+              : picker.status === 'error'
+                ? { kind: 'picker-retry' }
+                : pendingFocus
+            : null,
+        );
+      }
     }
   };
 
@@ -515,10 +700,18 @@ export const mountReceptionFormResponseLens = (
     if (action === null) return;
     if (action === 'open') {
       const id = target.getAttribute(FR_LENS_RECIPE_ATTR);
-      if (id !== null) void open(id);
+      if (id !== null) void open(id, true);
       return;
     }
     if (action === 'close') return close();
+    if (action === 'retry-detail') {
+      if (loadingDetail || detailId === null) return;
+      return void open(detailId, false, true);
+    }
+    if (action === 'retry-list') {
+      if (loading) return;
+      return void load(true);
+    }
     if (action === 'load-more') return void loadMore();
     if (action === 'discover') return void discover();
     if (action === 'review') {

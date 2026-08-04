@@ -48,8 +48,14 @@ import {
   CLEAR_THIS_BROWSER_PANEL_STYLES,
   CLEAR_THIS_BROWSER_RELOAD_BTN_ATTR,
 } from '../settings/clear-this-browser-panel.js';
-import { AI_MODELS_CHAT_SETUP_ATTR } from '../settings/ai-models-page.js';
-import { UPDATES_PAGE_STYLES } from '../settings/updates-page.js';
+import {
+  AI_MODELS_CHAT_SETUP_ATTR,
+  AI_MODELS_MODEL_PREF_BUTTON_ATTR,
+} from '../settings/ai-models-page.js';
+import {
+  UPDATES_PAGE_STYLES,
+  UPDATES_ROLLBACK_BTN_ATTR,
+} from '../settings/updates-page.js';
 import type {
   TransparencyPrefsGetCaller,
   TransparencyPrefsSetCaller,
@@ -109,10 +115,12 @@ import {
 import { createCertPinStateWatcher } from '../realtime/cert-pin-state-watcher.js';
 import { createInMemoryWebclientLocalStore } from '../storage/local-store.js';
 import type {
+  AccountBindResult,
   ArchiveImportRebind,
   RotationResult,
   SellerOverview,
   SellerTier,
+  UpdateRollbackResponse,
   WebclientCertPinState,
 } from '@recued/contracts';
 import { generateRecoveryKey } from '@recued/crypto';
@@ -149,6 +157,7 @@ interface FakeElement {
   scrollIntoView(opts?: unknown): void;
   focus(opts?: unknown): void;
   click(): void;
+  keydown(key: string): void;
   type: string;
 }
 
@@ -215,6 +224,18 @@ const makeFakeElement = (tagName: string): FakeElement => {
     click: () => {
       const arr = listeners.get('click') ?? [];
       for (const fn of arr) fn({ target: el });
+    },
+    keydown: (key) => {
+      const event = {
+        target: el,
+        key,
+        defaultPrevented: false,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+      };
+      const arr = listeners.get('keydown') ?? [];
+      for (const fn of arr) fn(event);
     },
   };
   return el;
@@ -371,6 +392,159 @@ describe('D-148 § A.4.1 — bootstrapSettingsRoute: construction', () => {
     route.dispose();
   });
 
+  it('aggregates an unresolved AI model selection into the Settings leave guard', async () => {
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    let resolvePreference!: (value: {
+      source_id: 'free_pool';
+      updated_at: number;
+    }) => void;
+    const preferenceWrite = new Promise<{
+      source_id: 'free_pool';
+      updated_at: number;
+    }>((resolve) => {
+      resolvePreference = resolve;
+    });
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      initialSectionId: 'ai-models',
+      aiModelsDefaultModelPrefGetCaller: async () => ({
+        source_id: 'slot_1',
+        updated_at: 1,
+      }),
+      aiModelsDefaultModelPrefSetCaller: () => preferenceWrite,
+      aiModelsGetLLMConfigCaller: async () => ({
+        config: {
+          slot_1: {
+            provider: 'openai',
+            model: 'gpt-4.1-mini',
+            has_key: true,
+            speed: 'fast',
+            supports_json: true,
+          },
+          free_pool: [{
+            id: 'free-test',
+            type: 'api',
+            provider: 'openai',
+            model: 'gpt-4.1-mini',
+            has_key: true,
+            speed: 'fast',
+            supports_json: true,
+            enabled: true,
+          }],
+        },
+      }),
+    });
+    await route.aiModelsPage()!.whenLoaded();
+    expect(route.hasInFlightWork()).toBe(false);
+    expect(route.inFlightWorkPrompt()).toBeNull();
+
+    findByAttrValue(host, AI_MODELS_MODEL_PREF_BUTTON_ATTR, 'free_pool')!.click();
+    expect(route.hasInFlightWork()).toBe(true);
+    expect(route.inFlightWorkPrompt()).toBe(
+      'An AI model setting is still updating. Leave Settings anyway?',
+    );
+
+    resolvePreference({ source_id: 'free_pool', updated_at: 2 });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(route.hasInFlightWork()).toBe(false);
+    expect(route.inFlightWorkPrompt()).toBeNull();
+    route.dispose();
+  });
+
+  it('aggregates an unresolved account binding into the Settings leave guard', async () => {
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    let bound = false;
+    let resolveBind!: (value: AccountBindResult) => void;
+    const bindingWrite = new Promise<AccountBindResult>((resolve) => {
+      resolveBind = resolve;
+    });
+    const binding = {
+      account_id: 'acct-1',
+      publisher_handle: 'mary',
+      server_fingerprint: 'sha256:server',
+      bound_at: 1_700_000_000_000,
+    };
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      initialSectionId: 'account',
+      accountBindingStatusCaller: async () => bound
+        ? { status: 'bound', binding }
+        : { status: 'unbound', binding: null },
+      accountBindCaller: () => bindingWrite,
+      accountUnbindCaller: async () => ({ outcome: 'not_bound' }),
+      accountProConvenienceStatusCaller: async () => ({
+        entitlement: 'unbound',
+        items: {
+          handle: { state: 'awaiting-server', detail: 'no_binding' },
+          ddns: { state: 'awaiting-server', detail: 'no_binding' },
+          acme: { state: 'awaiting-server', detail: 'no_binding' },
+        },
+      }),
+      accountBindingTokenMintCaller: async () => ({
+        binding_token: 'binding-token-1',
+        expires_at: 1_700_000_060_000,
+      }),
+    });
+    const panel = route.accountBindingPanel()!;
+    await panel.whenLoaded();
+    expect(route.hasInFlightWork()).toBe(false);
+    expect(route.inFlightWorkPrompt()).toBeNull();
+
+    const pending = panel.connect();
+    expect(route.hasInFlightWork()).toBe(true);
+    expect(route.inFlightWorkPrompt()).toBe(
+      'An account setting is still updating. Leave Settings anyway?',
+    );
+
+    bound = true;
+    resolveBind({ outcome: 'bound', binding });
+    await pending;
+    expect(route.hasInFlightWork()).toBe(false);
+    expect(route.inFlightWorkPrompt()).toBeNull();
+    route.dispose();
+  });
+
+  it('aggregates an unresolved server rollback into the Settings leave guard', async () => {
+    const host = makeFakeElement('div');
+    const doc = makeFakeDocument();
+    let resolveRollback!: (value: UpdateRollbackResponse) => void;
+    const rollback = new Promise<UpdateRollbackResponse>((resolve) => {
+      resolveRollback = resolve;
+    });
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      initialSectionId: 'updates',
+      updateCheckCaller: async () => ({
+        status: 'up-to-date',
+        current_version: '26.8.0',
+        channel: 'stable',
+      }),
+      updateRollbackCaller: () => rollback,
+    });
+    expect(route.hasInFlightWork()).toBe(false);
+    expect(route.inFlightWorkPrompt()).toBeNull();
+
+    findByAttr(host, UPDATES_ROLLBACK_BTN_ATTR)!.click();
+    expect(route.hasInFlightWork()).toBe(true);
+    expect(route.inFlightWorkPrompt()).toBe(
+      'A server update change is still in progress. Leave Settings anyway?',
+    );
+
+    resolveRollback({ status: 'refused' });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    expect(route.hasInFlightWork()).toBe(false);
+    expect(route.inFlightWorkPrompt()).toBeNull();
+    route.dispose();
+  });
+
   it('renders a Settings -> Data pointer for cold-start #data discovery', () => {
     const host = makeFakeElement('div');
     const doc = makeFakeDocument();
@@ -413,6 +587,9 @@ describe('D-148 § A.4.1 — bootstrapSettingsRoute: construction', () => {
     const serverItem = findByAttrValue(host, SETTINGS_ROUTE_NAV_ITEM_ATTR, 'server')!;
     expect(serverItem.getAttribute(SETTINGS_ROUTE_ACTIVE_ATTR)).toBe('true');
     expect(serverItem.getAttribute('aria-current')).toBe('page');
+    expect(serverItem.scrollIntoViewCalls).toEqual([
+      { block: 'nearest', inline: 'nearest' },
+    ]);
     // A deep link scroll-focuses the section for accessibility.
     expect(server.scrollIntoViewCalls).toEqual([
       { block: 'start', inline: 'nearest' },
@@ -617,12 +794,21 @@ describe('bootstrapSettingsRoute: Privacy directory + Server in-section sub-tabs
     );
     expect(reachabilityTab).not.toBeNull();
     expect(certsTab).not.toBeNull();
+    expect(reachabilityTab!.getAttribute('tabindex')).toBe('0');
+    expect(certsTab!.getAttribute('tabindex')).toBe('-1');
 
     const certsPanel = findByAttrValue(
       host,
       SETTINGS_ROUTE_SUBTAB_PANEL_ATTR,
       'certificates',
     )!;
+    expect(certsTab!.getAttribute('aria-controls')).toBe(
+      certsPanel.getAttribute('id'),
+    );
+    expect(certsPanel.getAttribute('role')).toBe('tabpanel');
+    expect(certsPanel.getAttribute('aria-labelledby')).toBe(
+      certsTab!.getAttribute('id'),
+    );
     // First sub-tab (reachability) active; certificates hidden until clicked.
     expect(certsPanel.getAttribute('data-active')).toBe('false');
     // The TLS renew panel is mounted inside the Certificates sub-tab panel.
@@ -630,6 +816,51 @@ describe('bootstrapSettingsRoute: Privacy directory + Server in-section sub-tabs
 
     certsTab!.click();
     expect(certsPanel.getAttribute('data-active')).toBe('true');
+    expect(certsTab!.getAttribute('tabindex')).toBe('0');
+    expect(reachabilityTab!.getAttribute('tabindex')).toBe('-1');
+    route.dispose();
+  });
+
+  it('gives Server sub-tabs one keyboard stop with wraparound and Home/End activation', () => {
+    const host = makeFakeElement('div');
+    const route = bootstrapSettingsRoute({
+      root: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      localStore: createInMemoryWebclientLocalStore(),
+      reachabilityExternalProbeCaller: async () => ({
+        account_id: 'acct-1',
+        hostname: 'alice.recued.cloud',
+        detected_public_ip: '203.0.113.5',
+        resolved_ips: ['203.0.113.5'],
+        probed_at: 1_700_000_000_000,
+        results: [],
+      }),
+      tlsRenewCaller: async () => SUCCESS_RESULT,
+    });
+    const reachability = findByAttrValue(
+      host,
+      SETTINGS_ROUTE_SUBTAB_ATTR,
+      'reachability',
+    )!;
+    const certificates = findByAttrValue(
+      host,
+      SETTINGS_ROUTE_SUBTAB_ATTR,
+      'certificates',
+    )!;
+
+    reachability.keydown('ArrowRight');
+    expect(certificates.getAttribute('aria-selected')).toBe('true');
+    expect(certificates.getAttribute('tabindex')).toBe('0');
+    expect(certificates.focusCalls).toEqual([undefined]);
+
+    certificates.keydown('ArrowRight');
+    expect(reachability.getAttribute('aria-selected')).toBe('true');
+    expect(reachability.focusCalls).toEqual([undefined]);
+
+    reachability.keydown('End');
+    expect(certificates.getAttribute('aria-selected')).toBe('true');
+    certificates.keydown('Home');
+    expect(reachability.getAttribute('aria-selected')).toBe('true');
     route.dispose();
   });
 

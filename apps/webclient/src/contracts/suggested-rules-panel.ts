@@ -104,6 +104,8 @@ export interface SuggestedRulesPanelMount {
   refresh(): Promise<void>;
   /** Initial load promise — resolves after the most recent list settles. */
   whenLoaded(): Promise<void>;
+  /** True while an accept or dismiss decision has no terminal result. */
+  hasInFlightWork(): boolean;
   /** Accept one suggestion programmatically (the equivalent of expanding the
    *  editor and committing with the given bounds). No-op for an unknown key
    *  or a card with a resolution already in flight. Test seam. */
@@ -680,6 +682,7 @@ export const mountSuggestedRulesPanel = (
     getListError: () => state.listError,
     refresh: () => doRefresh(),
     whenLoaded: () => pendingLoad,
+    hasInFlightWork: () => pendingByKey.size > 0,
     acceptSuggestion: async (keyHash, bounds) => {
       const row = state.suggestions.find((s) => s.key_hash === keyHash);
       if (row === undefined) return;

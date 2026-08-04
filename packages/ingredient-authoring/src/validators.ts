@@ -441,9 +441,44 @@ const validateCliOutputCapture = (
   if (row.bind.shape !== 'ref') {
     add('error', 'composition_cli_output_capture_shape', `${path}.bind.shape`, "an output_capture op must declare shape: 'ref' — a value shape would capture stdout and leak the file content into op-step values; the file content flows only via result.file_ref");
   }
+  // IN-PLACE capture (`from_input_arg`) — the tool edits its materialized input
+  // and offers no output path, so there is no `dir_arg` to bind. Mutually
+  // exclusive with `dir_arg`: an op declaring both is ambiguous about which file
+  // is the result, and the executor discriminates on `from_input_arg` alone.
+  const fromInputArg = capture.from_input_arg;
+  if (fromInputArg !== undefined) {
+    if (capture.dir_arg !== undefined) {
+      add('error', 'composition_cli_output_capture_in_place_dir_arg', capturePath, 'output_capture declares both from_input_arg and dir_arg — an in-place capture has no engine-owned output dir; declare exactly one');
+      return;
+    }
+    if (typeof fromInputArg !== 'string' || fromInputArg.length === 0) {
+      add('error', 'composition_cli_output_capture_in_place_arg', `${capturePath}.from_input_arg`, 'output_capture.from_input_arg must be a non-empty string');
+      return;
+    }
+    // The whole posture of in-place capture rests on the path being
+    // ENGINE-chosen. That is only true when the same arg is materialized: the
+    // materialize wrapper substitutes a `mkdtemp` path before the run. Without a
+    // materialize the arg is whatever the recipe passed, and this capture would
+    // ingest from — and the tool would write to — a caller-named location.
+    const materialize = row.bind.input_materialize;
+    if (!isPlainObject(materialize)) {
+      add('error', 'composition_cli_output_capture_in_place_materialize', `${capturePath}.from_input_arg`, `output_capture.from_input_arg '${fromInputArg}' requires an input_materialize on the same op — the captured path must be engine-chosen, not recipe-supplied`);
+      return;
+    }
+    if (materialize.kind !== 'file_ref') {
+      add('error', 'composition_cli_output_capture_in_place_materialize', `${capturePath}.from_input_arg`, `output_capture.from_input_arg requires input_materialize.kind 'file_ref' — a 'file_ref_array' materializes many paths and has no single file to capture`);
+    }
+    if (materialize.arg !== fromInputArg) {
+      add('error', 'composition_cli_output_capture_in_place_materialize', `${capturePath}.from_input_arg`, `output_capture.from_input_arg '${fromInputArg}' must be the same token as input_materialize.arg '${String(materialize.arg)}' — the captured file IS the materialized input`);
+    }
+    if (!cliArgvHasScalarRef(row.bind.argv_template, fromInputArg)) {
+      add('error', 'composition_cli_output_capture_in_place_arg', `${capturePath}.from_input_arg`, `output_capture.from_input_arg '${fromInputArg}' must appear as a {${fromInputArg}} token in argv_template`);
+    }
+    return;
+  }
   const dirArg = capture.dir_arg;
   if (typeof dirArg !== 'string' || dirArg.length === 0) {
-    add('error', 'composition_cli_output_capture_dir_arg', `${capturePath}.dir_arg`, 'output_capture.dir_arg must be a non-empty string');
+    add('error', 'composition_cli_output_capture_dir_arg', `${capturePath}.dir_arg`, 'output_capture.dir_arg must be a non-empty string (or declare from_input_arg for an in-place editor)');
     return;
   }
   if (!cliArgvHasScalarRef(row.bind.argv_template, dirArg)) {

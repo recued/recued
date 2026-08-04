@@ -12,7 +12,6 @@ import type { Checkpoint, Commit } from '@recued/contracts';
 import {
   D165_CONTRACT_SCHEMA,
   isMcpInboundTokenActive,
-  isMcpInboundTokenToolAuthorized,
   setVendorAliasRegistryResolver,
 } from '@recued/contracts';
 import { getArg } from '../cli/parse.js';
@@ -69,7 +68,10 @@ import { createContractGrantStore } from '../storage/contract-grant-store.js';
 import { createGatedReadGrantResolver } from '../read-grant-checker.js';
 import { createConnectionCatalogBindingStore } from '../storage/connection-catalog-binding-store.js';
 import { createLocalManifestStore } from '../ingredient-authoring/local-manifest-store.js';
-import { liveVendorRegistry } from '../connection-convention-families.js';
+import {
+  deriveBoundCrmMirrorSources,
+  liveVendorRegistry,
+} from '../connection-convention-families.js';
 import {
   createCliReachabilityResolver,
   createCliReachabilityStore,
@@ -81,6 +83,11 @@ import { createFormResponseStore } from '../storage/form-response-store.js';
 import { grandfatherPrimitiveGrants, reconcileOwnerGrants } from '../owner-grant-reconcile.js';
 import { createSeededCatalogOperationProfileStore } from '../connection-operation-profile-boot.js';
 import { createCollectionRegistry } from '../collections/registry.js';
+import { registerMcpReadonlyMailCollections } from '../mcp-readonly-mail-collections.js';
+import {
+  createMcpReadonlyBusinessContextReaders,
+} from '../mcp-readonly-business-context.js';
+import { createLiveMcpTokenToolAuthorizer } from '../mcp-recipe-callback.js';
 import { createWatcherDispatcher } from '../watchers/index.js';
 import { createPairedInstancesStore } from '../paired-instances-store.js';
 import { startMCPServer } from '../mcp-server.js';
@@ -262,15 +269,25 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     db,
   });
   const blobRoot = join(dirname(resolve(dbPath)), 'blobs');
+  const cacheBlobs = createEncryptedBlobStore(
+    blobRoot,
+    keys.keyProvider('blob-store'),
+  );
   const sharedStore = createSharedStore({
     db,
-    blobs: createEncryptedBlobStore(blobRoot, keys.keyProvider('blob-store')),
+    blobs: cacheBlobs,
   });
   const formResponseStore = createFormResponseStore(db);
   const annotationStore = createAnnotationStore({
     db,
-    blobs: createEncryptedBlobStore(blobRoot, keys.keyProvider('blob-store')),
+    blobs: cacheBlobs,
   });
+  // The stdio MCP process shares the warehouse DB but must not start a second
+  // provider sync loop beside the main server. Register table-backed mail read
+  // views plus narrow contact/work/calendar readers, so query recipes can use
+  // the local mirrors while all provider/network ownership stays in serve.
+  registerMcpReadonlyMailCollections({ db, registry: collectionRegistry });
+  const businessContextReaders = createMcpReadonlyBusinessContextReaders(db);
 
   let executorConfigRef: ServerExecutorConfig | undefined;
   let executeDepsRef: ExecuteHandlerDeps | undefined;
@@ -297,6 +314,7 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     emptyTabProbe: llmSubstrate.emptyTabProbe,
     pairedInstances,
     annotationDeps: { store: annotationStore, auditLog },
+    sharedStore,
     getContactStore: () => undefined,
     getCollectionRegistry: () => collectionRegistry,
     getEnrichmentStore: () => enrichmentStore,
@@ -311,10 +329,10 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     baseVault,
     llmQuota: llmSubstrate.llmQuota,
     cacheStore: undefined,
-    // No L1 cache / blob store in the MCP CLI context (no `db` cache
-    // substrate wired here), so the kernel `mail-body-read` dispatcher
-    // stays unwired — consistent with `cacheStore: undefined` above.
-    cacheBlobs: undefined,
+    // Reuse the same encrypted CAS reader as the main server. This profile owns
+    // no cache eviction or provider loop, but it must hydrate blob-backed mail
+    // bodies for read-only recipes invoked through MCP.
+    cacheBlobs,
     serverInstanceId,
     watcherDispatcher,
     collectionRegistry,
@@ -337,6 +355,15 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
     sharedStore,
     formResponseStore,
     contactStore: undefined,
+    businessContextContactStore: businessContextReaders.contacts,
+    businessContextWorkEntityStore: businessContextReaders.workEntities,
+    businessContextCrmMirrorStore: crmRecordMirror,
+    businessContextCalendars: businessContextReaders.calendars,
+    getBoundCrmSources: () => deriveBoundCrmMirrorSources(
+      'deal',
+      connectionStore,
+      liveVendorRegistry(localManifestStore),
+    ),
     annotationDeps: { store: annotationStore, auditLog },
     db,
     annotationStore,
@@ -467,6 +494,25 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
       + 'Pass --token <bearer> or set RECUED_MCP_TOKEN; create one in Settings → MCP Tokens.',
     );
   }
+  const initialBoundContractId = tokenRecord?.contract_id ?? null;
+  // A stdio MCP process may outlive token-grant edits, revocation, or a
+  // contract-door change. Re-read all three axes for every catalog/call check;
+  // never let the startup record become a durable authorization snapshot or
+  // silently adopt a token that was rebound to a different contract.
+  const authorizeCurrentTokenTool = tokenRecord
+    ? createLiveMcpTokenToolAuthorizer({
+        inboundTokenStore: chatBundle.inboundTokenStore,
+        token_id: tokenRecord.token_id,
+        initial_contract_id: initialBoundContractId,
+        isContractLive: (contract_id) =>
+          executeDepsBundle.executeDeps.contractOverlay?.isContractLive(contract_id) === true,
+        permitsMcpDoor: (contract_id) =>
+          executeDepsBundle.executeDeps.contractOverlay?.permitsDoorType?.(
+            contract_id,
+            'mcp',
+          ) ?? true,
+      })
+    : undefined;
   startMCPServer({
     ...executeDepsBundle.executeDeps,
     vaultStore,
@@ -487,11 +533,19 @@ export async function runMcpProfile(options: McpProfileOptions): Promise<void> {
               return false;
             }
           },
-          ...(tokenRecord.contract_id !== undefined && tokenRecord.contract_id !== null
-            ? { boundContractId: tokenRecord.contract_id, boundContractActive: true }
+          ...(initialBoundContractId !== null
+            ? {
+                boundContractId: initialBoundContractId,
+                boundContractActive: true,
+                mcpRecipeCallbackAuthorize: (pointer) =>
+                  pointer.target_token_id === tokenRecord.token_id
+                  && pointer.target_contract_id === initialBoundContractId
+                  && authorizeCurrentTokenTool?.(pointer.query_tool) === true,
+              }
             : {}),
-          inboundTokenAuthorize: (tool_name: string): boolean =>
-            isMcpInboundTokenToolAuthorized(tokenRecord, tool_name, Date.now()),
+          inboundTokenAuthorize: authorizeCurrentTokenTool,
+          mcpShutdownDrain: () =>
+            chatBundle.inboundTokenStore.drainAuthorityChanges(),
         }
       : {}),
   });

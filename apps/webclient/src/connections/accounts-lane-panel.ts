@@ -42,11 +42,13 @@ import {
   isOAuthAccountTransport,
   seedAccountFormValues,
   validateAccountForm,
+  wireFocusTrap,
   type AccountFormValues,
   type AccountLaneId,
   type AccountProvider,
   type AccountRow,
   type AccountsPanelState,
+  type FocusTrapHandle,
 } from '@recued/ui-shared';
 import {
   createActionDispatcher,
@@ -146,7 +148,10 @@ export interface CalendarLaneCallers {
 export interface FileLaneCallers {
   /** `collection.listInstances` filtered to `{ type: 'file' }`. */
   list: () => Promise<{ instances: ReadonlyArray<CollectionInstanceRow> }>;
-  enroll: (args: Record<string, unknown>) => Promise<unknown>;
+  enroll: (args: Record<string, unknown>) => Promise<{
+    instance: CollectionInstanceRow;
+    probe_result: unknown;
+  }>;
   delete: (args: { slug: string }) => Promise<{ ok: true }>;
   resync?: (args: { slug: string }) => Promise<unknown>;
 }
@@ -312,6 +317,7 @@ export const mountAccountsLanePanel = (
   let oauthDismissed = false;
   let oauthReloadVerificationInFlight = false;
   let oauthReloadVerificationMisses = 0;
+  let deleteFocusTrap: FocusTrapHandle | null = null;
   const now = opts.now ?? Date.now;
   const oauthReloadRetryGraceMs = opts.oauthReloadRetryGraceMs ?? 5_000;
   const timerWindow = doc.defaultView;
@@ -354,9 +360,27 @@ export const mountAccountsLanePanel = (
   interface PanelFocusSnapshot {
     /** Full data-* identity of the active delegated action. */
     actionDataset: Readonly<Record<string, string>> | null;
+    /** Full data-* identity + caret state of the active form control. */
+    field: {
+      dataset: Readonly<Record<string, string>>;
+      selection: {
+        start: number;
+        end: number;
+        direction: 'forward' | 'backward' | 'none';
+      } | null;
+    } | null;
     /** The active element lived inside the post-connect card. */
     inConnectionSuccess: boolean;
   }
+
+  const copyDataset = (
+    element: HTMLElement,
+  ): Readonly<Record<string, string>> =>
+    Object.fromEntries(
+      Object.entries(element.dataset).filter(
+        (entry): entry is [string, string] => entry[1] !== undefined,
+      ),
+    );
 
   const capturePanelFocus = (): PanelFocusSnapshot | null => {
     const active = doc.activeElement as HTMLElement | null | undefined;
@@ -367,14 +391,28 @@ export const mountAccountsLanePanel = (
       || !host.contains(active)
     ) return null;
     const action = active.closest('[data-action]') as HTMLElement | null;
+    const field = (
+      active.closest('[data-acct-field]')
+      ?? active.closest('[data-oauth-cred-field]')
+    ) as (HTMLElement & {
+      selectionStart?: number | null;
+      selectionEnd?: number | null;
+      selectionDirection?: 'forward' | 'backward' | 'none' | null;
+    }) | null;
+    const selection = field !== null
+      && typeof field.selectionStart === 'number'
+      && typeof field.selectionEnd === 'number'
+      ? {
+          start: field.selectionStart,
+          end: field.selectionEnd,
+          direction: field.selectionDirection ?? 'none' as const,
+        }
+      : null;
     return {
-      actionDataset: action === null
+      actionDataset: action === null ? null : copyDataset(action),
+      field: field === null
         ? null
-        : Object.fromEntries(
-            Object.entries(action.dataset).filter(
-              (entry): entry is [string, string] => entry[1] !== undefined,
-            ),
-          ),
+        : { dataset: copyDataset(field), selection },
       inConnectionSuccess:
         active.closest('[data-accounts-connection-success]') !== null,
     };
@@ -385,6 +423,60 @@ export const mountAccountsLanePanel = (
       '[data-accounts-connection-success]',
     ) as HTMLElement | null;
     card?.focus?.({ preventScroll });
+  };
+
+  const focusPanelElement = (selector: string): void => {
+    const element = host.querySelector(selector) as HTMLElement | null;
+    element?.focus?.({ preventScroll: true });
+  };
+
+  const focusProviderChoice = (providerId: string): void => {
+    // Provider ids come from the static lane catalog (not user input).
+    focusPanelElement(
+      `[data-action="accounts-pick-provider"][data-provider="${providerId}"]`,
+    );
+  };
+
+  const focusAccountRow = (slug: string): boolean => {
+    // Slugs are server-owned identities, so match datasets instead of
+    // interpolating one into a CSS selector.
+    if (typeof host.querySelectorAll !== 'function') return false;
+    const rows = host.querySelectorAll('[data-action="accounts-open-detail"]');
+    for (const candidate of Array.from(rows)) {
+      const element = candidate as HTMLElement;
+      if (element.dataset.slug !== slug) continue;
+      element.focus?.({ preventScroll: true });
+      return true;
+    }
+    return false;
+  };
+
+  const focusSlugAction = (action: 'accounts-delete', slug: string): void => {
+    if (typeof host.querySelectorAll !== 'function') return;
+    const actions = host.querySelectorAll(`[data-action="${action}"]`);
+    for (const candidate of Array.from(actions)) {
+      const element = candidate as HTMLElement;
+      if (element.dataset.slug !== slug) continue;
+      element.focus?.({ preventScroll: true });
+      return;
+    }
+  };
+
+  const deleteDialog = (): HTMLElement | null =>
+    host.querySelector('[data-accounts-delete-dialog]') as HTMLElement | null;
+
+  const armDeleteFocusTrap = (): void => {
+    deleteFocusTrap?.release();
+    deleteFocusTrap = wireFocusTrap({
+      document: doc,
+      getContainer: deleteDialog,
+      restoreFocus: false,
+    });
+  };
+
+  const releaseDeleteFocusTrap = (): void => {
+    deleteFocusTrap?.release();
+    deleteFocusTrap = null;
   };
 
   const restorePanelFocus = (snapshot: PanelFocusSnapshot | null): void => {
@@ -402,6 +494,33 @@ export const mountAccountsLanePanel = (
         }
       }
     }
+    if (snapshot.field !== null) {
+      const fields = host.querySelectorAll(
+        '[data-acct-field],[data-oauth-cred-field]',
+      );
+      for (const candidate of Array.from(fields)) {
+        const element = candidate as HTMLElement & {
+          setSelectionRange?: (
+            start: number,
+            end: number,
+            direction?: 'forward' | 'backward' | 'none',
+          ) => void;
+        };
+        const matches = Object.entries(snapshot.field.dataset).every(
+          ([key, value]) => element.dataset[key] === value,
+        );
+        if (!matches) continue;
+        element.focus?.({ preventScroll: true });
+        if (
+          snapshot.field.selection !== null
+          && typeof element.setSelectionRange === 'function'
+        ) {
+          const { start, end, direction } = snapshot.field.selection;
+          element.setSelectionRange(start, end, direction);
+        }
+        return;
+      }
+    }
     // A status transition can legitimately remove an action (for example the
     // unknown-state Retry button). Keep focus at the card, not on <body>.
     if (snapshot.inConnectionSuccess) focusConnectionSuccess(true);
@@ -410,8 +529,26 @@ export const mountAccountsLanePanel = (
   const render = (preserveFocus = false): void => {
     if (disposed) return;
     const focus = preserveFocus ? capturePanelFocus() : null;
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    const keepDeleteDialogFocus = deleteFocusTrap !== null
+      && state.deleteConfirm !== null
+      && active !== undefined
+      && active !== null
+      && typeof active.closest === 'function'
+      && active.closest('[data-accounts-delete-dialog]') !== null;
     host.innerHTML = renderAccountsPanel({ state });
     if (preserveFocus) restorePanelFocus(focus);
+    if (keepDeleteDialogFocus) {
+      const currentDialog = deleteDialog();
+      const currentActive = doc.activeElement as Node | null | undefined;
+      if (
+        currentActive === undefined
+        || currentActive === null
+        || currentDialog?.contains(currentActive) !== true
+      ) {
+        deleteFocusTrap?.focusInitial();
+      }
+    }
   };
 
   const laneCallers = (
@@ -620,11 +757,13 @@ export const mountAccountsLanePanel = (
       state.oauthCredValues = { client_id: '', client_secret: '' };
     }
     render();
+    focusPanelElement('[data-accounts-form-heading]');
   };
 
   const openAdd = (): void => {
     const lane = findAccountLane(state.lane);
     if (lane === undefined || lane.providers.length === 0) return;
+    const returnProviderId = state.stage === 'form' ? state.providerId : null;
     clearConnectionSuccess();
     if (lane.providers.length === 1) {
       openProvider(lane.providers[0]!);
@@ -637,9 +776,13 @@ export const mountAccountsLanePanel = (
     state.oauthCredValues = { client_id: '', client_secret: '' };
     state.formError = null;
     render();
+    if (returnProviderId !== null) focusProviderChoice(returnProviderId);
+    else focusPanelElement('[data-accounts-picker-heading]');
   };
 
   const backToList = (): void => {
+    const returnToAddTrigger = state.stage === 'provider-picker' || state.stage === 'form';
+    const returnDetailSlug = state.stage === 'detail' ? state.detailSlug : null;
     state.stage = 'list';
     state.providerId = null;
     state.values = {};
@@ -649,6 +792,11 @@ export const mountAccountsLanePanel = (
     state.formError = null;
     state.detailSlug = null;
     render();
+    if (returnToAddTrigger) {
+      focusPanelElement('[data-action="accounts-open-add"]');
+    } else if (returnDetailSlug !== null) {
+      focusAccountRow(returnDetailSlug);
+    }
     opts.onNavigate?.(state.lane, null);
   };
 
@@ -671,31 +819,46 @@ export const mountAccountsLanePanel = (
     submitInFlight = true;
     state.saving = true;
     state.formError = null;
-    render();
+    // The busy primary is aria-disabled (the guard above owns re-entrancy), so
+    // it can remain the keyboard anchor across this full-form replacement.
+    render(true);
     try {
+      let enrolledSlug: string;
       if (provider.transport === 'mail-imap') {
         if (opts.mail === undefined) throw new Error('Mail enrollment is not available.');
-        await opts.mail.enrollImap(payload);
+        const enrolled = await opts.mail.enrollImap(payload);
+        enrolledSlug = enrolled.slug;
       } else if (provider.transport === 'calendar-caldav') {
         if (opts.calendar?.enrollBasic === undefined) {
           throw new Error('CalDAV enrollment is not available.');
         }
-        await opts.calendar.enrollBasic(payload);
+        const enrolled = await opts.calendar.enrollBasic(payload);
+        enrolledSlug = enrolled.slug;
       } else {
         if (opts.file === undefined) throw new Error('File enrollment is not available.');
-        await opts.file.enroll(payload);
+        const enrolled = await opts.file.enroll(payload);
+        enrolledSlug = enrolled.instance.slug;
       }
       if (disposed) return;
+      state.connectionSuccess = {
+        slug: enrolledSlug,
+        providerId: provider.id,
+      };
       state.stage = 'list';
       state.providerId = null;
       state.values = {};
       state.saving = false;
-      await doRefresh();
+      state.detailSlug = null;
+      firstSyncPollAttempts = 0;
+      const refresh = doRefresh(false, true);
+      focusConnectionSuccess();
+      await refresh;
     } catch (err) {
       if (disposed) return;
       state.saving = false;
       state.formError = errMessage(err);
-      render();
+      // The retry action has the same semantic identity as the busy action.
+      render(true);
     } finally {
       submitInFlight = false;
     }
@@ -1357,6 +1520,7 @@ export const mountAccountsLanePanel = (
     state.stage = 'detail';
     state.detailSlug = slug;
     render();
+    focusPanelElement('[data-accounts-detail-heading]');
     opts.onNavigate?.(state.lane, slug);
   };
 
@@ -1383,9 +1547,10 @@ export const mountAccountsLanePanel = (
     afterSuccess: 'reload-list' | 'reload-stay',
   ): Promise<void> => {
     if (state.rowBusy.has(rowBusyKey(op, slug))) return;
+    const preserveActionFocus = true;
     setRowBusy(op, slug, true);
     setRowError(slug, null);
-    render();
+    render(preserveActionFocus);
     try {
       await call();
       if (disposed) return;
@@ -1393,16 +1558,16 @@ export const mountAccountsLanePanel = (
       if (afterSuccess === 'reload-list') {
         state.stage = 'list';
         state.detailSlug = null;
-        await doRefresh();
+        await doRefresh(false, preserveActionFocus);
         opts.onNavigate?.(state.lane, null);
       } else {
-        await doRefresh();
+        await doRefresh(false, preserveActionFocus);
       }
     } catch (err) {
       if (disposed) return;
       setRowBusy(op, slug, false);
       setRowError(slug, errMessage(err));
-      render();
+      render(preserveActionFocus);
     }
   };
 
@@ -1420,14 +1585,18 @@ export const mountAccountsLanePanel = (
       : undefined) ?? 'account';
     state.deleteConfirm = { slug, providerLabel, deleting: false };
     render();
+    armDeleteFocusTrap();
   };
 
   const cancelDeleteAccount = (): void => {
     // Ignore Cancel once the delete is in flight — the rpc cannot be recalled,
     // so closing the prompt would only hide an action that is still happening.
     if (state.deleteConfirm === null || state.deleteConfirm.deleting) return;
+    const { slug } = state.deleteConfirm;
     state.deleteConfirm = null;
+    releaseDeleteFocusTrap();
     render();
+    focusSlugAction('accounts-delete', slug);
   };
 
   const confirmDeleteAccount = async (): Promise<void> => {
@@ -1441,15 +1610,21 @@ export const mountAccountsLanePanel = (
     const callers = laneCallers(state.lane);
     if (callers === undefined) return;
     dc.deleting = true;
-    render();
+    // The confirm stays focusable under aria-disabled/aria-busy, so preserve
+    // its exact action identity instead of dropping focus to the dialog.
+    render(true);
     try {
       await runRowAction('delete', dc.slug, () => callers.delete({ slug: dc.slug }), 'reload-list');
     } finally {
       // Cleared on BOTH paths: `runRowAction` surfaces its own row-level error,
       // and leaving the prompt up over a failed delete would strand the panel
       // behind a modal with no way back.
+      const returnedToList = state.stage === 'list';
       state.deleteConfirm = null;
+      releaseDeleteFocusTrap();
       render();
+      if (returnedToList) focusPanelElement('[data-action="accounts-open-add"]');
+      else focusSlugAction('accounts-delete', dc.slug);
     }
   };
 
@@ -1461,7 +1636,7 @@ export const mountAccountsLanePanel = (
       || (callers as CalendarLaneCallers | FileLaneCallers).resync === undefined
     ) {
       setRowError(slug, 'Re-sync is not available for this account.');
-      render();
+      render(true);
       return;
     }
     const resync = (callers as CalendarLaneCallers | FileLaneCallers).resync!;
@@ -1476,7 +1651,7 @@ export const mountAccountsLanePanel = (
       || (callers as CalendarLaneCallers).reauth === undefined
     ) {
       setRowError(slug, 'Re-authorize is not available for this account.');
-      render();
+      render(true);
       return;
     }
     const reauth = (callers as CalendarLaneCallers).reauth!;
@@ -1618,8 +1793,13 @@ export const mountAccountsLanePanel = (
       void doRefresh(false, true);
     },
     'accounts-dismiss-success': () => {
+      const success = state.connectionSuccess;
+      if (success === null) return;
       clearConnectionSuccess();
       render();
+      if (!focusAccountRow(success.slug)) {
+        focusPanelElement('[data-action="accounts-open-add"]');
+      }
     },
     'accounts-open-detail': (dataset) => {
       if (dataset.slug === undefined) return;
@@ -1671,7 +1851,7 @@ export const mountAccountsLanePanel = (
       // Clear a stale form error on the first edit after a failed connect.
       if (state.formError !== null) {
         state.formError = null;
-        render();
+        render(true);
       } else {
         syncSubmitDisabled();
       }
@@ -1687,13 +1867,22 @@ export const mountAccountsLanePanel = (
     if (state.saving) return;
     state.values = { ...state.values, [key]: el.value ?? '' };
     if (state.formError !== null) {
-      // First edit after a failed submit clears the stale error (the one
-      // deliberate focus cost — re-enables Submit by re-render).
+      // First edit after a failed submit clears the stale error and re-enables
+      // Submit without dropping the corrected field's focus or caret.
       state.formError = null;
-      render();
+      render(true);
       return;
     }
     syncSubmitDisabled();
+  };
+
+  const onKeydown = (event: KeyboardEvent): void => {
+    if (event.key !== 'Escape' || state.deleteConfirm === null) return;
+    // Keep Escape owned by the modal even while its irreversible write is in
+    // flight; once started, the prompt deliberately cannot be dismissed.
+    event.preventDefault();
+    event.stopPropagation();
+    if (!state.deleteConfirm.deleting) cancelDeleteAccount();
   };
 
   // ── Wire dispatchers + seed load ──────────────────────────────
@@ -1703,6 +1892,7 @@ export const mountAccountsLanePanel = (
   });
   host.addEventListener('input', onFieldEvent);
   host.addEventListener('change', onFieldEvent);
+  host.addEventListener('keydown', onKeydown);
 
   render();
   void doRefresh();
@@ -1721,11 +1911,13 @@ export const mountAccountsLanePanel = (
       if (disposed) return;
       disposed = true;
       cancelFirstSyncPoll();
+      releaseDeleteFocusTrap();
       detachOAuthContinuity();
       if (ownsOAuthContinuity) oauthContinuity.dispose();
       detachActions();
       host.removeEventListener('input', onFieldEvent);
       host.removeEventListener('change', onFieldEvent);
+      host.removeEventListener('keydown', onKeydown);
       host.innerHTML = '';
     },
   };

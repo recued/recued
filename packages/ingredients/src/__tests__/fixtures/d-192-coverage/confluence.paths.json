@@ -1,209 +1,534 @@
 {
   "_extract": {
-    "note": "paths-only extract of the pinned official Confluence REST API v2 OpenAPI document; covers all 76 Confluence method/path bindings shipped by confluence pack v2 after applying Atlassian OAuth cloud-proxy routing. resource.list is an Atlassian OAuth platform operation outside this Confluence pin and is tested separately.",
+    "note": "paths-only extract of the pinned official document, VERBATIM. crossCheckCatalogOpenApi reads only `paths` and each path-item's method keys, so this proves exactly what the publish op-prover proves. ⛔ Path keys are the document's OWN keys — do NOT rewrite them to match a pack's wire paths (an earlier revision of this file applied the server base path to the keys, which made this test pass while the REAL pin still failed at publish; the pack now declares a path_alias instead).",
     "url": "https://developer.atlassian.com/cloud/confluence/openapi-v2.json",
     "sha256": "145fc22be9184b41a7619585f065fe927519a733df37cb9b0c447e6c1d818f79",
-    "fetched_at": "2026-07-14",
-    "servers": [
-      {
-        "url": "https://{your-domain}/wiki/api/v2",
-        "variables": {
-          "your-domain": {
-            "default": "no-default",
-            "description": "Specific domain of the Confluence site being used. Must be provided."
-          }
-        }
-      }
-    ]
+    "bytes": 973055,
+    "openapi": "3.0.3",
+    "path_count": 151,
+    "retrieved": "2026-08-03"
   },
+  "openapi": "3.0.3",
   "paths": {
-    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces": {
+    "/admin-key": {
+      "get": {},
+      "post": {},
+      "delete": {}
+    },
+    "/attachments": {
+      "get": {}
+    },
+    "/attachments/{id}": {
+      "get": {},
+      "delete": {}
+    },
+    "/attachments/{id}/labels": {
+      "get": {}
+    },
+    "/attachments/{id}/operations": {
+      "get": {}
+    },
+    "/attachments/{attachment-id}/properties": {
       "get": {},
       "post": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces/{id}": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces/{id}/pages": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces/{id}/blogposts": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces/{id}/labels": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces/{id}/content/labels": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces/{id}/operations": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces/{space-id}/properties": {
-      "get": {},
-      "post": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/spaces/{space-id}/properties/{property-id}": {
+    "/attachments/{attachment-id}/properties/{property-id}": {
       "get": {},
       "put": {},
       "delete": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/pages": {
+    "/attachments/{id}/versions": {
+      "get": {}
+    },
+    "/attachments/{attachment-id}/versions/{version-number}": {
+      "get": {}
+    },
+    "/attachments/{id}/footer-comments": {
+      "get": {}
+    },
+    "/blogposts": {
       "get": {},
       "post": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}": {
+    "/blogposts/{id}": {
       "get": {},
       "put": {},
       "delete": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/title": {
+    "/blogposts/{id}/attachments": {
+      "get": {}
+    },
+    "/blogposts/{id}/custom-content": {
+      "get": {}
+    },
+    "/blogposts/{id}/labels": {
+      "get": {}
+    },
+    "/blogposts/{id}/likes/count": {
+      "get": {}
+    },
+    "/blogposts/{id}/likes/users": {
+      "get": {}
+    },
+    "/blogposts/{blogpost-id}/properties": {
+      "get": {},
+      "post": {}
+    },
+    "/blogposts/{blogpost-id}/properties/{property-id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/blogposts/{id}/operations": {
+      "get": {}
+    },
+    "/blogposts/{id}/versions": {
+      "get": {}
+    },
+    "/blogposts/{blogpost-id}/versions/{version-number}": {
+      "get": {}
+    },
+    "/content/convert-ids-to-types": {
+      "post": {}
+    },
+    "/custom-content": {
+      "get": {},
+      "post": {}
+    },
+    "/custom-content/{id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/custom-content/{id}/attachments": {
+      "get": {}
+    },
+    "/custom-content/{id}/footer-comments": {
+      "get": {}
+    },
+    "/custom-content/{id}/labels": {
+      "get": {}
+    },
+    "/custom-content/{id}/operations": {
+      "get": {}
+    },
+    "/custom-content/{custom-content-id}/properties": {
+      "get": {},
+      "post": {}
+    },
+    "/custom-content/{custom-content-id}/properties/{property-id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/labels": {
+      "get": {}
+    },
+    "/labels/{id}/attachments": {
+      "get": {}
+    },
+    "/labels/{id}/blogposts": {
+      "get": {}
+    },
+    "/labels/{id}/pages": {
+      "get": {}
+    },
+    "/pages": {
+      "get": {},
+      "post": {}
+    },
+    "/pages/{id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/pages/{id}/attachments": {
+      "get": {}
+    },
+    "/pages/{id}/custom-content": {
+      "get": {}
+    },
+    "/pages/{id}/labels": {
+      "get": {}
+    },
+    "/pages/{id}/likes/count": {
+      "get": {}
+    },
+    "/pages/{id}/likes/users": {
+      "get": {}
+    },
+    "/pages/{id}/operations": {
+      "get": {}
+    },
+    "/pages/{page-id}/properties": {
+      "get": {},
+      "post": {}
+    },
+    "/pages/{page-id}/properties/{property-id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/pages/{id}/redact": {
+      "post": {}
+    },
+    "/blogposts/{id}/redact": {
+      "post": {}
+    },
+    "/pages/{id}/title": {
       "put": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/attachments": {
+    "/pages/{id}/versions": {
       "get": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/labels": {
-      "get": {}
+    "/whiteboards": {
+      "post": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/footer-comments": {
-      "get": {}
+    "/whiteboards/{id}": {
+      "get": {},
+      "delete": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/inline-comments": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/children": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/ancestors": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/descendants": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/operations": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{id}/versions": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{page-id}/versions/{version-number}": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{page-id}/properties": {
+    "/whiteboards/{id}/properties": {
       "get": {},
       "post": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/pages/{page-id}/properties/{property-id}": {
+    "/whiteboards/{whiteboard-id}/properties/{property-id}": {
       "get": {},
       "put": {},
       "delete": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/blogposts": {
+    "/whiteboards/{id}/operations": {
+      "get": {}
+    },
+    "/whiteboards/{id}/direct-children": {
+      "get": {}
+    },
+    "/whiteboards/{id}/descendants": {
+      "get": {}
+    },
+    "/whiteboards/{id}/ancestors": {
+      "get": {}
+    },
+    "/databases": {
+      "post": {}
+    },
+    "/databases/{id}": {
+      "get": {},
+      "delete": {}
+    },
+    "/databases/{id}/properties": {
       "get": {},
       "post": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/blogposts/{id}": {
+    "/databases/{database-id}/properties/{property-id}": {
       "get": {},
       "put": {},
       "delete": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/blogposts/{id}/attachments": {
+    "/databases/{id}/operations": {
       "get": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/blogposts/{id}/labels": {
+    "/databases/{id}/direct-children": {
       "get": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/blogposts/{id}/footer-comments": {
+    "/databases/{id}/descendants": {
       "get": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/blogposts/{id}/inline-comments": {
+    "/databases/{id}/ancestors": {
       "get": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/blogposts/{id}/versions": {
-      "get": {}
+    "/embeds": {
+      "post": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/blogposts/{blogpost-id}/versions/{version-number}": {
-      "get": {}
+    "/embeds/{id}": {
+      "get": {},
+      "delete": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/attachments": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/attachments/{id}": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/attachments/{id}/labels": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/attachments/{id}/versions": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/attachments/{attachment-id}/versions/{version-number}": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/attachments/{id}/footer-comments": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/labels": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/labels/{id}/pages": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/labels/{id}/blogposts": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/labels/{id}/attachments": {
-      "get": {}
-    },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/footer-comments": {
+    "/embeds/{id}/properties": {
       "get": {},
       "post": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/footer-comments/{comment-id}": {
+    "/embeds/{embed-id}/properties/{property-id}": {
       "get": {},
       "put": {},
       "delete": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/footer-comments/{id}/children": {
+    "/embeds/{id}/operations": {
       "get": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/footer-comments/{id}/versions": {
+    "/embeds/{id}/direct-children": {
       "get": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/inline-comments": {
+    "/embeds/{id}/descendants": {
+      "get": {}
+    },
+    "/embeds/{id}/ancestors": {
+      "get": {}
+    },
+    "/folders": {
+      "post": {}
+    },
+    "/folders/{id}": {
+      "get": {},
+      "delete": {}
+    },
+    "/folders/{id}/properties": {
       "get": {},
       "post": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/inline-comments/{comment-id}": {
+    "/folders/{folder-id}/properties/{property-id}": {
       "get": {},
       "put": {},
       "delete": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/inline-comments/{id}/children": {
+    "/folders/{id}/operations": {
       "get": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/tasks": {
+    "/folders/{id}/direct-children": {
       "get": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/tasks/{id}": {
+    "/folders/{id}/descendants": {
+      "get": {}
+    },
+    "/folders/{id}/ancestors": {
+      "get": {}
+    },
+    "/pages/{page-id}/versions/{version-number}": {
+      "get": {}
+    },
+    "/custom-content/{custom-content-id}/versions": {
+      "get": {}
+    },
+    "/custom-content/{custom-content-id}/versions/{version-number}": {
+      "get": {}
+    },
+    "/spaces": {
+      "get": {},
+      "post": {}
+    },
+    "/spaces/{id}": {
+      "get": {}
+    },
+    "/spaces/{id}/blogposts": {
+      "get": {}
+    },
+    "/spaces/{id}/labels": {
+      "get": {}
+    },
+    "/spaces/{id}/content/labels": {
+      "get": {}
+    },
+    "/spaces/{id}/custom-content": {
+      "get": {}
+    },
+    "/spaces/{id}/operations": {
+      "get": {}
+    },
+    "/spaces/{id}/pages": {
+      "get": {}
+    },
+    "/spaces/{space-id}/properties": {
+      "get": {},
+      "post": {}
+    },
+    "/spaces/{space-id}/properties/{property-id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/spaces/{id}/permissions": {
+      "get": {}
+    },
+    "/space-permissions": {
+      "get": {}
+    },
+    "/space-permissions/transition/combinations": {
+      "get": {},
+      "post": {}
+    },
+    "/space-permissions/transition/role-assignments": {
+      "post": {}
+    },
+    "/space-permissions/transition/access-removals": {
+      "post": {}
+    },
+    "/space-permissions/transition/tasks/{taskId}": {
+      "get": {}
+    },
+    "/space-roles": {
+      "get": {},
+      "post": {}
+    },
+    "/space-roles/{id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/space-role-mode": {
+      "get": {}
+    },
+    "/spaces/{id}/role-assignments": {
+      "get": {},
+      "post": {}
+    },
+    "/pages/{id}/footer-comments": {
+      "get": {}
+    },
+    "/pages/{id}/inline-comments": {
+      "get": {}
+    },
+    "/blogposts/{id}/footer-comments": {
+      "get": {}
+    },
+    "/blogposts/{id}/inline-comments": {
+      "get": {}
+    },
+    "/footer-comments": {
+      "get": {},
+      "post": {}
+    },
+    "/footer-comments/{comment-id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/footer-comments/{id}/children": {
+      "get": {}
+    },
+    "/footer-comments/{id}/likes/count": {
+      "get": {}
+    },
+    "/footer-comments/{id}/likes/users": {
+      "get": {}
+    },
+    "/footer-comments/{id}/operations": {
+      "get": {}
+    },
+    "/footer-comments/{id}/versions": {
+      "get": {}
+    },
+    "/footer-comments/{id}/versions/{version-number}": {
+      "get": {}
+    },
+    "/inline-comments": {
+      "get": {},
+      "post": {}
+    },
+    "/inline-comments/{comment-id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/inline-comments/{id}/children": {
+      "get": {}
+    },
+    "/inline-comments/{id}/likes/count": {
+      "get": {}
+    },
+    "/inline-comments/{id}/likes/users": {
+      "get": {}
+    },
+    "/inline-comments/{id}/operations": {
+      "get": {}
+    },
+    "/inline-comments/{id}/versions": {
+      "get": {}
+    },
+    "/inline-comments/{id}/versions/{version-number}": {
+      "get": {}
+    },
+    "/comments/{comment-id}/properties": {
+      "get": {},
+      "post": {}
+    },
+    "/comments/{comment-id}/properties/{property-id}": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/tasks": {
+      "get": {}
+    },
+    "/tasks/{id}": {
       "get": {},
       "put": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/custom-content": {
+    "/pages/{id}/children": {
       "get": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/custom-content/{id}": {
+    "/custom-content/{id}/children": {
       "get": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/custom-content/{id}/attachments": {
+    "/pages/{id}/direct-children": {
       "get": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/custom-content/{id}/footer-comments": {
+    "/pages/{id}/ancestors": {
       "get": {}
     },
-    "/ex/confluence/{cloud_id}/wiki/api/v2/custom-content/{id}/labels": {
+    "/pages/{id}/descendants": {
       "get": {}
+    },
+    "/users-bulk": {
+      "post": {}
+    },
+    "/user/access/check-access-by-email": {
+      "post": {}
+    },
+    "/user/access/invite-by-email": {
+      "post": {}
+    },
+    "/data-policies/metadata": {
+      "get": {}
+    },
+    "/data-policies/spaces": {
+      "get": {}
+    },
+    "/classification-levels": {
+      "get": {}
+    },
+    "/spaces/{id}/classification-level/default": {
+      "get": {},
+      "put": {},
+      "delete": {}
+    },
+    "/pages/{id}/classification-level": {
+      "get": {},
+      "put": {}
+    },
+    "/pages/{id}/classification-level/reset": {
+      "post": {}
+    },
+    "/blogposts/{id}/classification-level": {
+      "get": {},
+      "put": {}
+    },
+    "/blogposts/{id}/classification-level/reset": {
+      "post": {}
+    },
+    "/whiteboards/{id}/classification-level": {
+      "get": {},
+      "put": {}
+    },
+    "/whiteboards/{id}/classification-level/reset": {
+      "post": {}
+    },
+    "/databases/{id}/classification-level": {
+      "get": {},
+      "put": {}
+    },
+    "/databases/{id}/classification-level/reset": {
+      "post": {}
+    },
+    "/attachments/{id}/thumbnail/download": {
+      "get": {}
+    },
+    "/app/properties": {
+      "get": {}
+    },
+    "/app/properties/{propertyKey}": {
+      "get": {},
+      "put": {},
+      "delete": {}
     }
   }
 }

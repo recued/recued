@@ -16,6 +16,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   CONNECTION_SOURCE_ID,
+  parseQualifiedWorkEntityId,
   qualifyWorkEntityId,
   RECUED_BUILTIN_SOURCE_ID,
   taskIdFromIdempotencyKey,
@@ -32,9 +33,11 @@ import {
   CommitmentLifecycleError,
   WorkEntityNotFoundError,
   WorkEntityWriteCapabilityError,
+  WorkEntityWriteVerifyFailedError,
   createWorkEntityDispatchers,
 } from '../work-entity-ingredients.js';
 import type {
+  WorkEntityReadThroughWriteDispatchOutcome,
   WorkEntitySourceWriteExecutor,
   WorkEntityVendorWriteDispatchOutcome,
   WorkEntityVendorWritePrepared,
@@ -498,6 +501,47 @@ describe('task-* ingredients', () => {
     const deleted = await dispatchers.taskDelete({ id: qualifiedId });
     expect(deleted).toEqual({ ok: true, id: qualifiedId, tombstoned: true });
     expect(store.readTask('mirror-task-1')?.sync_state).toBe('tombstoned');
+  });
+
+  it('keeps the local row live when the provider delete is proven not to have landed', async () => {
+    const sourceId = 'todoist.personal.task';
+    store.registerSource({
+      id: sourceId,
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      source_label: 'Todoist tasks (personal)',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    store.writeTask({
+      id: 'mirror-task-delete-guard',
+      source_id: sourceId,
+      source_record_id: 'todoist-native-delete-guard',
+      title: 'Must remain local',
+    }, NOW);
+    const qualifiedId = qualifyWorkEntityId({
+      kind: 'task',
+      source_id: sourceId,
+      source_record_id: 'todoist-native-delete-guard',
+      local_id: 'mirror-task-delete-guard',
+    });
+    dispatchers = buildDispatchers(fakeWriteExecutor(() => ({
+      ok: false,
+      kind: 'verify_failed',
+      reason: 'the provider still returns the record after task.delete reported success',
+      unlanded_fields: [],
+      staged: false,
+    })));
+
+    await expect(dispatchers.taskDelete({ id: qualifiedId }))
+      .rejects.toBeInstanceOf(WorkEntityWriteVerifyFailedError);
+    const retained = store.readTask('mirror-task-delete-guard');
+    expect(retained).toMatchObject({
+      title: 'Must remain local',
+      sync_state: 'live',
+    });
+    expect(retained?.deleted_at).toBeUndefined();
   });
 
   it('a forged local qualified id fails loud without writing another Source row', async () => {
@@ -1318,5 +1362,197 @@ describe('registerSource UPSERT semantics', () => {
         registered_at: NOW,
       }),
     ).toThrow(/already registered/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// read_through Sources vs the generic LOCAL reads.
+//
+// `work.search` / `work.read` invoke a read_through Source on demand. The
+// recipe-callable `work-entity-list` / `work-entity-get` read the canonical
+// tables instead, where a read_through Source has nothing — so before this
+// guard they answered "no rows" / "not found" for records that exist and are
+// readable. A wrong answer, not a missing feature: refuse and name the surface
+// that can fetch it.
+// ────────────────────────────────────────────────────────────────
+
+describe('read_through Sources and the generic local reads', () => {
+  const PEER_SOURCE = 'recued-peer.hq.task';
+
+  beforeEach(() => {
+    store.registerSource({
+      id: PEER_SOURCE,
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      source_label: 'Federated peer (task)',
+      write_capable: true,
+      mcp_exposed: false,
+      sync_posture: 'read_through',
+      registered_at: NOW,
+    });
+  });
+
+  it('work-entity-list refuses a read_through source_id instead of answering empty', async () => {
+    await expect(
+      dispatchers.workEntityList({ kind: 'task', source_id: PEER_SOURCE }),
+    ).rejects.toThrow(/read_through/);
+  });
+
+  it('work-entity-list drops rows an interrupted posture migration left behind', async () => {
+    // What a half-finished migration leaves in the canonical table. The
+    // declaration says these rows do not exist, so no reader may serve them.
+    store.writeTask({ source_id: PEER_SOURCE, title: 'migration residue' }, NOW);
+    const listed = await dispatchers.workEntityList({ kind: 'task' });
+
+    expect(listed.entities.map((entity) => entity.source_id)).not.toContain(PEER_SOURCE);
+    // `total` stays on the same basis as the rows — a count that still
+    // included the residue would re-advertise exactly what was filtered.
+    expect(listed.total).toBe(listed.entities.length);
+  });
+
+  it('work-entity-get refuses a read_through qualified id instead of reporting not-found', async () => {
+    const id = qualifyWorkEntityId({
+      kind: 'task',
+      source_id: PEER_SOURCE,
+      source_record_id: 'peer-task-1',
+      local_id: 'no-local-row',
+    });
+
+    await expect(dispatchers.workEntityGet({ kind: 'task', id })).rejects.toThrow(/read_through/);
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// Read-through CREATE at the dispatcher seam. The point of the feature is the
+// round trip: the id a create hands back must route the very next write to the
+// same remote record, with no local row in between.
+// ────────────────────────────────────────────────────────────────
+
+describe('read_through create', () => {
+  const RT_SOURCE = 'recued-peer.hq.task';
+
+  /** A write executor whose read-through lane mints 'peer-1' and projects it. */
+  const readThroughExecutor = (
+    onCreate: () => WorkEntityReadThroughWriteDispatchOutcome = () => ({
+      ok: true,
+      operation: 'create',
+      source_record_id: 'peer-1',
+      projected: {
+        kind: 'task',
+        write: { source_id: RT_SOURCE, source_record_id: 'peer-1', title: 'From the peer' },
+      },
+      verified: true,
+    }),
+  ): WorkEntitySourceWriteExecutor => ({
+    prepare: () => ({ ok: false, kind: 'config', reason: 'mirror prepare must not be reached' }),
+    dispatch: async () => ({ ok: false, kind: 'error', reason: 'unused', staged: false }),
+    prepareReadThrough: ({ source_id, kind, operation, patch }) => ({
+      ok: true,
+      vendor_relevant: true,
+      prepared: {
+        source_id, kind, operation, patch,
+        // The update lane intersects the patch with what can actually be
+        // pushed; a fake without it would not exercise that guard.
+        pushable: Object.keys(patch).map((field) => ({ field })),
+      } as unknown as WorkEntityVendorWritePrepared,
+    }),
+    dispatchReadThrough: async () => ({
+      ok: false, kind: 'error', reason: 'unused in these cases', staged: false,
+    }),
+    dispatchReadThroughCreate: async () => onCreate(),
+    resolveCreateDependencies: async () => ({ ok: true, createArgs: {}, plannedCreates: [] }),
+    executeCreatePlan: async () => ({ ok: false, reason: 'unused' }),
+    tryFastTrackCreatePlan: async () => ({ ok: false, kind: 'not_granted' }),
+  });
+
+  beforeEach(() => {
+    store.registerSource({
+      id: RT_SOURCE,
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      source_label: 'Federated peer (task)',
+      write_capable: true,
+      mcp_exposed: false,
+      sync_posture: 'read_through',
+      registered_at: NOW,
+    });
+  });
+
+  it('answers with the Source-qualified id the vendor minted, and writes no local row', async () => {
+    dispatchers = buildDispatchers(readThroughExecutor());
+
+    const out = await dispatchers.taskCreate({ title: 'From the peer', source_id: RT_SOURCE });
+
+    // The id IS the route for the next write — kind, Source, and the vendor's
+    // own record id, all recoverable without asking the model to remember them.
+    expect(parseQualifiedWorkEntityId(out.task.id)).toEqual({
+      version: 'we1',
+      kind: 'task',
+      source_id: RT_SOURCE,
+      identity: 'source',
+      record_id: 'peer-1',
+    });
+    expect(out.task.title).toBe('From the peer');
+    // The whole point of the posture: nothing landed in the canonical table.
+    expect(store.listByKind('task', { source_id: RT_SOURCE })).toEqual([]);
+    expect(store.countByKind('task', { source_id: RT_SOURCE })).toBe(0);
+  });
+
+  it('the id it returns routes the next update back to the same remote record', async () => {
+    let updatedRecordId: string | undefined;
+    const executor = readThroughExecutor();
+    executor.dispatchReadThrough = async (_prepared, source_record_id) => {
+      updatedRecordId = source_record_id;
+      return {
+        ok: true,
+        operation: 'update',
+        projected: {
+          kind: 'task',
+          write: { source_id: RT_SOURCE, source_record_id: 'peer-1', title: 'Renamed' },
+        },
+        verified: true,
+      };
+    };
+    dispatchers = buildDispatchers(executor);
+
+    const created = await dispatchers.taskCreate({ title: 'From the peer', source_id: RT_SOURCE });
+    const updated = await dispatchers.taskUpdate({ id: created.task.id, title: 'Renamed' });
+
+    // No local lookup could have supplied this — it came out of the create's id.
+    expect(updatedRecordId).toBe('peer-1');
+    expect(updated.task.title).toBe('Renamed');
+    expect(updated.task.id).toBe(created.task.id);
+  });
+
+  it('refuses fields that would land only locally, instead of dropping them', async () => {
+    dispatchers = buildDispatchers(readThroughExecutor());
+
+    // `parent_project_id` rides the local FK lane and never reaches the vendor.
+    // Accepting it would report success while silently discarding the link.
+    await expect(
+      dispatchers.taskCreate({
+        title: 'From the peer',
+        source_id: RT_SOURCE,
+        parent_project_id: 'proj-local',
+      }),
+    ).rejects.toThrow(/parent_project_id/);
+  });
+
+  it('propagates a created-but-unverifiable failure rather than inventing a row', async () => {
+    dispatchers = buildDispatchers(
+      readThroughExecutor(() => ({
+        ok: false,
+        kind: 'verify_failed',
+        reason: "'task.create' created record 'peer-1', but the provider result could not be projected",
+        unlanded_fields: ['title'],
+        staged: false,
+        source_record_id: 'peer-1',
+      })),
+    );
+
+    await expect(
+      dispatchers.taskCreate({ title: 'From the peer', source_id: RT_SOURCE }),
+    ).rejects.toThrow(/peer-1/);
+    expect(store.countByKind('task', { source_id: RT_SOURCE })).toBe(0);
   });
 });

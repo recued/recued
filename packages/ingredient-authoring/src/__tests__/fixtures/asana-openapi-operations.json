@@ -224,7 +224,7 @@
     "body_wire_migration": {
       "root_version": 2,
       "migrated_recipe_versions": {
-        "create-task-intake-asana": 2,
+        "create-task-intake-asana": 3,
         "create-task-with-closure-asana": 2,
         "comment-task-with-closure-asana": 2
       },

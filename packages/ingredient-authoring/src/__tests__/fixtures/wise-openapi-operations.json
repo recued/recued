@@ -1,39 +1,11 @@
 {
-  "source": "https://docs.wise.com/_bundle/api-reference/index.json?download",
-  "sha256": "cc4e57d58982b669f6873525d12f41eb0e6c4f5d27d9292c6f26556966dec673",
+  "source": "https://docs.wise.com/_bundle/api-reference/@legacy/index.json",
+  "sha256": "c18eb1f56bd081fc9bbf2096176704ff72f46567ac6a7a3a545a4bc512dfb921",
   "openapi": "3.1.0",
-  "path_count": 201,
-  "operation_count": 242,
+  "path_count": 199,
+  "operation_count": 240,
   "selected_operation_count": 59,
   "operations": [
-    {
-      "method": "GET",
-      "path": "/2026Q2/embedded-flows/link-requests/{embeddedLinkRequestId}",
-      "operation_id": "embeddedLinkRequestGet",
-      "tags": [
-        "link-requests"
-      ],
-      "security": [
-        "UserToken"
-      ],
-      "deprecated": false,
-      "selected": false,
-      "reason": "outside the documented SMB personal-token business surface"
-    },
-    {
-      "method": "POST",
-      "path": "/2026Q2/profiles/{profileId}/embedded-flows/link-requests/recipients",
-      "operation_id": "recipientEmbeddedLinkRequestCreate",
-      "tags": [
-        "link-requests"
-      ],
-      "security": [
-        "UserToken"
-      ],
-      "deprecated": false,
-      "selected": false,
-      "reason": "outside the documented SMB personal-token business surface"
-    },
     {
       "method": "POST",
       "path": "/oauth/token",
@@ -123,7 +95,7 @@
       "path": "/twcard-data/v1/sensitive-card-data/preset-pin",
       "operation_id": "cardOrderPresetPin",
       "tags": [
-        "card-sensitive-details"
+        "card-order"
       ],
       "security": [
         "UserToken"
@@ -875,7 +847,7 @@
       "reason": "OpenAPI explicitly permits PersonalToken"
     },
     {
-      "method": "POST",
+      "method": "GET",
       "path": "/v1/profiles/{profileId}/balances/hold-limit-breach",
       "operation_id": "holdLimitBreachList",
       "tags": [
@@ -2197,7 +2169,7 @@
     {
       "method": "POST",
       "path": "/v2/profiles/{profileId}/third-party-transfers",
-      "operation_id": "createthirdpartytransfer",
+      "operation_id": "createThirdPartyTransfer",
       "tags": [
         "third-party-transfer"
       ],
@@ -2211,7 +2183,7 @@
     {
       "method": "GET",
       "path": "/v2/profiles/{profileId}/third-party-transfers/{transferId}",
-      "operation_id": "getthirdpartytransfer",
+      "operation_id": "getThirdPartyTransfer",
       "tags": [
         "third-party-transfer"
       ],
@@ -2696,7 +2668,7 @@
     {
       "method": "POST",
       "path": "/v3/profiles/{profileId}/transfers/{transferId}/payments",
-      "operation_id": "transferfund",
+      "operation_id": "transferFund",
       "tags": [
         "transfer"
       ],

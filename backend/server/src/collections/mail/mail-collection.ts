@@ -10,7 +10,7 @@
  *    body_text > 64 KB → CAS blob via `blob_hash` (not FTS-indexed).
  *
  *  Hot fields (hand-specified per D-106 #2; no auto-promotion):
- *    { from, to, cc, subject, thread_id, folder, is_read,
+ *    { from, to, cc, subject, thread_id, folder, direction, is_read,
  *      has_attachments, labels?, message_id, rfc_message_id?,
  *      reconciliation_id? }
  *
@@ -81,6 +81,7 @@ import type {
 } from '../types.js';
 import type {
   CanonicalMessage,
+  MailMessageDirection,
   MailSentReconciliationQuery,
   MailSentReconciliationResult,
   OutgoingAttachment,
@@ -203,6 +204,36 @@ const pickPrimaryFolder = (folderOrLabel: string, labels: string[] = []): string
   return labels[0] ?? '';
 };
 
+const normalizeMailAddress = (value: string): string => value.trim().toLowerCase();
+
+/** Resolve only from strong evidence. Provider outbound/draft evidence and an
+ * exact enrolled-account sender exclude self-originated mail; provider inbound
+ * evidence then wins. Recipient matching covers moved/custom folders without
+ * guessing that every non-Sent display name is inbound. */
+export const resolveMailMessageDirection = (
+  msg: CanonicalMessage,
+  accountEmail = '',
+): MailMessageDirection => {
+  switch (msg.direction) {
+    case 'outbound':
+    case 'draft':
+      return msg.direction;
+    default:
+      break;
+  }
+
+  const account = normalizeMailAddress(accountEmail);
+  const from = normalizeMailAddress(msg.from);
+  if (account.length > 0 && from.length > 0 && from === account) return 'outbound';
+  if (msg.direction === 'inbound') return 'inbound';
+  if (account.length === 0) return 'unknown';
+
+  const addressedToAccount = [...msg.to, ...msg.cc]
+    .some((address) => normalizeMailAddress(address) === account);
+  if (from.length > 0 && from !== account && addressedToAccount) return 'inbound';
+  return 'unknown';
+};
+
 /** Compose the FTS-indexed text for a mail record — sender + recipients +
  *  subject + body — so a "mail from / about <person or term>" query matches
  *  the SENDER / SUBJECT, not just the body. The mail-table analog of the
@@ -234,6 +265,7 @@ export const mailFtsText = (record: CollectionRecord): string => {
 export const buildRecord = (
   msg: CanonicalMessage,
   nowOf: () => number,
+  accountEmail = '',
 ): { record: CollectionRecord; bodyBytes: number } => {
   const bodyText = msg.body_text ?? '';
   const bodyBytes = Buffer.byteLength(bodyText, 'utf8');
@@ -244,6 +276,7 @@ export const buildRecord = (
     subject: msg.subject,
     thread_id: msg.thread_id,
     folder: pickPrimaryFolder(msg.folder_or_label, msg.labels),
+    direction: resolveMailMessageDirection(msg, accountEmail),
     is_read: msg.is_read,
     has_attachments: msg.has_attachments,
     message_id: msg.source_id,
@@ -632,15 +665,23 @@ export const createMailCollection = (
     msg: CanonicalMessage,
     shouldContinue: () => boolean,
   ): Promise<void> => {
-    const { record, bodyBytes } = buildRecord(msg, nowOf);
+    const { record, bodyBytes } = buildRecord(msg, nowOf, provider.accountEmail);
+    const assertActive = (): void => {
+      if (!shouldContinue()) {
+        throw new Error('mail sync generation is no longer active');
+      }
+    };
     try {
-      if (!shouldContinue()) return;
+      assertActive();
       if (bodyBytes <= INLINE_CUTOFF_BYTES) {
         record.body_inline = msg.body_text ?? '';
       } else {
         record.blob_hash = await blobs.put(Buffer.from(msg.body_text, 'utf8'));
       }
-      if (!shouldContinue()) return;
+      // The generation can change while durable blob I/O is in flight. A
+      // resolved stale callback would let the provider move its replay cursor
+      // past a row this generation never committed.
+      assertActive();
       const prev = table.upsert(record);
       if (prev) emitter.updated(record.record_id, prev.hot_fields);
       else emitter.created(record.record_id);
@@ -654,13 +695,23 @@ export const createMailCollection = (
       // 30-day backfill is thousands of them.
       touchSyncClock();
       await materializeInboundAttachments(msg, record.record_id, shouldContinue);
-      if (!shouldContinue()) return;
+      // The row may already be durable here; rejecting still matters because a
+      // provider that outlived stop must not persist a newer checkpoint. Replay
+      // is idempotent and will converge attachments/hooks under the next owner.
+      assertActive();
       if (opts.onMessageUpserted) {
         try { opts.onMessageUpserted(msg); }
         catch (err) { bumpError(`mail onMessageUpserted hook failed for ${msg.source_id}`, err); }
       }
     } catch (err) {
       bumpError(`mail ingest failed for ${msg.source_id}`, err);
+      // The provider owns the replay checkpoint. Resolving this callback would
+      // acknowledge an event that never became durable, allowing Gmail's
+      // historyId / Graph's deltaLink to move past it permanently. Preserve the
+      // local diagnostic, then reject so the provider can hold and replay its
+      // cursor. Optional derivation hooks remain best-effort above because the
+      // canonical mail row has already landed before they run.
+      throw err;
     }
   };
 
@@ -668,7 +719,9 @@ export const createMailCollection = (
     event: ProviderSyncEvent,
     shouldContinue: () => boolean,
   ): Promise<void> => {
-    if (!shouldContinue()) return;
+    if (!shouldContinue()) {
+      throw new Error('mail sync generation is no longer active');
+    }
     if (event.kind === 'deleted') {
       const recordId = recordIdFor(event.source_id);
       const prev = table.delete(recordId);
@@ -677,7 +730,7 @@ export const createMailCollection = (
     }
     if (!event.message) {
       bumpError(`sync event ${event.kind} missing message`, null);
-      return;
+      throw new Error(`mail sync event '${event.source_id}' is missing its message payload`);
     }
     await upsertMessage(event.message, shouldContinue);
   };
@@ -736,11 +789,14 @@ export const createMailCollection = (
         backfill_days: opts.config().backfill_days,
         onMessage: async (msg) => {
           if (!shouldContinue()) return false;
-          const before = localErrorCount;
-          await upsertMessage(msg, shouldContinue);
+          try {
+            await upsertMessage(msg, shouldContinue);
+          } catch (err) {
+            backfillRecorder.recordFailure();
+            throw err;
+          }
           if (!shouldContinue()) return false;
-          if (localErrorCount > before) backfillRecorder.recordFailure();
-          else backfillRecorder.recordImport(msg.received_at);
+          backfillRecorder.recordImport(msg.received_at);
           return true;
         },
       });

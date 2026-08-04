@@ -13,6 +13,7 @@
  *  encoded access token in introspect URL). */
 
 import { describe, expect, it, vi } from 'vitest';
+import { GENERIC_OAUTH_VENDOR } from '@recued/contracts';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -247,6 +248,110 @@ describe('handleConnectionCompleteVendorOAuth — input validation', () => {
     } finally {
       cleanup();
     }
+  });
+
+  describe('R26.2-for-vendors — the generic exchange a loopback flow needs', () => {
+    it('accepts an unregistered vendor when it supplies valid HTTPS endpoints', async () => {
+      const { store, cleanup } = makeStore();
+      try {
+        const fetcher = vi.fn(async () => ({
+          ok: true,
+          status: 200,
+          json: async () => ({ refresh_token: 'RT', access_token: 'AT', scope: 'Contacts.Read' }),
+          text: async () => '',
+        }));
+        const out = await handleConnectionCompleteVendorOAuth(
+          { store, fetcher: fetcher as never },
+          {
+            vendor: GENERIC_OAUTH_VENDOR,
+            code: 'C',
+            // The loopback self-serve callback — the whole point: no public
+            // server URL exists, so `startVendorOAuth` is unreachable.
+            redirect_uri: 'http://127.0.0.1:7841/webclient/oauth-callback.html',
+            client_id: 'CID',
+            authorize_url: 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+            token_endpoint: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+          } as never,
+        );
+        expect(out.refresh_token).toBe('RT');
+        // Exchanged against the SUPPLIED endpoint, not a registry one.
+        const firstCall = fetcher.mock.calls[0] as unknown as readonly unknown[];
+        expect(String(firstCall[0]))
+          .toBe('https://login.microsoftonline.com/common/oauth2/v2.0/token');
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('⛔ refuses an unsafe supplied token endpoint', async () => {
+      const { store, cleanup } = makeStore();
+      try {
+        for (const bad of [
+          'http://login.example/token',
+          'https://user:pw@login.example/token',
+          'https://login.example/token#frag',
+        ]) {
+          await expect(
+            handleConnectionCompleteVendorOAuth(
+              { store },
+              {
+                vendor: GENERIC_OAUTH_VENDOR,
+                code: 'C',
+                redirect_uri: 'http://127.0.0.1:7841/webclient/oauth-callback.html',
+                client_id: 'CID',
+                authorize_url: 'https://login.example/authorize',
+                token_endpoint: bad,
+              } as never,
+            ),
+          ).rejects.toThrow(/complete HTTPS URL/);
+        }
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('⛔ a REGISTERED vendor ignores supplied endpoints — they cannot bypass its controls', async () => {
+      const { store, cleanup } = makeStore();
+      try {
+        // HubSpot requires a client secret. If the supplied endpoints were
+        // honoured they would build a generic provider with no secret gate,
+        // and this call would proceed instead of being refused.
+        await expect(
+          handleConnectionCompleteVendorOAuth(
+            { store },
+            {
+              vendor: 'hubspot',
+              code: 'C',
+              redirect_uri: 'http://127.0.0.1:7841/webclient/oauth-callback.html',
+              client_id: 'CID',
+              authorize_url: 'https://evil.example/authorize',
+              token_endpoint: 'https://evil.example/token',
+            } as never,
+          ),
+        ).rejects.toThrow(/requires client_secret/);
+      } finally {
+        cleanup();
+      }
+    });
+
+    it('still rejects an unregistered vendor with NO endpoints', async () => {
+      const { store, cleanup } = makeStore();
+      try {
+        await expect(
+          handleConnectionCompleteVendorOAuth(
+            { store },
+            {
+              vendor: 'unknownvendor',
+              code: 'C',
+              redirect_uri: 'https://app.example.com/cb',
+              client_id: 'CID',
+            },
+          ),
+        ).rejects.toThrow(/'unknownvendor'/);
+      } finally {
+        cleanup();
+      }
+    });
   });
 
   it('rejects HubSpot calls without client_secret (client_secret_required)', async () => {

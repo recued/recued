@@ -10,6 +10,7 @@ import { createDdnsUpdateClient } from '../ddns/update-client.js';
 import { createRecuedCloudHandleClient } from '../handle/recued-cloud-client.js';
 import type { StoredAccountBinding } from '../keys/index.js';
 import { createHttpProEntitlementSource } from '../pro-convenience/entitlement-source.js';
+import { provisionHandleFromBinding } from '../pro-convenience/handle-provisioner.js';
 
 const bindingRequest: AccountBindingExchangeRequest = {
   binding_token: 'SECRET-binding-token',
@@ -70,6 +71,54 @@ describe('server cloud HTTP lifecycle', () => {
     });
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(fetchSpy.mock.calls[0]?.[1]).toMatchObject({ redirect: 'manual' });
+  });
+
+  // A self-hosted server with NO recued.com account must not talk to the auth
+  // Worker at all. Every other assertion here is about a request failing
+  // CLOSED; this one is about the request never being MADE — an unbound server
+  // that contacts `auth.recued.com` announces its existence to the cloud for
+  // an account that does not exist. Both entry points read the stored binding
+  // FIRST, including from the boot-time provisioning tick that re-runs every
+  // five minutes for the life of the process.
+  it('never calls the auth Worker while the server holds no account binding', async () => {
+    const fetchSpy = vi.fn(async () => new Response('{}'));
+    const source = createHttpProEntitlementSource({
+      loadBinding: () => null,
+      getEndpointUrl: () => 'https://auth.recued.com/v1/account/entitlement/mint',
+      getPublicKeyB64: () => 'configured-key',
+      fetchImpl: fetchSpy as unknown as typeof fetch,
+    });
+
+    await expect(source.resolve()).resolves.toEqual({ state: 'unbound' });
+    await expect(source.resolveClaim()).resolves.toBeNull();
+
+    const unreachable = () => {
+      throw new Error('unbound server must not reach the handle state machine');
+    };
+    const outcome = await provisionHandleFromBinding({
+      serverFingerprint: () => 'sha256:server',
+      loadBinding: () => null,
+      entitlement: source,
+      handle: {
+        current: unreachable,
+        reserveInitial: unreachable,
+        changeHandle: unreachable,
+        reReserve: unreachable,
+      },
+    });
+
+    expect(outcome).toEqual({ outcome: 'skipped', reason: 'unbound' });
+    expect(fetchSpy).not.toHaveBeenCalled();
+
+    // Known positive on the SAME spy: a zero above must mean "the binding gate
+    // held", not "this composition never reaches fetch at all".
+    await createHttpProEntitlementSource({
+      loadBinding: () => storedBinding,
+      getEndpointUrl: () => 'https://auth.recued.com/v1/account/entitlement/mint',
+      getPublicKeyB64: () => 'configured-key',
+      fetchImpl: fetchSpy as unknown as typeof fetch,
+    }).resolve();
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
   it('refuses to replay a signed handle request across origins', async () => {

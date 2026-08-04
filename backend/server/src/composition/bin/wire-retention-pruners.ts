@@ -1,8 +1,9 @@
 /** Phase B + D-145 PB12 + D-145 PB14 + D-157 N.8 — retention pruner
  *  registrations.
  *
- *  Four best-effort periodic pruners that the background-services
- *  registry owns once `cmdServe` calls this helper:
+ *  Best-effort periodic pruners that the background-services registry owns
+ *  once `cmdServe` calls this helper. The original four are documented below;
+ *  later privacy stores register beside them through the same lifecycle:
  *    - `audit-prune` (Phase B) — age + size reclaim for the audit gate.
  *      Cadence configurable via `audit.prune_interval_s` (floored at
  *      60s, defaults 1h). Skipped when `auditRetention` is absent
@@ -26,7 +27,7 @@
  *      past its grace. Skipped when `checkpointStore` / `auditLog` is
  *      absent.
  *
- *  All four are best-effort: per-tick failures must not crash the
+ *  Every pruner is best-effort: per-tick failures must not crash the
  *  server. The audit + checkpoint pruners have their own `runSafe()`
  *  wrappers; the other two get inline try/catch (mirroring
  *  pre-extraction shape).
@@ -57,6 +58,11 @@ import type { CorrectionEventsStore } from '../../storage/correction-events-stor
 import type {
   ExecutionCaseLifecycle,
 } from '../../chat-execution-case-tools.js';
+import {
+  sweepMcpRecipeCallbackRetention,
+} from '../../mcp-recipe-callback.js';
+import type { SharedStore } from '../../storage/shared-store.js';
+import type { ChatInboundTokenStore } from '../../storage/chat-inbound-token-store.js';
 
 export interface ComposeRetentionPrunersDeps {
   readonly backgroundServices: BackgroundServiceRegistry;
@@ -64,6 +70,14 @@ export interface ComposeRetentionPrunersDeps {
   readonly auditRetention: AuditRetention | undefined;
   readonly s2sPreviewStore: S2SPreviewStore | undefined;
   readonly correctionEventsStore: CorrectionEventsStore | undefined;
+  /** Recipe-callback TTL and terminal-token payload scrub. Both stores are
+   * required; independent absence skips only this pruner. */
+  readonly mcpRecipeCallbackStore?:
+    | Pick<SharedStore, 'list' | 'read' | 'compareAndSet'>
+    | undefined;
+  readonly mcpRecipeCallbackTokenStore?:
+    | Pick<ChatInboundTokenStore, 'getTokenById' | 'drainAuthorityChanges'>
+    | undefined;
   /** D-219 — the capture-only tool-argument buffer. ⛔ Nothing READS it, which
    *  is exactly why it needs a pruner: an unread store of raw arguments with no
    *  age bound is an archive nobody decided to keep. Absent ⇒ no sweep (db-less
@@ -106,7 +120,7 @@ const DAY_MS = 24 * HOUR_MS;
  *  schema default for `preflight.stale_after_days`). */
 const DEFAULT_STALE_AFTER_DAYS = 30;
 
-/** Register up to six pruner intervals with `backgroundServices`.
+/** Register the retention pruner intervals with `backgroundServices`.
  *  Each registration is gated independently — a missing store skips
  *  that pruner but doesn't block the others. */
 export const composeRetentionPruners = (
@@ -165,6 +179,38 @@ export const composeRetentionPruners = (
         }
       },
       fireImmediate: true,
+    });
+  }
+
+  // Recipe callbacks carry only bounded pointers, but logical non-delivery is
+  // not a retention policy. Scrub expired rows and rows whose token is now
+  // missing, revoked, expired, rebound, or ungranted. Keep the CAS row as a
+  // minimal revision fence so a concurrent enqueue cannot suffer delete/reuse
+  // ABA; a future event on the same route advances and replaces that fence.
+  if (deps.mcpRecipeCallbackStore && deps.mcpRecipeCallbackTokenStore) {
+    const store = deps.mcpRecipeCallbackStore;
+    const inboundTokenStore = deps.mcpRecipeCallbackTokenStore;
+    deps.backgroundServices.registerInterval({
+      name: 'mcp-recipe-callback-prune',
+      intervalMs: HOUR_MS,
+      tick: async () => {
+        try {
+          await sweepMcpRecipeCallbackRetention({
+            store,
+            inboundTokenStore,
+            now: nowOf,
+          });
+        } catch {
+          // Best-effort; inactive callbacks remain authorization-inert and the
+          // next immediate/hourly pass retries their payload scrub.
+        }
+      },
+      fireImmediate: true,
+    });
+    deps.backgroundServices.register({
+      name: 'mcp-recipe-callback-authority-drain',
+      kind: 'emitter',
+      stop: () => inboundTokenStore.drainAuthorityChanges(),
     });
   }
 

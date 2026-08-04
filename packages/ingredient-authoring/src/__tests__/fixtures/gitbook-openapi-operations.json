@@ -2,8 +2,8 @@
   "vendor": "GitBook",
   "generated_at": "2026-07-14",
   "url": "https://api.gitbook.com/openapi.json",
-  "sha256": "c56ea0152667fb66f98692146f7878e3b4f6e91dc612be6adc1a76f2c432e37d",
-  "byte_length": 1538423,
+  "sha256": "ce45c5b27ff004f719a35a222cc6c29dc8f11a5f3b731b94eeaf8c1b79a0639f",
+  "byte_length": 1537601,
   "openapi": "3.1.0",
   "title": "GitBook API",
   "version": "0.0.1-beta",
@@ -15,22 +15,22 @@
       }
     }
   },
-  "path_count": 246,
-  "operation_count": 355,
-  "selected_operation_count": 333,
-  "excluded_operation_count": 22,
+  "path_count": 249,
+  "operation_count": 357,
+  "selected_operation_count": 336,
+  "excluded_operation_count": 21,
   "selected_method_counts": {
     "DELETE": 38,
-    "GET": 173,
+    "GET": 174,
     "PATCH": 36,
-    "POST": 69,
+    "POST": 71,
     "PUT": 17
   },
   "selected_pack_counts": {
     "gitbook-content": 100,
     "gitbook-organization": 76,
-    "gitbook-sites": 72,
-    "gitbook-intelligence": 38,
+    "gitbook-sites": 74,
+    "gitbook-intelligence": 39,
     "gitbook-platform": 47
   },
   "selected_primary_tag_counts": {
@@ -58,7 +58,7 @@
     "site-channels": 5,
     "site-context": 25,
     "site-customization": 5,
-    "site-insights": 3,
+    "site-insights": 4,
     "site-mcp-servers": 5,
     "site-permissions": 4,
     "site-preview": 1,
@@ -68,10 +68,10 @@
     "site-section-groups": 5,
     "site-sections": 5,
     "site-share-links": 4,
-    "site-spaces": 5,
+    "site-spaces": 6,
     "site-structure": 1,
     "site-users": 4,
-    "sites": 14,
+    "sites": 15,
     "space-comment": 1,
     "space-comments": 10,
     "space-content": 25,
@@ -91,11 +91,11 @@
     "users": 3
   },
   "exclusion_counts": {
-    "The official operation does not admit the documented personal user bearer token; it is internal, staff, integration, or installation-token only.": 17,
+    "The official operation does not admit the documented personal user bearer token; it is internal, staff, integration, or installation-token only.": 16,
     "The operation returns an SSE stream, which the current static JSON REST composition does not represent.": 5
   },
   "pagination_counts": {
-    "none": 261,
+    "none": 264,
     "query_token": 69,
     "single_page": 3
   },
@@ -1494,33 +1494,6 @@
       "approval": "ask",
       "idempotency": "safe",
       "reason": ""
-    },
-    {
-      "method": "DELETE",
-      "path": "/spaces/{spaceId}/git/legacy-installation",
-      "operation_id": "deleteLegacyGitInstallation",
-      "primary_tag": "space-git",
-      "security": [
-        {
-          "user-internal": []
-        }
-      ],
-      "request_media": [],
-      "response_media": [],
-      "request_body_required": false,
-      "body_mode": "none",
-      "parameters": [
-        {
-          "name": "spaceId",
-          "in": "path",
-          "required": true,
-          "type": "string",
-          "pagination_owned": false,
-          "static_owned": false
-        }
-      ],
-      "selected": false,
-      "reason": "The official operation does not admit the documented personal user bearer token; it is internal, staff, integration, or installation-token only."
     },
     {
       "method": "POST",
@@ -16079,6 +16052,50 @@
     },
     {
       "method": "POST",
+      "path": "/orgs/{organizationId}/sites/{siteId}/agent-feedback",
+      "operation_id": "submitSiteAgentFeedback",
+      "primary_tag": "site-insights",
+      "security": [
+        {
+          "user": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [],
+      "request_body_required": true,
+      "body_mode": "json_fields",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "siteId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-intelligence",
+      "op": "site_insights.submit_site_agent_feedback",
+      "result_path": null,
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "reason": ""
+    },
+    {
+      "method": "POST",
       "path": "/orgs/{organizationId}/sites/{siteId}/ask",
       "operation_id": "streamAskInSite",
       "primary_tag": "site-ask",
@@ -16498,57 +16515,6 @@
       "reason": ""
     },
     {
-      "method": "POST",
-      "path": "/orgs/{organizationId}/sites/{siteId}/scans",
-      "operation_id": "createSiteScan",
-      "primary_tag": "site-context",
-      "security": [
-        {
-          "user": []
-        },
-        {
-          "oauth": [
-            "site:write"
-          ]
-        }
-      ],
-      "request_media": [
-        "application/json"
-      ],
-      "response_media": [
-        "application/json"
-      ],
-      "request_body_required": true,
-      "body_mode": "json_fields",
-      "parameters": [
-        {
-          "name": "organizationId",
-          "in": "path",
-          "required": true,
-          "type": "string",
-          "pagination_owned": false,
-          "static_owned": false
-        },
-        {
-          "name": "siteId",
-          "in": "path",
-          "required": true,
-          "type": "string",
-          "pagination_owned": false,
-          "static_owned": false
-        }
-      ],
-      "selected": true,
-      "pack": "gitbook-intelligence",
-      "op": "site_context.create_site_scan",
-      "result_path": null,
-      "pagination": null,
-      "risk": "admin",
-      "approval": "always",
-      "idempotency": "non_idempotent",
-      "reason": ""
-    },
-    {
       "method": "GET",
       "path": "/orgs/{organizationId}/sites/{siteId}/scans/{siteScanId}",
       "operation_id": "getSiteScanById",
@@ -16696,6 +16662,22 @@
           "in": "query",
           "required": false,
           "type": "boolean",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "source",
+          "in": "query",
+          "required": false,
+          "type": "array",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "orderBy",
+          "in": "query",
+          "required": false,
+          "type": "string",
           "pagination_owned": false,
           "static_owned": false
         }
@@ -17233,6 +17215,103 @@
           "param": "page"
         }
       },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe",
+      "reason": ""
+    },
+    {
+      "method": "GET",
+      "path": "/orgs/{organizationId}/sites/{siteId}/stats/findings",
+      "operation_id": "getSiteFindingStats",
+      "primary_tag": "site-context",
+      "security": [
+        {
+          "user": []
+        },
+        {
+          "oauth": [
+            "site:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "siteId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "topic",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "status",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "type",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "severity",
+          "in": "query",
+          "required": false,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "hasChangeRequests",
+          "in": "query",
+          "required": false,
+          "type": "boolean",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "source",
+          "in": "query",
+          "required": false,
+          "type": "array",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-intelligence",
+      "op": "site_context.get_site_finding_stats",
+      "result_path": null,
+      "pagination": null,
       "risk": "read",
       "approval": "ask",
       "idempotency": "safe",
@@ -18837,6 +18916,66 @@
       "reason": ""
     },
     {
+      "method": "POST",
+      "path": "/orgs/{organizationId}/sites/{siteId}/site-spaces/{siteSpaceId}/duplicate",
+      "operation_id": "duplicateSiteSpace",
+      "primary_tag": "site-spaces",
+      "security": [
+        {
+          "user": []
+        },
+        {
+          "oauth": [
+            "space:write",
+            "site:write"
+          ]
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "request_body_required": false,
+      "body_mode": "json_fields",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "siteId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "siteSpaceId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-sites",
+      "op": "site_spaces.duplicate_site_space",
+      "result_path": null,
+      "pagination": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "reason": ""
+    },
+    {
       "method": "GET",
       "path": "/orgs/{organizationId}/sites/{siteId}/site-spaces/{siteSpaceId}/customization",
       "operation_id": "getSiteSpaceCustomizationById",
@@ -19782,6 +19921,56 @@
       ],
       "selected": false,
       "reason": "The operation returns an SSE stream, which the current static JSON REST composition does not represent."
+    },
+    {
+      "method": "POST",
+      "path": "/orgs/{organizationId}/sites/{siteId}/template",
+      "operation_id": "applyTemplateToSite",
+      "primary_tag": "sites",
+      "security": [
+        {
+          "user-internal": []
+        },
+        {
+          "user": []
+        },
+        {
+          "oauth": [
+            "site:write"
+          ]
+        }
+      ],
+      "request_media": [],
+      "response_media": [],
+      "request_body_required": false,
+      "body_mode": "none",
+      "parameters": [
+        {
+          "name": "organizationId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        },
+        {
+          "name": "siteId",
+          "in": "path",
+          "required": true,
+          "type": "string",
+          "pagination_owned": false,
+          "static_owned": false
+        }
+      ],
+      "selected": true,
+      "pack": "gitbook-sites",
+      "op": "sites.apply_template_to_site",
+      "result_path": null,
+      "pagination": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "reason": ""
     },
     {
       "method": "GET",
@@ -21957,9 +22146,6 @@
     "/spaces/{spaceId}/git/info": {
       "get": {}
     },
-    "/spaces/{spaceId}/git/legacy-installation": {
-      "delete": {}
-    },
     "/spaces/{spaceId}/permissions": {
       "post": {}
     },
@@ -22536,6 +22722,9 @@
     "/orgs/{organizationId}/sites/{siteId}/search": {
       "post": {}
     },
+    "/orgs/{organizationId}/sites/{siteId}/agent-feedback": {
+      "post": {}
+    },
     "/orgs/{organizationId}/sites/{siteId}/ask": {
       "post": {}
     },
@@ -22550,8 +22739,7 @@
       "get": {}
     },
     "/orgs/{organizationId}/sites/{siteId}/scans": {
-      "get": {},
-      "post": {}
+      "get": {}
     },
     "/orgs/{organizationId}/sites/{siteId}/scans/{siteScanId}": {
       "get": {}
@@ -22574,6 +22762,9 @@
       "get": {}
     },
     "/orgs/{organizationId}/sites/{siteId}/findings/{siteFindingId}/records": {
+      "get": {}
+    },
+    "/orgs/{organizationId}/sites/{siteId}/stats/findings": {
       "get": {}
     },
     "/orgs/{organizationId}/sites/{siteId}/context-connections": {
@@ -22629,6 +22820,9 @@
       "patch": {},
       "delete": {}
     },
+    "/orgs/{organizationId}/sites/{siteId}/site-spaces/{siteSpaceId}/duplicate": {
+      "post": {}
+    },
     "/orgs/{organizationId}/sites/{siteId}/site-spaces/{siteSpaceId}/customization": {
       "get": {},
       "patch": {},
@@ -22664,6 +22858,9 @@
       "delete": {}
     },
     "/orgs/{organizationId}/sites/{siteId}/ai/response": {
+      "post": {}
+    },
+    "/orgs/{organizationId}/sites/{siteId}/template": {
       "post": {}
     },
     "/orgs/{organizationId}/sites/{siteId}/agent-settings": {

@@ -7,15 +7,15 @@
         "url": "https://api.pulumi.com/api/openapi/pulumi-spec.json",
         "reference_url": "https://www.pulumi.com/docs/reference/cloud-rest-api/",
         "reference_source_url": "https://raw.githubusercontent.com/pulumi/docs/4fd0c5118c6c909fcc2209e1d0b76308c2cac50c/layouts/shortcodes/cloud-rest-api-intro.html",
-        "bytes": 2215856,
-        "sha256": "16a5dbf2f2e6686ff7a401f2f5175d82d1aa2d97c3c0620c325f981018392f2d",
+        "bytes": 2221543,
+        "sha256": "a0a7d5fc63d78f25b1e106f59c66b3484814e96726d3e957486997aada927053",
         "reference_bytes": 1473,
         "reference_sha256": "4bff8544a9b7f891f8d06bb1fe70fbc34e6ebc0f3b752c2596ca6c6622bc55b8",
         "retrieved_on": "2026-07-20",
         "mutability": "The live first-party OpenAPI is mutable and byte/hash locked. The separate origin/auth/header authority is fetched from an immutable first-party docs commit and independently byte/hash verified before any artifact is written.",
         "evidence": [
-          "618 official operations across 471 paths",
-          "554 nondeprecated and 64 provider-deprecated operations",
+          "619 official operations across 472 paths",
+          "555 nondeprecated and 64 provider-deprecated operations",
           "OpenAPI method, path, parameter, request, response, media, and deprecation contracts",
           "REST guide managed origin https://api.pulumi.com",
           "REST guide Authorization: token {token} authentication contract",
@@ -24,20 +24,20 @@
         "openapi": "3.0.3",
         "title": "Pulumi APIs",
         "api_version": "1.0.0",
-        "official_path_count": 471,
+        "official_path_count": 472,
         "declared_servers": null,
         "security_schemes": {},
         "top_level_security": null
       }
     },
-    "official_operation_count": 618,
-    "nondeprecated_operation_count": 554,
+    "official_operation_count": 619,
+    "nondeprecated_operation_count": 555,
     "deprecated_operation_count": 64,
-    "admitted_operation_count": 548,
+    "admitted_operation_count": 549,
     "exclusion_count": 70,
     "official_method_counts": {
       "DELETE": 59,
-      "GET": 283,
+      "GET": 284,
       "HEAD": 6,
       "PATCH": 56,
       "POST": 200,
@@ -45,7 +45,7 @@
     },
     "admitted_method_counts": {
       "DELETE": 52,
-      "GET": 251,
+      "GET": 252,
       "PATCH": 52,
       "POST": 180,
       "PUT": 13
@@ -55,7 +55,7 @@
       "AI Agents": 13,
       "CloudSetup": 10,
       "Deployments": 40,
-      "Environments": 116,
+      "Environments": 117,
       "Insights": 46,
       "Miscellaneous": 4,
       "Neo": 7,
@@ -71,7 +71,7 @@
       "AI Agents": 12,
       "CloudSetup": 10,
       "Deployments": 38,
-      "Environments": 71,
+      "Environments": 72,
       "Insights": 45,
       "Miscellaneous": 4,
       "Neo": 7,
@@ -88,7 +88,7 @@
       "streaming_response_unsupported": 1
     },
     "pack_operation_counts": {
-      "pulumi-cloud-environments-read": 33,
+      "pulumi-cloud-environments-read": 34,
       "pulumi-cloud-environments-write": 38,
       "pulumi-cloud-deployments-runners": 43,
       "pulumi-cloud-insights": 45,
@@ -104,23 +104,23 @@
       "pulumi-cloud-stack-engine": 53
     },
     "composition_bytes": {
-      "pulumi-cloud-environments-read": 72831,
+      "pulumi-cloud-environments-read": 74839,
       "pulumi-cloud-environments-write": 96021,
-      "pulumi-cloud-deployments-runners": 102243,
-      "pulumi-cloud-insights": 86952,
+      "pulumi-cloud-deployments-runners": 102174,
+      "pulumi-cloud-insights": 87157,
       "pulumi-cloud-vcs-integrations": 99090,
-      "pulumi-cloud-registry-service": 70306,
+      "pulumi-cloud-registry-service": 70776,
       "pulumi-cloud-account-agents-setup": 84432,
-      "pulumi-cloud-organization-identity": 107383,
+      "pulumi-cloud-organization-identity": 107286,
       "pulumi-cloud-organization-governance": 80723,
-      "pulumi-cloud-organization-automation": 62834,
-      "pulumi-cloud-organization-change-search": 63047,
+      "pulumi-cloud-organization-automation": 62809,
+      "pulumi-cloud-organization-change-search": 63019,
       "pulumi-cloud-stack-state": 69465,
       "pulumi-cloud-stack-activity": 81452,
       "pulumi-cloud-stack-engine": 136212
     },
     "request_body_counts": {
-      "none": 352,
+      "none": 353,
       "raw": 196,
       "official_required": 0,
       "admitted_required": 196
@@ -137,20 +137,20 @@
     "response_mode_counts": {
       "empty": 155,
       "file_ref": 1,
-      "json": 363,
+      "json": 364,
       "json_or_text": 15,
       "text": 10,
       "undocumented_success": 4
     },
     "response_media_counts": {
-      "application/json": 378,
+      "application/json": 379,
       "application/x-tar": 1,
       "application/x-yaml": 5,
       "text/markdown": 6,
       "text/plain": 4
     },
     "success_status_set_counts": {
-      "200": 394,
+      "200": 395,
       "201": 12,
       "202": 4,
       "204": 124,
@@ -160,16 +160,16 @@
     "risk_counts": {
       "admin": 58,
       "destructive": 239,
-      "read": 251
+      "read": 252
     },
     "approval_counts": {
       "always": 297,
-      "never": 251
+      "never": 252
     },
     "idempotency_counts": {
       "idempotent": 52,
       "non_idempotent": 245,
-      "safe": 251
+      "safe": 252
     },
     "pagination": {
       "automatic_operation_count": 33,
@@ -268,7 +268,7 @@
       "credential_fields_in_pack_args": 0
     },
     "authority_notes": {
-      "official_operation_ids_present": 618,
+      "official_operation_ids_present": 619,
       "generated_operation_id_formula": "<snake_primary_tag>.<snake_official_operation_id>",
       "generated_operation_ids_unique": true,
       "exact_path_parameter_contract": true,
@@ -340,6 +340,7 @@
         "GET /api/console/orgs/{orgName}/integrations/custom",
         "GET /api/console/orgs/{orgName}/integrations/custom/{integrationId}",
         "GET /api/deployments/poll",
+        "GET /api/esc/context/schema",
         "GET /api/esc/environments/{orgName}/{projectName}/{envName}/hooks",
         "GET /api/esc/environments/{orgName}/{projectName}/{envName}/hooks/{hookName}",
         "GET /api/esc/providers/{providerName}/schema",
@@ -443,6 +444,7 @@
         "GET /api/deployments/poll",
         "GET /api/esc/cloudsetup/{orgName}/oauth/azure/accounts",
         "GET /api/esc/cloudsetup/{orgName}/oauth/gcp/accounts",
+        "GET /api/esc/context/schema",
         "GET /api/esc/environments/{orgName}/yaml/open/{openSessionID}",
         "GET /api/esc/environments/{orgName}/{projectName}/{envName}",
         "GET /api/esc/environments/{orgName}/{projectName}/{envName}/decrypt",
@@ -894,8 +896,8 @@
         "pagination": null
       }
     ],
-    "official_operation_ids_sha256": "deb01a0ea4a8c7b4e0e42002e8c053f4629c2e9a3787b350341db2264e7cc852",
-    "generated_operation_ids_sha256": "b0b02df477c7269276176b56562191b82d30ec36f1ffde453904b95f939936ef"
+    "official_operation_ids_sha256": "be97fad2df52b2bf554fe7657104344d5ff04d4bafb4457d90af7f93a1495ec7",
+    "generated_operation_ids_sha256": "91f4fcd0ddd5f5ae04622d4bfef03e2b5d827a6fc47ec85cd6edcc00a9e7b328"
   },
   "official_operations": [
     {
@@ -3529,6 +3531,33 @@
       "exclusion_reason": null,
       "pack": "pulumi-cloud-account-agents-setup",
       "op": "cloud_setup.initiate_oauth"
+    },
+    {
+      "key": "GET /api/esc/context/schema",
+      "method": "GET",
+      "path": "/api/esc/context/schema",
+      "primary_tag": "Environments",
+      "tags": [
+        "Environments"
+      ],
+      "official_operation_id": "GetContextSchema",
+      "generated_operation_id": "environments.get_context_schema",
+      "deprecated": false,
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "pulumi-cloud-environments-read",
+      "op": "environments.get_context_schema"
     },
     {
       "key": "GET /api/esc/environments",
@@ -25554,6 +25583,53 @@
       "security_source": "official_rest_reference_header_auth",
       "response_schema_sha256": "b71477ecca3acd5a87f28b64656f236b15a8dd8de927dbdf9a4d96ce67b3775f"
     },
+    "GET /api/esc/context/schema": {
+      "key": "GET /api/esc/context/schema",
+      "official_operation_id": "GetContextSchema",
+      "generated_operation_id": "environments.get_context_schema",
+      "pack": "pulumi-cloud-environments-read",
+      "op": "environments.get_context_schema",
+      "method": "GET",
+      "path": "/api/esc/context/schema",
+      "primary_tag": "Environments",
+      "tags": [
+        "Environments"
+      ],
+      "summary": "GetContextSchema",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [],
+      "parameter_repairs": [],
+      "request_media": [],
+      "official_request_body_required": false,
+      "admitted_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/vnd.pulumi+8",
+      "response_body_mode": "json",
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "pagination_signal": false,
+      "manual_pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": true,
+      "secret_response": true,
+      "secret_response_fields": [
+        "schema.secret"
+      ],
+      "credential_response": true,
+      "security_source": "official_rest_reference_header_auth",
+      "response_schema_sha256": "153d2714f711b29eebe4ae94e407dfa6a241a95b29c99d314885f8a990d64ca9"
+    },
     "GET /api/esc/environments": {
       "key": "GET /api/esc/environments",
       "official_operation_id": "ListEnvironments_esc",
@@ -26190,7 +26266,7 @@
       ],
       "credential_response": true,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "0dd072f1cce09d9d4d574a4d2c14d5245fcae8b9c558fd1e8e6e15856e0dfea9"
+      "response_schema_sha256": "c8426a8831d710ff0ac7e120a6ac91cc954621b434f8b65b849cfa2dd49c4940"
     },
     "POST /api/esc/environments/{orgName}/yaml/open": {
       "key": "POST /api/esc/environments/{orgName}/yaml/open",
@@ -26795,7 +26871,7 @@
       ],
       "credential_response": true,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "0dd072f1cce09d9d4d574a4d2c14d5245fcae8b9c558fd1e8e6e15856e0dfea9"
+      "response_schema_sha256": "c8426a8831d710ff0ac7e120a6ac91cc954621b434f8b65b849cfa2dd49c4940"
     },
     "POST /api/esc/environments/{orgName}/{projectName}/{envName}/clone": {
       "key": "POST /api/esc/environments/{orgName}/{projectName}/{envName}/clone",
@@ -32549,7 +32625,7 @@
       ],
       "credential_response": true,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "0dd072f1cce09d9d4d574a4d2c14d5245fcae8b9c558fd1e8e6e15856e0dfea9"
+      "response_schema_sha256": "c8426a8831d710ff0ac7e120a6ac91cc954621b434f8b65b849cfa2dd49c4940"
     },
     "GET /api/esc/environments/{orgName}/{projectName}/{envName}/versions/{version}/decrypt": {
       "key": "GET /api/esc/environments/{orgName}/{projectName}/{envName}/versions/{version}/decrypt",
@@ -33405,7 +33481,7 @@
       ],
       "credential_response": true,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "e06f0b6fbbd3f03f02c30ea464648fed86c1b86403ca6dcdbfce76382d7f1dd5"
+      "response_schema_sha256": "ee268e8f1b81315e0e9322bd55ef0beb63b9793b91ce7596ead280371a866e24"
     },
     "GET /api/esc/rotators": {
       "key": "GET /api/esc/rotators",
@@ -33536,7 +33612,7 @@
       ],
       "credential_response": true,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "e06f0b6fbbd3f03f02c30ea464648fed86c1b86403ca6dcdbfce76382d7f1dd5"
+      "response_schema_sha256": "ee268e8f1b81315e0e9322bd55ef0beb63b9793b91ce7596ead280371a866e24"
     },
     "POST /api/oauth/token": {
       "key": "POST /api/oauth/token",
@@ -33766,7 +33842,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "85dce21576b3a7d44ce25551e8b0384fa008074d20f93a197054ca4ad5c6ce2d"
+      "response_schema_sha256": "34b21b35b305541cfc5d4420cbd0d817e34a9a9e0c01033d807a8ec165faf252"
     },
     "GET /api/orgs/{orgName}/agent-pools": {
       "key": "GET /api/orgs/{orgName}/agent-pools",
@@ -38634,7 +38710,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "85dce21576b3a7d44ce25551e8b0384fa008074d20f93a197054ca4ad5c6ce2d"
+      "response_schema_sha256": "34b21b35b305541cfc5d4420cbd0d817e34a9a9e0c01033d807a8ec165faf252"
     },
     "GET /api/orgs/{orgName}/neo/token-budget": {
       "key": "GET /api/orgs/{orgName}/neo/token-budget",
@@ -52581,7 +52657,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "bd615c1a816d679d6a5038d5f65eecd27a021d43390a81caecdf3aac8a0b885a"
+      "response_schema_sha256": "ed6071b8cbf6087c00ce4faf640d193aefb918256cb6147be004a71808dbc7f0"
     },
     "DELETE /api/registry/packages/{source}/{publisher}/{name}/versions/{version}": {
       "key": "DELETE /api/registry/packages/{source}/{publisher}/{name}/versions/{version}",
@@ -55485,7 +55561,7 @@
       "secret_response_fields": [],
       "credential_response": false,
       "security_source": "official_rest_reference_header_auth",
-      "response_schema_sha256": "7addb5743e164f777bf40b9bb5f8564a37eafd876af3b0bbaa4cab3510c4ac9b"
+      "response_schema_sha256": "dd8b727334f536a064b02a611665b5bcf48ad94bd6666afc60a1e6520ba533d0"
     },
     "DELETE /api/registry/terraform-modules/{source}/{publisher}/{name}/versions/{version}": {
       "key": "DELETE /api/registry/terraform-modules/{source}/{publisher}/{name}/versions/{version}",
@@ -57519,7 +57595,7 @@
       "tags": [
         "Deployments"
       ],
-      "summary": "CreateAPIDeploymentHandlerV2",
+      "summary": "Create a new deployment",
       "risk": "destructive",
       "approval": "always",
       "idempotency": "non_idempotent",

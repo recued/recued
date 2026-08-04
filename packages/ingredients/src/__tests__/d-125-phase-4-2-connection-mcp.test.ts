@@ -625,6 +625,18 @@ describe('connection.mcp handler — JSON-RPC envelope', () => {
     });
   });
 
+  it('maps MCP CallToolResult.isError to tool_error over sse', async () => {
+    const toolResult = {
+      isError: true,
+      content: [{ type: 'text', text: 'participant is inactive' }],
+    };
+    const { deps } = mkDeps({ type: 'none' }, okJsonRpc(toolResult));
+    const handler = createConnectionMcpHandler(deps);
+
+    await expect(handler(mkRow(), { tool: 'list_projects' }, mkCall()))
+      .resolves.toEqual({ status: 'tool_error', result: toolResult, headers: undefined });
+  });
+
   it('throws NETWORK_ERROR on malformed JSON', async () => {
     const { deps } = mkDeps(
       { type: 'none' },
@@ -1311,6 +1323,18 @@ describe('connection.mcp handler — websocket transport', () => {
     });
   });
 
+  it('maps MCP CallToolResult.isError to tool_error over websocket', async () => {
+    const toolResult = {
+      isError: true,
+      content: [{ type: 'text', text: 'participant is inactive' }],
+    };
+    const { deps } = wsDeps({ type: 'none' }, () => ({ result: toolResult }));
+    const handler = createConnectionMcpHandler(deps);
+
+    await expect(handler(wsRow(), { tool: 'list_projects' }, mkCall()))
+      .resolves.toEqual({ status: 'tool_error', result: toolResult, headers: undefined });
+  });
+
   it('reuses one socket + one handshake across calls to the same record', async () => {
     const { deps, ws } = wsDeps({ type: 'none' }, () => ({ result: { ok: true } }));
     const handler = createConnectionMcpHandler(deps);
@@ -1536,6 +1560,18 @@ describe('connection.mcp handler — stdio transport', () => {
     const handler = createConnectionMcpHandler(deps);
     const result = await handler(stdioRow(), { tool: 'x' }, mkCall());
     expect(result).toEqual({ status: 'tool_error', result: { code: -32602, message: 'bad' }, headers: undefined });
+  });
+
+  it('maps MCP CallToolResult.isError to tool_error over stdio', async () => {
+    const toolResult = {
+      isError: true,
+      content: [{ type: 'text', text: 'participant is inactive' }],
+    };
+    const { deps } = stdioDeps(() => ({ result: toolResult }));
+    const handler = createConnectionMcpHandler(deps);
+
+    await expect(handler(stdioRow(), { tool: 'list_projects' }, mkCall()))
+      .resolves.toEqual({ status: 'tool_error', result: toolResult, headers: undefined });
   });
 
   it('reuses one child + one handshake across calls to the same record', async () => {

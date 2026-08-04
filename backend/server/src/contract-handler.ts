@@ -659,19 +659,62 @@ const handleOwnerOperationList = async (
   return { overrides };
 };
 
+/** ingredient_id → the AUTHORED slug of the pack that installed it.
+ *
+ *  ⛔ The Permissions tab used to derive pack membership on the CLIENT, from the
+ *  manifest's composition slugs. That works only while a pack's ingredients are
+ *  named after it. A Records pack registers its catalog under a
+ *  content-addressed `records-<hash>` id — a name matching neither the pack nor
+ *  its composition — so the guess missed every time and the tab rendered empty.
+ *
+ *  Ownership is not a guess: `installed_pack.ingredient_ids` records it, and
+ *  `authored_pack_slug` carries the name the author gave the pack when the row is
+ *  keyed by something else. Resolve it here, once, where the inventory lives. */
+const packSlugByIngredientId = (deps: ContractRpcDeps): Map<string, string> => {
+  const out = new Map<string, string>();
+  for (const row of deps.store.scan('installed_pack')) {
+    const value = (row.value ?? {}) as Record<string, unknown>;
+    const authored = typeof value.authored_pack_slug === 'string'
+      && value.authored_pack_slug.length > 0
+      ? value.authored_pack_slug
+      : (typeof value.pack_slug === 'string' ? value.pack_slug : row.segments[0]);
+    if (typeof authored !== 'string' || authored.length === 0) continue;
+    const ids = Array.isArray(value.ingredient_ids) ? value.ingredient_ids : [];
+    for (const id of ids) {
+      if (typeof id === 'string' && id.length > 0) out.set(id, authored);
+    }
+  }
+  return out;
+};
+
 const handleOwnerOperationListOperations = async (
   deps: ContractRpcDeps,
-): Promise<{ ingredients: OwnerOperationIngredientView[] }> => ({
-  ingredients: ownerOperationIngredientViews(deps.listManifests()),
-});
+): Promise<{ ingredients: OwnerOperationIngredientView[] }> => {
+  const owners = packSlugByIngredientId(deps);
+  return {
+    // Additive: an ingredient with no inventory row (a bundled manifest no pack
+    // installed) keeps its previous shape and the client's existing slug match.
+    ingredients: ownerOperationIngredientViews(deps.listManifests()).map((view) => {
+      const owner = owners.get(view.ingredient_id);
+      return owner === undefined ? view : { ...view, pack_slug: owner };
+    }),
+  };
+};
 
 const handleContractListCatalogOperations = async (
   deps: ContractRpcDeps,
-): Promise<{ ingredients: CatalogIngredientView[] }> => ({
+): Promise<{ ingredients: CatalogIngredientView[] }> => {
   // The catalog-form filter + projection + deterministic sort live in the pure
-  // `catalogIngredientViews`; the handler only supplies the manifest set.
-  ingredients: catalogIngredientViews(deps.listManifests()),
-});
+  // `catalogIngredientViews`; the handler supplies the manifest set and the one
+  // fact the manifests cannot carry — which pack installed each ingredient.
+  const owners = packSlugByIngredientId(deps);
+  return {
+    ingredients: catalogIngredientViews(deps.listManifests()).map((view) => {
+      const owner = owners.get(view.ingredient_id);
+      return owner === undefined ? view : { ...view, pack_slug: owner };
+    }),
+  };
+};
 
 // ════════════════════════════════════════════════════════════════
 // contract_id lifecycle — mint / revoke / list (the gating piece)

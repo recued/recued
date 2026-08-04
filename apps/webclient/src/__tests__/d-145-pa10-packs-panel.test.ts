@@ -121,10 +121,15 @@ interface FakeElement {
   remove(): void;
   addEventListener(name: string, fn: (ev: unknown) => void): void;
   removeEventListener(name: string, fn: (ev: unknown) => void): void;
+  contains(el: FakeElement): boolean;
+  focus(): void;
   click(): void;
 }
 
-const makeFakeElement = (tagName: string): FakeElement => {
+const makeFakeElement = (
+  tagName: string,
+  onFocus?: (el: FakeElement) => void,
+): FakeElement => {
   const listeners = new Map<string, Array<(ev: unknown) => void>>();
   const attrs = new Map<string, string>();
   const children: FakeElement[] = [];
@@ -173,6 +178,9 @@ const makeFakeElement = (tagName: string): FakeElement => {
       const idx = arr.indexOf(fn);
       if (idx >= 0) arr.splice(idx, 1);
     },
+    contains: (target) =>
+      target === el || children.some((child) => child.contains(target)),
+    focus: () => onFocus?.(el),
     click: () => {
       const arr = listeners.get('click') ?? [];
       for (const fn of arr) fn({ target: el });
@@ -182,12 +190,19 @@ const makeFakeElement = (tagName: string): FakeElement => {
 };
 
 interface FakeDocument {
+  activeElement: FakeElement | null;
   createElement(tag: string): FakeElement;
 }
 
-const makeFakeDocument = (): FakeDocument => ({
-  createElement: (tag) => makeFakeElement(tag),
-});
+const makeFakeDocument = (): FakeDocument => {
+  const doc: FakeDocument = {
+    activeElement: null,
+    createElement: (tag) => makeFakeElement(tag, (element) => {
+      doc.activeElement = element;
+    }),
+  };
+  return doc;
+};
 
 const findByAttr = (root: FakeElement, attr: string): FakeElement | null => {
   if (root.hasAttribute(attr)) return root;
@@ -271,6 +286,10 @@ const baseEntry = (overrides: Partial<PackListEntry> = {}): PackListEntry => {
     installed: false,
     requires: [...manifest.requires],
     recipe_count: manifest.recipes.length,
+    recipe_refs: manifest.recipes.map((r) => ({ slug: r.slug, version: r.version })),
+    body_visibility_grant_keys: [...(manifest.mcp_body_visibility_grants ?? [])],
+    ...(typeof manifest.service_kind === 'string' ? { service_kind: manifest.service_kind } : {}),
+    ...(typeof manifest.repo === 'string' ? { repo: manifest.repo } : {}),
     body_visibility_grant_count:
       manifest.mcp_body_visibility_grants?.length ?? 0,
     manifest,
@@ -458,6 +477,36 @@ describe('D-145 PA10 follow-on — initial load + state machine', () => {
     expect(mount.getState()).toBe('ready');
     expect(mount.getPacks()).toHaveLength(1);
   });
+
+  it('keeps Retry visible, guarded, and single-flight while recovery is pending', async () => {
+    let attempt = 0;
+    let releaseRetry!: (value: { packs: PackListEntry[] }) => void;
+    const retryPending = new Promise<{ packs: PackListEntry[] }>((resolve) => {
+      releaseRetry = resolve;
+    });
+    const { host, mount } = setupMount([], {
+      runList: async () => {
+        attempt += 1;
+        if (attempt === 1) throw new Error('first attempt');
+        return retryPending;
+      },
+    });
+    await mount.whenLoaded();
+    findByAttr(host, PACKS_RETRY_BTN_ATTR)!.click();
+    const pendingRetry = findByAttr(host, PACKS_RETRY_BTN_ATTR)!;
+    expect(pendingRetry.textContent).toBe('Retrying…');
+    expect(pendingRetry.getAttribute('aria-disabled')).toBe('true');
+    expect(pendingRetry.getAttribute('aria-busy')).toBe('true');
+    expect(pendingRetry.hasAttribute('disabled')).toBe(false);
+    pendingRetry.click();
+    pendingRetry.click();
+    expect(attempt).toBe(2);
+
+    releaseRetry({ packs: [baseEntry()] });
+    await mount.whenLoaded();
+    expect(mount.getState()).toBe('ready');
+    expect(findByAttr(host, PACKS_RETRY_BTN_ATTR)).toBeNull();
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════
@@ -535,6 +584,7 @@ describe('D-145 PA10 follow-on — row rendering', () => {
           ],
         }),
         recipe_count: 2,
+        body_visibility_grant_keys: ['data.contact.engagements.body_content'],
         body_visibility_grant_count: 1,
       }),
     ]);
@@ -890,6 +940,27 @@ describe('D-145 PA10 follow-on — install rpc', () => {
     expect(swap.mount.getPacks()[0]!.installed).toBe(true);
   });
 
+  it('hands a failed post-install refresh to Retry', async () => {
+    let listCall = 0;
+    const entry = baseEntry();
+    const { doc, host, mount } = setupMount([entry], {
+      runList: async () => {
+        listCall += 1;
+        if (listCall === 1) return { packs: [entry] };
+        throw new Error('post-install list unavailable');
+      },
+    });
+    await mount.whenLoaded();
+    mount.clickInstall('test-pack');
+    findByAttr(host, PACKS_DIALOG_INSTALL_BTN_ATTR)!.focus();
+
+    await mount.clickConfirmInstall();
+
+    const retry = findByAttr(host, PACKS_RETRY_BTN_ATTR);
+    expect(retry).not.toBeNull();
+    expect(doc.activeElement).toBe(retry);
+  });
+
   it('ok:false with known failure code renders mapped copy', async () => {
     const { mount } = setupMount([baseEntry()], {
       runInstall: async () => ({
@@ -912,14 +983,19 @@ describe('D-145 PA10 follow-on — install rpc', () => {
             ok: false,
             installed: [],
             rolled_back: [],
-            failure: { code: 'new_code_v2' as never, message: 'm' },
+            failure: {
+              code: 'new_code_v2' as never,
+              message: 'new server detail',
+            },
           },
         }) as { result: BulkPackInstallResultLike },
     });
     await mount.whenLoaded();
     mount.clickInstall('test-pack');
     await mount.clickConfirmInstall();
-    expect(mount.getDialogError()).toBe('Install rejected: new_code_v2.');
+    expect(mount.getDialogError()).toBe(
+      'Install rejected: new_code_v2. new server detail',
+    );
   });
 
   it('network error renders in dialog error chip', async () => {
@@ -945,7 +1021,7 @@ describe('D-145 PA10 follow-on — install rpc', () => {
       manifest: unknown;
       granted_permissions: ReadonlyArray<string>;
     }> = [];
-    const { mount } = setupMount([baseEntry()], {
+    const { host, mount } = setupMount([baseEntry()], {
       runInstall: (args) => {
         installCalls.push(args);
         return new Promise<{ result: BulkPackInstallResultLike }>((res) => {
@@ -960,6 +1036,10 @@ describe('D-145 PA10 follow-on — install rpc', () => {
     // Both calls await the same in-flight rpc; the rpc is called once
     expect(installCalls).toHaveLength(1);
     expect(mount.isInstalling()).toBe(true);
+    const busyInstall = findByAttr(host, PACKS_DIALOG_INSTALL_BTN_ATTR)!;
+    expect(busyInstall.disabled).toBe(false);
+    expect(busyInstall.getAttribute('aria-disabled')).toBe('true');
+    expect(busyInstall.getAttribute('aria-busy')).toBe('true');
     resolveInstall!({ result: okInstallResult() });
     await first;
     await second;

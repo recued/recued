@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
+import { WEBCLIENT_SHELL_CACHE_NAME } from '../runtime/service-worker.js';
+
 import {
   STARTUP_FAILURE_DIAGNOSTIC_ACTION_ATTR,
   STARTUP_FAILURE_DIAGNOSTIC_ATTR,
@@ -173,7 +175,11 @@ describe('buildStartupDiagnosticSummary', () => {
     expect(summary).toContain('Browser network signal: Online hint');
     expect(summary).toContain('Saved browser access: Verified present');
     expect(summary).toContain('Server host: alice.recued.cloud:8443');
-    expect(summary).toContain('Webclient shell: webclient-shell-v7');
+    // ⛔ Bound to the CONSTANT, not a copy of it. This pinned
+    // 'webclient-shell-v7' and broke the moment the shell bumped to v8 —
+    // failing on correct work while checking nothing anyone cares about.
+    // What matters is that the summary reports whatever shell is live.
+    expect(summary).toContain(`Webclient shell: ${WEBCLIENT_SHELL_CACHE_NAME}`);
     expect(summary).toContain(
       'The server host and any port shown above are included',
     );

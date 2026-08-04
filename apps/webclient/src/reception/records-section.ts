@@ -86,6 +86,9 @@ const LENS_NAV_STYLES = `
 [${RECEPTION_RECORDS_SECTION_ATTR}] .reception-records-lens--active {
   background: var(--surface); color: var(--fg); box-shadow: 0 1px 3px rgba(24, 24, 27, 0.10);
 }
+[${RECEPTION_RECORDS_SECTION_ATTR}] .reception-records-lens:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
 `;
 
 export const mountReceptionRecordsSection = (
@@ -108,28 +111,51 @@ export const mountReceptionRecordsSection = (
 
   const nav = doc.createElement('div');
   nav.className = 'reception-records-lenses';
+  nav.setAttribute('role', 'tablist');
+  nav.setAttribute('aria-label', 'Reception record lenses');
+  nav.setAttribute('aria-orientation', 'horizontal');
   root.appendChild(nav);
 
   const content = doc.createElement('div');
+  content.setAttribute('id', 'recued-reception-records-panel');
+  content.setAttribute('role', 'tabpanel');
   root.appendChild(content);
 
   let lens: ReceptionRecordsLens = opts.initialLens ?? 'requests';
   let child: ReceptionRecordsPanelMount | ReceptionFormResponseLensMount;
   let disposed = false;
+  const lensButtons = new Map<ReceptionRecordsLens, HTMLButtonElement>();
 
   const paintNav = (): void => {
-    nav.innerHTML = '';
     for (const entry of RECEPTION_RECORDS_LENSES) {
       const button = doc.createElement('button');
       button.setAttribute('type', 'button');
       button.setAttribute(RECEPTION_RECORDS_LENS_ATTR, entry.id);
-      button.className =
-        entry.id === lens
-          ? 'reception-records-lens reception-records-lens--active'
-          : 'reception-records-lens';
+      button.setAttribute('id', `recued-reception-records-${entry.id}-tab`);
+      button.setAttribute('role', 'tab');
+      button.setAttribute('aria-controls', 'recued-reception-records-panel');
       button.textContent = entry.label;
       nav.appendChild(button);
+      lensButtons.set(entry.id, button);
     }
+  };
+
+  const activateNav = (focus: boolean): void => {
+    for (const entry of RECEPTION_RECORDS_LENSES) {
+      const button = lensButtons.get(entry.id);
+      if (button === undefined) continue;
+      const active = entry.id === lens;
+      button.className = active
+        ? 'reception-records-lens reception-records-lens--active'
+        : 'reception-records-lens';
+      button.setAttribute('aria-selected', active ? 'true' : 'false');
+      button.setAttribute('tabindex', active ? '0' : '-1');
+    }
+    content.setAttribute(
+      'aria-labelledby',
+      `recued-reception-records-${lens}-tab`,
+    );
+    if (focus) lensButtons.get(lens)?.focus?.({ preventScroll: true });
   };
 
   const mountChild = (): ReceptionRecordsPanelMount | ReceptionFormResponseLensMount =>
@@ -146,7 +172,7 @@ export const mountReceptionRecordsSection = (
           ...(opts.now !== undefined ? { now: opts.now } : {}),
         });
 
-  const setLens = (next: ReceptionRecordsLens): void => {
+  const switchLens = (next: ReceptionRecordsLens, focus: boolean): void => {
     if (disposed || next === lens) return;
     lens = next;
     // ⛔ Dispose BEFORE re-mounting — each lens appends its own root to `content` and registers a
@@ -154,20 +180,50 @@ export const mountReceptionRecordsSection = (
     // so a click lands in both.
     child.dispose();
     content.innerHTML = '';
-    paintNav();
     child = mountChild();
+    activateNav(focus);
+  };
+
+  const setLens = (next: ReceptionRecordsLens): void => {
+    switchLens(next, false);
   };
 
   const onClick = (ev: Event): void => {
     const target = ev.target as HTMLElement | null;
     if (target === null || typeof target.getAttribute !== 'function') return;
     const next = target.getAttribute(RECEPTION_RECORDS_LENS_ATTR);
-    if (next === 'requests' || next === 'responses') setLens(next);
+    if (next === 'requests' || next === 'responses') switchLens(next, true);
+  };
+
+  const onKeydown = (ev: KeyboardEvent): void => {
+    const target = ev.target as HTMLElement | null;
+    const current = target?.getAttribute?.(RECEPTION_RECORDS_LENS_ATTR);
+    if (current !== 'requests' && current !== 'responses') return;
+    const currentIndex = RECEPTION_RECORDS_LENSES.findIndex(
+      (entry) => entry.id === current,
+    );
+    let nextIndex: number | null = null;
+    if (ev.key === 'ArrowRight') {
+      nextIndex = (currentIndex + 1) % RECEPTION_RECORDS_LENSES.length;
+    } else if (ev.key === 'ArrowLeft') {
+      nextIndex = (
+        currentIndex - 1 + RECEPTION_RECORDS_LENSES.length
+      ) % RECEPTION_RECORDS_LENSES.length;
+    } else if (ev.key === 'Home') {
+      nextIndex = 0;
+    } else if (ev.key === 'End') {
+      nextIndex = RECEPTION_RECORDS_LENSES.length - 1;
+    }
+    if (nextIndex === null) return;
+    ev.preventDefault();
+    switchLens(RECEPTION_RECORDS_LENSES[nextIndex]!.id, true);
   };
 
   paintNav();
+  activateNav(false);
   child = mountChild();
   nav.addEventListener('click', onClick);
+  nav.addEventListener('keydown', onKeydown);
 
   return {
     activeLens: () => lens,
@@ -177,6 +233,7 @@ export const mountReceptionRecordsSection = (
       if (disposed) return;
       disposed = true;
       nav.removeEventListener('click', onClick);
+      nav.removeEventListener('keydown', onKeydown);
       child.dispose();
       root.remove();
     },

@@ -118,6 +118,22 @@ const upsertApiConnection = (
   connectionStore.upsert(apiConnection(name, vendor, overrides));
 };
 
+const upsertMcpConnection = (name: string, updatedAt = NOW): void => {
+  connectionStore.upsert({
+    kind: 'mcp',
+    name,
+    subtype: 'sse',
+    display_name: `MCP ${name}`,
+    config_json: JSON.stringify({
+      transport: 'sse',
+      endpoint: 'https://peer.example.test/mcp',
+    }),
+    auth_ciphertext: 'CIPHER',
+    enrolled_at: NOW,
+    updated_at: updatedAt,
+  });
+};
+
 const wire = (
   getManifest: (slug: string) => IngredientManifest | null | undefined =
     () => catalogManifest(),
@@ -449,6 +465,41 @@ describe('wireCatalogOperationProfiles — local composition-catalog binding (D-
 
     upsertApiConnection('support', 'custom', { updated_at: NOW + 1 }); // connection returns
     expect(profileStore.get('support')?.catalog_slug).toBe(LOCAL_SLUG); // re-seeded
+  });
+
+  it('revokes and re-seeds a bound MCP connection profile across delete/re-enroll', () => {
+    bindingStore.bind('peer', LOCAL_SLUG, 'acme-pack');
+    grantLocalReads('peer');
+    wireLocal();
+
+    upsertMcpConnection('peer');
+    expect(profileStore.get('peer')).toMatchObject({
+      catalog_slug: LOCAL_SLUG,
+      allowed_operations: ['ticket.read'],
+    });
+
+    connectionStore.delete('mcp', 'peer');
+    expect(profileStore.get('peer')).toBeNull();
+    expect(bindingStore.resolveCatalogSlug('peer')).toBe(LOCAL_SLUG);
+
+    upsertMcpConnection('peer', NOW + 1);
+    expect(profileStore.get('peer')?.catalog_slug).toBe(LOCAL_SLUG);
+  });
+
+  it('keeps a same-name API profile when only its MCP sibling is deleted', () => {
+    upsertApiConnection('shared', 'hubspot');
+    upsertMcpConnection('shared');
+    grantReads('shared');
+    bindingStore.bind('shared', LOCAL_SLUG, 'acme-pack');
+    grantLocalReads('shared');
+    wireLocal();
+
+    expect(profileStore.get('shared')?.catalog_slug).toBe('hubspot-catalog');
+    connectionStore.delete('mcp', 'shared');
+    expect(profileStore.get('shared')?.catalog_slug).toBe('hubspot-catalog');
+
+    connectionStore.delete('api', 'shared');
+    expect(profileStore.get('shared')).toBeNull();
   });
 
   it('does not seed when the bound local catalog no longer resolves (uninstalled)', () => {

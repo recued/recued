@@ -683,7 +683,7 @@ describe('D-125 P7.1 — dialog stages', () => {
       withDialog({
         stage: 'form',
         kind: 'api',
-        values: { 'auth.type': 'oauth2_refresh' },
+        values: { name: 'acme', display_name: 'Acme', 'auth.type': 'oauth2_refresh' },
       }),
     );
     expect(html).toContain('Refresh Token');
@@ -1792,7 +1792,7 @@ describe('D-125 P7.2 — payload projection', () => {
         name: 'svc',
         display_name: 'Svc',
         'config.base_url': 'https://svc.example.com',
-        'auth.type': 'oauth2_refresh',
+          'auth.type': 'oauth2_refresh',
         'auth.refresh_token': 'r',
         'auth.client_id': 'cid',
         'auth.client_secret': '', // optional — should be dropped
@@ -1816,7 +1816,7 @@ describe('D-125 P7.2 — payload projection', () => {
         display_name: 'HubSpot',
         'config.vendor': 'hubspot',
         'config.base_url': HUBSPOT_API_BASE,
-        'auth.type': 'oauth2_refresh',
+          'auth.type': 'oauth2_refresh',
         'auth.client_id': 'cid',
         'auth.client_secret': 'secret',
         'auth.token_endpoint': HUBSPOT_OAUTH_TOKEN_URL,
@@ -1847,7 +1847,7 @@ describe('D-125 P7.2 — payload projection', () => {
       display_name: 'HubSpot',
       'config.vendor': 'hubspot',
       'config.base_url': HUBSPOT_API_BASE,
-      'auth.type': 'oauth2_refresh',
+          'auth.type': 'oauth2_refresh',
       'auth.token_endpoint': HUBSPOT_OAUTH_TOKEN_URL,
     })).toBe(false);
     expect(shouldPatchConnectionAuth(schema!, {
@@ -1855,7 +1855,7 @@ describe('D-125 P7.2 — payload projection', () => {
       display_name: 'HubSpot',
       'config.vendor': 'hubspot',
       'config.base_url': HUBSPOT_API_BASE,
-      'auth.type': 'oauth2_refresh',
+          'auth.type': 'oauth2_refresh',
       'auth.token_endpoint': HUBSPOT_OAUTH_TOKEN_URL,
       'auth.refresh_token': 'refresh',
     })).toBe(true);
@@ -2006,7 +2006,7 @@ describe('R13/R14 — kind picker + generic free-edit OAuth', () => {
       withDialog({
         stage: 'form',
         kind: 'api',
-        values: { 'auth.type': 'oauth2_refresh' },
+        values: { name: 'acme', display_name: 'Acme', 'auth.type': 'oauth2_refresh' },
       }),
     );
     expect(html).toContain('Authorize URL');
@@ -2023,6 +2023,8 @@ describe('R13/R14 — kind picker + generic free-edit OAuth', () => {
         stage: 'form',
         kind: 'api',
         values: {
+          name: 'acme',
+          display_name: 'Acme',
           'auth.type': 'oauth2_refresh',
           'auth.client_id': 'client-id',
           'auth.token_endpoint': 'http://provider.example/token',
@@ -2042,7 +2044,7 @@ describe('R13/R14 — kind picker + generic free-edit OAuth', () => {
         name: 'provider',
         display_name: 'Provider',
         'config.base_url': 'https://api.provider.example',
-        'auth.type': 'oauth2_refresh',
+          'auth.type': 'oauth2_refresh',
         'auth.client_id': 'client-id',
         'auth.refresh_token': 'pasted-token',
         'auth.token_endpoint': 'http://provider.example/token',
@@ -2060,6 +2062,8 @@ describe('R13/R14 — kind picker + generic free-edit OAuth', () => {
         stage: 'form',
         kind: 'api',
         values: {
+          name: 'acme',
+          display_name: 'Acme',
           'auth.type': 'oauth2_refresh',
           'auth.client_id': 'client-id',
           'auth.refresh_token': 'pasted-token',
@@ -2094,7 +2098,9 @@ describe('D-129 P1.3 — vendor-flavored form', () => {
       vendor: 'hubspot',
       values: {
         'config.vendor': 'hubspot',
-        'auth.type': 'oauth2_refresh',
+        name: 'acme',
+          display_name: 'Acme',
+          'auth.type': 'oauth2_refresh',
       },
       ...over,
     });
@@ -2120,6 +2126,8 @@ describe('D-129 P1.3 — vendor-flavored form', () => {
         values: {
           'config.vendor': 'hubspot',
           'config.base_url': HUBSPOT_API_BASE,
+          name: 'acme',
+          display_name: 'Acme',
           'auth.type': 'oauth2_refresh',
           'auth.token_endpoint': HUBSPOT_OAUTH_TOKEN_URL,
         },
@@ -2158,6 +2166,8 @@ describe('D-129 P1.3 — vendor-flavored form', () => {
       hubspotForm({
         values: {
           'config.vendor': 'hubspot',
+          name: 'acme',
+          display_name: 'Acme',
           'auth.type': 'oauth2_refresh',
           'auth.client_id': 'client-id',
           'auth.client_secret': 'client-secret',
@@ -2175,6 +2185,8 @@ describe('D-129 P1.3 — vendor-flavored form', () => {
       hubspotForm({
         values: {
           'config.vendor': 'hubspot',
+          name: 'acme',
+          display_name: 'Acme',
           'auth.type': 'oauth2_refresh',
           'auth.client_id': 'client-id',
           'auth.client_secret': 'client-secret',
@@ -2190,6 +2202,8 @@ describe('D-129 P1.3 — vendor-flavored form', () => {
       hubspotForm({
         values: {
           'config.vendor': 'hubspot',
+          name: 'acme',
+          display_name: 'Acme',
           'auth.type': 'oauth2_refresh',
           'auth.refresh_token': 'pasted-token',
         },
@@ -2207,7 +2221,9 @@ describe('D-129 P1.3 — vendor-flavored form', () => {
       oauthInFlight: true,
       values: {
         'config.vendor': 'hubspot',
-        'auth.type': 'oauth2_refresh',
+        name: 'acme',
+          display_name: 'Acme',
+          'auth.type': 'oauth2_refresh',
         'auth.client_id': 'client-id',
         'auth.client_secret': 'client-secret',
         'config.base_url': 'https://api.hubapi.com',
@@ -2229,7 +2245,9 @@ describe('D-129 P1.3 — vendor-flavored form', () => {
       saving: true,
       values: {
         'config.vendor': 'hubspot',
-        'auth.type': 'oauth2_refresh',
+        name: 'acme',
+          display_name: 'Acme',
+          'auth.type': 'oauth2_refresh',
         'auth.client_id': 'client-id',
         'auth.client_secret': 'client-secret',
       },
@@ -2245,6 +2263,8 @@ describe('D-129 P1.3 — vendor-flavored form', () => {
       hubspotForm({
         values: {
           'config.vendor': 'hubspot',
+          name: 'acme',
+          display_name: 'Acme',
           'auth.type': 'oauth2_refresh',
           'auth.client_id': 'client-id',
           'auth.client_secret': 'client-secret',
@@ -2257,11 +2277,115 @@ describe('D-129 P1.3 — vendor-flavored form', () => {
     expect(html).toContain('crm.objects.deals.read');
   });
 
+  /** A live drive stopped at exactly this state and asked three questions the
+   *  panel did not answer: is the connection saved now? why probe when the
+   *  authorization just succeeded? does Cancel undo the authorization?
+   *
+   *  The exchange patches the DRAFT only — nothing is on disk until Save — so
+   *  all three have the same answer and it has to be on screen here, next to
+   *  the token, not inferable from the privacy paragraph. */
+  it('after a successful exchange, states the draft is unsaved and why the probe is a separate check', () => {
+    const html = renderConnectionsPage(
+      hubspotForm({
+        values: {
+          'config.vendor': 'hubspot',
+          name: 'acme',
+          display_name: 'Acme',
+          'auth.type': 'oauth2_refresh',
+          'auth.client_id': 'client-id',
+          'auth.client_secret': 'client-secret',
+          'auth.refresh_token': 'fresh-token',
+          'config.base_url': 'https://api.hubapi.com',
+        },
+        oauthGrantedScopes: ['crm.objects.contacts.read'],
+      }),
+    );
+    expect(html).toContain('Not saved yet');
+    expect(html).toContain('Save and probe');
+    // The probe's job, named as distinct from the exchange's.
+    expect(html).toContain('the token actually reaches');
+    expect(html).toContain('https://api.hubapi.com');
+    // And what Cancel costs, since that was the third question.
+    expect(html).toContain('Cancel discards this authorization');
+    // ⚠ CSS is invisible to a render test, so assert the STYLED primitive is on
+    // it. No stylesheet targets any `connections-oauth-*` class — `rx-msg` is
+    // what carries the panel's message typography. Without it the most
+    // important sentence in the form renders as unstyled body text and every
+    // assertion above still passes.
+    expect(html).toMatch(/class="rx-msg rx-msg-warn connections-oauth-next-step"/);
+  });
+
+  it('says nothing about an unsaved authorization before one has happened', () => {
+    // Negative control: the notice must be bound to a COMPLETED exchange, not
+    // rendered into every OAuth form where it would be noise (and wrong).
+    const html = renderConnectionsPage(hubspotForm());
+    expect(html).not.toContain('Not saved yet');
+  });
+
+  it('retires Back once a provider consent has completed, keeping Cancel', () => {
+    // Back returns to the picker and WIPES `values` — post-consent it is a
+    // strictly worse Cancel, discarding a token the user paid a consent screen
+    // for while reading as mere navigation.
+    const before = renderConnectionsPage(
+      hubspotForm({
+        values: {
+          'config.vendor': 'hubspot',
+          name: 'acme',
+          display_name: 'Acme',
+          'auth.type': 'oauth2_refresh',
+          'auth.client_id': 'client-id',
+          'auth.client_secret': 'client-secret',
+        },
+      }),
+    );
+    expect(before).toContain('connections-back-to-kind');
+    expect(before).toContain('connections-cancel-dialog');
+
+    const after = renderConnectionsPage(
+      hubspotForm({
+        values: {
+          'config.vendor': 'hubspot',
+          name: 'acme',
+          display_name: 'Acme',
+          'auth.type': 'oauth2_refresh',
+          'auth.client_id': 'client-id',
+          'auth.client_secret': 'client-secret',
+          'auth.refresh_token': 'fresh-token',
+        },
+        oauthGrantedScopes: ['crm.objects.contacts.read'],
+      }),
+    );
+    expect(after).not.toContain('connections-back-to-kind');
+    // The exit is still reachable — this removes a duplicate, not the escape.
+    expect(after).toContain('connections-cancel-dialog');
+  });
+
+  it('keeps Back when the refresh token was pasted rather than authorized', () => {
+    // The gate is `oauthGrantedScopes`, not the token: a hand-pasted token
+    // consumed nothing external, so there is no consent to protect.
+    const html = renderConnectionsPage(
+      hubspotForm({
+        values: {
+          'config.vendor': 'hubspot',
+          name: 'acme',
+          display_name: 'Acme',
+          'auth.type': 'oauth2_refresh',
+          'auth.client_id': 'client-id',
+          'auth.client_secret': 'client-secret',
+          'auth.refresh_token': 'pasted-by-hand',
+        },
+      }),
+    );
+    expect(html).toContain('connections-back-to-kind');
+  });
+
   it('explains when changed app details invalidate an in-app authorization', () => {
     const html = renderConnectionsPage(
       hubspotForm({
         values: {
           'config.vendor': 'hubspot',
+          name: 'acme',
+          display_name: 'Acme',
           'auth.type': 'oauth2_refresh',
           'auth.client_id': 'replacement-client-id',
           'auth.client_secret': 'client-secret',
@@ -2348,5 +2472,61 @@ describe('D-129 P1.3 — resolveConnectionSchema vendor branch (regression)', ()
     // meaningful.
     const schema = resolveConnectionSchema('api', undefined, 'unknownvendor');
     expect(schema).toBe(apiSchema);
+  });
+});
+
+describe('autofilled — a required value the OWNER does not type', () => {
+  const apiSchema = resolveConnectionSchema('api');
+  const refreshField = apiSchema?.fields.find((f) => f.key === 'auth.refresh_token');
+
+  it('the generic api Refresh Token is marked autofilled, and still NOT optional', () => {
+    // Both halves matter. `autofilled` fixes the affordance; leaving `optional`
+    // false keeps the data rule — a connection with no refresh token can never
+    // mint an access token, so submit must still block.
+    expect(refreshField).toBeDefined();
+    expect(refreshField?.autofilled).toBe(true);
+    expect(refreshField?.optional).toBeUndefined();
+  });
+
+  it('⛔ renders NO required asterisk for it — the `*` is the owner\'s obligation', () => {
+    const html = renderConnectionsPage({
+      ...initialConnectionsPageState(),
+      dialog: {
+        ...initialConnectionsDialogState(),
+        stage: 'form',
+        mode: 'create',
+        kind: 'api',
+        values: { name: 'acme', display_name: 'Acme', 'auth.type': 'oauth2_refresh' },
+      },
+    } as never);
+    // The field renders…
+    expect(html).toContain('auth.refresh_token');
+    // …and its label carries no `*`, unlike a field the owner really must type.
+    const refreshLabel = html.slice(html.indexOf('Refresh Token') - 200, html.indexOf('Refresh Token') + 60);
+    expect(refreshLabel).not.toContain('connections-field-required');
+  });
+
+  it('blocking submit names the ACTION, not the obligation', () => {
+    // Every earlier required field filled, so the refresh token is the one that
+    // blocks — otherwise this would assert on whichever field happens to be first.
+    const message = validateConnectionForm(
+      apiSchema!,
+      {
+        name: 'ms',
+        display_name: 'Microsoft',
+        'config.base_url': 'https://graph.microsoft.com/v1.0',
+          'auth.type': 'oauth2_refresh',
+        'auth.client_id': 'cid',
+        'auth.client_secret': 'secret',
+        'auth.token_endpoint': 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+        'auth.refresh_token': '',
+      },
+      undefined,
+      'create',
+    );
+    // "Refresh Token is required." names something the owner cannot discharge
+    // by typing — the whole defect. It must name Authorize instead.
+    expect(message).toBe('Refresh Token: click Authorize to obtain one.');
+    expect(message).not.toContain('is required');
   });
 });

@@ -3,11 +3,11 @@
     "vendor": "Samsara",
     "product": "Samsara API",
     "url": "https://developers.samsara.com/openapi/samsara-api.json",
-    "bytes": 3524654,
-    "sha256": "46adc7cd845ff435d91a8e589b4e97378f35548ef7869655d9238cb9eac6a4b4",
+    "bytes": 4023832,
+    "sha256": "777b3bd3a58b5403bf3039cb6912c8666c574e708c805789ebb60fb844454e9b",
     "openapi_version": "3.0.1",
     "api_version": "2025-10-23",
-    "retrieved_on": "2026-07-15",
+    "retrieved_on": "2026-08-03",
     "servers": [
       "https://api.samsara.com",
       "https://api.eu.samsara.com",
@@ -16,48 +16,48 @@
     "authentication": "AccessTokenHeader HTTP bearer"
   },
   "inventory": {
-    "paths": 235,
-    "operations": 331,
-    "selected_operations": 316,
+    "paths": 259,
+    "operations": 371,
+    "selected_operations": 356,
     "excluded_operations": 15,
     "by_pack": {
       "samsara-admin-platform": 28,
-      "samsara-assets-organization": 28,
+      "samsara-assets-organization": 42,
       "samsara-drivers-compliance": 54,
       "samsara-forms-documents": 14,
-      "samsara-hubs-logistics": 25,
+      "samsara-hubs-logistics": 31,
       "samsara-industrial-readings": 31,
-      "samsara-maintenance-work-orders": 27,
+      "samsara-maintenance-work-orders": 43,
       "samsara-routing-dispatch": 27,
-      "samsara-telematics-safety": 48,
-      "samsara-vehicles-equipment": 34
+      "samsara-telematics-safety": 51,
+      "samsara-vehicles-equipment": 35
     },
     "by_method": {
-      "DELETE": 31,
-      "GET": 190,
-      "PATCH": 35,
-      "POST": 69,
+      "DELETE": 35,
+      "GET": 204,
+      "PATCH": 43,
+      "POST": 83,
       "PUT": 6
     },
     "by_release_stage": {
-      "beta": 73,
-      "legacy": 39,
-      "preview": 5,
+      "beta": 104,
+      "legacy": 41,
+      "preview": 12,
       "stable": 199
     },
     "by_risk": {
       "admin": 16,
-      "destructive": 39,
-      "read": 193,
-      "write": 68
+      "destructive": 43,
+      "read": 207,
+      "write": 90
     },
-    "paginated_operations": 134,
-    "comma_separated_query_arrays": 186,
+    "paginated_operations": 146,
+    "comma_separated_query_arrays": 195,
     "exploded_query_arrays": 18,
-    "response_int64_operations": 133,
+    "response_int64_operations": 146,
     "raw_nested_int64_requests": 4,
-    "raw_json_request_bodies": 23,
-    "required_optional_raw_requests": 18,
+    "raw_json_request_bodies": 31,
+    "required_optional_raw_requests": 26,
     "workflows": 35
   },
   "authentication": {
@@ -99,7 +99,7 @@
       "kind": "task",
       "eligible": true,
       "declared": false,
-      "evidence": "Samsara Issues and Work Orders are plausible task Sources with stable identifiers and update surfaces. Declaration is deferred because the D-192 work-entity-sources authoring brief requires a separate human field-path verification gate before commit."
+      "evidence": "Samsara Issues and Work Orders are plausible task Sources with stable identifiers and update surfaces. Declaration is deferred because D-192 requires a separate human field-path verification gate before commit."
     },
     {
       "kind": "note",
@@ -9144,6 +9144,1287 @@
       "idempotency": "safe"
     },
     {
+      "method": "DELETE",
+      "path": "/fleet/asset-sharing/agreements",
+      "operation_id": "deleteAssetSharingAgreement",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-assets-organization",
+      "op": "delete_asset_sharing_agreement",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Asset Sharing"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [],
+      "selected_response_media": null,
+      "response_type": null,
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.id": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.id"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": null,
+      "pagination": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    {
+      "method": "GET",
+      "path": "/fleet/asset-sharing/agreements",
+      "operation_id": "listAssetSharingAgreements",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-assets-organization",
+      "op": "list_asset_sharing_agreements",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Asset Sharing"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "ids",
+          "in": "query",
+          "required": false,
+          "schema_type": "array",
+          "schema_format": null,
+          "style": "form",
+          "explode": false,
+          "serialization": "csv_string",
+          "pagination_owned": false,
+          "emitted_key": "query.ids"
+        },
+        {
+          "name": "statusIn",
+          "in": "query",
+          "required": false,
+          "schema_type": "array",
+          "schema_format": null,
+          "style": "form",
+          "explode": false,
+          "serialization": "csv_string",
+          "pagination_owned": false,
+          "emitted_key": "query.statusIn"
+        },
+        {
+          "name": "roleIn",
+          "in": "query",
+          "required": false,
+          "schema_type": "array",
+          "schema_format": null,
+          "style": "form",
+          "explode": false,
+          "serialization": "csv_string",
+          "pagination_owned": false,
+          "emitted_key": "query.roleIn"
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.ids",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.statusIn",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.roleIn",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.ids": {
+            "type": "string",
+            "maxLength": 16384
+          },
+          "query.statusIn": {
+            "type": "string",
+            "maxLength": 16384
+          },
+          "query.roleIn": {
+            "type": "string",
+            "maxLength": 16384
+          }
+        },
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "token_from": "pagination.endCursor",
+        "token_to": {
+          "placement": "query",
+          "param": "after"
+        },
+        "done_when": {
+          "path": "pagination.hasNextPage",
+          "equals": false
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
+      "method": "POST",
+      "path": "/fleet/asset-sharing/agreements",
+      "operation_id": "createAssetSharingAgreement",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-assets-organization",
+      "op": "create_asset_sharing_agreement",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Asset Sharing"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "projected_top_level",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [],
+      "emitted_args": [
+        {
+          "key": "body.operator",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.providerDataPackages",
+          "type": "array",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.recipientDataPackages",
+          "type": "array",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.recipientOrganizationId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.recipientOrganizationName",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "body.operator": {
+            "type": "string",
+            "enum": [
+              "provider",
+              "recipient"
+            ]
+          },
+          "body.providerDataPackages": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "safety",
+                "telematics",
+                "location",
+                "maintenance",
+                "reefer",
+                "all"
+              ]
+            }
+          },
+          "body.recipientDataPackages": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "enum": [
+                "safety",
+                "telematics",
+                "location",
+                "maintenance",
+                "reefer",
+                "all"
+              ]
+            }
+          },
+          "body.recipientOrganizationId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.recipientOrganizationName": {
+            "type": "string",
+            "minLength": 3,
+            "maxLength": 255
+          }
+        },
+        "required": [
+          "body.operator",
+          "body.providerDataPackages",
+          "body.recipientDataPackages",
+          "body.recipientOrganizationId",
+          "body.recipientOrganizationName"
+        ],
+        "additionalProperties": true
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
+      "method": "POST",
+      "path": "/fleet/asset-sharing/agreements/accept",
+      "operation_id": "acceptAssetSharingAgreement",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-assets-organization",
+      "op": "accept_asset_sharing_agreement",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Asset Sharing"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.id": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.id"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
+      "method": "GET",
+      "path": "/fleet/asset-sharing/agreements/assets",
+      "operation_id": "listSharedAssets",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-assets-organization",
+      "op": "list_shared_assets",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Asset Sharing"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "dsaId",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.dsaId"
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.dsaId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.dsaId": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.dsaId"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "token_from": "pagination.endCursor",
+        "token_to": {
+          "placement": "query",
+          "param": "after"
+        },
+        "done_when": {
+          "path": "pagination.hasNextPage",
+          "equals": false
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
+      "method": "PATCH",
+      "path": "/fleet/asset-sharing/agreements/assets/batch",
+      "operation_id": "updateSharedAssetsBatch",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-assets-organization",
+      "op": "update_shared_assets_batch",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Asset Sharing"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "projected_top_level",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [],
+      "emitted_args": [
+        {
+          "key": "body.data",
+          "type": "array",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "body.data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "endTime": {
+                  "type": "string"
+                },
+                "id": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "endTime",
+                "id"
+              ],
+              "additionalProperties": true
+            }
+          }
+        },
+        "required": [
+          "body.data"
+        ],
+        "additionalProperties": true
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    {
+      "method": "POST",
+      "path": "/fleet/asset-sharing/agreements/assets/batch",
+      "operation_id": "createSharedAssetsBatch",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-assets-organization",
+      "op": "create_shared_assets_batch",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Asset Sharing"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "projected_top_level",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "dsaId",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.dsaId"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.dsaId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.data",
+          "type": "array",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.dsaId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "endTime": {
+                  "type": "string"
+                },
+                "serial": {
+                  "type": "string"
+                },
+                "startTime": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "serial"
+              ],
+              "additionalProperties": true
+            }
+          }
+        },
+        "required": [
+          "query.dsaId",
+          "body.data"
+        ],
+        "additionalProperties": true
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
+      "method": "POST",
+      "path": "/fleet/asset-sharing/agreements/cancel",
+      "operation_id": "cancelAssetSharingAgreement",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-assets-organization",
+      "op": "cancel_asset_sharing_agreement",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Asset Sharing"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.id": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.id"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
+      "method": "POST",
+      "path": "/fleet/asset-sharing/agreements/reject",
+      "operation_id": "rejectAssetSharingAgreement",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-assets-organization",
+      "op": "reject_asset_sharing_agreement",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Asset Sharing"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.id": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.id"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
+      "method": "GET",
+      "path": "/fleet/assets/assignments",
+      "operation_id": "listAssetAssignments",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-assets-organization",
+      "op": "list_asset_assignments",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Assignments"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "includeExternalIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.includeExternalIds"
+        },
+        {
+          "name": "assetIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "array",
+          "schema_format": null,
+          "style": "form",
+          "explode": false,
+          "serialization": "csv_string",
+          "pagination_owned": false,
+          "emitted_key": "query.assetIds"
+        },
+        {
+          "name": "assigneeIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "array",
+          "schema_format": null,
+          "style": "form",
+          "explode": false,
+          "serialization": "csv_string",
+          "pagination_owned": false,
+          "emitted_key": "query.assigneeIds"
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.includeExternalIds",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.assetIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.assigneeIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.includeExternalIds": {
+            "type": "boolean"
+          },
+          "query.assetIds": {
+            "type": "string",
+            "maxLength": 16384
+          },
+          "query.assigneeIds": {
+            "type": "string",
+            "maxLength": 16384
+          }
+        },
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "token_from": "pagination.endCursor",
+        "token_to": {
+          "placement": "query",
+          "param": "after"
+        },
+        "done_when": {
+          "path": "pagination.hasNextPage",
+          "equals": false
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
+      "method": "POST",
+      "path": "/fleet/assets/assignments",
+      "operation_id": "createAssetAssignment",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-assets-organization",
+      "op": "create_asset_assignment",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Assignments"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "projected_top_level",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [],
+      "emitted_args": [
+        {
+          "key": "body.assetId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.assigneeId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.assigneeType",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.expectedEndTime",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "body.assetId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.assigneeId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.assigneeType": {
+            "type": "string",
+            "enum": [
+              "driver",
+              "asset",
+              "geofence"
+            ]
+          },
+          "body.expectedEndTime": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "body.assetId",
+          "body.assigneeId",
+          "body.assigneeType"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
+      "method": "POST",
+      "path": "/fleet/assets/assignments/unassign",
+      "operation_id": "unassignAssetAssignment",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-assets-organization",
+      "op": "unassign_asset_assignment",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Assignments"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "projected_top_level",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [],
+      "selected_response_media": null,
+      "response_type": null,
+      "response_int64_paths": [],
+      "parameters": [],
+      "emitted_args": [
+        {
+          "key": "body.assetId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "body.assetId": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "body.assetId"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": null,
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
+      "method": "GET",
+      "path": "/fleet/assets/associations",
+      "operation_id": "listAssociations",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-assets-organization",
+      "op": "list_associations",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Assets"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "peripheralIds",
+          "in": "query",
+          "required": true,
+          "schema_type": "array",
+          "schema_format": null,
+          "style": "form",
+          "explode": false,
+          "serialization": "csv_string",
+          "pagination_owned": false,
+          "emitted_key": "query.peripheralIds"
+        },
+        {
+          "name": "startTime",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.startTime"
+        },
+        {
+          "name": "endTime",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.endTime"
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.peripheralIds",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.startTime",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.endTime",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.peripheralIds": {
+            "type": "string",
+            "maxLength": 16384
+          },
+          "query.startTime": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.endTime": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.peripheralIds",
+          "query.startTime"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "token_from": "pagination.endCursor",
+        "token_to": {
+          "placement": "query",
+          "param": "after"
+        },
+        "done_when": {
+          "path": "pagination.hasNextPage",
+          "equals": false
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
       "method": "GET",
       "path": "/fleet/assets/device-recovery-missing",
       "operation_id": "listDeviceRecoveryMissingAssets",
@@ -14310,6 +15591,117 @@
       "idempotency": "safe"
     },
     {
+      "method": "PATCH",
+      "path": "/fleet/equipment/{id}/digital-output",
+      "operation_id": "setEquipmentDigitalOutput",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-vehicles-equipment",
+      "op": "set_equipment_digital_output",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Equipment Output Control"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "projected_top_level",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data.id"
+      ],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema_type": "number",
+          "schema_format": "int64",
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.durationSeconds",
+          "type": "number",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.pinId",
+          "type": "number",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.state",
+          "type": "boolean",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string",
+            "maxLength": 40,
+            "pattern": "^-?(?:0|[1-9][0-9]*)$"
+          },
+          "body.durationSeconds": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 604800
+          },
+          "body.pinId": {
+            "type": "number",
+            "minimum": 1
+          },
+          "body.state": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "id",
+          "body.pinId",
+          "body.state"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    {
       "method": "GET",
       "path": "/fleet/equipment/locations",
       "operation_id": "getEquipmentLocations",
@@ -16104,6 +17496,371 @@
     },
     {
       "method": "GET",
+      "path": "/fleet/installer/photo-uploads",
+      "operation_id": "getFleetInstallerPhotoUploads",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-vehicles-equipment",
+      "op": "get_fleet_installer_photo_uploads",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Devices"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data[].sizeBytes"
+      ],
+      "parameters": [
+        {
+          "name": "ids",
+          "in": "query",
+          "required": false,
+          "schema_type": "array",
+          "schema_format": null,
+          "style": "form",
+          "explode": false,
+          "serialization": "csv_string",
+          "pagination_owned": false,
+          "emitted_key": "query.ids"
+        },
+        {
+          "name": "startTime",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.startTime"
+        },
+        {
+          "name": "endTime",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.endTime"
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.ids",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.startTime",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.endTime",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.ids": {
+            "type": "string",
+            "maxLength": 16384
+          },
+          "query.startTime": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.endTime": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "token_from": "pagination.endCursor",
+        "token_to": {
+          "placement": "query",
+          "param": "after"
+        },
+        "done_when": {
+          "path": "pagination.hasNextPage",
+          "equals": false
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
+      "method": "POST",
+      "path": "/fleet/installer/photo-uploads",
+      "operation_id": "postFleetInstallerPhotoUpload",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-vehicles-equipment",
+      "op": "post_fleet_installer_photo_upload",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Devices"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "projected_top_level",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data.sizeBytes"
+      ],
+      "parameters": [],
+      "emitted_args": [
+        {
+          "key": "body.contentMd5",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.deviceId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.fileFormatType",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.fileName",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.hardwareType",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.photoType",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.sizeBytes",
+          "type": "number",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "body.contentMd5": {
+            "type": "string",
+            "minLength": 24,
+            "maxLength": 24
+          },
+          "body.deviceId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.fileFormatType": {
+            "type": "string",
+            "enum": [
+              "imageJpeg",
+              "imagePng"
+            ]
+          },
+          "body.fileName": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 255,
+            "pattern": "^[^\\x00/\\\\]+$"
+          },
+          "body.hardwareType": {
+            "type": "string",
+            "enum": [
+              "vehicleGateway",
+              "assetGateway",
+              "camera",
+              "cameraConnector",
+              "environmentalMonitor",
+              "assetTag",
+              "trackingLabel"
+            ]
+          },
+          "body.photoType": {
+            "type": "string",
+            "enum": [
+              "installPhoto",
+              "assetPhoto"
+            ]
+          },
+          "body.sizeBytes": {
+            "type": "number",
+            "minimum": 1,
+            "maximum": 10485760
+          }
+        },
+        "required": [
+          "body.contentMd5",
+          "body.deviceId",
+          "body.fileFormatType",
+          "body.fileName",
+          "body.hardwareType",
+          "body.photoType",
+          "body.sizeBytes"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
+      "method": "POST",
+      "path": "/fleet/installer/photo-uploads/complete",
+      "operation_id": "postFleetInstallerPhotoUploadComplete",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-vehicles-equipment",
+      "op": "post_fleet_installer_photo_upload_complete",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Devices"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data.sizeBytes"
+      ],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.id": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.id"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
+      "method": "GET",
       "path": "/fleet/maintenance/vendor-categories",
       "operation_id": "listVendorCategories",
       "tag": "Beta APIs",
@@ -17875,6 +19632,14 @@
                   "type": "object",
                   "additionalProperties": true
                 },
+                "forms": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  },
+                  "maxItems": 300
+                },
                 "name": {
                   "type": "string"
                 },
@@ -17889,6 +19654,13 @@
                 "ontimeWindowBeforeArrivalMs": {
                   "type": "number",
                   "format": "int64"
+                },
+                "orders": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
                 },
                 "scheduledArrivalTime": {
                   "type": "string",
@@ -25990,6 +27762,12 @@
           "affects_target": true
         },
         {
+          "key": "body.fields",
+          "type": "array",
+          "required": false,
+          "affects_target": true
+        },
+        {
           "key": "body.id",
           "type": "string",
           "required": true,
@@ -26055,6 +27833,192 @@
           "body.dueAtTime": {
             "type": "string",
             "maxLength": 65536
+          },
+          "body.fields": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "assetValue": {
+                  "type": "object",
+                  "properties": {
+                    "asset": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  },
+                  "required": [
+                    "asset"
+                  ],
+                  "additionalProperties": true
+                },
+                "barcodeValue": {
+                  "type": "object",
+                  "properties": {
+                    "barcodes": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": true
+                      }
+                    }
+                  },
+                  "required": [
+                    "barcodes"
+                  ],
+                  "additionalProperties": true
+                },
+                "checkBoxesValue": {
+                  "type": "object",
+                  "properties": {
+                    "valueIds": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "valueIds"
+                  ],
+                  "additionalProperties": true
+                },
+                "dateTimeValue": {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "string",
+                      "format": "date-time"
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ],
+                  "additionalProperties": true
+                },
+                "geofenceValue": {
+                  "type": "object",
+                  "properties": {
+                    "geofence": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  },
+                  "required": [
+                    "geofence"
+                  ],
+                  "additionalProperties": true
+                },
+                "id": {
+                  "type": "string",
+                  "format": "uuid"
+                },
+                "mediaValue": {
+                  "type": "object",
+                  "properties": {
+                    "mediaList": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": true
+                      }
+                    }
+                  },
+                  "required": [
+                    "mediaList"
+                  ],
+                  "additionalProperties": true
+                },
+                "multipleChoiceValue": {
+                  "type": "object",
+                  "properties": {
+                    "valueId": {
+                      "type": "string",
+                      "format": "uuid"
+                    }
+                  },
+                  "required": [
+                    "valueId"
+                  ],
+                  "additionalProperties": true
+                },
+                "numberValue": {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "number",
+                      "format": "double"
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ],
+                  "additionalProperties": true
+                },
+                "personValue": {
+                  "type": "object",
+                  "properties": {
+                    "person": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  },
+                  "required": [
+                    "person"
+                  ],
+                  "additionalProperties": true
+                },
+                "tableValue": {
+                  "type": "object",
+                  "properties": {
+                    "rows": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": true
+                      }
+                    }
+                  },
+                  "required": [
+                    "rows"
+                  ],
+                  "additionalProperties": true
+                },
+                "textValue": {
+                  "type": "object",
+                  "properties": {
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "value"
+                  ],
+                  "additionalProperties": true
+                },
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "number",
+                    "text",
+                    "multiple_choice",
+                    "check_boxes",
+                    "datetime",
+                    "asset",
+                    "person",
+                    "table",
+                    "geofence",
+                    "barcode",
+                    "media"
+                  ]
+                }
+              },
+              "required": [
+                "id",
+                "type"
+              ],
+              "additionalProperties": true
+            }
           },
           "body.id": {
             "type": "string",
@@ -26287,6 +28251,22 @@
                   "type": "string",
                   "format": "uuid"
                 },
+                "mediaValue": {
+                  "type": "object",
+                  "properties": {
+                    "mediaList": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "additionalProperties": true
+                      }
+                    }
+                  },
+                  "required": [
+                    "mediaList"
+                  ],
+                  "additionalProperties": true
+                },
                 "multipleChoiceValue": {
                   "type": "object",
                   "properties": {
@@ -26366,7 +28346,8 @@
                     "person",
                     "table",
                     "geofence",
-                    "barcode"
+                    "barcode",
+                    "media"
                   ]
                 }
               },
@@ -28264,6 +30245,240 @@
       "result_path": "data",
       "pagination": null,
       "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
+      "method": "PATCH",
+      "path": "/ground-intelligence/watchpoints",
+      "operation_id": "updateWatchpoint",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-telematics-safety",
+      "op": "update_watchpoint",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Watchpoints"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "raw_required_optional_object",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data.observationCount"
+      ],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.id": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body_raw": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 1048576,
+            "pattern": "^\\s*\\{[\\s\\S]*\\}\\s*$"
+          }
+        },
+        "required": [
+          "query.id",
+          "body_raw"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    {
+      "method": "POST",
+      "path": "/ground-intelligence/watchpoints",
+      "operation_id": "createWatchpoint",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-telematics-safety",
+      "op": "create_watchpoint",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Watchpoints"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "projected_top_level",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data.observationCount"
+      ],
+      "parameters": [],
+      "emitted_args": [
+        {
+          "key": "body.location",
+          "type": "object",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.mode",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.name",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.note",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.observationType",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "body.location": {
+            "type": "object",
+            "properties": {
+              "latitude": {
+                "type": "number",
+                "minimum": -90,
+                "maximum": 90
+              },
+              "longitude": {
+                "type": "number",
+                "minimum": -180,
+                "maximum": 180
+              }
+            },
+            "required": [
+              "latitude",
+              "longitude"
+            ],
+            "additionalProperties": true
+          },
+          "body.mode": {
+            "type": "string",
+            "enum": [
+              "justOnce",
+              "daily",
+              "weekly",
+              "monthly"
+            ]
+          },
+          "body.name": {
+            "type": "string",
+            "maxLength": 80
+          },
+          "body.note": {
+            "type": "string",
+            "maxLength": 280
+          },
+          "body.observationType": {
+            "type": "string",
+            "enum": [
+              "roadDefect",
+              "utilityCut",
+              "guardrail",
+              "streetlight",
+              "signage",
+              "stormDrain",
+              "graffiti",
+              "vegetation",
+              "blight",
+              "illegalDumping",
+              "littering",
+              "highVegetationWeeds",
+              "fire",
+              "other"
+            ]
+          }
+        },
+        "required": [
+          "body.location",
+          "body.mode",
+          "body.observationType"
+        ],
+        "additionalProperties": true
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
       "approval": "always",
       "idempotency": "non_idempotent"
     },
@@ -30401,6 +32616,99 @@
       "risk": "read",
       "approval": "ask",
       "idempotency": "safe"
+    },
+    {
+      "method": "PATCH",
+      "path": "/hub/route-templates",
+      "operation_id": "updateHubRouteTemplate",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-hubs-logistics",
+      "op": "update_hub_route_template",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Routes"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "raw_required_optional_object",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data.distanceMeters",
+        "data.durationSeconds",
+        "data.locations[].position"
+      ],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.id": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body_raw": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 1048576,
+            "pattern": "^\\s*\\{[\\s\\S]*\\}\\s*$"
+          }
+        },
+        "required": [
+          "query.id",
+          "body_raw"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data.locations",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent"
     },
     {
       "method": "POST",
@@ -34085,6 +36393,1162 @@
       "idempotency": "non_idempotent"
     },
     {
+      "method": "DELETE",
+      "path": "/maintenance/parts",
+      "operation_id": "deletePart",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "delete_part",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Parts"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [],
+      "selected_response_media": null,
+      "response_type": null,
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.id": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.id"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": null,
+      "pagination": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    {
+      "method": "GET",
+      "path": "/maintenance/parts",
+      "operation_id": "listParts",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "list_parts",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Parts"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "idIn",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.idIn"
+        },
+        {
+          "name": "partIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.partIds"
+        },
+        {
+          "name": "partStatus",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.partStatus"
+        },
+        {
+          "name": "includeDeleted",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.includeDeleted"
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.idIn",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.partIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.partStatus",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.includeDeleted",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.idIn": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.partIds": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.partStatus": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.includeDeleted": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100,
+          "max": 200
+        },
+        "token_from": "pagination.endCursor",
+        "token_to": {
+          "placement": "query",
+          "param": "after"
+        },
+        "done_when": {
+          "path": "pagination.hasNextPage",
+          "equals": false
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
+      "method": "PATCH",
+      "path": "/maintenance/parts",
+      "operation_id": "updatePart",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "update_part",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Parts"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "raw_required_optional_object",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.id": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body_raw": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 1048576,
+            "pattern": "^\\s*\\{[\\s\\S]*\\}\\s*$"
+          }
+        },
+        "required": [
+          "query.id",
+          "body_raw"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    {
+      "method": "POST",
+      "path": "/maintenance/parts",
+      "operation_id": "createPart",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "create_part",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Parts"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "projected_top_level",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [],
+      "emitted_args": [
+        {
+          "key": "body.barcodeString",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.description",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.isInventoryTracked",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.manufacturerPartNumber",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.name",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.partNumber",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.unitCost",
+          "type": "object",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.vmrsCode",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "body.barcodeString": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.description": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.isInventoryTracked": {
+            "type": "boolean"
+          },
+          "body.manufacturerPartNumber": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.name": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.partNumber": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.unitCost": {
+            "type": "object",
+            "properties": {
+              "amount": {
+                "type": "string"
+              },
+              "currency": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "amount",
+              "currency"
+            ],
+            "additionalProperties": true
+          },
+          "body.vmrsCode": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "body.partNumber"
+        ],
+        "additionalProperties": true
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
+      "method": "GET",
+      "path": "/maintenance/parts/inventory-location",
+      "operation_id": "listPartInventory",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "list_part_inventory",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Parts"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "placeIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.placeIds"
+        },
+        {
+          "name": "isLowStock",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.isLowStock"
+        },
+        {
+          "name": "partSamsaraIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.partSamsaraIds"
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.placeIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.isLowStock",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.partSamsaraIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.placeIds": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.isLowStock": {
+            "type": "boolean"
+          },
+          "query.partSamsaraIds": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100,
+          "max": 200
+        },
+        "token_from": "pagination.endCursor",
+        "token_to": {
+          "placement": "query",
+          "param": "after"
+        },
+        "done_when": {
+          "path": "pagination.hasNextPage",
+          "equals": false
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
+      "method": "PATCH",
+      "path": "/maintenance/parts/inventory-location",
+      "operation_id": "updatePartInventoryLocation",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "update_part_inventory_location",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Parts"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "raw_required_optional_object",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "partSamsaraId",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.partSamsaraId"
+        },
+        {
+          "name": "placeId",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.placeId"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.partSamsaraId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.placeId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.partSamsaraId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.placeId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body_raw": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 1048576,
+            "pattern": "^\\s*\\{[\\s\\S]*\\}\\s*$"
+          }
+        },
+        "required": [
+          "body_raw"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    {
+      "method": "POST",
+      "path": "/maintenance/parts/inventory-location",
+      "operation_id": "createPartInventoryLocation",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "create_part_inventory_location",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Parts"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "raw_required_optional_object",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "partSamsaraId",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.partSamsaraId"
+        },
+        {
+          "name": "placeId",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.placeId"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.partSamsaraId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.placeId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.partSamsaraId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.placeId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body_raw": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 1048576,
+            "pattern": "^\\s*\\{[\\s\\S]*\\}\\s*$"
+          }
+        },
+        "required": [
+          "body_raw"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
+      "method": "POST",
+      "path": "/maintenance/parts/stock-movements",
+      "operation_id": "createStockMovement",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "create_stock_movement",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Parts"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "projected_top_level",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [],
+      "emitted_args": [
+        {
+          "key": "body.batch",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.fromPlaceId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.happenedAtTime",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.movementType",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.notes",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.partSamsaraId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.placeId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.purchaseOrder",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.quantity",
+          "type": "number",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.toPlaceId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.unitCost",
+          "type": "object",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.vendorId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "body.batch": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.fromPlaceId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.happenedAtTime": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.movementType": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.notes": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.partSamsaraId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.placeId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.purchaseOrder": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.quantity": {
+            "type": "number"
+          },
+          "body.toPlaceId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.unitCost": {
+            "type": "object",
+            "properties": {
+              "amount": {
+                "type": "string"
+              },
+              "currency": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "amount",
+              "currency"
+            ],
+            "additionalProperties": true
+          },
+          "body.vendorId": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "body.movementType",
+          "body.partSamsaraId",
+          "body.quantity"
+        ],
+        "additionalProperties": true
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
+      "method": "POST",
+      "path": "/maintenance/preventive/resolve",
+      "operation_id": "resolvePreventiveMaintenance",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "resolve_preventive_maintenance",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Preventive Maintenance Resolve"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "raw_required_optional_object",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [
+        "resolvedAtEngineHours",
+        "resolvedAtOdometer"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "assetId",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.assetId"
+        },
+        {
+          "name": "scheduleId",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.scheduleId"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.assetId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.scheduleId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.assetId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.scheduleId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body_raw": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 1048576,
+            "pattern": "^\\s*\\{[\\s\\S]*\\}\\s*$"
+          }
+        },
+        "required": [
+          "body_raw"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
       "method": "GET",
       "path": "/maintenance/preventive/schedules",
       "operation_id": "listPreventiveMaintenanceSchedules",
@@ -34119,7 +37583,7 @@
       ],
       "parameters": [
         {
-          "name": "idIn",
+          "name": "ids",
           "in": "query",
           "required": false,
           "schema_type": "string",
@@ -34128,7 +37592,7 @@
           "explode": null,
           "serialization": "scalar",
           "pagination_owned": false,
-          "emitted_key": "query.idIn"
+          "emitted_key": "query.ids"
         },
         {
           "name": "after",
@@ -34157,7 +37621,7 @@
       ],
       "emitted_args": [
         {
-          "key": "query.idIn",
+          "key": "query.ids",
           "type": "string",
           "required": false,
           "affects_target": true
@@ -34166,7 +37630,7 @@
       "request_schema": {
         "type": "object",
         "properties": {
-          "query.idIn": {
+          "query.ids": {
             "type": "string",
             "maxLength": 65536
           }
@@ -34241,7 +37705,7 @@
       ],
       "parameters": [
         {
-          "name": "preventativeMaintenanceScheduleIds",
+          "name": "scheduleIds",
           "in": "query",
           "required": false,
           "schema_type": "string",
@@ -34250,7 +37714,7 @@
           "explode": null,
           "serialization": "scalar",
           "pagination_owned": false,
-          "emitted_key": "query.preventativeMaintenanceScheduleIds"
+          "emitted_key": "query.scheduleIds"
         },
         {
           "name": "assetIds",
@@ -34291,7 +37755,7 @@
       ],
       "emitted_args": [
         {
-          "key": "query.preventativeMaintenanceScheduleIds",
+          "key": "query.scheduleIds",
           "type": "string",
           "required": false,
           "affects_target": true
@@ -34306,7 +37770,7 @@
       "request_schema": {
         "type": "object",
         "properties": {
-          "query.preventativeMaintenanceScheduleIds": {
+          "query.scheduleIds": {
             "type": "string",
             "maxLength": 65536
           },
@@ -34343,6 +37807,135 @@
       "risk": "read",
       "approval": "ask",
       "idempotency": "safe"
+    },
+    {
+      "method": "PATCH",
+      "path": "/maintenance/preventive/upcoming",
+      "operation_id": "updateUpcomingPreventiveMaintenance",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "update_upcoming_preventive_maintenance",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Upcoming Preventive Maintenance"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "raw_required_optional_object",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [
+        "lastResolvedAtEngineHours",
+        "lastResolvedAtOdometer",
+        "nextEngineHours",
+        "nextOdometer"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data.currentEngineHours",
+        "data.currentOdometer",
+        "data.currentOdometerMiles",
+        "data.dueInDays",
+        "data.dueInEngineHours",
+        "data.dueInOdometer",
+        "data.dueInOdometerMiles",
+        "data.lastResolvedAtEngineHours",
+        "data.lastResolvedAtOdometer",
+        "data.nextEngineHours",
+        "data.nextOdometer",
+        "data.nextOdometerMiles",
+        "data.priority"
+      ],
+      "parameters": [
+        {
+          "name": "assetId",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.assetId"
+        },
+        {
+          "name": "scheduleId",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.scheduleId"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.assetId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.scheduleId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.assetId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.scheduleId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body_raw": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 1048576,
+            "pattern": "^\\s*\\{[\\s\\S]*\\}\\s*$"
+          }
+        },
+        "required": [
+          "body_raw"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent"
     },
     {
       "method": "GET",
@@ -34447,6 +38040,143 @@
       "result_path": "data",
       "pagination": {
         "style": "query_token",
+        "token_from": "pagination.endCursor",
+        "token_to": {
+          "placement": "query",
+          "param": "after"
+        },
+        "done_when": {
+          "path": "pagination.hasNextPage",
+          "equals": false
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
+      "method": "GET",
+      "path": "/maintenance/time-entries/stream",
+      "operation_id": "listTimeEntries",
+      "tag": "Beta APIs",
+      "release_stage": "beta",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "list_time_entries",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Time Entries"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "startTime",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.startTime"
+        },
+        {
+          "name": "endTime",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.endTime"
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.startTime",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.endTime",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.startTime": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.endTime": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.startTime"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100,
+          "max": 200
+        },
         "token_from": "pagination.endCursor",
         "token_to": {
           "placement": "query",
@@ -35136,7 +38866,8 @@
               "On Hold",
               "Open",
               "Pending Approval",
-              "Pending Parts"
+              "Pending Parts",
+              "Planning"
             ]
           },
           "body.tax": {
@@ -35777,7 +39508,8 @@
                 "On Hold",
                 "Open",
                 "Pending Approval",
-                "Pending Parts"
+                "Pending Parts",
+                "Planning"
               ]
             }
           },
@@ -38158,20 +41890,92 @@
       "idempotency": null
     },
     {
-      "method": "GET",
-      "path": "/preview/fleet/installer/photo-uploads",
-      "operation_id": "getFleetInstallerPhotoUploads",
+      "method": "DELETE",
+      "path": "/preview/fleet/orders",
+      "operation_id": "deleteOrder",
       "tag": "Preview APIs",
       "release_stage": "preview",
       "selected": true,
       "exclusion_reason": null,
-      "pack": "samsara-vehicles-equipment",
-      "op": "get_fleet_installer_photo_uploads",
+      "pack": "samsara-hubs-logistics",
+      "op": "delete_order",
       "security": [
         "AccessTokenHeader"
       ],
       "scopes": [
-        "Read Devices"
+        "Write Routes"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [],
+      "selected_response_media": null,
+      "response_type": null,
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "orderId",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.orderId"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.orderId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.orderId": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.orderId"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": null,
+      "pagination": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    {
+      "method": "GET",
+      "path": "/preview/fleet/orders",
+      "operation_id": "getOrders",
+      "tag": "Preview APIs",
+      "release_stage": "preview",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-hubs-logistics",
+      "op": "get_orders",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Routes"
       ],
       "request_media": [],
       "selected_request_media": null,
@@ -38186,27 +41990,215 @@
       "selected_response_media": "application/json",
       "response_type": "object",
       "response_int64_paths": [
-        "data[].sizeBytes"
+        "data[].tasks[].serviceDurationSeconds"
       ],
       "parameters": [
         {
-          "name": "ids",
+          "name": "orderIds",
           "in": "query",
-          "required": false,
+          "required": true,
           "schema_type": "array",
           "schema_format": null,
           "style": "form",
           "explode": false,
           "serialization": "csv_string",
           "pagination_owned": false,
-          "emitted_key": "query.ids"
+          "emitted_key": "query.orderIds"
         },
+        {
+          "name": "includeExternalIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.includeExternalIds"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.orderIds",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.includeExternalIds",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.orderIds": {
+            "type": "string",
+            "maxLength": 16384
+          },
+          "query.includeExternalIds": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "query.orderIds"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
+      "method": "POST",
+      "path": "/preview/fleet/orders/batch",
+      "operation_id": "postOrdersBatch",
+      "tag": "Preview APIs",
+      "release_stage": "preview",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-hubs-logistics",
+      "op": "post_orders_batch",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Routes"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "projected_top_level",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [
+        "data[].tasks[].serviceDurationSeconds"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "responses[].data.tasks[].serviceDurationSeconds",
+        "responses[].status"
+      ],
+      "parameters": [],
+      "emitted_args": [
+        {
+          "key": "body.data",
+          "type": "array",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "body.data": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "customerProperties": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                },
+                "externalIds": {
+                  "type": "object",
+                  "additionalProperties": true
+                },
+                "id": {
+                  "type": "string"
+                },
+                "samsaraCustomerOrderName": {
+                  "type": "string"
+                },
+                "taskIdsToRemove": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "tasks": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "additionalProperties": true
+                  }
+                }
+              },
+              "additionalProperties": true
+            },
+            "minItems": 1,
+            "maxItems": 250
+          }
+        },
+        "required": [
+          "body.data"
+        ],
+        "additionalProperties": true
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": null,
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    {
+      "method": "GET",
+      "path": "/preview/fleet/orders/deletions",
+      "operation_id": "getOrderDeletions",
+      "tag": "Preview APIs",
+      "release_stage": "preview",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-hubs-logistics",
+      "op": "get_order_deletions",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Routes"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
         {
           "name": "startTime",
           "in": "query",
           "required": false,
           "schema_type": "string",
-          "schema_format": null,
+          "schema_format": "date-time",
           "style": null,
           "explode": null,
           "serialization": "scalar",
@@ -38218,7 +42210,7 @@
           "in": "query",
           "required": false,
           "schema_type": "string",
-          "schema_format": null,
+          "schema_format": "date-time",
           "style": null,
           "explode": null,
           "serialization": "scalar",
@@ -38236,15 +42228,21 @@
           "serialization": "scalar",
           "pagination_owned": true,
           "emitted_key": null
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
         }
       ],
       "emitted_args": [
-        {
-          "key": "query.ids",
-          "type": "string",
-          "required": false,
-          "affects_target": true
-        },
         {
           "key": "query.startTime",
           "type": "string",
@@ -38261,10 +42259,6 @@
       "request_schema": {
         "type": "object",
         "properties": {
-          "query.ids": {
-            "type": "string",
-            "maxLength": 16384
-          },
           "query.startTime": {
             "type": "string",
             "maxLength": 65536
@@ -38274,6 +42268,176 @@
             "maxLength": 65536
           }
         },
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100,
+          "max": 250
+        },
+        "token_from": "pagination.endCursor",
+        "token_to": {
+          "placement": "query",
+          "param": "after"
+        },
+        "done_when": {
+          "path": "pagination.hasNextPage",
+          "equals": false
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
+      "method": "GET",
+      "path": "/preview/fleet/orders/stream",
+      "operation_id": "getOrdersStream",
+      "tag": "Preview APIs",
+      "release_stage": "preview",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-hubs-logistics",
+      "op": "get_orders_stream",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Routes"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data[].tasks[].serviceDurationSeconds"
+      ],
+      "parameters": [
+        {
+          "name": "startTime",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": "date-time",
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.startTime"
+        },
+        {
+          "name": "endTime",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": "date-time",
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.endTime"
+        },
+        {
+          "name": "routeId",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.routeId"
+        },
+        {
+          "name": "includeExternalIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.includeExternalIds"
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.startTime",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.endTime",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.routeId",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.includeExternalIds",
+          "type": "boolean",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.startTime": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.endTime": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.routeId": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.includeExternalIds": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "query.startTime"
+        ],
         "additionalProperties": false
       },
       "request_json": null,
@@ -38296,231 +42460,6 @@
       "risk": "read",
       "approval": "ask",
       "idempotency": "safe"
-    },
-    {
-      "method": "POST",
-      "path": "/preview/fleet/installer/photo-uploads",
-      "operation_id": "postFleetInstallerPhotoUpload",
-      "tag": "Preview APIs",
-      "release_stage": "preview",
-      "selected": true,
-      "exclusion_reason": null,
-      "pack": "samsara-vehicles-equipment",
-      "op": "post_fleet_installer_photo_upload",
-      "security": [
-        "AccessTokenHeader"
-      ],
-      "scopes": [
-        "Write Devices"
-      ],
-      "request_media": [
-        "application/json"
-      ],
-      "selected_request_media": "application/json",
-      "request_body_mode": "projected_top_level",
-      "request_body_required": true,
-      "request_body_type": "object",
-      "request_read_only_paths": [],
-      "request_int64_paths": [],
-      "response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_type": "object",
-      "response_int64_paths": [
-        "data.sizeBytes"
-      ],
-      "parameters": [],
-      "emitted_args": [
-        {
-          "key": "body.contentMd5",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.deviceId",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.fileFormatType",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.fileName",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.hardwareType",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.photoType",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        },
-        {
-          "key": "body.sizeBytes",
-          "type": "number",
-          "required": true,
-          "affects_target": true
-        }
-      ],
-      "request_schema": {
-        "type": "object",
-        "properties": {
-          "body.contentMd5": {
-            "type": "string",
-            "minLength": 24,
-            "maxLength": 24
-          },
-          "body.deviceId": {
-            "type": "string",
-            "maxLength": 65536
-          },
-          "body.fileFormatType": {
-            "type": "string",
-            "enum": [
-              "imageJpeg",
-              "imagePng"
-            ]
-          },
-          "body.fileName": {
-            "type": "string",
-            "minLength": 1,
-            "maxLength": 255,
-            "pattern": "^[^\u0000/\\\\]+$"
-          },
-          "body.hardwareType": {
-            "type": "string",
-            "enum": [
-              "vehicleGateway",
-              "assetGateway",
-              "camera",
-              "cameraConnector",
-              "environmentalMonitor",
-              "assetTag",
-              "trackingLabel"
-            ]
-          },
-          "body.photoType": {
-            "type": "string",
-            "enum": [
-              "installPhoto",
-              "assetPhoto"
-            ]
-          },
-          "body.sizeBytes": {
-            "type": "number",
-            "minimum": 1,
-            "maximum": 10485760
-          }
-        },
-        "required": [
-          "body.contentMd5",
-          "body.deviceId",
-          "body.fileFormatType",
-          "body.fileName",
-          "body.hardwareType",
-          "body.photoType",
-          "body.sizeBytes"
-        ],
-        "additionalProperties": false
-      },
-      "request_json": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "result_path": "data",
-      "pagination": null,
-      "risk": "write",
-      "approval": "always",
-      "idempotency": "non_idempotent"
-    },
-    {
-      "method": "POST",
-      "path": "/preview/fleet/installer/photo-uploads/complete",
-      "operation_id": "postFleetInstallerPhotoUploadComplete",
-      "tag": "Preview APIs",
-      "release_stage": "preview",
-      "selected": true,
-      "exclusion_reason": null,
-      "pack": "samsara-vehicles-equipment",
-      "op": "post_fleet_installer_photo_upload_complete",
-      "security": [
-        "AccessTokenHeader"
-      ],
-      "scopes": [
-        "Write Devices"
-      ],
-      "request_media": [],
-      "selected_request_media": null,
-      "request_body_mode": null,
-      "request_body_required": false,
-      "request_body_type": null,
-      "request_read_only_paths": [],
-      "request_int64_paths": [],
-      "response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_type": "object",
-      "response_int64_paths": [
-        "data.sizeBytes"
-      ],
-      "parameters": [
-        {
-          "name": "id",
-          "in": "query",
-          "required": true,
-          "schema_type": "string",
-          "schema_format": null,
-          "style": null,
-          "explode": null,
-          "serialization": "scalar",
-          "pagination_owned": false,
-          "emitted_key": "query.id"
-        }
-      ],
-      "emitted_args": [
-        {
-          "key": "query.id",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        }
-      ],
-      "request_schema": {
-        "type": "object",
-        "properties": {
-          "query.id": {
-            "type": "string",
-            "maxLength": 65536
-          }
-        },
-        "required": [
-          "query.id"
-        ],
-        "additionalProperties": false
-      },
-      "request_json": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "result_path": "data",
-      "pagination": null,
-      "risk": "write",
-      "approval": "always",
-      "idempotency": "non_idempotent"
     },
     {
       "method": "DELETE",
@@ -38665,6 +42604,828 @@
       "risk": "destructive",
       "approval": "always",
       "idempotency": "idempotent"
+    },
+    {
+      "method": "GET",
+      "path": "/preview/maintenance/parts/transactions",
+      "operation_id": "listPartTransactions",
+      "tag": "Preview APIs",
+      "release_stage": "preview",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "list_part_transactions",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Parts"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "happenedAtTimeStart",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.happenedAtTimeStart"
+        },
+        {
+          "name": "happenedAtTimeEnd",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.happenedAtTimeEnd"
+        },
+        {
+          "name": "partSamsaraIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.partSamsaraIds"
+        },
+        {
+          "name": "placeIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.placeIds"
+        },
+        {
+          "name": "transactionTypeIn",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.transactionTypeIn"
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.happenedAtTimeStart",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query.happenedAtTimeEnd",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.partSamsaraIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.placeIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.transactionTypeIn",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.happenedAtTimeStart": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.happenedAtTimeEnd": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.partSamsaraIds": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.placeIds": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.transactionTypeIn": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.happenedAtTimeStart"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100,
+          "max": 200
+        },
+        "token_from": "pagination.endCursor",
+        "token_to": {
+          "placement": "query",
+          "param": "after"
+        },
+        "done_when": {
+          "path": "pagination.hasNextPage",
+          "equals": false
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
+      "method": "DELETE",
+      "path": "/preview/maintenance/purchase-orders",
+      "operation_id": "deletePurchaseOrder",
+      "tag": "Preview APIs",
+      "release_stage": "preview",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "delete_purchase_order",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Purchase Orders"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [],
+      "selected_response_media": null,
+      "response_type": null,
+      "response_int64_paths": [],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.id": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.id"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": null,
+      "pagination": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    {
+      "method": "GET",
+      "path": "/preview/maintenance/purchase-orders",
+      "operation_id": "listPurchaseOrders",
+      "tag": "Preview APIs",
+      "release_stage": "preview",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "list_purchase_orders",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Purchase Orders"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data[].parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
+      ],
+      "parameters": [
+        {
+          "name": "ids",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.ids"
+        },
+        {
+          "name": "poNumbers",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.poNumbers"
+        },
+        {
+          "name": "vendorIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.vendorIds"
+        },
+        {
+          "name": "endTime",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.endTime"
+        },
+        {
+          "name": "startTime",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.startTime"
+        },
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.ids",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.poNumbers",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.vendorIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.endTime",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.startTime",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.ids": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.poNumbers": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.vendorIds": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.endTime": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "query.startTime": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "query.startTime"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100,
+          "max": 200
+        },
+        "token_from": "pagination.endCursor",
+        "token_to": {
+          "placement": "query",
+          "param": "after"
+        },
+        "done_when": {
+          "path": "pagination.hasNextPage",
+          "equals": false
+        }
+      },
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
+      "method": "PATCH",
+      "path": "/preview/maintenance/purchase-orders",
+      "operation_id": "updatePurchaseOrder",
+      "tag": "Preview APIs",
+      "release_stage": "preview",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "update_purchase_order",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Purchase Orders"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "raw_required_optional_object",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [
+        "parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data.parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
+      ],
+      "parameters": [
+        {
+          "name": "id",
+          "in": "query",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.id"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.id": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body_raw": {
+            "type": "string",
+            "minLength": 2,
+            "maxLength": 1048576,
+            "pattern": "^\\s*\\{[\\s\\S]*\\}\\s*$"
+          }
+        },
+        "required": [
+          "query.id",
+          "body_raw"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    {
+      "method": "POST",
+      "path": "/preview/maintenance/purchase-orders",
+      "operation_id": "createPurchaseOrder",
+      "tag": "Preview APIs",
+      "release_stage": "preview",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-maintenance-work-orders",
+      "op": "create_purchase_order",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Write Purchase Orders"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_mode": "projected_top_level",
+      "request_body_required": true,
+      "request_body_type": "object",
+      "request_read_only_paths": [],
+      "request_int64_paths": [
+        "parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "data.parts[].coreCharge.recoverabilityPolicy.relativeWindowDuration"
+      ],
+      "parameters": [],
+      "emitted_args": [
+        {
+          "key": "body.glCode",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.invoiceNumber",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.notes",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.orderStatus",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.otherCost",
+          "type": "object",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.parts",
+          "type": "array",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.poNumberPrefix",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.poNumberSuffix",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.trackingNumber",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "body.vendorId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "body.glCode": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.invoiceNumber": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.notes": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.orderStatus": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.otherCost": {
+            "type": "object",
+            "properties": {
+              "amount": {
+                "type": "string"
+              },
+              "currency": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "amount",
+              "currency"
+            ],
+            "additionalProperties": true
+          },
+          "body.parts": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "batchNumber": {
+                  "type": "string"
+                },
+                "coreCharge": {
+                  "type": "object",
+                  "properties": {
+                    "coreChargeStatus": {
+                      "type": "string"
+                    },
+                    "corePartSamsaraId": {
+                      "type": "string"
+                    },
+                    "recoverabilityPolicy": {
+                      "type": "object",
+                      "additionalProperties": true
+                    },
+                    "returnRecipientVendorId": {
+                      "type": "string"
+                    },
+                    "unitCoreAmount": {
+                      "type": "object",
+                      "additionalProperties": true
+                    }
+                  },
+                  "required": [
+                    "coreChargeStatus"
+                  ],
+                  "additionalProperties": true
+                },
+                "description": {
+                  "type": "string"
+                },
+                "lineItemId": {
+                  "type": "string"
+                },
+                "partSamsaraId": {
+                  "type": "string"
+                },
+                "placeId": {
+                  "type": "string"
+                },
+                "quantityOrdered": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "quantityReceived": {
+                  "type": "number",
+                  "format": "double"
+                },
+                "unitCost": {
+                  "type": "object",
+                  "properties": {
+                    "amount": {
+                      "type": "string"
+                    },
+                    "currency": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "amount",
+                    "currency"
+                  ],
+                  "additionalProperties": true
+                },
+                "unitOfMeasureType": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "partSamsaraId",
+                "quantityOrdered",
+                "quantityReceived",
+                "unitOfMeasureType"
+              ],
+              "additionalProperties": true
+            }
+          },
+          "body.poNumberPrefix": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.poNumberSuffix": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.trackingNumber": {
+            "type": "string",
+            "maxLength": 65536
+          },
+          "body.vendorId": {
+            "type": "string",
+            "maxLength": 65536
+          }
+        },
+        "required": [
+          "body.orderStatus",
+          "body.vendorId"
+        ],
+        "additionalProperties": true
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": null,
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
     },
     {
       "method": "DELETE",
@@ -42717,6 +47478,7 @@
                 "Passenger",
                 "PolicyViolationMask",
                 "ProtectiveEquipment",
+                "ProximityWarning",
                 "RanRedLight",
                 "RearCollisionWarning",
                 "Reversing",
@@ -42785,6 +47547,7 @@
                 "Passenger",
                 "PolicyViolationMask",
                 "ProtectiveEquipment",
+                "ProximityWarning",
                 "RanRedLight",
                 "RearCollisionWarning",
                 "Reversing",
@@ -46399,6 +51162,129 @@
     },
     {
       "method": "GET",
+      "path": "/v1/fleet/assets/{assetId}/locations",
+      "operation_id": "getAssetLocation",
+      "tag": "Assets",
+      "release_stage": "legacy",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-assets-organization",
+      "op": "get_asset_location",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Equipment Statistics"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "locations[].time"
+      ],
+      "parameters": [
+        {
+          "name": "startMs",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": "int64",
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.startMs"
+        },
+        {
+          "name": "endMs",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": "int64",
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "query.endMs"
+        },
+        {
+          "name": "assetId",
+          "in": "path",
+          "required": true,
+          "schema_type": "number",
+          "schema_format": "int64",
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": false,
+          "emitted_key": "assetId"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.startMs",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.endMs",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "assetId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.startMs": {
+            "type": "string",
+            "maxLength": 40,
+            "pattern": "^-?(?:0|[1-9][0-9]*)$"
+          },
+          "query.endMs": {
+            "type": "string",
+            "maxLength": 40,
+            "pattern": "^-?(?:0|[1-9][0-9]*)$"
+          },
+          "assetId": {
+            "type": "string",
+            "maxLength": 40,
+            "pattern": "^-?(?:0|[1-9][0-9]*)$"
+          }
+        },
+        "required": [
+          "assetId"
+        ],
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "locations",
+      "pagination": null,
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
+      "method": "GET",
       "path": "/v1/fleet/assets/{assetId}/reefer",
       "operation_id": "getAssetReefer",
       "tag": "Assets",
@@ -47275,6 +52161,146 @@
       },
       "result_path": "authenticationLogs",
       "pagination": null,
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    {
+      "method": "GET",
+      "path": "/v1/fleet/locations",
+      "operation_id": "getFleetLocations",
+      "tag": "Fleet",
+      "release_stage": "legacy",
+      "selected": true,
+      "exclusion_reason": null,
+      "pack": "samsara-telematics-safety",
+      "op": "get_fleet_locations",
+      "security": [
+        "AccessTokenHeader"
+      ],
+      "scopes": [
+        "Read Vehicle Statistics"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_mode": null,
+      "request_body_required": false,
+      "request_body_type": null,
+      "request_read_only_paths": [],
+      "request_int64_paths": [],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_type": "object",
+      "response_int64_paths": [
+        "vehicles[].driverId",
+        "vehicles[].id",
+        "vehicles[].odometerMeters",
+        "vehicles[].routeIds[]",
+        "vehicles[].time"
+      ],
+      "parameters": [
+        {
+          "name": "after",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "required": false,
+          "schema_type": "number",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "serialization": "scalar",
+          "pagination_owned": true,
+          "emitted_key": null
+        },
+        {
+          "name": "vehicleIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "array",
+          "schema_format": null,
+          "style": "form",
+          "explode": false,
+          "serialization": "csv_string",
+          "pagination_owned": false,
+          "emitted_key": "query.vehicleIds"
+        },
+        {
+          "name": "tagIds",
+          "in": "query",
+          "required": false,
+          "schema_type": "array",
+          "schema_format": null,
+          "style": "form",
+          "explode": false,
+          "serialization": "csv_string",
+          "pagination_owned": false,
+          "emitted_key": "query.tagIds"
+        }
+      ],
+      "emitted_args": [
+        {
+          "key": "query.vehicleIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        },
+        {
+          "key": "query.tagIds",
+          "type": "string",
+          "required": false,
+          "affects_target": true
+        }
+      ],
+      "request_schema": {
+        "type": "object",
+        "properties": {
+          "query.vehicleIds": {
+            "type": "string",
+            "maxLength": 16384
+          },
+          "query.tagIds": {
+            "type": "string",
+            "maxLength": 16384
+          }
+        },
+        "additionalProperties": false
+      },
+      "request_json": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "vehicles",
+      "pagination": {
+        "style": "query_token",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100,
+          "max": 512
+        },
+        "token_from": "pagination.endCursor",
+        "token_to": {
+          "placement": "query",
+          "param": "after"
+        },
+        "done_when": {
+          "path": "pagination.hasNextPage",
+          "equals": false
+        }
+      },
       "risk": "read",
       "approval": "ask",
       "idempotency": "safe"
@@ -50397,18 +55423,18 @@
   "generated": [
     {
       "slug": "samsara-assets-organization",
-      "operations": 28,
-      "composition_bytes": 72307
+      "operations": 42,
+      "composition_bytes": 109650
     },
     {
       "slug": "samsara-vehicles-equipment",
-      "operations": 34,
-      "composition_bytes": 102430
+      "operations": 35,
+      "composition_bytes": 104263
     },
     {
       "slug": "samsara-telematics-safety",
-      "operations": 48,
-      "composition_bytes": 160854
+      "operations": 51,
+      "composition_bytes": 170712
     },
     {
       "slug": "samsara-drivers-compliance",
@@ -50418,17 +55444,17 @@
     {
       "slug": "samsara-routing-dispatch",
       "operations": 27,
-      "composition_bytes": 83783
+      "composition_bytes": 83957
     },
     {
       "slug": "samsara-maintenance-work-orders",
-      "operations": 27,
-      "composition_bytes": 90229
+      "operations": 43,
+      "composition_bytes": 141324
     },
     {
       "slug": "samsara-forms-documents",
       "operations": 14,
-      "composition_bytes": 44475
+      "composition_bytes": 46759
     },
     {
       "slug": "samsara-industrial-readings",
@@ -50442,8 +55468,8 @@
     },
     {
       "slug": "samsara-hubs-logistics",
-      "operations": 25,
-      "composition_bytes": 66719
+      "operations": 31,
+      "composition_bytes": 83289
     }
   ]
 }

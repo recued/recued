@@ -18,8 +18,10 @@ import {
 
 import {
   RECIPES_ROUTE_ACTION_ATTR,
+  RECIPES_ROUTE_RESULT_FILTER_ATTR,
   RECIPES_ROUTE_RESULT_GRID_ATTR,
   RECIPES_ROUTE_RESULT_GRID_CELL_ATTR,
+  type RecipesResultFilterAction,
 } from './recipe-result-panel.js';
 
 export interface ResultTableEditCellInput {
@@ -29,6 +31,89 @@ export interface ResultTableEditCellInput {
   column: string;
   value: string;
 }
+
+/** Capture the exact editable-grid Save command before a host replaces the
+ * result markup. The grid key is descriptor-derived, so it survives the busy
+ * and terminal repaint without relying on button copy. */
+export const captureResultTableEditSubmitFocus = (
+  activeElement: Element | null | undefined,
+): string | null => activeElement?.getAttribute?.(RECIPES_ROUTE_ACTION_ATTR)
+  === 'result-grid-submit'
+  ? activeElement.getAttribute(RECIPES_ROUTE_RESULT_GRID_ATTR)
+  : null;
+
+/** Restore a captured Save command after either result host repaints. Iterate
+ * rather than interpolating the opaque grid key into a selector. */
+export const restoreResultTableEditSubmitFocus = (
+  root: ParentNode,
+  gridKey: string | null,
+): boolean => {
+  if (gridKey === null) return false;
+  const submit = Array.from(root.querySelectorAll(
+    `[${RECIPES_ROUTE_ACTION_ATTR}="result-grid-submit"]`,
+  )).find((candidate) =>
+    candidate.getAttribute(RECIPES_ROUTE_RESULT_GRID_ATTR) === gridKey) as
+      | HTMLElement
+      | undefined;
+  if (submit === undefined) return false;
+  submit.focus({ preventScroll: true });
+  return true;
+};
+
+export interface ResultFilterActionFocus {
+  readonly filterKey: string;
+  readonly action: RecipesResultFilterAction;
+}
+
+const resultFilterAction = (
+  raw: string | null,
+): RecipesResultFilterAction | null => raw === 'result-filter-search'
+  ? 'search'
+  : raw === 'result-filter-page:next'
+    ? 'next'
+    : raw === 'result-filter-page:previous' ? 'previous' : null;
+
+/** Capture Search/Previous/Next by descriptor key and semantic action. */
+export const captureResultFilterActionFocus = (
+  activeElement: Element | null | undefined,
+): ResultFilterActionFocus | null => {
+  const action = resultFilterAction(
+    activeElement?.getAttribute?.(RECIPES_ROUTE_ACTION_ATTR) ?? null,
+  );
+  const filterKey = activeElement?.getAttribute?.(
+    RECIPES_ROUTE_RESULT_FILTER_ATTR,
+  ) ?? null;
+  return action === null || filterKey === null ? null : { action, filterKey };
+};
+
+/** Restore the exact filter command after a repaint. At a page boundary the
+ * pressed direction may disappear, so hand focus to the opposite pager (then
+ * Search) instead of dropping it to the document body. */
+export const restoreResultFilterActionFocus = (
+  root: ParentNode,
+  focused: ResultFilterActionFocus | null,
+): boolean => {
+  if (focused === null) return false;
+  const candidates = Array.from(root.querySelectorAll(
+    `[${RECIPES_ROUTE_ACTION_ATTR}]`,
+  ));
+  const order: RecipesResultFilterAction[] = focused.action === 'next'
+    ? ['next', 'previous', 'search']
+    : focused.action === 'previous'
+      ? ['previous', 'next', 'search']
+      : ['search'];
+  for (const action of order) {
+    const control = candidates.find((candidate) =>
+      candidate.getAttribute(RECIPES_ROUTE_RESULT_FILTER_ATTR) === focused.filterKey
+      && resultFilterAction(candidate.getAttribute(RECIPES_ROUTE_ACTION_ATTR)) === action) as
+        | HTMLElement
+        | undefined;
+    if (control === undefined) continue;
+    control.focus({ preventScroll: true });
+    return true;
+  }
+  return false;
+};
 
 /** Decode one delegated input/change event from any host embedding the panel. */
 export const readResultTableEditCellInput = (
@@ -63,7 +148,29 @@ export const syncResultTableEditChrome = (
     `[${RECIPES_ROUTE_ACTION_ATTR}="result-grid-submit"]`,
   ) as HTMLButtonElement | null | undefined;
   if (submit !== null && submit !== undefined) {
-    submit.disabled = !canSubmitTableEdit(state);
+    const enabled = canSubmitTableEdit(state);
+    // A Save that owns a live request must remain focusable across the host's
+    // repaint. The dispatch seam already rejects clean/busy submissions, so
+    // ARIA can express the unavailable state without a native `disabled`
+    // button forcing focus to <body>. A clean grid stays out of sequential
+    // keyboard order until the first real edit.
+    submit.disabled = false;
+    if (enabled) {
+      submit.tabIndex = 0;
+      submit.removeAttribute('aria-disabled');
+      submit.removeAttribute('aria-busy');
+      submit.removeAttribute('tabindex');
+    } else {
+      submit.setAttribute('aria-disabled', 'true');
+      if (state.busy) {
+        submit.tabIndex = 0;
+        submit.setAttribute('aria-busy', 'true');
+        submit.removeAttribute('tabindex');
+      } else {
+        submit.removeAttribute('aria-busy');
+        submit.tabIndex = -1;
+      }
+    }
   }
   const status = gridRoot.querySelector?.(
     '.recipes-result-grid-status',

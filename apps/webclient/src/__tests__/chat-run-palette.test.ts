@@ -31,6 +31,8 @@ import {
   RUN_PALETTE_ACTION_ATTR,
   RUN_PALETTE_CLOSE_ATTR,
   RUN_PALETTE_OVERLAY_ATTR,
+  RUN_PALETTE_RETRY_ATTR,
+  RUN_PALETTE_RESULT_ATTR,
   RUN_PALETTE_SEARCH_ATTR,
 } from '../chat/run-palette.js';
 
@@ -52,6 +54,7 @@ interface FakeEl {
   setAttribute(k: string, v: string): void;
   getAttribute(k: string): string | null;
   hasAttribute(k: string): boolean;
+  removeAttribute(k: string): void;
   appendChild(c: FakeEl): FakeEl;
   removeChild(c: FakeEl): FakeEl;
   remove(): void;
@@ -59,12 +62,14 @@ interface FakeEl {
   removeEventListener(t: string, fn: (ev: unknown) => void): void;
   querySelector(sel: string): FakeEl | null;
   querySelectorAll(sel: string): FakeEl[];
+  contains(el: FakeEl | null): boolean;
+  focus(): void;
   click(): void;
 }
 
 const attrOnly = (sel: string): string | null => sel.match(/^\[([\w-]+)\]$/)?.[1] ?? null;
 
-const makeEl = (tag: string): FakeEl => {
+const makeEl = (tag: string, onFocus: (el: FakeEl) => void): FakeEl => {
   const el: FakeEl = {
     tagName: tag.toUpperCase(),
     className: '',
@@ -83,6 +88,7 @@ const makeEl = (tag: string): FakeEl => {
     setAttribute: (k, v) => el.attrs.set(k, v),
     getAttribute: (k) => el.attrs.get(k) ?? null,
     hasAttribute: (k) => el.attrs.has(k),
+    removeAttribute: (k) => el.attrs.delete(k),
     appendChild: (c) => {
       c.parent = el;
       el.children.push(c);
@@ -128,6 +134,17 @@ const makeEl = (tag: string): FakeEl => {
       walk(el);
       return out;
     },
+    contains: (candidate) => {
+      let current = candidate;
+      while (current !== null) {
+        if (current === el) return true;
+        current = current.parent;
+      }
+      return false;
+    },
+    focus: () => {
+      if (!el.disabled) onFocus(el);
+    },
     click: () => {
       if (el.disabled) return;
       for (const fn of [...(el.listeners.get('click') ?? [])]) fn({ target: el });
@@ -138,6 +155,7 @@ const makeEl = (tag: string): FakeEl => {
 
 interface FakeDoc {
   body: FakeEl;
+  readonly activeElement: FakeEl | null;
   head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl };
   styles: FakeEl[];
   createElement(tag: string): FakeEl;
@@ -149,8 +167,15 @@ interface FakeDoc {
 const makeDoc = (): FakeDoc => {
   const styles: FakeEl[] = [];
   const keydown: Array<(ev: unknown) => void> = [];
+  let activeElement: FakeEl | null = null;
+  const createElement = (tag: string): FakeEl => makeEl(tag, (el) => {
+    activeElement = el;
+  });
   return {
-    body: makeEl('body'),
+    body: createElement('body'),
+    get activeElement() {
+      return activeElement;
+    },
     styles,
     head: {
       querySelector(sel) {
@@ -163,7 +188,7 @@ const makeDoc = (): FakeDoc => {
         return el;
       },
     },
-    createElement: (tag) => makeEl(tag),
+    createElement,
     addEventListener: (t, fn) => {
       if (t === 'keydown') keydown.push(fn);
     },
@@ -359,6 +384,126 @@ describe('run-palette wire', () => {
     handle.destroy();
   });
 
+  it('guards duplicate auto-run updates while the first mutation is pending', async () => {
+    let resolveUpdate!: () => void;
+    const updatePending = new Promise<void>((resolve) => {
+      resolveUpdate = resolve;
+    });
+    const autoRunUpdate = vi.fn(async () => updatePending);
+    const { doc, handle } = mount({
+      autoRunList: vi.fn(async () => ({ entries: [autoRunEntry('autorun-1')] })),
+      autoRunUpdate,
+    });
+    await tick();
+    handle.selectRecipe('autorun-1');
+
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    const toggle = collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!;
+    expect(handle.hasInFlightWork()).toBe(false);
+    toggle.focus();
+    toggle.click();
+    toggle.click();
+
+    expect(autoRunUpdate).toHaveBeenCalledTimes(1);
+    expect(handle.hasInFlightWork()).toBe(true);
+    expect(
+      collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!.disabled,
+    ).toBe(true);
+    const close = collectByAttr(overlay, RUN_PALETTE_CLOSE_ATTR)[0]!;
+    expect(close.getAttribute('aria-disabled')).toBe('true');
+    expect(close.disabled).toBe(false);
+    doc.fireKeydown('Escape');
+    close.click();
+    overlay.click();
+    expect(collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)).toHaveLength(1);
+    resolveUpdate();
+    await tick();
+    expect(handle.hasInFlightWork()).toBe(false);
+    const restored = collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!;
+    expect(restored).not.toBe(toggle);
+    expect(doc.activeElement).toBe(restored);
+    expect(close.getAttribute('aria-disabled')).toBeNull();
+    handle.destroy();
+  });
+
+  it('does not reclaim auto-run focus after the user moves within the palette', async () => {
+    let resolveUpdate!: () => void;
+    const updatePending = new Promise<void>((resolve) => {
+      resolveUpdate = resolve;
+    });
+    const { doc, handle } = mount({
+      autoRunList: vi.fn(async () => ({ entries: [autoRunEntry('autorun-1')] })),
+      autoRunUpdate: vi.fn(async () => updatePending),
+    });
+    await tick();
+    handle.selectRecipe('autorun-1');
+
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    const toggle = collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!;
+    toggle.focus();
+    toggle.click();
+    const close = collectByAttr(overlay, RUN_PALETTE_CLOSE_ATTR)[0]!;
+    close.focus();
+
+    resolveUpdate();
+    await tick();
+    expect(doc.activeElement).toBe(close);
+    handle.destroy();
+  });
+
+  it('keeps a pending auto-run write owned through the Automation link', async () => {
+    let resolveUpdate!: () => void;
+    const updatePending = new Promise<void>((resolve) => {
+      resolveUpdate = resolve;
+    });
+    const { doc, handle } = mount({
+      autoRunList: vi.fn(async () => ({ entries: [autoRunEntry('autorun-1')] })),
+      autoRunUpdate: vi.fn(async () => updatePending),
+    });
+    await tick();
+    handle.selectRecipe('autorun-1');
+
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!.click();
+    expect(handle.hasInFlightWork()).toBe(true);
+    handle.selectRecipe('trigger-1');
+    collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!.click();
+
+    expect(collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)).toHaveLength(1);
+    expect(handle.hasInFlightWork()).toBe(true);
+    resolveUpdate();
+    await tick();
+
+    expect(handle.hasInFlightWork()).toBe(false);
+    collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!.click();
+    expect(collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)).toHaveLength(0);
+  });
+
+  it('reports an auto-run update failure without dismissing the action', async () => {
+    const { doc, handle } = mount({
+      autoRunList: vi.fn(async () => ({ entries: [autoRunEntry('autorun-1')] })),
+      autoRunUpdate: vi.fn(async () => {
+        throw new Error('offline');
+      }),
+    });
+    await tick();
+    handle.selectRecipe('autorun-1');
+
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    const toggle = collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0]!;
+    toggle.focus();
+    toggle.click();
+    await tick();
+
+    const result = collectByAttr(overlay, RUN_PALETTE_RESULT_ATTR)[0]!;
+    expect(result.getAttribute('role')).toBe('status');
+    expect(result.textContent).toContain('Couldn’t update auto-run');
+    expect(doc.activeElement).toBe(
+      collectByAttr(overlay, RUN_PALETTE_ACTION_ATTR)[0],
+    );
+    handle.destroy();
+  });
+
   it('a tripped auto-run recipe offers Re-arm', async () => {
     const { doc, handle } = mount({
       autoRunList: vi.fn(async () => ({
@@ -461,6 +606,65 @@ describe('run-palette wire', () => {
     expect(allText(overlay)).toContain('Find a recipe');
     expect(collectByAttr(overlay, RUN_PALETTE_SEARCH_ATTR)[0]!.innerHTML)
       .toContain('data-ref-picker');
+    handle.destroy();
+  });
+
+  it('keeps the inventory retry visible and single-flight while it settles', async () => {
+    let resolveRetry!: (value: { recipes: ServerRecipeListEntry[] }) => void;
+    const retryPending = new Promise<{ recipes: ServerRecipeListEntry[] }>(
+      (resolve) => { resolveRetry = resolve; },
+    );
+    const recipeList = vi.fn()
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockImplementationOnce(() => retryPending);
+    const { doc, handle } = mount({ recipeList });
+    await tick();
+
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    expect(collectByAttr(overlay, 'role').some(
+      (element) => element.getAttribute('role') === 'alert',
+    )).toBe(true);
+    const retry = collectByAttr(overlay, RUN_PALETTE_RETRY_ATTR)[0]!;
+    retry.focus();
+    retry.click();
+    retry.click();
+
+    expect(recipeList).toHaveBeenCalledTimes(2);
+    const retrying = collectByAttr(overlay, RUN_PALETTE_RETRY_ATTR)[0]!;
+    expect(retrying).toBeDefined();
+    expect(retrying.textContent).toBe('Trying again…');
+    expect(retrying.getAttribute('aria-disabled')).toBe('true');
+    expect(retrying.getAttribute('aria-busy')).toBe('true');
+    expect(retrying.disabled).toBe(false);
+    expect(doc.activeElement).toBe(retrying);
+
+    resolveRetry({ recipes: [MANUAL] });
+    await tick();
+    expect(recipeList).toHaveBeenCalledTimes(2);
+    expect(collectByAttr(overlay, RUN_PALETTE_SEARCH_ATTR)[0]!.innerHTML)
+      .toContain('data-ref-picker');
+    handle.destroy();
+  });
+
+  it('returns a rejected inventory retry to its alert action', async () => {
+    const recipeList = vi.fn(async () => { throw new Error('offline'); });
+    const { doc, handle } = mount({ recipeList });
+    await tick();
+
+    const overlay = collectByAttr(doc.body, RUN_PALETTE_OVERLAY_ATTR)[0]!;
+    const retry = collectByAttr(overlay, RUN_PALETTE_RETRY_ATTR)[0]!;
+    retry.focus();
+    retry.click();
+    await tick();
+
+    const restored = collectByAttr(overlay, RUN_PALETTE_RETRY_ATTR)[0]!;
+    expect(recipeList).toHaveBeenCalledTimes(2);
+    expect(restored.textContent).toBe('Try again');
+    expect(restored.getAttribute('aria-disabled')).toBeNull();
+    expect(doc.activeElement).toBe(restored);
+    expect(collectByAttr(overlay, 'role').some(
+      (element) => element.getAttribute('role') === 'alert',
+    )).toBe(true);
     handle.destroy();
   });
 });

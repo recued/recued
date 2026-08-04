@@ -137,6 +137,9 @@ const buildFakeDocument = (): FakeDocument => {
   });
 
   const doc = {
+    get activeElement() {
+      return active;
+    },
     createElement: makeEl,
     addEventListener(type: string, listener: FakeListener) {
       const listeners =
@@ -306,6 +309,34 @@ describe('connection recovery surface', () => {
     // The banner no longer owns a panel — it points at the account menu, so
     // the alert and the remedy stay one gesture apart.
     expect(onRecoveryAction).toHaveBeenCalledTimes(1);
+    mount.dispose();
+  });
+
+  it('moves focus to stable shell chrome when recovery retires its action', () => {
+    const fixture = setup('connected');
+    const fallback = fixture.fake.create('button');
+    const mount = mountConnectionIndicator({
+      statusHost: fixture.statusHost as unknown as HTMLElement,
+      bannerHost: fixture.bannerHost as unknown as HTMLElement,
+      document: fixture.fake.document,
+      status: fixture.status.status,
+      onStatus: fixture.status.onStatus,
+      onRecoveryAction: vi.fn(),
+      focusAfterActionRetires: () => fallback as unknown as HTMLElement,
+    });
+    const action = findByAttr(
+      fixture.bannerHost,
+      CONNECTION_BANNER_ACTION_ATTR,
+    )!;
+
+    fixture.status.set('offline');
+    action.focus();
+    expect(fixture.fake.activeElement()).toBe(action);
+
+    fixture.status.set('connected');
+
+    expect(action.hasAttribute('hidden')).toBe(true);
+    expect(fixture.fake.activeElement()).toBe(fallback);
     mount.dispose();
   });
 

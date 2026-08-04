@@ -29,6 +29,7 @@ import {
   APPROVALS_ROUTE_PLAN_RESOLUTION_ANNOUNCER_ATTR,
   APPROVALS_ROUTE_PLAN_RESOLUTION_DISMISS_ATTR,
   APPROVALS_ROUTE_PLAN_RESOLUTION_LINK_ATTR,
+  APPROVALS_ROUTE_REFRESH_ATTR,
   APPROVALS_ROUTE_SUMMARY_ATTR,
   APPROVALS_ROUTE_STYLES,
   APPROVALS_ROUTE_STYLES_MARKER,
@@ -42,15 +43,18 @@ import {
 import type { WebclientReconnectSubscriber } from '../realtime/connection-status.js';
 import {
   ASK_CARD_ATTR,
+  ASK_CARD_ERROR_ATTR,
   ASK_CARD_OPTION_ATTR,
   APPROVAL_CARD_ACTION_ATTR,
   APPROVAL_CARD_ATTR,
   APPROVAL_CARD_CAUTION_ATTR,
+  APPROVAL_CARD_ERROR_ATTR,
   APPROVAL_CARD_LINK_ATTR,
   APPROVAL_CARD_STYLES,
   CHAT_PLAN_CARD_ATTR,
   CHAT_PLAN_CARD_ACTION_ATTR,
   CHAT_PLAN_CARD_CHAT_LINK_ATTR,
+  CHAT_PLAN_CARD_ERROR_ATTR,
   CHAT_PLAN_CARD_RETRY_NOTICE_ATTR,
   CHAT_PLAN_CARD_UNAVAILABLE_NOTICE_ATTR,
 } from '@recued/ui-shared/approval-card';
@@ -84,20 +88,23 @@ interface FakeEl {
   readonly firstChild: FakeEl | null;
   setAttribute(k: string, v: string): void;
   getAttribute(k: string): string | null;
+  removeAttribute(k: string): void;
   appendChild(c: FakeEl): FakeEl;
   removeChild(c: FakeEl): FakeEl;
   addEventListener(type: string, fn: () => void): void;
+  removeEventListener(type: string, fn: () => void): void;
   focus(): void;
   click(): void;
 }
 
 interface FakeDoc {
   styleElements: FakeEl[];
+  activeElement: FakeEl | null;
   head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl };
   createElement(tag: string): FakeEl;
 }
 
-const makeFakeEl = (tag: string): FakeEl => {
+const makeFakeEl = (tag: string, onFocus?: (el: FakeEl) => void): FakeEl => {
   const el: FakeEl = {
     tagName: tag.toUpperCase(),
     className: '',
@@ -118,6 +125,9 @@ const makeFakeEl = (tag: string): FakeEl => {
     getAttribute(k) {
       return el.attrs.get(k) ?? null;
     },
+    removeAttribute(k) {
+      el.attrs.delete(k);
+    },
     appendChild(c) {
       el.children.push(c);
       return c;
@@ -132,8 +142,14 @@ const makeFakeEl = (tag: string): FakeEl => {
       list.push(fn);
       el.listeners.set(type, list);
     },
+    removeEventListener(type, fn) {
+      const list = el.listeners.get(type) ?? [];
+      const index = list.indexOf(fn);
+      if (index >= 0) list.splice(index, 1);
+    },
     focus() {
       el.focused = true;
+      onFocus?.(el);
     },
     click() {
       if (el.disabled) return;
@@ -150,8 +166,9 @@ const makeFakeDocument = (): FakeDoc => {
     const m = sel.match(/^([\w-]+)\[([\w-]+)\]$/);
     return m === null ? null : { tag: m[1]!.toUpperCase(), attr: m[2]! };
   };
-  return {
+  const doc: FakeDoc = {
     styleElements,
+    activeElement: null,
     head: {
       querySelector(sel) {
         const parsed = matchSelector(sel);
@@ -167,8 +184,12 @@ const makeFakeDocument = (): FakeDoc => {
         return el;
       },
     },
-    createElement: (tag) => makeFakeEl(tag),
+    createElement: (tag) => makeFakeEl(tag, (el) => {
+      if (doc.activeElement !== null) doc.activeElement.focused = false;
+      doc.activeElement = el;
+    }),
   };
+  return doc;
 };
 
 const collectByAttr = (root: FakeEl, attr: string, out: FakeEl[] = []): FakeEl[] => {
@@ -417,6 +438,184 @@ describe('D-169 P2 — bootstrapApprovalsRoute: re-hosts the asks panel', () => 
     route.dispose();
   });
 
+  it('keeps a slow ask option owned through a live repaint and returns failure focus', async () => {
+    let rejectAnswer: (error: unknown) => void = () => {};
+    const runSubmitAnswer = vi.fn(
+      () => new Promise<never>((_resolve, reject) => {
+        rejectAnswer = reject;
+      }),
+    );
+    const runList = vi.fn(async () => ({ asks: [ask('a1')] }));
+    const { doc, root, route, sub } = mountFor({
+      runApprovalList: vi.fn(async () => ({ approvals: [] })),
+      runApprovalSubscribe: vi.fn(async () => ({ approvals: [], seq: 1 })),
+      runList,
+      runSubmitAnswer,
+    });
+    await route.whenLoaded();
+
+    const answer = optionButton(root, 'yes')!;
+    answer.focus();
+    answer.click();
+    await tick();
+
+    let busyAnswer = optionButton(root, 'yes')!;
+    const guardedSibling = optionButton(root, 'no')!;
+    expect(doc.activeElement).toBe(busyAnswer);
+    expect(busyAnswer.disabled).toBe(false);
+    expect(busyAnswer.getAttribute('aria-disabled')).toBe('true');
+    expect(busyAnswer.getAttribute('aria-busy')).toBe('true');
+    expect(busyAnswer.textContent).toBe('Approving…');
+    expect(guardedSibling.getAttribute('aria-disabled')).toBe('true');
+    expect(guardedSibling.getAttribute('aria-busy')).toBeNull();
+    guardedSibling.click();
+    expect(runSubmitAnswer).toHaveBeenCalledTimes(1);
+    expect(route.hasInFlightWork()).toBe(true);
+
+    sub!.fire('notification.ask');
+    await route.asksPanel().whenLoaded();
+    busyAnswer = optionButton(root, 'yes')!;
+    expect(doc.activeElement).toBe(busyAnswer);
+    expect(busyAnswer.getAttribute('aria-busy')).toBe('true');
+    expect(busyAnswer.textContent).toBe('Approving…');
+
+    rejectAnswer(new Error('offline'));
+    await tick();
+
+    const retry = optionButton(root, 'yes')!;
+    const error = firstByAttr(root, ASK_CARD_ERROR_ATTR)!;
+    expect(doc.activeElement).toBe(retry);
+    expect(retry.getAttribute('aria-disabled')).toBeNull();
+    expect(retry.getAttribute('aria-busy')).toBeNull();
+    expect(retry.textContent).toBe('Yes');
+    expect(error.hidden).toBe(false);
+    expect(error.textContent).toBe('Could not submit — try again.');
+    expect(route.hasInFlightWork()).toBe(false);
+
+    route.dispose();
+  });
+
+  it('moves focus to the next decision after answering an ask', async () => {
+    let asks = [
+      ask('a-new', { created_at: 2_000 }),
+      ask('a-next', { created_at: 1_000 }),
+    ];
+    const runList = vi.fn(async () => ({ asks }));
+    const runSubmitAnswer = vi.fn(async ({ ask_id }: { ask_id: string }) => {
+      asks = asks.filter((row) => row.ask_id !== ask_id);
+      return { ok: true as const };
+    });
+    const { doc, root, route } = mountFor({
+      runApprovalList: vi.fn(async () => ({ approvals: [] })),
+      runApprovalSubscribe: vi.fn(async () => ({ approvals: [], seq: 1 })),
+      runList,
+      runSubmitAnswer,
+    });
+    await route.whenLoaded();
+
+    const answered = collectByAttr(root, APPROVALS_ROUTE_FOCUS_ATTR).find(
+      (card) => card.getAttribute(APPROVALS_ROUTE_FOCUS_ATTR) === 'a-new',
+    )!;
+    const answer = optionButton(answered, 'yes')!;
+    answer.focus();
+    answer.click();
+    await tick();
+
+    expect(runSubmitAnswer).toHaveBeenCalledWith({
+      ask_id: 'a-new',
+      option_id: 'yes',
+    });
+    expect(
+      collectByAttr(root, APPROVALS_ROUTE_FOCUS_ATTR).some(
+        (card) => card.getAttribute(APPROVALS_ROUTE_FOCUS_ATTR) === 'a-new',
+      ),
+    ).toBe(false);
+    const successor = collectByAttr(root, APPROVALS_ROUTE_FOCUS_ATTR).find(
+      (card) => card.getAttribute(APPROVALS_ROUTE_FOCUS_ATTR) === 'a-next',
+    )!;
+    expect(successor.getAttribute('tabindex')).toBe('-1');
+    expect(doc.activeElement).toBe(successor);
+
+    route.dispose();
+  });
+
+  it('keeps an acknowledged ask retired and advances focus when reconciliation fails', async () => {
+    const asks = [
+      ask('a-new', { created_at: 2_000 }),
+      ask('a-next', { created_at: 1_000 }),
+    ];
+    const runList = vi
+      .fn<() => Promise<{ asks: ReadonlyArray<ServerPendingAsk> }>>()
+      .mockResolvedValueOnce({ asks })
+      .mockRejectedValueOnce(new Error('ask queue unavailable'));
+    const runSubmitAnswer = vi.fn(async () => ({ ok: true as const }));
+    const { doc, root, route } = mountFor({
+      runApprovalList: vi.fn(async () => ({ approvals: [] })),
+      runApprovalSubscribe: vi.fn(async () => ({ approvals: [], seq: 1 })),
+      runList,
+      runSubmitAnswer,
+    });
+    await route.whenLoaded();
+
+    const answered = collectByAttr(root, APPROVALS_ROUTE_FOCUS_ATTR).find(
+      (card) => card.getAttribute(APPROVALS_ROUTE_FOCUS_ATTR) === 'a-new',
+    )!;
+    const answer = optionButton(answered, 'yes')!;
+    answer.focus();
+    answer.click();
+    await tick();
+    await route.asksPanel().whenLoaded();
+
+    expect(runSubmitAnswer).toHaveBeenCalledWith({
+      ask_id: 'a-new',
+      option_id: 'yes',
+    });
+    expect(
+      collectByAttr(root, APPROVALS_ROUTE_FOCUS_ATTR).some(
+        (card) => card.getAttribute(APPROVALS_ROUTE_FOCUS_ATTR) === 'a-new',
+      ),
+    ).toBe(false);
+    const successor = collectByAttr(root, APPROVALS_ROUTE_FOCUS_ATTR).find(
+      (card) => card.getAttribute(APPROVALS_ROUTE_FOCUS_ATTR) === 'a-next',
+    )!;
+    expect(successor.getAttribute('tabindex')).toBe('-1');
+    expect(doc.activeElement).toBe(successor);
+    expect(firstByAttr(root, APPROVALS_ROUTE_ERROR_ATTR)?.textContent)
+      .toContain('ask queue unavailable');
+
+    route.dispose();
+  });
+
+  it('moves focus when a focused ask closes on another surface', async () => {
+    let asks = [
+      ask('a-new', { created_at: 2_000 }),
+      ask('a-next', { created_at: 1_000 }),
+    ];
+    const runList = vi.fn(async () => ({ asks }));
+    const { doc, root, route, sub } = mountFor({
+      runApprovalList: vi.fn(async () => ({ approvals: [] })),
+      runApprovalSubscribe: vi.fn(async () => ({ approvals: [], seq: 1 })),
+      runList,
+    });
+    await route.whenLoaded();
+
+    const closed = collectByAttr(root, APPROVALS_ROUTE_FOCUS_ATTR).find(
+      (card) => card.getAttribute(APPROVALS_ROUTE_FOCUS_ATTR) === 'a-new',
+    )!;
+    closed.focus();
+    asks = asks.filter((row) => row.ask_id !== 'a-new');
+    sub!.fire('notification.ask_closed');
+    await tick();
+
+    const successor = collectByAttr(root, APPROVALS_ROUTE_FOCUS_ATTR).find(
+      (card) => card.getAttribute(APPROVALS_ROUTE_FOCUS_ATTR) === 'a-next',
+    )!;
+    expect(successor.getAttribute('tabindex')).toBe('-1');
+    expect(doc.activeElement).toBe(successor);
+
+    route.dispose();
+  });
+
   it('forwards the subscribe seam — a notification.ask bus frame re-fetches the list', async () => {
     const runList = vi.fn(async () => ({ asks: [ask('a1')] }));
     const { route, sub } = mountFor({ runList });
@@ -499,6 +698,8 @@ describe('D-174 — bootstrapApprovalsRoute: deep queue', () => {
     );
     expect(focused).toHaveLength(1);
     expect(focused[0]!.getAttribute(APPROVALS_ROUTE_FOCUS_ATTR)).toBe('ap-2');
+    expect(focused[0]!.getAttribute('tabindex')).toBe('-1');
+    expect(focused[0]!.focused).toBe(true);
     const plain = focusCards.filter(
       (c) => c.getAttribute('data-focused') !== 'true',
     );
@@ -545,6 +746,8 @@ describe('D-174 — bootstrapApprovalsRoute: deep queue', () => {
     );
     expect(focused).toHaveLength(1);
     expect(focused[0]!.getAttribute(APPROVALS_ROUTE_FOCUS_ATTR)).toBe('a1');
+    expect(focused[0]!.getAttribute('tabindex')).toBe('-1');
+    expect(focused[0]!.focused).toBe(true);
 
     route.dispose();
   });
@@ -575,6 +778,53 @@ describe('D-174 — bootstrapApprovalsRoute: deep queue', () => {
     });
     expect(route.getApprovals()).toEqual([]);
     expect(collectByAttr(root, APPROVAL_CARD_ATTR)).toHaveLength(0);
+
+    route.dispose();
+  });
+
+  it('returns a rejected decision to its exact action and announces the error', async () => {
+    let rejectResolve: (error: unknown) => void = () => {};
+    const runApprovalResolve = vi.fn(
+      () => new Promise<never>((_resolve, reject) => {
+        rejectResolve = reject;
+      }),
+    );
+    const { doc, root, route } = mountFor({
+      runApprovalList: vi.fn(async () => ({ approvals: [approval('ap-1')] })),
+      runApprovalSubscribe: vi.fn(async () => ({
+        approvals: [approval('ap-1')],
+        seq: 1,
+      })),
+      runApprovalResolve,
+      runList: vi.fn(async () => ({ asks: [] })),
+    });
+    await route.whenLoaded();
+
+    approvalAction(root, 'reject')!.focus();
+    approvalAction(root, 'reject')!.click();
+    await tick();
+    const busyReject = approvalAction(root, 'reject')!;
+    expect(doc.activeElement).toBe(busyReject);
+    expect(busyReject.disabled).toBe(false);
+    expect(busyReject.getAttribute('aria-disabled')).toBe('true');
+    expect(busyReject.getAttribute('aria-busy')).toBe('true');
+    expect(busyReject.textContent).toBe('Rejecting…');
+    expect(route.hasInFlightWork()).toBe(true);
+    expect(route.inFlightWorkPrompt()).toBe(
+      'An approval action is still in progress. Leave Approvals anyway?',
+    );
+    rejectResolve(new Error('Decision could not be saved.'));
+    await tick();
+
+    const reject = approvalAction(root, 'reject')!;
+    const error = firstByAttr(root, APPROVAL_CARD_ERROR_ATTR)!;
+    expect(doc.activeElement).toBe(reject);
+    expect(reject.disabled).toBe(false);
+    expect(error.hidden).toBe(false);
+    expect(error.getAttribute('role')).toBe('alert');
+    expect(error.textContent).toBe('Decision could not be saved.');
+    expect(route.hasInFlightWork()).toBe(false);
+    expect(route.inFlightWorkPrompt()).toBeNull();
 
     route.dispose();
   });
@@ -751,7 +1001,7 @@ describe('R20 — destructive gate confirm', () => {
   };
 
   it('arms on Approve (no resolve) then resolves on Confirm', async () => {
-    const { root, route, runApprovalResolve } = mountDestructive();
+    const { doc, root, route, runApprovalResolve, sub } = mountDestructive();
     await route.whenLoaded();
 
     // Unarmed: an "arm" Approve button, no resolve "approve"/"confirm", no caution.
@@ -761,6 +1011,7 @@ describe('R20 — destructive gate confirm', () => {
     expect(firstByAttr(root, APPROVAL_CARD_CAUTION_ATTR)).toBeUndefined();
 
     // First Approve click ARMS — it does NOT resolve.
+    approvalAction(root, 'arm')!.focus();
     approvalAction(root, 'arm')!.click();
     await tick();
     expect(runApprovalResolve).not.toHaveBeenCalled();
@@ -768,9 +1019,17 @@ describe('R20 — destructive gate confirm', () => {
     expect(approvalAction(root, 'confirm')).toBeDefined();
     expect(approvalAction(root, 'cancel')).toBeDefined();
     expect(approvalAction(root, 'arm')).toBeUndefined();
+    let confirm = approvalAction(root, 'confirm')!;
+    expect(doc.activeElement).toBe(confirm);
+
+    // A benign queue repaint keeps ownership on the exact confirm control.
+    sub!.fire('approval');
+    await tick();
+    confirm = approvalAction(root, 'confirm')!;
+    expect(doc.activeElement).toBe(confirm);
 
     // Confirm resolves approve.
-    approvalAction(root, 'confirm')!.click();
+    confirm.click();
     await tick();
     expect(runApprovalResolve).toHaveBeenCalledTimes(1);
     expect(runApprovalResolve).toHaveBeenCalledWith({
@@ -783,16 +1042,20 @@ describe('R20 — destructive gate confirm', () => {
   });
 
   it('Cancel disarms back to the unarmed Approve (no resolve fires)', async () => {
-    const { root, route, runApprovalResolve } = mountDestructive();
+    const { doc, root, route, runApprovalResolve } = mountDestructive();
     await route.whenLoaded();
 
+    approvalAction(root, 'arm')!.focus();
     approvalAction(root, 'arm')!.click();
     await tick();
     expect(approvalAction(root, 'confirm')).toBeDefined();
 
+    approvalAction(root, 'cancel')!.focus();
     approvalAction(root, 'cancel')!.click();
     await tick();
-    expect(approvalAction(root, 'arm')).toBeDefined();
+    const approve = approvalAction(root, 'arm')!;
+    expect(approve).toBeDefined();
+    expect(doc.activeElement).toBe(approve);
     expect(approvalAction(root, 'confirm')).toBeUndefined();
     expect(firstByAttr(root, APPROVAL_CARD_CAUTION_ATTR)).toBeUndefined();
     expect(runApprovalResolve).not.toHaveBeenCalled();
@@ -1149,14 +1412,45 @@ describe('R20 — chat plan-approvals in #approvals', () => {
 
   it('reconciles after a stale resolve failure before leaving the card retryable', async () => {
     const chatPlans = makeFakeChatPlans([plan('pl-stale')]);
-    const runChatPlanResolve = vi.fn(async () => {
-      throw new Error('already resolved elsewhere');
-    });
-    const { root, route } = mountWithPlans(chatPlans, runChatPlanResolve);
+    let rejectResolve: (error: unknown) => void = () => {};
+    const runChatPlanResolve = vi.fn(
+      () => new Promise<never>((_resolve, reject) => {
+        rejectResolve = reject;
+      }),
+    );
+    const { doc, root, route } = mountWithPlans(chatPlans, runChatPlanResolve);
     await route.whenLoaded();
     chatPlans.refresh.mockClear();
 
+    chatPlanAction(root, 'approve')!.focus();
     chatPlanAction(root, 'approve')!.click();
+    await tick();
+    let busyApprove = chatPlanAction(root, 'approve')!;
+    const guardedReject = chatPlanAction(root, 'reject')!;
+    expect(doc.activeElement).toBe(busyApprove);
+    expect(busyApprove.disabled).toBe(false);
+    expect(busyApprove.getAttribute('aria-disabled')).toBe('true');
+    expect(busyApprove.getAttribute('aria-busy')).toBe('true');
+    expect(busyApprove.textContent).toBe('Approving…');
+    expect(guardedReject.getAttribute('aria-disabled')).toBe('true');
+    expect(guardedReject.getAttribute('aria-busy')).toBeNull();
+    guardedReject.click();
+    expect(runChatPlanResolve).toHaveBeenCalledTimes(1);
+    expect(route.hasInFlightWork()).toBe(true);
+    expect(route.inFlightWorkPrompt()).toBe(
+      'An approval action is still in progress. Leave Approvals anyway?',
+    );
+
+    // A benign store notification rebuilds the unified list while the action
+    // is pending; the replacement must retain the exact progress owner.
+    chatPlans.set([plan('pl-stale')]);
+    busyApprove = chatPlanAction(root, 'approve')!;
+    expect(doc.activeElement).toBe(busyApprove);
+    expect(busyApprove.getAttribute('aria-busy')).toBe('true');
+    expect(busyApprove.textContent).toBe('Approving…');
+
+    doc.activeElement = null;
+    rejectResolve(new Error('already resolved elsewhere'));
     await tick();
 
     expect(chatPlans.refresh).toHaveBeenCalledTimes(1);
@@ -1166,6 +1460,12 @@ describe('R20 — chat plan-approvals in #approvals', () => {
         (action) => action.disabled === false,
       ),
     ).toBe(true);
+    expect(doc.activeElement).toBe(chatPlanAction(root, 'approve'));
+    const error = firstByAttr(root, CHAT_PLAN_CARD_ERROR_ATTR)!;
+    expect(error.getAttribute('role')).toBe('alert');
+    expect(error.textContent).toBe('already resolved elsewhere');
+    expect(route.hasInFlightWork()).toBe(false);
+    expect(route.inFlightWorkPrompt()).toBeNull();
 
     route.dispose();
   });
@@ -1416,7 +1716,42 @@ describe('bootstrapApprovalsRoute: re-arms approval.subscribe on reconnect', () 
     const err = firstByAttr(root, APPROVALS_ROUTE_ERROR_ATTR);
     expect(err).toBeDefined();
     expect(err!.getAttribute(APPROVALS_ROUTE_ERROR_ATTR)).toBe('error');
+    expect(err!.getAttribute('role')).toBe('alert');
     expect(err!.textContent).toBe("Couldn't load approval gates: Bad filter.");
+    route.dispose();
+  });
+
+  it('keeps the unified queue Refresh focusable and single-flight', async () => {
+    let resolveRetry!: (value: { approvals: ServerPendingApproval[] }) => void;
+    const retry = new Promise<{ approvals: ServerPendingApproval[] }>((resolve) => {
+      resolveRetry = resolve;
+    });
+    const runApprovalList = vi.fn<ApprovalListCaller>()
+      .mockRejectedValueOnce(
+        new RpcError('bad_request', 'Approval queue unavailable.', undefined, 'approval.list'),
+      )
+      .mockImplementationOnce(() => retry);
+    const { doc, root, route } = mountFor({ runApprovalList });
+    await route.whenLoaded();
+
+    const refresh = firstByAttr(root, APPROVALS_ROUTE_REFRESH_ATTR)!;
+    refresh.focus();
+    refresh.click();
+    refresh.click();
+    expect(runApprovalList).toHaveBeenCalledTimes(2);
+    expect(refresh.textContent).toBe('Refreshing…');
+    expect(refresh.getAttribute('aria-disabled')).toBe('true');
+    expect(refresh.getAttribute('aria-busy')).toBe('true');
+    expect(refresh.disabled).toBe(false);
+    expect(doc.activeElement).toBe(refresh);
+
+    resolveRetry({ approvals: [approval('ap-recovered')] });
+    await tick();
+    expect(firstByAttr(root, APPROVALS_ROUTE_ERROR_ATTR)).toBeUndefined();
+    expect(refresh.textContent).toBe('Refresh');
+    expect(refresh.getAttribute('aria-disabled')).toBeNull();
+    expect(refresh.getAttribute('aria-busy')).toBeNull();
+    expect(doc.activeElement).toBe(refresh);
     route.dispose();
   });
 

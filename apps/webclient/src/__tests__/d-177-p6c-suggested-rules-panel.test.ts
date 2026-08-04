@@ -761,6 +761,31 @@ describe('D-177 P6c Suggested rules panel', () => {
     mount.dispose();
   });
 
+  it('owns an unresolved suggestion decision until the RPC settles', async () => {
+    const row = suggestionRow('key_pending_accept');
+    const accepting = deferred<Awaited<ReturnType<SuggestionsAcceptCaller>>>();
+    const { mount } = mountSuggestedFor({
+      suggestions: [row],
+      runAcceptSuggestion: () => accepting.promise,
+    });
+    await mount.whenLoaded();
+
+    const pending = mount.acceptSuggestion('key_pending_accept', {
+      ttl_ms: 7 * DAY_MS,
+      max_uses: 5,
+    });
+    expect(mount.hasInFlightWork()).toBe(true);
+
+    accepting.resolve({
+      rule: contractView('ct_pending', { grant_kind: 'delegation' }),
+      suggestion: suggestionRow('key_pending_accept', { state: 'accepted' }),
+    });
+    await pending;
+
+    expect(mount.hasInFlightWork()).toBe(false);
+    mount.dispose();
+  });
+
   it('rejects TTL values above the delegation ceiling client-side', async () => {
     const row = suggestionRow('key_ttl_guard');
     const { host, mount, calls } = mountSuggestedFor({ suggestions: [row] });

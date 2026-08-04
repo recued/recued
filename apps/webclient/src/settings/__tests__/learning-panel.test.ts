@@ -25,6 +25,7 @@ import {
   LEARNING_PANEL_DRAFT_PROMPT_ATTR,
   LEARNING_PANEL_ERROR_ATTR,
   LEARNING_PANEL_FORGET_ATTR,
+  LEARNING_PANEL_FORGET_ERROR_ATTR,
   LEARNING_PANEL_HOST_ATTR,
   LEARNING_PANEL_STYLES,
   LEARNING_PANEL_OFF_HINT_ATTR,
@@ -51,13 +52,19 @@ interface FakeElement {
   appendChild(el: FakeElement): FakeElement;
   removeChild(el: FakeElement): FakeElement;
   addEventListener(type: string, fn: () => void): void;
+  querySelector(selector: string): FakeElement | null;
+  querySelectorAll(selector: string): FakeElement[];
+  focus(): void;
   dispatchChange(): void;
   dispatchClick(): void;
   dispatchInput(): void;
   value: string;
 }
 
-const makeFakeElement = (tagName: string): FakeElement => {
+const makeFakeElement = (
+  tagName: string,
+  onFocus?: (element: FakeElement) => void,
+): FakeElement => {
   const el: FakeElement = {
     tagName: tagName.toUpperCase(),
     textContent: '',
@@ -85,6 +92,24 @@ const makeFakeElement = (tagName: string): FakeElement => {
       list.push(fn);
       el.listeners.set(type, list);
     },
+    querySelector(selector) {
+      return el.querySelectorAll(selector)[0] ?? null;
+    },
+    querySelectorAll(selector) {
+      const match = /^\[([^\]=]+)\]$/.exec(selector);
+      if (!match) return [];
+      const attr = match[1]!;
+      const matches: FakeElement[] = [];
+      const visit = (root: FakeElement): void => {
+        for (const child of root.children) {
+          if (child.hasAttribute(attr)) matches.push(child);
+          visit(child);
+        }
+      };
+      visit(el);
+      return matches;
+    },
+    focus() { onFocus?.(el); },
     dispatchChange() {
       for (const fn of el.listeners.get('change') ?? []) fn();
     },
@@ -98,7 +123,20 @@ const makeFakeElement = (tagName: string): FakeElement => {
   return el;
 };
 
-const makeFakeDocument = () => ({ createElement: makeFakeElement });
+interface FakeDocument {
+  activeElement: FakeElement | null;
+  createElement(tagName: string): FakeElement;
+}
+
+const makeFakeDocument = (): FakeDocument => {
+  const doc: FakeDocument = {
+    activeElement: null,
+    createElement: (tagName) => makeFakeElement(tagName, (element) => {
+      doc.activeElement = element;
+    }),
+  };
+  return doc;
+};
 
 const findAllByAttr = (
   root: FakeElement, attr: string, out: FakeElement[] = [],
@@ -122,17 +160,18 @@ const mount = (opts: {
   set?: (args: { patch: Partial<InstancePrefs> }) => Promise<{ prefs: InstancePrefs }>;
 } = {}) => {
   const host = makeFakeElement('div');
+  const doc = makeFakeDocument();
   const runPrefsSet = vi.fn(
     opts.set ?? (async (args: { patch: Partial<InstancePrefs> }) =>
       ({ prefs: prefs(args.patch) })),
   );
   const panel = mountLearningPanel({
     host: host as unknown as HTMLElement,
-    document: makeFakeDocument() as unknown as Document,
+    document: doc as unknown as Document,
     runPrefsGet: opts.get ?? (async () => ({ prefs: prefs() })),
     runPrefsSet,
   });
-  return { host, panel, runPrefsSet };
+  return { host, doc, panel, runPrefsSet };
 };
 
 describe('Settings → Learning — the ask that feeds precedent', () => {
@@ -154,6 +193,7 @@ describe('Settings → Learning — the ask that feeds precedent', () => {
     const h = mount();
     await h.panel.whenLoaded();
     const toggle = findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR)!;
+    toggle.focus();
     toggle.checked = false;
     toggle.dispatchChange();
     await h.panel.whenSaveSettled();
@@ -166,6 +206,43 @@ describe('Settings → Learning — the ask that feeds precedent', () => {
     });
     expect(h.panel.getState().prefs?.['chat.execution_case_offer']).toBe(false);
     expect(findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR)?.checked).toBe(false);
+  });
+
+  it('keeps a focused pending value truthful and single-flight until the server answers', async () => {
+    let settle!: (value: { prefs: InstancePrefs }) => void;
+    const h = mount({
+      set: () => new Promise((resolve) => { settle = resolve; }),
+    });
+    await h.panel.whenLoaded();
+    expect(h.panel.hasInFlightWork()).toBe(false);
+    let toggle = findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR)!;
+    toggle.focus();
+    toggle.checked = false;
+    toggle.dispatchChange();
+
+    toggle = findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR)!;
+    expect(h.panel.hasInFlightWork()).toBe(true);
+    expect(toggle.checked).toBe(false);
+    expect(toggle.disabled).toBe(false);
+    expect(toggle.getAttribute('aria-disabled')).toBe('true');
+    expect(toggle.getAttribute('aria-busy')).toBe('true');
+    expect(h.doc.activeElement).toBe(toggle);
+
+    // A second native toggle while ARIA-locked is immediately rolled back and
+    // never starts a competing write.
+    toggle.checked = true;
+    toggle.dispatchChange();
+    expect(toggle.checked).toBe(false);
+    expect(h.runPrefsSet).toHaveBeenCalledTimes(1);
+
+    settle({ prefs: prefs({ 'chat.execution_case_offer': false }) });
+    await h.panel.whenSaveSettled();
+    expect(h.panel.hasInFlightWork()).toBe(false);
+    toggle = findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR)!;
+    expect(toggle.checked).toBe(false);
+    expect(toggle.hasAttribute('aria-disabled')).toBe(false);
+    expect(toggle.hasAttribute('aria-busy')).toBe(false);
+    expect(h.doc.activeElement).toBe(toggle);
   });
 
   it('says what is LOST while it is off, and that past answers are kept', async () => {
@@ -208,6 +285,7 @@ describe('Settings → Learning — the ask that feeds precedent', () => {
     const h = mount({ set: async () => { throw new Error('pair offline'); } });
     await h.panel.whenLoaded();
     const toggle = findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR)!;
+    toggle.focus();
     toggle.checked = false;
     toggle.dispatchChange();
     await h.panel.whenSaveSettled();
@@ -216,6 +294,9 @@ describe('Settings → Learning — the ask that feeds precedent', () => {
     // last authoritative one rather than the optimistic click.
     expect(findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR)?.checked).toBe(true);
     expect(findByAttr(h.host, LEARNING_PANEL_ERROR_ATTR)).not.toBeNull();
+    expect(h.doc.activeElement).toBe(
+      findByAttr(h.host, LEARNING_PANEL_TOGGLE_ATTR),
+    );
   });
 
   it('dispose clears the host and its marker', async () => {
@@ -255,6 +336,7 @@ const mountWithCases = (opts: {
   ) => Promise<{ removed: boolean; cases_remaining: number }>;
 } = {}) => {
   const host = makeFakeElement('div');
+  const doc = makeFakeDocument();
   const runCasesList = vi.fn(
     opts.cases ?? (async () => ({ cases: [learned()] })),
   );
@@ -263,13 +345,13 @@ const mountWithCases = (opts: {
   );
   const panel = mountLearningPanel({
     host: host as unknown as HTMLElement,
-    document: makeFakeDocument() as unknown as Document,
+    document: doc as unknown as Document,
     runPrefsGet: async () => ({ prefs: prefs() }),
     runPrefsSet: async (args) => ({ prefs: prefs(args.patch) }),
     runCasesList,
     runCaseForget,
   });
-  return { host, panel, runCasesList, runCaseForget };
+  return { host, doc, panel, runCasesList, runCaseForget };
 };
 
 describe('Settings → Learning — what Recued has learned', () => {
@@ -364,6 +446,71 @@ describe('Settings → Learning — what Recued has learned', () => {
     expect(h.runCaseForget.mock.calls[0]![0]).toEqual({ case_id: 'case_one' });
   });
 
+  it('keeps a keyboard-owned confirmation and pending Forget single-flight', async () => {
+    let listed = [learned()];
+    let settle!: () => void;
+    const h = mountWithCases({
+      cases: async () => ({ cases: listed }),
+      forget: () => new Promise((resolve) => {
+        settle = () => {
+          listed = [];
+          resolve({ removed: true, cases_remaining: 0 });
+        };
+      }),
+    });
+    await h.panel.whenLoaded();
+    let button = findByAttr(h.host, LEARNING_PANEL_FORGET_ATTR)!;
+    button.focus();
+    button.dispatchClick();
+
+    button = findByAttr(h.host, LEARNING_PANEL_FORGET_ATTR)!;
+    expect(textOf(button)).toContain('Tap again');
+    expect(h.doc.activeElement).toBe(button);
+    button.dispatchClick();
+
+    button = findByAttr(h.host, LEARNING_PANEL_FORGET_ATTR)!;
+    expect(h.panel.hasInFlightWork()).toBe(true);
+    expect(textOf(button)).toContain('Forgetting...');
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    expect(h.doc.activeElement).toBe(button);
+    button.dispatchClick();
+    button.dispatchClick();
+    expect(h.runCaseForget).toHaveBeenCalledTimes(1);
+
+    settle();
+    await h.panel.whenForgetSettled();
+    expect(h.panel.hasInFlightWork()).toBe(false);
+    const empty = findByAttr(h.host, LEARNING_PANEL_CASES_EMPTY_ATTR)!;
+    expect(empty.getAttribute('tabindex')).toBe('-1');
+    expect(h.doc.activeElement).toBe(empty);
+  });
+
+  it('keeps a failed Forget beside its case, armed and focused for retry', async () => {
+    const h = mountWithCases({
+      forget: async () => { throw new Error('pair offline'); },
+    });
+    await h.panel.whenLoaded();
+    let button = findByAttr(h.host, LEARNING_PANEL_FORGET_ATTR)!;
+    button.focus();
+    button.dispatchClick();
+    findByAttr(h.host, LEARNING_PANEL_FORGET_ATTR)!.dispatchClick();
+    await h.panel.whenForgetSettled();
+
+    button = findByAttr(h.host, LEARNING_PANEL_FORGET_ATTR)!;
+    expect(findByAttr(h.host, LEARNING_PANEL_CASE_ATTR)).not.toBeNull();
+    expect(findByAttr(h.host, LEARNING_PANEL_CASES_ERROR_ATTR)).toBeNull();
+    expect(textOf(findByAttr(h.host, LEARNING_PANEL_FORGET_ERROR_ATTR)!))
+      .toContain('pair offline');
+    expect(textOf(button)).toContain('Tap again');
+    expect(h.doc.activeElement).toBe(button);
+
+    button.dispatchClick();
+    await h.panel.whenForgetSettled();
+    expect(h.runCaseForget).toHaveBeenCalledTimes(2);
+  });
+
   it('⛔ RE-READS the list after forgetting rather than splicing locally', async () => {
     // Forgetting removes the case's SOURCE reports, and a report shared with
     // another case takes that one with it. Only the server knows what actually
@@ -441,25 +588,44 @@ const CONFIRMATION = 'It is a slow call and it spends your model quota.';
 const mountWithDraft = (opts: {
   draft?: LearningDraftRecipeCaller;
   cases?: ExecutionCaseLearnedEntry[];
+  forget?: (
+    args: { case_id: string },
+  ) => Promise<{ removed: boolean; cases_remaining: number }>;
+  handoff?: (draft: {
+    case_id: string;
+    recipe: unknown;
+    request_aliased: boolean;
+  }) => boolean | void;
 } = {}) => {
   const host = makeFakeElement('div');
-  const onDraftReady = vi.fn();
+  const doc = makeFakeDocument();
+  const onDraftReady = vi.fn(opts.handoff ?? (() => undefined));
   const runDraftRecipe = vi.fn(
     opts.draft ?? (async () =>
       ({ ok: true, recipe: { recipe_id: 'r' }, issues: [], request_aliased: true })),
   );
+  const runCaseForget = vi.fn(
+    opts.forget ?? (async () => ({ removed: true, cases_remaining: 0 })),
+  );
   const panel = mountLearningPanel({
     host: host as unknown as HTMLElement,
-    document: makeFakeDocument() as unknown as Document,
+    document: doc as unknown as Document,
     runPrefsGet: async () => ({ prefs: prefs() }),
     runPrefsSet: async (args) => ({ prefs: prefs(args.patch) }),
     runCasesList: async () => ({ cases: opts.cases ?? [learned()] }),
-    runCaseForget: async () => ({ removed: true, cases_remaining: 0 }),
+    runCaseForget,
     runDraftRecipe,
     onDraftReady,
     draftConfirmation: CONFIRMATION,
   });
-  return { host, panel, runDraftRecipe, onDraftReady };
+  return {
+    host,
+    doc,
+    panel,
+    runCaseForget,
+    runDraftRecipe,
+    onDraftReady,
+  };
 };
 
 describe('Settings → Learning — make a recipe from a case', () => {
@@ -479,18 +645,125 @@ describe('Settings → Learning — make a recipe from a case', () => {
     await h.panel.whenLoaded();
     expect(findByAttr(h.host, LEARNING_PANEL_DRAFT_CONFIRM_ATTR)).toBeNull();
 
-    findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!.dispatchClick();
+    let button = findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!;
+    button.focus();
+    button.dispatchClick();
     expect(h.runDraftRecipe).not.toHaveBeenCalled();
     const confirm = findByAttr(h.host, LEARNING_PANEL_DRAFT_CONFIRM_ATTR);
     // ⛔ The SERVER's copy, threaded through — not a paraphrase this panel owns,
     // which could soften what the owner is agreeing to.
     expect(textOf(confirm!)).toBe(CONFIRMATION);
-    expect(textOf(findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!))
-      .toContain('Yes, write the draft');
+    button = findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!;
+    expect(textOf(button)).toContain('Yes, write the draft');
+    expect(h.doc.activeElement).toBe(button);
+  });
+
+  it('retains the prompt and focused single-flight control through failure', async () => {
+    let reject!: (reason: Error) => void;
+    const h = mountWithDraft({
+      draft: () => new Promise((_resolve, rejectDraft) => {
+        reject = rejectDraft;
+      }),
+    });
+    await h.panel.whenLoaded();
+    let button = findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!;
+    button.focus();
+    button.dispatchClick();
+
+    const prompt = findByAttr(h.host, LEARNING_PANEL_DRAFT_PROMPT_ATTR)!;
+    prompt.value = 'run it every Monday';
+    prompt.dispatchInput();
+    button = findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!;
+    button.focus();
+    button.dispatchClick();
+
+    button = findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!;
+    expect(h.panel.hasInFlightWork()).toBe(true);
+    expect(textOf(button)).toContain('Asking your AI...');
+    expect(button.disabled).toBe(false);
+    expect(button.getAttribute('aria-disabled')).toBe('true');
+    expect(button.getAttribute('aria-busy')).toBe('true');
+    expect(h.doc.activeElement).toBe(button);
+    expect(findByAttr(h.host, LEARNING_PANEL_DRAFT_PROMPT_ATTR)?.value)
+      .toBe('run it every Monday');
+    button.dispatchClick();
+    button.dispatchClick();
+    expect(h.runDraftRecipe).toHaveBeenCalledTimes(1);
+
+    reject(new Error('pair offline'));
+    await h.panel.whenDraftSettled();
+    expect(h.panel.hasInFlightWork()).toBe(false);
+    button = findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!;
+    expect(textOf(button)).toContain('Yes, write the draft');
+    expect(findByAttr(h.host, LEARNING_PANEL_DRAFT_PROMPT_ATTR)?.value)
+      .toBe('run it every Monday');
+    expect(textOf(findByAttr(h.host, LEARNING_PANEL_DRAFT_ERROR_ATTR)!))
+      .toContain('pair offline');
+    expect(h.doc.activeElement).toBe(button);
+  });
+
+  it('serializes drafting and forgetting so neither can race the other', async () => {
+    let settleDraft!: () => void;
+    const drafting = mountWithDraft({
+      draft: () => new Promise((resolve) => {
+        settleDraft = () => resolve({
+          ok: false,
+          issues: ['not used'],
+          reason: 'invalid_recipe',
+        });
+      }),
+    });
+    await drafting.panel.whenLoaded();
+    findByAttr(drafting.host, LEARNING_PANEL_DRAFT_ATTR)!.dispatchClick();
+    findByAttr(drafting.host, LEARNING_PANEL_DRAFT_ATTR)!.dispatchClick();
+
+    let competing = findByAttr(drafting.host, LEARNING_PANEL_FORGET_ATTR)!;
+    expect(competing.getAttribute('aria-disabled')).toBe('true');
+    expect(competing.disabled).toBe(false);
+    competing.dispatchClick();
+    competing.dispatchClick();
+    expect(drafting.runCaseForget).not.toHaveBeenCalled();
+    settleDraft();
+    await drafting.panel.whenDraftSettled();
+
+    let settleForget!: () => void;
+    const forgetting = mountWithDraft({
+      forget: () => new Promise((resolve) => {
+        settleForget = () => resolve({ removed: true, cases_remaining: 0 });
+      }),
+    });
+    await forgetting.panel.whenLoaded();
+    findByAttr(forgetting.host, LEARNING_PANEL_FORGET_ATTR)!.dispatchClick();
+    findByAttr(forgetting.host, LEARNING_PANEL_FORGET_ATTR)!.dispatchClick();
+
+    competing = findByAttr(forgetting.host, LEARNING_PANEL_DRAFT_ATTR)!;
+    expect(competing.getAttribute('aria-disabled')).toBe('true');
+    expect(competing.disabled).toBe(false);
+    competing.dispatchClick();
+    competing.dispatchClick();
+    expect(forgetting.runDraftRecipe).not.toHaveBeenCalled();
+    settleForget();
+    await forgetting.panel.whenForgetSettled();
   });
 
   it('sends the owner\'s instruction, and hands the draft back', async () => {
-    const h = mountWithDraft();
+    const ownershipDuringHandoff: Array<{
+      inFlight: boolean;
+      unsaved: boolean;
+    }> = [];
+    let readOwnership = (): { inFlight: boolean; unsaved: boolean } => ({
+      inFlight: true,
+      unsaved: true,
+    });
+    const h = mountWithDraft({
+      handoff: () => {
+        ownershipDuringHandoff.push(readOwnership());
+      },
+    });
+    readOwnership = () => ({
+      inFlight: h.panel.hasInFlightWork(),
+      unsaved: h.panel.hasUnsavedChanges(),
+    });
     await h.panel.whenLoaded();
     findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!.dispatchClick();
 
@@ -510,6 +783,45 @@ describe('Settings → Learning — make a recipe from a case', () => {
       recipe: { recipe_id: 'r' },
       request_aliased: true,
     });
+    expect(ownershipDuringHandoff).toEqual([{
+      inFlight: false,
+      unsaved: false,
+    }]);
+  });
+
+  it('retries a finished hand-off without asking the model again', async () => {
+    let handoffAttempts = 0;
+    const h = mountWithDraft({
+      handoff: () => {
+        handoffAttempts += 1;
+        return handoffAttempts > 1;
+      },
+    });
+    await h.panel.whenLoaded();
+    let button = findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!;
+    button.focus();
+    button.dispatchClick();
+    findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!.dispatchClick();
+    await h.panel.whenDraftSettled();
+
+    button = findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!;
+    expect(h.panel.hasInFlightWork()).toBe(false);
+    expect(h.panel.hasUnsavedChanges()).toBe(true);
+    expect(textOf(button)).toContain('Open finished draft');
+    expect(textOf(findByAttr(h.host, LEARNING_PANEL_DRAFT_ERROR_ATTR)!))
+      .toContain('does not ask your AI or spend model quota again');
+    expect(h.runDraftRecipe).toHaveBeenCalledTimes(1);
+    expect(h.onDraftReady).toHaveBeenCalledTimes(1);
+    expect(h.doc.activeElement).toBe(button);
+
+    button.dispatchClick();
+    expect(h.panel.hasUnsavedChanges()).toBe(false);
+    expect(h.onDraftReady).toHaveBeenCalledTimes(2);
+    expect(h.runDraftRecipe).toHaveBeenCalledTimes(1);
+    expect(findByAttr(h.host, LEARNING_PANEL_DRAFT_ERROR_ATTR)).toBeNull();
+    button = findByAttr(h.host, LEARNING_PANEL_DRAFT_ATTR)!;
+    expect(textOf(button)).toContain('Make a recipe...');
+    expect(h.doc.activeElement).toBe(button);
   });
 
   it('⚠ shows what the validator found, rather than failing silently', async () => {

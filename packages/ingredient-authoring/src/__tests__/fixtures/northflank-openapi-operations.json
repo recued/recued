@@ -3,12 +3,12 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://api.northflank.com/v1/swagger-json",
-      "bytes": 5911172,
-      "sha256": "59fdc2ce6fe8a7652715b2e0a24f762b2e248666393843d019af019159fa1d3b",
+      "bytes": 6109872,
+      "sha256": "628fb19e8b788edb82b9899c4285421158f3ea46d1fc7e7950f7f23c74c52037",
       "openapi": "3.0.1",
       "title": "Northflank API",
       "api_version": "1.0.0",
-      "official_path_count": 422,
+      "official_path_count": 426,
       "retrieved_on": "2026-07-15",
       "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract.",
       "declared_server": [
@@ -55,21 +55,21 @@
         ]
       }
     ],
-    "official_operation_count": 685,
-    "admitted_operation_count": 609,
+    "official_operation_count": 689,
+    "admitted_operation_count": 613,
     "deprecated_operation_count": 76,
     "official_method_counts": {
       "DELETE": 83,
       "GET": 283,
-      "PATCH": 47,
-      "POST": 234,
+      "PATCH": 49,
+      "POST": 236,
       "PUT": 38
     },
     "admitted_method_counts": {
       "DELETE": 81,
       "GET": 257,
-      "PATCH": 43,
-      "POST": 194,
+      "PATCH": 45,
+      "POST": 196,
       "PUT": 34
     },
     "official_tag_counts": {
@@ -78,7 +78,7 @@
       "Backup Destinations": 12,
       "Billing": 8,
       "Cloud Providers": 35,
-      "Domains": 46,
+      "Domains": 50,
       "Egress IPs": 12,
       "External Addons": 10,
       "Integrations": 70,
@@ -109,7 +109,7 @@
       "Backup Destinations": 12,
       "Billing": 8,
       "Cloud Providers": 35,
-      "Domains": 46,
+      "Domains": 50,
       "Egress IPs": 12,
       "External Addons": 10,
       "Integrations": 70,
@@ -140,38 +140,38 @@
       "northflank-addons": 73,
       "northflank-storage-secrets": 76,
       "northflank-integrations": 70,
-      "northflank-networking": 86,
+      "northflank-networking": 90,
       "northflank-cloud-ai": 47,
       "northflank-templates-preview": 46,
       "northflank-account-admin": 53
     },
     "composition_bytes": {
-      "northflank-projects-services": 139790,
+      "northflank-projects-services": 139988,
       "northflank-jobs-automation": 199700,
       "northflank-addons": 154592,
-      "northflank-storage-secrets": 147012,
+      "northflank-storage-secrets": 146888,
       "northflank-integrations": 125774,
-      "northflank-networking": 154856,
+      "northflank-networking": 162764,
       "northflank-cloud-ai": 85241,
       "northflank-templates-preview": 95230,
-      "northflank-account-admin": 93170
+      "northflank-account-admin": 93250
     },
     "body_mode_counts": {
       "none": 386,
-      "raw_json": 223
+      "raw_json": 227
     },
     "risk_counts": {
-      "admin": 229,
-      "destructive": 123,
+      "admin": 231,
+      "destructive": 125,
       "read": 257
     },
     "approval_counts": {
-      "always": 352,
+      "always": 356,
       "never": 257
     },
     "idempotency_counts": {
-      "idempotent": 158,
-      "non_idempotent": 194,
+      "idempotent": 160,
+      "non_idempotent": 196,
       "safe": 257
     },
     "pagination": {
@@ -415,11 +415,11 @@
     "auth": {
       "selected": "Complete Bearer token value supplied only by the enrolled northflank connection Authorization header",
       "official_documentation_model": "Bearer authorization over https://api.northflank.com/v1/",
-      "openapi_operation_security_empty_count": 685,
+      "openapi_operation_security_empty_count": 689,
       "credential_fields_in_pack": 0
     },
     "authority_notes": {
-      "openapi_operation_refs": 650,
+      "openapi_operation_refs": 654,
       "openapi_inline_operations": 35,
       "legacy_response_schema_shape": true,
       "placeholder_server_ignored": true,
@@ -606,7 +606,7 @@
         "approval": "never"
       }
     ],
-    "operation_ids_sha256": "f993722c60157b1a1755849029e940a4d1ef95210924833ac94e05f9518d76ce"
+    "operation_ids_sha256": "54a768d67d3d7ff437d6b398091f525491443c521bf06c38a9ed477caf77b37d"
   },
   "official_operations": [
     {
@@ -2249,6 +2249,82 @@
       "exclusion_reason": null,
       "pack": "northflank-networking",
       "op": "domains.post_domains_domain_subdomains_subdomain_cdn_enable_team"
+    },
+    {
+      "key": "POST /v1/domains/{domain}/subdomains/{subdomain}/cdn/purge",
+      "method": "POST",
+      "path": "/v1/domains/{domain}/subdomains/{subdomain}/cdn/purge",
+      "operation_id": "postDomainsDomainSubdomainsSubdomainCdnPurge",
+      "tag": "Domains",
+      "summary": "Purge CDN cache for a subdomain",
+      "deprecated": false,
+      "security": [],
+      "request_media": [
+        "application/json"
+      ],
+      "success_status": "200",
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "northflank-networking",
+      "op": "domains.post_domains_domain_subdomains_subdomain_cdn_purge_account"
+    },
+    {
+      "key": "POST /v1/teams/{teamId}/domains/{domain}/subdomains/{subdomain}/cdn/purge",
+      "method": "POST",
+      "path": "/v1/teams/{teamId}/domains/{domain}/subdomains/{subdomain}/cdn/purge",
+      "operation_id": "postDomainsDomainSubdomainsSubdomainCdnPurge",
+      "tag": "Domains",
+      "summary": "Purge CDN cache for a subdomain",
+      "deprecated": false,
+      "security": [],
+      "request_media": [
+        "application/json"
+      ],
+      "success_status": "200",
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "northflank-networking",
+      "op": "domains.post_domains_domain_subdomains_subdomain_cdn_purge_team"
+    },
+    {
+      "key": "PATCH /v1/domains/{domain}/subdomains/{subdomain}/geo-routing",
+      "method": "PATCH",
+      "path": "/v1/domains/{domain}/subdomains/{subdomain}/geo-routing",
+      "operation_id": "patchDomainsDomainSubdomainsSubdomainGeoRouting",
+      "tag": "Domains",
+      "summary": "Update geo routing configuration",
+      "deprecated": false,
+      "security": [],
+      "request_media": [
+        "application/json"
+      ],
+      "success_status": "200",
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "northflank-networking",
+      "op": "domains.patch_domains_domain_subdomains_subdomain_geo_routing_account"
+    },
+    {
+      "key": "PATCH /v1/teams/{teamId}/domains/{domain}/subdomains/{subdomain}/geo-routing",
+      "method": "PATCH",
+      "path": "/v1/teams/{teamId}/domains/{domain}/subdomains/{subdomain}/geo-routing",
+      "operation_id": "patchDomainsDomainSubdomainsSubdomainGeoRouting",
+      "tag": "Domains",
+      "summary": "Update geo routing configuration",
+      "deprecated": false,
+      "security": [],
+      "request_media": [
+        "application/json"
+      ],
+      "success_status": "200",
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "northflank-networking",
+      "op": "domains.patch_domains_domain_subdomains_subdomain_geo_routing_team"
     },
     {
       "key": "GET /v1/domains/{domain}/subdomains/{subdomain}/paths",
@@ -8978,7 +9054,7 @@
       "path": "/v1/projects/{projectId}/secrets",
       "operation_id": "postProjectsSecrets",
       "tag": "Secrets",
-      "summary": "Create project secret",
+      "summary": "Create combined service",
       "deprecated": false,
       "security": [],
       "request_media": [
@@ -9033,7 +9109,7 @@
       "path": "/v1/teams/{teamId}/projects/{projectId}/secrets",
       "operation_id": "postProjectsSecrets",
       "tag": "Secrets",
-      "summary": "Create project secret",
+      "summary": "Create combined service",
       "deprecated": false,
       "security": [],
       "request_media": [
@@ -40209,6 +40285,57 @@
       "pagination_contract_gap": null,
       "security": []
     },
+    "PATCH /v1/domains/{domain}/subdomains/{subdomain}/geo-routing": {
+      "key": "PATCH /v1/domains/{domain}/subdomains/{subdomain}/geo-routing",
+      "operation_id": "patchDomainsDomainSubdomainsSubdomainGeoRouting",
+      "pack": "northflank-networking",
+      "op": "domains.patch_domains_domain_subdomains_subdomain_geo_routing_account",
+      "method": "PATCH",
+      "path": "/v1/domains/{domain}/subdomains/{subdomain}/geo-routing",
+      "tag": "Domains",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "domain",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "domain",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter"
+        },
+        {
+          "in": "path",
+          "wire_name": "subdomain",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "subdomain",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter"
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_schema_types": [
+        "object"
+      ],
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "security": []
+    },
     "PATCH /v1/egress-ips/{egressIpId}": {
       "key": "PATCH /v1/egress-ips/{egressIpId}",
       "operation_id": "patchEgressIpsEgressipid",
@@ -41127,6 +41254,69 @@
             "string"
           ],
           "admitted_key": "integrationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter"
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_schema_types": [
+        "object"
+      ],
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "security": []
+    },
+    "PATCH /v1/teams/{teamId}/domains/{domain}/subdomains/{subdomain}/geo-routing": {
+      "key": "PATCH /v1/teams/{teamId}/domains/{domain}/subdomains/{subdomain}/geo-routing",
+      "operation_id": "patchDomainsDomainSubdomainsSubdomainGeoRouting",
+      "pack": "northflank-networking",
+      "op": "domains.patch_domains_domain_subdomains_subdomain_geo_routing_team",
+      "method": "PATCH",
+      "path": "/v1/teams/{teamId}/domains/{domain}/subdomains/{subdomain}/geo-routing",
+      "tag": "Domains",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "teamId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "teamId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter"
+        },
+        {
+          "in": "path",
+          "wire_name": "domain",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "domain",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter"
+        },
+        {
+          "in": "path",
+          "wire_name": "subdomain",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "subdomain",
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter"
@@ -42686,6 +42876,57 @@
       "path": "/v1/domains/{domain}/subdomains/{subdomain}/cdn/enable",
       "tag": "Domains",
       "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "domain",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "domain",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter"
+        },
+        {
+          "in": "path",
+          "wire_name": "subdomain",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "subdomain",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter"
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_schema_types": [
+        "object"
+      ],
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "security": []
+    },
+    "POST /v1/domains/{domain}/subdomains/{subdomain}/cdn/purge": {
+      "key": "POST /v1/domains/{domain}/subdomains/{subdomain}/cdn/purge",
+      "operation_id": "postDomainsDomainSubdomainsSubdomainCdnPurge",
+      "pack": "northflank-networking",
+      "op": "domains.post_domains_domain_subdomains_subdomain_cdn_purge_account",
+      "method": "POST",
+      "path": "/v1/domains/{domain}/subdomains/{subdomain}/cdn/purge",
+      "tag": "Domains",
+      "risk": "destructive",
       "approval": "always",
       "idempotency": "non_idempotent",
       "parameters": [
@@ -46990,6 +47231,69 @@
       "path": "/v1/teams/{teamId}/domains/{domain}/subdomains/{subdomain}/cdn/enable",
       "tag": "Domains",
       "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "teamId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "teamId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter"
+        },
+        {
+          "in": "path",
+          "wire_name": "domain",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "domain",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter"
+        },
+        {
+          "in": "path",
+          "wire_name": "subdomain",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "subdomain",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter"
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "request_body_required": true,
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_schema_types": [
+        "object"
+      ],
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "security": []
+    },
+    "POST /v1/teams/{teamId}/domains/{domain}/subdomains/{subdomain}/cdn/purge": {
+      "key": "POST /v1/teams/{teamId}/domains/{domain}/subdomains/{subdomain}/cdn/purge",
+      "operation_id": "postDomainsDomainSubdomainsSubdomainCdnPurge",
+      "pack": "northflank-networking",
+      "op": "domains.post_domains_domain_subdomains_subdomain_cdn_purge_team",
+      "method": "POST",
+      "path": "/v1/teams/{teamId}/domains/{domain}/subdomains/{subdomain}/cdn/purge",
+      "tag": "Domains",
+      "risk": "destructive",
       "approval": "always",
       "idempotency": "non_idempotent",
       "parameters": [

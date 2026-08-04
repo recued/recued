@@ -2,8 +2,8 @@
   "_extract": {
     "note": "paths-only extract of the pinned official v2 document; keys remain raw document-relative paths, and openapi_source.path_alias.wire_prefix reconciles the /api wire prefix",
     "url": "https://developer.clickup.com/openapi/clickup-api-v2-reference.json",
-    "sha256": "224a4d4d1a50116268be54dbf887a59a444a6bffadd133c620cd1a6c32b1069b",
-    "fetched_at": "2026-07-14",
+    "sha256": "2120b590bed02240fe24df897afcc9b59564dff4f90e3e58a665586dd0f31685",
+    "fetched_at": "2026-08-03",
     "source_title": "ClickUp API v2 Reference",
     "source_version": "2.0"
   },

@@ -20,6 +20,7 @@ import {
   CONTRACT_GRANTS_ASKS_ATTR,
   CONTRACT_GRANTS_AXIS_NOTE_ATTR,
   CONTRACT_GRANTS_CELL_ATTR,
+  CONTRACT_GRANTS_CELL_TOGGLE_ATTR,
   CONTRACT_GRANTS_EMPTY_ATTR,
   CONTRACT_GRANTS_ERROR_ATTR,
   CONTRACT_GRANTS_HOST_ATTR,
@@ -89,13 +90,18 @@ interface FakeEl {
   hasAttribute(k: string): boolean;
   appendChild(c: FakeEl): FakeEl;
   removeChild(c: FakeEl): FakeEl;
+  querySelector(selector: string): FakeEl | null;
   remove(): void;
   addEventListener(type: string, fn: (ev?: unknown) => void): void;
+  focus(): void;
   click(): void;
   dispatch(type: string): void;
 }
 
-const makeFakeEl = (tag: string): FakeEl => {
+const makeFakeEl = (
+  tag: string,
+  onFocus?: (el: FakeEl) => void,
+): FakeEl => {
   const el: FakeEl = {
     tagName: tag.toUpperCase(),
     className: '',
@@ -139,6 +145,23 @@ const makeFakeEl = (tag: string): FakeEl => {
       c.parent = null;
       return c;
     },
+    querySelector(selector) {
+      const match = selector.match(/^\[([\w-]+)(?:="([^"]*)")?\]$/);
+      if (match === null) return null;
+      const [, attr, value] = match;
+      const find = (node: FakeEl): FakeEl | null => {
+        if (
+          node.hasAttribute(attr!)
+          && (value === undefined || node.getAttribute(attr!) === value)
+        ) return node;
+        for (const child of node.children) {
+          const found = find(child);
+          if (found !== null) return found;
+        }
+        return null;
+      };
+      return find(el);
+    },
     remove() {
       if (el.parent === null) return;
       const i = el.parent.children.indexOf(el);
@@ -149,6 +172,9 @@ const makeFakeEl = (tag: string): FakeEl => {
       const list = el.listeners.get(type) ?? [];
       list.push(fn);
       el.listeners.set(type, list);
+    },
+    focus() {
+      onFocus?.(el);
     },
     click() {
       if (el.disabled || el.attrs.has('disabled')) return;
@@ -164,6 +190,7 @@ const makeFakeEl = (tag: string): FakeEl => {
 
 interface FakeDoc {
   styleElements: FakeEl[];
+  activeElement: FakeEl | null;
   head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl };
   createElement(tag: string): FakeEl;
 }
@@ -174,8 +201,9 @@ const makeFakeDocument = (): FakeDoc => {
     const m = sel.match(/^([\w-]+)\[([\w-]+)\]$/);
     return m === null ? null : { tag: m[1]!.toUpperCase(), attr: m[2]! };
   };
-  return {
+  const doc: FakeDoc = {
     styleElements,
+    activeElement: null,
     head: {
       querySelector(sel) {
         const parsed = matchSelector(sel);
@@ -191,8 +219,11 @@ const makeFakeDocument = (): FakeDoc => {
         return el;
       },
     },
-    createElement: (tag) => makeFakeEl(tag),
+    createElement: (tag) => makeFakeEl(tag, (element) => {
+      doc.activeElement = element;
+    }),
   };
+  return doc;
 };
 
 const collectByAttr = (root: FakeEl, attr: string, out: FakeEl[] = []): FakeEl[] => {
@@ -400,6 +431,7 @@ const mountPanelWith = (opts: PanelOpts = {}) => {
   });
   return {
     panel,
+    doc,
     store,
     cliStore,
     runGrantRead,
@@ -587,6 +619,43 @@ describe('contract-grants panel — universe split across Ops / Entities', () =>
 });
 
 describe('contract-grants panel — write / reconcile + chrome', () => {
+  it('keeps the active toggle focused through write and reconcile repaints', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { doc, panel } = mountPanelWith({ writeGate: gate });
+    await panel.whenLoaded();
+    const initial = collectByAttr(
+      opsRootEl(panel),
+      CONTRACT_GRANTS_CELL_TOGGLE_ATTR,
+    ).find((cell) => cell.getAttribute('data-entry') === READ_OP)!;
+    initial.focus();
+
+    const writing = panel.toggleEntry(READ_OP);
+    const busy = collectByAttr(
+      opsRootEl(panel),
+      CONTRACT_GRANTS_CELL_TOGGLE_ATTR,
+    ).find((cell) => cell.getAttribute('data-entry') === READ_OP)!;
+    expect(busy).not.toBe(initial);
+    expect(busy.hasAttribute('disabled')).toBe(false);
+    expect(busy.getAttribute('aria-disabled')).toBe('true');
+    expect(busy.getAttribute('aria-busy')).toBe('true');
+    expect(doc.activeElement).toBe(busy);
+    expect(panel.hasInFlightWork()).toBe(true);
+
+    release();
+    await writing;
+    expect(panel.hasInFlightWork()).toBe(false);
+    const settled = collectByAttr(
+      opsRootEl(panel),
+      CONTRACT_GRANTS_CELL_TOGGLE_ATTR,
+    ).find((cell) => cell.getAttribute('data-entry') === READ_OP)!;
+    expect(settled.checked).toBe(false);
+    expect(settled.hasAttribute('aria-disabled')).toBe(false);
+    expect(doc.activeElement).toBe(settled);
+  });
+
   it('toggling an author-default-ON op writes an explicit false + reconciles', async () => {
     const { panel, store, runGrantWrite } = mountPanelWith();
     await panel.whenLoaded();

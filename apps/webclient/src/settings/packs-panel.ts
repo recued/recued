@@ -167,7 +167,7 @@
  *  Per-row (install dialog substate):
  *      ready ── click Install on row r       ──▶ dialog { open, packSlug: r }
  *      dialog ── click Cancel                ──▶ closed
- *      dialog ── click Install               ──▶ installing (button disabled)
+ *      dialog ── click Install               ──▶ installing (button aria-disabled)
  *      installing ── rpc resolved + ok=true  ──▶ refresh list + dialog closed
  *      installing ── rpc resolved + ok=false ──▶ dialog stays open + inline error
  *                                                 (failure.code drives copy)
@@ -176,7 +176,7 @@
  *  Per-row (Slice B Delete substate — independent of install dialog):
  *      ready ── click Delete on row r          ──▶ confirming { packSlug: r }
  *      confirming ── click Cancel              ──▶ closed
- *      confirming ── click Confirm delete      ──▶ deleting (button disabled)
+ *      confirming ── click Confirm delete      ──▶ deleting (button aria-disabled)
  *      deleting ── rpc resolved + ok=true      ──▶ refresh list + confirm closed
  *      deleting ── rpc resolved + ok=false     ──▶ confirm stays open + inline error
  *                                                   (failure.code drives copy)
@@ -352,6 +352,9 @@ import type { BadgeTone } from '@recued/ui-shared/primitives';
 // `install_scope`. Pure-cli packs with no recipe tools still have no grantable
 // model; cli authority remains in the post-install grant dialog.
 import {
+  INSTALL_GRANT_ACCESS_OPTION_ATTR,
+  INSTALL_GRANT_AUDIENCE_DETAIL_OPTION_ATTR,
+  INSTALL_GRANT_SCOPE_OPTION_ATTR,
   installAudienceFromLegacyScope,
   installGrantModelFromManifest,
   resolveInstallAudienceSelection,
@@ -360,7 +363,12 @@ import {
 } from './install-grant-picker.js';
 // D-194 2b-2 — the Connect section's pick resolver (validates an explicit pick
 // against the live candidate list; falls back to the pre-selected default).
-import { resolveChosenConnection } from './install-connect-picker.js';
+import {
+  INSTALL_CONNECT_CANDIDATE_ATTR,
+  INSTALL_CONNECT_CUSTOMIZE_ATTR,
+  INSTALL_CONNECT_NONE_ATTR,
+  resolveChosenConnection,
+} from './install-connect-picker.js';
 // R2 — the install/consent dialog RENDER + its attrs / copy / failure-copy /
 // Access-tier clamp live in `packs-install-dialog.ts`; the dialog STATE
 // MACHINE (open/close/collapse/reconcile + the permission/tier maps) stays
@@ -372,6 +380,8 @@ import {
   PACKS_DIALOG_CANCEL_BTN_ATTR,
   PACKS_DIALOG_INSTALL_BTN_ATTR,
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ITEM_ATTR,
+  PACKS_DIALOG_PERMISSION_ATTR,
+  PACKS_DIALOG_SLUG_ATTR,
   installFailureCopy,
   renderPacksInstallDialog,
   resolveInstallDialogAccess,
@@ -463,6 +473,8 @@ export const PACKS_LIST_ERROR_ATTR = 'data-recued-packs-list-error';
 export const PACKS_ROW_ATTR = 'data-recued-packs-row';
 export const PACKS_ROW_SLUG_ATTR = 'data-recued-packs-row-slug';
 export const PACKS_ROW_INSTALL_BTN_ATTR = 'data-recued-packs-row-install';
+/** Placeholder standing in for the consent dialog while the manifest loads. */
+export const PACKS_DIALOG_PENDING_ATTR = 'data-recued-packs-dialog-pending';
 // R22 list→detail — the row's name-as-button (LIST view opens the detail) +
 // the detail view's Back-to-list control.
 export const PACKS_ROW_SELECT_ATTR = 'data-recued-packs-row-select';
@@ -472,6 +484,7 @@ export const PACKS_DETAIL_BACK_ATTR = 'data-recued-packs-detail-back';
 // reachability matrix.
 export const PACKS_DETAIL_TABS_ATTR = 'data-recued-packs-detail-tabs';
 export const PACKS_DETAIL_TAB_ATTR = 'data-recued-packs-detail-tab';
+export const PACKS_DETAIL_TAB_GROUP_ATTR = 'data-recued-packs-detail-tab-group';
 export const PACKS_DETAIL_TAB_PANEL_ATTR = 'data-recued-packs-detail-tab-panel';
 /** Pack-detail subviews. `use` is the pack AS AN APP (its views + actions);
  *  the other three are the control-plane surfaces, grouped behind Manage.
@@ -482,6 +495,23 @@ export type PacksDetailTab = 'use' | 'detail' | 'permissions' | 'access';
 /** The three subviews that sit behind Manage. `use` is the sibling of the
  *  whole group, not a member of it. */
 const MANAGE_TABS: ReadonlyArray<PacksDetailTab> = ['detail', 'permissions', 'access'];
+type PacksDetailTabGroup = 'primary' | 'manage';
+
+type PacksDeleteActionFocus = {
+  kind: 'delete' | 'confirm' | 'cancel';
+  slug: string;
+};
+
+type PacksInstallDialogFocus =
+  | { kind: 'dialog'; slug: string }
+  | { kind: 'opener'; slug: string }
+  | { kind: 'submit'; slug: string }
+  | { kind: 'cancel'; slug: string }
+  | {
+      kind: 'control';
+      slug: string;
+      identity: ReadonlyArray<readonly [attribute: string, value: string]>;
+    };
 // R22 3-section LIST — the section wrapper carries `data-section`
 // (`installed` / `discover` / `add`); the Installed section's per-service_kind
 // group carries `data-kind` (a PackServiceKind or `other`).
@@ -546,6 +576,14 @@ export const PACKS_DETAIL_REPO_LINK_ATTR = 'data-recued-packs-detail-repo';
 export const PACKS_DETAIL_RESOLVING_ATTR = 'data-recued-packs-detail-resolving';
 export const PACKS_DETAIL_RESOLVE_ERROR_ATTR =
   'data-recued-packs-detail-resolve-error';
+/** Pack-app recipe roster state. This read is separate from `packs.list`: a
+ *  failure must not silently remove the Use surface or retry in a loop. */
+export const PACKS_DETAIL_RECIPES_STATUS_ATTR =
+  'data-recued-packs-detail-recipes-status';
+export const PACKS_DETAIL_RECIPES_ERROR_ATTR =
+  'data-recued-packs-detail-recipes-error';
+export const PACKS_DETAIL_RECIPES_RETRY_ATTR =
+  'data-recued-packs-detail-recipes-retry';
 // Foundation-pack Delete confirm warning. Renders in the row
 // only when the row's Delete confirm strip is open AND `pre_install`
 // is true; the copy spells out the boot-time re-install so the user
@@ -844,6 +882,11 @@ export interface PacksPanelMount {
   clickSelectPack(slug: string): void;
   /** Return to the list (as the detail's Back link does → the surface shows the list). */
   clickBackToList(): void;
+  /** True while a pack mutation or Use-tab result lifecycle still owns the
+   *  active detail. Forwarded to the Packs route's shell leave guard. */
+  hasInFlightWork(): boolean;
+  /** True while the Use tab holds editable result rows not yet saved. */
+  hasUnsavedChanges(): boolean;
   /** Host-driven refresh — re-issues `runList`. Use after a known pack
    *  mutation happened elsewhere (e.g. a future broadcast subscription
    *  lands). Slice A has no broadcast subscription; this is the only
@@ -938,7 +981,13 @@ const COPY = {
   loading: 'Loading packs…',
   error_heading: 'Could not load packs.',
   retry_label: 'Retry',
+  retrying_label: 'Retrying…',
   install_label: 'Install',
+  /** Install, while this pack's manifest is still being fetched. */
+  install_preparing_label: 'Preparing…',
+  /** Shown where the consent dialog will appear, when Install was pressed
+   *  before the manifest finished loading. */
+  dialog_pending_label: 'Loading pack details…',
   cancel_label: 'Cancel',
   installed_badge: 'Installed',
   foundation_badge: 'Foundation',
@@ -970,6 +1019,8 @@ const COPY = {
   detail_resolving_label: 'Loading pack…',
   detail_resolve_error_retry_label: 'Try again',
   detail_unavailable_label: 'This pack isn’t available on this server.',
+  detail_recipes_loading_label: 'Loading what this pack can do…',
+  detail_recipes_error_prefix: 'Could not load what this pack can do.',
   detail_access_placeholder:
     'Per-contract access control for this pack will be managed here. Until then, grants live per contract:',
   detail_access_contracts_label: 'Open Contracts →',
@@ -1042,6 +1093,9 @@ export const mountPacksPanel = (
   let disposed = false;
   let packs: PackListEntry[] = [];
   let listError: string | null = null;
+  /** An owner-triggered Retry keeps the error surface mounted while its list
+   *  read settles, so the initiating control remains a visible keyboard anchor. */
+  let listRetrying = false;
   /** Most-recent `runList` promise, exposed via `whenLoaded()`. Updated
    *  on initial mount + on every `refresh()` / Retry / post-install
    *  auto-refresh — callers await the most recent load. */
@@ -1091,6 +1145,10 @@ export const mountPacksPanel = (
   /** In-flight install promise — lets `clickConfirmInstall` await the
    *  same rpc the dialog's Install button fires. */
   let pendingInstallPromise: Promise<void> | null = null;
+  /** Semantic owner for the inline consent region. Every selection mutates host
+   *  state and rebuilds the dialog, so focus must follow an identity rather than
+   *  a short-lived node. */
+  let pendingInstallDialogFocus: PacksInstallDialogFocus | null = null;
   // ── Slice B state ────────────────────────────────────────────────
   /** Slug of the pack whose Delete confirm strip is open. Single-row
    *  invariant (DD#9) — opening B's strip collapses A's. */
@@ -1106,6 +1164,11 @@ export const mountPacksPanel = (
   /** In-flight uninstall promise — lets `clickConfirmDelete` await the
    *  same rpc the Confirm button fires. */
   let pendingUninstallPromise: Promise<void> | null = null;
+  /** Semantic keyboard owner across the Delete strip's whole-panel repaints.
+   *  The actual button node is replaced at every transition, so retaining the
+   *  node would leave focus on detached DOM. The descriptor also survives the
+   *  loading paint during a successful refresh, then resolves to Install. */
+  let pendingDeleteActionFocus: PacksDeleteActionFocus | null = null;
   // ── Slice K state ────────────────────────────────────────────────
   /** Post-success runnability disclosure notice. Survives refreshes;
    *  cleared on dismiss / the next submit kickoff / replaced by the
@@ -1124,15 +1187,27 @@ export const mountPacksPanel = (
    *  whether it does is only known once `recipes.list` has answered, which is
    *  after the first paint. */
   let activeDetailTab: PacksDetailTab = 'detail';
+  let pendingDetailTabFocus: {
+    group: PacksDetailTabGroup;
+    id: PacksDetailTab;
+  } | null = null;
   /** True once the user has actually picked a tab, which suppresses the
    *  open-on-Use default. Without it, the async recipe load would yank someone
    *  out of Access and into Use the moment the list arrived. */
   let detailTabPinned = false;
   // ── Use tab state ────────────────────────────────────────────────
-  /** Installed recipe bodies. `null` = not loaded yet (or the read failed);
-   *  distinct from `[]`, which is a real answer meaning this server has none. */
+  /** Installed recipe bodies. `null` = not loaded yet; distinct from `[]`,
+   *  which is a real answer meaning this server has none. A failed read stays
+   *  explicit in `recipesError` so it cannot masquerade as either state. */
   let installedRecipes: ReadonlyArray<ServerRecipeListEntry> | null = null;
   let recipesLoading = false;
+  let recipesError: string | null = null;
+  /** Generation guard for a recipe read invalidated by a concurrent pack
+   *  mutation/refresh. An older response must not repopulate the new roster. */
+  let recipeLoadGeneration = 0;
+  /** Sticky across a failed `packs.list` refresh: the mutation already landed,
+   *  so the later list Retry must still invalidate and reload recipe bodies. */
+  let recipeRefreshPending = false;
   let appView: PackAppViewMount | null = null;
   /** Slug the mounted app view belongs to, so a pack switch tears it down
    *  instead of leaving one pack's views over another pack's page. */
@@ -1158,6 +1233,20 @@ export const mountPacksPanel = (
     value: PackAppSurface;
   } | null = null;
 
+  /** Drop every value derived from `recipe.list`. Pack install/uninstall changes
+   *  that inventory, and the mounted app view closes over the old entries, so
+   *  both the classifier memo and the child mount must be rebuilt together. */
+  const invalidateRecipeRoster = (): void => {
+    recipeLoadGeneration += 1;
+    installedRecipes = null;
+    recipesLoading = false;
+    recipesError = null;
+    surfaceMemo = null;
+    appView?.dispose();
+    appView = null;
+    appViewSlug = null;
+  };
+
   const appSurfaceFor = (pack: PackListEntry): PackAppSurface | null => {
     if (installedRecipes === null) return null;
     if (
@@ -1182,27 +1271,39 @@ export const mountPacksPanel = (
     return activeDetailTab === 'use' && !canUse ? 'detail' : activeDetailTab;
   };
 
-  /** Load recipe bodies once, on first need. Failure is SOFT: `installedRecipes`
-   *  stays null, no pack gets a Use tab, and the detail is the control-plane
-   *  page it has always been — a degraded read must not invent an empty app. */
-  const ensureRecipesLoaded = (): void => {
+  /** Start the recipe-body read. A retry keeps its error/action surface mounted
+   *  while busy, so keyboard ownership survives the whole-panel repaint and a
+   *  duplicate activation cannot start another request. */
+  const loadRecipes = (retry = false): void => {
     if (installedRecipes !== null || recipesLoading) return;
     const run = opts.runRecipeList;
     if (run === undefined) return;
+    const captured = ++recipeLoadGeneration;
     recipesLoading = true;
+    if (retry) render();
     void run()
       .then((res) => {
-        if (disposed) return;
+        if (disposed || captured !== recipeLoadGeneration) return;
         installedRecipes = res.recipes;
+        recipesError = null;
       })
-      .catch(() => {
-        // Soft: leave `installedRecipes` null.
+      .catch((err) => {
+        if (disposed || captured !== recipeLoadGeneration) return;
+        recipesError = humanizeRpcError(err);
       })
       .finally(() => {
-        if (disposed) return;
+        if (disposed || captured !== recipeLoadGeneration) return;
         recipesLoading = false;
         render();
       });
+  };
+
+  /** Load recipe bodies once, on first need. A recorded failure is terminal
+   *  until the person retries; otherwise the failure repaint calls this again
+   *  and creates an unbounded `recipe.list` request/repaint loop. */
+  const ensureRecipesLoaded = (): void => {
+    if (recipesError !== null) return;
+    loadRecipes();
   };
 
   /** The resolved-but-not-yet-installed marketplace pack, projected from its
@@ -1287,6 +1388,10 @@ export const mountPacksPanel = (
     installed: false,
     requires: [...manifest.requires],
     recipe_count: manifest.recipes.length,
+    recipe_refs: manifest.recipes.map((r) => ({ slug: r.slug, version: r.version })),
+    body_visibility_grant_keys: [...(manifest.mcp_body_visibility_grants ?? [])],
+    ...(typeof manifest.service_kind === 'string' ? { service_kind: manifest.service_kind } : {}),
+    ...(typeof manifest.repo === 'string' ? { repo: manifest.repo } : {}),
     body_visibility_grant_count: manifest.mcp_body_visibility_grants?.length ?? 0,
     manifest,
     ...(ownerOperationReview !== undefined && ownerOperationReview.length > 0
@@ -1306,7 +1411,14 @@ export const mountPacksPanel = (
    *  slug (so a failure doesn't loop on every render). Re-renders on completion. */
   const ensureDetailResolved = (slug: string): void => {
     if (opts.runResolvePack === undefined) return;
-    if (packs.some((p) => p.slug === slug)) return;
+    // ⛔ Was `packs.some(...)` — skip anything already listed. That held while
+    // `packs.list` forwarded EVERY manifest; it no longer does (installed only,
+    // see `PackListEntry.manifest`). A listed-but-uninstalled bundled pack now
+    // arrives WITHOUT one, and its detail + install consent need it — so resolve
+    // exactly those. `packs.resolveBySlug` reads the server's own bundled copy
+    // first, so this is a local read, not a marketplace round-trip.
+    const listed = packs.find((p) => p.slug === slug);
+    if (listed !== undefined && listed.manifest !== undefined) return;
     if (pendingAddEntry?.slug === slug) return;
     if (detailResolving === slug) return;
     if (detailResolveError?.slug === slug) return;
@@ -1323,6 +1435,29 @@ export const mountPacksPanel = (
             slug,
             message: result.failure?.message ?? COPY.add_generic_error,
           };
+        } else if (packs.some((p) => p.slug === slug)) {
+          // ⛔ A LISTED pack backfills its own row — it must NOT become a
+          // `pendingAddEntry`. That flag is what routes an install to
+          // `packs.installBySlug` (the marketplace resolver), and a pack the
+          // roster already carries installs BY VALUE through `packs.install`.
+          // Promoting it here would silently reroute every bundled / community
+          // pack's install onto the marketplace path. All that is actually
+          // missing is the manifest `packs.list` stopped forwarding, so put
+          // exactly that back and leave every other field the list computed.
+          const resolved = result.manifest;
+          const reviewHash = result.manifest_review_hash;
+          packs = packs.map((p) => (
+            p.slug === slug
+              ? {
+                  ...p,
+                  manifest: resolved,
+                  ...(reviewHash !== undefined
+                    ? { manifest_review_hash: reviewHash }
+                    : {}),
+                }
+              : p
+          ));
+          detailResolveError = null;
         } else {
           pendingAddEntry = projectAddedManifest(
             result.manifest,
@@ -1441,6 +1576,245 @@ export const mountPacksPanel = (
   wrapper.className = 'packs-panel';
   opts.host.appendChild(wrapper);
 
+  // Same walker shape as the panel test harnesses: real DOMs expose
+  // `children`; reduced fixtures may expose `childList` instead.
+  const findPanelElement = (
+    matches: (element: HTMLElement) => boolean,
+  ): HTMLElement | null => {
+    const walk = (node: HTMLElement): HTMLElement | null => {
+      if (matches(node)) return node;
+      const kids =
+        (node as unknown as { children?: ArrayLike<HTMLElement> }).children
+        ?? (node as unknown as { childList?: ArrayLike<HTMLElement> }).childList;
+      if (!kids) return null;
+      const length = (kids as { length: number }).length;
+      for (let i = 0; i < length; i += 1) {
+        const hit = walk(kids[i] as HTMLElement);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    return walk(wrapper as HTMLElement);
+  };
+
+  const findBtn = (
+    attr: string,
+    attrValue?: string,
+  ): HTMLButtonElement | null => {
+    const found = findPanelElement((element) =>
+      typeof element.hasAttribute === 'function'
+      && element.hasAttribute(attr)
+      && element.tagName === 'BUTTON'
+      && (attrValue === undefined || element.getAttribute(attr) === attrValue));
+    return found as HTMLButtonElement | null;
+  };
+
+  const findDetailTab = (
+    group: PacksDetailTabGroup,
+    id: PacksDetailTab,
+  ): HTMLButtonElement | null => {
+    const found = findPanelElement((element) =>
+      element.tagName === 'BUTTON'
+      && element.getAttribute?.(PACKS_DETAIL_TAB_ATTR) === id
+      && element.getAttribute?.(PACKS_DETAIL_TAB_GROUP_ATTR) === group);
+    return found as HTMLButtonElement | null;
+  };
+
+  const findSelectedDetailTab = (): HTMLButtonElement | null => {
+    const found = findPanelElement((element) =>
+      element.tagName === 'BUTTON'
+      && element.hasAttribute?.(PACKS_DETAIL_TAB_ATTR)
+      && element.getAttribute?.('aria-selected') === 'true');
+    return found as HTMLButtonElement | null;
+  };
+
+  const focusPanelElement = (element: HTMLElement | null): void => {
+    if (element === null) return;
+    try {
+      element.focus?.({ preventScroll: true });
+    } catch {
+      // Reduced/fake DOMs keep focus restoration best-effort.
+    }
+  };
+
+  const deleteActionFocusFrom = (
+    element: HTMLElement,
+  ): PacksDeleteActionFocus | null => {
+    const candidates: ReadonlyArray<{
+      attr: string;
+      kind: PacksDeleteActionFocus['kind'];
+    }> = [
+      { attr: PACKS_ROW_DELETE_BTN_ATTR, kind: 'delete' },
+      { attr: PACKS_ROW_DELETE_CONFIRM_BTN_ATTR, kind: 'confirm' },
+      { attr: PACKS_ROW_DELETE_CANCEL_BTN_ATTR, kind: 'cancel' },
+    ];
+    for (const candidate of candidates) {
+      const slug = element.getAttribute?.(candidate.attr);
+      if (slug !== null) return { kind: candidate.kind, slug };
+    }
+    return null;
+  };
+
+  /** Resolve an action descriptor to the best current replacement. Confirm may
+   *  become Install after success or Delete after a refresh that kept the pack
+   *  installed. A failed post-action relist hands ownership to Retry; Back is
+   *  the final fallback when the detail vanished. */
+  const restoreDeleteActionFocus = (
+    focus: PacksDeleteActionFocus,
+  ): boolean => {
+    const exact = focus.kind === 'delete'
+      ? findBtn(PACKS_ROW_DELETE_BTN_ATTR, focus.slug)
+      : focus.kind === 'confirm'
+        ? findBtn(PACKS_ROW_DELETE_CONFIRM_BTN_ATTR, focus.slug)
+        : findBtn(PACKS_ROW_DELETE_CANCEL_BTN_ATTR, focus.slug);
+    const target = exact
+      ?? findBtn(PACKS_ROW_INSTALL_BTN_ATTR, focus.slug)
+      ?? findBtn(PACKS_ROW_DELETE_BTN_ATTR, focus.slug)
+      ?? findBtn(PACKS_ROW_DELETE_CONFIRM_BTN_ATTR, focus.slug)
+      ?? findBtn(PACKS_RETRY_BTN_ATTR)
+      ?? findBtn(PACKS_DETAIL_BACK_ATTR);
+    if (target === null || target.disabled) return false;
+    focusPanelElement(target);
+    return true;
+  };
+
+  const findInstallDialog = (slug: string): HTMLElement | null =>
+    findPanelElement((element) =>
+      element.hasAttribute?.(PACKS_DIALOG_ATTR)
+      && element.getAttribute?.(PACKS_DIALOG_SLUG_ATTR) === slug);
+
+  const installControlIdentityFrom = (
+    element: HTMLElement,
+  ): ReadonlyArray<readonly [string, string]> | null => {
+    const candidates: ReadonlyArray<{
+      attribute: string;
+      qualifiers: ReadonlyArray<string>;
+    }> = [
+      { attribute: PACKS_DIALOG_PERMISSION_ATTR, qualifiers: [] },
+      {
+        attribute: INSTALL_GRANT_ACCESS_OPTION_ATTR,
+        qualifiers: ['data-access'],
+      },
+      {
+        attribute: INSTALL_GRANT_SCOPE_OPTION_ATTR,
+        qualifiers: ['data-scope'],
+      },
+      {
+        attribute: INSTALL_GRANT_AUDIENCE_DETAIL_OPTION_ATTR,
+        qualifiers: ['data-audience-kind', 'data-audience-id'],
+      },
+      { attribute: INSTALL_CONNECT_CANDIDATE_ATTR, qualifiers: [] },
+      { attribute: INSTALL_CONNECT_NONE_ATTR, qualifiers: [] },
+      { attribute: INSTALL_CONNECT_CUSTOMIZE_ATTR, qualifiers: [] },
+    ];
+    for (const candidate of candidates) {
+      if (!element.hasAttribute?.(candidate.attribute)) continue;
+      const identity: Array<readonly [string, string]> = [[
+        candidate.attribute,
+        element.getAttribute(candidate.attribute) ?? '',
+      ]];
+      for (const qualifier of candidate.qualifiers) {
+        const value = element.getAttribute(qualifier);
+        if (value !== null) identity.push([qualifier, value]);
+      }
+      return identity;
+    }
+    return null;
+  };
+
+  const installDialogFocusFrom = (
+    element: HTMLElement,
+  ): PacksInstallDialogFocus | null => {
+    const openerSlug = element.getAttribute?.(PACKS_ROW_INSTALL_BTN_ATTR);
+    if (openerSlug !== null) return { kind: 'opener', slug: openerSlug };
+    const dialog = findPanelElement((candidate) =>
+      candidate.hasAttribute?.(PACKS_DIALOG_ATTR)
+      && candidate.contains(element));
+    const slug = dialog?.getAttribute?.(PACKS_DIALOG_SLUG_ATTR) ?? null;
+    if (slug === null) return null;
+    if (element.hasAttribute?.(PACKS_DIALOG_ATTR)) {
+      return { kind: 'dialog', slug };
+    }
+    if (element.hasAttribute?.(PACKS_DIALOG_INSTALL_BTN_ATTR)) {
+      return { kind: 'submit', slug };
+    }
+    if (element.hasAttribute?.(PACKS_DIALOG_CANCEL_BTN_ATTR)) {
+      return { kind: 'cancel', slug };
+    }
+    const identity = installControlIdentityFrom(element);
+    return identity === null
+      ? { kind: 'dialog', slug }
+      : { kind: 'control', slug, identity };
+  };
+
+  const restoreInstallDialogFocus = (
+    focus: PacksInstallDialogFocus,
+  ): boolean => {
+    // A successful install normally replaces the dialog with Delete. If the
+    // mandatory relist fails instead, Retry is the only actionable successor.
+    const dialog = findInstallDialog(focus.slug);
+    let candidates: ReadonlyArray<HTMLElement | null>;
+    if (focus.kind === 'opener') {
+      candidates = [
+        findBtn(PACKS_ROW_INSTALL_BTN_ATTR, focus.slug),
+        dialog,
+        findBtn(PACKS_ROW_DELETE_BTN_ATTR, focus.slug),
+        findBtn(PACKS_RETRY_BTN_ATTR),
+        findBtn(PACKS_DETAIL_BACK_ATTR),
+      ];
+    } else if (focus.kind === 'dialog') {
+      candidates = [
+        dialog,
+        findBtn(PACKS_ROW_INSTALL_BTN_ATTR, focus.slug),
+        findBtn(PACKS_ROW_DELETE_BTN_ATTR, focus.slug),
+        findBtn(PACKS_RETRY_BTN_ATTR),
+        findBtn(PACKS_DETAIL_BACK_ATTR),
+      ];
+    } else if (focus.kind === 'submit') {
+      candidates = [
+        findBtn(PACKS_DIALOG_INSTALL_BTN_ATTR),
+        findBtn(PACKS_ROW_DELETE_BTN_ATTR, focus.slug),
+        findBtn(PACKS_ROW_INSTALL_BTN_ATTR, focus.slug),
+        findBtn(PACKS_RETRY_BTN_ATTR),
+        findBtn(PACKS_DETAIL_BACK_ATTR),
+      ];
+    } else if (focus.kind === 'cancel') {
+      candidates = [
+        findBtn(PACKS_DIALOG_CANCEL_BTN_ATTR),
+        findBtn(PACKS_ROW_INSTALL_BTN_ATTR, focus.slug),
+        dialog,
+        findBtn(PACKS_ROW_DELETE_BTN_ATTR, focus.slug),
+        findBtn(PACKS_RETRY_BTN_ATTR),
+        findBtn(PACKS_DETAIL_BACK_ATTR),
+      ];
+    } else {
+      const exact = findPanelElement((element) =>
+        focus.identity.every(([attribute, value]) =>
+          element.getAttribute?.(attribute) === value));
+      const expandedConnectionChoice = focus.identity[0]?.[0]
+        === INSTALL_CONNECT_CUSTOMIZE_ATTR
+        ? findPanelElement((element) =>
+            element.hasAttribute?.(INSTALL_CONNECT_CANDIDATE_ATTR)
+            || element.hasAttribute?.(INSTALL_CONNECT_NONE_ATTR))
+        : null;
+      candidates = [
+        exact,
+        expandedConnectionChoice,
+        dialog,
+        findBtn(PACKS_ROW_INSTALL_BTN_ATTR, focus.slug),
+        findBtn(PACKS_ROW_DELETE_BTN_ATTR, focus.slug),
+        findBtn(PACKS_RETRY_BTN_ATTR),
+        findBtn(PACKS_DETAIL_BACK_ATTR),
+      ];
+    }
+    const target = candidates.find((candidate) => candidate !== null) ?? null;
+    if (target === null || (target as HTMLButtonElement).disabled === true) {
+      return false;
+    }
+    focusPanelElement(target);
+    return true;
+  };
+
   // ── Transitions ──────────────────────────────────────────────────
   // `force = true` re-renders even when state is unchanged; rpc paths
   // use this when row state mutates without a state transition (post-
@@ -1459,8 +1833,15 @@ export const mountPacksPanel = (
     render();
   };
 
-  const refreshRows = (): Promise<void> => {
+  const refreshRows = (options: {
+    preserveErrorSurface?: boolean;
+    refreshRecipes?: boolean;
+  } = {}): Promise<void> => {
     if (disposed) return Promise.resolve();
+    if (options.refreshRecipes === true) recipeRefreshPending = true;
+    if (listRetrying && options.preserveErrorSurface !== true) {
+      return pendingListPromise;
+    }
     // Slice H — capture this load's generation BEFORE the await
     // (DD#14). Both the success + error branches re-check the captured
     // value against the latest `loadGeneration` after the await; a
@@ -1468,8 +1849,10 @@ export const mountPacksPanel = (
     // stale, so drop the result silently. The pre-increment + capture
     // is the only place the counter mutates.
     const captured = ++loadGeneration;
-    listError = null;
-    transitionTo('loading');
+    if (options.preserveErrorSurface !== true) {
+      listError = null;
+      transitionTo('loading');
+    }
     const promise = (async () => {
       try {
         // Load packs + the supervision discovery list + the enrolled-connection
@@ -1486,6 +1869,10 @@ export const mountPacksPanel = (
         ]);
         if (disposed) return;
         if (captured !== loadGeneration) return; // newer load in flight (DD#14)
+        if (recipeRefreshPending) {
+          invalidateRecipeRoster();
+          recipeRefreshPending = false;
+        }
         packs = [...result.packs];
         // Roster installed-set — packs[]'s installed entries UNION the
         // `installed_versions` inventory. The inventory is the ONLY signal a
@@ -1612,11 +1999,12 @@ export const mountPacksPanel = (
     // subtle bug because the default-checked invariant is the
     // assumed-consent UX. The map entry is recreated fresh on the next
     // openDialog().
-    dialogPermissions.delete(dialogOpenFor);
+    const slug = dialogOpenFor;
+    dialogPermissions.delete(slug);
     // D-182 §7.1 (inc 5b.2) — drop the per-pack Access selection on close for
     // the same reason: a re-open should start fresh at the picker's `read`
     // default, not a stale higher tier the user picked then cancelled.
-    clearDialogGrantPicks(dialogOpenFor);
+    clearDialogGrantPicks(slug);
     // KEEP a resolved marketplace `pendingAddEntry` on cancel — it IS the detail
     // the user is still viewing; discarding it would force a needless (and
     // possibly failing) re-resolve on the very next render. It's cleared on
@@ -1624,6 +2012,7 @@ export const mountPacksPanel = (
     dialogOpenFor = null;
     dialogError = null;
     pendingInstallPromise = null;
+    pendingInstallDialogFocus = { kind: 'opener', slug };
     if (!disposed) render();
   };
 
@@ -1637,6 +2026,26 @@ export const mountPacksPanel = (
   const selectPack = (slug: string | null): void => {
     if (installing || deleting) return;
     if (slug === selectedSlug) return;
+    if (appView?.hasInFlightWork() === true) {
+      const confirm = doc.defaultView?.confirm;
+      if (
+        typeof confirm === 'function'
+        && !confirm.call(
+          doc.defaultView,
+          'A pack action is still in progress. Leave this pack anyway?',
+        )
+      ) return;
+    }
+    if (appView?.hasUnsavedChanges() === true) {
+      const confirm = doc.defaultView?.confirm;
+      if (
+        typeof confirm === 'function'
+        && !confirm.call(
+          doc.defaultView,
+          'This pack result has unsaved table changes. Leave this pack anyway?',
+        )
+      ) return;
+    }
     if (dialogOpenFor !== null) {
       dialogPermissions.delete(dialogOpenFor);
       clearDialogGrantPicks(dialogOpenFor);
@@ -1659,6 +2068,9 @@ export const mountPacksPanel = (
     selectedSlug = slug;
     activeDetailTab = 'detail';
     detailTabPinned = false;
+    pendingDetailTabFocus = null;
+    pendingDeleteActionFocus = null;
+    pendingInstallDialogFocus = null;
     // Kick the recipe read as the detail opens, so the Use tab is usually
     // resolved by first paint rather than appearing a beat later.
     ensureRecipesLoaded();
@@ -1670,7 +2082,7 @@ export const mountPacksPanel = (
     if (state !== 'ready') return;
     if (installing) return;
     // Slice B — block opening the install dialog while a Delete is
-    // mid-rpc. The Delete strip's button is `disabled` during the rpc
+    // mid-rpc. The Delete strip's button is `aria-disabled` during the rpc
     // (DD#10), but the test seam can still drive `clickInstall` so the
     // gate is enforced here too.
     if (deleting) return;
@@ -1722,6 +2134,8 @@ export const mountPacksPanel = (
     // `closeDialog` + the success path also clear them; this is the belt-and-
     // suspenders that covers the paths that bypass `closeDialog`.
     clearDialogGrantPicks(slug);
+    pendingDeleteActionFocus = null;
+    pendingInstallDialogFocus = { kind: 'dialog', slug };
     render();
   };
 
@@ -1748,7 +2162,9 @@ export const mountPacksPanel = (
    *  dialog's pack, or `null` when none is open / the pack is not
    *  connection-backed. Recomputed on demand (cheap: bounded composition). */
   const grantModelFor = (pack: PackListEntry): InstallGrantPickerModel | null =>
-    installGrantModelFromManifest(pack.manifest);
+    // No manifest ⇒ not installed and not yet resolved; there is no grant model
+    // to compute rather than an empty one.
+    pack.manifest === undefined ? null : installGrantModelFromManifest(pack.manifest);
 
   /** D-182 §7.1 (inc 5b.2) — the Access tier the install rpc will send for a
    *  connection-backed pack. The clamp itself lives with the dialog module
@@ -1809,7 +2225,7 @@ export const mountPacksPanel = (
     // `[]` means "this pack declares no connection" (→ no Connect section), NOT
     // "fall through to the seed". Only a MISSING field (a not-yet-migrated pack
     // like onedrive) defers to the interim compile-time seed.
-    const manifestReqs = findPackBySlug(slug)?.manifest.connection_requirements;
+    const manifestReqs = findPackBySlug(slug)?.manifest?.connection_requirements;
     return manifestReqs !== undefined
       ? manifestReqs[0]
       : getSeededConnectionRequirements(slug)[0];
@@ -1916,6 +2332,7 @@ export const mountPacksPanel = (
     );
     installing = true;
     dialogError = null;
+    pendingInstallDialogFocus = { kind: 'submit', slug: submittingSlug };
     // Slice K — a new action invalidates the previous action's notice
     // (DD#15: the notice describes the LAST COMPLETED action).
     disclosure = null;
@@ -1950,6 +2367,7 @@ export const mountPacksPanel = (
         if (disposed) return;
         if (!response.result.ok) {
           const failureCode = response.result.failure?.code;
+          const failureDetail = response.result.failure?.message;
           if (isAdded && failureCode === 'review_stale') {
             // The server fetched a different marketplace artifact than the one
             // this consent dialog rendered. Discard every value derived from
@@ -1963,7 +2381,7 @@ export const mountPacksPanel = (
             dialogError = null;
             detailResolveError = {
               slug: submittingSlug,
-              message: installFailureCopy(failureCode),
+              message: installFailureCopy(failureCode, failureDetail),
             };
             return;
           }
@@ -1972,7 +2390,7 @@ export const mountPacksPanel = (
           // codes fall back defensively there — Codex MINOR 4 fold). The
           // dialog stays open so the user can adjust permissions + retry,
           // or cancel.
-          dialogError = installFailureCopy(failureCode);
+          dialogError = installFailureCopy(failureCode, failureDetail);
           return;
         }
         // Successful install — close the dialog + refresh the list so
@@ -2005,7 +2423,7 @@ export const mountPacksPanel = (
                 blocks: installBlocks,
               }
             : null;
-        await refreshRows();
+        await refreshRows({ refreshRecipes: true });
       } catch (err) {
         if (disposed) return;
         dialogError = humanizeRpcError(err);
@@ -2071,6 +2489,8 @@ export const mountPacksPanel = (
     confirmingDeleteFor = slug;
     deleteError = null;
     pendingUninstallPromise = null;
+    pendingDeleteActionFocus = { kind: 'confirm', slug };
+    pendingInstallDialogFocus = null;
     render();
   };
 
@@ -2083,6 +2503,7 @@ export const mountPacksPanel = (
     confirmingDeleteFor = null;
     deleteError = null;
     pendingUninstallPromise = null;
+    pendingDeleteActionFocus = { kind: 'delete', slug };
     render();
   };
 
@@ -2112,6 +2533,7 @@ export const mountPacksPanel = (
     if (!target) return Promise.resolve();
     deleting = true;
     deleteError = null;
+    pendingDeleteActionFocus = { kind: 'confirm', slug };
     // Slice K — a new action invalidates the previous action's notice
     // (DD#15).
     disclosure = null;
@@ -2158,7 +2580,7 @@ export const mountPacksPanel = (
                 blocks: uninstallBlocks,
               }
             : null;
-        await refreshRows();
+        await refreshRows({ refreshRecipes: true });
       } catch (err) {
         if (disposed) return;
         deleteError = humanizeRpcError(err);
@@ -2214,9 +2636,19 @@ export const mountPacksPanel = (
     retry.type = 'button';
     retry.setAttribute(PACKS_RETRY_BTN_ATTR, '');
     retry.className = 'rx-btn rx-btn-secondary rx-btn-sm';
-    retry.textContent = COPY.retry_label;
+    retry.textContent = listRetrying ? COPY.retrying_label : COPY.retry_label;
+    if (listRetrying) {
+      retry.setAttribute('aria-disabled', 'true');
+      retry.setAttribute('aria-busy', 'true');
+    }
     retry.addEventListener('click', () => {
-      void refreshRows();
+      if (listRetrying) return;
+      listRetrying = true;
+      render();
+      void refreshRows({ preserveErrorSurface: true }).finally(() => {
+        listRetrying = false;
+        if (!disposed) render();
+      });
     });
     actions.appendChild(retry);
 
@@ -2230,7 +2662,11 @@ export const mountPacksPanel = (
   // the DOM shape. State reads stay one-directional (props in, callbacks
   // out) so the panel remains the dialog state's single writer.
   const renderDialog = (
-    pack: PackListEntry,
+    // ⛔ RESOLVED pack — it must carry a manifest. `packs.list` forwards one only
+    // for installed packs, so the dialog for a Discover row renders from the
+    // entry `ensureDetailResolved` produced. The caller proves it, because the
+    // consent surface cannot honestly render without it.
+    pack: PackListEntry & { manifest: BulkPackManifest },
     collision: PackRecipeCollision | undefined,
     grantOverlap: PackGrantOverlap | undefined,
   ): HTMLElement => {
@@ -2243,7 +2679,7 @@ export const mountPacksPanel = (
     // Only consulted when there is no requirement: a descriptor already provides
     // the Connect section, and a hint must never add adoption to it.
     const connectionHintSetup = connectionHintSetupSlug(
-      findPackBySlug(pack.slug)?.manifest.connection_hints,
+      findPackBySlug(pack.slug)?.manifest?.connection_hints,
       connectionRequirement !== undefined,
     );
     return renderPacksInstallDialog({
@@ -2360,7 +2796,7 @@ export const mountPacksPanel = (
     // PackListEntry derivation), the install dialog's count-based
     // gate would render an empty heading; this surface gates on the
     // actual content so the heading + list always appear together.
-    const grants = pack.manifest.mcp_body_visibility_grants ?? [];
+    const grants = pack.body_visibility_grant_keys;
     const showDeleteBodyGrants =
       showDelete && grants.length > 0 && confirmingDeleteFor === pack.slug;
     if (showDeleteBodyGrants) {
@@ -2436,7 +2872,22 @@ export const mountPacksPanel = (
         installBtn.type = 'button';
         installBtn.setAttribute(PACKS_ROW_INSTALL_BTN_ATTR, pack.slug);
         installBtn.className = 'rx-btn rx-btn-primary rx-btn-sm packs-row-install';
-        installBtn.textContent = COPY.install_label;
+        // An uninstalled pack's manifest is fetched on detail render, and the
+        // consent dialog cannot open until it lands. Say so on the button rather
+        // than letting the click land on nothing and the popup appear later out
+        // of nowhere — that gap is indistinguishable from the button being
+        // broken, which is exactly how it was reported.
+        const resolvingThis = detailResolving === pack.slug;
+        installBtn.textContent = resolvingThis
+          ? COPY.install_preparing_label
+          : COPY.install_label;
+        // ⚠ NOT disabled while resolving. Disabling it swallowed the click —
+        // press Install during the fetch and nothing happened, the label flipped
+        // back, and you had to press again. `openDialog` does not need the
+        // manifest to record the intent, so the click is allowed to LAND: it
+        // sets `dialogOpenFor` now and the dialog paints its loading state,
+        // then fills in the moment the manifest arrives.
+        if (resolvingThis) installBtn.setAttribute('aria-busy', 'true');
         if (dialogOpenFor !== null || installing || deleting) {
           installBtn.disabled = true;
         }
@@ -2451,7 +2902,7 @@ export const mountPacksPanel = (
         // + `deleting` (mirrors SI Slice 1.5's per-row Delete strip):
         //   default:    [Delete]
         //   confirming: [Confirm delete] [Cancel]
-        //   in-flight:  [Deleting…] (disabled) [Cancel] (disabled)
+        //   in-flight:  [Deleting…] (aria-disabled) [Cancel] (aria-disabled)
         const isInFlightForThis =
           deleting && confirmingDeleteFor === pack.slug;
         const isConfirmingThis = confirmingDeleteFor === pack.slug;
@@ -2489,7 +2940,13 @@ export const mountPacksPanel = (
           confirmBtn.textContent = isInFlightForThis
             ? COPY.deleting_label
             : COPY.delete_confirm_label;
-          if (isInFlightForThis) confirmBtn.disabled = true;
+          if (isInFlightForThis) {
+            // Keep the activated confirmation as the keyboard anchor. The
+            // submit state guard owns re-entry while these attributes expose
+            // the lock without removing the button from the focus order.
+            confirmBtn.setAttribute('aria-disabled', 'true');
+            confirmBtn.setAttribute('aria-busy', 'true');
+          }
           confirmBtn.addEventListener('click', () => {
             void submitUninstall();
           });
@@ -2504,7 +2961,7 @@ export const mountPacksPanel = (
           cancelBtn.className =
             'rx-btn rx-btn-secondary rx-btn-sm packs-row-delete-cancel';
           cancelBtn.textContent = COPY.cancel_label;
-          if (isInFlightForThis) cancelBtn.disabled = true;
+          if (isInFlightForThis) cancelBtn.setAttribute('aria-disabled', 'true');
           cancelBtn.addEventListener('click', () => {
             cancelDeleteConfirm(pack.slug);
           });
@@ -2648,6 +3105,46 @@ export const mountPacksPanel = (
     wrapper.appendChild(retry);
   };
 
+  /** The pack roster and its installed recipe bodies are independent reads.
+   *  Keep the latter visible while unresolved: otherwise a failure looks like
+   *  a capability-only pack whose Use surface simply does not exist. */
+  const renderRecipesLoadState = (): void => {
+    if (opts.runRecipeList === undefined || installedRecipes !== null) return;
+    const box = doc.createElement('div');
+    box.className = 'packs-detail-recipes-state';
+    if (recipesError === null) {
+      const status = doc.createElement('p');
+      status.setAttribute(PACKS_DETAIL_RECIPES_STATUS_ATTR, '');
+      status.setAttribute('role', 'status');
+      status.className = 'packs-detail-note';
+      status.textContent = COPY.detail_recipes_loading_label;
+      box.appendChild(status);
+    } else {
+      const error = doc.createElement('p');
+      error.setAttribute(PACKS_DETAIL_RECIPES_ERROR_ATTR, '');
+      error.setAttribute('role', 'alert');
+      error.className = 'packs-add-error';
+      error.textContent = `${COPY.detail_recipes_error_prefix} ${recipesError}`;
+      box.appendChild(error);
+
+      const retry = doc.createElement('button');
+      retry.type = 'button';
+      retry.setAttribute(PACKS_DETAIL_RECIPES_RETRY_ATTR, '');
+      retry.className = 'rx-btn rx-btn-secondary rx-btn-sm';
+      retry.textContent = recipesLoading ? COPY.retrying_label : COPY.retry_label;
+      if (recipesLoading) {
+        retry.setAttribute('aria-disabled', 'true');
+        retry.setAttribute('aria-busy', 'true');
+      }
+      retry.addEventListener('click', () => {
+        if (recipesLoading) return;
+        loadRecipes(true);
+      });
+      box.appendChild(retry);
+    }
+    wrapper.appendChild(box);
+  };
+
   const renderDetail = (pack: PackListEntry): void => {
     const back = doc.createElement('button');
     back.type = 'button';
@@ -2693,7 +3190,7 @@ export const mountPacksPanel = (
     if (pack.installed) {
       header.appendChild(makeBadge(COPY.installed_badge, 'ok'));
     }
-    const kind = pack.manifest.service_kind;
+    const kind = pack.service_kind;
     if (isPackServiceKind(kind)) {
       header.appendChild(makeBadge(SERVICE_KIND_LABEL[kind] ?? kind, 'neutral'));
     }
@@ -2705,7 +3202,7 @@ export const mountPacksPanel = (
     identity.appendChild(facts);
     // Repo link — issues / support route to the author's repo (the
     // marketplace hosts no issue tracking); absent on most bundled packs.
-    const repo = pack.manifest.repo;
+    const repo = pack.repo;
     if (typeof repo === 'string' && repo.length > 0) {
       const repoLink = doc.createElement('a');
       repoLink.setAttribute(PACKS_DETAIL_REPO_LINK_ATTR, '');
@@ -2719,9 +3216,32 @@ export const mountPacksPanel = (
     appendPackActions(identity, pack, grantOverlap);
     wrapper.appendChild(identity);
     // Inline consent dialog directly under the Install affordance.
-    if (dialogOpenFor === pack.slug) {
-      wrapper.appendChild(renderDialog(pack, collision, grantOverlap));
+    //
+    // ⛔ Gated on the manifest, not just on `dialogOpenFor`. An uninstalled pack
+    // arrives from `packs.list` without one and `ensureDetailResolved` fills it
+    // in asynchronously; rendering consent from a half-resolved entry would show
+    // an install dialog listing no recipes, no grants and no permissions — a
+    // consent surface that under-states what the user is agreeing to. Absent ⇒
+    // render nothing this pass; the resolve completing re-renders.
+    if (dialogOpenFor === pack.slug && pack.manifest === undefined
+      && detailResolving === pack.slug) {
+      // Clicked Install while the manifest was still in flight. The intent is
+      // recorded (`dialogOpenFor`), so stand in for the consent surface rather
+      // than rendering nothing — an empty gap here is what made the click look
+      // lost. The next render, with the manifest, replaces this with the dialog.
+      const waiting = doc.createElement('p');
+      waiting.setAttribute(PACKS_DIALOG_PENDING_ATTR, pack.slug);
+      waiting.className = 'packs-detail-note';
+      waiting.textContent = COPY.dialog_pending_label;
+      wrapper.appendChild(waiting);
     }
+    if (dialogOpenFor === pack.slug && pack.manifest !== undefined) {
+      wrapper.appendChild(
+        renderDialog({ ...pack, manifest: pack.manifest }, collision, grantOverlap),
+      );
+    }
+
+    renderRecipesLoadState();
 
     // ── Tabs ─────────────────────────────────────────────────────────
     // A pack that gives you something to DO leads with it; its control-plane
@@ -2735,44 +3255,74 @@ export const mountPacksPanel = (
       id: PacksDetailTab,
       label: string,
       selected: boolean,
-      onPick: () => void,
-    ): HTMLElement => {
+      group: PacksDetailTabGroup,
+      order: ReadonlyArray<PacksDetailTab>,
+      onPick: (next: PacksDetailTab) => void,
+    ): HTMLButtonElement => {
       const button = doc.createElement('button');
       button.type = 'button';
       button.setAttribute(PACKS_DETAIL_TAB_ATTR, id);
+      button.setAttribute(PACKS_DETAIL_TAB_GROUP_ATTR, group);
       button.setAttribute('role', 'tab');
       button.setAttribute('aria-selected', selected ? 'true' : 'false');
+      button.tabIndex = selected ? 0 : -1;
       button.textContent = label;
-      button.addEventListener('click', onPick);
+      const activate = (next: PacksDetailTab): void => {
+        if (next === id && selected) {
+          focusPanelElement(button);
+          return;
+        }
+        pendingDetailTabFocus = { group, id: next };
+        onPick(next);
+      };
+      button.addEventListener('click', () => activate(id));
+      button.addEventListener('keydown', (event) => {
+        const currentIndex = order.indexOf(id);
+        if (currentIndex < 0) return;
+        let nextIndex: number;
+        if (event.key === 'Home') nextIndex = 0;
+        else if (event.key === 'End') nextIndex = order.length - 1;
+        else if (event.key === 'ArrowRight') {
+          nextIndex = (currentIndex + 1) % order.length;
+        } else if (event.key === 'ArrowLeft') {
+          nextIndex = (currentIndex - 1 + order.length) % order.length;
+        } else {
+          return;
+        }
+        event.preventDefault();
+        activate(order[nextIndex]!);
+      });
       return button;
     };
 
     if (showUse) {
+      const primaryTabs: ReadonlyArray<PacksDetailTab> = ['use', 'detail'];
+      const pickPrimaryTab = (next: PacksDetailTab): void => {
+        if (next === 'use') {
+          if (shownTab === 'use') return;
+          activeDetailTab = 'use';
+        } else {
+          if (shownTab !== 'use') return;
+          activeDetailTab = MANAGE_TABS.includes(activeDetailTab)
+            ? activeDetailTab
+            : 'detail';
+        }
+        detailTabPinned = true;
+        render();
+      };
       const topStrip = doc.createElement('nav');
       topStrip.setAttribute(PACKS_DETAIL_TABS_ATTR, '');
       topStrip.setAttribute('role', 'tablist');
       topStrip.setAttribute('aria-label', COPY.detail_tabs_label);
       topStrip.appendChild(makeTabButton(
         'use', COPY.detail_use_tab_label, shownTab === 'use',
-        () => {
-          if (shownTab === 'use') return;
-          activeDetailTab = 'use';
-          detailTabPinned = true;
-          render();
-        },
+        'primary', primaryTabs, pickPrimaryTab,
       ));
       // Manage re-enters the group at whichever member was last open, so
       // Use → Manage → Use → Manage returns you to Access, not to Detail.
       topStrip.appendChild(makeTabButton(
         'detail', COPY.detail_manage_tab_label, shownTab !== 'use',
-        () => {
-          if (shownTab !== 'use') return;
-          activeDetailTab = MANAGE_TABS.includes(activeDetailTab)
-            ? activeDetailTab
-            : 'detail';
-          detailTabPinned = true;
-          render();
-        },
+        'primary', primaryTabs, pickPrimaryTab,
       ));
       wrapper.appendChild(topStrip);
     }
@@ -2793,15 +3343,17 @@ export const mountPacksPanel = (
         { id: 'permissions', label: COPY.detail_permissions_tab_label },
         { id: 'access', label: COPY.detail_access_tab_label },
       ];
+      const manageTabOrder = manageTabs.map((tab) => tab.id);
+      const pickManageTab = (next: PacksDetailTab): void => {
+        if (shownTab === next) return;
+        activeDetailTab = next;
+        detailTabPinned = true;
+        render();
+      };
       for (const tab of manageTabs) {
         tabStrip.appendChild(makeTabButton(
           tab.id, tab.label, shownTab === tab.id,
-          () => {
-            if (shownTab === tab.id) return;
-            activeDetailTab = tab.id;
-            detailTabPinned = true;
-            render();
-          },
+          'manage', manageTabOrder, pickManageTab,
         ));
       }
       wrapper.appendChild(tabStrip);
@@ -2914,7 +3466,9 @@ export const mountPacksPanel = (
       desc.className = 'packs-detail-desc';
       desc.textContent = pack.description;
       about.appendChild(desc);
-      const tags = pack.manifest.tags ?? [];
+      // Unresolved Discover pack ⇒ no tags yet; `ensureDetailResolved` fills the
+      // manifest in and the About section re-renders with them.
+      const tags = pack.manifest?.tags ?? [];
       if (tags.length > 0) {
         const tagsP = doc.createElement('p');
         tagsP.className = 'packs-detail-tags';
@@ -2944,6 +3498,31 @@ export const mountPacksPanel = (
     ensureRecipesLoaded();
     const detailPack = findPackBySlug(selectedSlug);
     if (detailPack !== undefined) {
+      // ⛔ A listed pack can be found and STILL be missing its manifest —
+      // `packs.list` forwards one for installed packs only. Every consent
+      // surface below is gated on it, so without this the Install button
+      // renders, opens nothing, and reports nothing: `openDialog` sets
+      // `dialogOpenFor`, the dialog's own `pack.manifest !== undefined` guard
+      // renders nothing "this pass", and the resolve that was supposed to
+      // complete and re-render never started, because this early return is
+      // above the only `ensureDetailResolved` call. `ensureDetailResolved`
+      // already knew about this case; nothing routed the case to it.
+      //
+      // ⛔ And a resolve that FAILS has to say so here. The not-found branch
+      // below owns `renderDetailResolveError`, but a listed pack never reaches
+      // it — so a failed resolve left the detail rendering normally with an
+      // Install button that could not open, `ensureDetailResolved` refusing to
+      // retry (it early-returns on a recorded error), and nothing anywhere
+      // saying why. Same silence as the bug above, one layer down: the first
+      // version of this fix turned "always broken" into "broken only when the
+      // resolve fails", which is harder to find, not easier.
+      if (detailPack.manifest === undefined) {
+        if (detailResolveError?.slug === selectedSlug) {
+          renderDetailResolveError(selectedSlug, detailResolveError.message);
+          return;
+        }
+        ensureDetailResolved(selectedSlug);
+      }
       renderDetail(detailPack);
       return;
     }
@@ -2966,6 +3545,46 @@ export const mountPacksPanel = (
 
   const render = (): void => {
     if (disposed) return;
+    const activeElement = (
+      doc as unknown as { activeElement?: HTMLElement | null }
+    ).activeElement ?? null;
+    let activeOwned = false;
+    let restoreListRetry = false;
+    let restoreRecipesRetry = false;
+    let restoreDetailBack = false;
+    let restoreDetailTab = pendingDetailTabFocus;
+    let restoreDeleteAction = pendingDeleteActionFocus;
+    let restoreInstallDialog = pendingInstallDialogFocus;
+    pendingDetailTabFocus = null;
+    if (activeElement !== null) {
+      try {
+        activeOwned = wrapper.contains(activeElement);
+      } catch {
+        activeOwned = false;
+      }
+      restoreDetailBack = activeOwned
+        && activeElement.hasAttribute(PACKS_DETAIL_BACK_ATTR);
+      restoreListRetry = activeOwned
+        && activeElement.hasAttribute(PACKS_RETRY_BTN_ATTR);
+      restoreRecipesRetry = activeOwned
+        && activeElement.hasAttribute(PACKS_DETAIL_RECIPES_RETRY_ATTR);
+      if (activeOwned && restoreDetailTab === null) {
+        const id = activeElement.getAttribute(PACKS_DETAIL_TAB_ATTR);
+        const group = activeElement.getAttribute(PACKS_DETAIL_TAB_GROUP_ATTR);
+        if (
+          (group === 'primary' || group === 'manage')
+          && (id === 'use' || id === 'detail' || id === 'permissions' || id === 'access')
+        ) {
+          restoreDetailTab = { group, id };
+        }
+      }
+      if (activeOwned && restoreDeleteAction === null) {
+        restoreDeleteAction = deleteActionFocusFrom(activeElement);
+      }
+      if (activeOwned && restoreInstallDialog === null) {
+        restoreInstallDialog = installDialogFocusFrom(activeElement);
+      }
+    }
     clearChildren();
     switch (state) {
       case 'loading':
@@ -2977,6 +3596,35 @@ export const mountPacksPanel = (
       case 'error':
         renderError();
         break;
+    }
+    if (restoreListRetry) {
+      focusPanelElement(
+        findBtn(PACKS_RETRY_BTN_ATTR)
+          ?? findBtn(PACKS_DETAIL_BACK_ATTR)
+          ?? findSelectedDetailTab(),
+      );
+    } else if (restoreRecipesRetry) {
+      focusPanelElement(
+        findBtn(PACKS_DETAIL_RECIPES_RETRY_ATTR)
+          ?? findDetailTab('primary', 'use')
+          ?? findSelectedDetailTab()
+          ?? findBtn(PACKS_DETAIL_BACK_ATTR),
+      );
+    } else if (restoreInstallDialog !== null) {
+      pendingInstallDialogFocus = restoreInstallDialogFocus(restoreInstallDialog)
+        ? null
+        : restoreInstallDialog;
+    } else if (restoreDeleteAction !== null) {
+      pendingDeleteActionFocus = restoreDeleteActionFocus(restoreDeleteAction)
+        ? null
+        : restoreDeleteAction;
+    } else if (restoreDetailBack) {
+      focusPanelElement(findBtn(PACKS_DETAIL_BACK_ATTR));
+    } else if (restoreDetailTab !== null) {
+      focusPanelElement(
+        findDetailTab(restoreDetailTab.group, restoreDetailTab.id)
+          ?? findSelectedDetailTab(),
+      );
     }
   };
 
@@ -2998,13 +3646,13 @@ export const mountPacksPanel = (
     broadcastUnsubscribers.push(
       opts.subscribe('pack_installed', () => {
         if (disposed) return;
-        void refreshRows();
+        void refreshRows({ refreshRecipes: true });
       }),
     );
     broadcastUnsubscribers.push(
       opts.subscribe('pack_uninstalled', () => {
         if (disposed) return;
-        void refreshRows();
+        void refreshRows({ refreshRecipes: true });
       }),
     );
   }
@@ -3014,35 +3662,6 @@ export const mountPacksPanel = (
   // `render()` is the only painter of the initial loading state.
   render();
   void refreshRows();
-
-  // ── Test seams ───────────────────────────────────────────────────
-  // Same `findBtn` walker shape as `standing-instructions-panel.ts` so
-  // the fake DOM the panel test harness exposes (`children` or
-  // `childList`) composes through this panel without an additional
-  // helper.
-  const findBtn = (attr: string, attrValue?: string): HTMLButtonElement | null => {
-    const walk = (node: HTMLElement): HTMLButtonElement | null => {
-      if (
-        typeof node.hasAttribute === 'function'
-        && node.hasAttribute(attr)
-        && node.tagName === 'BUTTON'
-        && (attrValue === undefined || node.getAttribute(attr) === attrValue)
-      ) {
-        return node as HTMLButtonElement;
-      }
-      const kids =
-        (node as unknown as { children?: ArrayLike<HTMLElement> }).children
-        ?? (node as unknown as { childList?: ArrayLike<HTMLElement> }).childList;
-      if (!kids) return null;
-      const length = (kids as { length: number }).length;
-      for (let i = 0; i < length; i += 1) {
-        const hit = walk(kids[i] as HTMLElement);
-        if (hit) return hit;
-      }
-      return null;
-    };
-    return walk(wrapper as HTMLElement);
-  };
 
   return {
     getState: () => state,
@@ -3123,6 +3742,11 @@ export const mountPacksPanel = (
     getSelectedSlug: () => selectedSlug,
     clickSelectPack: (slug: string) => selectPack(slug),
     clickBackToList: () => selectPack(null),
+    hasInFlightWork: () =>
+      installing
+      || deleting
+      || appView?.hasInFlightWork() === true,
+    hasUnsavedChanges: () => appView?.hasUnsavedChanges() === true,
     refresh: () => {
       // Slice A — no defer-while-dialog-open invariant (mirroring SI
       // panel Major #3 would suppress refresh while the dialog is
@@ -3132,9 +3756,9 @@ export const mountPacksPanel = (
       // render. Pack disappearance during refresh is extremely rare
       // (would require a server-side pack file delete + immediate
       // refresh), so the lost-input cost is acceptable + matches the
-      // Devices panel pattern. If a future broadcast subscription adds
-      // a periodic auto-refresh, revisit this decision.
-      void refreshRows();
+      // Devices panel pattern. The recipe roster follows the same refresh so
+      // its Use classification cannot outlive the pack snapshot.
+      void refreshRows({ refreshRecipes: true });
     },
     whenLoaded: () => pendingListPromise,
     dispose: () => {
@@ -3403,10 +4027,40 @@ export const PACKS_PANEL_STYLES = `
 [${PACKS_PANEL_ATTR}] .packs-detail-access-link {
   font-size: 12px;
 }
+[${PACKS_PANEL_ATTR}] .packs-detail-recipes-state {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-sunk);
+}
+[${PACKS_PANEL_ATTR}] .packs-detail-recipes-state .packs-add-error {
+  flex: 1 1 260px;
+  margin: 0;
+  line-height: 1.45;
+}
+[${PACKS_PANEL_ATTR}] [${PACKS_DETAIL_RECIPES_RETRY_ATTR}][aria-disabled="true"] {
+  cursor: wait;
+  opacity: .65;
+}
 [${PACKS_PANEL_ATTR}] .packs-row-footer {
   display: flex;
   justify-content: flex-end;
   gap: 8px;
+}
+[${PACKS_PANEL_ATTR}] [${PACKS_ROW_DELETE_CONFIRM_BTN_ATTR}][aria-disabled="true"],
+[${PACKS_PANEL_ATTR}] [${PACKS_ROW_DELETE_CANCEL_BTN_ATTR}][aria-disabled="true"] {
+  cursor: wait;
+  opacity: .65;
+}
+[${PACKS_PANEL_ATTR}] [${PACKS_DIALOG_INSTALL_BTN_ATTR}][aria-disabled="true"],
+[${PACKS_PANEL_ATTR}] [${PACKS_DIALOG_CANCEL_BTN_ATTR}][aria-disabled="true"] {
+  cursor: wait;
+  opacity: .65;
 }
 [${PACKS_PANEL_ATTR}] [${PACKS_DIALOG_ATTR}] {
   display: flex;

@@ -30,9 +30,10 @@
  *  surface (D-158 I-6) — a webclient click + a bridge click for the same
  *  ask resolve once; the loser is a silent server-side no-op. The rpc
  *  always acks `{ ok: true }` (it's a no-op on an unknown / already-
- *  answered ask), so on a successful submit the answered ask converges
- *  out of the list via (a) the `notification.ask_closed` bus frame and
- *  (b) a defensive re-fetch this panel fires — both idempotent. A submit
+ *  answered ask), so on a successful submit the panel retires that ask
+ *  immediately and holds a short-lived tombstone while (a) the
+ *  `notification.ask_closed` bus frame and (b) a defensive re-fetch
+ *  reconcile — both idempotent. A submit
  *  FAILURE (transport / reauth) propagates out of the card's `onAnswer`
  *  promise, which re-enables the card's buttons + shows its own inline
  *  error so the user can retry (the shared card owns that affordance) —
@@ -125,8 +126,10 @@ export interface AsksPanelMount {
   /** The currently-held open asks in display order. On a refresh failure
    *  the prior list is RETAINED (rendered beneath the error chip — a
    *  transient failure must not wipe approvals the user can still act on),
-   *  so this is empty only during the first load before any successful
-   *  `runList`, or after a successful load that returned zero asks. */
+   *  except for locally acknowledged answers, which stay retired even when
+   *  their follow-up read fails. An empty result therefore means there is no
+   *  currently actionable ask in the retained state (including an ask just
+   *  acknowledged locally), not necessarily that the last list read worked. */
   getAsks(): ReadonlyArray<ServerPendingAsk>;
   /** Top-level list error message. Null when the last load succeeded. */
   getListError(): string | null;
@@ -198,6 +201,11 @@ export const mountAsksPanel = (
   let loadGeneration = 0;
   let pendingLoad: Promise<void> = Promise.resolve();
   let answersInFlight = 0;
+  // An acknowledged answer is authoritative even if its defensive follow-up
+  // list read fails or briefly returns a pre-answer snapshot. Keep it filtered
+  // until one successful snapshot proves the id absent; then release the
+  // tombstone so a theoretically reused id is not hidden forever.
+  const acknowledgedAskIds = new Set<string>();
 
   const root = doc.createElement('div');
   root.setAttribute(ASKS_PANEL_HOST_ATTR, '');
@@ -289,7 +297,12 @@ export const mountAsksPanel = (
       try {
         const res = await opts.runList();
         if (disposed || gen !== loadGeneration) return; // stale / torn down
-        state = { phase: 'ready', asks: [...res.asks], listError: null };
+        const returnedIds = new Set(res.asks.map((ask) => ask.ask_id));
+        const asks = res.asks.filter((ask) => !acknowledgedAskIds.has(ask.ask_id));
+        for (const id of [...acknowledgedAskIds]) {
+          if (!returnedIds.has(id)) acknowledgedAskIds.delete(id);
+        }
+        state = { phase: 'ready', asks, listError: null };
         render();
         notifyChange();
       } catch (err) {
@@ -303,12 +316,18 @@ export const mountAsksPanel = (
     return pendingLoad;
   };
 
-  /** The card-click path: submit, then reconcile against the
-   *  authoritative list. The submit's failure propagates (the card
-   *  re-enables + shows its inline error); the re-fetch is
-   *  fire-and-forget so a re-fetch failure never masquerades as a
-   *  submit failure. */
-  const submitFromCard = async (
+  const retireAcknowledgedAsk = (askId: string): void => {
+    if (disposed) return;
+    acknowledgedAskIds.add(askId);
+    state = {
+      ...state,
+      asks: state.asks.filter((ask) => ask.ask_id !== askId),
+    };
+    render();
+    notifyChange();
+  };
+
+  const submitAndRetire = async (
     askId: string,
     optionId: string,
   ): Promise<void> => {
@@ -318,9 +337,22 @@ export const mountAsksPanel = (
     } finally {
       answersInFlight -= 1;
     }
-    // Acked. Reconcile out the answered ask (also covered by the
-    // ask_closed bus frame; both idempotent). Not awaited here so the
-    // card's onAnswer resolves on the submit alone.
+    retireAcknowledgedAsk(askId);
+  };
+
+  /** The card-click path: submit, then reconcile against the
+   *  authoritative list. The submit's failure propagates (the card
+   *  re-enables + shows its inline error); the re-fetch is
+   *  fire-and-forget so a re-fetch failure never masquerades as a
+   *  submit failure. */
+  const submitFromCard = async (
+    askId: string,
+    optionId: string,
+  ): Promise<void> => {
+    await submitAndRetire(askId, optionId);
+    // Acked + retired. Reconcile the rest of the queue (also covered by the
+    // ask_closed bus frame; both idempotent). Not awaited here so the card's
+    // onAnswer resolves on the submit alone.
     void doRefresh();
   };
 
@@ -357,12 +389,7 @@ export const mountAsksPanel = (
     refresh: () => doRefresh(),
     whenLoaded: () => pendingLoad,
     submitAnswer: async (askId, optionId) => {
-      answersInFlight += 1;
-      try {
-        await opts.runSubmitAnswer({ ask_id: askId, option_id: optionId });
-      } finally {
-        answersInFlight -= 1;
-      }
+      await submitAndRetire(askId, optionId);
       // Test seam / host convenience: await the reconcile too, so a
       // caller can observe the converged list (the card path doesn't).
       await doRefresh();

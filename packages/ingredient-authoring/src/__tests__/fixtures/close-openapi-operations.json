@@ -5,8 +5,8 @@
     "source": {
       "kind": "openapi",
       "url": "https://api.close.com/api/openapi.json",
-      "sha256": "b1011d0e3d15d8c0d06be59579224dc10e7da85876de8d13e9077b7f1c3baa6a",
-      "bytes": 1206204,
+      "sha256": "d4692c30ab5c8e4b7e73237a2c5b9cc1eafc7ed9e40eb2ef4c441fa19f51459d",
+      "bytes": 1242142,
       "openapi": "3.1.0",
       "info_version": "1.0.0",
       "server": "https://api.close.com/api/v1",
@@ -16,14 +16,14 @@
     "documentary_authority": {
       "index": {
         "url": "https://developer.close.com/llms.txt",
-        "sha256": "8366d799177642dd7729774643995df61bd74144fa328817972390b2af9d9a93",
-        "bytes": 59262,
-        "indexed_markdown_pages": 372
+        "sha256": "a32644dc86626be618c023dcb497abff44d8d54da7c8cf263827251486eeae4b",
+        "bytes": 59918,
+        "indexed_markdown_pages": 376
       },
       "advanced_filtering": {
         "url": "https://developer.close.com/api/resources/advanced-filtering.md",
-        "sha256": "082c7292b2930a7c89c92e84f29c83e7aaa70dd2d761ecc0e1b90670bcb529c6",
-        "bytes": 13049,
+        "sha256": "d82505febcf1cf0e82d32af595d953d42a15097fa2bf5a839d12f8b8fab0c507",
+        "bytes": 13429,
         "method": "POST",
         "path": "/api/v1/data/search/",
         "reason": "Official callable route absent from the experimental OpenAPI; isolated in an unpinned dependency whose generator is pinned to this Markdown hash."
@@ -35,8 +35,8 @@
       },
       "events": {
         "url": "https://developer.close.com/api/resources/events/list.md",
-        "sha256": "d7eefa5d8a426201ee4fd8f011e72dd69753cb060b795c6f42ce890e78f37124",
-        "bytes": 13516,
+        "sha256": "0efccce81d216eea3554ae9f8f030bd7254cc55adbd9d4a9c9dad227b7c45e42",
+        "bytes": 13750,
         "correction": "The endpoint documentation overrides the OpenAPI shared _skip parameter: Events uses _cursor and caps/defaults _limit at 50."
       },
       "exhaustive_endpoint_page_audit": {
@@ -50,48 +50,48 @@
         "prose_only_supplements": 1
       }
     },
-    "official_openapi_operation_count": 297,
+    "official_openapi_operation_count": 300,
     "documentary_supplement_count": 1,
-    "admitted_operation_count": 298,
+    "admitted_operation_count": 301,
     "excluded_operation_count": 0,
-    "unique_admitted_method_path_count": 298,
+    "unique_admitted_method_path_count": 301,
     "method_counts": {
-      "GET": 135,
+      "GET": 137,
       "POST": 65,
       "PUT": 47,
-      "DELETE": 51
+      "DELETE": 52
     },
     "pack_operation_counts": {
       "close": 26,
-      "close-crm-activity": 83,
+      "close-crm-activity": 86,
       "close-communication-automation": 80,
       "close-data-customization": 82,
       "close-administration": 26,
       "close-advanced-filtering": 1
     },
     "pagination_counts": {
-      "offset": 43,
+      "offset": 44,
       "query_token": 2,
-      "none": 253
+      "none": 255
     },
     "risk_counts": {
       "admin": 66,
-      "destructive": 55,
-      "read": 139,
+      "destructive": 56,
+      "read": 141,
       "write": 38
     },
     "approval_counts": {
-      "always": 138,
+      "always": 139,
       "ask": 21,
-      "never": 139
+      "never": 141
     },
     "idempotency_counts": {
-      "idempotent": 98,
+      "idempotent": 99,
       "non_idempotent": 61,
-      "safe": 139
+      "safe": 141
     },
     "raw_body_operation_count": 61,
-    "lossless_json_response_operation_count": 298,
+    "lossless_json_response_operation_count": 301,
     "compatibility_operation_ids": [
       "lead.search",
       "lead.read",
@@ -124,7 +124,7 @@
     "compatibility_operation_rows_sha256": "cbc6fba9ff0384895f7fb558cc9e6a17cfd344a705d03484a8f27ab4ace2b37b",
     "compatibility_baseline_arg_metadata_sha256": "387b89efcb949016e693ec52603b196872fb7baeb1e57cb83a11357b454d1de9",
     "authority_gaps": {
-      "response_contract_gap_count": 56,
+      "response_contract_gap_count": 57,
       "response_contract_gaps": [
         {
           "operation_id": "activities.calls_delete",
@@ -154,6 +154,12 @@
           "operation_id": "activities.form_submissions_delete",
           "method": "DELETE",
           "path": "/activity/form_submission/{id}/",
+          "response_media": []
+        },
+        {
+          "operation_id": "activities.import_updates_delete",
+          "method": "DELETE",
+          "path": "/activity/import_update/{id}/",
           "response_media": []
         },
         {
@@ -521,6 +527,13 @@
       "get": {}
     },
     "/activity/form_submission/{id}/": {
+      "get": {},
+      "delete": {}
+    },
+    "/activity/import_update/": {
+      "get": {}
+    },
+    "/activity/import_update/{id}/": {
       "get": {},
       "delete": {}
     },
@@ -1088,7 +1101,7 @@
     "/data/search/": {
       "post": {
         "source": "https://developer.close.com/api/resources/advanced-filtering.md",
-        "sha256": "082c7292b2930a7c89c92e84f29c83e7aaa70dd2d761ecc0e1b90670bcb529c6"
+        "sha256": "d82505febcf1cf0e82d32af595d953d42a15097fa2bf5a839d12f8b8fab0c507"
       }
     }
   },
@@ -1477,6 +1490,12 @@
           "localtime": {
             "type": "string",
             "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "primary_address_full": {
+            "type": "string",
+            "format": null,
             "item_type": null,
             "item_format": null
           },
@@ -1888,6 +1907,12 @@
           "localtime": {
             "type": "string",
             "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "primary_address_full": {
+            "type": "string",
+            "format": null,
             "item_type": null,
             "item_format": null
           },
@@ -6665,6 +6690,13 @@
           "type": "string",
           "required": false,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -6815,6 +6847,11 @@
           "key": "query.activity_at__lt",
           "type": "string",
           "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
+          "affects_target": true
         }
       ],
       "risk": "read",
@@ -6842,6 +6879,13 @@
           "in": "path",
           "type": "string",
           "required": true,
+          "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
           "exposed": true
         }
       ],
@@ -7028,6 +7072,11 @@
           "key": "note_id",
           "type": "string",
           "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
           "affects_target": true
         }
       ],
@@ -8959,6 +9008,13 @@
           "type": "string",
           "required": false,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -9125,6 +9181,11 @@
         },
         {
           "key": "query.activity_at__lt",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
           "type": "string",
           "affects_target": true
         }
@@ -9764,6 +9825,13 @@
           "type": "string",
           "required": true,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -10080,6 +10148,11 @@
           "key": "id",
           "type": "string",
           "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
           "affects_target": true
         }
       ],
@@ -10835,6 +10908,13 @@
           "type": "string",
           "required": false,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -10844,7 +10924,10 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "data",
+          "has_more"
+        ],
         "properties": {
           "data": {
             "type": "array",
@@ -10864,6 +10947,7 @@
         "data",
         "data[]",
         "data[]._type",
+        "data[].activity_at",
         "data[].contact_id",
         "data[].created_by",
         "data[].created_by_name",
@@ -10982,6 +11066,11 @@
           "key": "query.activity_at__lt",
           "type": "string",
           "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
+          "affects_target": true
         }
       ],
       "risk": "read",
@@ -11010,6 +11099,13 @@
           "type": "string",
           "required": true,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -11019,7 +11115,22 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "_type",
+          "activity_at",
+          "contact_id",
+          "created_by",
+          "date_created",
+          "date_updated",
+          "id",
+          "import_id",
+          "lead_id",
+          "organization_id",
+          "source",
+          "updated_by",
+          "user_id",
+          "users"
+        ],
         "properties": {
           "_type": {
             "type": "string",
@@ -11027,8 +11138,14 @@
             "item_type": null,
             "item_format": null
           },
+          "activity_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
           "contact_id": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -11047,13 +11164,13 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -11064,7 +11181,7 @@
             "item_format": null
           },
           "import_id": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -11114,13 +11231,14 @@
           "users": {
             "type": "array",
             "format": null,
-            "item_type": null,
+            "item_type": "string",
             "item_format": null
           }
         }
       },
       "response_example_paths": [
         "_type",
+        "activity_at",
         "contact_id",
         "created_by",
         "created_by_name",
@@ -11148,6 +11266,11 @@
           "key": "id",
           "type": "string",
           "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
           "affects_target": true
         }
       ],
@@ -11296,6 +11419,13 @@
           "type": "string",
           "required": false,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -11305,7 +11435,10 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "data",
+          "has_more"
+        ],
         "properties": {
           "data": {
             "type": "array",
@@ -11325,6 +11458,7 @@
         "data",
         "data[]",
         "data[]._type",
+        "data[].activity_at",
         "data[].contact_id",
         "data[].created_by",
         "data[].created_by_name",
@@ -11333,10 +11467,15 @@
         "data[].date_created",
         "data[].date_updated",
         "data[].id",
+        "data[].last_published_at",
         "data[].lead_id",
+        "data[].mentions",
+        "data[].mentions[]",
+        "data[].mentions_updated_at",
         "data[].organization_id",
         "data[].pinned",
         "data[].pinned_at",
+        "data[].source",
         "data[].status",
         "data[].updated_by",
         "data[].updated_by_name",
@@ -11454,6 +11593,11 @@
         },
         {
           "key": "query.custom_activity_type_id__in",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
           "type": "string",
           "affects_target": true
         }
@@ -11597,7 +11741,28 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "_type",
+          "activity_at",
+          "contact_id",
+          "created_by",
+          "custom_activity_type_id",
+          "date_created",
+          "date_updated",
+          "id",
+          "last_published_at",
+          "lead_id",
+          "mentions",
+          "mentions_updated_at",
+          "organization_id",
+          "pinned",
+          "pinned_at",
+          "source",
+          "status",
+          "updated_by",
+          "user_id",
+          "users"
+        ],
         "properties": {
           "_type": {
             "type": "string",
@@ -11605,8 +11770,14 @@
             "item_type": null,
             "item_format": null
           },
+          "activity_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
           "contact_id": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -11643,13 +11814,13 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -11659,9 +11830,27 @@
             "item_type": null,
             "item_format": null
           },
+          "last_published_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
           "lead_id": {
             "type": "string",
             "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "mentions": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "mentions_updated_at": {
+            "type": "string",
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -11678,6 +11867,12 @@
             "item_format": null
           },
           "pinned_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "source": {
             "type": "string",
             "format": null,
             "item_type": null,
@@ -11716,6 +11911,12 @@
           "users": {
             "type": "array",
             "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "comment_summary": {
+            "type": "object",
+            "format": null,
             "item_type": null,
             "item_format": null
           }
@@ -11723,6 +11924,7 @@
       },
       "response_example_paths": [
         "_type",
+        "activity_at",
         "contact_id",
         "created_by",
         "created_by_name",
@@ -11732,10 +11934,15 @@
         "date_created",
         "date_updated",
         "id",
+        "last_published_at",
         "lead_id",
+        "mentions",
+        "mentions[]",
+        "mentions_updated_at",
         "organization_id",
         "pinned",
         "pinned_at",
+        "source",
         "status",
         "updated_by",
         "updated_by_name",
@@ -11829,6 +12036,13 @@
           "type": "string",
           "required": true,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -11838,7 +12052,28 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "_type",
+          "activity_at",
+          "contact_id",
+          "created_by",
+          "custom_activity_type_id",
+          "date_created",
+          "date_updated",
+          "id",
+          "last_published_at",
+          "lead_id",
+          "mentions",
+          "mentions_updated_at",
+          "organization_id",
+          "pinned",
+          "pinned_at",
+          "source",
+          "status",
+          "updated_by",
+          "user_id",
+          "users"
+        ],
         "properties": {
           "_type": {
             "type": "string",
@@ -11846,8 +12081,14 @@
             "item_type": null,
             "item_format": null
           },
+          "activity_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
           "contact_id": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -11878,13 +12119,13 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -11894,9 +12135,27 @@
             "item_type": null,
             "item_format": null
           },
+          "last_published_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
           "lead_id": {
             "type": "string",
             "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "mentions": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "mentions_updated_at": {
+            "type": "string",
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -11913,7 +12172,13 @@
             "item_format": null
           },
           "pinned_at": {
-            "type": null,
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "source": {
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -11951,6 +12216,12 @@
           "users": {
             "type": "array",
             "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "comment_summary": {
+            "type": "object",
+            "format": null,
             "item_type": null,
             "item_format": null
           }
@@ -11958,6 +12229,7 @@
       },
       "response_example_paths": [
         "_type",
+        "activity_at",
         "contact_id",
         "created_by",
         "created_by_name",
@@ -11966,10 +12238,15 @@
         "date_created",
         "date_updated",
         "id",
+        "last_published_at",
         "lead_id",
+        "mentions",
+        "mentions[]",
+        "mentions_updated_at",
         "organization_id",
         "pinned",
         "pinned_at",
+        "source",
         "status",
         "updated_by",
         "updated_by_name",
@@ -11988,6 +12265,11 @@
           "key": "id",
           "type": "string",
           "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
           "affects_target": true
         }
       ],
@@ -12087,7 +12369,28 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "_type",
+          "activity_at",
+          "contact_id",
+          "created_by",
+          "custom_activity_type_id",
+          "date_created",
+          "date_updated",
+          "id",
+          "last_published_at",
+          "lead_id",
+          "mentions",
+          "mentions_updated_at",
+          "organization_id",
+          "pinned",
+          "pinned_at",
+          "source",
+          "status",
+          "updated_by",
+          "user_id",
+          "users"
+        ],
         "properties": {
           "_type": {
             "type": "string",
@@ -12095,8 +12398,14 @@
             "item_type": null,
             "item_format": null
           },
+          "activity_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
           "contact_id": {
-            "type": null,
+            "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -12127,13 +12436,13 @@
           },
           "date_created": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
           "date_updated": {
             "type": "string",
-            "format": null,
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -12143,9 +12452,27 @@
             "item_type": null,
             "item_format": null
           },
+          "last_published_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
           "lead_id": {
             "type": "string",
             "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "mentions": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "mentions_updated_at": {
+            "type": "string",
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -12162,6 +12489,12 @@
             "item_format": null
           },
           "pinned_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "source": {
             "type": "string",
             "format": null,
             "item_type": null,
@@ -12200,6 +12533,12 @@
           "users": {
             "type": "array",
             "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "comment_summary": {
+            "type": "object",
+            "format": null,
             "item_type": null,
             "item_format": null
           }
@@ -12207,6 +12546,7 @@
       },
       "response_example_paths": [
         "_type",
+        "activity_at",
         "contact_id",
         "created_by",
         "created_by_name",
@@ -12215,10 +12555,15 @@
         "date_created",
         "date_updated",
         "id",
+        "last_published_at",
         "lead_id",
+        "mentions",
+        "mentions[]",
+        "mentions_updated_at",
         "organization_id",
         "pinned",
         "pinned_at",
+        "source",
         "status",
         "updated_by",
         "updated_by_name",
@@ -12441,6 +12786,13 @@
           "type": "string",
           "required": false,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -12656,6 +13008,11 @@
         },
         {
           "key": "query.activity_at__lt",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
           "type": "string",
           "affects_target": true
         }
@@ -13498,6 +13855,13 @@
           "type": "string",
           "required": true,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -13950,6 +14314,11 @@
           "key": "id",
           "type": "string",
           "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
           "affects_target": true
         }
       ],
@@ -14896,6 +15265,13 @@
           "type": "string",
           "required": false,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -15118,6 +15494,11 @@
           "key": "query.activity_at__lt",
           "type": "string",
           "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
+          "affects_target": true
         }
       ],
       "risk": "read",
@@ -15145,6 +15526,13 @@
           "in": "path",
           "type": "string",
           "required": true,
+          "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
           "exposed": true
         }
       ],
@@ -15371,6 +15759,11 @@
           "key": "id",
           "type": "string",
           "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
           "affects_target": true
         }
       ],
@@ -16113,6 +16506,553 @@
       "approval": "always",
       "idempotency": "idempotent"
     },
+    "close-crm-activity.activities_import_updates_list": {
+      "source": "openapi",
+      "pack": "close-crm-activity",
+      "ingredient": "close-crm-activity",
+      "op": "activities_import_updates_list",
+      "operation_id": "activities.import_updates_list",
+      "method": "GET",
+      "path": "/activity/import_update/",
+      "wire_path": "/api/v1/activity/import_update/",
+      "official_path": "/api/v1/activity/import_update/",
+      "tags": [
+        "activities.import_updates"
+      ],
+      "summary": "List or filter all ImportUpdate activities",
+      "compatibility": false,
+      "parameters": [
+        {
+          "name": "_limit",
+          "in": "query",
+          "type": "number",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "_skip",
+          "in": "query",
+          "type": "number",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "id__in",
+          "in": "query",
+          "type": "array",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "lead_id",
+          "in": "query",
+          "type": "array",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "contact_id",
+          "in": "query",
+          "type": "array",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "user_id",
+          "in": "query",
+          "type": "array",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "organization_id",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "_type",
+          "in": "query",
+          "type": "array",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "date_created__gte",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "date_created__lte",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "date_created__gt",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "date_created__lt",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "activity_at__gte",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "activity_at__lte",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "activity_at__gt",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "activity_at__lt",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "data",
+          "has_more"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
+          },
+          "has_more": {
+            "type": "boolean",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          }
+        }
+      },
+      "response_example_paths": [
+        "data",
+        "data[]",
+        "data[]._type",
+        "data[].activity_at",
+        "data[].contact_id",
+        "data[].created_by",
+        "data[].created_by_name",
+        "data[].date_created",
+        "data[].date_updated",
+        "data[].id",
+        "data[].import_id",
+        "data[].lead_id",
+        "data[].organization_id",
+        "data[].reverted",
+        "data[].updated_by",
+        "data[].updated_by_name",
+        "data[].user_id",
+        "data[].user_name",
+        "data[].users",
+        "data[].users[]",
+        "has_more"
+      ],
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "_limit",
+          "value": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "_skip"
+        },
+        "start": 0,
+        "increment": "by_page_size",
+        "done_when": {
+          "path": "has_more",
+          "equals": false
+        }
+      },
+      "args": [
+        {
+          "key": "query._limit",
+          "type": "number"
+        },
+        {
+          "key": "query._skip",
+          "type": "number"
+        },
+        {
+          "key": "query.id__in",
+          "type": "array",
+          "affects_target": true
+        },
+        {
+          "key": "query.lead_id",
+          "type": "array",
+          "affects_target": true
+        },
+        {
+          "key": "query.contact_id",
+          "type": "array",
+          "affects_target": true
+        },
+        {
+          "key": "query.user_id",
+          "type": "array",
+          "affects_target": true
+        },
+        {
+          "key": "query.organization_id",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query._type",
+          "type": "array",
+          "affects_target": true
+        },
+        {
+          "key": "query.date_created__gte",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.date_created__lte",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.date_created__gt",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.date_created__lt",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.activity_at__gte",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.activity_at__lte",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.activity_at__gt",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query.activity_at__lt",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "close-crm-activity.activities_import_updates_get": {
+      "source": "openapi",
+      "pack": "close-crm-activity",
+      "ingredient": "close-crm-activity",
+      "op": "activities_import_updates_get",
+      "operation_id": "activities.import_updates_get",
+      "method": "GET",
+      "path": "/activity/import_update/{id}/",
+      "wire_path": "/api/v1/activity/import_update/{{id}}/",
+      "official_path": "/api/v1/activity/import_update/{id}/",
+      "tags": [
+        "activities.import_updates"
+      ],
+      "summary": "Get a single ImportUpdate activity",
+      "compatibility": false,
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "type": "string",
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "_type",
+          "activity_at",
+          "contact_id",
+          "created_by",
+          "date_created",
+          "date_updated",
+          "id",
+          "import_id",
+          "lead_id",
+          "organization_id",
+          "reverted",
+          "updated_by",
+          "user_id",
+          "users"
+        ],
+        "properties": {
+          "_type": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "activity_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "contact_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "created_by": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "created_by_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "date_created": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "date_updated": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "import_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "lead_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "organization_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "reverted": {
+            "type": "boolean",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "updated_by": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "updated_by_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "users": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          }
+        }
+      },
+      "response_example_paths": [
+        "_type",
+        "activity_at",
+        "contact_id",
+        "created_by",
+        "created_by_name",
+        "date_created",
+        "date_updated",
+        "id",
+        "import_id",
+        "lead_id",
+        "organization_id",
+        "reverted",
+        "updated_by",
+        "updated_by_name",
+        "user_id",
+        "user_name",
+        "users",
+        "users[]"
+      ],
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": null,
+      "pagination": null,
+      "args": [
+        {
+          "key": "id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "close-crm-activity.activities_import_updates_delete": {
+      "source": "openapi",
+      "pack": "close-crm-activity",
+      "ingredient": "close-crm-activity",
+      "op": "activities_import_updates_delete",
+      "operation_id": "activities.import_updates_delete",
+      "method": "DELETE",
+      "path": "/activity/import_update/{id}/",
+      "wire_path": "/api/v1/activity/import_update/{{id}}/",
+      "official_path": "/api/v1/activity/import_update/{id}/",
+      "tags": [
+        "activities.import_updates"
+      ],
+      "summary": "Delete an ImportUpdate activity",
+      "compatibility": false,
+      "parameters": [
+        {
+          "name": "id",
+          "in": "path",
+          "type": "string",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response_media": [],
+      "response_schema": {
+        "type": null,
+        "format": null,
+        "required": [],
+        "properties": {}
+      },
+      "response_example_paths": [],
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": null,
+      "pagination": null,
+      "args": [
+        {
+          "key": "id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
     "close-crm-activity.activities_lead_merges_list": {
       "source": "openapi",
       "pack": "close-crm-activity",
@@ -16236,6 +17176,13 @@
         },
         {
           "name": "activity_at__lt",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "_fields",
           "in": "query",
           "type": "string",
           "required": false,
@@ -16385,6 +17332,11 @@
           "key": "query.activity_at__lt",
           "type": "string",
           "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
+          "affects_target": true
         }
       ],
       "risk": "read",
@@ -16412,6 +17364,13 @@
           "in": "path",
           "type": "string",
           "required": true,
+          "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
           "exposed": true
         }
       ],
@@ -16515,6 +17474,11 @@
           "key": "id",
           "type": "string",
           "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
           "affects_target": true
         }
       ],
@@ -17734,6 +18698,13 @@
           "type": "string",
           "required": false,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -17904,6 +18875,11 @@
         },
         {
           "key": "query.activity_at__lt",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
           "type": "string",
           "affects_target": true
         }
@@ -18482,6 +19458,13 @@
           "type": "string",
           "required": true,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -18790,6 +19773,11 @@
           "key": "id",
           "type": "string",
           "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
           "affects_target": true
         }
       ],
@@ -19450,6 +20438,13 @@
           "type": "string",
           "required": false,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -19595,6 +20590,11 @@
         },
         {
           "key": "query.activity_at__lt",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
           "type": "string",
           "affects_target": true
         }
@@ -19830,6 +20830,13 @@
           "type": "string",
           "required": true,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -19974,6 +20981,11 @@
           "key": "id",
           "type": "string",
           "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
           "affects_target": true
         }
       ],
@@ -20165,6 +21177,13 @@
           "type": "string",
           "required": false,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -20324,6 +21343,11 @@
         },
         {
           "key": "query.opportunity_id",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
           "type": "string",
           "affects_target": true
         }
@@ -20614,6 +21638,13 @@
           "type": "string",
           "required": true,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -20808,6 +21839,11 @@
           "type": "string",
           "required": true,
           "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
+          "affects_target": true
         }
       ],
       "risk": "read",
@@ -20991,6 +22027,13 @@
           "type": "string",
           "required": false,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -21000,7 +22043,10 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "data",
+          "has_more"
+        ],
         "properties": {
           "data": {
             "type": "array",
@@ -21020,6 +22066,7 @@
         "data",
         "data[]",
         "data[]._type",
+        "data[].activity_at",
         "data[].created_by",
         "data[].created_by_name",
         "data[].date_created",
@@ -21027,11 +22074,16 @@
         "data[].id",
         "data[].lead_id",
         "data[].organization_id",
+        "data[].task_assigned_to",
+        "data[].task_assigned_to_name",
         "data[].task_id",
         "data[].task_text",
         "data[].updated_by",
         "data[].updated_by_name",
         "data[].user_id",
+        "data[].user_name",
+        "data[].users",
+        "data[].users[]",
         "has_more"
       ],
       "response_json": {
@@ -21134,6 +22186,11 @@
           "key": "query.activity_at__lt",
           "type": "string",
           "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
+          "affects_target": true
         }
       ],
       "risk": "read",
@@ -21162,6 +22219,13 @@
           "type": "string",
           "required": true,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -21171,7 +22235,21 @@
       "response_schema": {
         "type": "object",
         "format": null,
-        "required": [],
+        "required": [
+          "_type",
+          "activity_at",
+          "created_by",
+          "date_created",
+          "date_updated",
+          "id",
+          "lead_id",
+          "organization_id",
+          "task_id",
+          "task_text",
+          "updated_by",
+          "user_id",
+          "users"
+        ],
         "properties": {
           "_type": {
             "type": "string",
@@ -21179,15 +22257,33 @@
             "item_type": null,
             "item_format": null
           },
-          "date_created": {
+          "activity_at": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "created_by": {
             "type": "string",
             "format": null,
             "item_type": null,
             "item_format": null
           },
-          "date_updated": {
+          "created_by_name": {
             "type": "string",
             "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "date_created": {
+            "type": "string",
+            "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "date_updated": {
+            "type": "string",
+            "format": "date-time",
             "item_type": null,
             "item_format": null
           },
@@ -21209,6 +22305,18 @@
             "item_type": null,
             "item_format": null
           },
+          "task_assigned_to": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "task_assigned_to_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "task_id": {
             "type": "string",
             "format": null,
@@ -21221,7 +22329,55 @@
             "item_type": null,
             "item_format": null
           },
+          "updated_by": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "updated_by_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "user_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "user_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "users": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "comment_summary": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "sequence_id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "sequence_name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "sequence_subscription_id": {
             "type": "string",
             "format": null,
             "item_type": null,
@@ -21231,14 +22387,24 @@
       },
       "response_example_paths": [
         "_type",
+        "activity_at",
+        "created_by",
+        "created_by_name",
         "date_created",
         "date_updated",
         "id",
         "lead_id",
         "organization_id",
+        "task_assigned_to",
+        "task_assigned_to_name",
         "task_id",
         "task_text",
-        "user_id"
+        "updated_by",
+        "updated_by_name",
+        "user_id",
+        "user_name",
+        "users",
+        "users[]"
       ],
       "response_json": {
         "unsafe_integers": "string"
@@ -21250,6 +22416,11 @@
           "key": "id",
           "type": "string",
           "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
           "affects_target": true
         }
       ],
@@ -21441,6 +22612,13 @@
           "type": "string",
           "required": false,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -21607,6 +22785,11 @@
         },
         {
           "key": "query.external_whatsapp_message_id",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
           "type": "string",
           "affects_target": true
         }
@@ -22104,6 +23287,13 @@
           "type": "string",
           "required": true,
           "exposed": true
+        },
+        {
+          "name": "_fields",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -22377,6 +23567,11 @@
           "key": "id",
           "type": "string",
           "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "query._fields",
+          "type": "string",
           "affects_target": true
         }
       ],
@@ -24046,6 +25241,12 @@
           "localtime": {
             "type": "string",
             "format": "date-time",
+            "item_type": null,
+            "item_format": null
+          },
+          "primary_address_full": {
+            "type": "string",
+            "format": null,
             "item_type": null,
             "item_format": null
           },
@@ -31658,6 +32859,13 @@
           "type": "boolean",
           "required": false,
           "exposed": true
+        },
+        {
+          "name": "participant_user_id",
+          "in": "query",
+          "type": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -31779,6 +32987,11 @@
           "key": "query.is_group_number",
           "type": "boolean",
           "affects_target": true
+        },
+        {
+          "key": "query.participant_user_id",
+          "type": "string",
+          "affects_target": true
         }
       ],
       "risk": "read",
@@ -31811,8 +33024,7 @@
           "type": "object",
           "format": null,
           "required": [
-            "country",
-            "sharing"
+            "country"
           ],
           "properties": {
             "country": {
@@ -32110,7 +33322,6 @@
         {
           "key": "body.sharing",
           "type": "string",
-          "required": true,
           "affects_target": true
         },
         {
@@ -52447,7 +53658,7 @@
     "close-advanced-filtering.advanced_filter.search": {
       "source": "official_markdown",
       "source_url": "https://developer.close.com/api/resources/advanced-filtering.md",
-      "source_sha256": "082c7292b2930a7c89c92e84f29c83e7aaa70dd2d761ecc0e1b90670bcb529c6",
+      "source_sha256": "d82505febcf1cf0e82d32af595d953d42a15097fa2bf5a839d12f8b8fab0c507",
       "pack": "close-advanced-filtering",
       "ingredient": "close-advanced-filtering",
       "op": "advanced_filter.search",

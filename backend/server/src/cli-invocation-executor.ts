@@ -2,6 +2,7 @@ import { spawn as nodeSpawn, type ChildProcess, type SpawnOptions } from 'node:c
 import { createHash } from 'node:crypto';
 import {
   closeSync,
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -14,11 +15,12 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
 import type { CliInvocationCall, CliInvocationExecutor } from '@recued/engine';
 import {
   cliSpawnErrorReason,
+  isInPlaceCapture,
   isPinnedCasFileRef,
   isTempFileRef,
   runAttentionForTriggerSource,
@@ -898,7 +900,24 @@ const CAPTURE_MIME_EXT: Record<string, string> = {
   'image/png': 'png',
   'image/jpeg': 'jpg',
   'image/webp': 'webp',
+  // Office document toolkit. Needed for `dir_arg` capture (soffice writes
+  // `<name>.pdf` beside nothing, but an office-producing op writes into a dir
+  // that may also hold a lock/profile file) — selecting by extension keeps the
+  // capture deterministic. In-place capture knows its path and never consults
+  // this map, but the mime must still round-trip onto the record.
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document': 'docx',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': 'xlsx',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation': 'pptx',
 };
+
+/** The OOXML mime types whose captured bytes must present a ZIP container.
+ *  Kept as a set beside `CAPTURE_MIME_EXT` so adding a format touches both the
+ *  extension selection and the envelope assertion in one place. */
+const OOXML_MIME_TYPES: ReadonlySet<string> = new Set([
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+]);
 
 const capturedOutputError = (
   call: CliInvocationCall,
@@ -962,6 +981,41 @@ const selectCapturedFile = (
   return { filePath, filename };
 };
 
+/** IN-PLACE capture — the produced file is the materialized INPUT the tool
+ *  edited, so there is no directory to scan and no ambiguity to resolve: the
+ *  path is the one the materialize wrapper already substituted into the arg.
+ *  Enforces the same size ceiling as `selectCapturedFile` before any caller
+ *  reads bytes, and the same `bad_output` classification when the tool exited
+ *  successfully but left nothing usable behind. A missing file here means the
+ *  tool deleted or renamed its input rather than editing it — fail loud rather
+ *  than capture whatever else happens to be around. */
+const selectInPlaceCapturedFile = (
+  inputPath: string,
+  call: CliInvocationCall,
+  maxBytes: number,
+): { filePath: string; filename: string } => {
+  if (!existsSync(inputPath)) {
+    throw capturedOutputError(
+      call,
+      `cli_invocation output_capture: '${call.operation_id}' in-place input ${basename(inputPath)} is missing after the run (the tool removed or renamed it instead of editing in place)`,
+    );
+  }
+  const stat = statSync(inputPath);
+  if (!stat.isFile()) {
+    throw capturedOutputError(
+      call,
+      `cli_invocation output_capture: '${call.operation_id}' in-place path ${basename(inputPath)} is not a regular file`,
+    );
+  }
+  if (stat.size > maxBytes) {
+    throw capturedOutputError(
+      call,
+      `cli_invocation output_capture: '${call.operation_id}' output ${basename(inputPath)} is ${stat.size} bytes, over the ${maxBytes}-byte cap`,
+    );
+  }
+  return { filePath: inputPath, filename: basename(inputPath) };
+};
+
 /** A fixed PDF capture is authority for the MIME recorded on the durable
  * data.file row. Verify the minimum PDF envelope before CAS ingest so a broken
  * or substituted binary cannot stamp arbitrary bytes as application/pdf. PDF
@@ -971,14 +1025,35 @@ const assertCapturedBytesMatchMime = (
   capture: CliOutputCaptureSpec,
   call: CliInvocationCall,
 ): void => {
-  if (capture.mime_type !== 'application/pdf') return;
-  const headerMatches = bytes.subarray(0, 5).toString('ascii') === '%PDF-';
-  const tail = bytes.subarray(Math.max(0, bytes.length - 1_024)).toString('latin1');
-  if (!headerMatches || !tail.includes('%%EOF')) {
-    throw capturedOutputError(
-      call,
-      `cli_invocation output_capture: '${call.operation_id}' produced invalid PDF bytes`,
-    );
+  if (capture.mime_type === 'application/pdf') {
+    const headerMatches = bytes.subarray(0, 5).toString('ascii') === '%PDF-';
+    const tail = bytes.subarray(Math.max(0, bytes.length - 1_024)).toString('latin1');
+    if (!headerMatches || !tail.includes('%%EOF')) {
+      throw capturedOutputError(
+        call,
+        `cli_invocation output_capture: '${call.operation_id}' produced invalid PDF bytes`,
+      );
+    }
+    return;
+  }
+  // Same reasoning as PDF, for the OOXML family an in-place editor produces
+  // (`officecli batch` on .docx/.xlsx/.pptx). Every OOXML part is a ZIP
+  // container, so a truncated write or a tool that replaced the file with an
+  // error page cannot be stamped as a Word document. Header only — unlike PDF's
+  // `%%EOF` there is no cheap tail marker (the central directory is a structure,
+  // not a sentinel), and reading it properly would mean parsing the archive.
+  if (OOXML_MIME_TYPES.has(capture.mime_type)) {
+    const sig = bytes.subarray(0, 4);
+    // `PK\x03\x04` — a normal local file header. `PK\x05\x06` (empty archive)
+    // and `PK\x07\x08` (spanned) are valid ZIP signatures but never a usable
+    // document, so they are rejected with everything else.
+    const isZip = sig[0] === 0x50 && sig[1] === 0x4b && sig[2] === 0x03 && sig[3] === 0x04;
+    if (!isZip) {
+      throw capturedOutputError(
+        call,
+        `cli_invocation output_capture: '${call.operation_id}' produced invalid OOXML bytes (expected a ZIP container for ${capture.mime_type})`,
+      );
+    }
   }
 };
 
@@ -986,11 +1061,10 @@ const assertCapturedBytesMatchMime = (
  *  (`data.file.received`) and surface a bare `record_id` string as
  *  `result.file_ref` (asymmetric union: a `cas` ref stays a string). */
 const captureToolOutputToCas = async (
-  outDir: string,
+  selected: { filePath: string; filename: string },
   capture: CliOutputCaptureSpec,
   call: CliInvocationCall,
   ingest: ToolOutputIngestor,
-  maxBytes: number,
 ): Promise<{
   file_ref: string;
   filename: string;
@@ -998,7 +1072,7 @@ const captureToolOutputToCas = async (
   content_sha256?: string;
   size_bytes?: number;
 }> => {
-  const { filePath, filename } = selectCapturedFile(outDir, capture, call, maxBytes);
+  const { filePath, filename } = selected;
   const bytes = readFileSync(filePath);
   assertCapturedBytesMatchMime(bytes, capture, call);
   const content_sha256 = createHash('sha256').update(bytes).digest('hex');
@@ -1035,12 +1109,10 @@ const captureToolOutputToCas = async (
  *  `mime_type` / `filename` ride on the ref so the doc-part consumer builds a
  *  content part without sniffing. */
 const captureToolOutputToTemp = (
-  outDir: string,
+  selected: { filePath: string; filename: string },
   capture: CliOutputCaptureSpec,
-  call: CliInvocationCall,
-  maxBytes: number,
 ): { file_ref: TempFileRef; filename: string; mime_type: string } => {
-  const { filePath, filename } = selectCapturedFile(outDir, capture, call, maxBytes);
+  const { filePath, filename } = selected;
   const file_ref: TempFileRef = {
     backing: 'temp',
     path: filePath,
@@ -1103,6 +1175,59 @@ export const createCliInvocationExecutor = (
     // recipe adds a `core.storage.file.persist` keep-step).
     const storage = call.binding.storage ?? 'temp';
 
+    // IN-PLACE capture: the tool edits its input and offers no output path, so
+    // there is no `dir_arg` to bind and no directory to scan. The materialize
+    // wrapper has ALREADY substituted the engine-chosen temp path into
+    // `from_input_arg` (it wraps `runResolved` from the outside), so reading the
+    // arg here yields that path — never a caller-named one, because the
+    // validators refuse this variant the materialize passthrough lane.
+    //
+    // Cleanup is the OUTER wrapper's: its `finally` removes the input temp dir
+    // after this returns. That ordering is load-bearing for `cas` (bytes are
+    // read here, before the sweep) and is exactly why `temp` must COPY rather
+    // than hand back the materialized path — a `TempFileRef` pointing into a
+    // directory about to be removed is a dangling ref the next step would fail
+    // on. The copy lands in run-scratch, which outlives the call by design.
+    if (isInPlaceCapture(capture)) {
+      const base = (await runForeground(
+        call,
+        resolveArgv(call),
+        spawn,
+        now,
+        tuning,
+        registry,
+      )) as Record<string, unknown>;
+      const inPlacePath = readArg(call.args, capture.from_input_arg);
+      if (typeof inPlacePath !== 'string' || inPlacePath.length === 0) {
+        throw new Error(
+          `cli_invocation '${call.operation_id}' in-place output_capture arg '${capture.from_input_arg}' did not resolve to a materialized path`,
+        );
+      }
+      const selected = selectInPlaceCapturedFile(inPlacePath, call, outputCaptureMaxBytes);
+      if (storage === 'temp') {
+        const scratchDir = allocateRunScratchDir(call.stepMeta?.run_id ?? '');
+        const keptPath = join(scratchDir, selected.filename);
+        copyFileSync(selected.filePath, keptPath);
+        const captured = captureToolOutputToTemp(
+          { filePath: keptPath, filename: selected.filename },
+          capture,
+        );
+        return { ...base, ...captured };
+      }
+      if (!ingestToolOutput) {
+        throw new Error(
+          `cli_invocation '${call.operation_id}' declares output_capture but no tool-output ingestor is wired`,
+        );
+      }
+      const captured = await captureToolOutputToCas(
+        selected,
+        capture,
+        call,
+        ingestToolOutput,
+      );
+      return { ...base, ...captured };
+    }
+
     if (storage === 'temp') {
       // `temp` (D-185 §3.4): the produced file goes under the RUN-SCOPED scratch
       // root and SURVIVES this call (the immediate next step consumes it by
@@ -1124,7 +1249,10 @@ export const createCliInvocationExecutor = (
         tuning,
         registry,
       )) as Record<string, unknown>;
-      const captured = captureToolOutputToTemp(outDir, capture, call, outputCaptureMaxBytes);
+      const captured = captureToolOutputToTemp(
+        selectCapturedFile(outDir, capture, call, outputCaptureMaxBytes),
+        capture,
+      );
       return { ...base, ...captured };
     }
 
@@ -1152,11 +1280,10 @@ export const createCliInvocationExecutor = (
         registry,
       )) as Record<string, unknown>;
       const captured = await captureToolOutputToCas(
-        tempDir,
+        selectCapturedFile(tempDir, capture, call, outputCaptureMaxBytes),
         capture,
         call,
         ingestToolOutput,
-        outputCaptureMaxBytes,
       );
       return { ...base, ...captured };
     } finally {
@@ -1201,11 +1328,34 @@ export const createCliInvocationExecutor = (
       tempDir.path ??= mkdtempSync(join(tmpdir(), 'recued-cli-in-'));
       return tempDir.path;
     };
+    // IN-PLACE capture changes what this arg IS: the tool will WRITE to the path
+    // we hand it, and that written file becomes the op's result. Two of the
+    // pass-through shortcuts below are safe only for a read-only consumer and
+    // must not apply here (the authoring validator already pins
+    // `from_input_arg === materialize.arg`, so this is the same single arg).
+    const captureSpec = call.binding.output_capture;
+    const isInPlaceInput =
+      captureSpec !== undefined
+      && isInPlaceCapture(captureSpec)
+      && captureSpec.from_input_arg === materialize.arg;
     const materializeOne = async (value: unknown, idx?: number): Promise<string> => {
       // D-185 Slice 2 — a `temp` ref (a prior `storage:'temp'` op's run-scoped
       // output, e.g. the ffmpeg→whisper pipe) ALREADY is a local file: substitute
       // its path straight into the arg — no CAS read, no re-materialize.
-      if (isTempFileRef(value)) return value.path;
+      if (isTempFileRef(value)) {
+        // ...EXCEPT for an in-place editor, which would mutate that prior step's
+        // run-scratch file underneath any other step still holding the same ref.
+        // Copy into OUR throwaway dir so the edit is confined to this op.
+        if (isInPlaceInput) {
+          const copyPath = join(
+            ensureTempDir(),
+            materializedInputBasename(value.filename, idx),
+          );
+          copyFileSync(value.path, copyPath);
+          return copyPath;
+        }
+        return value.path;
+      }
       // The materialize arg can otherwise carry EITHER a CAS file_ref (the
       // storage-gdrive download lane) OR a literal local path / URL (the manual
       // lane — docling's `source` serves both). Only a recognized
@@ -1214,6 +1364,19 @@ export const createCliInvocationExecutor = (
       const pinned = isPinnedCasFileRef(value) ? value : null;
       const recordId = pinned?.record_id ?? value;
       if (!isInboundFileRecordId(recordId)) {
+        // ⛔ The passthrough lane is REFUSED for an in-place capture. Letting a
+        // literal path through would hand the tool a location the RECIPE named,
+        // and this op then ingests whatever is there — the caller would both
+        // choose the write target and get its bytes back as a file_ref. Every
+        // other guard on this path (validators, grant-gating, stdout/stderr
+        // suppression) assumes the materialized path is engine-chosen; that
+        // assumption is what this branch would break. A read-only consumer like
+        // docling keeps the lane — it only ever reads what it was pointed at.
+        if (isInPlaceInput) {
+          throw new Error(
+            `cli_invocation '${call.operation_id}' in-place output_capture arg '${materialize.arg}' requires a data.file ref — a literal path or URL is refused because the captured file must live at an engine-chosen path`,
+          );
+        }
         return scalarString(value, idx === undefined
           ? materialize.arg
           : `${materialize.arg}[${idx}]`);

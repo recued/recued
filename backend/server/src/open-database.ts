@@ -16,6 +16,7 @@ import {
   finishDatabaseEnrollment,
   resolveDatabaseKeyFromServerFiles,
 } from './database-encryption.js';
+import { resolveServerBundleSwapMarkerPath } from './archive/server-bundle-swap.js';
 
 type CipherDatabaseHandle = Database.Database & {
   key(key: Buffer): number;
@@ -28,6 +29,10 @@ export interface OpenDatabaseOptions extends Database.Options {
   databaseKey?: Uint8Array | null;
   /** Environment used for an optionally passphrase-sealed identity keyfile. */
   keyEnvironment?: Record<string, string | undefined>;
+  /** Internal serve-boot handoff: the restore journal was reconciled in this
+   *  process before this open. Needed only when unresolved CAS parks keep an
+   *  otherwise-settled marker for a later retry. Standalone callers omit it. */
+  restoreJournalReconciled?: boolean;
 }
 
 const asCipherHandle = (db: Database.Database): CipherDatabaseHandle =>
@@ -251,12 +256,30 @@ export const openDatabase = (
     const {
       databaseKey: suppliedDatabaseKey,
       keyEnvironment,
+      restoreJournalReconciled,
       ...driverOptions
     } = options;
     const hasSuppliedKey = Object.prototype.hasOwnProperty.call(options, 'databaseKey');
     const dbPath = typeof filename === 'string' && filename !== ':memory:'
       ? filename
       : null;
+    // Every production SQLite door converges here, including standalone CLI
+    // profiles that do not run the serve boot reconciler. If a hard exit left a
+    // restore journal, opening the live path can observe a db/bundle/config mix;
+    // worse, in the pre-commit window the live db is absent and SQLite would
+    // create an empty replacement that makes deterministic rollback impossible.
+    // Serve and archive-import reconcile before reaching this chokepoint. Every
+    // other caller must fail closed and let a normal server boot settle it.
+    if (
+      dbPath
+      && !restoreJournalReconciled
+      && existsSync(resolveServerBundleSwapMarkerPath(dbPath))
+    ) {
+      throw new Error(
+        `ARCHIVE_RESTORE_RECOVERY_REQUIRED: an interrupted restore journal exists for ${dbPath}; `
+          + 'start the server once to reconcile it before opening the database',
+      );
+    }
     const databaseKey = hasSuppliedKey
       ? suppliedDatabaseKey ?? null
       : dbPath

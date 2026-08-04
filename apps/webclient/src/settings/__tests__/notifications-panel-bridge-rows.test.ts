@@ -371,6 +371,16 @@ describe('D-169 P1 notifications panel bridge rows', () => {
 
     const first = panel.clickBridgeMode('bridge-1', 'approval');
     expect(panel.getBridgeRowToggling().has('bridge-1::approval')).toBe(true);
+    const busy = findAllByAttr(
+      host,
+      NOTIFICATIONS_BRIDGE_MODE_BTN_ATTR,
+      'bridge-1',
+    ).find((button) =>
+      button.getAttribute(NOTIFICATIONS_BRIDGE_MODE_ATTR) === 'approval',
+    );
+    expect(busy?.disabled).toBe(false);
+    expect(busy?.getAttribute('aria-disabled')).toBe('true');
+    expect(busy?.getAttribute('aria-busy')).toBe('true');
     const second = panel.clickBridgeMode('bridge-1', 'approval');
     dispatch.resolve(okSettings('bridge-1', {
       notification: true,

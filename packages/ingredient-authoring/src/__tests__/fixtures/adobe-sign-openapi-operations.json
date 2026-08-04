@@ -5,8 +5,8 @@
       "reference_url": "https://secure.na1.adobesign.com/public/docs/restapi/v6",
       "repository_url": "https://github.com/adobe/acrobat-sign",
       "url": "https://secure.na1.adobesign.com/restapijson/v6/restapi.json",
-      "sha256": "451a1cbd832b3b13a4af6e99a7736b7735d33e5d8313fc28064b8be10a29d167",
-      "bytes": 1180637,
+      "sha256": "c88bf384171b40442e12bfc7b83d490c775405b9d0ac8a116ea0a563ed364d25",
+      "bytes": 1181806,
       "retrieved_on": "2026-07-15",
       "openapi": "3.1.0",
       "info_version": "6.0.0",
@@ -552,6 +552,14 @@
         "pack": "adobe-sign",
         "op": "agreement.create",
         "route_key": "POST /agreements",
+        "name": "hasPreservedDigitalSignatures",
+        "reason": "documented_not_writable_for_post",
+        "documented_required": false
+      },
+      {
+        "pack": "adobe-sign",
+        "op": "agreement.create",
+        "route_key": "POST /agreements",
         "name": "hasSignerIdentityReport",
         "reason": "documented_not_writable_for_post",
         "documented_required": false
@@ -841,6 +849,14 @@
         "op": "agreement.update",
         "route_key": "PUT /agreements/{agreementId}",
         "name": "hasFormFieldData",
+        "reason": "documented_not_writable_for_put",
+        "documented_required": false
+      },
+      {
+        "pack": "adobe-sign-agreement-workflows",
+        "op": "agreement.update",
+        "route_key": "PUT /agreements/{agreementId}",
+        "name": "hasPreservedDigitalSignatures",
         "reason": "documented_not_writable_for_put",
         "documented_required": false
       },
@@ -1309,8 +1325,8 @@
       "agreement-status-digest-adobe-sign": 2,
       "agreement-evidence-brief-adobe-sign": 1,
       "library-template-readiness-brief-adobe-sign": 2,
-      "send-agreement-adobe-sign": 1,
-      "remind-agreement-participants-adobe-sign": 2,
+      "send-agreement-adobe-sign": 2,
+      "remind-agreement-participants-adobe-sign": 3,
       "update-agreement-note-adobe-sign": 1,
       "cancel-agreement-adobe-sign": 2
     },
@@ -5892,6 +5908,11 @@
           },
           {
             "name": "hasFormFieldData",
+            "reason": "documented_not_writable_for_put",
+            "documented_required": false
+          },
+          {
+            "name": "hasPreservedDigitalSignatures",
             "reason": "documented_not_writable_for_put",
             "documented_required": false
           },
@@ -16570,6 +16591,11 @@
             "documented_required": false
           },
           {
+            "name": "hasPreservedDigitalSignatures",
+            "reason": "documented_not_writable_for_post",
+            "documented_required": false
+          },
+          {
             "name": "hasSignerIdentityReport",
             "reason": "documented_not_writable_for_post",
             "documented_required": false
@@ -16843,6 +16869,9 @@
       "response_schema": {
         "type": "object",
         "properties": {
+          "hasPreservedDigitalSignatures": {
+            "type": "boolean"
+          },
           "groupId": {
             "type": "string"
           },

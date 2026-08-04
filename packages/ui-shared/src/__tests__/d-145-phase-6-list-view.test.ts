@@ -89,6 +89,23 @@ describe('D-145 PA6 — renderWorkEntityListView (list)', () => {
     expect(html).toContain('Email Bob');
   });
 
+  it('keeps the opening row focusable and exposes its busy state', () => {
+    const html = renderWorkEntityListView({
+      kind: 'task',
+      rows: [row({ id: 'a', title: 'Buy milk' })],
+      show_source_label: false,
+      search_query: '',
+      opening_entity_id: 'a',
+    });
+    const button = html.match(
+      /<button[^>]*data-entity-id="a"[^>]*>[\s\S]*?<\/button>/,
+    )?.[0] ?? '';
+    expect(button).toContain('aria-disabled="true"');
+    expect(button).toContain('aria-busy="true"');
+    expect(button).not.toMatch(/\sdisabled(?:\s|=|>)/);
+    expect(button).toContain('Opening…');
+  });
+
   it('omits Source label per row when show_source_label is false', () => {
     const html = renderWorkEntityListView({
       kind: 'task',

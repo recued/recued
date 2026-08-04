@@ -3468,6 +3468,19 @@ export type ServerRpcRegistry = {
       redirect_uri: string;
       client_id: string;
       client_secret?: string;
+      /** R26.2-for-vendors — form-supplied endpoints for a NON-REGISTRY vendor,
+       *  mirroring `startVendorOAuth`. Ignored for a registered vendor, which
+       *  always uses its registry config so these can never bypass its PKCE /
+       *  secret gate / sandbox split.
+       *
+       *  They exist so a LOOPBACK self-serve flow can finish. `startVendorOAuth`
+       *  requires a public HTTPS server URL (its signed state carries one and
+       *  the cloud page forwards the code there), which a self-hosted server
+       *  reached at `127.0.0.1` does not have — so that path is unreachable and
+       *  the browser completes through this pure-exchange rpc instead, after the
+       *  same-origin callback page hands it the code. */
+      authorize_url?: string;
+      token_endpoint?: string;
       /** D-130 P1 — sandbox-mode flag. When `true` and the vendor
        *  declares sandbox OAuth URLs (Salesforce), the code exchange
        *  POSTs to the sandbox token endpoint. Vendors without a

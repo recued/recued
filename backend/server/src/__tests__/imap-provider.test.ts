@@ -31,6 +31,7 @@ import type {
 import {
   canonicalizeImap,
   createImapProvider,
+  imapMessageDirectionForMailbox,
   type ImapClient,
   type ImapClientFactory,
   type ImapProviderConfig,
@@ -40,6 +41,7 @@ import type {
   ProviderSyncCallback,
   ProviderSyncEvent,
 } from '../collections/mail/provider.js';
+import type { OAuthAccountStore } from '../collections/mail/oauth.js';
 
 // ────────────────────────────────────────────────────────────────
 // Fake IMAP client — programmatic messages + events per folder.
@@ -47,6 +49,7 @@ import type {
 
 interface FakeMessage {
   uid: number;
+  seq?: number;
   source: Buffer;
   flags?: Set<string>;
   internalDate?: Date;
@@ -60,9 +63,12 @@ interface FakeFolder {
 interface FakeState {
   folders: Map<string, FakeFolder>;
   clients: FakeClient[];
+  mailboxes?: Array<{ path: string; specialUse?: string }>;
   connectError?: Error;
   mailboxOpenError?: Error;
+  mailboxOpenErrorPath?: string;
   fetchThrows?: boolean;
+  fetches: Array<{ range: string | number[]; uidMode: boolean }>;
 }
 
 class FakeClient extends EventEmitter implements ImapClient {
@@ -91,7 +97,13 @@ class FakeClient extends EventEmitter implements ImapClient {
   }
 
   async mailboxOpen(path: string): Promise<MailboxObject> {
-    if (this.state.mailboxOpenError) throw this.state.mailboxOpenError;
+    if (
+      this.state.mailboxOpenError
+      && (this.state.mailboxOpenErrorPath === undefined
+        || this.state.mailboxOpenErrorPath === path)
+    ) {
+      throw this.state.mailboxOpenError;
+    }
     this.path = path;
     return {
       path,
@@ -99,6 +111,10 @@ class FakeClient extends EventEmitter implements ImapClient {
       flags: new Set(),
       exists: this.state.folders.get(path)?.messages.length ?? 0,
     } as unknown as MailboxObject;
+  }
+
+  async list(): Promise<Array<{ path: string; specialUse?: string }>> {
+    return this.state.mailboxes ?? [...this.state.folders.keys()].map((path) => ({ path }));
   }
 
   async search(query: SearchObject, _o?: { uid?: boolean }): Promise<number[] | false> {
@@ -120,15 +136,29 @@ class FakeClient extends EventEmitter implements ImapClient {
     _o?: { uid?: boolean },
   ): AsyncIterable<FetchMessageObject> {
     if (this.state.fetchThrows) throw new Error('boom');
+    this.state.fetches.push({ range, uidMode: _o?.uid === true });
     const folder = this.state.folders.get(this.path);
     if (!folder) return;
-    const uids = Array.isArray(range) ? range : [];
-    for (const uid of uids) {
-      const m = folder.messages.find((x) => x.uid === uid);
+    const selected = Array.isArray(range)
+      ? (_o?.uid === true
+          ? range.map((uid) => folder.messages.find((message) => message.uid === uid))
+          : range.map((seq) => folder.messages.find(
+              (message, index) => (message.seq ?? index + 1) === seq,
+            )))
+      : range.split(',').flatMap((part) => {
+          const seq = Number.parseInt(part, 10);
+          if (!Number.isSafeInteger(seq)) return [];
+          const message = folder.messages.find(
+            (candidate, index) => (candidate.seq ?? index + 1) === seq,
+          );
+          return message ? [message] : [];
+        });
+    for (const m of selected) {
       if (!m) continue;
+      const index = folder.messages.indexOf(m);
       yield {
-        seq: uid,
-        uid,
+        seq: m.seq ?? index + 1,
+        uid: m.uid,
         source: m.source,
         flags: m.flags,
         internalDate: m.internalDate,
@@ -143,6 +173,17 @@ class FakeClient extends EventEmitter implements ImapClient {
 
 const makeFactory = (state: FakeState): ImapClientFactory => () =>
   new FakeClient(state);
+
+const makeDeliveryStore = (): OAuthAccountStore & { data: Map<string, string> } => {
+  const data = new Map<string, string>();
+  return {
+    data,
+    async get(key) { return data.get(key) ?? null; },
+    async set(key, value) { data.set(key, value); },
+    async delete(key) { data.delete(key); },
+    async getAll() { return Object.fromEntries(data); },
+  };
+};
 
 const makeRfc822 = (opts: {
   from?: string;
@@ -223,12 +264,19 @@ const newHarness = (opts: {
   seed?: Record<string, FakeMessage[]>;
   connectError?: Error;
   mailboxOpenError?: Error;
+  mailboxOpenErrorPath?: string;
+  mailboxes?: Array<{ path: string; specialUse?: string }>;
+  deliveryStore?: OAuthAccountStore;
+  sleep?: (ms: number) => Promise<void>;
 } = {}): Harness => {
   const state: FakeState = {
     folders: new Map(),
     clients: [],
     connectError: opts.connectError,
     mailboxOpenError: opts.mailboxOpenError,
+    mailboxOpenErrorPath: opts.mailboxOpenErrorPath,
+    mailboxes: opts.mailboxes,
+    fetches: [],
   };
   const seed = opts.seed ?? { INBOX: [] };
   for (const [path, messages] of Object.entries(seed)) {
@@ -239,7 +287,8 @@ const newHarness = (opts: {
     slug: 'work',
     config: cfg,
     clientFactory: makeFactory(state),
-    sleep: () => Promise.resolve(),
+    sleep: opts.sleep ?? (() => Promise.resolve()),
+    ...(opts.deliveryStore ? { deliveryStore: opts.deliveryStore } : {}),
   });
   const events: ProviderSyncEvent[] = [];
   const cb: ProviderSyncCallback = async (e) => { events.push(e); };
@@ -286,6 +335,31 @@ describe('ImapProvider — connect', () => {
     expect(h.state.clients[1].path).toBe('Archive');
   });
 
+  it('carries a localized folder special-use direction through real provider ingest', async () => {
+    h = newHarness({
+      seed: {
+        Gesendet: [{
+          uid: 1,
+          source: makeRfc822({ from: 'owner@example.com' }),
+          flags: new Set(),
+          internalDate: new Date(),
+        }],
+      },
+      mailboxes: [{ path: 'Gesendet', specialUse: '\\Sent' }],
+    });
+    await h.provider.connect();
+    const directions: unknown[] = [];
+    await h.provider.initialScan({
+      backfill_days: 30,
+      onMessage: async (message) => {
+        directions.push(message.direction);
+        return true;
+      },
+    });
+
+    expect(directions).toEqual(['outbound']);
+  });
+
   it('surfaces connect errors to the caller', async () => {
     h = newHarness({ connectError: new Error('offline') });
     await expect(h.provider.connect()).rejects.toThrow(/offline/);
@@ -294,6 +368,20 @@ describe('ImapProvider — connect', () => {
   it('surfaces mailboxOpen errors to the caller', async () => {
     h = newHarness({ mailboxOpenError: new Error('no such folder') });
     await expect(h.provider.connect()).rejects.toThrow(/no such folder/);
+  });
+
+  it('closes folders opened before a later folder fails to connect', async () => {
+    h = newHarness({
+      seed: { INBOX: [], Archive: [] },
+      mailboxOpenError: new Error('archive unavailable'),
+      mailboxOpenErrorPath: 'Archive',
+    });
+
+    await expect(h.provider.connect()).rejects.toThrow('archive unavailable');
+
+    expect(h.state.clients).toHaveLength(2);
+    expect(h.state.clients[0]?.path).toBe('INBOX');
+    expect(h.state.clients.every((client) => client.closed || !client.usable)).toBe(true);
   });
 });
 
@@ -345,7 +433,7 @@ describe('ImapProvider — initialScan', () => {
       .rejects.toThrow(/before connect/);
   });
 
-  it('marks errors when fetch throws but keeps the provider alive', async () => {
+  it('rejects an incomplete folder scan after recording the error', async () => {
     h = newHarness({ seed: { INBOX: [{
       uid: 1,
       source: makeRfc822({}),
@@ -354,8 +442,26 @@ describe('ImapProvider — initialScan', () => {
     }] } });
     await h.provider.connect();
     h.state.fetchThrows = true;
-    await h.provider.initialScan({ backfill_days: 30, onMessage: async () => true });
+    await expect(h.provider.initialScan({
+      backfill_days: 30,
+      onMessage: async () => true,
+    })).rejects.toThrow('imap initial scan was incomplete');
     expect(h.provider.health().error_count_24h).toBeGreaterThan(0);
+  });
+
+  it('rejects an initial scan item whose RFC-822 source is missing', async () => {
+    h = newHarness({ seed: { INBOX: [{
+      uid: 7,
+      source: undefined as unknown as Buffer,
+      flags: new Set(),
+      internalDate: new Date(),
+    }] } });
+    await h.provider.connect();
+
+    await expect(h.provider.initialScan({
+      backfill_days: 30,
+      onMessage: async () => true,
+    })).rejects.toThrow('imap initial scan was incomplete');
   });
 });
 
@@ -371,7 +477,7 @@ describe('ImapProvider — live sync', () => {
 
     // Arriving message — seed the folder then simulate an EXISTS push.
     h.state.folders.get('INBOX')!.messages.push({
-      uid: 1,
+      uid: 900,
       source: makeRfc822({ subject: 'new' }),
       flags: new Set(),
       internalDate: new Date(),
@@ -381,7 +487,83 @@ describe('ImapProvider — live sync', () => {
     const created = await waitForEvent(h.events, (e) => e.kind === 'created');
     expect(created).toBeDefined();
     expect(created?.message?.subject).toBe('new');
+    expect(created?.source_id).toBe('900@INBOX');
+    expect(h.state.fetches).toContainEqual({ range: '1', uidMode: false });
     await stop();
+  });
+
+  it('replays a rejected IDLE delivery from the durable journal after restart', async () => {
+    const deliveryStore = makeDeliveryStore();
+    const never = (): Promise<void> => new Promise(() => {});
+    const first = newHarness({
+      seed: { INBOX: [{
+        uid: 41,
+        source: makeRfc822({ subject: 'retry me', messageId: 'retry@example.com' }),
+        flags: new Set(),
+        internalDate: new Date(),
+      }] },
+      deliveryStore,
+      sleep: never,
+    });
+    h = first;
+    await first.provider.connect();
+    await first.provider.startSync(async () => {
+      throw new Error('collection unavailable');
+    });
+    first.state.clients[0].emit('exists', { count: 1, prevCount: 0, path: 'INBOX' });
+
+    expect(await waitForCondition(() => deliveryStore.data.size === 1)).toBe(true);
+    expect([...deliveryStore.data.keys()][0]).toContain('pending_delivery');
+    await first.provider.close();
+
+    const recovered = newHarness({
+      seed: { INBOX: [{
+        uid: 41,
+        source: makeRfc822({ subject: 'retry me', messageId: 'retry@example.com' }),
+        flags: new Set(),
+        internalDate: new Date(),
+      }] },
+      deliveryStore,
+    });
+    h = recovered;
+    await recovered.provider.connect();
+    await recovered.provider.startSync(recovered.cb);
+
+    const replayed = await waitForEvent(
+      recovered.events,
+      (event) => event.kind === 'created' && event.source_id === '41@INBOX',
+    );
+    expect(replayed).toBeDefined();
+    expect(deliveryStore.data.size).toBe(0);
+  });
+
+  it('drains an admitted IDLE callback before the sync stop resolves', async () => {
+    h = newHarness({ seed: { INBOX: [{
+      uid: 12,
+      source: makeRfc822({ subject: 'in flight' }),
+      flags: new Set(),
+      internalDate: new Date(),
+    }] } });
+    await h.provider.connect();
+    let release!: () => void;
+    let markStarted!: () => void;
+    const callbackWait = new Promise<void>((resolve) => { release = resolve; });
+    const callbackStarted = new Promise<void>((resolve) => { markStarted = resolve; });
+    const stop = await h.provider.startSync(async () => {
+      markStarted();
+      await callbackWait;
+    });
+    h.state.clients[0].emit('exists', { count: 1, prevCount: 0, path: 'INBOX' });
+    await callbackStarted;
+
+    let stopped = false;
+    const stopping = stop().then(() => { stopped = true; });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+
+    release();
+    await stopping;
+    expect(stopped).toBe(true);
   });
 
   it('translates expunge → deleted', async () => {
@@ -504,7 +686,19 @@ describe('canonicalizeImap', () => {
     expect(canonical.body_text.trim()).toBe('plain body');
     expect(canonical.is_read).toBe(true);
     expect(canonical.folder_or_label).toBe('INBOX');
+    expect(canonical.direction).toBe('inbound');
     expect(canonical.source_id).toBe('42@INBOX');
+  });
+
+  it('uses RFC special-use flags for localized Sent and Drafts folder names', () => {
+    const mailboxes = [
+      { path: 'Gesendet', specialUse: '\\Sent' },
+      { path: 'Brouillons', specialUse: '\\Drafts' },
+    ];
+
+    expect(imapMessageDirectionForMailbox('Gesendet', mailboxes)).toBe('outbound');
+    expect(imapMessageDirectionForMailbox('Brouillons', mailboxes)).toBe('draft');
+    expect(imapMessageDirectionForMailbox('Projet secret', mailboxes)).toBe('unknown');
   });
 
   it('derives thread_id from References header', async () => {

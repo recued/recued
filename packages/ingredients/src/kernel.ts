@@ -72,6 +72,7 @@ import {
   type CommitmentEvidenceEntry,
   type CommitmentExpiryPolicy,
   type ContactAliasPlatform,
+  type ContactBusinessContextResult,
   type ContactRecord,
   type EnrichmentScope,
   type FormResponse,
@@ -1042,6 +1043,16 @@ export interface KernelDispatchers {
     contact?: ContactRecord;
   }>;
 
+  /** Backs `contact-business-context`. Recomputes a metadata-only, zero-AI
+   * relationship projection from existing contact, CRM, work-entity, and
+   * calendar stores. The mutually-exclusive `level` lets recipes consume the
+   * correlated family as one capped signal. */
+  contactBusinessContext?: (input: {
+    email: string;
+    as_of: number;
+    known_before_at: number;
+  }) => Promise<ContactBusinessContextResult>;
+
   /** Backs `mail-thread-reader`. Queries `data.mail` records matching
    *  `thread_id`, sorts ascending by `received_at`, returns up to
    *  `max_messages` messages plus first/last timestamps + count. */
@@ -1213,6 +1224,25 @@ export interface KernelDispatchers {
   }) => Promise<{
     delivered_to: Array<NotificationDeliveryChannel>;
     failed: Array<NotificationDeliveryChannel>;
+  }>;
+
+  /** Backs `core.notification.recipe-callback`. Queues a bounded pointer for
+   * active MCP tokens bound to the selected contract and explicitly granted the
+   * named query recipe. The callback is only a hint; its arguments are replayed
+   * through the ordinary MCP tool gate when the client follows it. */
+  notificationRecipeCallback?: (input: {
+    destination_contract_id: string;
+    topic: string;
+    query_tool: string;
+    arguments: Record<string, unknown>;
+    ttl_seconds?: number;
+    /** Trusted engine provenance; never accepted from authored input. */
+    source_recipe_id: string;
+  }) => Promise<{
+    queued_to: number;
+    failed_to: number;
+    coalesced: true;
+    skipped_reason: string | null;
   }>;
 
   /** D-193 — backs `schedule-recipe`. Creates a server-owned schedule
@@ -2697,6 +2727,55 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         return dispatchers.contactResolve(dispatchInput);
       }
 
+      case 'contact-business-context': {
+        if (!dispatchers.contactBusinessContext) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            `contact-business-context unavailable — no paired server or contact dispatcher`,
+            { slug },
+          );
+        }
+        const input = call.input as {
+          email?: unknown;
+          as_of?: unknown;
+          known_before_at?: unknown;
+        };
+        const email = typeof input.email === 'string'
+          ? canonicalizeEmail(input.email)
+          : '';
+        if (email.length === 0) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'contact-business-context: email must be a valid email address',
+            { slug },
+          );
+        }
+        if (typeof input.as_of !== 'number'
+            || !Number.isFinite(input.as_of)
+            || input.as_of < 0) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'contact-business-context: as_of must be a non-negative finite number',
+            { slug },
+          );
+        }
+        if (typeof input.known_before_at !== 'number'
+            || !Number.isFinite(input.known_before_at)
+            || input.known_before_at < 0
+            || input.known_before_at > input.as_of) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'contact-business-context: known_before_at must be a non-negative finite number no later than as_of',
+            { slug },
+          );
+        }
+        return dispatchers.contactBusinessContext({
+          email,
+          as_of: input.as_of,
+          known_before_at: input.known_before_at,
+        });
+      }
+
       case 'mail-thread-reader': {
         if (!dispatchers.mailThreadRead) {
           throw new IngredientError(
@@ -3118,6 +3197,89 @@ export const createKernelAdapter = (dispatchers: KernelDispatchers): Adapter => 
         if (typeof input.title === 'string') dispatchInput.title = input.title;
         if (typeof input.link_url === 'string') dispatchInput.link_url = input.link_url;
         return dispatchers.notificationSend(dispatchInput);
+      }
+
+      case 'notification-recipe-callback': {
+        if (!dispatchers.notificationRecipeCallback) {
+          throw new IngredientError(
+            'SERVER_NOT_REACHABLE',
+            'notification-recipe-callback unavailable — no MCP callback dispatcher',
+            { slug },
+          );
+        }
+        const input = call.input as Record<string, unknown>;
+        assertOnlyKernelInputFields(
+          input,
+          ['destination_contract_id', 'topic', 'query_tool', 'arguments', 'ttl_seconds'],
+          slug,
+        );
+        const destinationContractId = input.destination_contract_id;
+        const topic = input.topic;
+        const queryTool = input.query_tool;
+        const callbackArguments = input.arguments;
+        const ttlSeconds = input.ttl_seconds;
+        const sourceRecipeId = call.stepMeta?.recipe_id;
+        if (typeof destinationContractId !== 'string' || destinationContractId.length === 0) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'notification-recipe-callback: destination_contract_id is required',
+            { slug },
+          );
+        }
+        if (typeof topic !== 'string' || topic.length === 0) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'notification-recipe-callback: topic is required',
+            { slug },
+          );
+        }
+        if (typeof queryTool !== 'string' || queryTool.length === 0) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'notification-recipe-callback: query_tool is required',
+            { slug },
+          );
+        }
+        if (
+          callbackArguments === null
+          || typeof callbackArguments !== 'object'
+          || Array.isArray(callbackArguments)
+        ) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'notification-recipe-callback: arguments must be an object',
+            { slug },
+          );
+        }
+        if (
+          ttlSeconds !== undefined
+          && (
+            typeof ttlSeconds !== 'number'
+            || !Number.isSafeInteger(ttlSeconds)
+            || ttlSeconds <= 0
+          )
+        ) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'notification-recipe-callback: ttl_seconds must be a positive integer',
+            { slug },
+          );
+        }
+        if (typeof sourceRecipeId !== 'string' || sourceRecipeId.length === 0) {
+          throw new IngredientError(
+            'BAD_INPUT',
+            'notification-recipe-callback: a recipe execution context is required',
+            { slug },
+          );
+        }
+        return dispatchers.notificationRecipeCallback({
+          destination_contract_id: destinationContractId,
+          topic,
+          query_tool: queryTool,
+          arguments: callbackArguments as Record<string, unknown>,
+          ...(ttlSeconds !== undefined ? { ttl_seconds: ttlSeconds } : {}),
+          source_recipe_id: sourceRecipeId,
+        });
       }
 
       case 'schedule-recipe': {

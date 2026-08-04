@@ -18,7 +18,14 @@ import {
   mountReceptionRecordsSection,
   type ReceptionRecordsSectionConn,
 } from './records-section.js';
-import { FR_LENS_EMPTY_COPY, formResponseFields } from './form-response-lens.js';
+import {
+  FR_LENS_EMPTY_COPY,
+  FR_LENS_DETAIL_RETRY_ATTR,
+  FR_LENS_ERROR_ATTR,
+  FR_LENS_RETRY_ATTR,
+  formResponseFields,
+  type ReceptionFormResponseLensMount,
+} from './form-response-lens.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -94,7 +101,10 @@ const makeConn = (over: Record<string, unknown> = {}) => {
   const calls: Array<{ method: string; args: unknown }> = [];
   const conn = ((method: string, args?: unknown) => {
     calls.push({ method, args });
-    if (method in over) return Promise.resolve(over[method]);
+    if (method in over) {
+      const result = over[method];
+      return result instanceof Error ? Promise.reject(result) : Promise.resolve(result);
+    }
     if (method === 'reception.record.list') return Promise.resolve({ records: [], truncated: false });
     if (method === 'form_response.list') return Promise.resolve({ responses: [] });
     if (method === 'recipe.list') return Promise.resolve({ recipes: [] });
@@ -116,6 +126,52 @@ const mount = (over: Record<string, unknown> = {}) => {
 };
 
 describe('mountReceptionRecordsSection — lenses', () => {
+  it('renders one roving tab stop with a labelled tabpanel', () => {
+    const { host } = mount();
+    const root = host.children[0] as FakeEl;
+    const nav = root.children.find((c) => c.className === 'reception-records-lenses')!;
+    const content = root.children.at(-1)!;
+    const [requests, responses] = nav.children;
+
+    expect(nav.getAttribute('role')).toBe('tablist');
+    expect(requests?.getAttribute('role')).toBe('tab');
+    expect(requests?.getAttribute('aria-selected')).toBe('true');
+    expect(requests?.getAttribute('tabindex')).toBe('0');
+    expect(responses?.getAttribute('aria-selected')).toBe('false');
+    expect(responses?.getAttribute('tabindex')).toBe('-1');
+    expect(content.getAttribute('role')).toBe('tabpanel');
+    expect(content.getAttribute('aria-labelledby')).toBe(
+      requests?.getAttribute('id'),
+    );
+  });
+
+  it('switches lenses with the horizontal tab keys', () => {
+    const { host, section } = mount();
+    const root = host.children[0] as FakeEl;
+    const nav = root.children.find((c) => c.className === 'reception-records-lenses')!;
+    const [requests, responses] = nav.children;
+    const listener = nav.listeners.get('keydown')?.[0];
+    let prevented = 0;
+
+    listener?.({
+      target: requests,
+      key: 'ArrowRight',
+      preventDefault: () => { prevented += 1; },
+    });
+    expect(section.activeLens()).toBe('responses');
+    expect(responses?.getAttribute('aria-selected')).toBe('true');
+    expect(responses?.getAttribute('tabindex')).toBe('0');
+
+    listener?.({
+      target: responses,
+      key: 'Home',
+      preventDefault: () => { prevented += 1; },
+    });
+    expect(section.activeLens()).toBe('requests');
+    expect(requests?.getAttribute('aria-selected')).toBe('true');
+    expect(prevented).toBe(2);
+  });
+
   it('opens on Requests and queries the record list, not form responses', async () => {
     const { calls, section } = mount();
     await Promise.resolve();
@@ -194,6 +250,41 @@ describe('mountReceptionRecordsSection — lenses', () => {
     const html = (content.children[0] as FakeEl | undefined)?.innerHTML ?? '';
     expect(html).toContain('v@example.com');
     expect(html).not.toContain(FR_LENS_EMPTY_COPY);
+  });
+
+  it('offers an alerting Retry instead of empty copy after a list failure', async () => {
+    const { host, section } = mount({
+      'form_response.list': new Error('responses offline'),
+    });
+    section.setLens('responses');
+    await Promise.resolve();
+    await Promise.resolve();
+    const root = host.children[0] as FakeEl;
+    const content = root.children.at(-1) as FakeEl;
+    const html = (content.children[0] as FakeEl | undefined)?.innerHTML ?? '';
+    expect(html).toContain(FR_LENS_ERROR_ATTR);
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('responses offline');
+    expect(html).toContain(FR_LENS_RETRY_ATTR);
+    expect(html).not.toContain(FR_LENS_EMPTY_COPY);
+  });
+
+  it('offers a detail-scoped Retry only when the detail read fails', async () => {
+    const { host, section } = mount({
+      'form_response.list': { responses: [listItem()] },
+      'form_response.get': new Error('detail offline'),
+    });
+    section.setLens('responses');
+    await Promise.resolve();
+    await Promise.resolve();
+    await (section.current() as ReceptionFormResponseLensMount).open('sub_1');
+    const root = host.children[0] as FakeEl;
+    const content = root.children.at(-1) as FakeEl;
+    const html = (content.children[0] as FakeEl | undefined)?.innerHTML ?? '';
+    expect(html).toContain(FR_LENS_ERROR_ATTR);
+    expect(html).toContain('detail offline');
+    expect(html).toContain(FR_LENS_DETAIL_RETRY_ATTR);
+    expect(html).toContain('Try again or return to the list');
   });
 });
 

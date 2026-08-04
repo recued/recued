@@ -28,6 +28,7 @@ import {
   CHAT_MODEL_ROUTING_LAYERS,
   type ChatModelHint,
   type ChatModelRoutingLayer,
+  type ChatModelSourceId,
   type ChatSession,
 } from '@recued/contracts';
 
@@ -230,19 +231,30 @@ export const buildChatModelSourceOptions = (
   return options;
 };
 
-/** Match a session's `model_routing` (`{ current, model_hint? }`) to its
- *  picker option. `free_pool` matches by layer; a slot matches by hint, with
- *  a legacy/no-hint fallback to the first slot option (slot_1 / fast — the
- *  prior default). Returns `null` when nothing matches (e.g. the routed
- *  source is no longer configured). */
+/** Match a session's `model_routing` to its picker option. An exact persisted
+ *  `source_id` wins because two configured slots can share a speed; legacy
+ *  rows without that pin fall back to layer + hint matching. Returns `null`
+ *  when nothing matches (e.g. the routed source is no longer configured). */
 export const matchChatModelSource = (
   options: ReadonlyArray<ChatModelSourceOption>,
   routing:
-    | { current: ChatModelRoutingLayer; model_hint?: ChatModelHint }
+    | {
+        current: ChatModelRoutingLayer;
+        model_hint?: ChatModelHint;
+        source_id?: ChatModelSourceId;
+      }
     | null
     | undefined,
 ): ChatModelSourceOption | null => {
   if (!routing) return null;
+  const exact = routing.source_id === undefined
+    ? undefined
+    : options.find(
+        (option) =>
+          option.id === routing.source_id
+          && option.layer === routing.current,
+      );
+  if (exact !== undefined) return exact;
   if (routing.current === 'free_pool') {
     return options.find((o) => o.id === 'free_pool') ?? null;
   }
@@ -250,8 +262,8 @@ export const matchChatModelSource = (
   // now (D-191: locality is display-only, not a routing layer), so the layer
   // filter just excludes the free pool; the `model_hint` (slot_1=fast vs
   // slot_2=quality/thinking) disambiguates WHICH slot. With the standard
-  // distinct-speed slot convention the hint uniquely identifies the slot; the
-  // same-speed local+remote edge is closed by the exact-slot pin (Phase 6).
+  // distinct-speed slot convention the hint uniquely identifies the slot;
+  // same-speed slots were already disambiguated by the exact pin above.
   // `null` when no slot is configured (the caller keeps the routing as-is
   // rather than synthesizing a divergent source).
   const candidates = options.filter(

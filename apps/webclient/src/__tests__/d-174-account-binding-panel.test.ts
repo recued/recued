@@ -13,7 +13,11 @@ import type {
 
 import {
   ACCOUNT_BINDING_ACTION_MESSAGE_ATTR,
+  ACCOUNT_BINDING_CANCEL_REBIND_ATTR,
+  ACCOUNT_BINDING_CANCEL_UNBIND_ATTR,
+  ACCOUNT_BINDING_CONNECT_ATTR,
   ACCOUNT_BINDING_CONFIRM_REBIND_ATTR,
+  ACCOUNT_BINDING_CONFIRM_UNBIND_ATTR,
   ACCOUNT_BINDING_ERROR_ATTR,
   ACCOUNT_BINDING_FREE_CARD_ATTR,
   ACCOUNT_BINDING_FREE_CLAIM_ATTR,
@@ -24,9 +28,12 @@ import {
   ACCOUNT_BINDING_PRO_LIFECYCLE_ATTR,
   ACCOUNT_BINDING_PRO_SUBSCRIBE_ATTR,
   ACCOUNT_BINDING_PUBLISHING_LINK_ATTR,
+  ACCOUNT_BINDING_RETRY_ATTR,
   ACCOUNT_BINDING_SESSION_ATTR,
   ACCOUNT_BINDING_SIGNOUT_ATTR,
   ACCOUNT_BINDING_SUMMARY_ATTR,
+  ACCOUNT_BINDING_UNBIND_ATTR,
+  ACCOUNT_BINDING_UNBIND_CONFIRMATION_ATTR,
   mountAccountBindingPanel,
   type MountAccountBindingPanelOptions,
 } from '../settings/account-binding-panel.js';
@@ -257,7 +264,11 @@ describe('D-174 account binding panel — status states', () => {
     mount.dispose();
   });
 
-  it('renders connected-but-no-server when an auth session exists but the server is unbound', async () => {
+  // The session is read on an UNBOUND server only inside the user-initiated
+  // connect action (never on panel open — see the session-gate describe), so
+  // that press is where `connected-no-server` becomes reachable: signed in at
+  // recued.com, but the bind that follows didn't land.
+  it('renders connected-but-no-server when Connect finds a session the bind cannot use', async () => {
     const { host, mount } = mountFixture({
       runReadSession: vi.fn(async () => ({
         authenticated: true,
@@ -265,8 +276,14 @@ describe('D-174 account binding panel — status states', () => {
         expiresAt: 1_700_000_100_000,
         csrfToken: 'csrf',
       })),
+      mintBindingToken: vi.fn(async () => {
+        throw new Error('Could not mint binding token.');
+      }),
     });
     await mount.whenLoaded();
+    expect(mount.viewState()).toBe('not-connected');
+
+    await mount.connect();
 
     expect(mount.viewState()).toBe('connected-no-server');
     expect(textOf(host)).toContain('Connected, server not bound');
@@ -292,6 +309,69 @@ describe('D-174 account binding panel — status states', () => {
 });
 
 describe('D-174 account binding panel — connect flow', () => {
+  it('owns a Connect mutation through its authoritative refresh', async () => {
+    let statusCalls = 0;
+    let resolveRefresh!: (value: AccountBindingStatusResponse) => void;
+    const refreshed = new Promise<AccountBindingStatusResponse>((resolve) => {
+      resolveRefresh = resolve;
+    });
+    const runBindingStatus = vi.fn(() => {
+      statusCalls += 1;
+      return statusCalls === 1 ? Promise.resolve(unbound()) : refreshed;
+    });
+    let resolveBind!: (value: AccountBindResult) => void;
+    const runBind = vi.fn(
+      () => new Promise<AccountBindResult>((resolve) => {
+        resolveBind = resolve;
+      }),
+    );
+    const { mount } = mountFixture({ runBindingStatus, runBind });
+    await mount.whenLoaded();
+
+    expect(mount.hasInFlightWork()).toBe(false);
+    const pending = mount.connect();
+    expect(mount.hasInFlightWork()).toBe(true);
+    await Promise.resolve();
+    resolveBind({ outcome: 'bound', binding: summary() });
+    for (let i = 0; i < 4 && runBindingStatus.mock.calls.length < 2; i += 1) {
+      await Promise.resolve();
+    }
+    expect(runBindingStatus).toHaveBeenCalledTimes(2);
+    expect(mount.hasInFlightWork()).toBe(true);
+
+    resolveRefresh(bound());
+    await pending;
+    expect(mount.hasInFlightWork()).toBe(false);
+    mount.dispose();
+  });
+
+  it('keeps the Connect command focusable, busy, and single-flight', async () => {
+    let resolveBind!: (value: AccountBindResult) => void;
+    const runBind = vi.fn(
+      () => new Promise<AccountBindResult>((resolve) => {
+        resolveBind = resolve;
+      }),
+    );
+    const { host, mount, opts } = mountFixture({ runBind });
+    await mount.whenLoaded();
+
+    findByAttr(host, ACCOUNT_BINDING_CONNECT_ATTR)?.click();
+    const pending = findByAttr(host, ACCOUNT_BINDING_CONNECT_ATTR);
+    expect(pending?.textContent).toBe('Connecting…');
+    expect(pending?.getAttribute('aria-disabled')).toBe('true');
+    expect(pending?.getAttribute('aria-busy')).toBe('true');
+    expect(pending?.disabled).toBe(false);
+    pending?.click();
+    pending?.click();
+    expect(opts.mintBindingToken).toHaveBeenCalledTimes(1);
+    await Promise.resolve();
+    expect(runBind).toHaveBeenCalledTimes(1);
+
+    resolveBind({ outcome: 'bound', binding: summary() });
+    await Promise.resolve();
+    mount.dispose();
+  });
+
   it('mints a binding token and relays it to account.bind on bound', async () => {
     let current = unbound();
     const next = bound();
@@ -372,6 +452,11 @@ describe('D-174 account binding panel — connect flow', () => {
     await mount.connect();
 
     expect(mount.viewState()).toBe('conflict');
+    expect(mount.hasInFlightWork()).toBe(false);
+    const conflictDialog = findByAttr(host, 'role', 'alertdialog');
+    expect(conflictDialog).not.toBeNull();
+    expect(conflictDialog?.getAttribute('aria-labelledby'))
+      .toBe('account-binding-conflict-title');
     expect(findByAttr(host, ACCOUNT_BINDING_CONFIRM_REBIND_ATTR)).not.toBeNull();
     expect(textOf(host)).toContain('acct-old (@old)');
     expect(textOf(host)).toContain('acct-new (@new)');
@@ -385,9 +470,136 @@ describe('D-174 account binding panel — connect flow', () => {
     expect(mount.viewState()).toBe('bound-active');
     mount.dispose();
   });
+
+  it('keeps Confirm rebind focusable, busy, and single-flight', async () => {
+    let resolveRebind!: (value: AccountBindResult) => void;
+    const rebind = new Promise<AccountBindResult>((resolve) => {
+      resolveRebind = resolve;
+    });
+    const runBind = vi.fn((args): Promise<AccountBindResult> => {
+      if (args.confirm_rebind === true) return rebind;
+      return Promise.resolve({
+        outcome: 'conflict',
+        current_owner: summary({ account_id: 'acct-old' }),
+        incoming: { account_id: 'acct-new', publisher_handle: 'new' },
+      });
+    });
+    const { host, mount, opts } = mountFixture({
+      runBindingStatus: vi.fn(async () => bound()),
+      runBind,
+    });
+    await mount.whenLoaded();
+    await mount.connect();
+
+    findByAttr(host, ACCOUNT_BINDING_CONFIRM_REBIND_ATTR)?.click();
+    expect(mount.hasInFlightWork()).toBe(true);
+    const confirm = findByAttr(host, ACCOUNT_BINDING_CONFIRM_REBIND_ATTR);
+    const cancel = findByAttr(host, ACCOUNT_BINDING_CANCEL_REBIND_ATTR);
+    expect(confirm?.textContent).toBe('Rebinding…');
+    expect(confirm?.getAttribute('aria-disabled')).toBe('true');
+    expect(confirm?.getAttribute('aria-busy')).toBe('true');
+    expect(confirm?.disabled).toBe(false);
+    expect(cancel?.getAttribute('aria-disabled')).toBe('true');
+    expect(cancel?.disabled).toBe(false);
+    confirm?.click();
+    cancel?.click();
+    expect(opts.mintBindingToken).toHaveBeenCalledTimes(2);
+    await Promise.resolve();
+    expect(runBind).toHaveBeenCalledTimes(2);
+
+    resolveRebind({
+      outcome: 'rebound',
+      binding: summary({ account_id: 'acct-new' }),
+      previous_account_id: 'acct-old',
+    });
+    await Promise.resolve();
+    mount.dispose();
+  });
+
+  it('cancels a conflict without relaying a confirm_rebind', async () => {
+    const runBind = vi.fn(async (): Promise<AccountBindResult> => ({
+      outcome: 'conflict',
+      current_owner: summary({ account_id: 'acct-old' }),
+      incoming: { account_id: 'acct-new', publisher_handle: 'new' },
+    }));
+    const { host, mount } = mountFixture({
+      runBindingStatus: vi.fn(async () => bound()),
+      runBind,
+    });
+    await mount.whenLoaded();
+    await mount.connect();
+
+    mount.cancelRebind();
+    expect(mount.viewState()).toBe('bound-active');
+    expect(findByAttr(host, 'role', 'alertdialog')).toBeNull();
+    expect(mount.getState().actionMessage).toBe('Rebind cancelled.');
+    expect(runBind).toHaveBeenCalledTimes(1);
+    mount.dispose();
+  });
 });
 
 describe('D-174 account binding panel — unbind and Pro status', () => {
+  it('reviews Disconnect safely and Cancel does not call account.unbind', async () => {
+    const { host, mount, opts } = mountFixture({
+      runBindingStatus: vi.fn(async () => bound()),
+    });
+    await mount.whenLoaded();
+
+    findByAttr(host, ACCOUNT_BINDING_UNBIND_ATTR)?.click();
+    const confirmation = findByAttr(
+      host,
+      ACCOUNT_BINDING_UNBIND_CONFIRMATION_ATTR,
+    );
+    expect(confirmation).not.toBeNull();
+    expect(confirmation?.getAttribute('role')).toBe('alertdialog');
+    expect(confirmation?.getAttribute('aria-labelledby'))
+      .toBe('account-binding-unbind-title');
+    expect(confirmation?.getAttribute('aria-describedby'))
+      .toBe('account-binding-unbind-description');
+    expect(findByAttr(host, ACCOUNT_BINDING_CONFIRM_UNBIND_ATTR)?.textContent)
+      .toBe('Disconnect server');
+    expect(textOf(confirmation!)).toContain('Your browser stays signed in');
+    expect(opts.runUnbind).not.toHaveBeenCalled();
+
+    findByAttr(host, ACCOUNT_BINDING_CANCEL_UNBIND_ATTR)?.click();
+    expect(findByAttr(host, ACCOUNT_BINDING_UNBIND_CONFIRMATION_ATTR)).toBeNull();
+    expect(opts.runUnbind).not.toHaveBeenCalled();
+    mount.dispose();
+  });
+
+  it('keeps Confirm Disconnect focusable, busy, and single-flight', async () => {
+    let resolveUnbind!: (value: AccountUnbindResult) => void;
+    const runUnbind = vi.fn(
+      () => new Promise<AccountUnbindResult>((resolve) => {
+        resolveUnbind = resolve;
+      }),
+    );
+    const { host, mount } = mountFixture({
+      runBindingStatus: vi.fn(async () => bound()),
+      runUnbind,
+    });
+    await mount.whenLoaded();
+    findByAttr(host, ACCOUNT_BINDING_UNBIND_ATTR)?.click();
+
+    findByAttr(host, ACCOUNT_BINDING_CONFIRM_UNBIND_ATTR)?.click();
+    expect(mount.hasInFlightWork()).toBe(true);
+    const confirm = findByAttr(host, ACCOUNT_BINDING_CONFIRM_UNBIND_ATTR);
+    const cancel = findByAttr(host, ACCOUNT_BINDING_CANCEL_UNBIND_ATTR);
+    expect(confirm?.textContent).toBe('Disconnecting…');
+    expect(confirm?.getAttribute('aria-disabled')).toBe('true');
+    expect(confirm?.getAttribute('aria-busy')).toBe('true');
+    expect(confirm?.disabled).toBe(false);
+    expect(cancel?.getAttribute('aria-disabled')).toBe('true');
+    expect(cancel?.disabled).toBe(false);
+    confirm?.click();
+    cancel?.click();
+    expect(runUnbind).toHaveBeenCalledTimes(1);
+
+    resolveUnbind({ outcome: 'unbound', previous: summary() });
+    await Promise.resolve();
+    mount.dispose();
+  });
+
   it('calls account.unbind and handles the idempotent not_bound path', async () => {
     const { host, mount, opts } = mountFixture({
       runBindingStatus: vi.fn(async () => bound()),
@@ -399,6 +611,7 @@ describe('D-174 account binding panel — unbind and Pro status', () => {
     await mount.unbind();
 
     expect(opts.runUnbind).toHaveBeenCalledTimes(1);
+    expect(mount.hasInFlightWork()).toBe(false);
     expect(findByAttr(host, ACCOUNT_BINDING_ACTION_MESSAGE_ATTR)).not.toBeNull();
     expect(textOf(host)).toContain('No binding was stored');
     mount.dispose();
@@ -449,8 +662,69 @@ describe('D-174 account binding panel — unbind and Pro status', () => {
     mount.dispose();
   });
 
+  it('gates unknown binding state and retries all account reads in place', async () => {
+    let bindingAttempt = 0;
+    let proAttempt = 0;
+    let resolveBinding!: (value: AccountBindingStatusResponse) => void;
+    let resolvePro!: (value: ProConvenienceStatusResponse) => void;
+    const runBindingStatus = vi.fn(() => {
+      bindingAttempt += 1;
+      if (bindingAttempt === 1) {
+        return Promise.reject(new Error('binding status unavailable'));
+      }
+      return new Promise<AccountBindingStatusResponse>((resolve) => {
+        resolveBinding = resolve;
+      });
+    });
+    const runProStatus = vi.fn(() => {
+      proAttempt += 1;
+      if (proAttempt === 1) {
+        return Promise.reject(new Error('plan status unavailable'));
+      }
+      return new Promise<ProConvenienceStatusResponse>((resolve) => {
+        resolvePro = resolve;
+      });
+    });
+    const runReadSession = vi.fn(async () => authedSession());
+    const { host, mount } = mountFixture({
+      runBindingStatus,
+      runProStatus,
+      runReadSession,
+    });
+    await mount.whenLoaded();
+
+    // Two chips, not three: an UNKNOWN binding state is not a bound one, so the
+    // panel must not go ask recued.com about it.
+    expect(findAllByAttr(host, ACCOUNT_BINDING_ERROR_ATTR)).toHaveLength(2);
+    expect(runReadSession).not.toHaveBeenCalled();
+    expect(findByAttr(host, ACCOUNT_BINDING_CONNECT_ATTR)).toBeNull();
+    findByAttr(host, ACCOUNT_BINDING_RETRY_ATTR)?.click();
+    const retry = findByAttr(host, ACCOUNT_BINDING_RETRY_ATTR);
+    expect(retry?.textContent).toBe('Retrying account status…');
+    expect(retry?.getAttribute('aria-disabled')).toBe('true');
+    expect(retry?.getAttribute('aria-busy')).toBe('true');
+    expect(retry?.disabled).toBe(false);
+    expect(findByAttr(host, ACCOUNT_BINDING_CONNECT_ATTR)).toBeNull();
+    retry?.click();
+    retry?.click();
+    expect(runBindingStatus).toHaveBeenCalledTimes(2);
+    expect(runProStatus).toHaveBeenCalledTimes(2);
+
+    resolveBinding(bound());
+    resolvePro(proStatus());
+    await mount.whenLoaded();
+    // The retry landed a KNOWN bound server — now the session read joins in.
+    expect(runReadSession).toHaveBeenCalledTimes(1);
+    expect(findAllByAttr(host, ACCOUNT_BINDING_ERROR_ATTR)).toHaveLength(0);
+    expect(findByAttr(host, ACCOUNT_BINDING_RETRY_ATTR)).toBeNull();
+    expect(findByAttr(host, ACCOUNT_BINDING_CONNECT_ATTR)).not.toBeNull();
+    mount.dispose();
+  });
+
   it('replaces a raw recued.com fetch failure with contextual recovery copy', async () => {
     const { host, mount } = mountFixture({
+      runBindingStatus: vi.fn(async () => bound()),
+      runProStatus: vi.fn(async () => proStatus()),
       runReadSession: vi.fn(async () => {
         throw new TypeError('Failed to fetch');
       }),
@@ -514,6 +788,82 @@ describe('R27 account panel — Free-account card', () => {
   });
 });
 
+// The Settings route mounts EVERY section eagerly, so this panel's mount is
+// reached by opening any settings surface. Its session read is the only
+// cross-origin call it makes — to the auth Worker at `auth.recued.com` — and a
+// self-hosted server with no account must never make it just because its owner
+// opened Settings.
+describe('account panel — recued.com session gate', () => {
+  it('does not read the recued.com session when the server is unbound', async () => {
+    const runReadSession = vi.fn(async () => authedSession());
+    const { host, mount } = mountFixture({ runReadSession });
+    await mount.whenLoaded();
+
+    expect(runReadSession).not.toHaveBeenCalled();
+    // …and the panel is still usable: status renders and Connect is offered.
+    expect(mount.viewState()).toBe('not-connected');
+    expect(mount.getState().errors.session).toBeNull();
+    expect(findByAttr(host, ACCOUNT_BINDING_CONNECT_ATTR)?.textContent)
+      .toBe('Connect your recued.com account');
+    mount.dispose();
+  });
+
+  it('reads the recued.com session when the server holds a binding', async () => {
+    const runReadSession = vi.fn(async () => authedSession());
+    const { mount } = mountFixture({
+      runBindingStatus: vi.fn(async () => bound()),
+      runProStatus: vi.fn(async () => proStatus()),
+      runReadSession,
+    });
+    await mount.whenLoaded();
+
+    expect(runReadSession).toHaveBeenCalledTimes(1);
+    expect(mount.getState().session?.authenticated).toBe(true);
+    mount.dispose();
+  });
+
+  it('reads the recued.com session on an unbound server when the owner presses Connect', async () => {
+    const runReadSession = vi.fn(async () => authedSession());
+    const { host, mount } = mountFixture({ runReadSession });
+    await mount.whenLoaded();
+    expect(runReadSession).not.toHaveBeenCalled();
+
+    findByAttr(host, ACCOUNT_BINDING_CONNECT_ATTR)?.click();
+    await mount.whenLoaded();
+
+    expect(runReadSession).toHaveBeenCalledTimes(1);
+    mount.dispose();
+  });
+
+  it('keeps a session already read when the server is later unbound', async () => {
+    let status = bound();
+    const runReadSession = vi.fn(async () => authedSession());
+    const { host, mount } = mountFixture({
+      runBindingStatus: vi.fn(async () => status),
+      runProStatus: vi.fn(async () => proStatus()),
+      runReadSession,
+      runUnbind: vi.fn(async (): Promise<AccountUnbindResult> => {
+        status = unbound();
+        return { outcome: 'unbound', previous: summary() };
+      }),
+      runSignOut: vi.fn(async () => {}),
+    });
+    await mount.whenLoaded();
+    expect(runReadSession).toHaveBeenCalledTimes(1);
+
+    await mount.unbind();
+
+    // Unbinding the SERVER does not sign the BROWSER out, so the last known
+    // session survives the (now skipped) read — no second cloud call to learn
+    // something that did not change.
+    expect(runReadSession).toHaveBeenCalledTimes(1);
+    expect(mount.getState().bindingStatus?.status).toBe('unbound');
+    expect(findByAttr(host, ACCOUNT_BINDING_SESSION_ATTR)?.textContent)
+      .toContain('mary@example.com');
+    mount.dispose();
+  });
+});
+
 describe('R27 account panel — recued.com session sign-out', () => {
   const unauthed = (): AccountBindingAuthSession => ({
     authenticated: false,
@@ -522,8 +872,21 @@ describe('R27 account panel — recued.com session sign-out', () => {
     csrfToken: 'csrf',
   });
 
+  // A signed-in browser on a BOUND server — the only mount that reads the
+  // recued.com session (the gate; see the session-gate describe). Mounting
+  // these against an unbound server would assert the sign-out UI against a
+  // session the panel deliberately never fetched, so "no Sign out button"
+  // would pass for the wrong reason.
+  const mountSignedInFixture = (
+    overrides: Partial<MountAccountBindingPanelOptions> = {},
+  ) => mountFixture({
+    runBindingStatus: vi.fn(async () => bound()),
+    runProStatus: vi.fn(async () => proStatus()),
+    ...overrides,
+  });
+
   it('shows "Signed in as" + a Sign out action when authenticated and a signout caller is wired', async () => {
-    const { host, mount } = mountFixture({
+    const { host, mount } = mountSignedInFixture({
       runReadSession: vi.fn(async () => authedSession()),
       runSignOut: vi.fn(async () => {}),
     });
@@ -536,7 +899,7 @@ describe('R27 account panel — recued.com session sign-out', () => {
   });
 
   it('hides Sign out when no session is authenticated', async () => {
-    const { host, mount } = mountFixture({
+    const { host, mount } = mountSignedInFixture({
       runReadSession: vi.fn(async () => unauthed()),
       runSignOut: vi.fn(async () => {}),
     });
@@ -548,7 +911,7 @@ describe('R27 account panel — recued.com session sign-out', () => {
   });
 
   it('hides Sign out when signed in but no signout caller is wired', async () => {
-    const { host, mount } = mountFixture({
+    const { host, mount } = mountSignedInFixture({
       runReadSession: vi.fn(async () => authedSession()),
     });
     await mount.whenLoaded();
@@ -557,12 +920,41 @@ describe('R27 account panel — recued.com session sign-out', () => {
     mount.dispose();
   });
 
+  it('keeps Sign out focusable, busy, and single-flight', async () => {
+    let resolveSignOut!: () => void;
+    const runSignOut = vi.fn(
+      () => new Promise<void>((resolve) => {
+        resolveSignOut = resolve;
+      }),
+    );
+    const { host, mount } = mountSignedInFixture({
+      runReadSession: vi.fn(async () => authedSession()),
+      runSignOut,
+    });
+    await mount.whenLoaded();
+
+    findByAttr(host, ACCOUNT_BINDING_SIGNOUT_ATTR)?.click();
+    expect(mount.hasInFlightWork()).toBe(true);
+    const pending = findByAttr(host, ACCOUNT_BINDING_SIGNOUT_ATTR);
+    expect(pending?.textContent).toBe('Signing out…');
+    expect(pending?.getAttribute('aria-disabled')).toBe('true');
+    expect(pending?.getAttribute('aria-busy')).toBe('true');
+    expect(pending?.disabled).toBe(false);
+    pending?.click();
+    pending?.click();
+    expect(runSignOut).toHaveBeenCalledTimes(1);
+
+    resolveSignOut();
+    await Promise.resolve();
+    mount.dispose();
+  });
+
   it('signs out, reports the pairing-unchanged message, and clears the session UI', async () => {
     let session: AccountBindingAuthSession = authedSession();
     const runSignOut = vi.fn(async () => {
       session = unauthed();
     });
-    const { host, mount } = mountFixture({
+    const { host, mount } = mountSignedInFixture({
       runReadSession: vi.fn(async () => session),
       runSignOut,
     });
@@ -572,6 +964,7 @@ describe('R27 account panel — recued.com session sign-out', () => {
     await mount.signOut();
 
     expect(runSignOut).toHaveBeenCalledTimes(1);
+    expect(mount.hasInFlightWork()).toBe(false);
     expect(mount.getState().actionMessage).toContain('Signed out of recued.com');
     expect(mount.getState().actionMessage).toContain('pairing is unchanged');
     expect(findByAttr(host, ACCOUNT_BINDING_SIGNOUT_ATTR)).toBeNull();
@@ -588,7 +981,7 @@ describe('R27 account panel — recued.com session sign-out', () => {
     const runSignOut = vi.fn(async () => {
       signedOut = true;
     });
-    const { host, mount } = mountFixture({ runReadSession, runSignOut });
+    const { host, mount } = mountSignedInFixture({ runReadSession, runSignOut });
     await mount.whenLoaded();
     expect(findByAttr(host, ACCOUNT_BINDING_SIGNOUT_ATTR)).not.toBeNull();
 

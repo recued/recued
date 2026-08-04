@@ -42,8 +42,8 @@ export const recipeUsesInstalledRecordsOperation = (
 ): boolean => {
   for (const step of [
     ...(recipe.trigger_steps ?? []),
-    ...recipe.prefetch_steps,
-    ...recipe.steps,
+    ...(recipe.prefetch_steps ?? []),
+    ...(recipe.steps ?? []),
   ]) {
     const op = stepOp(step);
     if (op !== null && inventory.isOperationId(op)) return true;
@@ -90,7 +90,7 @@ export const assertRecordsNonOwnerRecipeExposure = (
   if ((recipe.trigger_steps?.length ?? 0) !== 0) {
     refuse('trigger_steps would execute before the required contract refusal');
   }
-  if (recipe.prefetch_steps.length !== 0) {
+  if ((recipe.prefetch_steps?.length ?? 0) !== 0) {
     refuse('prefetch_steps would execute before the required contract refusal');
   }
 

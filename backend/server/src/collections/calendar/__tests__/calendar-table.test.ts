@@ -213,6 +213,43 @@ describe('upsert + prior_payload rotation', () => {
   });
 });
 
+describe('summarizeParticipant', () => {
+  it('counts an event once across organizer/alias matches and excludes cancelled rows', () => {
+    table.upsert(makeInput(baseEvent({
+      source_id: 'active-aliases',
+      ical_uid: 'active-aliases@example.test',
+      organizer: { email: 'ada@example.test' },
+      attendees: [{ email: 'ada+sales@example.test', response_status: 'accepted' }],
+      start_at: 200,
+      end_at: 300,
+    })));
+    table.upsert(makeInput(baseEvent({
+      source_id: 'historical',
+      ical_uid: 'historical@example.test',
+      organizer: { email: 'ada@example.test' },
+      start_at: 10,
+      end_at: 20,
+    })));
+    table.upsert(makeInput(baseEvent({
+      source_id: 'cancelled',
+      ical_uid: 'cancelled@example.test',
+      organizer: { email: 'ada@example.test' },
+      start_at: 200,
+      end_at: 300,
+      status: 'cancelled',
+    })));
+
+    expect(table.summarizeParticipant([
+      'ADA@example.test',
+      'ada+sales@example.test',
+    ], 100)).toEqual({
+      active_count: 1,
+      historical_count: 1,
+      observed_count: 2,
+    });
+  });
+});
+
 describe('body_inline / blob_hash invariants', () => {
   it('rejects body_inline above CALENDAR_INLINE_CUTOFF_BYTES', () => {
     const oversized = 'x'.repeat(CALENDAR_INLINE_CUTOFF_BYTES + 1);

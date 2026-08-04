@@ -20,6 +20,7 @@ import {
   RECEPTION_RECORDS_EMPTY_ATTR,
   RECEPTION_RECORDS_ERROR_ATTR,
   RECEPTION_RECORDS_KIND_ATTR,
+  RECEPTION_RECORDS_RETRY_ATTR,
   RECEPTION_RECORDS_TRUNCATED_ATTR,
   RECEPTION_RECORDS_UNRESOLVED_ATTR,
   RECEPTION_RECORDS_UNRESOLVED_COPY,
@@ -189,6 +190,19 @@ describe('mountReceptionRecordsPanel — what reaches the wire', () => {
     expect(calls.length).toBeGreaterThan(before);
     expect(calls.at(-1)).toEqual({ kind: 'scheduling_link' });
   });
+
+  it('exposes each filter group and its selected button', async () => {
+    const { host, panel } = mount([ok([])]);
+    await panel.refresh();
+    const html = rootOf(host).innerHTML;
+    expect(html).toContain('role="group" aria-label="Record kind"');
+    expect(html).toContain(
+      `aria-pressed="true" ${RECEPTION_RECORDS_KIND_ATTR}="all"`,
+    );
+    expect(html).toContain(
+      `aria-pressed="false" ${RECEPTION_RECORDS_KIND_ATTR}="scheduling_link"`,
+    );
+  });
 });
 
 describe('mountReceptionRecordsPanel — what reaches the DOM', () => {
@@ -260,7 +274,9 @@ describe('mountReceptionRecordsPanel — what reaches the DOM', () => {
     await panel.refresh();
     const html = rootOf(host).innerHTML;
     expect(html).toContain(RECEPTION_RECORDS_ERROR_ATTR);
+    expect(html).toContain('role="alert"');
     expect(html).toContain('server said no');
+    expect(html).toContain(RECEPTION_RECORDS_RETRY_ATTR);
     expect(html).not.toContain('No reception records yet');
   });
 

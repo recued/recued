@@ -26,8 +26,27 @@
 /** The form-field keys a suggestion may target. This list IS the capability
  *  surface: widening a publisher's reach means one entry here plus its
  *  validation, never a new authoring cell. */
+import { CONNECTION_AUTH_TYPES } from './connection.js';
+
 export const APPLICABLE_GUIDE_FIELD_KEYS: ReadonlySet<string> = new Set([
   'config.base_url',
+  // ⛔ Added because D-223 shipped SHORT OF ITS OWN § 7 promise: "an owner …
+  // sees the base URL already filled, THE AUTH TYPE PRE-SELECTED, and a link to
+  // the page where the token is created." `auth.type` was never in this list, so
+  // that clause could not hold.
+  //
+  // 🔑 And its absence did not cost one field, it cost most of the feature.
+  // Every other OAuth key here is gated `showWhen: ifAuth('oauth2_refresh')` /
+  // `ifAuth('oauth2_client_credentials')` on the api form, so with the type
+  // unset a hinted `auth.authorize_url` / `auth.token_endpoint` / `auth.scopes`
+  // is seeded and NEVER RENDERS — the owner still has to research the auth
+  // method, which is the one thing the hint exists to spare them.
+  //
+  // ⚠ It is a VALUE, not schema: `auth.type` is a visible, editable `select`
+  // the owner can change. Selecting a value that reveals other fields is what
+  // that select does for a human too — the hint does not set `hidden`,
+  // `readonly` or `showWhen`, which is D-223's actual boundary.
+  'auth.type',
   'subresource_path',
   'auth.param_name',
   'auth.token_endpoint',
@@ -103,6 +122,17 @@ export const canApplyConnectionSetupGuideSuggestion = (
     || suggestedValue.trim().length === 0
     || suggestedValue.length > 500
   ) return false;
+  // `auth.type` is a CLOSED vocabulary — validate against the canonical union,
+  // never "any non-empty string". An unknown value would select nothing on the
+  // form and silently strand every dependent `showWhen` field, which is the
+  // failure this key was added to remove.
+  //
+  // `'none'` is excluded deliberately: the api form's own `AUTH_TYPES` filters
+  // it out, so hinting it would name an option the select does not offer.
+  if (fieldKey === 'auth.type') {
+    return (CONNECTION_AUTH_TYPES as readonly string[]).includes(suggestedValue.trim())
+      && suggestedValue.trim() !== 'none';
+  }
   if (!HTTPS_GUIDE_FIELD_KEYS.has(fieldKey)) return true;
   try {
     const parsed = new URL(suggestedValue.trim());

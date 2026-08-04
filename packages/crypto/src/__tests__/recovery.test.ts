@@ -57,13 +57,12 @@ describe('recoveryKeyToEntropy — rejections', () => {
   });
 
   it('rejects bad checksum', () => {
-    const { mnemonic } = generateRecoveryKey();
-    const words = mnemonic.split(' ');
-    // Replace last word (checksum depends on it) with something that won't checksum
-    words[words.length - 1] = 'abandon';
-    const tampered = words.join(' ');
-    // Either invalid checksum or invalid (we don't control which branch BIP39 hits)
-    expect(() => recoveryKeyToEntropy(tampered)).toThrow();
+    // The 24-word all-zero BIP-39 vector ends in `art`; replacing its checksum
+    // byte with another `abandon` is deterministically invalid. Mutating a
+    // freshly generated last word was probabilistic: one in 256 replacements
+    // happened to carry a valid checksum and made this release gate flaky.
+    const invalidChecksum = Array(24).fill('abandon').join(' ');
+    expect(() => recoveryKeyToEntropy(invalidChecksum)).toThrow('invalid mnemonic');
   });
 });
 

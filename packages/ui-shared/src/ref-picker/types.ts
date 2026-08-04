@@ -154,6 +154,10 @@ export interface RefPickerHandle {
   /** Current visible query text. Primarily useful for safe async label
    *  hydration: a late resolver must not overwrite text the user has typed. */
   getQuery(): string;
+  /** Restore visible, uncommitted query text after a host-owned full repaint.
+   *  Keeps the committed selection, reruns search, and does NOT fire
+   *  `onChange`. */
+  setQuery(query: string): void;
   /** Programmatically set (or clear, with null) the selection. Repaints
    *  the picker's subtree; does NOT fire `onChange`. */
   setValue(selection: RefPickerSelection | null): void;

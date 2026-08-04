@@ -406,17 +406,9 @@ describe('applyRestore', () => {
     }
   });
 
-  /** Config is written BEFORE the journaled pair swap, because it is
-   *  independent of it. A swap that then FAILS left the archive's config live
-   *  over a database that was never replaced — a mismatched pair the operator
-   *  never asked for and gets no report of, since the call throws.
-   *
-   *  ⚠ Driven through the ONLINE pair, deliberately. Offline, every reachable
-   *  refusal fires inside `streamRestoreInto`, i.e. BEFORE `writeConfigRecord`
-   *  ever runs — a test written there passes without touching the code it
-   *  claims to cover. `commitStagedRestore` is where a refusal genuinely lands
-   *  after the config write: the posture gate ran back at stage time, so the
-   *  realm can acquire its sidecar in between. */
+  /** Config now joins the swap journal instead of being written ahead of it.
+   *  Drive a refusal at commit time and prove both halves of that change: the
+   *  operator's live config is untouched and no staged config residue remains. */
   const stagedThenRefused = async (
     tgt: string,
     configPath: string,
@@ -441,7 +433,7 @@ describe('applyRestore', () => {
     ).rejects.toThrow(/D212_REALM_DOWNGRADE_REFUSED/);
   };
 
-  it('puts config.toml back when the swap is refused after it was written', async () => {
+  it('leaves config.toml untouched when the swap is refused', async () => {
     const tgt = newDir();
     const configPath = join(tgt, 'config.toml');
     writeFileSync(configPath, '[bootstrap]\nbind_port = 9999\n');
@@ -450,18 +442,21 @@ describe('applyRestore', () => {
 
     // The operator's config is theirs again — not the archive's.
     expect(readFileSync(configPath, 'utf8')).toContain('bind_port = 9999');
+    expect(readdirSync(tgt).filter((name) => name.startsWith('config.toml.restore-')))
+      .toEqual([]);
   });
 
-  it('removes a config the failed restore introduced where there was none', async () => {
+  it('introduces no config or staging residue when the swap is refused', async () => {
     const tgt = newDir();
     const configPath = join(tgt, 'config.toml');
     expect(existsSync(configPath)).toBe(false);
 
     await stagedThenRefused(tgt, configPath, 0x27);
 
-    // Nothing was there before; nothing is there now. "Restore the backup" has
-    // to cover the no-backup case too, or the realm keeps a config it never had.
+    // Nothing was there before; nothing is there now, including journal scratch.
     expect(existsSync(configPath)).toBe(false);
+    expect(readdirSync(tgt).filter((name) => name.startsWith('config.toml.restore-')))
+      .toEqual([]);
   });
 
   it('a keyless archive still restores onto a keyless realm', async () => {

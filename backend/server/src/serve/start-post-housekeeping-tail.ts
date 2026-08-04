@@ -40,7 +40,7 @@ export type PostHousekeepingTailStorageContext = Pick<
 export type PostHousekeepingTailAppContext = Pick<
   AppContext,
   'llmConfig' | 'executionCaseLifecycle' | 'executionCaseArgumentStore'
-  | 'executionCaseSourcePruner'
+  | 'executionCaseSourcePruner' | 'sharedStoreRef' | 'chatInboundTokenStoreRef'
 >;
 
 export type PostHousekeepingTailCollectionContext = Pick<
@@ -89,6 +89,8 @@ export const startPostHousekeepingTail = (
     auditRetention: storage.auditRetention,
     s2sPreviewStore: storage.s2sPreviewStoreRef,
     correctionEventsStore: storage.correctionEventsStoreRef,
+    mcpRecipeCallbackStore: options.app.sharedStoreRef,
+    mcpRecipeCallbackTokenStore: options.app.chatInboundTokenStoreRef,
     checkpointStore: storage.checkpointStore,
     auditLog: storage.auditLog,
     executionCaseLifecycle: options.app.executionCaseLifecycle,

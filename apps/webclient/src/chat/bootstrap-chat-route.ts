@@ -556,6 +556,13 @@ const CHAT_ROUTE_CHROME_STYLES = `
   cursor: wait;
   opacity: .72;
 }
+[${CHAT_ROUTE_HOST_ATTR}] .chat-session-opening {
+  display: block;
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 650;
+}
 [${CHAT_ROUTE_HOST_ATTR}] .chat-session-title {
   display: block;
   font-size: 13px;
@@ -615,6 +622,11 @@ const CHAT_ROUTE_CHROME_STYLES = `
 [${CHAT_ROUTE_SESSION_DELETE_ATTR}],
 [${CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR}] {
   color: var(--danger);
+}
+[${CHAT_ROUTE_SESSION_EXPORT_ATTR}][aria-disabled="true"],
+[${CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR}][aria-disabled="true"] {
+  cursor: wait;
+  opacity: .65;
 }
 [${CHAT_ROUTE_HOST_ATTR}] .chat-session-confirm,
 [${CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR}] {
@@ -2243,9 +2255,14 @@ export interface ChatRoute {
    * composer is empty; server-owned thread state is deliberately excluded. */
   getRecoveryDraft(): ChatRouteRecoveryDraft | null;
   hasUnsavedChanges(): boolean;
+  /** Contextual route-leave copy when a portaled Create draft would be lost. */
+  unsavedChangesPrompt(): string | null;
   /** True from send dispatch until the accepted turn settles. A server switch
    * cannot prove or cancel the outcome during this window. */
   hasInFlightWork(): boolean;
+  /** Contextual route-leave copy for modal recipe writes that must keep their
+   * visible owner. Ordinary server-owned Chat turns remain navigable. */
+  inFlightWorkPrompt(): string | null;
   startNewChat(): void;
   createSession(title?: string): Promise<void>;
   sendMessage(message: string): Promise<void>;
@@ -2953,6 +2970,12 @@ export const bootstrapChatRoute = (
     defaultSourceId: null,
     draftSourceId: null,
   };
+  // Active-session picker writes are serialized per session. The intent map
+  // is also the render source of truth while a write is pending, so a quick
+  // second choice cannot be mistaken for a no-op against stale server state
+  // or snap back when the first response/broadcast arrives.
+  const pendingModelSourceBySession = new Map<string, ChatModelSourceId>();
+  const modelSourceWriteSessions = new Set<string>();
 
   // Shell-frame Step 3 — the composer's typed-but-unsent text, held in the
   // closure (NOT route state) so a re-render driven by a picker change or an
@@ -2975,6 +2998,12 @@ export const bootstrapChatRoute = (
       : null;
   let historyQuery = '';
   let openingSessionId: string | null = null;
+  // History row actions are disclosure menus, but native <details> elements
+  // do not coordinate with one another and do not dismiss on Escape. Keep a
+  // single owner so a long history cannot accumulate overlapping menus and so
+  // keyboard/pointer dismissal has one exact focus-return target.
+  let openHistoryActions: HTMLDetailsElement | null = null;
+  let openComposerActions: HTMLDetailsElement | null = null;
   let sessionAction:
     | {
         readonly sessionId: string;
@@ -2982,6 +3011,9 @@ export const bootstrapChatRoute = (
         readonly message?: string;
       }
     | null = null;
+  const historyActionInFlight = (): boolean =>
+    sessionAction?.kind === 'export-busy'
+    || sessionAction?.kind === 'delete-busy';
   let pendingDraftGuard:
     | { readonly kind: 'new' }
     | { readonly kind: 'open'; readonly sessionId: string }
@@ -3379,6 +3411,43 @@ export const bootstrapChatRoute = (
   const routeRoot = doc.createElement('div');
   routeRoot.setAttribute(CHAT_ROUTE_HOST_ATTR, '');
 
+  const dismissOpenHistoryActions = (restoreFocus: boolean): void => {
+    const actions = openHistoryActions;
+    if (actions === null) return;
+    const trigger = actions.querySelector('summary') as HTMLElement | null;
+    openHistoryActions = null;
+    actions.open = false;
+    if (restoreFocus) trigger?.focus({ preventScroll: true });
+  };
+
+  const dismissOpenComposerActions = (restoreFocus: boolean): void => {
+    const actions = openComposerActions;
+    if (actions === null) return;
+    const trigger = actions.querySelector('summary') as HTMLElement | null;
+    openComposerActions = null;
+    actions.open = false;
+    if (restoreFocus) trigger?.focus({ preventScroll: true });
+  };
+
+  const handleActionDisclosurePointerDown = (event: PointerEvent): void => {
+    const historyActions = openHistoryActions;
+    if (
+      historyActions !== null
+      && event.target !== null
+      && !historyActions.contains(event.target as Node)
+    ) {
+      dismissOpenHistoryActions(false);
+    }
+    const composerActions = openComposerActions;
+    if (
+      composerActions !== null
+      && event.target !== null
+      && !composerActions.contains(event.target as Node)
+    ) {
+      dismissOpenComposerActions(false);
+    }
+  };
+
   const clearChildren = (node: HTMLElement): void => {
     while (node.firstChild) node.removeChild(node.firstChild);
   };
@@ -3457,6 +3526,15 @@ export const bootstrapChatRoute = (
     const caret = position === 'start' ? 0 : input?.value.length ?? 0;
     input?.setSelectionRange?.(caret, caret);
     input?.focus?.({ preventScroll });
+  };
+
+  /** A pending turn stays owned by its current thread. The composer remains
+   * editable for the next thought, so rejected conversation changes return to
+   * that textarea instead of moving or disabling it. */
+  const retainPendingSend = (): boolean => {
+    if (!state.sending) return false;
+    focusComposer(true, 'end');
+    return true;
   };
 
   const composerHasFocus = (): boolean => {
@@ -3734,7 +3812,7 @@ export const bootstrapChatRoute = (
       } else {
         collapsedActivity.add(key);
       }
-      render();
+      renderPreservingHandoffFocus();
     });
     block.appendChild(toggle);
     if (expanded) {
@@ -3796,10 +3874,11 @@ export const bootstrapChatRoute = (
   // tab.
   const pendingPlanActions = new Map<string, 'approve' | 'cancel'>();
 
-  /** A plan action rebuilds the card twice (busy, then resolved/error). Restore
-   * keyboard focus to the useful next control after the final rebuild: the
-   * continuation action after approval, the attempted control after failure,
-   * or the terminal card after cancellation. */
+  /** A plan action rebuilds the card twice (busy, then resolved/error). Keep
+   * keyboard focus on the attempted control during the first rebuild, then
+   * move it to the useful next control after the final rebuild: continuation
+   * after approval, the attempted control after failure, or the terminal card
+   * after cancellation. */
   const focusPlanResolutionTarget = (
     planId: string,
     attemptedAction: 'approve' | 'cancel',
@@ -3841,8 +3920,12 @@ export const bootstrapChatRoute = (
   };
 
   /** The closure controls are rebuilt for both the saving and durable receipt
-   * states. Keep focus on that exact receipt instead of dropping it to body. */
-  const focusDataDiagnosisResolutionTarget = (messageId: string): void => {
+   * states. Keep focus on the attempted choice while it saves, then hand it to
+   * the exact durable receipt instead of dropping it to body. */
+  const focusDataDiagnosisResolutionTarget = (
+    messageId: string,
+    attemptedStatus?: ChatDataDiagnosisResolutionStatus,
+  ): void => {
     const queryable = routeRoot as unknown as {
       querySelectorAll?: (
         selectors: string,
@@ -3858,6 +3941,20 @@ export const bootstrapChatRoute = (
           CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_MESSAGE_ATTR,
         ) === messageId,
     );
+    if (receipt !== undefined && attemptedStatus !== undefined) {
+      const attemptedAction = Array.from(
+        receipt.querySelectorAll<HTMLElement>(
+          `[${CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ACTION_ATTR}]`,
+        ),
+      ).find(
+        (candidate) => candidate.getAttribute('data-action')
+          === `resolve-${attemptedStatus}`,
+      );
+      if (attemptedAction !== undefined) {
+        attemptedAction.focus?.({ preventScroll: true });
+        return;
+      }
+    }
     receipt?.focus?.({ preventScroll: true });
   };
 
@@ -3874,6 +3971,7 @@ export const bootstrapChatRoute = (
     if (pendingPlanActions.has(plan_id)) return;
     pendingPlanActions.set(plan_id, action);
     render();
+    focusPlanResolutionTarget(plan_id, action);
     try {
       const { plan } = await opts.conn(
         action === 'approve' ? 'chat.plan.approve' : 'chat.plan.cancel',
@@ -3911,7 +4009,8 @@ export const bootstrapChatRoute = (
     ) return;
     pendingDataDiagnosisResolutions.set(message_id, status);
     render();
-    focusDataDiagnosisResolutionTarget(message_id);
+    focusDataDiagnosisResolutionTarget(message_id, status);
+    let resolved = false;
     try {
       const { resolution } = await opts.conn(
         'chat.data_diagnosis.resolve',
@@ -3935,6 +4034,7 @@ export const bootstrapChatRoute = (
         thread: nextThread,
         error: null,
       };
+      resolved = true;
     } catch (err) {
       if (disposed) return;
       state = { ...state, error: classifyRpcError(err) };
@@ -3942,7 +4042,10 @@ export const bootstrapChatRoute = (
       pendingDataDiagnosisResolutions.delete(message_id);
       if (!disposed) {
         render();
-        focusDataDiagnosisResolutionTarget(message_id);
+        focusDataDiagnosisResolutionTarget(
+          message_id,
+          resolved ? undefined : status,
+        );
       }
     }
   };
@@ -4264,8 +4367,18 @@ export const bootstrapChatRoute = (
             : selected
               ? choice.selectedLabel
               : choice.label;
-        button.disabled = pendingStatus !== undefined || selected;
+        button.disabled = selected;
+        if (pendingStatus !== undefined || selected) {
+          button.setAttribute('aria-disabled', 'true');
+        }
+        if (pendingStatus === choice.status) {
+          button.setAttribute('aria-busy', 'true');
+        }
         button.addEventListener('click', () => {
+          if (
+            pendingDataDiagnosisResolutions.has(messageId)
+            || selected
+          ) return;
           void resolveDataDiagnosis(messageId, choice.status);
         });
         closureActions.appendChild(button);
@@ -4787,8 +4900,18 @@ export const bootstrapChatRoute = (
       approve.setAttribute(CHAT_ROUTE_PLAN_APPROVE_ATTR, '');
       approve.textContent =
         pendingAction === 'approve' ? 'Approving…' : 'Approve once';
-      approve.disabled = busy || card.payload_available === false;
+      approve.disabled = card.payload_available === false;
+      if (busy || card.payload_available === false) {
+        approve.setAttribute('aria-disabled', 'true');
+      }
+      if (pendingAction === 'approve') {
+        approve.setAttribute('aria-busy', 'true');
+      }
       approve.addEventListener('click', () => {
+        if (
+          pendingPlanActions.has(card.plan_id)
+          || card.payload_available === false
+        ) return;
         void resolvePlan(card.plan_id, 'approve');
       });
       actions.appendChild(approve);
@@ -4797,8 +4920,12 @@ export const bootstrapChatRoute = (
       cancel.setAttribute(CHAT_ROUTE_PLAN_CANCEL_ATTR, '');
       cancel.textContent =
         pendingAction === 'cancel' ? 'Cancelling…' : 'Don’t approve';
-      cancel.disabled = busy;
+      if (busy) cancel.setAttribute('aria-disabled', 'true');
+      if (pendingAction === 'cancel') {
+        cancel.setAttribute('aria-busy', 'true');
+      }
       cancel.addEventListener('click', () => {
+        if (pendingPlanActions.has(card.plan_id)) return;
         void resolvePlan(card.plan_id, 'cancel');
       });
       actions.appendChild(cancel);
@@ -4937,6 +5064,15 @@ export const bootstrapChatRoute = (
     const sources = state.modelSources;
     if (sources === null || sources.length === 0) return null;
     if (state.thread.session !== null) {
+      const pendingSourceId = pendingModelSourceBySession.get(
+        state.thread.session.id,
+      );
+      if (pendingSourceId !== undefined) {
+        const pendingSource = sources.find(
+          (source) => source.id === pendingSourceId,
+        );
+        if (pendingSource !== undefined) return pendingSource;
+      }
       return matchChatModelSource(sources, state.thread.session.model_routing);
     }
     // DRAFT: an explicit pick, else the global default selected by EXACT
@@ -4985,6 +5121,14 @@ export const bootstrapChatRoute = (
     const select = doc.createElement('select');
     select.setAttribute(CHAT_ROUTE_MODEL_PICKER_ATTR, '');
     select.setAttribute('aria-label', 'Model');
+    if (
+      state.thread.session !== null
+      && modelSourceWriteSessions.has(state.thread.session.id)
+    ) {
+      // Keep the select focusable so a newer choice can replace the queued
+      // intent while the current persistence request settles.
+      select.setAttribute('aria-busy', 'true');
+    }
     // When the current/default routing matches no configured source (e.g. a
     // stale persisted default whose slot is no longer configured), show a
     // leading placeholder so NO slot looks auto-selected — the user must choose, and a
@@ -5153,7 +5297,10 @@ export const bootstrapChatRoute = (
     return actions;
   };
 
-  const makeActionButton = (action: ComposerAction): HTMLElement => {
+  const makeActionButton = (
+    action: ComposerAction,
+    beforeRun?: () => void,
+  ): HTMLElement => {
     const button = doc.createElement('button');
     button.type = 'button';
     button.className = 'chat-composer-action';
@@ -5161,6 +5308,7 @@ export const bootstrapChatRoute = (
     button.setAttribute('title', action.title);
     button.textContent = action.label;
     button.addEventListener('click', () => {
+      beforeRun?.();
       action.run();
     });
     return button;
@@ -5182,10 +5330,30 @@ export const bootstrapChatRoute = (
       const menu = doc.createElement('div');
       menu.className = 'chat-composer-actions chat-composer-actions--menu';
       menu.setAttribute(CHAT_ROUTE_COMPOSER_ACTIONS_ATTR, '');
+      details.addEventListener('toggle', () => {
+        if (details.isConnected === false) return;
+        if (!details.open) {
+          if (openComposerActions === details) openComposerActions = null;
+          return;
+        }
+        dismissOpenHistoryActions(false);
+        openComposerActions = details;
+      });
+      details.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape' || !details.open) return;
+        event.preventDefault();
+        event.stopPropagation();
+        openComposerActions = details;
+        dismissOpenComposerActions(true);
+      });
       for (const action of actions) {
-        const button = makeActionButton(action);
-        button.addEventListener('click', () => {
-          (details as { open?: boolean }).open = false;
+        const button = makeActionButton(action, () => {
+          // Child overlays capture `document.activeElement` as their return
+          // target. Collapse this disclosure and move focus to its stable,
+          // visible trigger before opening the child; otherwise it captures
+          // the now-hidden menu action and cannot restore focus on close.
+          openComposerActions = details;
+          dismissOpenComposerActions(true);
         });
         menu.appendChild(button);
       }
@@ -5354,11 +5522,15 @@ export const bootstrapChatRoute = (
         'primary',
         viewState === 'checking' ? 'Checking…' : 'Check now',
         () => {
+          if (connectedSourceStatus?.state === 'checking') return;
           connectedSourcePollAttempts = 0;
           void refreshConnectedSourceStatus(false);
         },
       );
-      if (viewState === 'checking') checkButton.disabled = true;
+      if (viewState === 'checking') {
+        checkButton.setAttribute('aria-disabled', 'true');
+        checkButton.setAttribute('aria-busy', 'true');
+      }
       actions.appendChild(checkButton);
     } else {
       actions.appendChild(sourceActionLink(
@@ -6181,6 +6353,10 @@ export const bootstrapChatRoute = (
     input.addEventListener('input', () => {
       composerDraft = (input as { value?: string }).value ?? '';
       composerDraftProtected = composerDraft.trim().length > 0;
+      send.disabled =
+        state.sending
+        || state.aiAvailable === false
+        || composerDraft.trim().length === 0;
       if (
         connectedSourcePromptSeeded
         && connectedSourcePrompt !== null
@@ -6343,6 +6519,7 @@ export const bootstrapChatRoute = (
     const send = doc.createElement('button');
     send.type = 'button';
     send.setAttribute(CHAT_ROUTE_SEND_ATTR, '');
+    send.setAttribute('aria-keyshortcuts', 'Control+Enter Meta+Enter');
     send.textContent = state.sending
       ? dataVerificationDiagnosisDraft !== null
         ? 'Asking...'
@@ -6367,7 +6544,11 @@ export const bootstrapChatRoute = (
             ? 'Send'
             : 'Ask Chat';
     const aiUnavailable = state.aiAvailable === false;
-    if (state.sending || aiUnavailable) {
+    if (
+      state.sending
+      || aiUnavailable
+      || composerDraft.trim().length === 0
+    ) {
       send.disabled = true;
     }
     if (aiUnavailable) {
@@ -6382,6 +6563,20 @@ export const bootstrapChatRoute = (
     send.addEventListener('click', () => {
       void sendMessage(composerDraft);
     });
+    input.addEventListener('keydown', (event) => {
+      if (
+        event.key !== 'Enter'
+        || (!event.ctrlKey && !event.metaKey)
+        || event.altKey
+        || event.shiftKey
+        || event.isComposing
+        || send.disabled
+      ) {
+        return;
+      }
+      event.preventDefault();
+      void sendMessage(composerDraft);
+    });
     inputRow.appendChild(input);
     inputRow.appendChild(send);
     composer.appendChild(inputRow);
@@ -6393,6 +6588,11 @@ export const bootstrapChatRoute = (
     reconcileLandingTarget();
     reconcileDataVerificationDiagnosis();
     reconcileFreshActionDraft();
+    // A full render removes every Chat disclosure from the DOM. Retire the old
+    // owners before rebuilding so document-level dismissal never targets a
+    // detached row.
+    openHistoryActions = null;
+    openComposerActions = null;
     clearChildren(routeRoot);
 
     const header = doc.createElement('header');
@@ -6411,6 +6611,7 @@ export const bootstrapChatRoute = (
     if (state.error !== null && !state.error.suppressible) {
       const error = doc.createElement('div');
       error.setAttribute(CHAT_ROUTE_ERROR_ATTR, '');
+      error.setAttribute('role', 'alert');
       if (state.error.connectionCaused) error.setAttribute('data-connection', 'true');
       error.textContent = state.error.copy;
       routeRoot.appendChild(error);
@@ -6468,6 +6669,9 @@ export const bootstrapChatRoute = (
     newButton.setAttribute(CHAT_ROUTE_NEW_SESSION_ATTR, '');
     newButton.className = 'chat-history-new';
     newButton.textContent = 'New chat';
+    if (openingSessionId !== null || state.sending || historyActionInFlight()) {
+      newButton.setAttribute('aria-disabled', 'true');
+    }
     newButton.addEventListener('click', () => {
       requestStartNewChat();
     });
@@ -6487,15 +6691,22 @@ export const bootstrapChatRoute = (
       guard.appendChild(copy);
       const actions = doc.createElement('div');
       actions.className = 'chat-history-guard-actions';
+      const keepWriting = (): void => {
+        pendingDraftGuard = null;
+        render();
+        focusComposer(true);
+      };
+      guard.addEventListener('keydown', (event) => {
+        if (event.key !== 'Escape') return;
+        event.preventDefault();
+        event.stopPropagation();
+        keepWriting();
+      });
       const keep = doc.createElement('button');
       keep.type = 'button';
       keep.className = 'chat-history-guard-action';
       keep.textContent = 'Keep writing';
-      keep.addEventListener('click', () => {
-        pendingDraftGuard = null;
-        render();
-        focusComposer(true);
-      });
+      keep.addEventListener('click', keepWriting);
       actions.appendChild(keep);
       const discard = doc.createElement('button');
       discard.type = 'button';
@@ -6596,6 +6807,7 @@ export const bootstrapChatRoute = (
           const list = doc.createElement('ul');
           list.className = 'chat-history-items';
           for (const session of group.sessions) {
+            const openingThisSession = openingSessionId === session.id;
             const item = doc.createElement('li');
             item.className = 'chat-session-item';
             item.setAttribute(
@@ -6612,9 +6824,13 @@ export const bootstrapChatRoute = (
             if (session.id === state.activeSessionId) {
               row.setAttribute('aria-current', 'page');
             }
-            if (openingSessionId !== null) {
-              row.disabled = true;
-              if (openingSessionId === session.id) {
+            if (
+              openingSessionId !== null
+              || state.sending
+              || historyActionInFlight()
+            ) {
+              row.setAttribute('aria-disabled', 'true');
+              if (openingThisSession) {
                 row.setAttribute('aria-busy', 'true');
               }
             }
@@ -6628,7 +6844,18 @@ export const bootstrapChatRoute = (
             meta.textContent =
               `${messages} · ${formatSessionRecency(session.last_active_at, (opts.now ?? Date.now)())}`;
             row.appendChild(meta);
+            if (openingThisSession) {
+              const opening = doc.createElement('span');
+              opening.className = 'chat-session-opening';
+              opening.textContent = 'Opening…';
+              row.appendChild(opening);
+            }
             row.addEventListener('click', () => {
+              if (historyActionInFlight()) {
+                focusHistoryActionOwner();
+                return;
+              }
+              if (openingSessionId !== null) return;
               requestOpenSession(session.id);
             });
             item.appendChild(row);
@@ -6642,23 +6869,47 @@ export const bootstrapChatRoute = (
             const menu = doc.createElement('div');
             menu.className = 'chat-session-action-menu';
             actionDetails.addEventListener('toggle', () => {
-              if (actionDetails.open) {
-                menu.scrollIntoView?.({ block: 'nearest' });
+              if (actionDetails.isConnected === false) return;
+              if (!actionDetails.open) {
+                if (openHistoryActions === actionDetails) {
+                  openHistoryActions = null;
+                }
+                return;
               }
+              dismissOpenComposerActions(false);
+              const previous = openHistoryActions;
+              openHistoryActions = actionDetails;
+              if (previous !== null && previous !== actionDetails) {
+                previous.open = false;
+              }
+              menu.scrollIntoView?.({ block: 'nearest' });
+            });
+            actionDetails.addEventListener('keydown', (event) => {
+              if (event.key !== 'Escape' || !actionDetails.open) return;
+              event.preventDefault();
+              event.stopPropagation();
+              openHistoryActions = actionDetails;
+              dismissOpenHistoryActions(true);
             });
             const exportButton = doc.createElement('button');
             exportButton.type = 'button';
             exportButton.className = 'chat-session-action';
             exportButton.setAttribute(CHAT_ROUTE_SESSION_EXPORT_ATTR, session.id);
-            exportButton.textContent =
+            const exportingThisSession =
               sessionAction?.sessionId === session.id
-              && sessionAction.kind === 'export-busy'
-                ? 'Exporting…'
-                : 'Export JSON';
+              && sessionAction.kind === 'export-busy';
+            exportButton.textContent = exportingThisSession
+              ? 'Exporting…'
+              : 'Export JSON';
             const historyActionLocked =
               openingSessionId !== null
               || (sessionAction !== null && sessionAction.kind !== 'error');
-            exportButton.disabled = historyActionLocked;
+            if (exportingThisSession) {
+              exportButton.setAttribute('aria-disabled', 'true');
+              exportButton.setAttribute('aria-busy', 'true');
+            } else {
+              exportButton.disabled = historyActionLocked;
+            }
             exportButton.addEventListener('click', () => {
               void exportSession(session);
             });
@@ -6727,7 +6978,13 @@ export const bootstrapChatRoute = (
                 sessionAction.kind === 'delete-busy'
                   ? 'Deleting…'
                   : 'Delete permanently';
-              confirmDelete.disabled = sessionAction.kind === 'delete-busy';
+              if (sessionAction.kind === 'delete-busy') {
+                // Keep the activated confirmation as the keyboard anchor.
+                // `deleteSession` state-gates re-entry while aria-disabled
+                // communicates the lock without removing focusability.
+                confirmDelete.setAttribute('aria-disabled', 'true');
+                confirmDelete.setAttribute('aria-busy', 'true');
+              }
               confirmDelete.addEventListener('click', () => {
                 void deleteSession(session);
               });
@@ -6834,15 +7091,27 @@ export const bootstrapChatRoute = (
         continueButton.className =
           'chat-history-landing-action chat-history-landing-action--primary';
         continueButton.setAttribute(CHAT_ROUTE_HISTORY_CONTINUE_ATTR, recent.id);
-        continueButton.textContent = 'Continue chat';
+        const continuingThisSession = openingSessionId === recent.id;
+        continueButton.textContent = continuingThisSession
+          ? 'Opening chat…'
+          : 'Continue chat';
+        if (continuingThisSession) {
+          continueButton.setAttribute('aria-disabled', 'true');
+          continueButton.setAttribute('aria-busy', 'true');
+        } else if (historyActionInFlight()) {
+          continueButton.setAttribute('aria-disabled', 'true');
+        }
         continueButton.addEventListener('click', () => {
-          requestOpenSession(recent.id);
+          requestOpenSession(recent.id, 'continue');
         });
         actions.appendChild(continueButton);
         const startButton = doc.createElement('button');
         startButton.type = 'button';
         startButton.className = 'chat-history-landing-action';
         startButton.textContent = 'Start a new chat';
+        if (openingSessionId !== null || historyActionInFlight()) {
+          startButton.setAttribute('aria-disabled', 'true');
+        }
         startButton.addEventListener('click', () => {
           requestStartNewChat();
         });
@@ -7122,6 +7391,15 @@ export const bootstrapChatRoute = (
     const handoff = routeRoot.querySelector?.(
       `[${CHAT_ROUTE_SOURCE_HANDOFF_ATTR}]`,
     ) as HTMLElement | null | undefined;
+    const modelPicker = routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_MODEL_PICKER_ATTR}]`,
+    ) as HTMLElement | null | undefined;
+    const historySearch = routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_HISTORY_SEARCH_ATTR}]`,
+    ) as HTMLInputElement | null | undefined;
+    const historyContinue = routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_HISTORY_CONTINUE_ATTR}]`,
+    ) as HTMLElement | null | undefined;
     const inputFocused = input !== null && input !== undefined && active === input;
     const handoffFocused = handoff !== null
       && handoff !== undefined
@@ -7130,6 +7408,47 @@ export const bootstrapChatRoute = (
           && active !== undefined
           && typeof handoff.contains === 'function'
           && handoff.contains(active)));
+    const focusedHandoffAction = handoffFocused
+      ? active?.getAttribute?.(CHAT_ROUTE_SOURCE_ACTION_ATTR) ?? null
+      : null;
+    const modelPickerFocused = modelPicker !== null
+      && modelPicker !== undefined
+      && active === modelPicker;
+    const historySearchFocused = historySearch !== null
+      && historySearch !== undefined
+      && active === historySearch;
+    const historyContinueFocused = historyContinue !== null
+      && historyContinue !== undefined
+      && active === historyContinue;
+    const activityToggleFocused =
+      (active?.getAttribute?.(CHAT_ROUTE_ACTIVITY_TOGGLE_ATTR) ?? null) !== null;
+    const focusedActivityMessageId = activityToggleFocused
+      ? active?.closest?.(`[${CHAT_ROUTE_MESSAGE_ATTR}]`)?.getAttribute?.(
+          CHAT_ROUTE_MESSAGE_ATTR,
+        ) ?? null
+      : null;
+    const focusedHistorySessionId =
+      active?.getAttribute?.(CHAT_ROUTE_SESSION_ROW_ATTR) ?? null;
+    const activeHistoryActions = active?.closest?.(
+      `[${CHAT_ROUTE_SESSION_ACTIONS_ATTR}]`,
+    ) as HTMLDetailsElement | null | undefined;
+    const activeHistoryActionsSessionId = activeHistoryActions?.getAttribute?.(
+      CHAT_ROUTE_SESSION_ACTIONS_ATTR,
+    ) ?? null;
+    const focusedHistoryActions = activeHistoryActionsSessionId === null
+      ? null
+      : {
+          sessionId: activeHistoryActionsSessionId,
+          open: activeHistoryActions?.open === true,
+          control:
+            active?.getAttribute?.(CHAT_ROUTE_SESSION_EXPORT_ATTR)
+              === activeHistoryActionsSessionId
+              ? 'export' as const
+              : active?.getAttribute?.(CHAT_ROUTE_SESSION_DELETE_ATTR)
+                  === activeHistoryActionsSessionId
+                ? 'delete' as const
+                : 'summary' as const,
+        };
     const activePlanCard =
       active?.closest?.(`[${CHAT_ROUTE_PLAN_CARD_ATTR}]`) as
         | HTMLElement
@@ -7140,6 +7459,15 @@ export const bootstrapChatRoute = (
       && activePlanCard?.getAttribute('data-plan-id') === highlightedPlanId;
     const selectionStart = inputFocused ? input.selectionStart : null;
     const selectionEnd = inputFocused ? input.selectionEnd : null;
+    const historySelectionStart = historySearchFocused
+      ? historySearch.selectionStart
+      : null;
+    const historySelectionEnd = historySearchFocused
+      ? historySearch.selectionEnd
+      : null;
+    const historySelectionDirection = historySearchFocused
+      ? historySearch.selectionDirection
+      : null;
     render();
     if (inputFocused) {
       focusComposer(true);
@@ -7155,7 +7483,131 @@ export const bootstrapChatRoute = (
         nextInput.setSelectionRange?.(selectionStart, selectionEnd);
       }
     } else if (handoffFocused) {
-      focusConnectedSourceHandoff(true);
+      const nextHandoff = routeRoot.querySelector?.(
+        `[${CHAT_ROUTE_SOURCE_HANDOFF_ATTR}]`,
+      ) as HTMLElement | null | undefined;
+      const nextAction = focusedHandoffAction === null
+        ? undefined
+        : Array.from(
+            nextHandoff?.querySelectorAll<HTMLElement>(
+              `[${CHAT_ROUTE_SOURCE_ACTION_ATTR}]`,
+            ) ?? [],
+          ).find(
+            (candidate) => candidate.getAttribute(
+              CHAT_ROUTE_SOURCE_ACTION_ATTR,
+            ) === focusedHandoffAction,
+          );
+      if (nextAction === undefined) {
+        focusConnectedSourceHandoff(true);
+      } else {
+        nextAction.focus?.({ preventScroll: true });
+      }
+    } else if (modelPickerFocused) {
+      const nextModelPicker = routeRoot.querySelector?.(
+        `[${CHAT_ROUTE_MODEL_PICKER_ATTR}]`,
+      ) as HTMLElement | null | undefined;
+      nextModelPicker?.focus?.({ preventScroll: true });
+    } else if (historySearchFocused) {
+      const nextHistorySearch = routeRoot.querySelector?.(
+        `[${CHAT_ROUTE_HISTORY_SEARCH_ATTR}]`,
+      ) as HTMLInputElement | null | undefined;
+      nextHistorySearch?.focus?.({ preventScroll: true });
+      if (
+        nextHistorySearch !== null
+        && nextHistorySearch !== undefined
+        && historySelectionStart !== null
+        && historySelectionEnd !== null
+      ) {
+        nextHistorySearch.setSelectionRange?.(
+          historySelectionStart,
+          historySelectionEnd,
+          historySelectionDirection ?? undefined,
+        );
+      }
+    } else if (historyContinueFocused) {
+      const nextHistoryContinue = routeRoot.querySelector?.(
+        `[${CHAT_ROUTE_HISTORY_CONTINUE_ATTR}]`,
+      ) as HTMLElement | null | undefined;
+      nextHistoryContinue?.focus?.({ preventScroll: true });
+    } else if (focusedActivityMessageId !== null) {
+      const queryable = routeRoot as unknown as {
+        querySelectorAll?: (
+          selectors: string,
+        ) => ArrayLike<HTMLElement>;
+      };
+      const nextMessage = Array.from(
+        queryable.querySelectorAll?.(`[${CHAT_ROUTE_MESSAGE_ATTR}]`) ?? [],
+      ).find(
+        (candidate) => candidate.getAttribute(CHAT_ROUTE_MESSAGE_ATTR)
+          === focusedActivityMessageId,
+      );
+      const nextToggle = nextMessage?.querySelector?.(
+        `[${CHAT_ROUTE_ACTIVITY_TOGGLE_ATTR}]`,
+      ) as HTMLElement | null | undefined;
+      nextToggle?.focus?.({ preventScroll: true });
+    } else if (focusedHistorySessionId !== null) {
+      const queryable = routeRoot as unknown as {
+        querySelectorAll?: (
+          selectors: string,
+        ) => ArrayLike<HTMLElement>;
+      };
+      const nextRow = Array.from(
+        queryable.querySelectorAll?.(`[${CHAT_ROUTE_SESSION_ROW_ATTR}]`) ?? [],
+      ).find(
+        (candidate) =>
+          candidate.getAttribute(CHAT_ROUTE_SESSION_ROW_ATTR)
+            === focusedHistorySessionId,
+      );
+      const fallback = (
+        routeRoot.querySelector?.(`[${CHAT_ROUTE_HISTORY_CONTINUE_ATTR}]`)
+        ?? routeRoot.querySelector?.(`[${CHAT_ROUTE_HISTORY_SEARCH_ATTR}]`)
+        ?? routeRoot.querySelector?.(`[${CHAT_ROUTE_NEW_SESSION_ATTR}]`)
+      ) as HTMLElement | null | undefined;
+      (nextRow ?? fallback)?.focus?.({ preventScroll: true });
+    } else if (focusedHistoryActions !== null) {
+      const queryable = routeRoot as unknown as {
+        querySelectorAll?: (
+          selectors: string,
+        ) => ArrayLike<HTMLDetailsElement>;
+      };
+      const nextActions = Array.from(
+        queryable.querySelectorAll?.(
+          `[${CHAT_ROUTE_SESSION_ACTIONS_ATTR}]`,
+        ) ?? [],
+      ).find(
+        (candidate) =>
+          candidate.getAttribute(CHAT_ROUTE_SESSION_ACTIONS_ATTR)
+            === focusedHistoryActions.sessionId,
+      );
+      const fallback = (
+        routeRoot.querySelector?.(`[${CHAT_ROUTE_HISTORY_CONTINUE_ATTR}]`)
+        ?? routeRoot.querySelector?.(`[${CHAT_ROUTE_HISTORY_SEARCH_ATTR}]`)
+        ?? routeRoot.querySelector?.(`[${CHAT_ROUTE_NEW_SESSION_ATTR}]`)
+      ) as HTMLElement | null | undefined;
+      if (nextActions === undefined) {
+        fallback?.focus?.({ preventScroll: true });
+      } else {
+        if (focusedHistoryActions.open) {
+          nextActions.open = true;
+          openHistoryActions = nextActions;
+        }
+        const summary = nextActions.querySelector('summary') as
+          | HTMLElement
+          | null;
+        const requested = focusedHistoryActions.control === 'export'
+          ? nextActions.querySelector(
+              `[${CHAT_ROUTE_SESSION_EXPORT_ATTR}]`,
+            ) as HTMLElement | null
+          : focusedHistoryActions.control === 'delete'
+            ? nextActions.querySelector(
+                `[${CHAT_ROUTE_SESSION_DELETE_ATTR}]`,
+              ) as HTMLElement | null
+            : summary;
+        const target = requested?.hasAttribute('disabled') === true
+          ? summary
+          : requested ?? summary;
+        target?.focus?.({ preventScroll: true });
+      }
     } else if (landingPlanFocused && highlightedPlanId !== null) {
       focusPlanLanding(highlightedPlanId);
     }
@@ -7278,7 +7730,11 @@ export const bootstrapChatRoute = (
         seedStarterPrompt();
       } else {
         seedStarterPromptOnLoad = false;
-        render();
+        if (background) {
+          renderPreservingHandoffFocus();
+        } else {
+          render();
+        }
       }
     } catch (err) {
       if (disposed) return;
@@ -7287,7 +7743,11 @@ export const bootstrapChatRoute = (
         phase: background && state.sessions.length > 0 ? 'ready' : 'error',
         error: classifyRpcError(err),
       };
-      render();
+      if (background) {
+        renderPreservingHandoffFocus();
+      } else {
+        render();
+      }
     }
   };
 
@@ -7364,6 +7824,11 @@ export const bootstrapChatRoute = (
     returnMessageId: string | null = null,
     returnPlanId: string | null = null,
   ): Promise<void> => {
+    if (historyActionInFlight()) {
+      focusHistoryActionOwner();
+      return;
+    }
+    if (retainPendingSend()) return;
     if (
       dataVerificationLanding !== null
       && (
@@ -7490,6 +7955,53 @@ export const bootstrapChatRoute = (
     }
   };
 
+  const focusSessionHistoryAction = (
+    sessionId: string,
+    actionAttr:
+      | typeof CHAT_ROUTE_SESSION_EXPORT_ATTR
+      | typeof CHAT_ROUTE_SESSION_DELETE_ATTR,
+  ): void => {
+    const queryable = routeRoot as unknown as {
+      querySelectorAll?: (
+        selectors: string,
+      ) => ArrayLike<HTMLDetailsElement>;
+    };
+    const actions = Array.from(
+      queryable.querySelectorAll?.(
+        `[${CHAT_ROUTE_SESSION_ACTIONS_ATTR}]`,
+      ) ?? [],
+    ).find(
+      (candidate) =>
+        candidate.getAttribute(CHAT_ROUTE_SESSION_ACTIONS_ATTR) === sessionId,
+    );
+    const button = actions?.querySelector?.(
+      `[${actionAttr}]`,
+    ) as HTMLElement | null | undefined;
+    if (
+      actions === undefined
+      || button?.getAttribute(actionAttr) !== sessionId
+    ) return;
+    actions.open = true;
+    openHistoryActions = actions;
+    button.focus?.({ preventScroll: true });
+  };
+
+  const focusSessionExport = (sessionId: string): void => {
+    focusSessionHistoryAction(sessionId, CHAT_ROUTE_SESSION_EXPORT_ATTR);
+  };
+
+  const focusSessionDelete = (sessionId: string): void => {
+    focusSessionHistoryAction(sessionId, CHAT_ROUTE_SESSION_DELETE_ATTR);
+  };
+
+  const focusHistoryActionOwner = (): void => {
+    if (sessionAction?.kind === 'export-busy') {
+      focusSessionExport(sessionAction.sessionId);
+    } else if (sessionAction?.kind === 'delete-busy') {
+      focusSessionDeleteConfirm(sessionAction.sessionId);
+    }
+  };
+
   const focusHistorySessionRow = (sessionId: string): void => {
     const queryable = routeRoot as unknown as {
       querySelectorAll?: (
@@ -7505,6 +8017,19 @@ export const bootstrapChatRoute = (
     row?.focus?.({ preventScroll: true });
   };
 
+  const focusHistoryContinue = (sessionId: string): void => {
+    const candidate = routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_HISTORY_CONTINUE_ATTR}]`,
+    ) as HTMLElement | null | undefined;
+    if (
+      candidate?.getAttribute(CHAT_ROUTE_HISTORY_CONTINUE_ATTR) === sessionId
+    ) {
+      candidate.focus?.({ preventScroll: true });
+    } else {
+      focusHistorySessionRow(sessionId);
+    }
+  };
+
   const focusHistoryHome = (): void => {
     const target = (
       routeRoot.querySelector?.(`[${CHAT_ROUTE_HISTORY_CONTINUE_ATTR}]`)
@@ -7517,8 +8042,13 @@ export const bootstrapChatRoute = (
   const openHistorySession = async (
     sessionId: string,
     discardProtectedDraft = false,
+    focusOrigin: 'row' | 'continue' = 'row',
   ): Promise<void> => {
-    if (openingSessionId !== null) return;
+    if (historyActionInFlight()) {
+      focusHistoryActionOwner();
+      return;
+    }
+    if (openingSessionId !== null || retainPendingSend()) return;
     if (
       !discardProtectedDraft
       && composerDraftProtected
@@ -7541,7 +8071,7 @@ export const bootstrapChatRoute = (
     openingSessionId = sessionId;
     pendingDraftGuard = null;
     state = { ...state, error: null };
-    render();
+    renderPreservingHandoffFocus();
     try {
       await openSession(sessionId);
       if (
@@ -7560,6 +8090,8 @@ export const bootstrapChatRoute = (
         render();
         if (state.activeSessionId === sessionId) {
           focusOpenThread();
+        } else if (focusOrigin === 'continue') {
+          focusHistoryContinue(sessionId);
         } else {
           focusHistorySessionRow(sessionId);
         }
@@ -7567,8 +8099,11 @@ export const bootstrapChatRoute = (
     }
   };
 
-  const requestOpenSession = (sessionId: string): void => {
-    void openHistorySession(sessionId);
+  const requestOpenSession = (
+    sessionId: string,
+    focusOrigin: 'row' | 'continue' = 'row',
+  ): void => {
+    void openHistorySession(sessionId, false, focusOrigin);
   };
 
   const openPlanLanding = (address: ChatPlanAddress): boolean => {
@@ -7834,6 +8369,11 @@ export const bootstrapChatRoute = (
     discardProtectedDraft = false,
     addressMode?: 'push' | 'replace',
   ): void => {
+    if (historyActionInFlight()) {
+      focusHistoryActionOwner();
+      return;
+    }
+    if (retainPendingSend()) return;
     if (
       !discardProtectedDraft
       && composerDraftProtected
@@ -7851,6 +8391,7 @@ export const bootstrapChatRoute = (
       && !connectedSourceHandoffActive
       && !historyLandingActive
     ) {
+      focusComposer(true, 'start');
       return;
     }
     historyLandingActive = false;
@@ -7897,6 +8438,7 @@ export const bootstrapChatRoute = (
   };
 
   const requestStartNewChat = (): void => {
+    if (openingSessionId !== null) return;
     startNewChat(false, 'push');
   };
 
@@ -7906,7 +8448,7 @@ export const bootstrapChatRoute = (
     if (sessionAction?.kind === 'export-busy') return;
     sessionAction = { sessionId: session.id, kind: 'export-busy' };
     render();
-    focusHistorySessionRow(session.id);
+    focusSessionExport(session.id);
     try {
       const bundle = await opts.conn('chat.session.export', {
         session_id: session.id,
@@ -7926,7 +8468,9 @@ export const bootstrapChatRoute = (
         message: `Couldn't export this chat. ${classifyRpcError(err).copy}`,
       };
       render();
-      focusHistorySessionRow(session.id);
+      // Keep the rejected operation visible and keyboard-owned so retrying
+      // does not require rediscovering the row disclosure.
+      focusSessionExport(session.id);
     }
   };
 
@@ -7939,6 +8483,7 @@ export const bootstrapChatRoute = (
     ) return;
     sessionAction = { sessionId: session.id, kind: 'delete-busy' };
     render();
+    focusSessionDeleteConfirm(session.id);
     try {
       await opts.conn('chat.session.delete', { session_id: session.id });
       if (disposed) return;
@@ -7963,7 +8508,9 @@ export const bootstrapChatRoute = (
         message: `Couldn't delete this chat. ${classifyRpcError(err).copy}`,
       };
       render();
-      focusHistorySessionRow(session.id);
+      // Return to the safe delete initiator (not the permanent confirmation),
+      // preserving the disclosure while requiring an explicit reconfirmation.
+      focusSessionDelete(session.id);
     }
   };
 
@@ -7972,7 +8519,81 @@ export const bootstrapChatRoute = (
   // `chat.session_changed` so every paired client re-renders); a DRAFT (no
   // session yet) just remembers the pick — the in-mount "last-used" — and the
   // session inherits it on first send.
-  const selectModelSource = async (sourceId: string): Promise<void> => {
+  const persistQueuedModelSource = async (
+    sessionId: string,
+  ): Promise<void> => {
+    let terminalError: ClassifiedRpcError | null = null;
+    try {
+      while (!disposed) {
+        const sourceId = pendingModelSourceBySession.get(sessionId);
+        if (sourceId === undefined) break;
+        const source = state.modelSources?.find(
+          (candidate) => candidate.id === sourceId,
+        ) ?? null;
+        if (source === null) {
+          pendingModelSourceBySession.delete(sessionId);
+          break;
+        }
+        try {
+          await opts.conn('chat.session.set_model_pref', {
+            session_id: sessionId,
+            model_pref: {
+              current: source.layer,
+              ...(source.model_hint
+                ? { model_hint: source.model_hint }
+                : {}),
+              source_id: source.id,
+            },
+          });
+        } catch (err) {
+          if (disposed) return;
+          // A failed superseded choice is no longer the user's intent. Keep
+          // draining toward the newer choice without painting a stale error.
+          if (pendingModelSourceBySession.get(sessionId) !== sourceId) {
+            continue;
+          }
+          pendingModelSourceBySession.delete(sessionId);
+          terminalError = classifyRpcError(err);
+          break;
+        }
+        if (disposed) return;
+        if (state.thread.session?.id === sessionId) {
+          state = {
+            ...state,
+            error: null,
+            thread: {
+              ...state.thread,
+              session: {
+                ...state.thread.session,
+                model_routing: {
+                  current: source.layer,
+                  ...(source.model_hint
+                    ? { model_hint: source.model_hint }
+                    : {}),
+                  source_id: source.id,
+                  overridden: true,
+                },
+              },
+            },
+          };
+        }
+        if (pendingModelSourceBySession.get(sessionId) === sourceId) {
+          pendingModelSourceBySession.delete(sessionId);
+          break;
+        }
+      }
+    } finally {
+      modelSourceWriteSessions.delete(sessionId);
+      if (!disposed && state.thread.session?.id === sessionId) {
+        if (terminalError !== null) {
+          state = { ...state, error: terminalError };
+        }
+        renderPreservingHandoffFocus();
+      }
+    }
+  };
+
+  const selectModelSource = (sourceId: string): void => {
     const source =
       state.modelSources?.find((s) => s.id === sourceId) ?? null;
     if (source === null) return;
@@ -7980,11 +8601,14 @@ export const bootstrapChatRoute = (
     if (session === null) {
       if (state.draftSourceId === source.id) return;
       state = { ...state, draftSourceId: source.id };
-      render();
+      renderPreservingHandoffFocus();
       return;
     }
+    const pendingSourceId = pendingModelSourceBySession.get(session.id);
+    if (pendingSourceId === source.id) return;
     if (
-      session.model_routing.current === source.layer
+      pendingSourceId === undefined
+      && session.model_routing.current === source.layer
       && (session.model_routing.model_hint ?? undefined)
         === (source.model_hint ?? undefined)
       // D-191 Phase 6 — also compare the EXACT picked slot: two slots can share
@@ -7994,45 +8618,12 @@ export const bootstrapChatRoute = (
     ) {
       return;
     }
-    try {
-      await opts.conn('chat.session.set_model_pref', {
-        session_id: session.id,
-        model_pref: {
-          current: source.layer,
-          ...(source.model_hint ? { model_hint: source.model_hint } : {}),
-          source_id: source.id,
-        },
-      });
-      if (disposed) return;
-      // The thread may have CHANGED during the await (the user opened another
-      // session / started a draft) — only apply the optimistic reflect if it
-      // is still the same session; otherwise the `model_pref` broadcast
-      // reconciles the correct thread.
-      if (state.thread.session?.id !== session.id) return;
-      // Optimistic local reflect — the broadcast also lands and reduces
-      // idempotently. Match the reducer: REPLACE model_routing wholesale (the
-      // server drops any prior provider/model_id on a set).
-      state = {
-        ...state,
-        thread: {
-          ...state.thread,
-          session: {
-            ...state.thread.session,
-            model_routing: {
-              current: source.layer,
-              ...(source.model_hint ? { model_hint: source.model_hint } : {}),
-              source_id: source.id,
-              overridden: true,
-            },
-          },
-        },
-      };
-      render();
-    } catch (err) {
-      if (disposed) return;
-      state = { ...state, error: classifyRpcError(err) };
-      render();
-    }
+    pendingModelSourceBySession.set(session.id, source.id);
+    const startsWrite = !modelSourceWriteSessions.has(session.id);
+    if (startsWrite) modelSourceWriteSessions.add(session.id);
+    state = { ...state, error: null };
+    renderPreservingHandoffFocus();
+    if (startsWrite) void persistQueuedModelSource(session.id);
   };
 
   // Shell-frame Step 3 — lazy session creation: mint + open the session on
@@ -8108,7 +8699,7 @@ export const bootstrapChatRoute = (
         pending_turn_id: null,
       };
       historyLandingActive = false;
-      render();
+      renderPreservingHandoffFocus();
       opts.onAddressChange?.(
         serializeChatSessionAddress({ sessionId: session_id }),
         'replace',
@@ -8119,12 +8710,13 @@ export const bootstrapChatRoute = (
     } catch (err) {
       if (disposed) return null;
       state = { ...state, error: classifyRpcError(err) };
-      render();
+      renderPreservingHandoffFocus();
       return null;
     }
   };
 
   const createSession = async (title?: string): Promise<void> => {
+    if (retainPendingSend()) return;
     try {
       const { session_id } = title !== undefined
         ? await opts.conn('chat.session.create', { title })
@@ -8148,6 +8740,15 @@ export const bootstrapChatRoute = (
   const sendMessage = async (message: string): Promise<void> => {
     const trimmed = message.trim();
     if (trimmed.length === 0 || state.sending) return;
+    const activeBeforeSend = doc.activeElement as HTMLElement | null | undefined;
+    const composerInputBeforeSend = routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_INPUT_ATTR}]`,
+    );
+    const sendButtonBeforeSend = routeRoot.querySelector?.(
+      `[${CHAT_ROUTE_SEND_ATTR}]`,
+    );
+    const composerOwnedFocus = activeBeforeSend === composerInputBeforeSend
+      || activeBeforeSend === sendButtonBeforeSend;
     // A send click adopts even an auto-seeded prompt as the owner's work. If
     // transport fails, the retained draft must be protected on navigation.
     composerDraftProtected = true;
@@ -8179,6 +8780,7 @@ export const bootstrapChatRoute = (
     // session and dispatch a second turn (the draft Send is otherwise enabled).
     state = { ...state, sending: true, error: null };
     render();
+    if (composerOwnedFocus) focusComposer(true, 'end');
 
     // Lazy session — a DRAFT thread (no active session) mints + opens its
     // session HERE, on the first send, before the turn is dispatched. A blank
@@ -8192,7 +8794,7 @@ export const bootstrapChatRoute = (
         // lock on success, so the send path inherits it).
         if (!disposed && state.sending) {
           state = { ...state, sending: false };
-          render();
+          renderPreservingHandoffFocus();
         }
         return;
       }
@@ -8371,7 +8973,7 @@ export const bootstrapChatRoute = (
         pending_turn_id: turn_id,
         thread: beginInFlightTurn(state.thread, turn_id),
       });
-      render();
+      renderPreservingHandoffFocus();
     } catch (err) {
       if (disposed) return;
       // The RPC did not confirm its turn id, so release the provisional
@@ -8380,7 +8982,7 @@ export const bootstrapChatRoute = (
       pendingConnectedSourceAnswer = null;
       pendingConnectedSourceProvisionalTurnId = null;
       state = { ...state, sending: false, error: classifyRpcError(err) };
-      render();
+      renderPreservingHandoffFocus();
     }
   };
 
@@ -8553,8 +9155,6 @@ export const bootstrapChatRoute = (
             changed = true;
           }
           if (!changed) return;
-          const diagnosisComposerWasActive =
-            dataVerificationDiagnosisDraft !== null;
           const requestedPlanAppeared =
             requestedPlanWasMissing
             && requestedPlanId !== null
@@ -8567,11 +9167,7 @@ export const bootstrapChatRoute = (
             planTargetUnverified = false;
           }
           state = nextState;
-          if (requestedPlanAppeared || diagnosisComposerWasActive) {
-            renderPreservingHandoffFocus();
-          } else {
-            render();
-          }
+          renderPreservingHandoffFocus();
           if (
             requestedPlanAppeared
             && !composerHasFocus()
@@ -8593,6 +9189,11 @@ export const bootstrapChatRoute = (
     );
   }
 
+  doc.addEventListener(
+    'pointerdown',
+    handleActionDisclosurePointerDown,
+    true,
+  );
   opts.root.appendChild(routeRoot);
   render();
   const focusStarterAfterInitialLoad = opts.initialStarterPrompt === true;
@@ -8711,21 +9312,45 @@ export const bootstrapChatRoute = (
       };
     },
     hasUnsavedChanges: () =>
-      (composerDraftProtected && composerDraft.trim().length > 0)
+      createOverlay?.hasUnsavedChanges() === true
+      || (composerDraftProtected && composerDraft.trim().length > 0)
       || (
         pendingRecoveryDraft?.protected === true
         && pendingRecoveryDraft.text.trim().length > 0
       ),
+    unsavedChangesPrompt: () =>
+      createOverlay?.hasUnsavedChanges() === true
+        ? 'Discard this unfinished Create item?'
+        : null,
     hasInFlightWork: () => state.sending
       || pendingPlanActions.size > 0
+      || pendingDataDiagnosisResolutions.size > 0
+      || modelSourceWriteSessions.size > 0
       || sessionAction?.kind === 'export-busy'
-      || sessionAction?.kind === 'delete-busy',
+      || sessionAction?.kind === 'delete-busy'
+      || createOverlay?.hasInFlightWork() === true
+      || runPalette?.hasInFlightWork() === true,
+    inFlightWorkPrompt: () =>
+      createOverlay?.hasInFlightWork() === true
+        ? 'A Create save is still in progress. Leave Chat anyway?'
+        : modelSourceWriteSessions.size > 0
+          ? 'A Chat model change is still in progress. Leave Chat anyway?'
+          : runPalette?.hasInFlightWork() === true
+            ? 'A recipe action is still in progress. Leave Chat anyway?'
+            : historyActionInFlight()
+              ? 'A chat history action is still in progress. Leave Chat anyway?'
+              : null,
     startNewChat: () => requestStartNewChat(),
     createSession: (title) => createSession(title),
     sendMessage: (message) => sendMessage(message),
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      doc.removeEventListener(
+        'pointerdown',
+        handleActionDisclosurePointerDown,
+        true,
+      );
       cancelConnectedSourcePoll();
       connectedSourceStatusGeneration += 1;
       // The Create overlay + Run palette are portaled to body — detach them.

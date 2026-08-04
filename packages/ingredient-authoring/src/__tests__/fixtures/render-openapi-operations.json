@@ -3,8 +3,8 @@
     "source": {
       "kind": "openapi",
       "url": "https://api-docs.render.com/openapi/render-public-api-1.json",
-      "sha256": "2d27d5834d8bbc586e0aee62160cf996bb07f4be747112f15ec02c14fc11b315",
-      "bytes": 331391,
+      "sha256": "a969bde304f7b51fa447cd91a86ca6992407b0a0b1df735f2047d42a1fe592b6",
+      "bytes": 334383,
       "openapi": "3.0.2",
       "info_version": "1.0.0",
       "server": "https://api.render.com/v1",
@@ -434,7 +434,7 @@
         ]
       }
     ],
-    "compatibility_argument_rows_sha256": "aac5beb60135949a44569b740493a7f5cfa2c53796d55cc3c02ff37c4bb722f1",
+    "compatibility_argument_rows_sha256": "191619b637244d33e08a7cb6ba61d970a830145d58c96b8bc5802a724b845bfd",
     "compatibility_missing_baseline_arguments": [],
     "safe_request_field_omissions": [
       {
@@ -12873,6 +12873,16 @@
           "exposed": true
         },
         {
+          "name": "sandbox",
+          "wire_name": "sandbox",
+          "in": "query",
+          "official_type": "array",
+          "admitted_type": "array",
+          "admitted_name": "query.sandbox",
+          "required": false,
+          "exposed": true
+        },
+        {
           "name": "level",
           "wire_name": "level",
           "in": "query",
@@ -13082,6 +13092,16 @@
           "official_type": "array",
           "admitted_type": "array",
           "admitted_name": "query.taskRun",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "sandbox",
+          "wire_name": "sandbox",
+          "in": "query",
+          "official_type": "array",
+          "admitted_type": "array",
+          "admitted_name": "query.sandbox",
           "required": false,
           "exposed": true
         },

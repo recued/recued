@@ -31,17 +31,19 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { createRequire } from 'node:module';
 import {
   chmodSync,
   copyFileSync,
   createReadStream,
   existsSync,
   mkdirSync,
+  readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { binaryFileName, currentPlatformTriple } from '@recued/release';
@@ -118,12 +120,46 @@ chmodSync(binPath, 0o755);
 // checkout without it gets a clear instruction rather than a crash; CI installs
 // it as a devDependency.
 const SENTINEL = 'NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2';
+// ⛔ RUN POSTJECT'S JS WITH THIS NODE. NOT VIA npx.
+//
+//  Two reasons, one portability and one supply chain.
+//
+//  Portability: `npx` is `npx.cmd` on Windows, and since the CVE-2024-27980
+//  hardening Node REFUSES to spawn .cmd/.bat without `shell: true` — bare 'npx'
+//  gives ENOENT, 'npx.cmd' gives EINVAL. Both were reported by this script as
+//  "install postject", pointing at the wrong component. `shell: true` would fix
+//  it while re-introducing quoting hazards around the absolute paths below.
+//
+//  Supply chain: `npx --yes postject` FETCHED AN UNPINNED PACKAGE FROM THE
+//  NETWORK AT BUILD TIME and let it write into the binary we then sign. postject
+//  is now a pinned devDependency, so the injector is in the lockfile like
+//  everything else and an offline build works.
+//
+//  Resolving the bin through package.json rather than hardcoding dist/cli.js so
+//  an upstream layout change fails loudly here instead of silently skipping
+//  injection.
+// ⛔ NOT EVERY `node` CAN BE A SEA BASE. Injection needs the fuse sentinel
+// COMPILED INTO the host binary, and distro/homebrew builds routinely lack it —
+// verified on this machine: homebrew node 25.9.0 contains ZERO occurrences,
+// official node:24 contains one. Without this check postject fails with "could
+// not find the sentinel", which reads as a corrupt build; the actual fix is to
+// build with an official nodejs.org runtime. Checking the COPY we are about to
+// inject, not `process.execPath`, so it still holds if that copy ever changes.
+if (!readFileSync(binPath).includes(SENTINEL)) {
+  fail(
+    `${basename(process.execPath)} has no SEA fuse sentinel, so nothing can be injected into it.\n`
+    + '  Build with an official runtime from nodejs.org (or the node: Docker image).\n'
+    + '  Homebrew/distro builds omit the sentinel and cannot host a single executable.',
+  );
+}
+
+const postjectPkg = createRequire(import.meta.url).resolve('postject/package.json');
+const postjectCli = resolve(dirname(postjectPkg), JSON.parse(readFileSync(postjectPkg, 'utf8')).bin.postject);
 try {
   execFileSync(
-    'npx',
+    process.execPath,
     [
-      '--yes',
-      'postject',
+      postjectCli,
       binPath,
       'NODE_SEA_BLOB',
       blobPath,
@@ -137,8 +173,7 @@ try {
   );
 } catch (err) {
   fail(
-    `postject injection failed (${err?.message ?? err}). Install it ` +
-      `(npm i -D postject) and re-run. On macOS the binary must also be ` +
+    `postject injection failed (${err?.message ?? err}). On macOS the binary must also be ` +
       `re-signed AFTER injection (S4); on Windows re-signed via S5.`,
   );
 }

@@ -4,6 +4,14 @@
  *  Worker-issued binding token through the auth cookie session, relays
  *  only that token via `account.bind`, and renders Pro-convenience
  *  posture from `pro_convenience.status`.
+ *
+ *  ⛔ The recued.com session read (`runReadSession` -> the auth Worker's
+ *  `/v1/auth/session`) is the ONLY cross-origin call this panel makes, and it
+ *  is gated: it runs on refresh ONLY when the paired server holds an account
+ *  binding, plus inside the user-initiated connect action. A self-hosted
+ *  server with no account never reaches recued.com just because the owner
+ *  opened Settings — the Settings route mounts every section eagerly, so an
+ *  ungated read made opening ANY settings surface a cloud call.
  */
 
 import type {
@@ -34,6 +42,7 @@ export type AccountSignOutCaller = () => Promise<void>;
 export type AccountBindingPanelPhase = 'loading' | 'ready';
 export type AccountBindingActionPhase =
   | 'idle'
+  | 'refreshing'
   | 'connecting'
   | 'confirming'
   | 'unbinding'
@@ -79,6 +88,9 @@ export interface MountAccountBindingPanelOptions {
 export interface AccountBindingPanelMount {
   getState(): AccountBindingPanelState;
   viewState(): AccountBindingViewState;
+  /** A user-started account mutation whose authoritative refresh has not
+   *  settled yet. Eager/read-recovery status loads are deliberately excluded. */
+  hasInFlightWork(): boolean;
   refresh(): Promise<void>;
   whenLoaded(): Promise<void>;
   connect(): Promise<void>;
@@ -93,12 +105,16 @@ export const ACCOUNT_BINDING_PANEL_ATTR = 'data-recued-account-binding-panel';
 export const ACCOUNT_BINDING_PANEL_STATE_ATTR = 'data-recued-account-binding-state';
 export const ACCOUNT_BINDING_LOADING_ATTR = 'data-recued-account-binding-loading';
 export const ACCOUNT_BINDING_ERROR_ATTR = 'data-recued-account-binding-error';
+export const ACCOUNT_BINDING_RETRY_ATTR = 'data-recued-account-binding-retry';
 export const ACCOUNT_BINDING_STATUS_CHIP_ATTR = 'data-recued-account-binding-status-chip';
 export const ACCOUNT_BINDING_SUMMARY_ATTR = 'data-recued-account-binding-summary';
 export const ACCOUNT_BINDING_CONNECT_ATTR = 'data-recued-account-binding-connect';
 export const ACCOUNT_BINDING_CONFIRM_REBIND_ATTR = 'data-recued-account-binding-confirm-rebind';
 export const ACCOUNT_BINDING_CANCEL_REBIND_ATTR = 'data-recued-account-binding-cancel-rebind';
 export const ACCOUNT_BINDING_UNBIND_ATTR = 'data-recued-account-binding-unbind';
+export const ACCOUNT_BINDING_UNBIND_CONFIRMATION_ATTR = 'data-recued-account-binding-unbind-confirmation';
+export const ACCOUNT_BINDING_CONFIRM_UNBIND_ATTR = 'data-recued-account-binding-confirm-unbind';
+export const ACCOUNT_BINDING_CANCEL_UNBIND_ATTR = 'data-recued-account-binding-cancel-unbind';
 export const ACCOUNT_BINDING_SIGNOUT_ATTR = 'data-recued-account-binding-signout';
 export const ACCOUNT_BINDING_SESSION_ATTR = 'data-recued-account-binding-session';
 export const ACCOUNT_BINDING_DASHBOARD_LINK_ATTR = 'data-recued-account-binding-dashboard-link';
@@ -301,6 +317,8 @@ export const mountAccountBindingPanel = (
   let disposed = false;
   let loadGeneration = 0;
   let pendingLoad: Promise<void> = Promise.resolve();
+  let unbindConfirmationOpen = false;
+  let mutationInFlight = false;
 
   const root = doc.createElement('div');
   root.setAttribute(ACCOUNT_BINDING_PANEL_ATTR, '');
@@ -314,6 +332,36 @@ export const mountAccountBindingPanel = (
   };
 
   const isBusy = (): boolean => state.action !== 'idle';
+
+  const hasReadError = (): boolean =>
+    state.errors.bindingStatus !== null
+    || state.errors.proStatus !== null
+    || state.errors.session !== null;
+
+  const findControl = (attr: string): HTMLElement | null => {
+    if (typeof root.querySelector !== 'function') return null;
+    return root.querySelector<HTMLElement>(`[${attr}]`);
+  };
+
+  const focusControl = (attr: string): void => {
+    const control = findControl(attr);
+    if (control === null) return;
+    control.focus({ preventScroll: true });
+    control.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const controlHasFocus = (attr: string): boolean => {
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    return active !== null
+      && active !== undefined
+      && typeof active.hasAttribute === 'function'
+      && active.hasAttribute(attr);
+  };
+
+  const focusIsUnowned = (): boolean =>
+    doc.activeElement === null
+    || doc.activeElement === undefined
+    || doc.activeElement === doc.body;
 
   const setState = (patch: Partial<AccountBindingPanelState>): void => {
     if (disposed) return;
@@ -343,26 +391,38 @@ export const mountAccountBindingPanel = (
 
   const renderActions = (parent: HTMLElement): void => {
     const actions = append(doc, parent, 'div', 'account-bind-actions');
-    const connect = append(doc, actions, 'button', 'rx-btn rx-btn-primary');
-    connect.setAttribute('type', 'button');
-    connect.setAttribute(ACCOUNT_BINDING_CONNECT_ATTR, '');
-    connect.textContent = state.bindingStatus?.status === 'bound'
-      ? 'Refresh binding'
-      : 'Connect your recued.com account';
-    connect.disabled = isBusy();
-    connect.addEventListener('click', () => {
-      void connectFlow(false);
-    });
-
-    if (state.bindingStatus?.status === 'bound') {
-      const unbind = append(doc, actions, 'button', 'rx-btn rx-btn-secondary');
-      unbind.setAttribute('type', 'button');
-      unbind.setAttribute(ACCOUNT_BINDING_UNBIND_ATTR, '');
-      unbind.textContent = 'Disconnect';
-      unbind.disabled = isBusy();
-      unbind.addEventListener('click', () => {
-        void unbindFlow();
+    // Binding mutations require a confirmed-current status read. When the
+    // latest read failed, the dedicated Retry owns recovery instead of
+    // presenting "Connect" from an unknown/null state.
+    if (
+      state.bindingStatus !== null
+      && state.errors.bindingStatus === null
+    ) {
+      const connect = append(doc, actions, 'button', 'rx-btn rx-btn-primary');
+      connect.setAttribute('type', 'button');
+      connect.setAttribute(ACCOUNT_BINDING_CONNECT_ATTR, '');
+      const connecting = state.action === 'connecting';
+      connect.textContent = connecting
+        ? 'Connecting…'
+        : state.bindingStatus.status === 'bound'
+          ? 'Refresh binding'
+          : 'Connect your recued.com account';
+      if (isBusy()) connect.setAttribute('aria-disabled', 'true');
+      if (connecting) connect.setAttribute('aria-busy', 'true');
+      connect.addEventListener('click', () => {
+        void connectFlow(false, true);
       });
+
+      if (state.bindingStatus.status === 'bound') {
+        const unbind = append(doc, actions, 'button', 'rx-btn rx-btn-secondary');
+        unbind.setAttribute('type', 'button');
+        unbind.setAttribute(ACCOUNT_BINDING_UNBIND_ATTR, '');
+        unbind.textContent = 'Disconnect';
+        unbind.disabled = isBusy();
+        unbind.addEventListener('click', () => {
+          openUnbindConfirmation(true);
+        });
+      }
     }
 
     // Sign out of the recued.com browser session (Worker local-scope signout).
@@ -372,10 +432,12 @@ export const mountAccountBindingPanel = (
       const signOutBtn = append(doc, actions, 'button', 'rx-btn rx-btn-secondary');
       signOutBtn.setAttribute('type', 'button');
       signOutBtn.setAttribute(ACCOUNT_BINDING_SIGNOUT_ATTR, '');
-      signOutBtn.textContent = 'Sign out';
-      signOutBtn.disabled = isBusy();
+      const signingOut = state.action === 'signing-out';
+      signOutBtn.textContent = signingOut ? 'Signing out…' : 'Sign out';
+      if (isBusy()) signOutBtn.setAttribute('aria-disabled', 'true');
+      if (signingOut) signOutBtn.setAttribute('aria-busy', 'true');
       signOutBtn.addEventListener('click', () => {
-        void signOutFlow();
+        void signOutFlow(true);
       });
     }
 
@@ -387,10 +449,31 @@ export const mountAccountBindingPanel = (
     dashboard.textContent = 'Open dashboard';
   };
 
+  const renderReadRecovery = (parent: HTMLElement): void => {
+    const refreshing = state.action === 'refreshing';
+    if (!refreshing && !hasReadError()) return;
+    const retry = append(doc, parent, 'button', 'rx-btn rx-btn-secondary');
+    retry.setAttribute('type', 'button');
+    retry.setAttribute(ACCOUNT_BINDING_RETRY_ATTR, '');
+    retry.textContent = refreshing
+      ? 'Retrying account status…'
+      : 'Retry account status';
+    if (refreshing) {
+      retry.setAttribute('aria-disabled', 'true');
+      retry.setAttribute('aria-busy', 'true');
+    }
+    retry.addEventListener('click', () => {
+      void retryAndTrack(true);
+    });
+  };
+
   const renderConflict = (parent: HTMLElement): void => {
     if (state.conflict === null) return;
     const box = append(doc, parent, 'div', 'account-bind-conflict');
+    box.setAttribute('role', 'alertdialog');
+    box.setAttribute('aria-labelledby', 'account-binding-conflict-title');
     const title = append(doc, box, 'h4');
+    title.setAttribute('id', 'account-binding-conflict-title');
     title.textContent = 'Binding conflict';
     renderLabelValue(doc, box, 'Current owner', accountLabel(state.conflict.current_owner));
     renderLabelValue(doc, box, 'Incoming account', accountLabel(state.conflict.incoming));
@@ -398,17 +481,52 @@ export const mountAccountBindingPanel = (
     const confirm = append(doc, actions, 'button', 'rx-btn rx-btn-primary');
     confirm.setAttribute('type', 'button');
     confirm.setAttribute(ACCOUNT_BINDING_CONFIRM_REBIND_ATTR, '');
-    confirm.textContent = 'Confirm rebind';
-    confirm.disabled = isBusy();
+    const confirming = state.action === 'confirming';
+    confirm.textContent = confirming ? 'Rebinding…' : 'Confirm rebind';
+    if (isBusy()) confirm.setAttribute('aria-disabled', 'true');
+    if (confirming) confirm.setAttribute('aria-busy', 'true');
     confirm.addEventListener('click', () => {
-      void connectFlow(true);
+      void connectFlow(true, true);
     });
     const cancel = append(doc, actions, 'button', 'rx-btn rx-btn-secondary');
     cancel.setAttribute('type', 'button');
     cancel.setAttribute(ACCOUNT_BINDING_CANCEL_REBIND_ATTR, '');
     cancel.textContent = 'Cancel';
-    cancel.disabled = isBusy();
-    cancel.addEventListener('click', () => cancelRebind());
+    if (isBusy()) cancel.setAttribute('aria-disabled', 'true');
+    cancel.addEventListener('click', () => cancelRebind(true));
+  };
+
+  const renderUnbindConfirmation = (parent: HTMLElement): void => {
+    if (!unbindConfirmationOpen) return;
+    const box = append(doc, parent, 'div', 'account-bind-conflict');
+    box.setAttribute(ACCOUNT_BINDING_UNBIND_CONFIRMATION_ATTR, '');
+    box.setAttribute('role', 'alertdialog');
+    box.setAttribute('aria-labelledby', 'account-binding-unbind-title');
+    box.setAttribute('aria-describedby', 'account-binding-unbind-description');
+    const title = append(doc, box, 'h4');
+    title.setAttribute('id', 'account-binding-unbind-title');
+    title.textContent = 'Disconnect this server?';
+    const description = append(doc, box, 'p', 'account-bind-message');
+    description.setAttribute('id', 'account-binding-unbind-description');
+    description.textContent =
+      'This removes the server’s recued.com binding. Your browser stays signed in, and you can reconnect the server later.';
+    const actions = append(doc, box, 'div', 'account-bind-actions');
+    const confirm = append(doc, actions, 'button', 'rx-btn rx-btn-danger');
+    confirm.setAttribute('type', 'button');
+    confirm.setAttribute(ACCOUNT_BINDING_CONFIRM_UNBIND_ATTR, '');
+    const unbinding = state.action === 'unbinding';
+    confirm.textContent = unbinding ? 'Disconnecting…' : 'Disconnect server';
+    if (isBusy()) confirm.setAttribute('aria-disabled', 'true');
+    if (unbinding) confirm.setAttribute('aria-busy', 'true');
+    confirm.addEventListener('click', () => {
+      void unbindFlow(true);
+    });
+    const cancel = append(doc, actions, 'button', 'rx-btn rx-btn-secondary');
+    cancel.setAttribute('type', 'button');
+    cancel.setAttribute(ACCOUNT_BINDING_CANCEL_UNBIND_ATTR, '');
+    cancel.textContent = 'Cancel';
+    if (isBusy()) cancel.setAttribute('aria-disabled', 'true');
+    cancel.addEventListener('click', () => cancelUnbind(true));
   };
 
   const renderConnectionCard = (parent: HTMLElement): void => {
@@ -450,6 +568,7 @@ export const mountAccountBindingPanel = (
     if (state.errors.action !== null) {
       renderError(doc, card, 'action', state.errors.action);
     }
+    renderReadRecovery(card);
 
     if (state.session?.authenticated === true && state.session.user !== null) {
       const signedIn = append(doc, card, 'p', 'account-bind-message');
@@ -460,6 +579,7 @@ export const mountAccountBindingPanel = (
     const binding = state.bindingStatus?.binding ?? null;
     if (binding !== null) renderStatusSummary(card, binding);
     renderConflict(card);
+    renderUnbindConfirmation(card);
     renderActions(card);
   };
 
@@ -595,11 +715,20 @@ export const mountAccountBindingPanel = (
     renderProCard(root);
   }
 
-  const refresh = async (): Promise<void> => {
+  const refresh = async (
+    fromRetry = false,
+    ownFocus = false,
+  ): Promise<void> => {
+    if (fromRetry && (disposed || isBusy())) return;
     const generation = ++loadGeneration;
     state = {
       ...state,
-      phase: state.bindingStatus === null && state.proStatus === null ? 'loading' : 'ready',
+      phase: fromRetry
+        ? 'ready'
+        : state.bindingStatus === null && state.proStatus === null
+          ? 'loading'
+          : 'ready',
+      action: fromRetry ? 'refreshing' : state.action,
       errors: {
         ...state.errors,
         bindingStatus: null,
@@ -608,20 +737,43 @@ export const mountAccountBindingPanel = (
       },
     };
     render();
+    if (fromRetry && ownFocus) focusControl(ACCOUNT_BINDING_RETRY_ATTR);
 
-    const [binding, pro, session] = await Promise.allSettled([
+    // Both server reads first — they are local pair-rpcs and always safe.
+    const [binding, pro] = await Promise.allSettled([
       opts.runBindingStatus(),
       opts.runProStatus(),
-      opts.runReadSession !== undefined ? opts.runReadSession() : Promise.resolve(null),
     ]);
     if (disposed || generation !== loadGeneration) return;
+    const nextBindingStatus =
+      binding.status === 'fulfilled' ? binding.value : state.bindingStatus;
 
+    // …then the recued.com session, ONLY when this server is bound to an
+    // account. An unbound server has no account to ask about, so a background
+    // probe would be a cloud call the owner never asked for; `connectFlow`
+    // reads the session explicitly when they press Connect. A skipped read
+    // keeps the last known session (an unbind does not sign the browser out).
+    let session: AccountBindingAuthSession | null = state.session;
+    let sessionError: string | null = null;
+    if (opts.runReadSession !== undefined && nextBindingStatus?.status === 'bound') {
+      try {
+        session = await opts.runReadSession();
+      } catch (err) {
+        sessionError = readErrorMessage(err, 'recued.com');
+      }
+      if (disposed || generation !== loadGeneration) return;
+    }
+
+    const returnFromRetry = fromRetry
+      && ownFocus
+      && controlHasFocus(ACCOUNT_BINDING_RETRY_ATTR);
     state = {
       ...state,
       phase: 'ready',
-      bindingStatus: binding.status === 'fulfilled' ? binding.value : state.bindingStatus,
+      action: fromRetry ? 'idle' : state.action,
+      bindingStatus: nextBindingStatus,
       proStatus: pro.status === 'fulfilled' ? pro.value : state.proStatus,
-      session: session.status === 'fulfilled' ? session.value : state.session,
+      session,
       errors: {
         ...state.errors,
         bindingStatus: binding.status === 'rejected'
@@ -630,12 +782,15 @@ export const mountAccountBindingPanel = (
         proStatus: pro.status === 'rejected'
           ? readErrorMessage(pro.reason, 'server')
           : null,
-        session: session.status === 'rejected'
-          ? readErrorMessage(session.reason, 'recued.com')
-          : null,
+        session: sessionError,
       },
     };
     render();
+    if (returnFromRetry) {
+      focusControl(hasReadError()
+        ? ACCOUNT_BINDING_RETRY_ATTR
+        : ACCOUNT_BINDING_CONNECT_ATTR);
+    }
   };
 
   const refreshAndTrack = (): Promise<void> => {
@@ -643,27 +798,64 @@ export const mountAccountBindingPanel = (
     return pendingLoad;
   };
 
-  const connectFlow = async (confirm_rebind: boolean): Promise<void> => {
-    if (disposed || isBusy()) return;
-    setState({
-      action: confirm_rebind ? 'confirming' : 'connecting',
-      errors: { ...state.errors, action: null },
-      actionMessage: null,
-    });
+  const retryAndTrack = (ownFocus = false): Promise<void> => {
+    if (disposed || isBusy()) return pendingLoad;
+    pendingLoad = refresh(true, ownFocus);
+    return pendingLoad;
+  };
+
+  const connectFlow = async (
+    confirm_rebind: boolean,
+    ownFocus = false,
+  ): Promise<void> => {
+    if (disposed || isBusy() || mutationInFlight) return;
+    const actionAttr = confirm_rebind
+      ? ACCOUNT_BINDING_CONFIRM_REBIND_ATTR
+      : ACCOUNT_BINDING_CONNECT_ATTR;
+    mutationInFlight = true;
     try {
+      setState({
+        action: confirm_rebind ? 'confirming' : 'connecting',
+        errors: { ...state.errors, action: null },
+        actionMessage: null,
+      });
+      if (ownFocus) focusControl(actionAttr);
+      // The one place an UNBOUND server may reach the auth Worker: the owner
+      // pressed Connect, so the cloud call is the action they asked for. It
+      // costs no extra request — `mintBindingToken` fetches the same session
+      // itself when it holds no CSRF token — and reading it here lets the card
+      // name who is signed in even when the bind that follows doesn't land.
+      if (opts.runReadSession !== undefined) {
+        try {
+          const session = await opts.runReadSession();
+          if (disposed) return;
+          const preserveActionFocus = ownFocus && controlHasFocus(actionAttr);
+          setState({ session });
+          if (preserveActionFocus) focusControl(actionAttr);
+        } catch {
+          // The mint below fails the same way and owns the error copy.
+        }
+      }
       const token = await opts.mintBindingToken();
       const result = await opts.runBind({
         binding_token: token.binding_token,
         ...(confirm_rebind ? { confirm_rebind: true } : {}),
       });
       if (result.outcome === 'conflict') {
+        const returnToConflict = ownFocus && controlHasFocus(actionAttr);
         setState({
           action: 'idle',
           conflict: result,
           actionMessage: 'Confirm before this server is rebound.',
         });
+        if (returnToConflict) {
+          focusControl(confirm_rebind
+            ? ACCOUNT_BINDING_CONFIRM_REBIND_ATTR
+            : ACCOUNT_BINDING_CANCEL_REBIND_ATTR);
+        }
         return;
       }
+      const returnToConnect = ownFocus && controlHasFocus(actionAttr);
       setState({
         action: 'idle',
         conflict: null,
@@ -672,30 +864,65 @@ export const mountAccountBindingPanel = (
             ? 'Server rebound to this recued.com account.'
             : 'Server bound to this recued.com account.',
       });
-      await refreshAndTrack();
+      const refreshPromise = refreshAndTrack();
+      if (returnToConnect) focusControl(ACCOUNT_BINDING_CONNECT_ATTR);
+      await refreshPromise;
+      if (returnToConnect && focusIsUnowned()) {
+        focusControl(ACCOUNT_BINDING_CONNECT_ATTR);
+      }
     } catch (err) {
+      const returnToAction = ownFocus && controlHasFocus(actionAttr);
       setActionError(errMessage(err));
+      if (returnToAction) focusControl(actionAttr);
+    } finally {
+      mutationInFlight = false;
     }
   };
 
-  const cancelRebind = (): void => {
+  const cancelRebind = (ownFocus = false): void => {
     if (disposed || isBusy()) return;
+    const returnToConnect = ownFocus
+      && controlHasFocus(ACCOUNT_BINDING_CANCEL_REBIND_ATTR);
     setState({
       conflict: null,
       actionMessage: 'Rebind cancelled.',
       errors: { ...state.errors, action: null },
     });
+    if (returnToConnect) focusControl(ACCOUNT_BINDING_CONNECT_ATTR);
   };
 
-  const unbindFlow = async (): Promise<void> => {
-    if (disposed || isBusy()) return;
-    setState({
-      action: 'unbinding',
-      errors: { ...state.errors, action: null },
-      actionMessage: null,
-    });
+  const openUnbindConfirmation = (ownFocus = false): void => {
+    if (disposed || isBusy() || unbindConfirmationOpen) return;
+    const moveToSafeAction = ownFocus
+      && controlHasFocus(ACCOUNT_BINDING_UNBIND_ATTR);
+    unbindConfirmationOpen = true;
+    render();
+    if (moveToSafeAction) focusControl(ACCOUNT_BINDING_CANCEL_UNBIND_ATTR);
+  };
+
+  const cancelUnbind = (ownFocus = false): void => {
+    if (disposed || isBusy() || !unbindConfirmationOpen) return;
+    const returnToUnbind = ownFocus
+      && controlHasFocus(ACCOUNT_BINDING_CANCEL_UNBIND_ATTR);
+    unbindConfirmationOpen = false;
+    render();
+    if (returnToUnbind) focusControl(ACCOUNT_BINDING_UNBIND_ATTR);
+  };
+
+  const unbindFlow = async (ownFocus = false): Promise<void> => {
+    if (disposed || isBusy() || mutationInFlight) return;
+    mutationInFlight = true;
     try {
+      setState({
+        action: 'unbinding',
+        errors: { ...state.errors, action: null },
+        actionMessage: null,
+      });
+      if (ownFocus) focusControl(ACCOUNT_BINDING_CONFIRM_UNBIND_ATTR);
       const result = await opts.runUnbind();
+      const advanceToConnect = ownFocus
+        && controlHasFocus(ACCOUNT_BINDING_CONFIRM_UNBIND_ATTR);
+      unbindConfirmationOpen = false;
       setState({
         action: 'idle',
         conflict: null,
@@ -703,9 +930,19 @@ export const mountAccountBindingPanel = (
           ? 'No binding was stored on this server.'
           : 'Server disconnected from recued.com.',
       });
-      await refreshAndTrack();
+      const refreshPromise = refreshAndTrack();
+      if (advanceToConnect) focusControl(ACCOUNT_BINDING_CONNECT_ATTR);
+      await refreshPromise;
+      if (advanceToConnect && focusIsUnowned()) {
+        focusControl(ACCOUNT_BINDING_CONNECT_ATTR);
+      }
     } catch (err) {
+      const returnToConfirm = ownFocus
+        && controlHasFocus(ACCOUNT_BINDING_CONFIRM_UNBIND_ATTR);
       setActionError(errMessage(err));
+      if (returnToConfirm) focusControl(ACCOUNT_BINDING_CONFIRM_UNBIND_ATTR);
+    } finally {
+      mutationInFlight = false;
     }
   };
 
@@ -713,15 +950,24 @@ export const mountAccountBindingPanel = (
   // server↔account binding is untouched — this is not an unbind. After it
   // resolves, refresh() re-reads the session (now unauthenticated) so the
   // "Signed in as" line + Sign out button drop away.
-  const signOutFlow = async (): Promise<void> => {
-    if (disposed || isBusy() || opts.runSignOut === undefined) return;
-    setState({
-      action: 'signing-out',
-      errors: { ...state.errors, action: null },
-      actionMessage: null,
-    });
+  const signOutFlow = async (ownFocus = false): Promise<void> => {
+    if (
+      disposed
+      || isBusy()
+      || mutationInFlight
+      || opts.runSignOut === undefined
+    ) return;
+    mutationInFlight = true;
     try {
+      setState({
+        action: 'signing-out',
+        errors: { ...state.errors, action: null },
+        actionMessage: null,
+      });
+      if (ownFocus) focusControl(ACCOUNT_BINDING_SIGNOUT_ATTR);
       await opts.runSignOut();
+      const advanceToConnect = ownFocus
+        && controlHasFocus(ACCOUNT_BINDING_SIGNOUT_ATTR);
       // Clear the session LOCALLY the instant sign-out succeeds — do not wait
       // for (or trust) the follow-up read. This drops the "Signed in as" line +
       // the Sign out button immediately (no enabled-button window for a
@@ -734,9 +980,19 @@ export const mountAccountBindingPanel = (
         actionMessage:
           'Signed out of recued.com on this browser. Your server pairing is unchanged.',
       });
-      await refreshAndTrack();
+      const refreshPromise = refreshAndTrack();
+      if (advanceToConnect) focusControl(ACCOUNT_BINDING_CONNECT_ATTR);
+      await refreshPromise;
+      if (advanceToConnect && focusIsUnowned()) {
+        focusControl(ACCOUNT_BINDING_CONNECT_ATTR);
+      }
     } catch (err) {
+      const returnToSignOut = ownFocus
+        && controlHasFocus(ACCOUNT_BINDING_SIGNOUT_ATTR);
       setActionError(errMessage(err));
+      if (returnToSignOut) focusControl(ACCOUNT_BINDING_SIGNOUT_ATTR);
+    } finally {
+      mutationInFlight = false;
     }
   };
 
@@ -746,11 +1002,12 @@ export const mountAccountBindingPanel = (
   return {
     getState: () => cloneState(state),
     viewState,
+    hasInFlightWork: () => !disposed && mutationInFlight,
     refresh: refreshAndTrack,
     whenLoaded: () => pendingLoad,
     connect: () => connectFlow(false),
     confirmRebind: () => connectFlow(true),
-    cancelRebind,
+    cancelRebind: () => cancelRebind(false),
     unbind: unbindFlow,
     signOut: signOutFlow,
     dispose: () => {

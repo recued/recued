@@ -177,7 +177,7 @@ export const projectRowText = (entity: WorkEntity): RowText => {
 
 /** Render the list view (search input + entity rows or empty state). */
 export const renderWorkEntityListView = (
-  props: WorkEntityListViewProps,
+  props: WorkEntityListViewProps & { opening_entity_id?: string },
 ): string => {
   const search = renderSearchInput(
     props.search_query,
@@ -187,7 +187,11 @@ export const renderWorkEntityListView = (
   const body =
     props.rows.length === 0
       ? renderEmptyState(props.kind, props.empty_state_copy, props.search_query)
-      : renderRows(props.rows, props.show_source_label);
+      : renderRows(
+          props.rows,
+          props.show_source_label,
+          props.opening_entity_id,
+        );
   return `
     <div class="work-entity-list-view" data-kind="${e(props.kind)}">
       ${search}
@@ -233,14 +237,23 @@ const renderSearchInput = (
 const renderRows = (
   rows: readonly WorkEntityListRow[],
   show_source_label: boolean,
+  opening_entity_id: string | undefined,
 ): string => {
   const items = rows
-    .map((row) => renderRow(row, show_source_label))
+    .map((row) => renderRow(
+      row,
+      show_source_label,
+      row.entity.id === opening_entity_id,
+    ))
     .join('');
   return `<ul class="work-entity-list" role="list">${items}</ul>`;
 };
 
-const renderRow = (row: WorkEntityListRow, show_source_label: boolean): string => {
+const renderRow = (
+  row: WorkEntityListRow,
+  show_source_label: boolean,
+  opening: boolean,
+): string => {
   const text = projectRowText(row.entity);
   const sourceLabel = show_source_label
     ? `<span class="work-entity-list-row-source" data-source-id="${e(row.source.id)}">${e(row.source.label)}</span>`
@@ -253,6 +266,9 @@ const renderRow = (row: WorkEntityListRow, show_source_label: boolean): string =
     text.meta !== undefined && text.meta !== ''
       ? `<div class="work-entity-list-row-meta">${e(text.meta)}</div>`
       : '';
+  const openingStatus = opening
+    ? '<span class="work-entity-list-row-opening" role="status">Opening…</span>'
+    : '';
   return `
     <li class="work-entity-list-row">
       <button
@@ -262,12 +278,14 @@ const renderRow = (row: WorkEntityListRow, show_source_label: boolean): string =
         data-entity-id="${e(row.entity.id)}"
         data-source-id="${e(row.entity.source_id)}"
         data-kind="${e(row.entity._kind)}"
+        ${opening ? 'aria-disabled="true" aria-busy="true"' : ''}
       >
         <div class="work-entity-list-row-primary">${e(text.primary)}</div>
         ${secondary}
         <div class="work-entity-list-row-footer">
           ${sourceLabel}
           ${meta}
+          ${openingStatus}
         </div>
       </button>
     </li>

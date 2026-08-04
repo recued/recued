@@ -2,7 +2,7 @@
   "_meta": {
     "note": "Paths-only extract of the pinned official Deel aggregate OpenAPI 3.1 document. crossCheckCatalogOpenApi reads paths; REST and SCIM wire prefixes are supplied by each composition path_alias.",
     "source_url": "https://developer.deel.com/openapi/endpoints-5.json",
-    "sha256": "c572722bce37959afe8a23d3af038442ac615203e57ca8d06aac595075e8c773"
+    "sha256": "d244f6275996ba07cea38aa70a1118c9e6d2bf0842c8d7df1e4bde2e827bd9c0"
   },
   "openapi": "3.1.0",
   "paths": {
@@ -204,10 +204,8 @@
     "/contracts/custom_fields/{id}": {
       "get": {}
     },
-    "/contracts/custom_fields": {
-      "get": {}
-    },
     "/contracts/{contract_id}/custom_fields": {
+      "get": {},
       "put": {}
     },
     "/people/{worker_id}/custom_fields/{id}": {
@@ -232,16 +230,13 @@
     "/employee-info/contract-types/{type}/countries/{country}": {
       "get": {}
     },
-    "/benefits/legal-entities/{id}/employees/{employee_id}": {
-      "get": {}
-    },
-    "/benefits/legal-entities/{legal_entity_id}/contracts/{contract_id}/plans/{plan_id}": {
-      "get": {}
-    },
     "/eor/workers/contracts/{contract_id}/project-assignment/acknowledge": {
       "post": {}
     },
     "/eor/contracts/amendments/data-points/configuration": {
+      "get": {}
+    },
+    "/eor/contracts/{contract_id}/employee-agreement-draft-preview": {
       "get": {}
     },
     "/eor/contracts/{contract_id}/amendments/{amendment_id}/accept": {
@@ -286,7 +281,7 @@
     "/eor/contract/{contract_id}": {
       "patch": {}
     },
-    "/eor/contracts/{contract_id}/documents/{type}": {
+    "/eor/contracts/{contract_id}/documents": {
       "get": {}
     },
     "/eor/contract/{oid}/cancel": {
@@ -453,16 +448,10 @@
     "/gp/workers/{id}/payslips/{payslip_id}/download": {
       "get": {}
     },
-    "/cycles/{cycle_id}/payroll-report": {
-      "get": {}
-    },
     "/forms/gp/worker-additional-fields/{country_code}": {
       "get": {}
     },
     "/gp/contracts/{contract_id}/employment-type": {
-      "patch": {}
-    },
-    "/gp/contracts/{contract_id}/job-title": {
       "patch": {}
     },
     "/contracts/gp": {
@@ -559,9 +548,6 @@
       "delete": {},
       "patch": {}
     },
-    "/benefits/legal-entities/{id}": {
-      "get": {}
-    },
     "/industries": {
       "get": {}
     },
@@ -620,6 +606,27 @@
     "/offboarding/tracker/hris_profile/{oid}": {
       "get": {}
     },
+    "/on-demand-payroll/{odp_id}/entries/attach": {
+      "patch": {}
+    },
+    "/on-demand-payroll/{odp_id}/cancel": {
+      "post": {}
+    },
+    "/on-demand-payroll/contract/{contract_id}": {
+      "post": {}
+    },
+    "/on-demand-payroll/{odp_id}/entries/detach": {
+      "patch": {}
+    },
+    "/on-demand-payroll/contract/{contract_id}/entries": {
+      "get": {}
+    },
+    "/on-demand-payroll/contract/{contract_id}/current": {
+      "get": {}
+    },
+    "/on-demand-payroll/{odp_id}/submit": {
+      "post": {}
+    },
     "/onboarding/tracker/hris_profile/{hris_profile_id}": {
       "get": {}
     },
@@ -664,6 +671,9 @@
     "/organizations/tasks": {
       "get": {}
     },
+    "/organizations/children/{child_organization_id}/session": {
+      "post": {}
+    },
     "/organizations/children": {
       "post": {}
     },
@@ -685,6 +695,12 @@
     },
     "/roles/{roleId}": {
       "patch": {}
+    },
+    "/payments/statements": {
+      "post": {}
+    },
+    "/payments/statements/{payment_statement_id}": {
+      "get": {}
     },
     "/payouts/employees/methods": {
       "post": {},
@@ -722,13 +738,7 @@
     "/payouts/contractors/settings/auto_withdraw": {
       "post": {}
     },
-    "/benefits/legal-entities/{id}/year-to-date-pay": {
-      "get": {}
-    },
     "/gp/workers/{id}/payslips": {
-      "get": {}
-    },
-    "/benefits/legal-entities/{legal_entity_id}/paystubs": {
       "get": {}
     },
     "/people": {
@@ -755,17 +765,8 @@
       "get": {},
       "patch": {}
     },
-    "/benefits/legal-entities/{id}/benefits/401k/activate": {
-      "post": {}
-    },
-    "/benefits/legal-entities/{id}/401k/plans/clean-up": {
-      "post": {}
-    },
-    "/benefits/legal-entities/{legal_entity_id}/401k/plans": {
-      "post": {}
-    },
-    "/benefits/legal-entities/{legal_entity_id}/401k/plans/{plan_id}": {
-      "put": {}
+    "/profiles": {
+      "patch": {}
     },
     "/it/policies": {
       "get": {}
@@ -778,9 +779,6 @@
     },
     "/hris/positions/profile/{hrisProfileId}": {
       "get": {}
-    },
-    "/profiles": {
-      "patch": {}
     },
     "/timesheets/presets": {
       "post": {}
@@ -833,9 +831,6 @@
     "/screenings/kyc/external": {
       "post": {}
     },
-    "/ServiceProviderConfig": {
-      "get": {}
-    },
     "/contracts/{contract_id}/tasks": {
       "post": {},
       "get": {}
@@ -871,6 +866,9 @@
       "get": {}
     },
     "/time_offs/time-off-events": {
+      "get": {}
+    },
+    "/time_offs/attachments/{attachment_id}/download": {
       "get": {}
     },
     "/time_offs/dailies": {
@@ -909,19 +907,30 @@
     "/time-tracking/timesheets/{timesheet_id}/review": {
       "post": {}
     },
-    "/time_tracking/shifts/raw": {
+    "/v2/time_tracking/shift_rates": {
+      "post": {},
+      "get": {}
+    },
+    "/v2/time_tracking/shifts/raw": {
       "post": {}
+    },
+    "/v2/time_tracking/shifts": {
+      "post": {},
+      "get": {}
     },
     "/time_tracking/shifts": {
       "post": {},
       "get": {}
+    },
+    "/time_tracking/shifts/raw": {
+      "post": {}
     },
     "/time_tracking/shifts/{external_id}": {
       "delete": {},
       "get": {},
       "patch": {}
     },
-    "/time_tracking/shifts/bulk-delete": {
+    "/v2/time_tracking/shifts/bulk-delete": {
       "post": {}
     },
     "/timesheets": {
@@ -950,9 +959,6 @@
     },
     "/Users/{hris_profile_id}": {
       "get": {}
-    },
-    "/Users/.search": {
-      "post": {}
     },
     "/webhooks": {
       "post": {},
@@ -1046,10 +1052,10 @@
     "/ic/workers/invoices/{invoice_id}/pdf": {
       "get": {}
     },
-    "/onboarding/workers/individual": {
+    "/worker": {
       "post": {}
     },
-    "/worker": {
+    "/workers/tax-forms": {
       "post": {}
     },
     "/ic/workers/invoices/{invoice_id}": {
@@ -1060,9 +1066,6 @@
     },
     "/ic/workers/transactions": {
       "get": {}
-    },
-    "/onboarding/workers/legal-entity": {
-      "post": {}
     }
   }
 }

@@ -1856,7 +1856,11 @@ export interface CliProgressSpec {
  *  `data.file.received` record. Either carrier lets a downstream `ai-*` step
  *  consume the output through `{ file_ref }` without plaintext entering
  *  ordinary op-step values. */
-export interface CliOutputCaptureSpec {
+export type CliOutputCaptureSpec =
+  | CliOutputDirCaptureSpec
+  | CliOutputInPlaceCaptureSpec;
+
+export interface CliOutputDirCaptureSpec {
   /** The argv-template token (e.g. `output_dir`) the executor fills with the
    *  engine-managed temp dir. MUST appear as a `{dir_arg}` token in
    *  `argv_template` and MUST NOT be a user-supplied `editable_args` key — the
@@ -1866,7 +1870,41 @@ export interface CliOutputCaptureSpec {
    *  type — e.g. `text/markdown` for docling `to_markdown`). Also selects which
    *  produced file to capture when the tool emits sidecars (by extension). */
   mime_type: string;
+  from_input_arg?: never;
 }
+
+/** IN-PLACE capture — the op's output IS the file `input_materialize` wrote to
+ *  a throwaway temp path. For a tool that edits its input and offers no output
+ *  path (`officecli batch`, `ruff --fix`, in-place `ocrmypdf`), a `dir_arg` has
+ *  nothing to point at: the tool never writes into a directory we own.
+ *
+ *  The posture is UNCHANGED from `dir_arg` capture, and deliberately so. The
+ *  path is still engine-chosen (`mkdtemp` + `materializedInputBasename`) — the
+ *  caller supplies a `file_ref`, never a path. That equivalence is load-bearing,
+ *  so the validators additionally REFUSE this variant the materialize
+ *  passthrough lane (a literal local path / URL): with a caller-named path the
+ *  tool would write to, and this capture would ingest from, a location the
+ *  recipe chose. `from_input_arg` MUST equal `input_materialize.arg`, and the
+ *  op MUST declare a scalar `input_materialize` (`file_ref_array` has no single
+ *  path to capture). */
+export interface CliOutputInPlaceCaptureSpec {
+  /** The `input_materialize.arg` token whose materialized temp file the tool
+   *  edited in place. MUST equal `input_materialize.arg`. */
+  from_input_arg: string;
+  /** mime_type stamped on the captured record. Unlike `dir_arg` capture this
+   *  never selects among sidecars — the path is known — but it still stamps the
+   *  record and drives the envelope assertion. */
+  mime_type: string;
+  dir_arg?: never;
+}
+
+/** Narrow a capture spec to the in-place variant. Presence of `from_input_arg`
+ *  is the discriminator; `?: never` on each sibling keeps a both-keys literal
+ *  from type-checking. */
+export const isInPlaceCapture = (
+  capture: CliOutputCaptureSpec,
+): capture is CliOutputInPlaceCaptureSpec =>
+  typeof (capture as CliOutputInPlaceCaptureSpec).from_input_arg === 'string';
 
 /** D-189 — one argv template entry. String entries are the historical scalar
  *  tokens. `{ expand_arg }` expands an already-typed array arg into one argv

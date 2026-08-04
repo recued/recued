@@ -714,6 +714,55 @@ describe('GcalProvider — startSync', () => {
     await stop();
   });
 
+  it('holds and replays the syncToken after a collection callback rejects', async () => {
+    const store = seedStore();
+    const tokenKey = `gcal.work.sync_token.${hashId('primary')}`;
+    store.data.set(tokenKey, 'tok-prior');
+    const { fetcher } = makeRouter([
+      calendarListRoute([{ id: 'primary' }]),
+      {
+        match: (u) =>
+          u.includes('/calendars/primary/events') && u.includes('syncToken=tok-prior'),
+        response: {
+          status: 200,
+          body: {
+            items: [{
+              id: 'retry-event',
+              iCalUID: 'retry-event',
+              status: 'confirmed',
+              summary: 'Must replay',
+              start: { dateTime: '2026-04-23T10:00:00Z' },
+              end: { dateTime: '2026-04-23T11:00:00Z' },
+            } as GcalEvent],
+            nextSyncToken: 'tok-next',
+          },
+        },
+      },
+    ]);
+    const provider = createGcalProvider({
+      slug: 'work',
+      config: mkConfig(),
+      accountStore: store,
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+
+    let attempts = 0;
+    const firstStop = await provider.startSync(async () => {
+      attempts++;
+      throw new Error('collection write failed');
+    });
+    await firstStop();
+    expect(store.data.get(tokenKey)).toBe('tok-prior');
+
+    const secondStop = await provider.startSync(async () => { attempts++; });
+    await secondStop();
+    expect(attempts).toBe(2);
+    expect(store.data.get(tokenKey)).toBe('tok-next');
+  });
+
   it('clears the cached token and re-scans when gcal returns 410', async () => {
     const store = seedStore();
     store.data.set(

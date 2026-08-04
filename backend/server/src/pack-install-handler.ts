@@ -2102,17 +2102,38 @@ export const resolvePackBySlug = async (
   if (typeof args.slug !== 'string' || args.slug.length === 0) {
     throw new RpcError('bad_request', 'packs.resolveBySlug: slug must be a non-empty string');
   }
+  // BUNDLED FIRST — the server's own disk outranks the marketplace for a pack it
+  // already ships. Added when `packs.list` stopped forwarding the manifest for
+  // UNINSTALLED packs (44.6 MB → ~1 MB; see `PackListEntry.manifest`): the
+  // install dialog for a bundled Discover row now resolves its manifest here
+  // instead of reading one the list pushed eagerly.
+  //
+  // 🔑 Order is the trust decision, not an optimisation. The marketplace-
+  // authoritative rule this rpc documents exists so the WEBCLIENT never supplies
+  // the manifest; reading the server's own bundled copy honours that rule more
+  // strictly than a network fetch does, and it cannot 404 or be MITM'd. A pack
+  // that is bundled AND published resolves to the bundled bytes — which is the
+  // copy `packs.install` would validate against anyway (see the records
+  // review-hash comparison below).
+  const bundled = resolveBundledPackManifest(
+    deps.packDir ?? findCommunityPackDir(),
+    args.slug,
+  );
   const fetchFn = deps.marketplaceFetch ?? defaultMarketplaceFetch;
   let manifest: BulkPackManifest | null;
-  try {
-    // DELIBERATELY UNMARKED. `ensureDetailResolved` calls this on every pack
-    // detail render — a Discover card click, a click-through from the public
-    // marketplace, a back/forward nav — all with zero install intent. Marking it
-    // would turn the install signal back into a view count, which is what the
-    // marker exists to separate.
-    manifest = await fetchBulkPackBySlug(args.slug, fetchFn);
-  } catch (e) {
-    return resolveFetchErrorToResult(e);
+  if (bundled !== null) {
+    manifest = bundled;
+  } else {
+    try {
+      // DELIBERATELY UNMARKED. `ensureDetailResolved` calls this on every pack
+      // detail render — a Discover card click, a click-through from the public
+      // marketplace, a back/forward nav — all with zero install intent. Marking it
+      // would turn the install signal back into a view count, which is what the
+      // marker exists to separate.
+      manifest = await fetchBulkPackBySlug(args.slug, fetchFn);
+    } catch (e) {
+      return resolveFetchErrorToResult(e);
+    }
   }
   if (manifest === null) {
     return {
@@ -2128,10 +2149,38 @@ export const resolvePackBySlug = async (
     preparedRecords = await prepareRecordsUpdateReview(
       deps,
       manifest,
+      // ⛔ BUNDLED FIRST HERE TOO. The manifest above already resolves from the
+      // server's own disk before the marketplace, and the comment there calls
+      // that a trust decision rather than an optimisation. This callback used to
+      // undo it: it went straight to the marketplace for every recipe, so a
+      // BUNDLED records pack whose recipes are not published — or any records
+      // pack at all on a LAN-only server — failed its whole resolve on the first
+      // ref, with `Records recipe '<slug>' could not be resolved for review`.
+      //
+      // The user-visible shape was `rental-book` → Install → nothing. It is a
+      // records pack with 19 refs; `booking-desk`, four refs and no records
+      // composition, installed fine, because it never reaches this code.
+      //
+      // Mirrors the by-value path's precedence (see `resolveMarketplaceRecipe`
+      // above): when a marketplace row exists it WINS, because its publisher row
+      // is the identity the install will attribute. The bundled body is the
+      // fallback that keeps a self-hosted server working offline, attributed to
+      // the pack's own publisher — which is exactly who ships it on disk.
       async (slug) => {
-        const row = await fetchRecipeBySlug(slug, fetchFn);
-        if (row === null || row.recipe_id !== slug || row.recipe.recipe_id !== slug) return null;
-        return { recipe: row.recipe, publisher_id: row.publisher_id, version: row.version };
+        const row = await fetchRecipeBySlug(slug, fetchFn).catch(() => null);
+        if (row !== null && row.recipe_id === slug && row.recipe.recipe_id === slug) {
+          return { recipe: row.recipe, publisher_id: row.publisher_id, version: row.version };
+        }
+        if (bundled === null) return null;
+        const local = deps.recipeStore?.getBundled(slug) ?? null;
+        if (local === null) return null;
+        return {
+          recipe: local,
+          publisher_id: manifest.publisher,
+          version: typeof (local as { version?: number }).version === 'number'
+            ? (local as { version: number }).version
+            : (manifest.recipes.find((r) => r.slug === slug)?.version ?? manifest.version),
+        };
       },
     );
   } catch (error) {

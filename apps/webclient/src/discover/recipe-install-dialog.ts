@@ -27,11 +27,15 @@
 
 import {
   installGrantModelFromManifest,
+  INSTALL_GRANT_ACCESS_OPTION_ATTR,
+  INSTALL_GRANT_AUDIENCE_DETAIL_OPTION_ATTR,
+  INSTALL_GRANT_SCOPE_OPTION_ATTR,
   installAudienceFromLegacyScope,
   renderInstallGrantPicker,
   resolveInstallAudienceSelection,
   type InstallGrantPickerModel,
 } from '../settings/install-grant-picker.js';
+import { wireFocusTrap, type FocusTrapHandle } from '@recued/ui-shared';
 import type {
   InstallAccessTier,
   InstallAudienceSelection,
@@ -46,6 +50,10 @@ export const RECIPE_DIALOG_DEP_ATTR = 'data-recued-recipe-dialog-dep';
 export const RECIPE_DIALOG_INSTALL_ATTR = 'data-recued-recipe-dialog-install';
 export const RECIPE_DIALOG_CANCEL_ATTR = 'data-recued-recipe-dialog-cancel';
 export const RECIPE_DIALOG_ERROR_ATTR = 'data-recued-recipe-dialog-error';
+export const RECIPE_DIALOG_DEP_TOGGLE_ATTR =
+  'data-recued-recipe-dialog-dep-toggle';
+const RECIPE_DIALOG_DEP_GRANT_CONTROL_ATTR =
+  'data-recued-recipe-dialog-dep-grant-control';
 
 export interface RecipeDialogRecipe {
   recipe_id: string;
@@ -74,6 +82,11 @@ export interface MountRecipeInstallDialogOptions {
   /** Fired after a fully-successful install (recipe + any co-installed packs)
    *  so the caller can re-list + reconcile install-state. */
   onInstalled?: (recipe_id: string) => void;
+  /** Restore focus to the current replacement for the recipe's Discover
+   *  action. The browse panel repaints after handing off, so the original DOM
+   *  opener is detached before this dialog closes. Omit for a stable opener;
+   *  the shared focus trap then restores that element directly. */
+  returnFocus?: (recipe_id: string) => void;
   /** Humanize a service_kind slug for the type badge. */
   serviceKindLabel?: (kind: string) => string;
 }
@@ -114,6 +127,139 @@ export const mountRecipeInstallDialog = (
   let busy = false;
   let error: string | null = null;
   let disposed = false;
+  let renderedBox: HTMLElement | null = null;
+  let focusTrap: FocusTrapHandle | null = null;
+
+  type FocusSnapshot =
+    | { readonly kind: 'install' | 'cancel' }
+    | { readonly kind: 'dep-toggle'; readonly pack: string }
+    | {
+        readonly kind: 'grant-access' | 'grant-scope';
+        readonly pack: string;
+        readonly value: string;
+      }
+    | {
+        readonly kind: 'grant-detail';
+        readonly pack: string;
+        readonly audienceKind: string;
+        readonly audienceId: string;
+      };
+
+  const hasAttr = (element: HTMLElement, name: string): boolean =>
+    element.getAttribute?.(name) !== null;
+
+  const walkElements = (
+    parent: HTMLElement,
+    visit: (element: HTMLElement) => void,
+  ): void => {
+    for (const child of Array.from(parent.children ?? [])) {
+      const element = child as HTMLElement;
+      visit(element);
+      walkElements(element, visit);
+    }
+  };
+
+  const captureFocus = (): FocusSnapshot | null => {
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    if (active === null || active === undefined) return null;
+    if (hasAttr(active, RECIPE_DIALOG_INSTALL_ATTR)) {
+      return { kind: 'install' };
+    }
+    if (hasAttr(active, RECIPE_DIALOG_CANCEL_ATTR)) {
+      return { kind: 'cancel' };
+    }
+    const depToggle = active.getAttribute?.(RECIPE_DIALOG_DEP_TOGGLE_ATTR);
+    if (depToggle !== null && depToggle !== undefined) {
+      return { kind: 'dep-toggle', pack: depToggle };
+    }
+    const pack = active.getAttribute?.(RECIPE_DIALOG_DEP_GRANT_CONTROL_ATTR);
+    if (pack === null || pack === undefined) return null;
+    if (hasAttr(active, INSTALL_GRANT_ACCESS_OPTION_ATTR)) {
+      return {
+        kind: 'grant-access',
+        pack,
+        value: active.getAttribute('data-access') ?? '',
+      };
+    }
+    if (hasAttr(active, INSTALL_GRANT_SCOPE_OPTION_ATTR)) {
+      return {
+        kind: 'grant-scope',
+        pack,
+        value: active.getAttribute('data-scope') ?? '',
+      };
+    }
+    if (hasAttr(active, INSTALL_GRANT_AUDIENCE_DETAIL_OPTION_ATTR)) {
+      return {
+        kind: 'grant-detail',
+        pack,
+        audienceKind: active.getAttribute('data-audience-kind') ?? '',
+        audienceId: active.getAttribute('data-audience-id') ?? '',
+      };
+    }
+    return null;
+  };
+
+  const restoreFocus = (snapshot: FocusSnapshot | null): void => {
+    if (snapshot === null || renderedBox === null) return;
+    let replacement: HTMLElement | null = null;
+    walkElements(renderedBox, (element) => {
+      if (replacement !== null) return;
+      if (
+        snapshot.kind === 'install'
+        && hasAttr(element, RECIPE_DIALOG_INSTALL_ATTR)
+      ) {
+        replacement = element;
+        return;
+      }
+      if (
+        snapshot.kind === 'cancel'
+        && hasAttr(element, RECIPE_DIALOG_CANCEL_ATTR)
+      ) {
+        replacement = element;
+        return;
+      }
+      if (
+        snapshot.kind === 'dep-toggle'
+        && element.getAttribute?.(RECIPE_DIALOG_DEP_TOGGLE_ATTR)
+          === snapshot.pack
+      ) {
+        replacement = element;
+        return;
+      }
+      if (
+        snapshot.kind === 'grant-access'
+        && element.getAttribute?.(RECIPE_DIALOG_DEP_GRANT_CONTROL_ATTR)
+          === snapshot.pack
+        && hasAttr(element, INSTALL_GRANT_ACCESS_OPTION_ATTR)
+        && element.getAttribute('data-access') === snapshot.value
+      ) {
+        replacement = element;
+        return;
+      }
+      if (
+        snapshot.kind === 'grant-scope'
+        && element.getAttribute?.(RECIPE_DIALOG_DEP_GRANT_CONTROL_ATTR)
+          === snapshot.pack
+        && hasAttr(element, INSTALL_GRANT_SCOPE_OPTION_ATTR)
+        && element.getAttribute('data-scope') === snapshot.value
+      ) {
+        replacement = element;
+        return;
+      }
+      if (
+        snapshot.kind === 'grant-detail'
+        && element.getAttribute?.(RECIPE_DIALOG_DEP_GRANT_CONTROL_ATTR)
+          === snapshot.pack
+        && hasAttr(element, INSTALL_GRANT_AUDIENCE_DETAIL_OPTION_ATTR)
+        && element.getAttribute('data-audience-kind')
+          === snapshot.audienceKind
+        && element.getAttribute('data-audience-id') === snapshot.audienceId
+      ) {
+        replacement = element;
+      }
+    });
+    (replacement as HTMLElement | null)?.focus?.({ preventScroll: true });
+  };
 
   // Per-dep grant state (§7.1/§7.2). `grantModels` is derived once per open()
   // from each dep's manifest (null ⇒ no grantable op/tool ⇒ no picker). The
@@ -167,12 +313,19 @@ export const mountRecipeInstallDialog = (
   const coInstallable = (): ResolvedDep[] => deps.filter((d) => !d.installed && d.known);
 
   const render = (): void => {
+    const focusBeforeRender = captureFocus();
     root.hidden = recipe === null;
     clear(root);
+    renderedBox = null;
     if (recipe === null) return;
 
     const box = doc.createElement('div');
     box.className = 'recipe-dialog-box';
+    box.setAttribute('role', 'dialog');
+    box.setAttribute('aria-modal', 'true');
+    box.setAttribute('aria-label', `Install ${recipe.name}`);
+    box.setAttribute('tabindex', '-1');
+    renderedBox = box;
 
     const h = doc.createElement('h2');
     h.className = 'recipe-dialog-title';
@@ -206,6 +359,7 @@ export const mountRecipeInstallDialog = (
     if (error !== null) {
       const err = doc.createElement('p');
       err.setAttribute(RECIPE_DIALOG_ERROR_ATTR, '');
+      err.setAttribute('role', 'alert');
       err.className = 'recipe-dialog-error';
       err.textContent = error;
       box.appendChild(err);
@@ -227,7 +381,13 @@ export const mountRecipeInstallDialog = (
     install.type = 'button';
     install.setAttribute(RECIPE_DIALOG_INSTALL_ATTR, '');
     install.className = 'recipe-dialog-btn recipe-dialog-btn--primary';
-    install.disabled = busy;
+    if (busy) {
+      // Keep the command that owns the RPC keyboard-focusable. State guards
+      // duplicate activation; ARIA communicates the lock without ejecting the
+      // owner to <body> when this re-render replaces the button.
+      install.setAttribute('aria-disabled', 'true');
+      install.setAttribute('aria-busy', 'true');
+    }
     const n = coInstallable().filter((d) => selected.has(d.pack)).length;
     install.textContent = busy
       ? 'Installing…'
@@ -241,6 +401,7 @@ export const mountRecipeInstallDialog = (
     box.appendChild(foot);
 
     root.appendChild(box);
+    restoreFocus(focusBeforeRender);
   };
 
   const renderDepRow = (dep: ResolvedDep): HTMLElement => {
@@ -260,6 +421,7 @@ export const mountRecipeInstallDialog = (
       const cb = doc.createElement('input') as HTMLInputElement;
       cb.type = 'checkbox';
       cb.className = 'recipe-dialog-dep-check';
+      cb.setAttribute(RECIPE_DIALOG_DEP_TOGGLE_ATTR, dep.pack);
       cb.checked = selected.has(dep.pack);
       cb.disabled = busy;
       cb.addEventListener('change', () => togglePack(dep.pack));
@@ -302,25 +464,36 @@ export const mountRecipeInstallDialog = (
     // grantable model and therefore no picker.
     const model = grantModelFor(dep.pack);
     if (!dep.installed && dep.known && model !== null && selected.has(dep.pack)) {
-      row.appendChild(
-        renderInstallGrantPicker({
-          document: doc,
-          model,
-          access: accessFor(dep.pack, model),
-          audience: audienceFor(dep.pack),
-          disabled: busy,
-          onAccess: (tier) => {
-            if (busy) return;
-            accessPicks.set(dep.pack, tier);
-            render();
-          },
-          onAudience: (audience) => {
-            if (busy) return;
-            audiencePicks.set(dep.pack, resolveInstallAudienceSelection(audience));
-            render();
-          },
-        }),
-      );
+      const picker = renderInstallGrantPicker({
+        document: doc,
+        model,
+        access: accessFor(dep.pack, model),
+        audience: audienceFor(dep.pack),
+        disabled: busy,
+        onAccess: (tier) => {
+          if (busy) return;
+          accessPicks.set(dep.pack, tier);
+          render();
+        },
+        onAudience: (audience) => {
+          if (busy) return;
+          audiencePicks.set(dep.pack, resolveInstallAudienceSelection(audience));
+          render();
+        },
+      });
+      // The picker is stateless and this dialog rebuilds it after each choice.
+      // Stamp its controls with the dependency identity so the exact radio or
+      // checkbox can regain focus after that repaint.
+      walkElements(picker, (element) => {
+        if (
+          hasAttr(element, INSTALL_GRANT_ACCESS_OPTION_ATTR)
+          || hasAttr(element, INSTALL_GRANT_SCOPE_OPTION_ATTR)
+          || hasAttr(element, INSTALL_GRANT_AUDIENCE_DETAIL_OPTION_ATTR)
+        ) {
+          element.setAttribute(RECIPE_DIALOG_DEP_GRANT_CONTROL_ATTR, dep.pack);
+        }
+      });
+      row.appendChild(picker);
     }
     return row;
   };
@@ -330,6 +503,8 @@ export const mountRecipeInstallDialog = (
     // still keyboard-reachable behind the modal backdrop; re-entering `open`
     // mid-install would reset `busy`/`selected` and half-install both).
     if (busy) return;
+    focusTrap?.release();
+    focusTrap = null;
     recipe = r;
     deps = d;
     // Default: co-install every missing, roster-known pack.
@@ -346,9 +521,17 @@ export const mountRecipeInstallDialog = (
     busy = false;
     error = null;
     render();
+    focusTrap = wireFocusTrap({
+      document: doc,
+      getContainer: () => renderedBox,
+      restoreFocus: opts.returnFocus === undefined,
+    });
   };
 
   const close = (): void => {
+    const returnRecipeId = recipe?.recipe_id ?? null;
+    const trap = focusTrap;
+    focusTrap = null;
     recipe = null;
     deps = [];
     selected = new Set();
@@ -358,6 +541,8 @@ export const mountRecipeInstallDialog = (
     busy = false;
     error = null;
     render();
+    trap?.release();
+    if (returnRecipeId !== null) opts.returnFocus?.(returnRecipeId);
   };
 
   const togglePack = (slug: string): void => {
@@ -371,6 +556,21 @@ export const mountRecipeInstallDialog = (
     if (busy) return;
     close();
   };
+
+  root.addEventListener('click', (event) => {
+    if (event.target === root) clickCancel();
+  });
+
+  const docEvents = doc as unknown as {
+    addEventListener?: (type: string, listener: (event: Event) => void) => void;
+    removeEventListener?: (type: string, listener: (event: Event) => void) => void;
+  };
+  const onDocumentKeydown = (event: Event): void => {
+    if (recipe === null || (event as KeyboardEvent).key !== 'Escape') return;
+    (event as { preventDefault?: () => void }).preventDefault?.();
+    if (!busy) clickCancel();
+  };
+  docEvents.addEventListener?.('keydown', onDocumentKeydown);
 
   const clickInstall = async (): Promise<void> => {
     if (busy || recipe === null) return;
@@ -445,6 +645,9 @@ export const mountRecipeInstallDialog = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      focusTrap?.release();
+      focusTrap = null;
+      docEvents.removeEventListener?.('keydown', onDocumentKeydown);
       try {
         opts.host.removeChild(root);
       } catch {
@@ -524,7 +727,9 @@ export const RECIPE_DIALOG_STYLES = `
 [${RECIPE_DIALOG_ATTR}] .recipe-dialog-btn--primary {
   border-color: var(--accent); background: var(--accent); color: var(--on-accent);
 }
-[${RECIPE_DIALOG_ATTR}] .recipe-dialog-btn:disabled { opacity: .65; cursor: progress; }
+[${RECIPE_DIALOG_ATTR}] .recipe-dialog-btn:is(:disabled, [aria-disabled="true"]) {
+  opacity: .65; cursor: progress;
+}
 @media (max-width: 560px) {
   [${RECIPE_DIALOG_ATTR}] { padding: 10px; }
   [${RECIPE_DIALOG_ATTR}] .recipe-dialog-box {

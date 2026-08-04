@@ -34,15 +34,14 @@
  *  from D-148 slices 110/111. The state-machine transitions live in
  *  this mount (not the renderer) so the renderer stays pure.
  *
- *  DD#3 — Roster refresh is fire-and-forget on revoke success. The
- *  mount calls `runPairList` after a successful `pair.revoke`, but
- *  the dispatch is async + the mount re-renders synchronously with
- *  `revokedInstanceId` flipped on so the row shows as struck-through
- *  immediately. If the list rpc takes longer than the user expects,
- *  the local-only "this row is now revoked" view is still correct
- *  (the server has already accepted the revoke; the next list call
- *  will reconcile the `revoked_at` stamp). On rpc failure the mount
- *  surfaces an inline error + keeps the confirm panel expanded.
+ *  DD#3 — Roster refresh follows revoke success. The mount renders a
+ *  durable success receipt as soon as `pair.revoke` resolves, then
+ *  reconciles against `pair.list`; the accepted row disappears when
+ *  that authoritative roster reports its `revoked_at` stamp. The
+ *  delegated click path remains fire-and-forget, while the internal
+ *  pipeline awaits reconciliation so it can preserve a useful focus
+ *  owner across both renders. On rpc failure the mount surfaces an
+ *  inline error + keeps the confirm panel expanded.
  *
  *  DD#4 — Auto-refresh on mount + live `pair.list_changed`. The mount
  *  fires `runPairList` once on construction so a cold-load Settings →
@@ -126,6 +125,9 @@ export interface MountDevicesPageOptions {
 export interface DevicesPageMount {
   /** Re-fetch the roster + re-render. Idempotent. */
   refresh(): Promise<void>;
+  /** A user-confirmed revoke whose authoritative roster refresh has not
+   *  settled. Initial, broadcast, and retry list reads are excluded. */
+  hasInFlightWork(): boolean;
   /** Synchronous teardown — clears host + detaches the click
    *  listener. */
   dispose(): void;
@@ -140,15 +142,27 @@ interface MountState {
   confirmingInstanceId?: string;
   revokingInstanceId?: string;
   revokeError?: string;
+  revokeSucceeded?: boolean;
   listError?: string;
+  listRetrying?: boolean;
   loading: boolean;
 }
 
 const LIST_ERROR_COPY =
   "Couldn't load paired devices — check your server's connection, then retry.";
 
-const REVOKE_ERROR_COPY = (detail: string): string =>
-  `Could not revoke this device${detail ? `: ${detail}` : ''}. Try again, or revoke from a different paired device.`;
+const REVOKE_ERROR_COPY = (detail: string): string => {
+  const trimmed = detail.trim();
+  const punctuatedDetail = trimmed.length === 0
+    ? ''
+    : /[.!?]$/.test(trimmed)
+      ? trimmed
+      : `${trimmed}.`;
+  const firstSentence = punctuatedDetail
+    ? `Could not revoke this device: ${punctuatedDetail}`
+    : 'Could not revoke this device.';
+  return `${firstSentence} Try again, or revoke from a different paired device.`;
+};
 
 const toDevicesPageRow = (
   device: ServerPairedDevice,
@@ -189,6 +203,101 @@ export const mountDevicesPage = (
     loading: true,
   };
   let disposed = false;
+  let revokeInFlight = false;
+
+  const findAction = (
+    action: string,
+    instanceId?: string,
+  ): HTMLElement | null => {
+    if (typeof host.querySelectorAll !== 'function') return null;
+    const candidates = host.querySelectorAll<HTMLElement>(
+      `[data-action="${action}"]`,
+    );
+    for (const candidate of candidates) {
+      if (
+        instanceId === undefined
+        || candidate.getAttribute('data-instance-id') === instanceId
+      ) {
+        return candidate;
+      }
+    }
+    return null;
+  };
+
+  const focusAction = (action: string, instanceId?: string): boolean => {
+    const candidate = findAction(action, instanceId);
+    if (candidate === null) return false;
+    candidate.focus({ preventScroll: true });
+    candidate.scrollIntoView?.({ block: 'nearest' });
+    return true;
+  };
+
+  const actionHasFocus = (action: string, instanceId?: string): boolean => {
+    // ⛔ `?? null` IS LOAD-BEARING. `ownerDocument?.activeElement` yields
+    // UNDEFINED when either is absent, and the cast claimed null-only — so the
+    // `active === null` clause below passed it through and `typeof
+    // active.getAttribute` threw on the very guard meant to protect the call.
+    // That unhandled TypeError aborted doRevoke between the resolved revoke and
+    // its roster refresh, so a revoked device stayed on the active roster.
+    const active = (host.ownerDocument?.activeElement ?? null) as HTMLElement | null;
+    if (active === null || typeof active.getAttribute !== 'function') {
+      return false;
+    }
+    return active.getAttribute('data-action') === action
+      && (
+        instanceId === undefined
+        || active.getAttribute('data-instance-id') === instanceId
+      );
+  };
+
+  const focusedRevokeAction = (
+    instanceId: string,
+  ): 'cancel-revoke' | 'confirm-revoke' | undefined => {
+    // ⛔ `?? null` IS LOAD-BEARING. `ownerDocument?.activeElement` yields
+    // UNDEFINED when either is absent, and the cast claimed null-only — so the
+    // `active === null` clause below passed it through and `typeof
+    // active.getAttribute` threw on the very guard meant to protect the call.
+    // That unhandled TypeError aborted doRevoke between the resolved revoke and
+    // its roster refresh, so a revoked device stayed on the active roster.
+    const active = (host.ownerDocument?.activeElement ?? null) as HTMLElement | null;
+    if (active === null || typeof active.getAttribute !== 'function') {
+      return undefined;
+    }
+    if (active.getAttribute('data-instance-id') !== instanceId) return undefined;
+    const action = active.getAttribute('data-action');
+    return action === 'cancel-revoke' || action === 'confirm-revoke'
+      ? action
+      : undefined;
+  };
+
+  const focusSuccessReceipt = (): void => {
+    if (typeof host.querySelector !== 'function') return;
+    const receipt = host.querySelector<HTMLElement>(
+      '[data-device-revoke-success]',
+    );
+    if (receipt === null) return;
+    receipt.focus({ preventScroll: true });
+    receipt.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const focusRecoveredRoster = (): void => {
+    if (focusAction('revoke-device')) return;
+    if (typeof host.querySelector !== 'function') return;
+    const heading = host.querySelector<HTMLElement>(
+      '#account-devices .rx-section-title',
+    );
+    if (heading === null) return;
+    heading.tabIndex = -1;
+    heading.focus({ preventScroll: true });
+    heading.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const focusIsUnowned = (): boolean => {
+    const doc = host.ownerDocument;
+    return doc === undefined
+      || doc.activeElement === null
+      || doc.activeElement === doc.body;
+  };
 
   const render = (): void => {
     if (disposed) return;
@@ -208,13 +317,25 @@ export const mountDevicesPage = (
     const errorBanner = state.listError
       ? `<div class="account-devices-list-error" role="alert" data-error="list">`
         + `<span class="account-devices-list-error-text">${state.listError}</span>`
-        + `<button type="button" class="account-devices-action account-devices-retry" data-action="retry-list">Retry</button>`
+        + `<button type="button" class="account-devices-action account-devices-retry" data-action="retry-list"`
+        + (state.listRetrying
+          ? ' aria-disabled="true" aria-busy="true">Retrying…'
+          : '>Retry')
+        + `</button>`
         + `</div>`
       : '';
     const loadingBanner = state.loading
       ? '<p class="account-devices-loading" role="status">Loading devices…</p>'
       : '';
-    host.innerHTML = errorBanner + loadingBanner + renderDevicesPage(pageState);
+    const successReceipt = state.revokeSucceeded
+      ? '<p class="account-devices-revoke-success" role="status" tabindex="-1" data-device-revoke-success>'
+        + 'Device revoked. It no longer has access to this server.'
+        + '</p>'
+      : '';
+    host.innerHTML = errorBanner
+      + successReceipt
+      + loadingBanner
+      + renderDevicesPage(pageState);
   };
 
   const setState = (patch: Partial<MountState>): void => {
@@ -223,16 +344,26 @@ export const mountDevicesPage = (
   };
 
   // ── Roster fetch ─────────────────────────────────────────────
-  const refresh = async (): Promise<void> => {
+  const refresh = async (fromRetry = false): Promise<void> => {
     if (disposed) return;
-    setState({ loading: true, listError: undefined });
+    if (fromRetry && state.listRetrying) return;
+    setState(fromRetry
+      ? { loading: true, listRetrying: true }
+      : { loading: true, listError: undefined, listRetrying: false });
+    if (fromRetry) focusAction('retry-list');
     let response: { devices: ServerPairedDevice[] };
     try {
       response = await runPairList();
     } catch (err) {
       if (disposed) return;
+      const returnToRetry = fromRetry && actionHasFocus('retry-list');
       const wrapped = err instanceof Error ? err : new Error(String(err));
-      setState({ loading: false, listError: LIST_ERROR_COPY });
+      setState({
+        loading: false,
+        listError: LIST_ERROR_COPY,
+        listRetrying: false,
+      });
+      if (returnToRetry) focusAction('retry-list');
       if (options.onListError) {
         try {
           options.onListError(wrapped);
@@ -243,12 +374,19 @@ export const mountDevicesPage = (
       return;
     }
     if (disposed) return;
+    const advanceFromRetry = fromRetry && actionHasFocus('retry-list');
     // R30 — revoked devices drop off the active roster (they linger only
     // in the audit log; re-pairing returns them as a fresh row).
     const rows = response.devices
       .filter((d) => d.revoked_at === null)
       .map((d) => toDevicesPageRow(d, options.currentInstanceId));
-    setState({ rows, loading: false });
+    setState({
+      rows,
+      loading: false,
+      listError: undefined,
+      listRetrying: false,
+    });
+    if (advanceFromRetry && focusIsUnowned()) focusRecoveredRoster();
   };
 
   // R30 defect #1 — self-revoke HARD guard. The renderer already omits the
@@ -264,36 +402,52 @@ export const mountDevicesPage = (
 
   // ── Revoke pipeline ──────────────────────────────────────────
   const doRevoke = async (instanceId: string): Promise<void> => {
-    if (disposed) return;
+    if (disposed || revokeInFlight) return;
     if (isSelfInstance(instanceId)) return;
-    setState({
-      revokingInstanceId: instanceId,
-      revokeError: undefined,
-    });
+    revokeInFlight = true;
     try {
-      await runPairRevoke({ instance_id: instanceId });
-    } catch (err) {
-      if (disposed) return;
-      const detail = humanizeRpcError(err);
       setState({
-        revokingInstanceId: undefined,
-        // Keep `confirmingInstanceId` set so the user can Cancel or
-        // retry from the same expanded panel (DD#3).
-        revokeError: REVOKE_ERROR_COPY(detail),
+        revokingInstanceId: instanceId,
+        revokeError: undefined,
+        revokeSucceeded: false,
       });
-      return;
+      // render() replaces the initiating button. Keep the command focus owner
+      // present and busy while the server decides the revoke.
+      focusAction('confirm-revoke', instanceId);
+      try {
+        await runPairRevoke({ instance_id: instanceId });
+      } catch (err) {
+        if (disposed) return;
+        const returnAction = focusedRevokeAction(instanceId);
+        const detail = humanizeRpcError(err);
+        setState({
+          revokingInstanceId: undefined,
+          // Keep `confirmingInstanceId` set so the user can Cancel or
+          // retry from the same expanded panel (DD#3).
+          revokeError: REVOKE_ERROR_COPY(detail),
+        });
+        if (returnAction !== undefined) focusAction(returnAction, instanceId);
+        return;
+      }
+      if (disposed) return;
+      const advanceFocus = focusedRevokeAction(instanceId) !== undefined;
+      // Render the accepted receipt immediately, then let pair.list reconcile
+      // the row's authoritative `revoked_at` state. The receipt survives both
+      // the loading render and the completed/error roster render.
+      setState({
+        confirmingInstanceId: undefined,
+        revokingInstanceId: undefined,
+        revokeError: undefined,
+        revokeSucceeded: true,
+      });
+      const refreshPromise = refresh();
+      if (advanceFocus) focusSuccessReceipt();
+      await refreshPromise;
+      if (disposed) return;
+      if (advanceFocus && focusIsUnowned()) focusSuccessReceipt();
+    } finally {
+      revokeInFlight = false;
     }
-    if (disposed) return;
-    // Optimistic local clear — the next pair.list reconciles
-    // `revoked_at` from the server. Until then, the confirm row
-    // collapses + the rendered row goes struck-through via the
-    // refreshed roster.
-    setState({
-      confirmingInstanceId: undefined,
-      revokingInstanceId: undefined,
-      revokeError: undefined,
-    });
-    void refresh();
   };
 
   // ── Delegated click listener ─────────────────────────────────
@@ -310,20 +464,28 @@ export const mountDevicesPage = (
     const instanceId = actionEl.getAttribute('data-instance-id') ?? '';
     if (action === 'retry-list') {
       // R30 — the list-error banner offers an inline Retry (was reload-only
-      // with stale rows beneath). `refresh()` re-fetches + clears the error.
-      void refresh();
+      // with stale rows beneath). Keep the Retry control as the focusable
+      // single-flight owner while `refresh()` reconciles the roster.
+      if (state.listRetrying) return;
+      void refresh(true);
       return;
     }
     if (action === 'revoke-device') {
       // R30 defect #1 — never open a confirm for our own instance.
-      if (!instanceId || isSelfInstance(instanceId)) return;
+      if (!instanceId || isSelfInstance(instanceId) || revokeInFlight) return;
       // DD#2 — single-row confirm. Opening a new confirm collapses any
       // existing one + clears stale error copy.
       setState({
         confirmingInstanceId: instanceId,
         revokingInstanceId: undefined,
         revokeError: undefined,
+        revokeSucceeded: false,
       });
+      // The whole table is replaced by render(), so the original Revoke
+      // button no longer owns focus. Start the destructive alert dialog on
+      // its least-destructive action instead of dropping keyboard users on
+      // <body> (and requiring them to rediscover the expanded row).
+      focusAction('cancel-revoke', instanceId);
       return;
     }
     if (action === 'cancel-revoke') {
@@ -335,6 +497,9 @@ export const mountDevicesPage = (
         confirmingInstanceId: undefined,
         revokeError: undefined,
       });
+      // Cancel removes its own subtree. Return to the exact row control that
+      // opened it so repeated device administration remains locally owned.
+      focusAction('revoke-device', instanceId);
       return;
     }
     if (action === 'confirm-revoke') {
@@ -363,6 +528,7 @@ export const mountDevicesPage = (
 
   return {
     refresh,
+    hasInFlightWork: () => !disposed && revokeInFlight,
     dispose: () => {
       if (disposed) return;
       disposed = true;
@@ -434,15 +600,16 @@ export const DEVICES_PAGE_STYLES = `
   color: var(--fg);
   cursor: pointer;
 }
-.account-devices-action:hover:not(:disabled) { background: var(--surface-sunk); }
-.account-devices-action:disabled { opacity: 0.55; cursor: not-allowed; }
+.account-devices-action:hover:not(:disabled):not([aria-disabled="true"]) { background: var(--surface-sunk); }
+.account-devices-action:disabled,
+.account-devices-action[aria-disabled="true"] { opacity: 0.55; cursor: not-allowed; }
 .account-devices-action--revoke,
 .account-devices-action--confirm-revoke {
   border-color: var(--danger);
   color: var(--danger);
 }
-.account-devices-action--revoke:hover:not(:disabled),
-.account-devices-action--confirm-revoke:hover:not(:disabled) {
+.account-devices-action--revoke:hover:not(:disabled):not([aria-disabled="true"]),
+.account-devices-action--confirm-revoke:hover:not(:disabled):not([aria-disabled="true"]) {
   background: var(--danger-weak);
 }
 .account-devices-action:focus-visible {
@@ -466,6 +633,11 @@ export const DEVICES_PAGE_STYLES = `
 .account-devices-confirm-actions { display: flex; gap: 8px; margin-top: 4px; }
 .account-devices-confirm-status { margin: 0; color: var(--fg-muted); }
 .account-devices-confirm-error { margin: 0; color: var(--danger); }
+.account-devices-revoke-success {
+  margin: 0 0 8px;
+  color: var(--success, var(--fg));
+  font-size: 13px;
+}
 .account-devices-empty {
   text-align: center;
   color: var(--fg-muted);

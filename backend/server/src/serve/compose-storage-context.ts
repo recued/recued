@@ -136,6 +136,10 @@ export interface ComposeStorageContextOptions {
    *  the Master DEK (no plaintext `server_dek`) and its boot-time load is
    *  locked-tolerant — persisted creds load on the post-unlock re-init. */
   getVaultKey?: () => Uint8Array | null;
+  /** The serve boot reconciles any interrupted restore immediately before
+   *  storage composition. This explicit handoff lets the database chokepoint
+   *  open when only an unresolved CAS park deliberately keeps the marker. */
+  restoreJournalReconciled?: boolean;
 }
 
 export interface StorageContext {
@@ -262,7 +266,9 @@ export const composeStorageContext = async (
   const { dbPath, bootTrace, runtimeConfig, vaultQuotas, getVaultKey } = options;
 
   bootTrace.markDbOpenAttempted('configured-db-path');
-  const db = await openDatabase(dbPath);
+  const db = await openDatabase(dbPath, {
+    restoreJournalReconciled: options.restoreJournalReconciled === true,
+  });
   db.pragma('journal_mode = WAL');
   // D-212 slice 0 — the page-cache ceiling. Ships independently of the rest of
   // the at-rest-encryption arc because it is a free win TODAY and it is what

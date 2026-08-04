@@ -2,8 +2,8 @@
   "_extract": {
     "note": "paths-only extract of the pinned official document (crossCheckCatalogOpenApi reads only `paths`); Swagger 2.0, 193 paths; URL is unversioned (drift risk - re-pin at publish)",
     "url": "https://api.bitbucket.org/swagger.json",
-    "sha256": "a04ed757df692b79db907cbcb73fec9ff89a0d7f54e2cde6ddcc79b3b4993e17",
-    "fetched_at": "2026-07-08"
+    "sha256": "7e9be973015d29fbfcc05bddf1133f69622428ba54293b98d9c06e55df463a20",
+    "fetched_at": "2026-08-03"
   },
   "paths": {
     "/workspaces": {

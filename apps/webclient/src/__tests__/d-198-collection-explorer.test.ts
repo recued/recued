@@ -9,10 +9,14 @@
 import { describe, expect, it } from 'vitest';
 import type { CollectionInstanceRow, CollectionRecord } from '@recued/contracts';
 import {
+  COLLECTION_DETAIL_RETRY_ACTION,
+  COLLECTION_DETAIL_RETRY_ATTR,
   COLLECTION_DETAIL_HEADING_ATTR,
   COLLECTION_EXPLORER_STYLES,
   COLLECTION_OPEN_RECORD_ACTION,
   COLLECTION_RECORD_ID_ATTR,
+  COLLECTION_RETRY_ACTION,
+  COLLECTION_RETRY_ATTR,
   COLLECTION_SELECT_INSTANCE_ACTION,
   renderCollectionExplorer,
   type CollectionExplorerProps,
@@ -78,8 +82,25 @@ describe('collection-explorer — schema-driven list', () => {
     expect(renderCollectionExplorer(base({ instances: [], selectedSlug: null })))
       .toContain('Nothing connected');
     expect(renderCollectionExplorer(base({ records: [] }))).toContain('No records');
-    expect(renderCollectionExplorer(base({ error: 'Source check failed' })))
-      .toContain('class="col-explorer-error" role="alert"');
+    const failed = renderCollectionExplorer(base({ error: 'Source check failed' }));
+    expect(failed).toContain('class="col-explorer-error" role="alert"');
+    expect(failed).not.toContain(COLLECTION_RETRY_ACTION);
+
+    const retryable = renderCollectionExplorer(base({
+      error: 'Source check failed',
+      retryable: true,
+    }));
+    expect(retryable).toContain(COLLECTION_RETRY_ACTION);
+    expect(retryable).toContain(COLLECTION_RETRY_ATTR);
+    expect(retryable).toContain('>Retry<');
+
+    const retrying = renderCollectionExplorer(base({
+      error: 'Source check failed',
+      retryable: true,
+      retrying: true,
+    }));
+    expect(retrying).toContain('aria-disabled="true" aria-busy="true"');
+    expect(retrying).toContain('>Retrying…<');
   });
 
   it('formats future time fields as "in …" (calendar start_at), not "just now"', () => {
@@ -159,8 +180,27 @@ describe('collection-explorer — record detail', () => {
   it('detail loading + error + vanished states', () => {
     expect(renderCollectionExplorer(base({ detail: { record_id: 'r1', loading: true } })))
       .toContain('Loading record');
-    expect(renderCollectionExplorer(base({ detail: { record_id: 'r1', loading: false, error: 'boom' } })))
-      .toContain('boom');
+    const failed = renderCollectionExplorer(base({
+      detail: { record_id: 'r1', loading: false, error: 'boom' },
+    }));
+    expect(failed).toContain('boom');
+    expect(failed).not.toContain(COLLECTION_DETAIL_RETRY_ACTION);
+
+    const retryable = renderCollectionExplorer(base({
+      detail: { record_id: 'r1', loading: false, error: 'boom' },
+      detailRetryable: true,
+    }));
+    expect(retryable).toContain(COLLECTION_DETAIL_RETRY_ACTION);
+    expect(retryable).toContain(COLLECTION_DETAIL_RETRY_ATTR);
+    expect(retryable).toContain('>Retry<');
+
+    const retrying = renderCollectionExplorer(base({
+      detail: { record_id: 'r1', loading: false, error: 'boom' },
+      detailRetryable: true,
+      detailRetrying: true,
+    }));
+    expect(retrying).toContain('aria-disabled="true" aria-busy="true"');
+    expect(retrying).toContain('>Retrying…<');
     expect(renderCollectionExplorer(base({ detail: { record_id: 'r1', loading: false, record: null } })))
       .toContain('no longer exists');
   });
@@ -199,6 +239,69 @@ describe('collection-explorer — record detail', () => {
     expect(html).not.toContain('>Size<');
     expect(html).not.toContain('>Source id<');
     expect(html).toContain('Raw fields'); // full row still in the disclosure
+    // ...but Record id survives the compact trim — in compact mode Source id is
+    // dropped precisely BECAUSE it equals record_id, so trimming both would
+    // leave the record with no visible identity at all.
+    expect(html).toContain('>Record id<');
+  });
+
+  // The `file` collection holds TWO record shapes: a watched-folder entry
+  // (`path`) and an inbound upload / captured tool output (`filename`, no
+  // `path`). With a single title field the second shape titled every row with
+  // its 32-hex record_id, which reads as an id column rather than as a field
+  // the record lacks. `primary_field_fallbacks: ['filename']` closes it.
+  it('titles an uploaded file by filename, and a watched-folder file by path', () => {
+    const uploaded = renderCollectionExplorer(base({
+      collection: 'file',
+      records: [mkRecord({
+        record_id: `file:${'a'.repeat(32)}`,
+        hot_fields: { filename: 'invoice-template-eu.docx', mime_type: 'application/vnd.x', size: 4096 },
+      })],
+    }));
+    expect(uploaded).toContain('invoice-template-eu.docx');
+    // ⛔ The defect: the id standing in for a title.
+    expect(uploaded).not.toContain(`>file:${'a'.repeat(32)}<`);
+
+    // `path` still wins when the record has one — the fallback is a fallback.
+    const watched = renderCollectionExplorer(base({
+      collection: 'file',
+      records: [mkRecord({
+        record_id: 'file:w1',
+        hot_fields: { path: '/docs/notes.txt', filename: 'notes.txt' },
+      })],
+    }));
+    expect(watched).toContain('/docs/notes.txt');
+  });
+
+  // A recipe references a stored record ONLY by its id
+  // (`{{config.invoice_template}}` → officecli `document.template_fill`), so the
+  // id needs a row of its own — especially now that the title is a filename.
+  it('detail exposes the record_id a recipe references a stored file by', () => {
+    const record = mkRecord({
+      record_id: 'file:abc',
+      source_id: 'upl_session_7', // an upload SESSION id — not the record id
+      size_bytes: 4096,
+      hot_fields: { filename: 'invoice-template-eu.docx' },
+    });
+    const html = renderCollectionExplorer(base({
+      collection: 'file',
+      detail: { record_id: 'file:abc', loading: false, record },
+    }));
+    expect(html).toContain('>Record id<');
+    expect(html).toContain('file:abc');
+    expect(html).toContain('upl_session_7');
+
+    // The id must survive the title carrying a real filename — the state the
+    // schema lands in the moment `primary_field` gains a fallback chain.
+    const titled = renderCollectionExplorer(base({
+      collection: 'file',
+      detail: { record_id: 'file:abc', loading: false, record: {
+        ...record, hot_fields: { ...record.hot_fields, path: '/templates/eu.docx' },
+      } },
+    }));
+    expect(titled).toContain('/templates/eu.docx'); // now the title
+    expect(titled).toContain('>Record id<'); // ...and the id is still reachable
+    expect(titled).toContain('file:abc');
   });
 
   it('compact detail hides "Received" when the record has no timestamp (shared KV)', () => {

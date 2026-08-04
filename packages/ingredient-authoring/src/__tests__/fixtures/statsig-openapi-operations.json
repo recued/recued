@@ -4,11 +4,11 @@
       "openapi": {
         "kind": "official_versioned_openapi_hash_locked",
         "url": "https://api.statsig.com/openapi/20240601.json",
-        "bytes": 3109423,
-        "sha256": "21dd0e248e0abdd7f22b75b921deaafa0ca0abe98bc51ba97018efb735362f9d",
+        "bytes": 3179557,
+        "sha256": "d10f3b7cb337a269f158d2f1d3dd8f20de569c818e51222cbe993563f311016b",
         "retrieved_on": "2026-07-20",
         "evidence": [
-          "313 explicitly Console-key-secured method/path operations across 201 paths",
+          "321 explicitly Console-key-secured method/path operations across 206 paths",
           "exact path and query parameters, required JSON bodies, success response schemas, and pagination metadata",
           "declared Statsig Console API server https://statsigapi.net"
         ],
@@ -16,7 +16,7 @@
         "openapi": "3.0.0",
         "title": "Console API",
         "api_version": "20240601.0.0",
-        "official_path_count": 201,
+        "official_path_count": 206,
         "declared_server": [
           {
             "url": "https://statsigapi.net"
@@ -64,14 +64,14 @@
         "extraction_end_marker": "\n\n================================================================================\n"
       }
     },
-    "official_operation_count": 313,
-    "admitted_operation_count": 313,
+    "official_operation_count": 321,
+    "admitted_operation_count": 321,
     "exclusion_count": 0,
     "official_method_counts": {
-      "DELETE": 37,
-      "GET": 123,
-      "PATCH": 31,
-      "POST": 75,
+      "DELETE": 41,
+      "GET": 124,
+      "PATCH": 32,
+      "POST": 77,
       "PUT": 47
     },
     "pack_operation_counts": {
@@ -79,8 +79,8 @@
       "statsig-dynamic-config-layers": 37,
       "statsig-experiment-lifecycle": 34,
       "statsig-experiment-analytics": 29,
-      "statsig-metrics-autotunes-holdouts": 48,
-      "statsig-audiences-prompts-metadata": 41,
+      "statsig-metrics-autotunes-holdouts": 55,
+      "statsig-audiences-prompts-metadata": 42,
       "statsig-observability-ingestion-release": 49,
       "statsig-project-access-admin": 37
     },
@@ -89,43 +89,43 @@
       "statsig-dynamic-config-layers": 108551,
       "statsig-experiment-lifecycle": 87249,
       "statsig-experiment-analytics": 70892,
-      "statsig-metrics-autotunes-holdouts": 136325,
-      "statsig-audiences-prompts-metadata": 95486,
-      "statsig-observability-ingestion-release": 127936,
+      "statsig-metrics-autotunes-holdouts": 152260,
+      "statsig-audiences-prompts-metadata": 96895,
+      "statsig-observability-ingestion-release": 128332,
       "statsig-project-access-admin": 75446
     },
     "body_mode_counts": {
-      "none": 186,
-      "raw_json": 127
+      "none": 191,
+      "raw_json": 130
     },
     "body_root_type_counts": {
       "array": 1,
-      "object": 126
+      "object": 129
     },
     "body_schema_shape_counts": {
       "array": 1,
-      "object": 120,
+      "object": 123,
       "oneOf": 6
     },
-    "required_body_count": 127,
+    "required_body_count": 130,
     "risk_counts": {
       "admin": 57,
-      "destructive": 133,
-      "read": 123
+      "destructive": 140,
+      "read": 124
     },
     "approval_counts": {
-      "always": 190,
-      "never": 123
+      "always": 197,
+      "never": 124
     },
     "idempotency_counts": {
-      "idempotent": 94,
-      "non_idempotent": 96,
-      "safe": 123
+      "idempotent": 99,
+      "non_idempotent": 98,
+      "safe": 124
     },
     "response_mode_counts": {
       "empty": 3,
       "file_ref": 1,
-      "json": 309
+      "json": 317
     },
     "pagination": {
       "automatic_operation_count": 48,
@@ -210,7 +210,7 @@
         }
       },
       "origin_matching": "fixed statsigapi.net host; per_org vendor-tag matching is deliberately disabled",
-      "explicitly_secured_operation_count": 313,
+      "explicitly_secured_operation_count": 321,
       "credential_fields_in_pack_args": 0,
       "static_version_header": {
         "STATSIG-API-VERSION": "20240601"
@@ -221,7 +221,7 @@
       "generated_operation_id_formula": "<snake_primary_tag>.<snake_http_method_and_official_summary>",
       "generated_operation_ids_unique": true,
       "exact_path_parameter_contract": true,
-      "exact_json_content_type_operation_count": 127,
+      "exact_json_content_type_operation_count": 130,
       "pagination_owned_parameters": [
         "GET /console/v1/alerts/{id}/events:limit",
         "GET /console/v1/alerts/{id}/events:page",
@@ -436,7 +436,7 @@
       },
       {
         "severity": "medium",
-        "finding": "The official OpenAPI defines no operationId for any of its 313 operations.",
+        "finding": "The official OpenAPI defines no operationId for any of its 321 operations.",
         "resolution": "Derives deterministic names from the primary official tag, HTTP method, and official summary, proves uniqueness across the complete pinned inventory, and records the formula and IDs in the fixture."
       },
       {
@@ -451,7 +451,7 @@
       },
       {
         "severity": "medium",
-        "finding": "All 127 request bodies are required JSON: 120 object schemas, six object-union schemas, and one array schema.",
+        "finding": "All 130 request bodies are required JSON: 123 object schemas, six object-union schemas, and one array schema.",
         "resolution": "Every body uses required bounded body_raw with an authority-derived object or array wire-root pattern, preserving union branches, nested fields, nulls, and exact integer lexemes."
       },
       {
@@ -981,7 +981,7 @@
         }
       }
     ],
-    "operation_ids_sha256": "c14be0e711226737c6be32c01f6bb824ef3ff6e04518298687d0a8e212771239"
+    "operation_ids_sha256": "791cacdb7bdfc8639059a488ccd7f9cf45183fa1b5f7412c07276d3b438699aa"
   },
   "official_operations": [
     {
@@ -1541,6 +1541,212 @@
       "op": "autotunes.put_finish_experiment_early"
     },
     {
+      "key": "GET /console/v1/autotunes/{id}/overrides",
+      "method": "GET",
+      "path": "/console/v1/autotunes/{id}/overrides",
+      "primary_tag": "Autotunes",
+      "tags": [
+        "Autotunes"
+      ],
+      "summary": "Get Autotune Overrides",
+      "official_operation_id": null,
+      "generated_operation_id": "autotunes.get_get_autotune_overrides",
+      "deprecated": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "statsig-metrics-autotunes-holdouts",
+      "op": "autotunes.get_get_autotune_overrides"
+    },
+    {
+      "key": "POST /console/v1/autotunes/{id}/overrides",
+      "method": "POST",
+      "path": "/console/v1/autotunes/{id}/overrides",
+      "primary_tag": "Autotunes",
+      "tags": [
+        "Autotunes"
+      ],
+      "summary": "Update Autotune Overrides",
+      "official_operation_id": null,
+      "generated_operation_id": "autotunes.post_update_autotune_overrides",
+      "deprecated": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_shape": "object",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "statsig-metrics-autotunes-holdouts",
+      "op": "autotunes.post_update_autotune_overrides"
+    },
+    {
+      "key": "PATCH /console/v1/autotunes/{id}/overrides",
+      "method": "PATCH",
+      "path": "/console/v1/autotunes/{id}/overrides",
+      "primary_tag": "Autotunes",
+      "tags": [
+        "Autotunes"
+      ],
+      "summary": "Partially Update Autotune Overrides",
+      "official_operation_id": null,
+      "generated_operation_id": "autotunes.patch_partially_update_autotune_overrides",
+      "deprecated": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_shape": "object",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "statsig-metrics-autotunes-holdouts",
+      "op": "autotunes.patch_partially_update_autotune_overrides"
+    },
+    {
+      "key": "DELETE /console/v1/autotunes/{id}/overrides",
+      "method": "DELETE",
+      "path": "/console/v1/autotunes/{id}/overrides",
+      "primary_tag": "Autotunes",
+      "tags": [
+        "Autotunes"
+      ],
+      "summary": "Delete Autotune Overrides",
+      "official_operation_id": null,
+      "generated_operation_id": "autotunes.delete_delete_autotune_overrides",
+      "deprecated": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "statsig-metrics-autotunes-holdouts",
+      "op": "autotunes.delete_delete_autotune_overrides"
+    },
+    {
+      "key": "DELETE /console/v1/autotunes/{id}/overrides/conditional/{type}/{name}",
+      "method": "DELETE",
+      "path": "/console/v1/autotunes/{id}/overrides/conditional/{type}/{name}",
+      "primary_tag": "Autotunes",
+      "tags": [
+        "Autotunes"
+      ],
+      "summary": "Delete a Single Autotune Override",
+      "official_operation_id": null,
+      "generated_operation_id": "autotunes.delete_delete_a_single_autotune_override",
+      "deprecated": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "statsig-metrics-autotunes-holdouts",
+      "op": "autotunes.delete_delete_a_single_autotune_override"
+    },
+    {
+      "key": "DELETE /console/v1/autotunes/{id}/overrides/userID/{userID}",
+      "method": "DELETE",
+      "path": "/console/v1/autotunes/{id}/overrides/userID/{userID}",
+      "primary_tag": "Autotunes",
+      "tags": [
+        "Autotunes"
+      ],
+      "summary": "Delete a Single Autotune User ID Override",
+      "official_operation_id": null,
+      "generated_operation_id": "autotunes.delete_delete_a_single_autotune_user_id_override",
+      "deprecated": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "statsig-metrics-autotunes-holdouts",
+      "op": "autotunes.delete_delete_a_single_autotune_user_id_override"
+    },
+    {
       "key": "PUT /console/v1/autotunes/{id}/reset",
       "method": "PUT",
       "path": "/console/v1/autotunes/{id}/reset",
@@ -1852,6 +2058,43 @@
       "exclusion_reason": null,
       "pack": "statsig-metrics-autotunes-holdouts",
       "op": "autotunes.put_reject_autotune_review"
+    },
+    {
+      "key": "POST /console/v1/autotunes/{id}/schedule_start",
+      "method": "POST",
+      "path": "/console/v1/autotunes/{id}/schedule_start",
+      "primary_tag": "Autotunes",
+      "tags": [
+        "Autotunes"
+      ],
+      "summary": "Schedule Autotune Start",
+      "official_operation_id": null,
+      "generated_operation_id": "autotunes.post_schedule_autotune_start",
+      "deprecated": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_shape": "object",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "statsig-metrics-autotunes-holdouts",
+      "op": "autotunes.post_schedule_autotune_start"
     },
     {
       "key": "PUT /console/v1/autotunes/{id}/start",
@@ -10586,6 +10829,39 @@
       "op": "segments.patch_remove_ids_from_user_store_id_list"
     },
     {
+      "key": "DELETE /console/v1/segments/{id}/reviews/{reviewID}",
+      "method": "DELETE",
+      "path": "/console/v1/segments/{id}/reviews/{reviewID}",
+      "primary_tag": "Segments",
+      "tags": [
+        "Segments"
+      ],
+      "summary": "Cancel Segment Review",
+      "official_operation_id": null,
+      "generated_operation_id": "segments.delete_cancel_segment_review",
+      "deprecated": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "statsig-audiences-prompts-metadata",
+      "op": "segments.delete_cancel_segment_review"
+    },
+    {
       "key": "PUT /console/v1/segments/{id}/reviews/{reviewID}/commit",
       "method": "PUT",
       "path": "/console/v1/segments/{id}/reviews/{reviewID}/commit",
@@ -11954,6 +12230,308 @@
         }
       ],
       "response_schema_sha256": "e198a4761daed59654606a0e6d529477af19d8f6c9c0ea6139b8f91562f6aa39"
+    },
+    "DELETE /console/v1/autotunes/{id}/overrides": {
+      "key": "DELETE /console/v1/autotunes/{id}/overrides",
+      "generated_operation_id": "autotunes.delete_delete_autotune_overrides",
+      "pack": "statsig-metrics-autotunes-holdouts",
+      "op": "autotunes.delete_delete_autotune_overrides",
+      "method": "DELETE",
+      "path": "/console/v1/autotunes/{id}/overrides",
+      "primary_tag": "Autotunes",
+      "tags": [
+        "Autotunes"
+      ],
+      "summary": "Delete Autotune Overrides",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_body_mode": "json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "response_schema_sha256": "dd077c9808aa8e61d5bc7b48d17c778250a27a138ef394a2c6ff555491759423"
+    },
+    "DELETE /console/v1/autotunes/{id}/overrides/conditional/{type}/{name}": {
+      "key": "DELETE /console/v1/autotunes/{id}/overrides/conditional/{type}/{name}",
+      "generated_operation_id": "autotunes.delete_delete_a_single_autotune_override",
+      "pack": "statsig-metrics-autotunes-holdouts",
+      "op": "autotunes.delete_delete_a_single_autotune_override",
+      "method": "DELETE",
+      "path": "/console/v1/autotunes/{id}/overrides/conditional/{type}/{name}",
+      "primary_tag": "Autotunes",
+      "tags": [
+        "Autotunes"
+      ],
+      "summary": "Delete a Single Autotune Override",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "path",
+          "wire_name": "type",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "type",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "path",
+          "wire_name": "name",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "name",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "groupID",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.groupID",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "environment",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.environment",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_body_mode": "json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "response_schema_sha256": "dd077c9808aa8e61d5bc7b48d17c778250a27a138ef394a2c6ff555491759423"
+    },
+    "DELETE /console/v1/autotunes/{id}/overrides/userID/{userID}": {
+      "key": "DELETE /console/v1/autotunes/{id}/overrides/userID/{userID}",
+      "generated_operation_id": "autotunes.delete_delete_a_single_autotune_user_id_override",
+      "pack": "statsig-metrics-autotunes-holdouts",
+      "op": "autotunes.delete_delete_a_single_autotune_user_id_override",
+      "method": "DELETE",
+      "path": "/console/v1/autotunes/{id}/overrides/userID/{userID}",
+      "primary_tag": "Autotunes",
+      "tags": [
+        "Autotunes"
+      ],
+      "summary": "Delete a Single Autotune User ID Override",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "path",
+          "wire_name": "userID",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "userID",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "groupID",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.groupID",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "unitType",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.unitType",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "query",
+          "wire_name": "environment",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "query.environment",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_body_mode": "json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "response_schema_sha256": "dd077c9808aa8e61d5bc7b48d17c778250a27a138ef394a2c6ff555491759423"
     },
     "DELETE /console/v1/autotunes/{id}/reviews/{reviewID}": {
       "key": "DELETE /console/v1/autotunes/{id}/reviews/{reviewID}",
@@ -14192,6 +14770,80 @@
       ],
       "response_schema_sha256": "e198a4761daed59654606a0e6d529477af19d8f6c9c0ea6139b8f91562f6aa39"
     },
+    "DELETE /console/v1/segments/{id}/reviews/{reviewID}": {
+      "key": "DELETE /console/v1/segments/{id}/reviews/{reviewID}",
+      "generated_operation_id": "segments.delete_cancel_segment_review",
+      "pack": "statsig-audiences-prompts-metadata",
+      "op": "segments.delete_cancel_segment_review",
+      "method": "DELETE",
+      "path": "/console/v1/segments/{id}/reviews/{reviewID}",
+      "primary_tag": "Segments",
+      "tags": [
+        "Segments"
+      ],
+      "summary": "Cancel Segment Review",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        },
+        {
+          "in": "path",
+          "wire_name": "reviewID",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "reviewID",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_body_mode": "json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "response_schema_sha256": "e198a4761daed59654606a0e6d529477af19d8f6c9c0ea6139b8f91562f6aa39"
+    },
     "DELETE /console/v1/tags/{id}": {
       "key": "DELETE /console/v1/tags/{id}",
       "generated_operation_id": "tags.delete_delete_tag",
@@ -15035,7 +15687,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "9f3ba6c7f700267363a34437eff0ed36f325afb02a2903c370071816ceadfad2"
+      "response_schema_sha256": "d5cff5be90d5cefc3976a69ebef27709581d5b4e202a29099a776c7ea226c036"
     },
     "GET /console/v1/autotunes": {
       "key": "GET /console/v1/autotunes",
@@ -15189,6 +15841,64 @@
         }
       ],
       "response_schema_sha256": "e4a8ff07936928b97fa36accf02283780e913e1b876be150363b87b46c5d1207"
+    },
+    "GET /console/v1/autotunes/{id}/overrides": {
+      "key": "GET /console/v1/autotunes/{id}/overrides",
+      "generated_operation_id": "autotunes.get_get_autotune_overrides",
+      "pack": "statsig-metrics-autotunes-holdouts",
+      "op": "autotunes.get_get_autotune_overrides",
+      "method": "GET",
+      "path": "/console/v1/autotunes/{id}/overrides",
+      "primary_tag": "Autotunes",
+      "tags": [
+        "Autotunes"
+      ],
+      "summary": "Get Autotune Overrides",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "request_body_types": [],
+      "request_body_shape": null,
+      "request_body_mode": "none",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_body_mode": "json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "response_schema_sha256": "dd077c9808aa8e61d5bc7b48d17c778250a27a138ef394a2c6ff555491759423"
     },
     "GET /console/v1/autotunes/{id}/reviews": {
       "key": "GET /console/v1/autotunes/{id}/reviews",
@@ -23604,7 +24314,7 @@
           "STATSIG-API-KEY": []
         }
       ],
-      "response_schema_sha256": "b17711fdec6c5c35a90e9966d2a2d45ea9a4c893e102589a0dbbe4432f302c0f"
+      "response_schema_sha256": "3698d45f30f98588139509ecc275fe1cbc9ccfff54dbbd4b97fddcffab6a4d96"
     },
     "GET /console/v1/param_stores": {
       "key": "GET /console/v1/param_stores",
@@ -26113,6 +26823,68 @@
       ],
       "response_schema_sha256": "e4a8ff07936928b97fa36accf02283780e913e1b876be150363b87b46c5d1207"
     },
+    "PATCH /console/v1/autotunes/{id}/overrides": {
+      "key": "PATCH /console/v1/autotunes/{id}/overrides",
+      "generated_operation_id": "autotunes.patch_partially_update_autotune_overrides",
+      "pack": "statsig-metrics-autotunes-holdouts",
+      "op": "autotunes.patch_partially_update_autotune_overrides",
+      "method": "PATCH",
+      "path": "/console/v1/autotunes/{id}/overrides",
+      "primary_tag": "Autotunes",
+      "tags": [
+        "Autotunes"
+      ],
+      "summary": "Partially Update Autotune Overrides",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_shape": "object",
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_body_mode": "json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "response_schema_sha256": "dd077c9808aa8e61d5bc7b48d17c778250a27a138ef394a2c6ff555491759423"
+    },
     "PATCH /console/v1/change_validation/message": {
       "key": "PATCH /console/v1/change_validation/message",
       "generated_operation_id": "change_validation.patch_update_change_validation_message",
@@ -28147,6 +28919,68 @@
       ],
       "response_schema_sha256": "e4a8ff07936928b97fa36accf02283780e913e1b876be150363b87b46c5d1207"
     },
+    "POST /console/v1/autotunes/{id}/overrides": {
+      "key": "POST /console/v1/autotunes/{id}/overrides",
+      "generated_operation_id": "autotunes.post_update_autotune_overrides",
+      "pack": "statsig-metrics-autotunes-holdouts",
+      "op": "autotunes.post_update_autotune_overrides",
+      "method": "POST",
+      "path": "/console/v1/autotunes/{id}/overrides",
+      "primary_tag": "Autotunes",
+      "tags": [
+        "Autotunes"
+      ],
+      "summary": "Update Autotune Overrides",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_shape": "object",
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_body_mode": "json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "response_schema_sha256": "dd077c9808aa8e61d5bc7b48d17c778250a27a138ef394a2c6ff555491759423"
+    },
     "POST /console/v1/autotunes/{id}/reviews": {
       "key": "POST /console/v1/autotunes/{id}/reviews",
       "generated_operation_id": "autotunes.post_create_autotune_review",
@@ -28208,6 +29042,68 @@
         }
       ],
       "response_schema_sha256": "44488d283a180528c6f50b1b8e9571ac1d3abdbb561faeb936bafdf66208ce92"
+    },
+    "POST /console/v1/autotunes/{id}/schedule_start": {
+      "key": "POST /console/v1/autotunes/{id}/schedule_start",
+      "generated_operation_id": "autotunes.post_schedule_autotune_start",
+      "pack": "statsig-metrics-autotunes-holdouts",
+      "op": "autotunes.post_schedule_autotune_start",
+      "method": "POST",
+      "path": "/console/v1/autotunes/{id}/schedule_start",
+      "primary_tag": "Autotunes",
+      "tags": [
+        "Autotunes"
+      ],
+      "summary": "Schedule Autotune Start",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "id",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "official_format": null,
+          "admitted_key": "id",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "exact_integer": false,
+          "admitted_pattern": null
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_shape": "object",
+      "request_body_mode": "raw_json",
+      "success_statuses": [
+        "200"
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "response_body_mode": "json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination_kind": null,
+      "pagination": null,
+      "sensitive_request": false,
+      "sensitive_response": false,
+      "security": [
+        {
+          "STATSIG-API-KEY": []
+        }
+      ],
+      "response_schema_sha256": "e198a4761daed59654606a0e6d529477af19d8f6c9c0ea6139b8f91562f6aa39"
     },
     "POST /console/v1/change_validation": {
       "key": "POST /console/v1/change_validation",

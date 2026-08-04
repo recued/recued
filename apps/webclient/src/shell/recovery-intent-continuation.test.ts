@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   createRecoveryIntentContinuationStore,
+  createRecoveryIntentDeferredCheckStore,
   RECOVERY_INTENT_CONTINUATION_MAX_AGE_MS,
   RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+  RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
   RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
 } from './recovery-intent-continuation.js';
 
@@ -298,6 +300,375 @@ describe('paused recovery-intent continuation', () => {
       ...restored,
       state: 'checking',
     });
+  });
+
+  it('persists a bounded quiet deferral without the prior intent or review material', () => {
+    const storage = memoryStorage();
+    let now = 1_000;
+    const continuationStore = createRecoveryIntentContinuationStore({
+      storage,
+      now: () => now,
+      maxAgeMs: 1_000,
+    });
+    const deferredStore = createRecoveryIntentDeferredCheckStore({
+      storage,
+      now: () => now,
+      maxAgeMs: 1_000,
+      handoffMaxAgeMs: 500,
+    });
+    const marker = continuationStore.arm({
+      profileId: 'profile-home',
+      landingHash: '#contracts',
+      intent: 'choose_again',
+    })!;
+    continuationStore.prepareReviewVerification(marker);
+
+    now = 1_200;
+    const deferred = deferredStore.defer(marker);
+    expect(deferred).toEqual({
+      profileId: 'profile-home',
+      landingHash: '#contracts',
+      pausedAt: 1_000,
+      deferredAt: 1_200,
+      expiresAt: 2_000,
+      handoffExpiresAt: 2_500,
+      reviewStartedAt: null,
+      attemptCount: 0,
+      diagnosisTarget: null,
+      diagnosisOutcome: null,
+    });
+    const raw = storage.data.get(
+      RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+    )!;
+    expect(JSON.parse(raw)).toEqual({
+      v: 4,
+      profile_id: 'profile-home',
+      landing_hash: '#contracts',
+      paused_at: 1_000,
+      deferred_at: 1_200,
+      review_started_at: null,
+      attempt_count: 0,
+      diagnosis_target: null,
+      diagnosis_outcome: null,
+    });
+    expect(raw).not.toMatch(
+      /intent|choose|receipt|credential|error|record|provider|review_target/i,
+    );
+
+    now = 1_500;
+    expect(deferredStore.defer(marker)).toEqual(deferred);
+    const reloaded = createRecoveryIntentDeferredCheckStore({
+      storage,
+      now: () => now,
+      maxAgeMs: 1_000,
+      handoffMaxAgeMs: 500,
+    });
+    expect(reloaded.readForProfile('profile-home')).toEqual(deferred);
+
+    // The exact return is now stale, but its intent-free broad-area handoff
+    // remains briefly available and then retires itself.
+    now = 2_001;
+    const started = reloaded.markReviewStarted(deferred!);
+    expect(started).toEqual({
+      ...deferred!,
+      reviewStartedAt: 2_001,
+      attemptCount: 1,
+    });
+    expect(JSON.parse(storage.data.get(
+      RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+    )!)).toEqual({
+      v: 4,
+      profile_id: 'profile-home',
+      landing_hash: '#contracts',
+      paused_at: 1_000,
+      deferred_at: 1_200,
+      review_started_at: 2_001,
+      attempt_count: 1,
+      diagnosis_target: null,
+      diagnosis_outcome: null,
+    });
+    const retryReloaded = createRecoveryIntentDeferredCheckStore({
+      storage,
+      now: () => now,
+      maxAgeMs: 1_000,
+      handoffMaxAgeMs: 500,
+    });
+    expect(retryReloaded.readForProfile('profile-home')).toEqual(started);
+    const secondAttempt = retryReloaded.markReviewStarted(started!);
+    expect(secondAttempt).toEqual({
+      ...started!,
+      attemptCount: 2,
+    });
+    const bounded = retryReloaded.recordReviewFailure(
+      secondAttempt!,
+      'area',
+    );
+    expect(bounded).toEqual({
+      ...secondAttempt!,
+      diagnosisTarget: 'area',
+    });
+    expect(retryReloaded.recordReviewFailure(
+      secondAttempt!,
+      'server',
+    )).toEqual(bounded);
+    expect(retryReloaded.recordDiagnosisOutcome(bounded!)).toBeNull();
+    expect(storage.data.get(
+      RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+    )).not.toMatch(/credential|receipt|record|provider|error/i);
+    now = 2_500;
+    expect(retryReloaded.readForProfile('profile-home')).toBeNull();
+    expect(storage.data.has(
+      RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+    )).toBe(false);
+
+    now = 2_000;
+    expect(deferredStore.defer(marker)).toBeNull();
+  });
+
+  it('restores a legacy deferred marker without inventing a retry', () => {
+    const storage = memoryStorage();
+    storage.setItem(
+      'recued.webclient.recovery-intent-deferred-check.v1',
+      JSON.stringify({
+        v: 1,
+        profile_id: 'profile-home',
+        landing_hash: '#contracts',
+        paused_at: 1_000,
+        deferred_at: 1_200,
+      }),
+    );
+    const store = createRecoveryIntentDeferredCheckStore({
+      storage,
+      now: () => 2_001,
+      maxAgeMs: 1_000,
+      handoffMaxAgeMs: 500,
+    });
+
+    expect(store.readForProfile('profile-home')).toEqual({
+      profileId: 'profile-home',
+      landingHash: '#contracts',
+      pausedAt: 1_000,
+      deferredAt: 1_200,
+      expiresAt: 2_000,
+      handoffExpiresAt: 2_500,
+      reviewStartedAt: null,
+      attemptCount: 0,
+      diagnosisTarget: null,
+      diagnosisOutcome: null,
+    });
+  });
+
+  it('migrates a v2 started review into the first bounded attempt', () => {
+    const storage = memoryStorage();
+    storage.setItem(
+      'recued.webclient.recovery-intent-deferred-check.v2',
+      JSON.stringify({
+        v: 2,
+        profile_id: 'profile-home',
+        landing_hash: '#contracts',
+        paused_at: 1_000,
+        deferred_at: 1_200,
+        review_started_at: 2_001,
+      }),
+    );
+    const store = createRecoveryIntentDeferredCheckStore({
+      storage,
+      now: () => 2_002,
+      maxAgeMs: 1_000,
+      handoffMaxAgeMs: 500,
+    });
+
+    const migrated = store.readForProfile('profile-home');
+    expect(migrated).toMatchObject({
+      reviewStartedAt: 2_001,
+      attemptCount: 1,
+      diagnosisTarget: null,
+    });
+    const secondAttempt = store.markReviewStarted(migrated!);
+    expect(secondAttempt?.attemptCount).toBe(2);
+    expect(store.recordReviewFailure(
+      secondAttempt!,
+      'server',
+    )?.diagnosisTarget).toBe('server');
+    expect(JSON.parse(storage.getItem(
+      RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+    )!)).toMatchObject({
+      v: 4,
+      attempt_count: 2,
+      diagnosis_target: 'server',
+      diagnosis_outcome: null,
+    });
+    expect(storage.getItem(
+      'recued.webclient.recovery-intent-deferred-check.v2',
+    )).toBeNull();
+  });
+
+  it('offers and consumes one privacy-safe recheck after server diagnosis', () => {
+    const storage = memoryStorage();
+    storage.setItem(
+      'recued.webclient.recovery-intent-deferred-check.v3',
+      JSON.stringify({
+        v: 3,
+        profile_id: 'profile-home',
+        landing_hash: '#contracts',
+        paused_at: 1_000,
+        deferred_at: 1_200,
+        review_started_at: 2_001,
+        attempt_count: 2,
+        diagnosis_target: 'server',
+      }),
+    );
+    const store = createRecoveryIntentDeferredCheckStore({
+      storage,
+      now: () => 2_002,
+      maxAgeMs: 1_000,
+      handoffMaxAgeMs: 500,
+    });
+
+    const diagnosed = store.readForProfile('profile-home');
+    expect(diagnosed).toMatchObject({
+      attemptCount: 2,
+      diagnosisTarget: 'server',
+      diagnosisOutcome: null,
+    });
+    const choice = store.recordDiagnosisOutcome(diagnosed!);
+    expect(choice?.diagnosisOutcome).toBe('choose');
+    const started = store.markDiagnosisRecheckStarted(choice!);
+    expect(started?.diagnosisOutcome).toBe('recheck_started');
+    expect(store.markDiagnosisRecheckStarted(choice!)).toEqual(started);
+    const failed = store.recordDiagnosisRecheckFailure(started!, 'area');
+    expect(failed?.diagnosisOutcome).toBe('area_unconfirmed');
+    expect(store.markDiagnosisRecheckStarted(failed!)).toBeNull();
+    expect(JSON.parse(storage.getItem(
+      RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+    )!)).toEqual({
+      v: 4,
+      profile_id: 'profile-home',
+      landing_hash: '#contracts',
+      paused_at: 1_000,
+      deferred_at: 1_200,
+      review_started_at: 2_001,
+      attempt_count: 2,
+      diagnosis_target: 'server',
+      diagnosis_outcome: 'area_unconfirmed',
+    });
+    expect(storage.getItem(
+      RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+    )).not.toMatch(/intent|credential|receipt|record|provider|error/i);
+    expect(storage.getItem(
+      'recued.webclient.recovery-intent-deferred-check.v3',
+    )).toBeNull();
+  });
+
+  it('rejects malformed, detailed, and cross-profile deferred checks', () => {
+    const invalid: unknown[] = [
+      {
+        v: 1,
+        profile_id: 'profile-home',
+        landing_hash: '#contracts/private-contract',
+        paused_at: 1_000,
+        deferred_at: 1_100,
+      },
+      {
+        v: 1,
+        profile_id: 'profile-home',
+        landing_hash: '#contracts',
+        paused_at: 1_000,
+        deferred_at: 1_100,
+        intent: 'choose_again',
+      },
+      {
+        v: 1,
+        profile_id: 'profile-home',
+        landing_hash: '#contracts',
+        paused_at: 1_000,
+        deferred_at: 2_001,
+      },
+      {
+        v: 2,
+        profile_id: 'profile-home',
+        landing_hash: '#contracts',
+        paused_at: 1_000,
+        deferred_at: 1_100,
+        review_started_at: 2_001,
+      },
+      {
+        v: 2,
+        profile_id: 'profile-home',
+        landing_hash: '#contracts',
+        paused_at: 1_000,
+        deferred_at: 1_100,
+        review_started_at: null,
+        error: 'private transport detail',
+      },
+      {
+        v: 3,
+        profile_id: 'profile-home',
+        landing_hash: '#contracts',
+        paused_at: 1_000,
+        deferred_at: 1_100,
+        review_started_at: 2_001,
+        attempt_count: 1,
+        diagnosis_target: 'server',
+      },
+      {
+        v: 4,
+        profile_id: 'profile-home',
+        landing_hash: '#contracts',
+        paused_at: 1_000,
+        deferred_at: 1_100,
+        review_started_at: 2_001,
+        attempt_count: 2,
+        diagnosis_target: 'area',
+        diagnosis_outcome: 'choose',
+      },
+      {
+        v: 4,
+        profile_id: 'profile-home',
+        landing_hash: '#contracts',
+        paused_at: 1_000,
+        deferred_at: 1_100,
+        review_started_at: 2_001,
+        attempt_count: 2,
+        diagnosis_target: 'server',
+        diagnosis_outcome: 'choose',
+        error: 'private transport detail',
+      },
+    ];
+    for (const value of invalid) {
+      const storage = memoryStorage();
+      storage.setItem(
+        RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+        JSON.stringify(value),
+      );
+      const store = createRecoveryIntentDeferredCheckStore({
+        storage,
+        now: () => 1_500,
+        maxAgeMs: 1_000,
+      });
+      expect(store.readForProfile('profile-home')).toBeNull();
+      expect(storage.data.has(
+        RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+      )).toBe(false);
+    }
+
+    const storage = memoryStorage();
+    const store = createRecoveryIntentDeferredCheckStore({
+      storage,
+      now: () => 1_000,
+      maxAgeMs: 1_000,
+    });
+    expect(store.defer({
+      profileId: 'profile-home',
+      landingHash: '#contracts',
+      intent: 'continue',
+      pausedAt: 1_000,
+      expiresAt: 2_000,
+    })).not.toBeNull();
+    expect(store.readForProfile('profile-office')).toBeNull();
+    expect(storage.data.has(
+      RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+    )).toBe(false);
   });
 
   it('caps repeated interruption attempts and deduplicates duplicate signals', () => {

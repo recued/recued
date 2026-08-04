@@ -268,6 +268,34 @@ export const mountClearThisBrowserPanel = (
   wrapper.className = 'clear-this-browser-panel';
   opts.host.appendChild(wrapper);
 
+  const findElement = (attr: string): HTMLElement | null => {
+    const walk = (node: HTMLElement): HTMLElement | null => {
+      if (typeof node.hasAttribute === 'function' && node.hasAttribute(attr)) {
+        return node;
+      }
+      const kids =
+        (node as unknown as { children?: ArrayLike<HTMLElement> }).children ??
+        (node as unknown as { childList?: ArrayLike<HTMLElement> }).childList;
+      if (!kids) return null;
+      for (let index = 0; index < kids.length; index += 1) {
+        const hit = walk(kids[index] as HTMLElement);
+        if (hit) return hit;
+      }
+      return null;
+    };
+    return walk(wrapper as HTMLElement);
+  };
+
+  const elementHasFocus = (attr: string): boolean => {
+    const active = (doc as Document & { activeElement?: Element | null })
+      .activeElement;
+    return active?.hasAttribute?.(attr) === true;
+  };
+
+  const focusElement = (attr: string): void => {
+    findElement(attr)?.focus?.();
+  };
+
   // ── Transitions ──────────────────────────────────────────────────
   const transitionTo = (next: ClearThisBrowserPanelState): void => {
     if (disposed) return;
@@ -276,9 +304,10 @@ export const mountClearThisBrowserPanel = (
     render();
   };
 
-  const runClear = async (): Promise<void> => {
+  const runClear = async (returnFromConfirm = false): Promise<void> => {
     if (disposed) return;
     transitionTo('busy');
+    if (returnFromConfirm) focusElement(CLEAR_THIS_BROWSER_STATUS_ATTR);
     try {
       const clearOpts: Parameters<typeof clearThisBrowser>[0] = {
         local_store: opts.localStore,
@@ -314,7 +343,9 @@ export const mountClearThisBrowserPanel = (
       lastResult = result;
       lastSwUnregistered = sw_unregistered;
       lastError = '';
+      const returnToResult = elementHasFocus(CLEAR_THIS_BROWSER_STATUS_ATTR);
       transitionTo('done');
+      if (returnToResult) focusElement(CLEAR_THIS_BROWSER_STATUS_ATTR);
       if (opts.onCleared) {
         try {
           opts.onCleared(result, sw_unregistered);
@@ -324,7 +355,9 @@ export const mountClearThisBrowserPanel = (
       }
     } catch (err) {
       lastError = humanizeRpcError(err);
+      const returnToError = elementHasFocus(CLEAR_THIS_BROWSER_STATUS_ATTR);
       transitionTo('error');
+      if (returnToError) focusElement(CLEAR_THIS_BROWSER_STATUS_ATTR);
     }
   };
 
@@ -362,8 +395,19 @@ export const mountClearThisBrowserPanel = (
     const actions = doc.createElement('div');
     actions.className = 'clear-this-browser-actions';
     actions.appendChild(
-      makeButton('Clear this browser', CLEAR_THIS_BROWSER_CLEAR_BTN_ATTR, 'danger', () =>
-        transitionTo('confirm'),
+      makeButton(
+        'Clear this browser',
+        CLEAR_THIS_BROWSER_CLEAR_BTN_ATTR,
+        'danger',
+        () => {
+          const returnToCancel = elementHasFocus(
+            CLEAR_THIS_BROWSER_CLEAR_BTN_ATTR,
+          );
+          transitionTo('confirm');
+          if (returnToCancel) {
+            focusElement(CLEAR_THIS_BROWSER_CANCEL_BTN_ATTR);
+          }
+        },
       ),
     );
 
@@ -386,13 +430,26 @@ export const mountClearThisBrowserPanel = (
     const actions = doc.createElement('div');
     actions.className = 'clear-this-browser-actions';
     actions.appendChild(
-      makeButton('Cancel', CLEAR_THIS_BROWSER_CANCEL_BTN_ATTR, 'secondary', () =>
-        transitionTo('idle'),
+      makeButton(
+        'Cancel',
+        CLEAR_THIS_BROWSER_CANCEL_BTN_ATTR,
+        'secondary',
+        () => {
+          const returnToClear = elementHasFocus(
+            CLEAR_THIS_BROWSER_CANCEL_BTN_ATTR,
+          );
+          transitionTo('idle');
+          if (returnToClear) {
+            focusElement(CLEAR_THIS_BROWSER_CLEAR_BTN_ATTR);
+          }
+        },
       ),
     );
     actions.appendChild(
       makeButton('Yes, clear', CLEAR_THIS_BROWSER_CONFIRM_BTN_ATTR, 'danger', () => {
-        pendingClearPromise = runClear();
+        pendingClearPromise = runClear(
+          elementHasFocus(CLEAR_THIS_BROWSER_CONFIRM_BTN_ATTR),
+        );
       }),
     );
 
@@ -410,6 +467,7 @@ export const mountClearThisBrowserPanel = (
     status.className = 'clear-this-browser-help clear-this-browser-help-busy';
     status.setAttribute(CLEAR_THIS_BROWSER_STATUS_ATTR, '');
     status.setAttribute('role', 'status');
+    status.setAttribute('tabindex', '-1');
     status.textContent = COPY.busy;
 
     const actions = doc.createElement('div');
@@ -445,6 +503,9 @@ export const mountClearThisBrowserPanel = (
     heading.textContent = COPY.done_heading;
 
     const subtitle = doc.createElement('p');
+    subtitle.setAttribute(CLEAR_THIS_BROWSER_STATUS_ATTR, '');
+    subtitle.setAttribute('role', 'status');
+    subtitle.setAttribute('tabindex', '-1');
     subtitle.className = 'clear-this-browser-help';
     subtitle.textContent = COPY.done_subtitle;
 
@@ -508,19 +569,42 @@ export const mountClearThisBrowserPanel = (
     const errBox = doc.createElement('p');
     errBox.setAttribute(CLEAR_THIS_BROWSER_STATUS_ATTR, '');
     errBox.setAttribute('role', 'alert');
+    errBox.setAttribute('tabindex', '-1');
     errBox.className = 'clear-this-browser-error';
     errBox.textContent = lastError;
 
     const actions = doc.createElement('div');
     actions.className = 'clear-this-browser-actions';
     actions.appendChild(
-      makeButton('Cancel', CLEAR_THIS_BROWSER_CANCEL_BTN_ATTR, 'secondary', () =>
-        transitionTo('idle'),
+      makeButton(
+        'Cancel',
+        CLEAR_THIS_BROWSER_CANCEL_BTN_ATTR,
+        'secondary',
+        () => {
+          const returnToClear = elementHasFocus(
+            CLEAR_THIS_BROWSER_CANCEL_BTN_ATTR,
+          );
+          transitionTo('idle');
+          if (returnToClear) {
+            focusElement(CLEAR_THIS_BROWSER_CLEAR_BTN_ATTR);
+          }
+        },
       ),
     );
     actions.appendChild(
-      makeButton('Retry', CLEAR_THIS_BROWSER_RETRY_BTN_ATTR, 'danger', () =>
-        transitionTo('confirm'),
+      makeButton(
+        'Retry',
+        CLEAR_THIS_BROWSER_RETRY_BTN_ATTR,
+        'danger',
+        () => {
+          const returnToCancel = elementHasFocus(
+            CLEAR_THIS_BROWSER_RETRY_BTN_ATTR,
+          );
+          transitionTo('confirm');
+          if (returnToCancel) {
+            focusElement(CLEAR_THIS_BROWSER_CANCEL_BTN_ATTR);
+          }
+        },
       ),
     );
 
@@ -575,28 +659,10 @@ export const mountClearThisBrowserPanel = (
   // is non-null keeps the seam compatible with both fakes + the real
   // DOM without dragging a shared fake-DOM helper into production code.
   const findBtn = (attr: string): HTMLButtonElement | null => {
-    const walk = (
-      node: HTMLElement,
-    ): HTMLButtonElement | null => {
-      if (
-        typeof node.hasAttribute === 'function' &&
-        node.hasAttribute(attr) &&
-        node.tagName === 'BUTTON'
-      ) {
-        return node as HTMLButtonElement;
-      }
-      const kids =
-        (node as unknown as { children?: ArrayLike<HTMLElement> }).children ??
-        (node as unknown as { childList?: ArrayLike<HTMLElement> }).childList;
-      if (!kids) return null;
-      const length = (kids as { length: number }).length;
-      for (let i = 0; i < length; i += 1) {
-        const hit = walk(kids[i] as HTMLElement);
-        if (hit) return hit;
-      }
-      return null;
-    };
-    return walk(wrapper as HTMLElement);
+    const element = findElement(attr);
+    return element?.tagName === 'BUTTON'
+      ? element as HTMLButtonElement
+      : null;
   };
 
   return {

@@ -34,6 +34,7 @@ export const DISCOVER_PANEL_SORT_ATTR = 'data-recued-discover-sort';
 export const DISCOVER_PANEL_FILTERS_ATTR = 'data-recued-discover-filters';
 export const DISCOVER_PANEL_GRID_ATTR = 'data-recued-discover-grid';
 export const DISCOVER_PANEL_PAGER_ATTR = 'data-recued-discover-pager';
+export const DISCOVER_PANEL_PAGE_ATTR = 'data-recued-discover-page';
 export const DISCOVER_PANEL_SUMMARY_ATTR = 'data-recued-discover-summary';
 export const DISCOVER_PANEL_STATUS_ATTR = 'data-recued-discover-status';
 export const DISCOVER_PANEL_CARD_ATTR = 'data-recued-discover-card';
@@ -223,6 +224,9 @@ export interface DiscoverPanelMount {
   setPage(page: number): void;
   /** Drive the card's action affordance — navigates (navigate mode) or installs. */
   clickInstall(id: string): Promise<void>;
+  /** Move focus to the current action replacement for a row. Used by a
+   *  handed-off consent dialog whose original opener was repainted. */
+  focusAction(id: string): boolean;
   /** Navigate mode — simulate a card-body click (fires `onSelect`). No-op when
    *  `onSelect` isn't wired. */
   clickSelect(id: string): void;
@@ -262,6 +266,8 @@ export const mountDiscoverPanel = <Row>(
   /** A search failed and the corpus took over. Sticky until `retry()` /
    *  `refresh()` — re-probing a down endpoint on every keystroke helps nobody. */
   let degraded = false;
+  let retrying = false;
+  let pendingRetryFocus = false;
   const debounceMs = opts.searchDebounceMs ?? DISCOVER_SEARCH_DEBOUNCE_MS;
   /** Server mode right now — false once degraded, so every downstream branch
    *  reads one predicate rather than re-deriving the condition. */
@@ -362,6 +368,10 @@ export const mountDiscoverPanel = <Row>(
   };
 
   let view: DiscoverView<Row> | null = null;
+  let renderedCards = new Map<string, HTMLElement>();
+  let renderedActions = new Map<string, HTMLElement>();
+  let renderedPageButtons = new Map<'prev' | 'next', HTMLButtonElement>();
+  let renderedRetry: HTMLButtonElement | null = null;
 
   /** The status line, optionally with an affordance that re-attempts the server.
    *  An error the user cannot act on is a dead end, and after stage 4 there is
@@ -372,6 +382,8 @@ export const mountDiscoverPanel = <Row>(
     kind: 'info' | 'error' | 'notice' = 'info',
     withRetry = false,
   ): void => {
+    const retryWasFocused = doc.activeElement === renderedRetry;
+    renderedRetry = null;
     clear(status);
     status.className =
       kind === 'error'
@@ -383,6 +395,8 @@ export const mountDiscoverPanel = <Row>(
     // Always stamped (never toggled off) so the hook reads the CURRENT kind
     // rather than the residue of a previous render.
     status.setAttribute(DISCOVER_PANEL_NOTICE_ATTR, kind);
+    status.setAttribute('role', kind === 'error' ? 'alert' : 'status');
+    status.setAttribute('aria-live', kind === 'error' ? 'assertive' : 'polite');
     if (text === '') return;
     const line = doc.createElement('span');
     line.className = 'discover-status-text';
@@ -396,13 +410,41 @@ export const mountDiscoverPanel = <Row>(
     retryBtn.type = 'button';
     retryBtn.setAttribute(DISCOVER_PANEL_RETRY_ATTR, '');
     retryBtn.className = 'discover-retry';
-    retryBtn.textContent = 'Retry';
+    retryBtn.textContent = retrying ? 'Retrying…' : 'Retry';
+    if (retrying) {
+      retryBtn.setAttribute('aria-disabled', 'true');
+      retryBtn.setAttribute('aria-busy', 'true');
+    }
     retryBtn.addEventListener('click', () => void retry());
     status.appendChild(retryBtn);
+    renderedRetry = retryBtn;
+    if (retryWasFocused) retryBtn.focus?.({ preventScroll: true });
+    if (
+      pendingRetryFocus
+      && !retrying
+      && (state === 'error' || degraded)
+    ) {
+      pendingRetryFocus = false;
+      retryBtn.focus?.({ preventScroll: true });
+    }
   };
 
   // ── Render ────────────────────────────────────────────────────────
   const renderFilters = (result: DiscoverView<Row>): void => {
+    // Facet changes repaint the complete chip set twice in server mode: once
+    // immediately, then again when the refreshed page lands. Remember the
+    // focused facet owner so a keyboard toggle stays on its replacement rather
+    // than being stranded on <body>. The same owner also covers collapsing a
+    // large-facet finder back to its freshly-created "Find more" button.
+    const focused = doc.activeElement as HTMLElement | null | undefined;
+    const focusedFacet = focused?.getAttribute?.('data-facet') ?? null;
+    const focusedValue = focused?.getAttribute?.('data-value') ?? null;
+    const focusedMore = focused?.getAttribute?.(
+      DISCOVER_PANEL_FACET_MORE_ATTR,
+    ) ?? null;
+    const focusOwner: { replacement: HTMLButtonElement | null } = {
+      replacement: null,
+    };
     clear(filters);
     for (const group of opts.filterGroups) {
       const values = result.facets[group.key] ?? [];
@@ -424,6 +466,9 @@ export const mountDiscoverPanel = <Row>(
         chip.setAttribute('data-facet', group.key);
         chip.setAttribute('data-value', fv.value);
         chip.textContent = `${facetLabel(group.key, fv.value)} ${fv.count}`;
+        if (focusedFacet === group.key && focusedValue === fv.value) {
+          focusOwner.replacement = chip;
+        }
         chip.addEventListener('click', (ev) => {
           ev.stopPropagation();
           toggleFilter(group.key, fv.value);
@@ -451,6 +496,7 @@ export const mountDiscoverPanel = <Row>(
         more.className = 'discover-chip discover-chip--more';
         more.setAttribute(DISCOVER_PANEL_FACET_MORE_ATTR, group.key);
         more.setAttribute('aria-expanded', String(expanded));
+        if (focusedMore === group.key) focusOwner.replacement = more;
         more.textContent = expanded
           ? `Hide ${group.label.toLocaleLowerCase()} finder`
           : `Find more ${group.label.toLocaleLowerCase()} values (${values.length - inlineValues.length})`;
@@ -522,6 +568,7 @@ export const mountDiscoverPanel = <Row>(
       }
       filters.appendChild(wrap);
     }
+    focusOwner.replacement?.focus?.({ preventScroll: true });
   };
 
   const renderSummary = (): void => {
@@ -545,6 +592,7 @@ export const mountDiscoverPanel = <Row>(
       badge.setAttribute('data-id', id);
       badge.className = 'discover-action discover-action--installed';
       badge.textContent = 'Installed ✓';
+      renderedActions.set(id, badge);
       return badge;
     }
     const btn = doc.createElement('button') as HTMLButtonElement;
@@ -553,7 +601,10 @@ export const mountDiscoverPanel = <Row>(
     btn.setAttribute('data-id', id);
     btn.setAttribute('data-state', st);
     const busy = installing.has(id);
-    btn.disabled = busy && navigate === undefined;
+    if (busy && navigate === undefined) {
+      btn.setAttribute('aria-disabled', 'true');
+      btn.setAttribute('aria-busy', 'true');
+    }
     if (st === 'update') {
       btn.className = 'discover-action discover-action--update';
       const from = installedLookup(id);
@@ -575,6 +626,7 @@ export const mountDiscoverPanel = <Row>(
       ev.stopPropagation();
       onActionClick(id);
     });
+    renderedActions.set(id, btn);
     return btn;
   };
 
@@ -595,6 +647,7 @@ export const mountDiscoverPanel = <Row>(
     card.setAttribute(DISCOVER_PANEL_CARD_ATTR, '');
     card.setAttribute('data-id', id);
     card.className = 'discover-card';
+    renderedCards.set(id, card);
     // Navigate mode — the whole card opens the detail. The "Installed ✓" badge
     // has no own handler, so its click bubbles here; the action button
     // stops-propagation + navigates itself (same destination).
@@ -610,6 +663,12 @@ export const mountDiscoverPanel = <Row>(
           opts.onSelect!(id);
         }
       });
+    } else if (installStateOf(row) === 'installed') {
+      // Installed inline cards are not Tab stops, but they are the durable
+      // completion receipt if their focused Install action becomes the
+      // non-interactive "Installed ✓" badge after reconciliation. Available
+      // cards remain unfocusable so retry completion still lands on Install.
+      card.setAttribute('tabindex', '-1');
     }
 
     const head = doc.createElement('div');
@@ -672,6 +731,8 @@ export const mountDiscoverPanel = <Row>(
     const prev = doc.createElement('button') as HTMLButtonElement;
     prev.type = 'button';
     prev.className = 'discover-page-btn';
+    prev.setAttribute(DISCOVER_PANEL_PAGE_ATTR, 'prev');
+    renderedPageButtons.set('prev', prev);
     prev.textContent = '‹ Prev';
     prev.disabled = result.page <= 1;
     prev.addEventListener('click', () => setPage(result.page - 1));
@@ -681,6 +742,8 @@ export const mountDiscoverPanel = <Row>(
     const next = doc.createElement('button') as HTMLButtonElement;
     next.type = 'button';
     next.className = 'discover-page-btn';
+    next.setAttribute(DISCOVER_PANEL_PAGE_ATTR, 'next');
+    renderedPageButtons.set('next', next);
     next.textContent = 'Next ›';
     next.disabled = result.page >= result.totalPages;
     next.addEventListener('click', () => setPage(result.page + 1));
@@ -716,12 +779,39 @@ export const mountDiscoverPanel = <Row>(
   // caller (chip clicks, install completion, broadcasts) for no benefit, and
   // would flash the grid on each keystroke.
   const render = (): void => {
+    const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    let focusedCardId: string | null = null;
+    let focusedActionId: string | null = null;
+    let focusedPageDirection: 'prev' | 'next' | null = null;
+    if (activeElement !== null && activeElement !== undefined) {
+      for (const [id, card] of renderedCards) {
+        if (card === activeElement) {
+          focusedCardId = id;
+          break;
+        }
+      }
+      for (const [id, action] of renderedActions) {
+        if (action === activeElement) {
+          focusedActionId = id;
+          break;
+        }
+      }
+      for (const [direction, button] of renderedPageButtons) {
+        if (button === activeElement) {
+          focusedPageDirection = direction;
+          break;
+        }
+      }
+    }
+    renderedCards = new Map();
+    renderedActions = new Map();
+    renderedPageButtons = new Map();
     if (state === 'loading') {
       clear(grid);
       clear(pager);
       clear(filters);
       summary.hidden = true;
-      setStatus(`Loading ${opts.copy.kindPlural}…`);
+      setStatus(`Loading ${opts.copy.kindPlural}…`, 'info', retrying);
       return;
     }
     if (state === 'error') {
@@ -765,6 +855,45 @@ export const mountDiscoverPanel = <Row>(
     }
     for (const row of result.pageRows) grid.appendChild(renderCard(row));
     renderPager(result);
+    const firstCard = renderedCards.values().next().value as HTMLElement | undefined;
+    if (focusedActionId !== null) {
+      const replacement = renderedActions.get(focusedActionId);
+      if (
+        replacement !== undefined
+        && replacement.tagName === 'BUTTON'
+      ) {
+        replacement.focus?.({ preventScroll: true });
+      } else {
+        (renderedCards.get(focusedActionId) ?? firstCard ?? search)
+          .focus?.({ preventScroll: true });
+      }
+    } else if (focusedCardId !== null) {
+      const replacement = renderedCards.get(focusedCardId)
+        ?? firstCard
+        ?? search;
+      replacement.focus?.({ preventScroll: true });
+    } else if (focusedPageDirection !== null) {
+      const same = renderedPageButtons.get(focusedPageDirection);
+      const opposite = renderedPageButtons.get(
+        focusedPageDirection === 'prev' ? 'next' : 'prev',
+      );
+      const replacement = same !== undefined && !same.disabled
+        ? same
+        : opposite !== undefined && !opposite.disabled
+          ? opposite
+          : firstCard ?? search;
+      replacement.focus?.({ preventScroll: true });
+    }
+    if (pendingRetryFocus && !retrying) {
+      pendingRetryFocus = false;
+      const firstResultTarget = firstCard !== undefined
+        && firstCard.getAttribute('tabindex') !== null
+        ? firstCard
+        : firstCard?.querySelector?.<HTMLElement>(
+            `button[${DISCOVER_PANEL_ACTION_ATTR}]`,
+          ) ?? search;
+      firstResultTarget?.focus?.({ preventScroll: true });
+    }
   };
 
   // ── Actions ───────────────────────────────────────────────────────
@@ -879,17 +1008,36 @@ export const mountDiscoverPanel = <Row>(
   // fallback and a search are two ways of answering the same question, and one
   // must be able to supersede the other. Last request wins, not last completion.
   let debounceTimer: ReturnType<typeof setTimeout> | undefined;
+  let settleDebouncedRefetch: (() => void) | undefined;
   let idle: Promise<void> = Promise.resolve();
 
+  const cancelDebouncedRefetch = (): void => {
+    if (debounceTimer !== undefined) {
+      clearTimeout(debounceTimer);
+      debounceTimer = undefined;
+    }
+    settleDebouncedRefetch?.();
+    settleDebouncedRefetch = undefined;
+  };
+
   const scheduleRefetch = (delayMs: number): void => {
-    if (debounceTimer !== undefined) clearTimeout(debounceTimer);
+    cancelDebouncedRefetch();
+    // The visible query changed NOW, even though its request starts after the
+    // debounce. Invalidate an older in-flight answer immediately so it cannot
+    // paint stale cards underneath the newer controls during that window.
+    loadGeneration += 1;
     let settle: () => void = () => {};
     idle = new Promise<void>((resolve) => {
       settle = resolve;
     });
+    settleDebouncedRefetch = settle;
     debounceTimer = setTimeout(() => {
       debounceTimer = undefined;
-      void refetch(true).then(settle, settle);
+      const finish = (): void => {
+        if (settleDebouncedRefetch === settle) settleDebouncedRefetch = undefined;
+        settle();
+      };
+      void refetch(true).then(finish, finish);
     }, delayMs);
   };
 
@@ -947,13 +1095,21 @@ export const mountDiscoverPanel = <Row>(
   };
 
   const retry = async (): Promise<void> => {
-    if (opts.search === undefined) {
-      await load(false);
-      return;
+    if (retrying) return;
+    pendingRetryFocus = doc.activeElement === renderedRetry;
+    retrying = true;
+    try {
+      if (opts.search === undefined) {
+        await load(false);
+        return;
+      }
+      degraded = false;
+      rows = [];
+      await refetch(false);
+    } finally {
+      retrying = false;
+      if (!disposed) render();
     }
-    degraded = false;
-    rows = [];
-    await refetch(false);
   };
 
   // ── Events ────────────────────────────────────────────────────────
@@ -992,6 +1148,17 @@ export const mountDiscoverPanel = <Row>(
     clickInstall: async (id) => {
       await onActionClick(id);
     },
+    focusAction: (id) => {
+      const action = renderedActions.get(id);
+      const target = action?.tagName === 'BUTTON'
+        ? action
+        : renderedCards.get(id);
+      if (target === undefined || typeof target.focus !== 'function') {
+        return false;
+      }
+      target.focus({ preventScroll: true });
+      return true;
+    },
     clickSelect: (id) => opts.onSelect?.(id),
     refresh: () => {
       // Background — a return-visit re-check keeps the current cards visible.
@@ -1024,7 +1191,7 @@ export const mountDiscoverPanel = <Row>(
     dispose: () => {
       if (disposed) return;
       disposed = true;
-      if (debounceTimer !== undefined) clearTimeout(debounceTimer);
+      cancelDebouncedRefetch();
       search.removeEventListener('input', onSearch);
       sortSelect.removeEventListener('change', onSort);
       try {
@@ -1183,7 +1350,9 @@ export const DISCOVER_PANEL_STYLES = `
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-action--installed {
   background: transparent; color: var(--fg-subtle); border-color: var(--border); cursor: default;
 }
-[${DISCOVER_PANEL_HOST_ATTR}] .discover-action:disabled { opacity: .65; cursor: progress; }
+[${DISCOVER_PANEL_HOST_ATTR}] .discover-action:is(:disabled, [aria-disabled="true"]) {
+  opacity: .65; cursor: progress;
+}
 [${DISCOVER_PANEL_HOST_ATTR}] .discover-pager {
   display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 4px;
 }

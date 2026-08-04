@@ -1121,6 +1121,41 @@ const MANIFESTS = [
     }
   },
   {
+    "slug": "contact-business-context",
+    "name": "Read contact business context",
+    "description": "Recompute a zero-AI, metadata-only business relationship projection for one exact contact email. as_of is the current evaluation clock; known_before_at is the source-event cutoff that prevents the current mail from manufacturing prior familiarity. Reads existing contact/company, deal, task, calendar, booking, and project relationships without creating a cache or table. Returns counts with explicit complete/partial/not_configured/unavailable coverage and one mutually-exclusive strongest level (none, known, historical, active), so correlated facts can contribute at most one recipe signal. Never returns mail or calendar bodies, work-item titles, deal names, or company names.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "data",
+    "risk_tier": "read",
+    "tags": [
+      "kernel",
+      "contact",
+      "relationships",
+      "deterministic",
+      "read"
+    ],
+    "input": {
+      "email": null,
+      "as_of": null,
+      "known_before_at": null
+    },
+    "output": {
+      "as_of": "as_of",
+      "known_before_at": "known_before_at",
+      "identity": "identity",
+      "deals": "deals",
+      "tasks": "tasks",
+      "calendar": "calendar",
+      "bookings": "bookings",
+      "projects": "projects",
+      "level": "level",
+      "active_families": "active_families",
+      "historical_families": "historical_families"
+    }
+  },
+  {
     "slug": "contact-upsert",
     "name": "Upsert a contact",
     "description": "Idempotent upsert into data.contact keyed on the canonical email. Supplied display_name + last_interaction + first_seen merge with the existing row when present (first-seen-wins on first_seen, latest-wins on last_interaction). Routes via the paired server's `contact.upsert` rpc; the underlying ContactStore canonicalizes the email (lowercases, strips +suffix per RFC 5322 conventions) before the upsert.",
@@ -1634,6 +1669,37 @@ const MANIFESTS = [
     "output": {
       "delivered_to": "delivered_to",
       "failed": "failed"
+    }
+  },
+  {
+    "slug": "core-notification-recipe-callback",
+    "name": "MCP Recipe Callback",
+    "description": "Queues one bounded, coalescing callback hint for active MCP tokens bound to `destination_contract_id` and explicitly granted `query_tool`. The callback contains `topic`, a flat pointer/settings envelope, and an opaque callback_ref; free-form content, nested data, arrays, credential-like names, and query results are rejected. It is delivered only by a transport that supports unsolicited MCP notifications. The receiving client must call `query_tool` through the ordinary live token, contract, and recipe gates to compute the current answer. No matching destination is a normal skipped result so a sibling Recued notification remains independent.",
+    "author": "recued",
+    "kind": "storage",
+    "version": 1,
+    "category": "action",
+    "risk_tier": "write",
+    "permission": "notification_send",
+    "tags": [
+      "kernel",
+      "notification",
+      "mcp",
+      "callback",
+      "action"
+    ],
+    "input": {
+      "destination_contract_id": null,
+      "topic": null,
+      "query_tool": null,
+      "arguments": {},
+      "ttl_seconds": 21600
+    },
+    "output": {
+      "queued_to": "queued_to",
+      "failed_to": "failed_to",
+      "coalesced": "coalesced",
+      "skipped_reason": "skipped_reason"
     }
   },
   {
@@ -2385,7 +2451,7 @@ const MANIFESTS = [
   {
     "slug": "email-get",
     "name": "Fetch a single email record from a warehouse collection",
-    "description": "Return one record from `data.email.{slug}.*` by record_id. `record_id` comes from `email-list` or `email-search` output (the provider's `source_id` hashed to a 32-char SHA-256 prefix — stable across re-syncs). `record.body_inline` carries plaintext bodies up to 64 KB; larger messages spill to the CAS blob store accessible via `record.blob_hash`. `hot_fields` exposes `{ from, to, cc, subject, thread_id, folder, is_read, has_attachments, labels?, message_id, rfc_message_id? }`; `message_id` is provider-native while `rfc_message_id`, when present, is the normalized RFC 5322 header value.",
+    "description": "Return one record from `data.email.{slug}.*` by record_id. `record_id` comes from `email-list` or `email-search` output (the provider's `source_id` hashed to a 32-char SHA-256 prefix — stable across re-syncs). `record.body_inline` carries plaintext bodies up to 64 KB; larger messages spill to the CAS blob store accessible via `record.blob_hash`. `hot_fields` exposes `{ from, to, cc, subject, thread_id, folder, direction, is_read, has_attachments, labels?, message_id, rfc_message_id? }`; `direction` is the provider-canonical `inbound | outbound | draft | unknown`, `message_id` is provider-native, and `rfc_message_id`, when present, is the normalized RFC 5322 header value.",
     "author": "recued",
     "kind": "storage",
     "version": 1,
@@ -2409,7 +2475,7 @@ const MANIFESTS = [
   {
     "slug": "email-list",
     "name": "List emails from a mail warehouse collection",
-    "description": "Return records from `data.email.{slug}.*` filtered by hot-field equality, `received_at` range, and limit. Hot fields: `{ from, to, cc, subject, thread_id, folder, is_read, has_attachments, labels?, message_id, rfc_message_id? }`; `message_id` is provider-native while `rfc_message_id`, when present, is the normalized RFC 5322 header value. Set `metadata_only: true` to strip both `body_inline` and `blob_hash` at the kernel boundary before records enter recipe state; use `email-get` when body materialization is intended. IMAP collections key `folder` to the RFC-5322 folder path (`INBOX`, `INBOX/Archive`, …); Gmail folds labels into the first match from `INBOX > IMPORTANT > STARRED > SENT > DRAFT`; Graph stores the Graph `parentFolderId`.",
+    "description": "Return records from `data.email.{slug}.*` filtered by hot-field equality, `received_at` range, and limit. Hot fields: `{ from, to, cc, subject, thread_id, folder, direction, is_read, has_attachments, labels?, message_id, rfc_message_id? }`; `direction` is the provider-canonical `inbound | outbound | draft | unknown`, `message_id` is provider-native, and `rfc_message_id`, when present, is the normalized RFC 5322 header value. Set `metadata_only: true` to strip both `body_inline` and `blob_hash` at the kernel boundary before records enter recipe state; use `email-get` when body materialization is intended. IMAP collections key `folder` to the RFC-5322 folder path (`INBOX`, `INBOX/Archive`, …); Gmail folds labels into the first match from `INBOX > IMPORTANT > STARRED > SENT > DRAFT`; Graph stores the Graph `parentFolderId`. Direction instead uses Gmail system labels, the queried Graph well-known folder, IMAP RFC 6154 special-use flags, or strong enrolled-account header evidence; unknown is never treated as inbound.",
     "author": "recued",
     "kind": "storage",
     "version": 2,

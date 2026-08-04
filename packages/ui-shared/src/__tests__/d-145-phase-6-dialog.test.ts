@@ -11,7 +11,7 @@
  *    - Edit dialog renders title "Edit <Singular>" + Source label
  *      (read-only) + form-renderer body.
  *    - Submit-error banner renders when submit_error is set.
- *    - Submit button disables when submitting flag is set.
+ *    - Submit button remains focusable and exposes busy state while submitting.
  *    - data-action wires for close / submit / select-create-source.
  */
 
@@ -27,7 +27,12 @@ import {
   type WorkEntityPageDialogStateEdit,
 } from '@recued/contracts';
 
-import { renderWorkEntityDialog } from '../work-entity-page/dialog.js';
+import {
+  renderWorkEntityDialog,
+  WORK_ENTITY_DIALOG_DISCARD_COMMIT_ACTION,
+  WORK_ENTITY_DIALOG_DISCARD_GUARD_ATTR,
+  WORK_ENTITY_DIALOG_DISCARD_KEEP_ACTION,
+} from '../work-entity-page/dialog.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -82,6 +87,7 @@ describe('D-145 PA6 — create dialog', () => {
       sources: buildSourceDropdownOptions('task', [builtinTask()]),
     });
     expect(html).toContain('>New Task<');
+    expect(html).toContain('id="work-entity-dialog-title" tabindex="-1"');
   });
 
   it('renders Source as static value when only one write-capable Source exists', () => {
@@ -170,6 +176,23 @@ describe('D-145 PA6 — edit dialog', () => {
     expect(html).not.toContain('data-action="select-create-source"');
     expect(html).toContain('Recued built-in (task)');
   });
+
+  it('replaces editor interaction with a named discard review', () => {
+    const html = renderWorkEntityDialog({
+      kind: 'task',
+      definition: formFromCanonicalSchema(TASK_SCHEMA),
+      state: baseEditDialog(),
+      sources: buildSourceDropdownOptions('task', [builtinTask()]),
+      discard_guard: true,
+    });
+    expect(html).toContain(WORK_ENTITY_DIALOG_DISCARD_GUARD_ATTR);
+    expect(html).toContain('role="alertdialog"');
+    expect(html).toContain('Discard your task changes?');
+    expect(html).toContain(`data-action="${WORK_ENTITY_DIALOG_DISCARD_KEEP_ACTION}"`);
+    expect(html).toContain(`data-action="${WORK_ENTITY_DIALOG_DISCARD_COMMIT_ACTION}"`);
+    expect(html).toMatch(/work-entity-dialog-header" inert aria-hidden="true"/);
+    expect(html).toMatch(/work-entity-dialog-form[^>]* inert aria-hidden="true"/);
+  });
 });
 
 describe('D-145 PA6 — submit feedback', () => {
@@ -184,16 +207,19 @@ describe('D-145 PA6 — submit feedback', () => {
     expect(html).toContain('Storage offline');
   });
 
-  it('disables the submit button + relabels to Saving… when submitting', () => {
+  it('keeps submit focusable and relabels it to Saving… when submitting', () => {
     const html = renderWorkEntityDialog({
       kind: 'task',
       definition: formFromCanonicalSchema(TASK_SCHEMA),
       state: baseCreateDialog({ submitting: true }),
       sources: buildSourceDropdownOptions('task', [builtinTask()]),
     });
-    expect(html).toMatch(
-      /data-action="submit-work-entity-dialog"[\s\S]*?\sdisabled[\s>]/,
-    );
+    const submit = html.match(
+      /<button[\s\S]*?data-action="submit-work-entity-dialog"[\s\S]*?<\/button>/,
+    )?.[0] ?? '';
+    expect(submit).toContain('aria-disabled="true"');
+    expect(submit).toContain('aria-busy="true"');
+    expect(submit).not.toMatch(/\sdisabled(?:\s|=|>)/);
     expect(html).toContain('Saving…');
   });
 });

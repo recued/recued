@@ -196,6 +196,8 @@ export interface BootstrapReceptionRoute {
    *  has no `update`). */
   update(): void;
   hasInFlightWork(): boolean;
+  /** Route-scoped shell copy for unresolved Reception mutations. */
+  inFlightWorkPrompt(): string | null;
   /** Tear down the active section mount + remove the route chrome.
    *  Idempotent. */
   dispose(): void;
@@ -517,6 +519,13 @@ export const bootstrapReceptionRoute = (
       mount.update?.();
     },
     hasInFlightWork: () => mount.hasInFlightWork?.() ?? false,
+    // Keep the copy available for the outer bootstrap's tracked mutation
+    // owner too: authoring/wizard writes are tracked above this route, while
+    // the Inbox reports its own decision state through `hasInFlightWork`.
+    inFlightWorkPrompt: () =>
+      disposed
+        ? null
+        : 'A Reception action is still in progress. Leave Reception anyway?',
     dispose: () => {
       if (disposed) return;
       disposed = true;

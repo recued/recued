@@ -1374,6 +1374,11 @@ export interface ContactStore {
    *  It is in the set on purpose: rows written while the contact was
    *  `mention_only` are still keyed on it. */
   addressSet(email: string): string[];
+  /** Exact normalized-company peer count, excluding the focal merge survivor.
+   * Uses `idx_contacts_company_norm`; merged-away rows never count as peers.
+   * This is the deterministic "same known company" evidence path — callers
+   * must not substitute raw email-domain equality. */
+  countCompanyPeers(company_norm: string, exclude_contact_id: string): number;
   /** Insert or replace a `(vendor, platform_id)` link onto a canonical
    *  contact. Idempotent — re-inserting the same `(vendor, platform_id)`
    *  preserves the older `linked_at`. Re-materializes the row's
@@ -2966,6 +2971,20 @@ export const createContactStore = (
    *  — the same "one definition, two doors" discipline that keeps
    *  `MERGED_SOURCE_EMAILS_SQL` from being copied. */
   const addressSet = (email: string): string[] => contactAddressSet(db, email);
+
+  const countCompanyPeersStmt = db.prepare(
+    `SELECT COUNT(*) AS n FROM ${CONTACT_TABLE}
+       WHERE company_norm = ?
+         AND merged_into IS NULL
+         AND contact_id <> ?`,
+  );
+  const countCompanyPeers: ContactStore['countCompanyPeers'] = (
+    company_norm,
+    exclude_contact_id,
+  ) => {
+    if (company_norm.length === 0 || exclude_contact_id.length === 0) return 0;
+    return (countCompanyPeersStmt.get(company_norm, exclude_contact_id) as { n: number }).n;
+  };
 
   const fireLinkChange = (change: PlatformLinkChange): void => {
     if (!storeOpts.onPlatformLinkChanged) return;
@@ -5336,6 +5355,7 @@ export const createContactStore = (
     resolveCanonicalEmail,
     listMergedSourceEmails,
     addressSet,
+    countCompanyPeers,
     linkPlatformId,
     unlinkPlatformId,
     retractPlatformLinksForConnection,

@@ -130,6 +130,20 @@ const calendarsListRoute = (
   response: { status: 200, body: { value: entries } },
 });
 
+const initialDeltaRoute = (calendarId: string): Route => ({
+  match: (u) =>
+    u.includes(`/me/calendars/${calendarId}/calendarView/delta`)
+    && !u.includes('$deltatoken'),
+  response: {
+    status: 200,
+    body: {
+      value: [],
+      '@odata.deltaLink':
+        `https://graph.microsoft.com/v1.0/me/calendars/${calendarId}/calendarView/delta?$deltatoken=before-scan`,
+    },
+  },
+});
+
 let cleanup: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const fn of cleanup) await fn();
@@ -375,6 +389,7 @@ describe('GraphCalProvider — initialScan', () => {
     ];
     const { fetcher } = makeRouter([
       calendarsListRoute([{ id: 'cal-1', name: 'Primary' }]),
+      initialDeltaRoute('cal-1'),
       {
         match: (u) =>
           u.includes('/me/calendars/cal-1/calendarView') &&
@@ -404,10 +419,78 @@ describe('GraphCalProvider — initialScan', () => {
     expect(got).toEqual(['A', 'B']);
   });
 
+  it('captures the delta boundary before backfill so arrivals during the scan replay', async () => {
+    const store = seedStore();
+    const before =
+      'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=before';
+    const after =
+      'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=after';
+    const calls: string[] = [];
+    let listStarted = false;
+    const fetcher: HttpFetcher = async (url) => {
+      calls.push(url);
+      if (url.includes('/me/calendars?') || url.endsWith('/me/calendars')) {
+        return mkJson(200, { value: [{ id: 'cal-1', name: 'Primary' }] });
+      }
+      if (
+        url.includes('/calendarView/delta')
+        && !url.includes('$deltatoken')
+      ) {
+        return mkJson(200, {
+          value: [],
+          '@odata.deltaLink': listStarted ? after : before,
+        });
+      }
+      if (url === before) {
+        return mkJson(200, {
+          value: [{
+            id: 'arrived-during-scan',
+            iCalUId: 'arrived-during-scan',
+            subject: 'New arrival',
+            start: { dateTime: '2026-04-23T10:00:00', timeZone: 'UTC' },
+            end: { dateTime: '2026-04-23T11:00:00', timeZone: 'UTC' },
+          } as GraphCalEvent],
+          '@odata.deltaLink': after,
+        });
+      }
+      if (url.includes('/calendarView') && !url.includes('/delta')) {
+        listStarted = true;
+        return mkJson(200, { value: [] });
+      }
+      return mkJson(404, { error: 'unmapped', url });
+    };
+    const provider = createGraphCalProvider({
+      slug: 'work',
+      config: mkConfig(),
+      accountStore: store,
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+
+    await provider.initialScan({
+      backfill_days: 7,
+      expansion_future_days: 30,
+      expansion_past_days: 7,
+      onEvent: async () => true,
+    });
+    const emitted: CalendarSyncEvent[] = [];
+    const stop = await provider.startSync(async (event) => { emitted.push(event); });
+
+    expect(emitted.map((event) => event.source_id)).toEqual(['arrived-during-scan']);
+    expect(calls.findIndex((url) => url.includes('/calendarView/delta')))
+      .toBeLessThan(calls.findIndex((url) =>
+        url.includes('/calendarView') && !url.includes('/delta')));
+    expect(store.data.get(`graph.work.cal_delta_link.${hashId('cal-1')}`)).toBe(after);
+    await stop();
+  });
+
   it('aborts when onEvent returns false', async () => {
     const store = seedStore();
     const { fetcher } = makeRouter([
       calendarsListRoute([{ id: 'cal-1' }]),
+      initialDeltaRoute('cal-1'),
       {
         match: (u) => u.includes('/me/calendars/cal-1/calendarView'),
         response: {
@@ -459,6 +542,7 @@ describe('GraphCalProvider — initialScan', () => {
     const store = seedStore();
     const { fetcher } = makeRouter([
       calendarsListRoute([{ id: 'cal-1' }]),
+      initialDeltaRoute('cal-1'),
       {
         match: (u) => u.includes('/me/calendars/cal-1/calendarView'),
         response: {
@@ -517,6 +601,7 @@ describe('GraphCalProvider — initialScan', () => {
       'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView?$skiptoken=xyz';
     const { fetcher } = makeRouter([
       calendarsListRoute([{ id: 'cal-1' }]),
+      initialDeltaRoute('cal-1'),
       {
         match: (u) =>
           u.includes('/me/calendars/cal-1/calendarView') &&
@@ -582,6 +667,7 @@ describe('GraphCalProvider — initialScan', () => {
     const attackerUrl = 'https://attacker.invalid/collect?cursor=calendar';
     const { fetcher, calls } = makeRouter([
       calendarsListRoute([{ id: 'cal-1' }]),
+      initialDeltaRoute('cal-1'),
       {
         match: (u) => u.includes('/me/calendars/cal-1/calendarView'),
         response: {
@@ -614,6 +700,7 @@ describe('GraphCalProvider — initialScan', () => {
       'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView?$skiptoken=repeat';
     const { fetcher, calls } = makeRouter([
       calendarsListRoute([{ id: 'cal-1' }]),
+      initialDeltaRoute('cal-1'),
       {
         match: (u) => u === page2Url,
         response: {
@@ -651,6 +738,7 @@ describe('GraphCalProvider — initialScan', () => {
     const store = seedStore();
     const { fetcher } = makeRouter([
       calendarsListRoute([{ id: 'cal-1' }]),
+      initialDeltaRoute('cal-1'),
       {
         match: (u) => u.includes('/me/calendars/cal-1/calendarView'),
         response: {
@@ -800,7 +888,7 @@ describe('GraphCalProvider — startSync', () => {
     await stop();
   });
 
-  it('re-seeds on 410 Gone (expired deltaLink) and resumes', async () => {
+  it('replays replacement full state on 410 before committing the new deltaLink', async () => {
     const store = seedStore();
     const expiredLink =
       'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=old';
@@ -823,7 +911,16 @@ describe('GraphCalProvider — startSync', () => {
         !url.includes('deltatoken')
       ) {
         seededCalls++;
-        return mkJson(200, { value: [], '@odata.deltaLink': newLink });
+        return mkJson(200, {
+          value: [{
+            id: 'recovered-event',
+            iCalUId: 'recovered-event',
+            subject: 'Recovered event',
+            start: { dateTime: '2026-04-23T10:00:00', timeZone: 'UTC' },
+            end: { dateTime: '2026-04-23T11:00:00', timeZone: 'UTC' },
+          } as GraphCalEvent],
+          '@odata.deltaLink': newLink,
+        });
       }
       return mkJson(404, { error: 'unmapped', url });
     };
@@ -841,11 +938,109 @@ describe('GraphCalProvider — startSync', () => {
       emitted.push(e);
     });
     expect(seededCalls).toBe(1);
-    expect(emitted).toHaveLength(0);
+    expect(emitted).toEqual([
+      expect.objectContaining({ kind: 'updated', source_id: 'recovered-event' }),
+    ]);
     expect(
       store.data.get(`graph.work.cal_delta_link.${hashId('cal-1')}`),
     ).toBe(newLink);
     await stop();
+  });
+
+  it('retains an expired deltaLink when the recovery replay is rejected', async () => {
+    const store = seedStore();
+    const tokenKey = `graph.work.cal_delta_link.${hashId('cal-1')}`;
+    const expiredLink =
+      'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=expired-retry';
+    store.data.set(tokenKey, expiredLink);
+    const replacement =
+      'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=must-not-commit';
+    const fetcher: HttpFetcher = async (url) => {
+      if (url.includes('/me/calendars?') || url.endsWith('/me/calendars')) {
+        return mkJson(200, { value: [{ id: 'cal-1' }] });
+      }
+      if (url === expiredLink) return mkJson(410, { error: { code: 'gone' } });
+      if (url.includes('/calendarView/delta') && !url.includes('deltatoken')) {
+        return mkJson(200, {
+          value: [{
+            id: 'not-acked',
+            iCalUId: 'not-acked',
+            subject: 'Retry me',
+            start: { dateTime: '2026-04-23T10:00:00', timeZone: 'UTC' },
+            end: { dateTime: '2026-04-23T11:00:00', timeZone: 'UTC' },
+          } as GraphCalEvent],
+          '@odata.deltaLink': replacement,
+        });
+      }
+      return mkJson(404, { error: 'unmapped', url });
+    };
+    const provider = createGraphCalProvider({
+      slug: 'work',
+      config: mkConfig(),
+      accountStore: store,
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+
+    const stop = await provider.startSync(async () => {
+      throw new Error('collection unavailable');
+    });
+    await stop();
+
+    expect(store.data.get(tokenKey)).toBe(expiredLink);
+  });
+
+  it('holds and replays the deltaLink after a collection callback rejects', async () => {
+    const store = seedStore();
+    const tokenKey = `graph.work.cal_delta_link.${hashId('cal-1')}`;
+    const prior =
+      'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=prior';
+    const next =
+      'https://graph.microsoft.com/v1.0/me/calendars/cal-1/calendarView/delta?$deltatoken=next';
+    store.data.set(tokenKey, prior);
+    const { fetcher } = makeRouter([
+      calendarsListRoute([{ id: 'cal-1' }]),
+      {
+        match: (u) => u === prior,
+        response: {
+          status: 200,
+          body: {
+            value: [{
+              id: 'retry-event',
+              iCalUId: 'retry-event',
+              subject: 'Must replay',
+              start: { dateTime: '2026-04-23T10:00:00', timeZone: 'UTC' },
+              end: { dateTime: '2026-04-23T11:00:00', timeZone: 'UTC' },
+            } as GraphCalEvent],
+            '@odata.deltaLink': next,
+          },
+        },
+      },
+    ]);
+    const provider = createGraphCalProvider({
+      slug: 'work',
+      config: mkConfig(),
+      accountStore: store,
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    cleanup.push(() => provider.close());
+
+    let attempts = 0;
+    const firstStop = await provider.startSync(async () => {
+      attempts++;
+      throw new Error('collection write failed');
+    });
+    await firstStop();
+    expect(store.data.get(tokenKey)).toBe(prior);
+
+    const secondStop = await provider.startSync(async () => { attempts++; });
+    await secondStop();
+    expect(attempts).toBe(2);
+    expect(store.data.get(tokenKey)).toBe(next);
   });
 
   it('stop halts the poll scheduler', async () => {

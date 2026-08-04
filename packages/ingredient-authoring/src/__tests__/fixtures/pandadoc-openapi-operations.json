@@ -615,7 +615,7 @@
       "document-status-digest-pandadoc": 1,
       "document-evidence-brief-pandadoc": 1,
       "template-readiness-brief-pandadoc": 1,
-      "create-template-document-pandadoc": 1,
+      "create-template-document-pandadoc": 2,
       "send-document-pandadoc": 1
     },
     "auth": {

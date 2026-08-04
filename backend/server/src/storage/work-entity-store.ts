@@ -821,6 +821,18 @@ export interface WorkEntityListQuery {
   booking_lifecycle_states?: readonly BookingLifecycleState[];
 }
 
+export interface WorkEntityRelationshipCounts {
+  active_count: number;
+  historical_count: number;
+  observed_count: number;
+}
+
+export interface WorkEntityContactRelationshipSummary {
+  tasks: WorkEntityRelationshipCounts;
+  bookings: WorkEntityRelationshipCounts;
+  projects: WorkEntityRelationshipCounts;
+}
+
 const DEFAULT_LIST_LIMIT = 100;
 const MAX_LIST_LIMIT = 1000;
 
@@ -1686,6 +1698,16 @@ interface WorkEntityStoreInternal {
 }
 
 export interface WorkEntityStore {
+  /** Metadata-only relationship aggregate for one resolved contact. The caller
+   * supplies the stable contact id when resolved plus the complete merge/alias address set;
+   * storage matches both key spaces because legacy/native task rows use email,
+   * while bookings require the opaque id and project arrays may contain either.
+   * Disabled, deleted, tombstoned, and orphaned rows follow ordinary list-read
+   * visibility. No row bodies or titles leave this boundary. */
+  summarizeContactRelationships(input: {
+    contact_id?: string;
+    emails: readonly string[];
+  }): WorkEntityContactRelationshipSummary;
   // ── tasks ──────────────────────────────────────────────────────
   writeTask(input: TaskWriteInput, now?: number): Task;
   /** Atomic create-if-absent for a caller-derived stable local task id. The
@@ -2493,6 +2515,99 @@ export const createWorkEntityStore = (
           safe,
         )) as TaskRow[];
     return rows.map(rowToTask);
+  };
+
+  const emptyRelationshipCounts = (): WorkEntityRelationshipCounts => ({
+    active_count: 0,
+    historical_count: 0,
+    observed_count: 0,
+  });
+  const relationshipCounts = (row: {
+    active_count: number | null;
+    historical_count: number | null;
+    observed_count: number;
+  } | undefined): WorkEntityRelationshipCounts => row
+    ? {
+        active_count: row.active_count ?? 0,
+        historical_count: row.historical_count ?? 0,
+        observed_count: row.observed_count,
+      }
+    : emptyRelationshipCounts();
+  const relationshipVisible = buildListWhere(normalizeListQuery({ limit: 1 }));
+  const summarizeTaskRelationshipsStmt = db.prepare(
+    `SELECT
+       SUM(CASE WHEN done = 0 THEN 1 ELSE 0 END) AS active_count,
+       SUM(CASE WHEN done = 1 THEN 1 ELSE 0 END) AS historical_count,
+       COUNT(*) AS observed_count
+     FROM ${TASK_TABLE} ${relationshipVisible.sql}
+       AND assigned_contact_id IN (SELECT value FROM json_each(?))`,
+  );
+  const summarizeBookingRelationshipsStmt = db.prepare(
+    `SELECT
+       SUM(CASE WHEN lifecycle_state IN ('pending', 'confirmed') THEN 1 ELSE 0 END) AS active_count,
+       SUM(CASE WHEN lifecycle_state IN ('completed', 'cancelled', 'no_show') THEN 1 ELSE 0 END) AS historical_count,
+       COUNT(*) AS observed_count
+     FROM ${BOOKING_TABLE} ${relationshipVisible.sql}
+       AND counterparty_contact_id IN (SELECT value FROM json_each(?))`,
+  );
+  const summarizeProjectRelationshipsStmt = db.prepare(
+    `SELECT
+       SUM(CASE WHEN state IN ('active', 'paused') THEN 1 ELSE 0 END) AS active_count,
+       SUM(CASE WHEN state IN ('completed', 'archived') THEN 1 ELSE 0 END) AS historical_count,
+       COUNT(*) AS observed_count
+     FROM ${PROJECT_TABLE} ${relationshipVisible.sql}
+       AND EXISTS (
+         SELECT 1 FROM json_each(${PROJECT_TABLE}.related_contact_ids) AS related
+          WHERE related.value IN (SELECT value FROM json_each(?))
+       )`,
+  );
+  const summarizeContactRelationships: WorkEntityStore['summarizeContactRelationships'] = (
+    input,
+  ) => {
+    const identifiers = [...new Set([
+      input.contact_id ?? '',
+      ...input.emails,
+    ].filter((value) => value.length > 0))];
+    if (identifiers.length === 0) {
+      return {
+        tasks: emptyRelationshipCounts(),
+        bookings: emptyRelationshipCounts(),
+        projects: emptyRelationshipCounts(),
+      };
+    }
+    // One JSON parameter keeps the query complete even for a contact with a large
+    // merge/alias address set; expanding a `?` per address would eventually hit
+    // SQLite's bound-variable ceiling and turn "many aliases" into a partial read.
+    const identifiersJson = JSON.stringify(identifiers);
+    const task = summarizeTaskRelationshipsStmt.get(
+      ...relationshipVisible.params,
+      identifiersJson,
+    ) as {
+      active_count: number | null;
+      historical_count: number | null;
+      observed_count: number;
+    } | undefined;
+    const booking = summarizeBookingRelationshipsStmt.get(
+      ...relationshipVisible.params,
+      identifiersJson,
+    ) as {
+      active_count: number | null;
+      historical_count: number | null;
+      observed_count: number;
+    } | undefined;
+    const project = summarizeProjectRelationshipsStmt.get(
+      ...relationshipVisible.params,
+      identifiersJson,
+    ) as {
+      active_count: number | null;
+      historical_count: number | null;
+      observed_count: number;
+    } | undefined;
+    return {
+      tasks: relationshipCounts(task),
+      bookings: relationshipCounts(booking),
+      projects: relationshipCounts(project),
+    };
   };
 
   // ── notes ───────────────────────────────────────────────────────
@@ -3325,6 +3440,7 @@ export const createWorkEntityStore = (
   };
 
   return {
+    summarizeContactRelationships,
     writeTask,
     ensureTask,
     readTask,

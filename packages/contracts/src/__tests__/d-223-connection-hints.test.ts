@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import {
   APPLICABLE_GUIDE_FIELD_KEYS,
   BULK_PACK_MAX_CONNECTION_HINTS,
+  CONNECTION_AUTH_TYPES,
   RESERVED_CONNECTION_REQUIREMENT_CELLS,
   canApplyConnectionSetupGuideSuggestion,
   parseBulkPackManifest,
@@ -150,14 +151,53 @@ describe('D-223 — a hint is a value on a visible field', () => {
   it('the admitted key set is the capability surface', () => {
     // Stated in the decision as the widening mechanism: one entry plus its
     // validation, never a new authoring cell. Pinned so a silent widening shows.
+    //
+    // ✅ `auth.type` was ADDED deliberately, and this ratchet is where that is
+    // recorded. D-223 § 7 promised "the auth type pre-selected" while the
+    // allow-list omitted the only key that could deliver it — and because every
+    // other OAuth key is `showWhen`-gated on the auth type, the omission kept
+    // them from rendering at all. Its validation lives beside it in
+    // `connection-hints.ts` (closed union, `'none'` excluded), which is exactly
+    // the "one entry plus its validation" this test exists to police.
     expect([...APPLICABLE_GUIDE_FIELD_KEYS].sort()).toEqual([
       'auth.authorize_url',
       'auth.param_name',
       'auth.scope',
       'auth.scopes',
       'auth.token_endpoint',
+      'auth.type',
       'config.base_url',
       'subresource_path',
     ]);
+  });
+});
+
+describe("auth.type — the key § 7 promised and the allow-list omitted", () => {
+  it('admits every real auth type the api form offers', () => {
+    for (const t of CONNECTION_AUTH_TYPES) {
+      if (t === 'none') continue;
+      expect(canApplyConnectionSetupGuideSuggestion('auth.type', t), t).toBe(true);
+    }
+  });
+
+  it('⛔ refuses a value outside the closed union', () => {
+    // A closed vocabulary validated as "any non-empty string" fails OPEN: an
+    // unknown value selects nothing on the form and silently strands every
+    // dependent `showWhen` field — the exact failure this key was added to fix.
+    for (const bogus of ['oauth2', 'OAuth2_Refresh', 'bearer-token', 'https://x.example']) {
+      expect(canApplyConnectionSetupGuideSuggestion('auth.type', bogus), bogus).toBe(false);
+    }
+  });
+
+  it("⛔ refuses 'none' — the api form's own AUTH_TYPES filters it out", () => {
+    // Hinting it would name an option the select does not offer.
+    expect(canApplyConnectionSetupGuideSuggestion('auth.type', 'none')).toBe(false);
+  });
+
+  it('is NOT a reserved connection_requirements cell', () => {
+    // `auth` (the whole block) is reserved; `auth.type` as a FORM FIELD KEY is
+    // not the same thing, and the two must not be conflated.
+    expect(RESERVED_CONNECTION_REQUIREMENT_CELLS).toContain('auth');
+    expect(RESERVED_CONNECTION_REQUIREMENT_CELLS).not.toContain('auth.type');
   });
 });

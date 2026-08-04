@@ -51,13 +51,22 @@ export interface AskCardModel {
 export interface AskCardHandlers {
   /** Fired with the chosen option's `id` when the user clicks its button.
    *  The host submits the answer via the `notification.submitAnswer` rpc.
-   *  MAY be async: while the returned promise is pending the card disables
-   *  its buttons (an in-flight guard against a double-tap firing two
-   *  answers). On success the host removes the card (the answered ask drops
-   *  out of the list). If the promise REJECTS (transient failure / not
-   *  paired) the card re-enables its buttons + shows a brief inline error
-   *  so the user can retry — the disable is in-flight-only, never sticky. */
+   *  MAY be async: while the returned promise is pending the card guards all
+   *  options with `aria-disabled` while keeping the chosen option focusable
+   *  and visibly busy. On success the host removes the card (the answered ask
+   *  drops out of the list). If the promise REJECTS (transient failure / not
+   *  paired) the card clears the guard + shows a brief inline error so the
+   *  user can retry — the busy state is in-flight-only, never sticky. */
   onAnswer: (optionId: string) => void | Promise<void>;
+}
+
+/** Optional host-owned async state. A composed queue can rebuild the card
+ *  during a submit (for example after a live queue event) without losing the
+ *  exact option that owns progress or its failure message. */
+export interface AskCardOptions {
+  busy?: boolean;
+  busyOptionId?: string;
+  errorMessage?: string | null;
 }
 
 /** Stable hook on the card root — the value is the `ask_id` so a host can
@@ -168,6 +177,7 @@ export const renderAskCard = (
   doc: Document,
   model: AskCardModel,
   handlers: AskCardHandlers,
+  options: AskCardOptions = {},
 ): HTMLElement => {
   const card = doc.createElement('div');
   card.className = 'rx-ask-card';
@@ -255,8 +265,9 @@ export const renderAskCard = (
   const errorEl = doc.createElement('div');
   errorEl.className = 'rx-ask-card-error';
   errorEl.setAttribute(ASK_CARD_ERROR_ATTR, model.ask_id);
-  errorEl.textContent = 'Could not submit — try again.';
-  errorEl.hidden = true;
+  errorEl.setAttribute('role', 'alert');
+  errorEl.textContent = options.errorMessage ?? 'Could not submit — try again.';
+  errorEl.hidden = options.errorMessage == null;
 
   const actions = doc.createElement('div');
   actions.className = 'rx-ask-card-actions';
@@ -268,12 +279,33 @@ export const renderAskCard = (
   confirmation.textContent = 'Confirm this change. It may affect data outside Recued.';
   confirmation.hidden = true;
 
-  const buttons: HTMLButtonElement[] = [];
   const buttonOptions: Array<{ button: HTMLButtonElement; option: AskCardOption }> = [];
-  let pending = false;
+  let pending = options.busy === true;
   let armedOptionId: string | null = null;
-  const setDisabled = (disabled: boolean): void => {
-    for (const b of buttons) b.disabled = disabled;
+  const pendingLabel = (option: AskCardOption): string => {
+    const intent = askOptionIntent(option);
+    return intent === 'approve'
+      ? 'Approving…'
+      : intent === 'reject'
+        ? 'Rejecting…'
+        : 'Submitting…';
+  };
+  const setBusy = (optionId: string | undefined): void => {
+    for (const row of buttonOptions) {
+      row.button.setAttribute('aria-disabled', 'true');
+      if (row.option.id === optionId) {
+        row.button.setAttribute('aria-busy', 'true');
+        row.button.textContent = pendingLabel(row.option);
+      } else {
+        row.button.removeAttribute('aria-busy');
+      }
+    }
+  };
+  const clearBusy = (): void => {
+    for (const row of buttonOptions) {
+      row.button.removeAttribute('aria-disabled');
+      row.button.removeAttribute('aria-busy');
+    }
   };
   const resetOptionButtons = (): void => {
     for (const row of buttonOptions) {
@@ -293,6 +325,9 @@ export const renderAskCard = (
     btn.setAttribute('aria-pressed', 'false');
     btn.textContent = option.label;
     btn.addEventListener('click', () => {
+      // `aria-disabled` deliberately keeps the active option in the tab order,
+      // so every activation path needs this explicit single-flight guard.
+      if (pending) return;
       if (risk !== null && intent === 'approve' && armedOptionId !== option.id) {
         armedOptionId = option.id;
         resetOptionButtons();
@@ -307,16 +342,14 @@ export const renderAskCard = (
         confirmation.hidden = true;
         resetOptionButtons();
       }
-      // First submitted answer wins on this surface: disable while it is in
-      // flight so a double-tap can't fire two answers (the server block
-      // also dedups first-answer-wins, D-158 I-6). On a SUCCESSFUL submit
-      // the host removes the card (the answered ask drops out of the
-      // list), so the buttons stay disabled only as long as the card
-      // lives. On a FAILED submit we re-enable so the user can retry —
-      // the disable is in-flight-only, never sticky (Codex Slice-3 fold).
-      if (pending) return;
+      // First submitted answer wins on this surface. Keep the chosen button
+      // focusable while every option is guarded, so keyboard focus and visible
+      // progress retain the exact async owner instead of falling to <body>.
+      const ownedFocus = doc.activeElement === btn;
+      const settledLabel = btn.textContent;
       pending = true;
-      setDisabled(true);
+      setBusy(option.id);
+      const focusAfterBusy = doc.activeElement;
       errorEl.hidden = true;
       // Call `onAnswer` SYNCHRONOUSLY (the async IIFE body runs up to the
       // first `await` before suspending), so a click fires the submit in
@@ -327,15 +360,19 @@ export const renderAskCard = (
           await handlers.onAnswer(option.id);
         } catch {
           pending = false;
-          setDisabled(false);
+          clearBusy();
+          btn.textContent = settledLabel;
           errorEl.hidden = false;
+          if (ownedFocus && doc.activeElement === focusAfterBusy) {
+            btn.focus({ preventScroll: true });
+          }
         }
       })();
     });
-    buttons.push(btn);
     buttonOptions.push({ button: btn, option });
     actions.appendChild(btn);
   }
+  if (pending) setBusy(options.busyOptionId);
   card.appendChild(confirmation);
   card.appendChild(actions);
   card.appendChild(errorEl);
@@ -390,7 +427,14 @@ export interface ApprovalCardHandlers {
 
 export interface ApprovalCardOptions {
   links?: ApprovalCardLinks;
+  /** Permanently unavailable (for example a timed-out gate). Uses native
+   * disabled semantics because there is no pending action to retain. */
   disabled?: boolean;
+  /** Temporarily settling. Actions remain focusable but guarded with ARIA so
+   * the initiating control can visibly own progress through route repaints. */
+  busy?: boolean;
+  /** `APPROVAL_CARD_ACTION_ATTR` value of the action that owns `busy`. */
+  busyAction?: string;
   disabledReason?: string;
   errorMessage?: string | null;
   /** R20 — host-owned armed state for a `destructive` gate's confirm step
@@ -485,6 +529,7 @@ export const renderApprovalCard = (
   const errorEl = doc.createElement('div');
   errorEl.className = 'rx-approval-card-error';
   errorEl.setAttribute(APPROVAL_CARD_ERROR_ATTR, model.approval_id);
+  errorEl.setAttribute('role', 'alert');
   errorEl.textContent = options.errorMessage ?? 'Could not resolve approval - try again.';
   errorEl.hidden = options.errorMessage === undefined || options.errorMessage === null;
 
@@ -509,6 +554,33 @@ export const renderApprovalCard = (
   const setDisabled = (disabled: boolean): void => {
     for (const b of buttons) b.disabled = disabled;
   };
+  const idleLabels = new Map<HTMLButtonElement, string>();
+  const busyLabel = (action: string, fallback: string): string =>
+    action === 'reject'
+      ? 'Rejecting…'
+      : action === 'approve' || action === 'confirm'
+        ? 'Approving…'
+        : fallback;
+  const setBusy = (busy: boolean, ownerAction?: string): void => {
+    for (const button of buttons) {
+      const action = button.getAttribute(APPROVAL_CARD_ACTION_ATTR) ?? '';
+      const idleLabel = idleLabels.get(button) ?? button.textContent ?? '';
+      if (busy) {
+        button.setAttribute('aria-disabled', 'true');
+        if (action === ownerAction) {
+          button.setAttribute('aria-busy', 'true');
+          button.textContent = busyLabel(action, idleLabel);
+        } else {
+          button.removeAttribute('aria-busy');
+          button.textContent = idleLabel;
+        }
+      } else {
+        button.removeAttribute('aria-disabled');
+        button.removeAttribute('aria-busy');
+        button.textContent = idleLabel;
+      }
+    }
+  };
   /** A resolve button — fires `onResolve(decision)` behind the in-flight
    *  guard. `actionAttr` is decoupled from `decision` so the destructive
    *  "Confirm" carries its own hook while still resolving `approve`. */
@@ -524,10 +596,11 @@ export const renderApprovalCard = (
     btn.setAttribute(APPROVAL_CARD_ACTION_ATTR, actionAttr);
     btn.textContent = label;
     btn.disabled = options.disabled === true;
+    idleLabels.set(btn, label);
     btn.addEventListener('click', () => {
-      if (pending || btn.disabled) return;
+      if (pending || options.busy === true || btn.disabled) return;
       pending = true;
-      setDisabled(true);
+      setBusy(true, actionAttr);
       errorEl.hidden = true;
       void (async () => {
         try {
@@ -535,6 +608,7 @@ export const renderApprovalCard = (
         } catch {
           pending = false;
           setDisabled(options.disabled === true);
+          setBusy(options.busy === true, options.busyAction);
           errorEl.textContent =
             options.errorMessage ?? 'Could not resolve approval - try again.';
           errorEl.hidden = false;
@@ -558,8 +632,9 @@ export const renderApprovalCard = (
     btn.setAttribute(APPROVAL_CARD_ACTION_ATTR, actionAttr);
     btn.textContent = label;
     btn.disabled = options.disabled === true;
+    idleLabels.set(btn, label);
     btn.addEventListener('click', () => {
-      if (btn.disabled) return;
+      if (pending || options.busy === true || btn.disabled) return;
       onClick();
     });
     buttons.push(btn);
@@ -633,6 +708,7 @@ export const renderApprovalCard = (
   card.appendChild(actions);
   card.appendChild(statusEl);
   card.appendChild(errorEl);
+  setBusy(options.busy === true, options.busyAction);
   return card;
 };
 
@@ -660,13 +736,18 @@ export type ChatPlanCardDecision = 'approve' | 'reject';
 export interface ChatPlanCardHandlers {
   /** Approve → `chat.plan.approve`; Reject → `chat.plan.cancel` (the host maps
    *  the verb — the wire verb is unchanged, only the LABEL is "Reject", R20).
-   *  MAY be async: buttons disable while the promise is pending; a rejection
-   *  re-enables + shows the inline error. */
+   *  MAY be async: actions stay focusable but guarded while the promise is
+   *  pending; a rejection clears the guard + shows the inline error. */
   onResolve: (decision: ChatPlanCardDecision) => void | Promise<void>;
 }
 
 export interface ChatPlanCardOptions {
+  /** Permanently unavailable card. Transient progress belongs in `busy`. */
   disabled?: boolean;
+  /** Host-owned pending state, retained across composed-queue repaints. */
+  busy?: boolean;
+  /** Exact approve/reject action that owns the pending operation. */
+  busyAction?: ChatPlanCardDecision;
   errorMessage?: string | null;
   /** Durable address for reviewing the plan in its originating Chat. */
   chatHref?: string;
@@ -773,6 +854,7 @@ export const renderChatPlanCard = (
   const errorEl = doc.createElement('div');
   errorEl.className = 'rx-approval-card-error';
   errorEl.setAttribute(CHAT_PLAN_CARD_ERROR_ATTR, model.plan_id);
+  errorEl.setAttribute('role', 'alert');
   errorEl.textContent = options.errorMessage ?? 'Could not resolve plan - try again.';
   errorEl.hidden = options.errorMessage === undefined || options.errorMessage === null;
 
@@ -780,16 +862,34 @@ export const renderChatPlanCard = (
   actions.className = 'rx-approval-card-actions';
 
   const buttons: HTMLButtonElement[] = [];
-  let pending = false;
-  const setDisabled = (resolvePending: boolean): void => {
+  let pending = options.busy === true;
+  const setBusy = (
+    busy: boolean,
+    busyAction?: ChatPlanCardDecision,
+  ): void => {
     for (const b of buttons) {
-      b.disabled =
-        resolvePending
-        || options.disabled === true
+      const action = b.getAttribute(
+        CHAT_PLAN_CARD_ACTION_ATTR,
+      ) as ChatPlanCardDecision;
+      b.disabled = options.disabled === true
         || (
-          b.getAttribute(CHAT_PLAN_CARD_ACTION_ATTR) === 'approve'
+          action === 'approve'
           && !payloadAvailable
         );
+      if (busy) {
+        b.setAttribute('aria-disabled', 'true');
+        if (action === busyAction) {
+          b.setAttribute('aria-busy', 'true');
+          b.textContent = action === 'approve' ? 'Approving…' : 'Rejecting…';
+        } else {
+          b.removeAttribute('aria-busy');
+          b.textContent = action === 'approve' ? 'Approve' : 'Reject';
+        }
+      } else {
+        b.removeAttribute('aria-disabled');
+        b.removeAttribute('aria-busy');
+        b.textContent = action === 'approve' ? 'Approve' : 'Reject';
+      }
     }
   };
   const makeButton = (
@@ -809,16 +909,20 @@ export const renderChatPlanCard = (
       btn.title = 'Exact reviewed details are required before approval.';
     }
     btn.addEventListener('click', () => {
-      if (pending || btn.disabled) return;
+      if (
+        pending
+        || btn.disabled
+        || btn.getAttribute('aria-disabled') === 'true'
+      ) return;
       pending = true;
-      setDisabled(true);
+      setBusy(true, decision);
       errorEl.hidden = true;
       void (async () => {
         try {
           await handlers.onResolve(decision);
         } catch {
           pending = false;
-          setDisabled(false);
+          setBusy(false);
           errorEl.textContent =
             options.errorMessage ?? 'Could not resolve plan - try again.';
           errorEl.hidden = false;
@@ -836,6 +940,7 @@ export const renderChatPlanCard = (
   );
   card.appendChild(actions);
   card.appendChild(errorEl);
+  setBusy(pending, options.busyAction);
   return card;
 };
 
@@ -961,8 +1066,9 @@ export const ASK_CARD_STYLES = `
   background: var(--danger);
   color: var(--on-danger, #fff);
 }
-.rx-ask-card-btn:hover:not(:disabled) { filter: brightness(.96); }
-.rx-ask-card-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.rx-ask-card-btn:hover:not(:disabled):not([aria-disabled="true"]) { filter: brightness(.96); }
+.rx-ask-card-btn:disabled,
+.rx-ask-card-btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 .rx-ask-card-error {
   margin-top: 6px;
   font-size: 12px;
@@ -1059,8 +1165,9 @@ export const APPROVAL_CARD_STYLES = `
   background: var(--danger, var(--fail));
   color: var(--on-danger, #ffffff);
 }
-.rx-approval-card-btn:hover:not(:disabled) { opacity: 0.9; }
-.rx-approval-card-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.rx-approval-card-btn:hover:not(:disabled):not([aria-disabled="true"]) { opacity: 0.9; }
+.rx-approval-card-btn:disabled,
+.rx-approval-card-btn[aria-disabled="true"] { opacity: 0.5; cursor: not-allowed; }
 .rx-approval-card-caution {
   margin-top: 8px;
   font-size: 12px;

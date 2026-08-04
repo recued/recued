@@ -79,6 +79,10 @@ export const RUN_MODAL_STYLES = `
   color: var(--fg);
   border-bottom-color: var(--accent);
 }
+.run-modal-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
 .run-modal-body {
   display: grid;
   gap: 10px;
@@ -112,7 +116,8 @@ export const RUN_MODAL_STYLES = `
   font-weight: 600;
   cursor: pointer;
 }
-.run-modal-button:disabled {
+.run-modal-button:disabled,
+.run-modal-button[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.55;
 }

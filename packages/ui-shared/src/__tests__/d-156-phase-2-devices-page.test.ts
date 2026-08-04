@@ -284,17 +284,23 @@ describe('renderDevicesPage — inline revoke-confirm panel', () => {
     expect(confirmRowIdx).toBeGreaterThan(phoneRowIdx);
   });
 
-  it('revoking state disables both buttons + shows the Revoking… status', () => {
+  it('revoking state keeps the busy owner focusable while both actions are inert', () => {
     const html = renderDevicesPage(
       confirmingState({ revokingInstanceId: 'phone' }),
     );
     expect(html).toContain('Revoking…');
     expect(html).toContain('account-devices-confirm-status');
-    // Both buttons disabled while in flight.
+    // Both buttons remain focusable but inert while in flight; the initiating
+    // action also exposes its busy state and progress label.
     const confirmIdx = html.indexOf('data-action="confirm-revoke"');
     const cancelIdx = html.indexOf('data-action="cancel-revoke"');
-    expect(html.slice(confirmIdx, confirmIdx + 300)).toContain(' disabled');
-    expect(html.slice(cancelIdx, cancelIdx + 300)).toContain(' disabled');
+    const confirm = html.slice(confirmIdx, confirmIdx + 300);
+    const cancel = html.slice(cancelIdx, cancelIdx + 300);
+    expect(confirm).toContain('aria-disabled="true"');
+    expect(confirm).toContain('aria-busy="true"');
+    expect(confirm).not.toContain(' disabled');
+    expect(cancel).toContain('aria-disabled="true"');
+    expect(cancel).not.toContain(' disabled');
   });
 
   it('rpc failure surfaces the error inline while keeping the confirm panel open', () => {

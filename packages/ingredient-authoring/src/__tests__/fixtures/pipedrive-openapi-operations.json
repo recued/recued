@@ -73,7 +73,8 @@
       }
     },
     "pack_operation_counts": {
-      "pipedrive": 31,
+      "pipedrive": 20,
+      "pipedrive-core-v1": 11,
       "pipedrive-crm-products-v2": 66,
       "pipedrive-projects-fields-v2": 65,
       "pipedrive-sales-engagement-v1": 87,
@@ -581,10 +582,10 @@
         "person": 10,
         "organization": 8,
         "activity": 13,
-        "lead": 10,
-        "note": 8,
         "pipeline": 4,
         "stage": 6,
+        "lead": 10,
+        "note": 8,
         "user": 5
       },
       "dropped": []
@@ -1443,12 +1444,12 @@
   },
   "paths": {
     "v1": {
-      "/v1/activityFields": {
+      "/activityFields": {
         "get": {
           "operationId": "getActivityFields"
         }
       },
-      "/v1/activityTypes": {
+      "/activityTypes": {
         "get": {
           "operationId": "getActivityTypes"
         },
@@ -1456,7 +1457,7 @@
           "operationId": "addActivityType"
         }
       },
-      "/v1/activityTypes/{id}": {
+      "/activityTypes/{id}": {
         "delete": {
           "operationId": "deleteActivityType"
         },
@@ -1464,12 +1465,12 @@
           "operationId": "updateActivityType"
         }
       },
-      "/v1/billing/subscriptions/addons": {
+      "/billing/subscriptions/addons": {
         "get": {
           "operationId": "getCompanyAddons"
         }
       },
-      "/v1/callLogs": {
+      "/callLogs": {
         "post": {
           "operationId": "addCallLog"
         },
@@ -1477,7 +1478,7 @@
           "operationId": "getUserCallLogs"
         }
       },
-      "/v1/callLogs/{id}": {
+      "/callLogs/{id}": {
         "delete": {
           "operationId": "deleteCallLog"
         },
@@ -1485,87 +1486,87 @@
           "operationId": "getCallLog"
         }
       },
-      "/v1/callLogs/{id}/recordings": {
+      "/callLogs/{id}/recordings": {
         "post": {
           "operationId": "addCallLogAudioFile"
         }
       },
-      "/v1/channels": {
+      "/channels": {
         "post": {
           "operationId": "addChannel"
         }
       },
-      "/v1/channels/{id}": {
+      "/channels/{id}": {
         "delete": {
           "operationId": "deleteChannel"
         }
       },
-      "/v1/channels/messages/receive": {
+      "/channels/messages/receive": {
         "post": {
           "operationId": "receiveMessage"
         }
       },
-      "/v1/channels/{channel-id}/conversations/{conversation-id}": {
+      "/channels/{channel-id}/conversations/{conversation-id}": {
         "delete": {
           "operationId": "deleteConversation"
         }
       },
-      "/v1/currencies": {
+      "/currencies": {
         "get": {
           "operationId": "getCurrencies"
         }
       },
-      "/v1/deals/archived": {
+      "/deals/archived": {
         "get": {
           "operationId": "getArchivedDeals"
         }
       },
-      "/v1/deals/summary": {
+      "/deals/summary": {
         "get": {
           "operationId": "getDealsSummary"
         }
       },
-      "/v1/deals/summary/archived": {
+      "/deals/summary/archived": {
         "get": {
           "operationId": "getArchivedDealsSummary"
         }
       },
-      "/v1/deals/timeline": {
+      "/deals/timeline": {
         "get": {
           "operationId": "getDealsTimeline"
         }
       },
-      "/v1/deals/timeline/archived": {
+      "/deals/timeline/archived": {
         "get": {
           "operationId": "getArchivedDealsTimeline"
         }
       },
-      "/v1/deals/{id}/changelog": {
+      "/deals/{id}/changelog": {
         "get": {
           "operationId": "getDealChangelog"
         }
       },
-      "/v1/deals/{id}/duplicate": {
+      "/deals/{id}/duplicate": {
         "post": {
           "operationId": "duplicateDeal"
         }
       },
-      "/v1/deals/{id}/files": {
+      "/deals/{id}/files": {
         "get": {
           "operationId": "getDealFiles"
         }
       },
-      "/v1/deals/{id}/flow": {
+      "/deals/{id}/flow": {
         "get": {
           "operationId": "getDealUpdates"
         }
       },
-      "/v1/deals/{id}/participantsChangelog": {
+      "/deals/{id}/participantsChangelog": {
         "get": {
           "operationId": "getDealParticipantsChangelog"
         }
       },
-      "/v1/deals/{id}/followers": {
+      "/deals/{id}/followers": {
         "get": {
           "operationId": "getDealFollowers"
         },
@@ -1573,22 +1574,22 @@
           "operationId": "addDealFollower"
         }
       },
-      "/v1/deals/{id}/followers/{follower_id}": {
+      "/deals/{id}/followers/{follower_id}": {
         "delete": {
           "operationId": "deleteDealFollower"
         }
       },
-      "/v1/deals/{id}/mailMessages": {
+      "/deals/{id}/mailMessages": {
         "get": {
           "operationId": "getDealMailMessages"
         }
       },
-      "/v1/deals/{id}/merge": {
+      "/deals/{id}/merge": {
         "put": {
           "operationId": "mergeDeals"
         }
       },
-      "/v1/deals/{id}/participants": {
+      "/deals/{id}/participants": {
         "get": {
           "operationId": "getDealParticipants"
         },
@@ -1596,17 +1597,17 @@
           "operationId": "addDealParticipant"
         }
       },
-      "/v1/deals/{id}/participants/{deal_participant_id}": {
+      "/deals/{id}/participants/{deal_participant_id}": {
         "delete": {
           "operationId": "deleteDealParticipant"
         }
       },
-      "/v1/deals/{id}/permittedUsers": {
+      "/deals/{id}/permittedUsers": {
         "get": {
           "operationId": "getDealUsers"
         }
       },
-      "/v1/dealFields": {
+      "/dealFields": {
         "get": {
           "operationId": "getDealFields"
         },
@@ -1617,7 +1618,7 @@
           "operationId": "deleteDealFields"
         }
       },
-      "/v1/dealFields/{id}": {
+      "/dealFields/{id}": {
         "get": {
           "operationId": "getDealField"
         },
@@ -1628,7 +1629,7 @@
           "operationId": "updateDealField"
         }
       },
-      "/v1/files": {
+      "/files": {
         "get": {
           "operationId": "getFiles"
         },
@@ -1636,17 +1637,17 @@
           "operationId": "addFile"
         }
       },
-      "/v1/files/remote": {
+      "/files/remote": {
         "post": {
           "operationId": "addFileAndLinkIt"
         }
       },
-      "/v1/files/remoteLink": {
+      "/files/remoteLink": {
         "post": {
           "operationId": "linkFileToItem"
         }
       },
-      "/v1/files/{id}": {
+      "/files/{id}": {
         "delete": {
           "operationId": "deleteFile"
         },
@@ -1657,12 +1658,12 @@
           "operationId": "updateFile"
         }
       },
-      "/v1/files/{id}/download": {
+      "/files/{id}/download": {
         "get": {
           "operationId": "downloadFile"
         }
       },
-      "/v1/filters": {
+      "/filters": {
         "delete": {
           "operationId": "deleteFilters"
         },
@@ -1673,12 +1674,12 @@
           "operationId": "addFilter"
         }
       },
-      "/v1/filters/helpers": {
+      "/filters/helpers": {
         "get": {
           "operationId": "getFilterHelpers"
         }
       },
-      "/v1/filters/{id}": {
+      "/filters/{id}": {
         "delete": {
           "operationId": "deleteFilter"
         },
@@ -1689,17 +1690,17 @@
           "operationId": "updateFilter"
         }
       },
-      "/v1/goals": {
+      "/goals": {
         "post": {
           "operationId": "addGoal"
         }
       },
-      "/v1/goals/find": {
+      "/goals/find": {
         "get": {
           "operationId": "getGoals"
         }
       },
-      "/v1/goals/{id}": {
+      "/goals/{id}": {
         "put": {
           "operationId": "updateGoal"
         },
@@ -1707,12 +1708,12 @@
           "operationId": "deleteGoal"
         }
       },
-      "/v1/goals/{id}/results": {
+      "/goals/{id}/results": {
         "get": {
           "operationId": "getGoalResult"
         }
       },
-      "/v1/leads": {
+      "/leads": {
         "get": {
           "operationId": "getLeads"
         },
@@ -1720,12 +1721,12 @@
           "operationId": "addLead"
         }
       },
-      "/v1/leads/archived": {
+      "/leads/archived": {
         "get": {
           "operationId": "getArchivedLeads"
         }
       },
-      "/v1/leads/{id}": {
+      "/leads/{id}": {
         "get": {
           "operationId": "getLead"
         },
@@ -1736,22 +1737,22 @@
           "operationId": "deleteLead"
         }
       },
-      "/v1/leads/{id}/permittedUsers": {
+      "/leads/{id}/permittedUsers": {
         "get": {
           "operationId": "getLeadUsers"
         }
       },
-      "/v1/leads/search": {
+      "/leads/search": {
         "get": {
           "operationId": "searchLeads"
         }
       },
-      "/v1/leadFields": {
+      "/leadFields": {
         "get": {
           "operationId": "getLeadFields"
         }
       },
-      "/v1/leadLabels": {
+      "/leadLabels": {
         "get": {
           "operationId": "getLeadLabels"
         },
@@ -1759,7 +1760,7 @@
           "operationId": "addLeadLabel"
         }
       },
-      "/v1/leadLabels/{id}": {
+      "/leadLabels/{id}": {
         "patch": {
           "operationId": "updateLeadLabel"
         },
@@ -1767,12 +1768,12 @@
           "operationId": "deleteLeadLabel"
         }
       },
-      "/v1/leadSources": {
+      "/leadSources": {
         "get": {
           "operationId": "getLeadSources"
         }
       },
-      "/v1/legacyTeams": {
+      "/legacyTeams": {
         "get": {
           "operationId": "getTeams"
         },
@@ -1780,7 +1781,7 @@
           "operationId": "addTeam"
         }
       },
-      "/v1/legacyTeams/{id}": {
+      "/legacyTeams/{id}": {
         "get": {
           "operationId": "getTeam"
         },
@@ -1788,7 +1789,7 @@
           "operationId": "updateTeam"
         }
       },
-      "/v1/legacyTeams/{id}/users": {
+      "/legacyTeams/{id}/users": {
         "get": {
           "operationId": "getTeamUsers"
         },
@@ -1799,22 +1800,22 @@
           "operationId": "deleteTeamUser"
         }
       },
-      "/v1/legacyTeams/user/{id}": {
+      "/legacyTeams/user/{id}": {
         "get": {
           "operationId": "getUserTeams"
         }
       },
-      "/v1/mailbox/mailMessages/{id}": {
+      "/mailbox/mailMessages/{id}": {
         "get": {
           "operationId": "getMailMessage"
         }
       },
-      "/v1/mailbox/mailThreads": {
+      "/mailbox/mailThreads": {
         "get": {
           "operationId": "getMailThreads"
         }
       },
-      "/v1/mailbox/mailThreads/{id}": {
+      "/mailbox/mailThreads/{id}": {
         "delete": {
           "operationId": "deleteMailThread"
         },
@@ -1825,22 +1826,22 @@
           "operationId": "updateMailThreadDetails"
         }
       },
-      "/v1/mailbox/mailThreads/{id}/mailMessages": {
+      "/mailbox/mailThreads/{id}/mailMessages": {
         "get": {
           "operationId": "getMailThreadMessages"
         }
       },
-      "/v1/meetings/userProviderLinks": {
+      "/meetings/userProviderLinks": {
         "post": {
           "operationId": "saveUserProviderLink"
         }
       },
-      "/v1/meetings/userProviderLinks/{id}": {
+      "/meetings/userProviderLinks/{id}": {
         "delete": {
           "operationId": "deleteUserProviderLink"
         }
       },
-      "/v1/notes": {
+      "/notes": {
         "get": {
           "operationId": "getNotes"
         },
@@ -1848,7 +1849,7 @@
           "operationId": "addNote"
         }
       },
-      "/v1/notes/{id}": {
+      "/notes/{id}": {
         "delete": {
           "operationId": "deleteNote"
         },
@@ -1859,7 +1860,7 @@
           "operationId": "updateNote"
         }
       },
-      "/v1/notes/{id}/comments": {
+      "/notes/{id}/comments": {
         "get": {
           "operationId": "getNoteComments"
         },
@@ -1867,7 +1868,7 @@
           "operationId": "addNoteComment"
         }
       },
-      "/v1/notes/{id}/comments/{commentId}": {
+      "/notes/{id}/comments/{commentId}": {
         "get": {
           "operationId": "getComment"
         },
@@ -1878,42 +1879,42 @@
           "operationId": "deleteComment"
         }
       },
-      "/v1/noteFields": {
+      "/noteFields": {
         "get": {
           "operationId": "getNoteFields"
         }
       },
-      "/v1/oauth/authorize": {
+      "/oauth/authorize": {
         "get": {
           "operationId": "authorize"
         }
       },
-      "/v1/oauth/token": {
+      "/oauth/token": {
         "post": {
           "operationId": "get-tokens"
         }
       },
-      "/v1/oauth/token/": {
+      "/oauth/token/": {
         "post": {
           "operationId": "refresh-tokens"
         }
       },
-      "/v1/organizations/{id}/changelog": {
+      "/organizations/{id}/changelog": {
         "get": {
           "operationId": "getOrganizationChangelog"
         }
       },
-      "/v1/organizations/{id}/files": {
+      "/organizations/{id}/files": {
         "get": {
           "operationId": "getOrganizationFiles"
         }
       },
-      "/v1/organizations/{id}/flow": {
+      "/organizations/{id}/flow": {
         "get": {
           "operationId": "getOrganizationUpdates"
         }
       },
-      "/v1/organizations/{id}/followers": {
+      "/organizations/{id}/followers": {
         "get": {
           "operationId": "getOrganizationFollowers"
         },
@@ -1921,27 +1922,27 @@
           "operationId": "addOrganizationFollower"
         }
       },
-      "/v1/organizations/{id}/followers/{follower_id}": {
+      "/organizations/{id}/followers/{follower_id}": {
         "delete": {
           "operationId": "deleteOrganizationFollower"
         }
       },
-      "/v1/organizations/{id}/mailMessages": {
+      "/organizations/{id}/mailMessages": {
         "get": {
           "operationId": "getOrganizationMailMessages"
         }
       },
-      "/v1/organizations/{id}/merge": {
+      "/organizations/{id}/merge": {
         "put": {
           "operationId": "mergeOrganizations"
         }
       },
-      "/v1/organizations/{id}/permittedUsers": {
+      "/organizations/{id}/permittedUsers": {
         "get": {
           "operationId": "getOrganizationUsers"
         }
       },
-      "/v1/organizationFields": {
+      "/organizationFields": {
         "get": {
           "operationId": "getOrganizationFields"
         },
@@ -1952,7 +1953,7 @@
           "operationId": "deleteOrganizationFields"
         }
       },
-      "/v1/organizationFields/{id}": {
+      "/organizationFields/{id}": {
         "get": {
           "operationId": "getOrganizationField"
         },
@@ -1963,7 +1964,7 @@
           "operationId": "updateOrganizationField"
         }
       },
-      "/v1/organizationRelationships": {
+      "/organizationRelationships": {
         "get": {
           "operationId": "getOrganizationRelationships"
         },
@@ -1971,7 +1972,7 @@
           "operationId": "addOrganizationRelationship"
         }
       },
-      "/v1/organizationRelationships/{id}": {
+      "/organizationRelationships/{id}": {
         "delete": {
           "operationId": "deleteOrganizationRelationship"
         },
@@ -1982,37 +1983,37 @@
           "operationId": "updateOrganizationRelationship"
         }
       },
-      "/v1/permissionSets": {
+      "/permissionSets": {
         "get": {
           "operationId": "getPermissionSets"
         }
       },
-      "/v1/permissionSets/{id}": {
+      "/permissionSets/{id}": {
         "get": {
           "operationId": "getPermissionSet"
         }
       },
-      "/v1/permissionSets/{id}/assignments": {
+      "/permissionSets/{id}/assignments": {
         "get": {
           "operationId": "getPermissionSetAssignments"
         }
       },
-      "/v1/persons/{id}/changelog": {
+      "/persons/{id}/changelog": {
         "get": {
           "operationId": "getPersonChangelog"
         }
       },
-      "/v1/persons/{id}/files": {
+      "/persons/{id}/files": {
         "get": {
           "operationId": "getPersonFiles"
         }
       },
-      "/v1/persons/{id}/flow": {
+      "/persons/{id}/flow": {
         "get": {
           "operationId": "getPersonUpdates"
         }
       },
-      "/v1/persons/{id}/followers": {
+      "/persons/{id}/followers": {
         "get": {
           "operationId": "getPersonFollowers"
         },
@@ -2020,27 +2021,27 @@
           "operationId": "addPersonFollower"
         }
       },
-      "/v1/persons/{id}/followers/{follower_id}": {
+      "/persons/{id}/followers/{follower_id}": {
         "delete": {
           "operationId": "deletePersonFollower"
         }
       },
-      "/v1/persons/{id}/mailMessages": {
+      "/persons/{id}/mailMessages": {
         "get": {
           "operationId": "getPersonMailMessages"
         }
       },
-      "/v1/persons/{id}/merge": {
+      "/persons/{id}/merge": {
         "put": {
           "operationId": "mergePersons"
         }
       },
-      "/v1/persons/{id}/permittedUsers": {
+      "/persons/{id}/permittedUsers": {
         "get": {
           "operationId": "getPersonUsers"
         }
       },
-      "/v1/persons/{id}/picture": {
+      "/persons/{id}/picture": {
         "delete": {
           "operationId": "deletePersonPicture"
         },
@@ -2048,12 +2049,12 @@
           "operationId": "addPersonPicture"
         }
       },
-      "/v1/persons/{id}/products": {
+      "/persons/{id}/products": {
         "get": {
           "operationId": "getPersonProducts"
         }
       },
-      "/v1/personFields": {
+      "/personFields": {
         "get": {
           "operationId": "getPersonFields"
         },
@@ -2064,7 +2065,7 @@
           "operationId": "deletePersonFields"
         }
       },
-      "/v1/personFields/{id}": {
+      "/personFields/{id}": {
         "get": {
           "operationId": "getPersonField"
         },
@@ -2075,32 +2076,32 @@
           "operationId": "updatePersonField"
         }
       },
-      "/v1/pipelines/{id}/conversion_statistics": {
+      "/pipelines/{id}/conversion_statistics": {
         "get": {
           "operationId": "getPipelineConversionStatistics"
         }
       },
-      "/v1/pipelines/{id}/deals": {
+      "/pipelines/{id}/deals": {
         "get": {
           "operationId": "getPipelineDeals"
         }
       },
-      "/v1/pipelines/{id}/movement_statistics": {
+      "/pipelines/{id}/movement_statistics": {
         "get": {
           "operationId": "getPipelineMovementStatistics"
         }
       },
-      "/v1/products/{id}/deals": {
+      "/products/{id}/deals": {
         "get": {
           "operationId": "getProductDeals"
         }
       },
-      "/v1/products/{id}/files": {
+      "/products/{id}/files": {
         "get": {
           "operationId": "getProductFiles"
         }
       },
-      "/v1/products/{id}/followers": {
+      "/products/{id}/followers": {
         "get": {
           "operationId": "getProductFollowers"
         },
@@ -2108,17 +2109,17 @@
           "operationId": "addProductFollower"
         }
       },
-      "/v1/products/{id}/followers/{follower_id}": {
+      "/products/{id}/followers/{follower_id}": {
         "delete": {
           "operationId": "deleteProductFollower"
         }
       },
-      "/v1/products/{id}/permittedUsers": {
+      "/products/{id}/permittedUsers": {
         "get": {
           "operationId": "getProductUsers"
         }
       },
-      "/v1/productFields": {
+      "/productFields": {
         "delete": {
           "operationId": "deleteProductFields"
         },
@@ -2129,7 +2130,7 @@
           "operationId": "addProductField"
         }
       },
-      "/v1/productFields/{id}": {
+      "/productFields/{id}": {
         "delete": {
           "operationId": "deleteProductField"
         },
@@ -2140,7 +2141,7 @@
           "operationId": "updateProductField"
         }
       },
-      "/v1/projects": {
+      "/projects": {
         "get": {
           "operationId": "getProjects"
         },
@@ -2148,7 +2149,7 @@
           "operationId": "addProject"
         }
       },
-      "/v1/projects/{id}": {
+      "/projects/{id}": {
         "get": {
           "operationId": "getProject"
         },
@@ -2159,77 +2160,77 @@
           "operationId": "deleteProject"
         }
       },
-      "/v1/projects/{id}/archive": {
+      "/projects/{id}/archive": {
         "post": {
           "operationId": "archiveProject"
         }
       },
-      "/v1/projects/{id}/plan": {
+      "/projects/{id}/plan": {
         "get": {
           "operationId": "getProjectPlan"
         }
       },
-      "/v1/projects/{id}/plan/activities/{activityId}": {
+      "/projects/{id}/plan/activities/{activityId}": {
         "put": {
           "operationId": "putProjectPlanActivity"
         }
       },
-      "/v1/projects/{id}/plan/tasks/{taskId}": {
+      "/projects/{id}/plan/tasks/{taskId}": {
         "put": {
           "operationId": "putProjectPlanTask"
         }
       },
-      "/v1/projects/{id}/groups": {
+      "/projects/{id}/groups": {
         "get": {
           "operationId": "getProjectGroups"
         }
       },
-      "/v1/projects/{id}/tasks": {
+      "/projects/{id}/tasks": {
         "get": {
           "operationId": "getProjectTasks"
         }
       },
-      "/v1/projects/{id}/activities": {
+      "/projects/{id}/activities": {
         "get": {
           "operationId": "getProjectActivities"
         }
       },
-      "/v1/projects/boards": {
+      "/projects/boards": {
         "get": {
           "operationId": "getProjectsBoards"
         }
       },
-      "/v1/projects/boards/{id}": {
+      "/projects/boards/{id}": {
         "get": {
           "operationId": "getProjectsBoard"
         }
       },
-      "/v1/projects/phases": {
+      "/projects/phases": {
         "get": {
           "operationId": "getProjectsPhases"
         }
       },
-      "/v1/projects/phases/{id}": {
+      "/projects/phases/{id}": {
         "get": {
           "operationId": "getProjectsPhase"
         }
       },
-      "/v1/projectTemplates": {
+      "/projectTemplates": {
         "get": {
           "operationId": "getProjectTemplates"
         }
       },
-      "/v1/projectTemplates/{id}": {
+      "/projectTemplates/{id}": {
         "get": {
           "operationId": "getProjectTemplate"
         }
       },
-      "/v1/recents": {
+      "/recents": {
         "get": {
           "operationId": "getRecents"
         }
       },
-      "/v1/roles": {
+      "/roles": {
         "get": {
           "operationId": "getRoles"
         },
@@ -2237,7 +2238,7 @@
           "operationId": "addRole"
         }
       },
-      "/v1/roles/{id}": {
+      "/roles/{id}": {
         "delete": {
           "operationId": "deleteRole"
         },
@@ -2248,7 +2249,7 @@
           "operationId": "updateRole"
         }
       },
-      "/v1/roles/{id}/assignments": {
+      "/roles/{id}/assignments": {
         "delete": {
           "operationId": "deleteRoleAssignment"
         },
@@ -2259,7 +2260,7 @@
           "operationId": "addRoleAssignment"
         }
       },
-      "/v1/roles/{id}/settings": {
+      "/roles/{id}/settings": {
         "get": {
           "operationId": "getRoleSettings"
         },
@@ -2267,7 +2268,7 @@
           "operationId": "addOrUpdateRoleSetting"
         }
       },
-      "/v1/roles/{id}/pipelines": {
+      "/roles/{id}/pipelines": {
         "get": {
           "operationId": "getRolePipelines"
         },
@@ -2275,12 +2276,12 @@
           "operationId": "updateRolePipelines"
         }
       },
-      "/v1/stages/{id}/deals": {
+      "/stages/{id}/deals": {
         "get": {
           "operationId": "getStageDeals"
         }
       },
-      "/v1/tasks": {
+      "/tasks": {
         "get": {
           "operationId": "getTasks"
         },
@@ -2288,7 +2289,7 @@
           "operationId": "addTask"
         }
       },
-      "/v1/tasks/{id}": {
+      "/tasks/{id}": {
         "get": {
           "operationId": "getTask"
         },
@@ -2299,7 +2300,7 @@
           "operationId": "deleteTask"
         }
       },
-      "/v1/users": {
+      "/users": {
         "get": {
           "operationId": "getUsers"
         },
@@ -2307,17 +2308,17 @@
           "operationId": "addUser"
         }
       },
-      "/v1/users/find": {
+      "/users/find": {
         "get": {
           "operationId": "findUsersByName"
         }
       },
-      "/v1/users/me": {
+      "/users/me": {
         "get": {
           "operationId": "getCurrentUser"
         }
       },
-      "/v1/users/{id}": {
+      "/users/{id}": {
         "get": {
           "operationId": "getUser"
         },
@@ -2325,37 +2326,37 @@
           "operationId": "updateUser"
         }
       },
-      "/v1/users/{id}/followers": {
+      "/users/{id}/followers": {
         "get": {
           "operationId": "getUserFollowers"
         }
       },
-      "/v1/users/{id}/permissions": {
+      "/users/{id}/permissions": {
         "get": {
           "operationId": "getUserPermissions"
         }
       },
-      "/v1/users/{id}/roleAssignments": {
+      "/users/{id}/roleAssignments": {
         "get": {
           "operationId": "getUserRoleAssignments"
         }
       },
-      "/v1/users/{id}/roleSettings": {
+      "/users/{id}/roleSettings": {
         "get": {
           "operationId": "getUserRoleSettings"
         }
       },
-      "/v1/userConnections": {
+      "/userConnections": {
         "get": {
           "operationId": "getUserConnections"
         }
       },
-      "/v1/userSettings": {
+      "/userSettings": {
         "get": {
           "operationId": "getUserSettings"
         }
       },
-      "/v1/webhooks": {
+      "/webhooks": {
         "get": {
           "operationId": "getWebhooks"
         },
@@ -2363,14 +2364,14 @@
           "operationId": "addWebhook"
         }
       },
-      "/v1/webhooks/{id}": {
+      "/webhooks/{id}": {
         "delete": {
           "operationId": "deleteWebhook"
         }
       }
     },
     "v2": {
-      "/api/v2/activities": {
+      "/activities": {
         "get": {
           "operationId": "getActivities"
         },
@@ -2378,7 +2379,7 @@
           "operationId": "addActivity"
         }
       },
-      "/api/v2/activities/{id}": {
+      "/activities/{id}": {
         "delete": {
           "operationId": "deleteActivity"
         },
@@ -2389,17 +2390,17 @@
           "operationId": "updateActivity"
         }
       },
-      "/api/v2/activityFields": {
+      "/activityFields": {
         "get": {
           "operationId": "getActivityFields"
         }
       },
-      "/api/v2/activityFields/{field_code}": {
+      "/activityFields/{field_code}": {
         "get": {
           "operationId": "getActivityField"
         }
       },
-      "/api/v2/deals": {
+      "/deals": {
         "get": {
           "operationId": "getDeals"
         },
@@ -2407,12 +2408,12 @@
           "operationId": "addDeal"
         }
       },
-      "/api/v2/deals/archived": {
+      "/deals/archived": {
         "get": {
           "operationId": "getArchivedDeals"
         }
       },
-      "/api/v2/deals/{id}": {
+      "/deals/{id}": {
         "delete": {
           "operationId": "deleteDeal"
         },
@@ -2423,7 +2424,7 @@
           "operationId": "updateDeal"
         }
       },
-      "/api/v2/deals/{id}/followers": {
+      "/deals/{id}/followers": {
         "get": {
           "operationId": "getDealFollowers"
         },
@@ -2431,27 +2432,27 @@
           "operationId": "addDealFollower"
         }
       },
-      "/api/v2/deals/{id}/followers/changelog": {
+      "/deals/{id}/followers/changelog": {
         "get": {
           "operationId": "getDealFollowersChangelog"
         }
       },
-      "/api/v2/deals/{id}/followers/{follower_id}": {
+      "/deals/{id}/followers/{follower_id}": {
         "delete": {
           "operationId": "deleteDealFollower"
         }
       },
-      "/api/v2/deals/products": {
+      "/deals/products": {
         "get": {
           "operationId": "getDealsProducts"
         }
       },
-      "/api/v2/deals/search": {
+      "/deals/search": {
         "get": {
           "operationId": "searchDeals"
         }
       },
-      "/api/v2/deals/{id}/products": {
+      "/deals/{id}/products": {
         "get": {
           "operationId": "getDealProducts"
         },
@@ -2462,7 +2463,7 @@
           "operationId": "deleteManyDealProducts"
         }
       },
-      "/api/v2/deals/{id}/products/{product_attachment_id}": {
+      "/deals/{id}/products/{product_attachment_id}": {
         "patch": {
           "operationId": "updateDealProduct"
         },
@@ -2470,12 +2471,12 @@
           "operationId": "deleteDealProduct"
         }
       },
-      "/api/v2/deals/{id}/products/bulk": {
+      "/deals/{id}/products/bulk": {
         "post": {
           "operationId": "addManyDealProducts"
         }
       },
-      "/api/v2/deals/{id}/discounts": {
+      "/deals/{id}/discounts": {
         "get": {
           "operationId": "getAdditionalDiscounts"
         },
@@ -2483,7 +2484,7 @@
           "operationId": "postAdditionalDiscount"
         }
       },
-      "/api/v2/deals/{id}/discounts/{discount_id}": {
+      "/deals/{id}/discounts/{discount_id}": {
         "patch": {
           "operationId": "updateAdditionalDiscount"
         },
@@ -2491,17 +2492,17 @@
           "operationId": "deleteAdditionalDiscount"
         }
       },
-      "/api/v2/deals/installments": {
+      "/deals/installments": {
         "get": {
           "operationId": "getInstallments"
         }
       },
-      "/api/v2/deals/{id}/installments": {
+      "/deals/{id}/installments": {
         "post": {
           "operationId": "postInstallment"
         }
       },
-      "/api/v2/deals/{id}/installments/{installment_id}": {
+      "/deals/{id}/installments/{installment_id}": {
         "patch": {
           "operationId": "updateInstallment"
         },
@@ -2509,12 +2510,12 @@
           "operationId": "deleteInstallment"
         }
       },
-      "/api/v2/deals/{id}/convert/lead": {
+      "/deals/{id}/convert/lead": {
         "post": {
           "operationId": "convertDealToLead"
         }
       },
-      "/api/v2/dealFields": {
+      "/dealFields": {
         "get": {
           "operationId": "getDealFields"
         },
@@ -2522,7 +2523,7 @@
           "operationId": "addDealField"
         }
       },
-      "/api/v2/dealFields/{field_code}": {
+      "/dealFields/{field_code}": {
         "get": {
           "operationId": "getDealField"
         },
@@ -2533,7 +2534,7 @@
           "operationId": "deleteDealField"
         }
       },
-      "/api/v2/dealFields/{field_code}/options": {
+      "/dealFields/{field_code}/options": {
         "post": {
           "operationId": "addDealFieldOptions"
         },
@@ -2544,12 +2545,12 @@
           "operationId": "updateDealFieldOptions"
         }
       },
-      "/api/v2/deals/{id}/convert/status/{conversion_id}": {
+      "/deals/{id}/convert/status/{conversion_id}": {
         "get": {
           "operationId": "getDealConversionStatus"
         }
       },
-      "/api/v2/persons": {
+      "/persons": {
         "get": {
           "operationId": "getPersons"
         },
@@ -2557,7 +2558,7 @@
           "operationId": "addPerson"
         }
       },
-      "/api/v2/persons/{id}": {
+      "/persons/{id}": {
         "delete": {
           "operationId": "deletePerson"
         },
@@ -2568,7 +2569,7 @@
           "operationId": "updatePerson"
         }
       },
-      "/api/v2/persons/{id}/followers": {
+      "/persons/{id}/followers": {
         "get": {
           "operationId": "getPersonFollowers"
         },
@@ -2576,22 +2577,22 @@
           "operationId": "addPersonFollower"
         }
       },
-      "/api/v2/persons/{id}/followers/changelog": {
+      "/persons/{id}/followers/changelog": {
         "get": {
           "operationId": "getPersonFollowersChangelog"
         }
       },
-      "/api/v2/persons/{id}/followers/{follower_id}": {
+      "/persons/{id}/followers/{follower_id}": {
         "delete": {
           "operationId": "deletePersonFollower"
         }
       },
-      "/api/v2/persons/{id}/picture": {
+      "/persons/{id}/picture": {
         "get": {
           "operationId": "getPersonPicture"
         }
       },
-      "/api/v2/personFields": {
+      "/personFields": {
         "get": {
           "operationId": "getPersonFields"
         },
@@ -2599,7 +2600,7 @@
           "operationId": "addPersonField"
         }
       },
-      "/api/v2/personFields/{field_code}": {
+      "/personFields/{field_code}": {
         "get": {
           "operationId": "getPersonField"
         },
@@ -2610,7 +2611,7 @@
           "operationId": "deletePersonField"
         }
       },
-      "/api/v2/personFields/{field_code}/options": {
+      "/personFields/{field_code}/options": {
         "post": {
           "operationId": "addPersonFieldOptions"
         },
@@ -2621,7 +2622,7 @@
           "operationId": "updatePersonFieldOptions"
         }
       },
-      "/api/v2/organizations": {
+      "/organizations": {
         "get": {
           "operationId": "getOrganizations"
         },
@@ -2629,7 +2630,7 @@
           "operationId": "addOrganization"
         }
       },
-      "/api/v2/organizations/{id}": {
+      "/organizations/{id}": {
         "delete": {
           "operationId": "deleteOrganization"
         },
@@ -2640,7 +2641,7 @@
           "operationId": "updateOrganization"
         }
       },
-      "/api/v2/organizations/{id}/followers": {
+      "/organizations/{id}/followers": {
         "get": {
           "operationId": "getOrganizationFollowers"
         },
@@ -2648,17 +2649,17 @@
           "operationId": "addOrganizationFollower"
         }
       },
-      "/api/v2/organizations/{id}/followers/changelog": {
+      "/organizations/{id}/followers/changelog": {
         "get": {
           "operationId": "getOrganizationFollowersChangelog"
         }
       },
-      "/api/v2/organizations/{id}/followers/{follower_id}": {
+      "/organizations/{id}/followers/{follower_id}": {
         "delete": {
           "operationId": "deleteOrganizationFollower"
         }
       },
-      "/api/v2/organizationFields": {
+      "/organizationFields": {
         "get": {
           "operationId": "getOrganizationFields"
         },
@@ -2666,7 +2667,7 @@
           "operationId": "addOrganizationField"
         }
       },
-      "/api/v2/organizationFields/{field_code}": {
+      "/organizationFields/{field_code}": {
         "get": {
           "operationId": "getOrganizationField"
         },
@@ -2677,7 +2678,7 @@
           "operationId": "deleteOrganizationField"
         }
       },
-      "/api/v2/organizationFields/{field_code}/options": {
+      "/organizationFields/{field_code}/options": {
         "post": {
           "operationId": "addOrganizationFieldOptions"
         },
@@ -2688,7 +2689,7 @@
           "operationId": "updateOrganizationFieldOptions"
         }
       },
-      "/api/v2/products": {
+      "/products": {
         "get": {
           "operationId": "getProducts"
         },
@@ -2696,7 +2697,7 @@
           "operationId": "addProduct"
         }
       },
-      "/api/v2/products/{id}/followers": {
+      "/products/{id}/followers": {
         "get": {
           "operationId": "getProductFollowers"
         },
@@ -2704,22 +2705,22 @@
           "operationId": "addProductFollower"
         }
       },
-      "/api/v2/products/{id}/followers/changelog": {
+      "/products/{id}/followers/changelog": {
         "get": {
           "operationId": "getProductFollowersChangelog"
         }
       },
-      "/api/v2/products/{id}/followers/{follower_id}": {
+      "/products/{id}/followers/{follower_id}": {
         "delete": {
           "operationId": "deleteProductFollower"
         }
       },
-      "/api/v2/products/search": {
+      "/products/search": {
         "get": {
           "operationId": "searchProducts"
         }
       },
-      "/api/v2/products/{id}": {
+      "/products/{id}": {
         "delete": {
           "operationId": "deleteProduct"
         },
@@ -2730,12 +2731,12 @@
           "operationId": "updateProduct"
         }
       },
-      "/api/v2/products/{id}/duplicate": {
+      "/products/{id}/duplicate": {
         "post": {
           "operationId": "duplicateProduct"
         }
       },
-      "/api/v2/products/{id}/variations": {
+      "/products/{id}/variations": {
         "get": {
           "operationId": "getProductVariations"
         },
@@ -2743,7 +2744,7 @@
           "operationId": "addProductVariation"
         }
       },
-      "/api/v2/products/{id}/variations/{product_variation_id}": {
+      "/products/{id}/variations/{product_variation_id}": {
         "patch": {
           "operationId": "updateProductVariation"
         },
@@ -2751,7 +2752,7 @@
           "operationId": "deleteProductVariation"
         }
       },
-      "/api/v2/products/{id}/images": {
+      "/products/{id}/images": {
         "get": {
           "operationId": "getProductImage"
         },
@@ -2765,7 +2766,7 @@
           "operationId": "deleteProductImage"
         }
       },
-      "/api/v2/productFields": {
+      "/productFields": {
         "get": {
           "operationId": "getProductFields"
         },
@@ -2773,7 +2774,7 @@
           "operationId": "addProductField"
         }
       },
-      "/api/v2/productFields/{field_code}": {
+      "/productFields/{field_code}": {
         "get": {
           "operationId": "getProductField"
         },
@@ -2784,7 +2785,7 @@
           "operationId": "deleteProductField"
         }
       },
-      "/api/v2/productFields/{field_code}/options": {
+      "/productFields/{field_code}/options": {
         "post": {
           "operationId": "addProductFieldOptions"
         },
@@ -2795,42 +2796,42 @@
           "operationId": "updateProductFieldOptions"
         }
       },
-      "/api/v2/leads/search": {
+      "/leads/search": {
         "get": {
           "operationId": "searchLeads"
         }
       },
-      "/api/v2/leads/{id}/convert/deal": {
+      "/leads/{id}/convert/deal": {
         "post": {
           "operationId": "convertLeadToDeal"
         }
       },
-      "/api/v2/leads/{id}/convert/status/{conversion_id}": {
+      "/leads/{id}/convert/status/{conversion_id}": {
         "get": {
           "operationId": "getLeadConversionStatus"
         }
       },
-      "/api/v2/organizations/search": {
+      "/organizations/search": {
         "get": {
           "operationId": "searchOrganization"
         }
       },
-      "/api/v2/persons/search": {
+      "/persons/search": {
         "get": {
           "operationId": "searchPersons"
         }
       },
-      "/api/v2/itemSearch": {
+      "/itemSearch": {
         "get": {
           "operationId": "searchItem"
         }
       },
-      "/api/v2/itemSearch/field": {
+      "/itemSearch/field": {
         "get": {
           "operationId": "searchItemByField"
         }
       },
-      "/api/v2/stages": {
+      "/stages": {
         "get": {
           "operationId": "getStages"
         },
@@ -2838,7 +2839,7 @@
           "operationId": "addStage"
         }
       },
-      "/api/v2/stages/{id}": {
+      "/stages/{id}": {
         "delete": {
           "operationId": "deleteStage"
         },
@@ -2849,7 +2850,7 @@
           "operationId": "updateStage"
         }
       },
-      "/api/v2/pipelines": {
+      "/pipelines": {
         "get": {
           "operationId": "getPipelines"
         },
@@ -2857,7 +2858,7 @@
           "operationId": "addPipeline"
         }
       },
-      "/api/v2/pipelines/{id}": {
+      "/pipelines/{id}": {
         "delete": {
           "operationId": "deletePipeline"
         },
@@ -2868,7 +2869,7 @@
           "operationId": "updatePipeline"
         }
       },
-      "/api/v2/projectFields": {
+      "/projectFields": {
         "get": {
           "operationId": "getProjectFields"
         },
@@ -2876,7 +2877,7 @@
           "operationId": "addProjectField"
         }
       },
-      "/api/v2/projectFields/{field_code}": {
+      "/projectFields/{field_code}": {
         "get": {
           "operationId": "getProjectField"
         },
@@ -2887,7 +2888,7 @@
           "operationId": "deleteProjectField"
         }
       },
-      "/api/v2/projectFields/{field_code}/options": {
+      "/projectFields/{field_code}/options": {
         "post": {
           "operationId": "addProjectFieldOptions"
         },
@@ -2898,7 +2899,7 @@
           "operationId": "updateProjectFieldOptions"
         }
       },
-      "/api/v2/projects": {
+      "/projects": {
         "get": {
           "operationId": "getProjects"
         },
@@ -2906,12 +2907,12 @@
           "operationId": "addProject"
         }
       },
-      "/api/v2/projects/archived": {
+      "/projects/archived": {
         "get": {
           "operationId": "getArchivedProjects"
         }
       },
-      "/api/v2/projects/{id}": {
+      "/projects/{id}": {
         "get": {
           "operationId": "getProject"
         },
@@ -2922,37 +2923,37 @@
           "operationId": "deleteProject"
         }
       },
-      "/api/v2/projectTemplates": {
+      "/projectTemplates": {
         "get": {
           "operationId": "getProjectTemplates"
         }
       },
-      "/api/v2/projectTemplates/{id}": {
+      "/projectTemplates/{id}": {
         "get": {
           "operationId": "getProjectTemplate"
         }
       },
-      "/api/v2/projects/search": {
+      "/projects/search": {
         "get": {
           "operationId": "searchProjects"
         }
       },
-      "/api/v2/projects/{id}/archive": {
+      "/projects/{id}/archive": {
         "post": {
           "operationId": "archiveProject"
         }
       },
-      "/api/v2/projects/{id}/permittedUsers": {
+      "/projects/{id}/permittedUsers": {
         "get": {
           "operationId": "getProjectUsers"
         }
       },
-      "/api/v2/projects/{id}/changelog": {
+      "/projects/{id}/changelog": {
         "get": {
           "operationId": "getProjectChangelog"
         }
       },
-      "/api/v2/tasks": {
+      "/tasks": {
         "get": {
           "operationId": "getTasks"
         },
@@ -2960,7 +2961,7 @@
           "operationId": "addTask"
         }
       },
-      "/api/v2/tasks/{id}": {
+      "/tasks/{id}": {
         "get": {
           "operationId": "getTask"
         },
@@ -2971,7 +2972,7 @@
           "operationId": "deleteTask"
         }
       },
-      "/api/v2/boards": {
+      "/boards": {
         "get": {
           "operationId": "getProjectsBoards"
         },
@@ -2979,7 +2980,7 @@
           "operationId": "addProjectBoard"
         }
       },
-      "/api/v2/boards/{id}": {
+      "/boards/{id}": {
         "get": {
           "operationId": "getProjectsBoard"
         },
@@ -2990,7 +2991,7 @@
           "operationId": "deleteProjectBoard"
         }
       },
-      "/api/v2/phases": {
+      "/phases": {
         "get": {
           "operationId": "getProjectsPhases"
         },
@@ -2998,7 +2999,7 @@
           "operationId": "addProjectPhase"
         }
       },
-      "/api/v2/phases/{id}": {
+      "/phases/{id}": {
         "get": {
           "operationId": "getProjectsPhase"
         },
@@ -3009,7 +3010,7 @@
           "operationId": "deleteProjectPhase"
         }
       },
-      "/api/v2/users/{id}/followers": {
+      "/users/{id}/followers": {
         "get": {
           "operationId": "getUserFollowers"
         }
@@ -6427,6 +6428,1003 @@
       "risk": "admin",
       "approval": "always",
       "idempotency": "idempotent"
+    },
+    "pipedrive-core-v1.lead.create": {
+      "pack": "pipedrive-core-v1",
+      "ingredient": "pipedrive-catalog",
+      "version": "v1",
+      "op": "lead.create",
+      "operation_id": "addLead",
+      "method": "POST",
+      "path": "/leads",
+      "effective_path": "/v1/leads",
+      "wire_path": "/v1/leads",
+      "tags": [
+        "Leads"
+      ],
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": "object",
+        "writable_properties": [
+          "title",
+          "owner_id",
+          "label_ids",
+          "person_id",
+          "organization_id",
+          "value",
+          "expected_close_date",
+          "visible_to",
+          "was_seen",
+          "origin_id",
+          "channel",
+          "channel_id"
+        ],
+        "omitted_nested_int64_properties": [],
+        "raw_body": false
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "data",
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": {
+        "decimal_integer_fields": [
+          "owner_id",
+          "person_id",
+          "organization_id"
+        ]
+      },
+      "response_capture": null,
+      "required_scopes": [
+        "leads:full"
+      ],
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    "pipedrive-core-v1.lead.read": {
+      "pack": "pipedrive-core-v1",
+      "ingredient": "pipedrive-catalog",
+      "version": "v1",
+      "op": "lead.read",
+      "operation_id": "getLead",
+      "method": "GET",
+      "path": "/leads/{id}",
+      "effective_path": "/v1/leads/{id}",
+      "wire_path": "/v1/leads/{{lead_id}}",
+      "tags": [
+        "Leads"
+      ],
+      "parameters": [
+        {
+          "name": "id",
+          "wire_name": "id",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "lead_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "data",
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "required_scopes": [
+        "leads:read"
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "pipedrive-core-v1.lead.search": {
+      "pack": "pipedrive-core-v1",
+      "ingredient": "pipedrive-catalog",
+      "version": "v1",
+      "op": "lead.search",
+      "operation_id": "getLeads",
+      "method": "GET",
+      "path": "/leads",
+      "effective_path": "/v1/leads",
+      "wire_path": "/v1/leads",
+      "tags": [
+        "Leads"
+      ],
+      "parameters": [
+        {
+          "name": "limit",
+          "wire_name": "limit",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "number",
+          "admitted_name": "query.limit",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "start",
+          "wire_name": "start",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "number",
+          "admitted_name": "query.start",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "owner_id",
+          "wire_name": "owner_id",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "query.owner_id",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "person_id",
+          "wire_name": "person_id",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "query.person_id",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "organization_id",
+          "wire_name": "organization_id",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "query.organization_id",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "filter_id",
+          "wire_name": "filter_id",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "query.filter_id",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "updated_since",
+          "wire_name": "updated_since",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.updated_since",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "sort",
+          "wire_name": "sort",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.sort",
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "array"
+          },
+          "additional_data": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "start"
+        },
+        "start": 0,
+        "increment": "by_page_size",
+        "done_when": {
+          "path": "additional_data.more_items_in_collection",
+          "equals": false
+        }
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "required_scopes": [
+        "leads:read"
+      ],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "pipedrive-core-v1.lead.update": {
+      "pack": "pipedrive-core-v1",
+      "ingredient": "pipedrive-catalog",
+      "version": "v1",
+      "op": "lead.update",
+      "operation_id": "updateLead",
+      "method": "PATCH",
+      "path": "/leads/{id}",
+      "effective_path": "/v1/leads/{id}",
+      "wire_path": "/v1/leads/{{lead_id}}",
+      "tags": [
+        "Leads"
+      ],
+      "parameters": [
+        {
+          "name": "id",
+          "wire_name": "id",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "lead_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": "object",
+        "writable_properties": [
+          "title",
+          "owner_id",
+          "label_ids",
+          "person_id",
+          "organization_id",
+          "is_archived",
+          "value",
+          "expected_close_date",
+          "visible_to",
+          "was_seen",
+          "channel",
+          "channel_id"
+        ],
+        "omitted_nested_int64_properties": [],
+        "raw_body": false
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "data",
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": {
+        "decimal_integer_fields": [
+          "owner_id",
+          "person_id",
+          "organization_id"
+        ]
+      },
+      "response_capture": null,
+      "required_scopes": [
+        "leads:full"
+      ],
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "pipedrive-core-v1.note.create": {
+      "pack": "pipedrive-core-v1",
+      "ingredient": "pipedrive-catalog",
+      "version": "v1",
+      "op": "note.create",
+      "operation_id": "addNote",
+      "method": "POST",
+      "path": "/notes",
+      "effective_path": "/v1/notes",
+      "wire_path": "/v1/notes",
+      "tags": [
+        "Notes"
+      ],
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": null,
+        "writable_properties": [
+          "content",
+          "lead_id",
+          "deal_id",
+          "person_id",
+          "org_id",
+          "project_id",
+          "task_id",
+          "user_id",
+          "add_time",
+          "pinned_to_lead_flag",
+          "pinned_to_deal_flag",
+          "pinned_to_organization_flag",
+          "pinned_to_person_flag",
+          "pinned_to_project_flag",
+          "pinned_to_task_flag"
+        ],
+        "omitted_nested_int64_properties": [],
+        "raw_body": false
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "data",
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": {
+        "decimal_integer_fields": [
+          "deal_id",
+          "person_id",
+          "org_id",
+          "project_id",
+          "task_id",
+          "user_id"
+        ]
+      },
+      "response_capture": null,
+      "required_scopes": [
+        "deals:full"
+      ],
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    "pipedrive-core-v1.note.read": {
+      "pack": "pipedrive-core-v1",
+      "ingredient": "pipedrive-catalog",
+      "version": "v1",
+      "op": "note.read",
+      "operation_id": "getNote",
+      "method": "GET",
+      "path": "/notes/{id}",
+      "effective_path": "/v1/notes/{id}",
+      "wire_path": "/v1/notes/{{note_id}}",
+      "tags": [
+        "Notes"
+      ],
+      "parameters": [
+        {
+          "name": "id",
+          "wire_name": "id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "note_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "data",
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "required_scopes": [
+        "deals:read"
+      ],
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    "pipedrive-core-v1.note.search": {
+      "pack": "pipedrive-core-v1",
+      "ingredient": "pipedrive-catalog",
+      "version": "v1",
+      "op": "note.search",
+      "operation_id": "getNotes",
+      "method": "GET",
+      "path": "/notes",
+      "effective_path": "/v1/notes",
+      "wire_path": "/v1/notes",
+      "tags": [
+        "Notes"
+      ],
+      "parameters": [
+        {
+          "name": "user_id",
+          "wire_name": "user_id",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "query.user_id",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "lead_id",
+          "wire_name": "lead_id",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.lead_id",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "deal_id",
+          "wire_name": "deal_id",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "query.deal_id",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "person_id",
+          "wire_name": "person_id",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "query.person_id",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "org_id",
+          "wire_name": "org_id",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "query.org_id",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "project_id",
+          "wire_name": "project_id",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "query.project_id",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "task_id",
+          "wire_name": "task_id",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "query.task_id",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "start",
+          "wire_name": "start",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "number",
+          "admitted_name": "query.start",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "limit",
+          "wire_name": "limit",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "number",
+          "admitted_name": "query.limit",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "sort",
+          "wire_name": "sort",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.sort",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "start_date",
+          "wire_name": "start_date",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.start_date",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "end_date",
+          "wire_name": "end_date",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.end_date",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "updated_since",
+          "wire_name": "updated_since",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.updated_since",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "pinned_to_lead_flag",
+          "wire_name": "pinned_to_lead_flag",
+          "in": "query",
+          "official_type": "number",
+          "admitted_type": "number",
+          "admitted_name": "query.pinned_to_lead_flag",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "pinned_to_deal_flag",
+          "wire_name": "pinned_to_deal_flag",
+          "in": "query",
+          "official_type": "number",
+          "admitted_type": "number",
+          "admitted_name": "query.pinned_to_deal_flag",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "pinned_to_organization_flag",
+          "wire_name": "pinned_to_organization_flag",
+          "in": "query",
+          "official_type": "number",
+          "admitted_type": "number",
+          "admitted_name": "query.pinned_to_organization_flag",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "pinned_to_person_flag",
+          "wire_name": "pinned_to_person_flag",
+          "in": "query",
+          "official_type": "number",
+          "admitted_type": "number",
+          "admitted_name": "query.pinned_to_person_flag",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "pinned_to_project_flag",
+          "wire_name": "pinned_to_project_flag",
+          "in": "query",
+          "official_type": "number",
+          "admitted_type": "number",
+          "admitted_name": "query.pinned_to_project_flag",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "pinned_to_task_flag",
+          "wire_name": "pinned_to_task_flag",
+          "in": "query",
+          "official_type": "number",
+          "admitted_type": "number",
+          "admitted_name": "query.pinned_to_task_flag",
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "array"
+          },
+          "additional_data": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "data",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "start"
+        },
+        "start": 0,
+        "increment": "by_page_size",
+        "done_when": {
+          "path": "additional_data.pagination.more_items_in_collection",
+          "equals": false
+        }
+      },
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "required_scopes": [
+        "deals:read"
+      ],
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    "pipedrive-core-v1.note.update": {
+      "pack": "pipedrive-core-v1",
+      "ingredient": "pipedrive-catalog",
+      "version": "v1",
+      "op": "note.update",
+      "operation_id": "updateNote",
+      "method": "PUT",
+      "path": "/notes/{id}",
+      "effective_path": "/v1/notes/{id}",
+      "wire_path": "/v1/notes/{{note_id}}",
+      "tags": [
+        "Notes"
+      ],
+      "parameters": [
+        {
+          "name": "id",
+          "wire_name": "id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "note_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": "object",
+        "writable_properties": [
+          "content",
+          "lead_id",
+          "deal_id",
+          "person_id",
+          "org_id",
+          "project_id",
+          "task_id",
+          "user_id",
+          "add_time",
+          "pinned_to_lead_flag",
+          "pinned_to_deal_flag",
+          "pinned_to_organization_flag",
+          "pinned_to_person_flag",
+          "pinned_to_project_flag",
+          "pinned_to_task_flag"
+        ],
+        "omitted_nested_int64_properties": [],
+        "raw_body": false
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "data",
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": {
+        "decimal_integer_fields": [
+          "deal_id",
+          "person_id",
+          "org_id",
+          "project_id",
+          "task_id",
+          "user_id"
+        ]
+      },
+      "response_capture": null,
+      "required_scopes": [
+        "deals:full"
+      ],
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "pipedrive-core-v1.user.me": {
+      "pack": "pipedrive-core-v1",
+      "ingredient": "pipedrive-catalog",
+      "version": "v1",
+      "op": "user.me",
+      "operation_id": "getCurrentUser",
+      "method": "GET",
+      "path": "/users/me",
+      "effective_path": "/v1/users/me",
+      "wire_path": "/v1/users/me",
+      "tags": [
+        "Users"
+      ],
+      "parameters": [],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": null,
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "data",
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "required_scopes": [
+        "base"
+      ],
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    "pipedrive-core-v1.user.read": {
+      "pack": "pipedrive-core-v1",
+      "ingredient": "pipedrive-catalog",
+      "version": "v1",
+      "op": "user.read",
+      "operation_id": "getUser",
+      "method": "GET",
+      "path": "/users/{id}",
+      "effective_path": "/v1/users/{id}",
+      "wire_path": "/v1/users/{{user_id}}",
+      "tags": [
+        "Users"
+      ],
+      "parameters": [
+        {
+          "name": "id",
+          "wire_name": "id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "user_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": null,
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "data",
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "required_scopes": [
+        "users:read"
+      ],
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
+    },
+    "pipedrive-core-v1.user.search": {
+      "pack": "pipedrive-core-v1",
+      "ingredient": "pipedrive-catalog",
+      "version": "v1",
+      "op": "user.search",
+      "operation_id": "getUsers",
+      "method": "GET",
+      "path": "/users",
+      "effective_path": "/v1/users",
+      "wire_path": "/v1/users",
+      "tags": [
+        "Users"
+      ],
+      "parameters": [],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": null,
+        "properties": {
+          "success": {
+            "type": "boolean"
+          },
+          "data": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "data",
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "required_scopes": [
+        "users:read"
+      ],
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe"
     },
     "pipedrive-crm-products-v2.add_deal_follower": {
       "pack": "pipedrive-crm-products-v2",
@@ -24342,854 +25340,6 @@
       "approval": "always",
       "idempotency": "idempotent"
     },
-    "pipedrive.lead.create": {
-      "pack": "pipedrive",
-      "ingredient": "pipedrive-catalog",
-      "version": "v1",
-      "op": "lead.create",
-      "operation_id": "addLead",
-      "method": "POST",
-      "path": "/leads",
-      "effective_path": "/v1/leads",
-      "wire_path": "/v1/leads",
-      "tags": [
-        "Leads"
-      ],
-      "parameters": [],
-      "request": {
-        "documented_media": [
-          "application/json"
-        ],
-        "selected_media": "application/json",
-        "schema_type": "object",
-        "writable_properties": [
-          "title",
-          "owner_id",
-          "label_ids",
-          "person_id",
-          "organization_id",
-          "value",
-          "expected_close_date",
-          "visible_to",
-          "was_seen",
-          "origin_id",
-          "channel",
-          "channel_id"
-        ],
-        "omitted_nested_int64_properties": [],
-        "raw_body": false
-      },
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "data": {
-            "type": "object"
-          }
-        }
-      },
-      "result_path": "data",
-      "pagination": null,
-      "accept": "application/json",
-      "content_type": "application/json",
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": {
-        "decimal_integer_fields": [
-          "owner_id",
-          "person_id",
-          "organization_id"
-        ]
-      },
-      "response_capture": null,
-      "required_scopes": [
-        "leads:full"
-      ],
-      "risk": "write",
-      "approval": "always",
-      "idempotency": "non_idempotent"
-    },
-    "pipedrive.lead.read": {
-      "pack": "pipedrive",
-      "ingredient": "pipedrive-catalog",
-      "version": "v1",
-      "op": "lead.read",
-      "operation_id": "getLead",
-      "method": "GET",
-      "path": "/leads/{id}",
-      "effective_path": "/v1/leads/{id}",
-      "wire_path": "/v1/leads/{{lead_id}}",
-      "tags": [
-        "Leads"
-      ],
-      "parameters": [
-        {
-          "name": "id",
-          "wire_name": "id",
-          "in": "path",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "lead_id",
-          "required": true,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "data": {
-            "type": "object"
-          }
-        }
-      },
-      "result_path": "data",
-      "pagination": null,
-      "accept": "application/json",
-      "content_type": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": null,
-      "response_capture": null,
-      "required_scopes": [
-        "leads:read"
-      ],
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe"
-    },
-    "pipedrive.lead.search": {
-      "pack": "pipedrive",
-      "ingredient": "pipedrive-catalog",
-      "version": "v1",
-      "op": "lead.search",
-      "operation_id": "getLeads",
-      "method": "GET",
-      "path": "/leads",
-      "effective_path": "/v1/leads",
-      "wire_path": "/v1/leads",
-      "tags": [
-        "Leads"
-      ],
-      "parameters": [
-        {
-          "name": "limit",
-          "wire_name": "limit",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "number",
-          "admitted_name": "query.limit",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "start",
-          "wire_name": "start",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "number",
-          "admitted_name": "query.start",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "owner_id",
-          "wire_name": "owner_id",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "query.owner_id",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "person_id",
-          "wire_name": "person_id",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "query.person_id",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "organization_id",
-          "wire_name": "organization_id",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "query.organization_id",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "filter_id",
-          "wire_name": "filter_id",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "query.filter_id",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "updated_since",
-          "wire_name": "updated_since",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.updated_since",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "sort",
-          "wire_name": "sort",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.sort",
-          "required": false,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "data": {
-            "type": "array"
-          },
-          "additional_data": {
-            "type": "object"
-          }
-        }
-      },
-      "result_path": "data",
-      "pagination": {
-        "style": "offset",
-        "page_size": {
-          "placement": "query",
-          "param": "limit",
-          "value": 100
-        },
-        "param": {
-          "placement": "query",
-          "param": "start"
-        },
-        "start": 0,
-        "increment": "by_page_size",
-        "done_when": {
-          "path": "additional_data.more_items_in_collection",
-          "equals": false
-        }
-      },
-      "accept": "application/json",
-      "content_type": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": null,
-      "response_capture": null,
-      "required_scopes": [
-        "leads:read"
-      ],
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe"
-    },
-    "pipedrive.lead.update": {
-      "pack": "pipedrive",
-      "ingredient": "pipedrive-catalog",
-      "version": "v1",
-      "op": "lead.update",
-      "operation_id": "updateLead",
-      "method": "PATCH",
-      "path": "/leads/{id}",
-      "effective_path": "/v1/leads/{id}",
-      "wire_path": "/v1/leads/{{lead_id}}",
-      "tags": [
-        "Leads"
-      ],
-      "parameters": [
-        {
-          "name": "id",
-          "wire_name": "id",
-          "in": "path",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "lead_id",
-          "required": true,
-          "exposed": true
-        }
-      ],
-      "request": {
-        "documented_media": [
-          "application/json"
-        ],
-        "selected_media": "application/json",
-        "schema_type": "object",
-        "writable_properties": [
-          "title",
-          "owner_id",
-          "label_ids",
-          "person_id",
-          "organization_id",
-          "is_archived",
-          "value",
-          "expected_close_date",
-          "visible_to",
-          "was_seen",
-          "channel",
-          "channel_id"
-        ],
-        "omitted_nested_int64_properties": [],
-        "raw_body": false
-      },
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "data": {
-            "type": "object"
-          }
-        }
-      },
-      "result_path": "data",
-      "pagination": null,
-      "accept": "application/json",
-      "content_type": "application/json",
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": {
-        "decimal_integer_fields": [
-          "owner_id",
-          "person_id",
-          "organization_id"
-        ]
-      },
-      "response_capture": null,
-      "required_scopes": [
-        "leads:full"
-      ],
-      "risk": "write",
-      "approval": "always",
-      "idempotency": "idempotent"
-    },
-    "pipedrive.note.create": {
-      "pack": "pipedrive",
-      "ingredient": "pipedrive-catalog",
-      "version": "v1",
-      "op": "note.create",
-      "operation_id": "addNote",
-      "method": "POST",
-      "path": "/notes",
-      "effective_path": "/v1/notes",
-      "wire_path": "/v1/notes",
-      "tags": [
-        "Notes"
-      ],
-      "parameters": [],
-      "request": {
-        "documented_media": [
-          "application/json"
-        ],
-        "selected_media": "application/json",
-        "schema_type": null,
-        "writable_properties": [
-          "content",
-          "lead_id",
-          "deal_id",
-          "person_id",
-          "org_id",
-          "project_id",
-          "task_id",
-          "user_id",
-          "add_time",
-          "pinned_to_lead_flag",
-          "pinned_to_deal_flag",
-          "pinned_to_organization_flag",
-          "pinned_to_person_flag",
-          "pinned_to_project_flag",
-          "pinned_to_task_flag"
-        ],
-        "omitted_nested_int64_properties": [],
-        "raw_body": false
-      },
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "data": {
-            "type": "object"
-          }
-        }
-      },
-      "result_path": "data",
-      "pagination": null,
-      "accept": "application/json",
-      "content_type": "application/json",
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": {
-        "decimal_integer_fields": [
-          "deal_id",
-          "person_id",
-          "org_id",
-          "project_id",
-          "task_id",
-          "user_id"
-        ]
-      },
-      "response_capture": null,
-      "required_scopes": [
-        "deals:full"
-      ],
-      "risk": "write",
-      "approval": "always",
-      "idempotency": "non_idempotent"
-    },
-    "pipedrive.note.read": {
-      "pack": "pipedrive",
-      "ingredient": "pipedrive-catalog",
-      "version": "v1",
-      "op": "note.read",
-      "operation_id": "getNote",
-      "method": "GET",
-      "path": "/notes/{id}",
-      "effective_path": "/v1/notes/{id}",
-      "wire_path": "/v1/notes/{{note_id}}",
-      "tags": [
-        "Notes"
-      ],
-      "parameters": [
-        {
-          "name": "id",
-          "wire_name": "id",
-          "in": "path",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "note_id",
-          "required": true,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "data": {
-            "type": "object"
-          }
-        }
-      },
-      "result_path": "data",
-      "pagination": null,
-      "accept": "application/json",
-      "content_type": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": null,
-      "response_capture": null,
-      "required_scopes": [
-        "deals:read"
-      ],
-      "risk": "read",
-      "approval": "ask",
-      "idempotency": "safe"
-    },
-    "pipedrive.note.search": {
-      "pack": "pipedrive",
-      "ingredient": "pipedrive-catalog",
-      "version": "v1",
-      "op": "note.search",
-      "operation_id": "getNotes",
-      "method": "GET",
-      "path": "/notes",
-      "effective_path": "/v1/notes",
-      "wire_path": "/v1/notes",
-      "tags": [
-        "Notes"
-      ],
-      "parameters": [
-        {
-          "name": "user_id",
-          "wire_name": "user_id",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "query.user_id",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "lead_id",
-          "wire_name": "lead_id",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.lead_id",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "deal_id",
-          "wire_name": "deal_id",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "query.deal_id",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "person_id",
-          "wire_name": "person_id",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "query.person_id",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "org_id",
-          "wire_name": "org_id",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "query.org_id",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "project_id",
-          "wire_name": "project_id",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "query.project_id",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "task_id",
-          "wire_name": "task_id",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "query.task_id",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "start",
-          "wire_name": "start",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "number",
-          "admitted_name": "query.start",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "limit",
-          "wire_name": "limit",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "number",
-          "admitted_name": "query.limit",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "sort",
-          "wire_name": "sort",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.sort",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "start_date",
-          "wire_name": "start_date",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.start_date",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "end_date",
-          "wire_name": "end_date",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.end_date",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "updated_since",
-          "wire_name": "updated_since",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.updated_since",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "pinned_to_lead_flag",
-          "wire_name": "pinned_to_lead_flag",
-          "in": "query",
-          "official_type": "number",
-          "admitted_type": "number",
-          "admitted_name": "query.pinned_to_lead_flag",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "pinned_to_deal_flag",
-          "wire_name": "pinned_to_deal_flag",
-          "in": "query",
-          "official_type": "number",
-          "admitted_type": "number",
-          "admitted_name": "query.pinned_to_deal_flag",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "pinned_to_organization_flag",
-          "wire_name": "pinned_to_organization_flag",
-          "in": "query",
-          "official_type": "number",
-          "admitted_type": "number",
-          "admitted_name": "query.pinned_to_organization_flag",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "pinned_to_person_flag",
-          "wire_name": "pinned_to_person_flag",
-          "in": "query",
-          "official_type": "number",
-          "admitted_type": "number",
-          "admitted_name": "query.pinned_to_person_flag",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "pinned_to_project_flag",
-          "wire_name": "pinned_to_project_flag",
-          "in": "query",
-          "official_type": "number",
-          "admitted_type": "number",
-          "admitted_name": "query.pinned_to_project_flag",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "pinned_to_task_flag",
-          "wire_name": "pinned_to_task_flag",
-          "in": "query",
-          "official_type": "number",
-          "admitted_type": "number",
-          "admitted_name": "query.pinned_to_task_flag",
-          "required": false,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "data": {
-            "type": "array"
-          },
-          "additional_data": {
-            "type": "object"
-          }
-        }
-      },
-      "result_path": "data",
-      "pagination": {
-        "style": "offset",
-        "page_size": {
-          "placement": "query",
-          "param": "limit",
-          "value": 100
-        },
-        "param": {
-          "placement": "query",
-          "param": "start"
-        },
-        "start": 0,
-        "increment": "by_page_size",
-        "done_when": {
-          "path": "additional_data.pagination.more_items_in_collection",
-          "equals": false
-        }
-      },
-      "accept": "application/json",
-      "content_type": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": null,
-      "response_capture": null,
-      "required_scopes": [
-        "deals:read"
-      ],
-      "risk": "read",
-      "approval": "ask",
-      "idempotency": "safe"
-    },
-    "pipedrive.note.update": {
-      "pack": "pipedrive",
-      "ingredient": "pipedrive-catalog",
-      "version": "v1",
-      "op": "note.update",
-      "operation_id": "updateNote",
-      "method": "PUT",
-      "path": "/notes/{id}",
-      "effective_path": "/v1/notes/{id}",
-      "wire_path": "/v1/notes/{{note_id}}",
-      "tags": [
-        "Notes"
-      ],
-      "parameters": [
-        {
-          "name": "id",
-          "wire_name": "id",
-          "in": "path",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "note_id",
-          "required": true,
-          "exposed": true
-        }
-      ],
-      "request": {
-        "documented_media": [
-          "application/json"
-        ],
-        "selected_media": "application/json",
-        "schema_type": "object",
-        "writable_properties": [
-          "content",
-          "lead_id",
-          "deal_id",
-          "person_id",
-          "org_id",
-          "project_id",
-          "task_id",
-          "user_id",
-          "add_time",
-          "pinned_to_lead_flag",
-          "pinned_to_deal_flag",
-          "pinned_to_organization_flag",
-          "pinned_to_person_flag",
-          "pinned_to_project_flag",
-          "pinned_to_task_flag"
-        ],
-        "omitted_nested_int64_properties": [],
-        "raw_body": false
-      },
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "data": {
-            "type": "object"
-          }
-        }
-      },
-      "result_path": "data",
-      "pagination": null,
-      "accept": "application/json",
-      "content_type": "application/json",
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": {
-        "decimal_integer_fields": [
-          "deal_id",
-          "person_id",
-          "org_id",
-          "project_id",
-          "task_id",
-          "user_id"
-        ]
-      },
-      "response_capture": null,
-      "required_scopes": [
-        "deals:full"
-      ],
-      "risk": "write",
-      "approval": "always",
-      "idempotency": "idempotent"
-    },
     "pipedrive.organization.create": {
       "pack": "pipedrive",
       "ingredient": "pipedrive-catalog",
@@ -26420,155 +26570,6 @@
       ],
       "risk": "read",
       "approval": "never",
-      "idempotency": "safe"
-    },
-    "pipedrive.user.me": {
-      "pack": "pipedrive",
-      "ingredient": "pipedrive-catalog",
-      "version": "v1",
-      "op": "user.me",
-      "operation_id": "getCurrentUser",
-      "method": "GET",
-      "path": "/users/me",
-      "effective_path": "/v1/users/me",
-      "wire_path": "/v1/users/me",
-      "tags": [
-        "Users"
-      ],
-      "parameters": [],
-      "request": null,
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": null,
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "data": {
-            "type": "object"
-          }
-        }
-      },
-      "result_path": "data",
-      "pagination": null,
-      "accept": "application/json",
-      "content_type": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": null,
-      "response_capture": null,
-      "required_scopes": [
-        "base"
-      ],
-      "risk": "read",
-      "approval": "ask",
-      "idempotency": "safe"
-    },
-    "pipedrive.user.read": {
-      "pack": "pipedrive",
-      "ingredient": "pipedrive-catalog",
-      "version": "v1",
-      "op": "user.read",
-      "operation_id": "getUser",
-      "method": "GET",
-      "path": "/users/{id}",
-      "effective_path": "/v1/users/{id}",
-      "wire_path": "/v1/users/{{user_id}}",
-      "tags": [
-        "Users"
-      ],
-      "parameters": [
-        {
-          "name": "id",
-          "wire_name": "id",
-          "in": "path",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "user_id",
-          "required": true,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": null,
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "data": {
-            "type": "object"
-          }
-        }
-      },
-      "result_path": "data",
-      "pagination": null,
-      "accept": "application/json",
-      "content_type": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": null,
-      "response_capture": null,
-      "required_scopes": [
-        "users:read"
-      ],
-      "risk": "read",
-      "approval": "ask",
-      "idempotency": "safe"
-    },
-    "pipedrive.user.search": {
-      "pack": "pipedrive",
-      "ingredient": "pipedrive-catalog",
-      "version": "v1",
-      "op": "user.search",
-      "operation_id": "getUsers",
-      "method": "GET",
-      "path": "/users",
-      "effective_path": "/v1/users",
-      "wire_path": "/v1/users",
-      "tags": [
-        "Users"
-      ],
-      "parameters": [],
-      "request": null,
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": null,
-        "properties": {
-          "success": {
-            "type": "boolean"
-          },
-          "data": {
-            "type": "array"
-          }
-        }
-      },
-      "result_path": "data",
-      "pagination": null,
-      "accept": "application/json",
-      "content_type": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": null,
-      "response_capture": null,
-      "required_scopes": [
-        "users:read"
-      ],
-      "risk": "read",
-      "approval": "ask",
       "idempotency": "safe"
     }
   }

@@ -50,6 +50,7 @@ import { describe, expect, it } from 'vitest';
 import {
   PACKS_DIALOG_ATTR,
   PACKS_DIALOG_INSTALL_BTN_ATTR,
+  PACKS_RETRY_BTN_ATTR,
   PACKS_ROW_DELETE_BTN_ATTR,
   PACKS_ROW_DELETE_CANCEL_BTN_ATTR,
   PACKS_ROW_DELETE_CONFIRM_BTN_ATTR,
@@ -93,10 +94,15 @@ interface FakeElement {
   remove(): void;
   addEventListener(name: string, fn: (ev: unknown) => void): void;
   removeEventListener(name: string, fn: (ev: unknown) => void): void;
+  contains(el: FakeElement): boolean;
+  focus(): void;
   click(): void;
 }
 
-const makeFakeElement = (tagName: string): FakeElement => {
+const makeFakeElement = (
+  tagName: string,
+  onFocus?: (el: FakeElement) => void,
+): FakeElement => {
   const listeners = new Map<string, Array<(ev: unknown) => void>>();
   const attrs = new Map<string, string>();
   const children: FakeElement[] = [];
@@ -145,6 +151,9 @@ const makeFakeElement = (tagName: string): FakeElement => {
       const idx = arr.indexOf(fn);
       if (idx >= 0) arr.splice(idx, 1);
     },
+    contains: (target) =>
+      target === el || children.some((child) => child.contains(target)),
+    focus: () => onFocus?.(el),
     click: () => {
       const arr = listeners.get('click') ?? [];
       for (const fn of arr) fn({ target: el });
@@ -154,12 +163,19 @@ const makeFakeElement = (tagName: string): FakeElement => {
 };
 
 interface FakeDocument {
+  activeElement: FakeElement | null;
   createElement(tag: string): FakeElement;
 }
 
-const makeFakeDocument = (): FakeDocument => ({
-  createElement: (tag) => makeFakeElement(tag),
-});
+const makeFakeDocument = (): FakeDocument => {
+  const doc: FakeDocument = {
+    activeElement: null,
+    createElement: (tag) => makeFakeElement(tag, (element) => {
+      doc.activeElement = element;
+    }),
+  };
+  return doc;
+};
 
 const findByAttr = (root: FakeElement, attr: string): FakeElement | null => {
   if (root.hasAttribute(attr)) return root;
@@ -222,6 +238,10 @@ const baseEntry = (overrides: Partial<PackListEntry> = {}): PackListEntry => {
     installed: false,
     requires: [...manifest.requires],
     recipe_count: manifest.recipes.length,
+    recipe_refs: manifest.recipes.map((r) => ({ slug: r.slug, version: r.version })),
+    body_visibility_grant_keys: [...(manifest.mcp_body_visibility_grants ?? [])],
+    ...(typeof manifest.service_kind === 'string' ? { service_kind: manifest.service_kind } : {}),
+    ...(typeof manifest.repo === 'string' ? { repo: manifest.repo } : {}),
     body_visibility_grant_count:
       manifest.mcp_body_visibility_grants?.length ?? 0,
     manifest,
@@ -504,6 +524,31 @@ describe('D-145 PA10 follow-on Slice B — uninstall rpc', () => {
     expect(pack!.installed).toBe(false);
   });
 
+  it('hands a failed post-uninstall refresh to Retry', async () => {
+    let listCall = 0;
+    const entry = installedEntry();
+    const { doc, host, mount } = setupMount([entry], {
+      runList: async () => {
+        listCall += 1;
+        if (listCall === 1) return { packs: [entry] };
+        throw new Error('post-uninstall list unavailable');
+      },
+    });
+    await mount.whenLoaded();
+    mount.clickDelete('test-pack');
+    findByAttrValue(
+      host,
+      PACKS_ROW_DELETE_CONFIRM_BTN_ATTR,
+      'test-pack',
+    )!.focus();
+
+    await mount.clickConfirmDelete();
+
+    const retry = findByAttr(host, PACKS_RETRY_BTN_ATTR);
+    expect(retry).not.toBeNull();
+    expect(doc.activeElement).toBe(retry);
+  });
+
   it('ok=false response with known failure code renders mapped copy', async () => {
     const { host, mount } = setupMount([installedEntry()], {
       runUninstall: async () => ({
@@ -575,7 +620,7 @@ describe('D-145 PA10 follow-on Slice B — uninstall rpc', () => {
     expect(errChip!.textContent).toContain('socket exploded');
   });
 
-  it('Confirm button shows "Deleting…" + disabled while rpc in flight', async () => {
+  it('Confirm button stays focusable but aria-disabled while rpc is in flight', async () => {
     let resolveRpc: (v: { result: BulkPackUninstallResultLike }) => void = () => {};
     const { host, mount } = setupMount([installedEntry()], {
       runUninstall: () =>
@@ -594,7 +639,9 @@ describe('D-145 PA10 follow-on Slice B — uninstall rpc', () => {
       'test-pack',
     );
     expect(confirmBtn!.textContent).toBe('Deleting…');
-    expect(confirmBtn!.disabled).toBe(true);
+    expect(confirmBtn!.disabled).toBe(false);
+    expect(confirmBtn!.getAttribute('aria-disabled')).toBe('true');
+    expect(confirmBtn!.getAttribute('aria-busy')).toBe('true');
     // Resolve the rpc + drain.
     resolveRpc({ result: okUninstallResult() });
     await pending;

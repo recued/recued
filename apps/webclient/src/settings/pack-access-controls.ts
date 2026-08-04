@@ -262,6 +262,17 @@ export const createPackAccessController = (
   /** The pack's slice of the op universe (recomputed at click time so a bulk
    *  runner never acts on a stale render snapshot). */
   const entriesForManifest = (manifest: BulkPackManifest): GrantUniverseEntry[] => {
+    // ⛔ Prefer the server's OWNERSHIP claim. Deriving membership from the
+    // manifest's composition slug works only while a pack's catalog is named
+    // after it, and a Records pack's is not — it registers as `records-<hash>`,
+    // so this filter matched NOTHING and the whole Access matrix rendered empty
+    // for every Records pack. That is worse than cosmetic: the install-time
+    // access tier is only a starting point, and this panel is the surface that
+    // widens it afterwards. With it empty there was no way to widen at all.
+    const claimed = universe.filter((e) => e.packSlug === manifest.slug);
+    if (claimed.length > 0) return claimed;
+    // Fallback: an ingredient with no inventory row, or a server too old to
+    // report ownership.
     const slugs = new Set(packCompositionSlugs(manifest));
     return universe.filter(
       (e) => e.ingredientId !== undefined && slugs.has(e.ingredientId),
@@ -638,8 +649,14 @@ export const createPackAccessController = (
   };
 
   // ── R3b render pieces ─────────────────────────────────────────────
+  // Access grants only exist for an INSTALLED pack, and `packs.list` forwards a
+  // manifest exactly then (see `PackListEntry.manifest`). These helpers all need
+  // it, so the requirement lives in the type and `renderForPack` narrows once
+  // rather than each helper re-checking.
+  type PackWithManifest = PackListEntry & { manifest: BulkPackManifest };
+
   const renderScopeRow = (
-    pack: PackListEntry,
+    pack: PackWithManifest,
     entries: ReadonlyArray<GrantUniverseEntry>,
   ): HTMLElement => {
     const scope = deriveScope(entries);
@@ -687,7 +704,7 @@ export const createPackAccessController = (
   };
 
   const renderAllOpsSelect = (
-    pack: PackListEntry,
+    pack: PackWithManifest,
     contractId: string,
   ): HTMLElement => {
     const select = doc.createElement('select') as HTMLSelectElement;
@@ -718,7 +735,7 @@ export const createPackAccessController = (
   };
 
   const renderAddAffordance = (
-    pack: PackListEntry,
+    pack: PackWithManifest,
     entries: ReadonlyArray<GrantUniverseEntry>,
   ): HTMLElement => {
     const wrap = doc.createElement('div');
@@ -796,7 +813,9 @@ export const createPackAccessController = (
 
   const renderForPack = (pack: PackListEntry): HTMLElement | null => {
     if (!enabled) return null;
-    const entries = entriesForManifest(pack.manifest);
+    if (pack.manifest === undefined) return null;
+    const installedPack: PackWithManifest = { ...pack, manifest: pack.manifest };
+    const entries = entriesForManifest(installedPack.manifest);
     // Recipe-only / cli-less pack with no catalog ops — nothing to grant; the
     // detail keeps its placeholder copy. (While the first load is still in
     // flight the universe is empty too — same fallback, repainted onChange.)
@@ -835,7 +854,7 @@ export const createPackAccessController = (
     // plain R3 per-cell look (codex R3b LOW — a disabled radio row would
     // contradict the render-only-when-writable invariant).
     const bulkOk = bulkWritable(entries);
-    if (bulkOk) section.appendChild(renderScopeRow(pack, entries));
+    if (bulkOk) section.appendChild(renderScopeRow(installedPack, entries));
 
     for (const contract of contracts) {
       const isExpanded = expanded.has(contract.contract_id);
@@ -890,7 +909,7 @@ export const createPackAccessController = (
       });
       head.appendChild(header);
       if (isExpanded && bulkOk) {
-        head.appendChild(renderAllOpsSelect(pack, contract.contract_id));
+        head.appendChild(renderAllOpsSelect(installedPack, contract.contract_id));
       }
       group.appendChild(head);
 
@@ -902,7 +921,7 @@ export const createPackAccessController = (
       }
       section.appendChild(group);
     }
-    if (bulkOk) section.appendChild(renderAddAffordance(pack, entries));
+    if (bulkOk) section.appendChild(renderAddAffordance(installedPack, entries));
     return section;
   };
 

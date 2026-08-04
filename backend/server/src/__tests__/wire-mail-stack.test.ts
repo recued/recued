@@ -339,8 +339,10 @@ describe('composeMailBoot', () => {
     expect(accountStoreDouble).not.toBe(accountStore);
     if (!accountStoreDouble) throw new Error('bundle.accountStore was not wired');
     await expect(accountStoreDouble.get('k')).resolves.toBe('real');
+    await expect(accountStoreDouble.getAll?.()).resolves.toEqual({ k: 'real' });
     expect(accountStore.get).toHaveBeenCalledTimes(1);
     expect(accountStore.get).toHaveBeenCalledWith('k');
+    expect(accountStore.getAll).toHaveBeenCalledTimes(1);
   });
 
   it('bundle oauthConfig delegates to the injected per-use resolver', () => {

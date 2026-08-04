@@ -69,6 +69,7 @@ import {
   COMMITMENT_FULFILL_ALLOWED_EXPIRY_POLICIES,
   COMMITMENT_FULFILL_FROM_STATES,
   parseQualifiedWorkEntityId,
+  qualifyWorkEntityId,
   QualifiedWorkEntityIdError,
   isTaskIdempotencyKey,
   RECUED_BUILTIN_SOURCE_ID,
@@ -104,14 +105,17 @@ import {
   type WorkEntityStore,
 } from './storage/work-entity-store.js';
 import { classifyCommitmentDueStatus } from './work-entity-due-status-sweep.js';
+import { readThroughSourceIds } from './work-entity-read-resolution.js';
 import type { WorkEntityResolver } from './work-entity-resolver.js';
 import type {
   WorkEntitySourceWriteExecutor,
+  WorkEntityReadThroughWriteDispatchOutcome,
   WorkEntityVendorWriteDispatchOutcome,
   WorkEntityVendorWriteOperation,
   WorkEntityVendorWritePrepared,
   WorkEntityVendorWriteStamp,
 } from './work-entity-write-executor.js';
+import type { ProjectedWorkEntityUpsert } from './work-entity-source-projector.js';
 import type { PromptDependencyAsk } from './source-dependency-resolver.js';
 
 /** Thrown when a write is attempted against a Source that has not
@@ -379,6 +383,74 @@ export class WorkEntityNotFoundError extends Error {
   }
 }
 
+interface ReadThroughWriteTarget {
+  source: SourceRegistration;
+  source_record_id: string;
+  qualified_id: string;
+}
+
+/** Recognise the one qualified-id shape that must bypass local-row lookup.
+ * Wrong-kind and local-only spellings fail loudly before a provider call; a
+ * mirrored Source returns null and continues through the established local-row
+ * path. */
+const resolveReadThroughWriteTarget = (
+  deps: WorkEntityIngredientDeps,
+  kind: WorkEntityKind,
+  rawId: string,
+): ReadThroughWriteTarget | null => {
+  const qualified = parseQualifiedWorkEntityId(rawId);
+  if (qualified === null) return null;
+  if (qualified.kind !== kind) {
+    throw new QualifiedWorkEntityIdError(
+      'QUALIFIED_ID_KIND_MISMATCH',
+      `QUALIFIED_ID_KIND_MISMATCH: this operation targets '${kind}', but the id is for `
+        + `'${qualified.kind}'. No write was made. Retry with 'work.search' and use an id `
+        + `whose kind is '${kind}'.`,
+      { retry_with: 'work.search', actual_source: qualified.source_id },
+    );
+  }
+  const source = deps.store.getSource(qualified.source_id);
+  if (source === null || source.sync_posture !== 'read_through') return null;
+  if (source.top_tier_kind !== kind) {
+    throw new QualifiedWorkEntityIdError(
+      'SOURCE_MISMATCH',
+      `SOURCE_MISMATCH: the qualified id names source '${source.id}', but that Source `
+        + `belongs to '${source.top_tier_kind}', not '${kind}'. No write was made. Retry `
+        + `with 'work.search' and pass the returned id unchanged.`,
+      {
+        retry_with: 'work.search',
+        expected_source: source.id,
+        actual_source: qualified.source_id,
+      },
+    );
+  }
+  if (source.enabled === false) {
+    throw new WorkEntityWriteCapabilityError(
+      source.id,
+      kind,
+      'The Source is disabled in Settings → Work Entities',
+    );
+  }
+  if (qualified.identity !== 'source') {
+    throw new QualifiedWorkEntityIdError(
+      'QUALIFIED_ID_LOCAL_ONLY',
+      `QUALIFIED_ID_LOCAL_ONLY: source '${source.id}' is read_through and has no local row `
+        + `id. No write was made. Retry with 'work.search' and pass its source-qualified `
+        + 'id unchanged.',
+      {
+        retry_with: 'work.search',
+        expected_source: source.id,
+        actual_source: qualified.source_id,
+      },
+    );
+  }
+  return {
+    source,
+    source_record_id: qualified.record_id,
+    qualified_id: rawId,
+  };
+};
+
 /** Resolve an AI-facing qualified id back to the local mirror row used by
  * kernel CRUD. Legacy local ids remain valid for existing recipe/RPC callers. */
 const resolveWorkEntityInputId = (
@@ -430,6 +502,20 @@ const readWorkEntityInput = (
       `QUALIFIED_ID_KIND_MISMATCH: work.read requested '${kind}', but the id is for `
         + `'${qualified.kind}'. Retry with kind '${qualified.kind}' and the same id.`,
       { retry_with: 'work.read', actual_source: qualified.source_id },
+    );
+  }
+  // A read_through Source materializes no local row, so every lookup below
+  // would answer `null` — and `work-entity-get` would report `found: false`
+  // for a record that exists and is readable. Refuse with the surface that
+  // CAN fetch it instead of returning a wrong answer.
+  const registration = deps.store.getSource(qualified.source_id);
+  if (registration !== null && registration.sync_posture === 'read_through') {
+    throw new QualifiedWorkEntityIdError(
+      'QUALIFIED_ID_LOCAL_ONLY',
+      `QUALIFIED_ID_LOCAL_ONLY: source '${qualified.source_id}' is read_through and keeps no `
+        + 'local row, so this generic read cannot resolve it. Retry with '
+        + "'work.read' (or the Source's own provider read operation), which fetches it live.",
+      { retry_with: 'work.read', expected_source: qualified.source_id, actual_source: qualified.source_id },
     );
   }
   const entity = qualified.identity === 'source'
@@ -704,6 +790,24 @@ interface VendorWriteRoute {
   prepared: WorkEntityVendorWritePrepared;
 }
 
+const markSourceWriteCapable = (
+  deps: WorkEntityIngredientDeps,
+  source: SourceRegistration,
+): void => {
+  if (source.write_capable) return;
+  deps.store.registerSource({
+    id: source.id,
+    top_tier_kind: source.top_tier_kind,
+    source_kind: source.source_kind,
+    sync_posture: source.sync_posture,
+    source_label: source.source_label,
+    write_capable: true,
+    mcp_exposed: source.mcp_exposed,
+    ...(source.schema_extension_blob ? { schema_extension_blob: source.schema_extension_blob } : {}),
+    ...(source.config_blob ? { config_blob: source.config_blob } : {}),
+  });
+};
+
 /** D-192 P4b phase 1 — resolve whether (and how) this write reaches a
  *  vendor. Runs BEFORE the dispatcher's local write:
  *    - non-connection Source: require `write_capable: true` (the boot
@@ -815,7 +919,18 @@ const prepareVendorWrite = async (
       dependencyCreateArgs = dep.createArgs;
     }
   }
-  const prep = executor.prepare({
+  // Container-dependency resolution above is posture-independent — a
+  // read-through Source picks its Asana workspace exactly like a mirrored one.
+  // Only the LANDING differs, so only the prepare call forks here.
+  const readThroughPosture = source.sync_posture === 'read_through';
+  if (readThroughPosture && executor.prepareReadThrough === undefined) {
+    throw new WorkEntityWriteCapabilityError(
+      source.id,
+      kind,
+      'the wired write executor has no read-through path',
+    );
+  }
+  const prepareInput = {
     source_id: source.id, kind, operation, patch,
     ...(dependencyCreateArgs !== undefined ? { dependencyCreateArgs } : {}),
     // Create-only admission — a re-run write pre-approved by the create-plan /
@@ -826,7 +941,10 @@ const prepareVendorWrite = async (
     // the actor-aware contract-grant admission for a vendor create (the OWNER / a granting
     // DOOR admits past the `'ask'` gate). Unforgeable — forwarded from `StepMeta`.
     ...(opts.execution_source !== undefined ? { execution_source: opts.execution_source } : {}),
-  });
+  };
+  const prep = readThroughPosture
+    ? executor.prepareReadThrough!(prepareInput)
+    : executor.prepare(prepareInput);
   if (!prep.ok) {
     throw new WorkEntityWriteCapabilityError(source.id, kind, prep.reason);
   }
@@ -867,19 +985,250 @@ const dispatchVendorWrite = async (
       source.id, kind, outcome.kind, outcome.reason, outcome.staged,
     );
   }
-  if (!source.write_capable) {
-    deps.store.registerSource({
-      id: source.id,
-      top_tier_kind: source.top_tier_kind,
-      source_kind: source.source_kind,
-      source_label: source.source_label,
-      write_capable: true,
-      mcp_exposed: source.mcp_exposed,
-      ...(source.schema_extension_blob ? { schema_extension_blob: source.schema_extension_blob } : {}),
-      ...(source.config_blob ? { config_blob: source.config_blob } : {}),
-    });
-  }
+  markSourceWriteCapable(deps, source);
   return outcome;
+};
+
+const previewField = (
+  projected: ProjectedWorkEntityUpsert,
+  field: string,
+): string | undefined => {
+  const blob = projected.write.source_extension_blob;
+  if (blob === undefined || blob === null || typeof blob !== 'object' || Array.isArray(blob)) {
+    return undefined;
+  }
+  const preview = blob.preview;
+  if (preview === undefined || preview === null || typeof preview !== 'object' || Array.isArray(preview)) {
+    return undefined;
+  }
+  const value = (preview as Record<string, unknown>)[field];
+  return typeof value === 'string' ? value : undefined;
+};
+
+/** Shape a verified live response for the existing write contracts. The id is
+ * intentionally the same Source-qualified id the caller supplied. This object
+ * is returned only; it is never handed to WorkEntityStore. */
+const projectReadThroughWriteEntity = (
+  projected: ProjectedWorkEntityUpsert,
+  qualifiedId: string,
+  now: number,
+): Task | Note | Project => {
+  const write = projected.write;
+  const updatedAt = write.source_updated_at ?? now;
+  const identity = {
+    id: qualifiedId,
+    source_id: write.source_id,
+    source_record_id: write.source_record_id,
+    connection_id: write.connection_id,
+    source_updated_at: write.source_updated_at,
+    source_record_hash: write.source_record_hash,
+    source_version_token: write.source_version_token,
+    source_extension_blob: write.source_extension_blob,
+    last_seen_at: now,
+    sync_state: 'live' as const,
+    conflict_policy: 'manual_merge' as const,
+    created_at: updatedAt,
+    updated_at: updatedAt,
+  };
+  switch (projected.kind) {
+    case 'task': {
+      const task = projected.write;
+      const body = previewField(projected, 'body');
+      return {
+        ...identity,
+        title: task.title,
+        done: task.done ?? false,
+        blocks_task_ids: [],
+        ...(body !== undefined ? { body } : {}),
+        ...(task.state !== undefined ? { state: task.state } : {}),
+        ...(task.progress !== undefined ? { progress: task.progress } : {}),
+        ...(task.due_at !== undefined ? { due_at: task.due_at } : {}),
+        ...(task.priority !== undefined ? { priority: task.priority } : {}),
+        ...(task.completed_at !== undefined ? { completed_at: task.completed_at } : {}),
+      };
+    }
+    case 'note': {
+      const note = projected.write;
+      return {
+        ...identity,
+        body: previewField(projected, 'body') ?? '',
+        last_user_action_at: now,
+        related_contact_ids: [],
+        related_calendar_event_ids: [],
+        related_mail_thread_ids: [],
+        related_project_ids: [],
+        ...(note.title !== undefined ? { title: note.title } : {}),
+      };
+    }
+    case 'project': {
+      const project = projected.write;
+      const description = previewField(projected, 'description');
+      return {
+        ...identity,
+        title: project.title,
+        state: project.state ?? 'active',
+        last_activity_at: updatedAt,
+        related_contact_ids: [],
+        ...(description !== undefined ? { description } : {}),
+        ...(project.target_completion_at !== undefined
+          ? { target_completion_at: project.target_completion_at }
+          : {}),
+      };
+    }
+  }
+};
+
+const throwReadThroughDispatchFailure = (
+  source: SourceRegistration,
+  kind: WorkEntityKind,
+  outcome: Extract<WorkEntityReadThroughWriteDispatchOutcome, { ok: false }>,
+): never => {
+  if (outcome.kind === 'verify_failed') {
+    throw new WorkEntityWriteVerifyFailedError(
+      source.id,
+      kind,
+      outcome.unlanded_fields,
+      outcome.reason,
+      false,
+    );
+  }
+  throw new WorkEntityVendorWriteError(
+    source.id,
+    kind,
+    outcome.kind,
+    outcome.reason,
+    false,
+  );
+};
+
+/** Generic data.<kind> qualified-id route for non-materialising Sources. */
+const dispatchReadThroughVendorWrite = async (
+  deps: WorkEntityIngredientDeps,
+  target: ReadThroughWriteTarget,
+  kind: WorkEntityKind,
+  operation: Exclude<WorkEntityVendorWriteOperation, 'create'>,
+  patch: Record<string, unknown>,
+): Promise<ProjectedWorkEntityUpsert | null> => {
+  const executor = deps.getWriteExecutor?.() ?? null;
+  if (executor === null) {
+    throw new WorkEntityWriteCapabilityError(
+      target.source.id,
+      kind,
+      'No write executor is wired',
+    );
+  }
+  if (executor.prepareReadThrough === undefined || executor.dispatchReadThrough === undefined) {
+    throw new WorkEntityWriteCapabilityError(
+      target.source.id,
+      kind,
+      'The write executor does not support read-through routing',
+    );
+  }
+  const prepared = executor.prepareReadThrough({
+    source_id: target.source.id,
+    kind,
+    operation,
+    patch,
+  });
+  if (!prepared.ok) {
+    throw new WorkEntityWriteCapabilityError(target.source.id, kind, prepared.reason);
+  }
+  if (!prepared.vendor_relevant) {
+    throw new WorkEntityWriteCapabilityError(
+      target.source.id,
+      kind,
+      `${prepared.reason}; a read-through Source has no local-only write lane`,
+    );
+  }
+  const pushed = new Set(prepared.prepared.pushable.map((field) => field.field));
+  const localOnly = Object.entries(patch)
+    .filter(([, value]) => value !== undefined && value !== null)
+    .map(([field]) => field)
+    .filter((field) => !pushed.has(field));
+  if (localOnly.length > 0) {
+    throw new WorkEntityWriteCapabilityError(
+      target.source.id,
+      kind,
+      `Read-through has no local row for unrouteable field(s): ${localOnly.join(', ')}`,
+    );
+  }
+  const outcome = await executor.dispatchReadThrough(
+    prepared.prepared,
+    target.source_record_id,
+  );
+  if (!outcome.ok) {
+    return throwReadThroughDispatchFailure(target.source, kind, outcome);
+  }
+  markSourceWriteCapable(deps, target.source);
+  return outcome.operation === 'delete' ? null : outcome.projected;
+};
+
+/** Read-through CREATE — the one read-through write with no incoming qualified
+ *  id, because the id does not exist until the vendor mints it. The vendor's
+ *  native id becomes the `we1` identity the caller answers with, so the very
+ *  next `data.<kind>.update` routes straight back to the same remote record.
+ *
+ *  No local row is written and no warehouse event fires — the same posture the
+ *  read-through update path holds. A reactive recipe that must see these
+ *  creates watches the Source, not `data.work.<kind>.item.created`. */
+const dispatchReadThroughCreateWrite = async (
+  deps: WorkEntityIngredientDeps,
+  source: SourceRegistration,
+  kind: WorkEntityKind,
+  route: VendorWriteRoute,
+): Promise<{ projected: ProjectedWorkEntityUpsert; qualified_id: string }> => {
+  if (route.executor.dispatchReadThroughCreate === undefined) {
+    throw new WorkEntityWriteCapabilityError(
+      source.id,
+      kind,
+      'The write executor does not support read-through create routing',
+    );
+  }
+  const outcome = await route.executor.dispatchReadThroughCreate(route.prepared);
+  if (!outcome.ok) return throwReadThroughDispatchFailure(source, kind, outcome);
+  if (outcome.operation !== 'create') {
+    throw new WorkEntityVendorWriteError(
+      source.id,
+      kind,
+      'error',
+      `read-through create returned a '${outcome.operation}' outcome`,
+      false,
+    );
+  }
+  markSourceWriteCapable(deps, source);
+  return {
+    projected: outcome.projected,
+    qualified_id: qualifyWorkEntityId({
+      kind,
+      source_id: source.id,
+      source_record_id: outcome.source_record_id,
+      // Never read — `local_id` is the fallback only when there is no source
+      // record id, and a create that reached here always has one.
+      local_id: outcome.source_record_id,
+    }),
+  };
+};
+
+/** Refuse a read-through create that was handed fields with nowhere to land.
+ *  Relationship / FK / extension fields ride the LOCAL lane (they are excluded
+ *  from the vendor patch by construction), and a read-through Source has no
+ *  local row — so accepting them would drop the caller's data silently while
+ *  reporting success. Mirrors the read-through update path's `localOnly` guard. */
+const refuseUnroutableReadThroughCreateFields = (
+  source: SourceRegistration,
+  kind: WorkEntityKind,
+  localOnlyInput: Record<string, unknown>,
+): void => {
+  const supplied = Object.entries(localOnlyInput)
+    .filter(([, value]) => value !== undefined && value !== null)
+    .map(([field]) => field);
+  if (supplied.length === 0) return;
+  throw new WorkEntityWriteCapabilityError(
+    source.id,
+    kind,
+    `read-through create has no local row for ${supplied.join(', ')} — these fields never reach `
+      + 'the provider. Create the record without them, or use a records-posture Source',
+  );
 };
 
 /** Apply a create dispatch's vendor-truth stamp to the local write
@@ -976,6 +1325,37 @@ const taskCreate = (deps: WorkEntityIngredientDeps) =>
         ? { execution_source: input.origin_execution_source }
         : {}),
     });
+    if (source.sync_posture === 'read_through') {
+      refuseUnroutableReadThroughCreateFields(source, 'task', {
+        assigned_contact_id: input.assigned_contact_id,
+        parent_calendar_event_id: input.parent_calendar_event_id,
+        linked_mail_thread_id: input.linked_mail_thread_id,
+        parent_project_id: input.parent_project_id,
+        blocks_task_ids: input.blocks_task_ids,
+        source_extension_blob: input.source_extension_blob,
+      });
+      if (route === null) {
+        throw new WorkEntityWriteCapabilityError(
+          source.id,
+          'task',
+          'a read-through Source has no local-only create lane',
+        );
+      }
+      const created = await dispatchReadThroughCreateWrite(deps, source, 'task', route);
+      if (created.projected.kind !== 'task') {
+        throw new WorkEntityVendorWriteError(
+          source.id, 'task', 'error',
+          'verified read-through create returned no task projection', false,
+        );
+      }
+      return {
+        task: projectReadThroughWriteEntity(
+          created.projected,
+          created.qualified_id,
+          deps.now?.() ?? Date.now(),
+        ) as Task,
+      };
+    }
     const vendor = route !== null
       ? await dispatchVendorWrite(deps, source, 'task', route)
       : null;
@@ -1087,6 +1467,45 @@ const taskUpdate = (deps: WorkEntityIngredientDeps) =>
     blocks_task_ids?: readonly string[];
     source_extension_blob?: Record<string, unknown>;
   }): Promise<{ task: Task }> => {
+    const readThrough = resolveReadThroughWriteTarget(deps, 'task', input.id);
+    if (readThrough !== null) {
+      const projected = await dispatchReadThroughVendorWrite(
+        deps,
+        readThrough,
+        'task',
+        'update',
+        {
+          title: input.title,
+          body: input.body,
+          due_at: input.due_at,
+          priority: input.priority,
+          state: input.state,
+          progress: input.progress,
+          assigned_contact_id: input.assigned_contact_id,
+          parent_calendar_event_id: input.parent_calendar_event_id,
+          linked_mail_thread_id: input.linked_mail_thread_id,
+          parent_project_id: input.parent_project_id,
+          blocks_task_ids: input.blocks_task_ids,
+          source_extension_blob: input.source_extension_blob,
+        },
+      );
+      if (projected === null || projected.kind !== 'task') {
+        throw new WorkEntityVendorWriteError(
+          readThrough.source.id,
+          'task',
+          'error',
+          'verified read-through update returned no task projection',
+          false,
+        );
+      }
+      return {
+        task: projectReadThroughWriteEntity(
+          projected,
+          readThrough.qualified_id,
+          deps.now?.() ?? Date.now(),
+        ) as Task,
+      };
+    }
     const localId = resolveWorkEntityInputId(deps, 'task', input.id);
     const existing = deps.store.readTask(localId);
     if (!existing) throw new WorkEntityNotFoundError('task', input.id);
@@ -1213,6 +1632,11 @@ const taskDelete = (deps: WorkEntityIngredientDeps) =>
     id: string;
     tombstoned: boolean;
   }> => {
+    const readThrough = resolveReadThroughWriteTarget(deps, 'task', input.id);
+    if (readThrough !== null) {
+      await dispatchReadThroughVendorWrite(deps, readThrough, 'task', 'delete', {});
+      return { ok: true as const, id: input.id, tombstoned: false };
+    }
     const localId = resolveWorkEntityInputId(deps, 'task', input.id);
     const existing = deps.store.readTask(localId);
     if (!existing) throw new WorkEntityNotFoundError('task', input.id);
@@ -1239,6 +1663,36 @@ const taskDelete = (deps: WorkEntityIngredientDeps) =>
 
 const taskMarkDone = (deps: WorkEntityIngredientDeps) =>
   async (input: { id: string; done?: boolean; completed_at?: number }): Promise<{ task: Task }> => {
+    const readThrough = resolveReadThroughWriteTarget(deps, 'task', input.id);
+    if (readThrough !== null) {
+      const done = input.done !== false;
+      const projected = await dispatchReadThroughVendorWrite(
+        deps,
+        readThrough,
+        'task',
+        'complete',
+        {
+          done,
+          completed_at: done ? input.completed_at ?? (deps.now?.() ?? Date.now()) : undefined,
+        },
+      );
+      if (projected === null || projected.kind !== 'task') {
+        throw new WorkEntityVendorWriteError(
+          readThrough.source.id,
+          'task',
+          'error',
+          'verified read-through completion returned no task projection',
+          false,
+        );
+      }
+      return {
+        task: projectReadThroughWriteEntity(
+          projected,
+          readThrough.qualified_id,
+          deps.now?.() ?? Date.now(),
+        ) as Task,
+      };
+    }
     const localId = resolveWorkEntityInputId(deps, 'task', input.id);
     const existing = deps.store.readTask(localId);
     if (!existing) throw new WorkEntityNotFoundError('task', input.id);
@@ -1362,6 +1816,36 @@ const noteCreate = (deps: WorkEntityIngredientDeps) =>
         ? { execution_source: input.origin_execution_source }
         : {}),
     });
+    if (source.sync_posture === 'read_through') {
+      refuseUnroutableReadThroughCreateFields(source, 'note', {
+        related_contact_ids: input.related_contact_ids,
+        related_calendar_event_ids: input.related_calendar_event_ids,
+        related_mail_thread_ids: input.related_mail_thread_ids,
+        related_project_ids: input.related_project_ids,
+        source_extension_blob: input.source_extension_blob,
+      });
+      if (route === null) {
+        throw new WorkEntityWriteCapabilityError(
+          source.id,
+          'note',
+          'a read-through Source has no local-only create lane',
+        );
+      }
+      const created = await dispatchReadThroughCreateWrite(deps, source, 'note', route);
+      if (created.projected.kind !== 'note') {
+        throw new WorkEntityVendorWriteError(
+          source.id, 'note', 'error',
+          'verified read-through create returned no note projection', false,
+        );
+      }
+      return {
+        note: projectReadThroughWriteEntity(
+          created.projected,
+          created.qualified_id,
+          deps.now?.() ?? Date.now(),
+        ) as Note,
+      };
+    }
     const vendor = route !== null
       ? await dispatchVendorWrite(deps, source, 'note', route)
       : null;
@@ -1399,6 +1883,40 @@ const noteUpdate = (deps: WorkEntityIngredientDeps) =>
     // (the storage layer allows `''` for the mirror lane only).
     if (input.body !== undefined && (typeof input.body !== 'string' || input.body.length === 0)) {
       throw new WorkEntityValidationError('body is required', 'body');
+    }
+    const readThrough = resolveReadThroughWriteTarget(deps, 'note', input.id);
+    if (readThrough !== null) {
+      const projected = await dispatchReadThroughVendorWrite(
+        deps,
+        readThrough,
+        'note',
+        'update',
+        {
+          body: input.body,
+          title: input.title,
+          related_contact_ids: input.related_contact_ids,
+          related_calendar_event_ids: input.related_calendar_event_ids,
+          related_mail_thread_ids: input.related_mail_thread_ids,
+          related_project_ids: input.related_project_ids,
+          source_extension_blob: input.source_extension_blob,
+        },
+      );
+      if (projected === null || projected.kind !== 'note') {
+        throw new WorkEntityVendorWriteError(
+          readThrough.source.id,
+          'note',
+          'error',
+          'verified read-through update returned no note projection',
+          false,
+        );
+      }
+      return {
+        note: projectReadThroughWriteEntity(
+          projected,
+          readThrough.qualified_id,
+          deps.now?.() ?? Date.now(),
+        ) as Note,
+      };
     }
     const localId = resolveWorkEntityInputId(deps, 'note', input.id);
     const existing = deps.store.readNote(localId);
@@ -1467,6 +1985,11 @@ const noteDelete = (deps: WorkEntityIngredientDeps) =>
     id: string;
     tombstoned: boolean;
   }> => {
+    const readThrough = resolveReadThroughWriteTarget(deps, 'note', input.id);
+    if (readThrough !== null) {
+      await dispatchReadThroughVendorWrite(deps, readThrough, 'note', 'delete', {});
+      return { ok: true as const, id: input.id, tombstoned: false };
+    }
     const localId = resolveWorkEntityInputId(deps, 'note', input.id);
     const existing = deps.store.readNote(localId);
     if (!existing) throw new WorkEntityNotFoundError('note', input.id);
@@ -2044,6 +2567,34 @@ const projectCreate = (deps: WorkEntityIngredientDeps) =>
         ? { execution_source: input.origin_execution_source }
         : {}),
     });
+    if (source.sync_posture === 'read_through') {
+      refuseUnroutableReadThroughCreateFields(source, 'project', {
+        related_contact_ids: input.related_contact_ids,
+        parent_project_id: input.parent_project_id,
+        source_extension_blob: input.source_extension_blob,
+      });
+      if (route === null) {
+        throw new WorkEntityWriteCapabilityError(
+          source.id,
+          'project',
+          'a read-through Source has no local-only create lane',
+        );
+      }
+      const created = await dispatchReadThroughCreateWrite(deps, source, 'project', route);
+      if (created.projected.kind !== 'project') {
+        throw new WorkEntityVendorWriteError(
+          source.id, 'project', 'error',
+          'verified read-through create returned no project projection', false,
+        );
+      }
+      return {
+        project: projectReadThroughWriteEntity(
+          created.projected,
+          created.qualified_id,
+          deps.now?.() ?? Date.now(),
+        ) as Project,
+      };
+    }
     const vendor = route !== null
       ? await dispatchVendorWrite(deps, source, 'project', route)
       : null;
@@ -2083,6 +2634,40 @@ const projectUpdate = (deps: WorkEntityIngredientDeps) =>
     parent_project_id?: string;
     source_extension_blob?: Record<string, unknown>;
   }): Promise<{ project: Project }> => {
+    const readThrough = resolveReadThroughWriteTarget(deps, 'project', input.id);
+    if (readThrough !== null) {
+      const projected = await dispatchReadThroughVendorWrite(
+        deps,
+        readThrough,
+        'project',
+        'update',
+        {
+          title: input.title,
+          description: input.description,
+          state: input.state,
+          target_completion_at: input.target_completion_at,
+          related_contact_ids: input.related_contact_ids,
+          parent_project_id: input.parent_project_id,
+          source_extension_blob: input.source_extension_blob,
+        },
+      );
+      if (projected === null || projected.kind !== 'project') {
+        throw new WorkEntityVendorWriteError(
+          readThrough.source.id,
+          'project',
+          'error',
+          'verified read-through update returned no project projection',
+          false,
+        );
+      }
+      return {
+        project: projectReadThroughWriteEntity(
+          projected,
+          readThrough.qualified_id,
+          deps.now?.() ?? Date.now(),
+        ) as Project,
+      };
+    }
     const localId = resolveWorkEntityInputId(deps, 'project', input.id);
     const existing = deps.store.readProject(localId);
     if (!existing) throw new WorkEntityNotFoundError('project', input.id);
@@ -2161,6 +2746,32 @@ const projectUpdate = (deps: WorkEntityIngredientDeps) =>
 
 const projectArchive = (deps: WorkEntityIngredientDeps) =>
   async (input: { id: string }): Promise<{ project: Project }> => {
+    const readThrough = resolveReadThroughWriteTarget(deps, 'project', input.id);
+    if (readThrough !== null) {
+      const projected = await dispatchReadThroughVendorWrite(
+        deps,
+        readThrough,
+        'project',
+        'update',
+        { state: 'archived' },
+      );
+      if (projected === null || projected.kind !== 'project') {
+        throw new WorkEntityVendorWriteError(
+          readThrough.source.id,
+          'project',
+          'error',
+          'verified read-through archive returned no project projection',
+          false,
+        );
+      }
+      return {
+        project: projectReadThroughWriteEntity(
+          projected,
+          readThrough.qualified_id,
+          deps.now?.() ?? Date.now(),
+        ) as Project,
+      };
+    }
     const localId = resolveWorkEntityInputId(deps, 'project', input.id);
     const existing = deps.store.readProject(localId);
     if (!existing) throw new WorkEntityNotFoundError('project', input.id);
@@ -2237,6 +2848,11 @@ const projectDelete = (deps: WorkEntityIngredientDeps) =>
     id: string;
     tombstoned: boolean;
   }> => {
+    const readThrough = resolveReadThroughWriteTarget(deps, 'project', input.id);
+    if (readThrough !== null) {
+      await dispatchReadThroughVendorWrite(deps, readThrough, 'project', 'delete', {});
+      return { ok: true as const, id: input.id, tombstoned: false };
+    }
     const localId = resolveWorkEntityInputId(deps, 'project', input.id);
     const existing = deps.store.readProject(localId);
     if (!existing) throw new WorkEntityNotFoundError('project', input.id);
@@ -2311,10 +2927,31 @@ export const createWorkEntityDispatchers = (deps: WorkEntityIngredientDeps) => (
       ...(input.limit !== undefined ? { limit: input.limit } : {}),
       ...(input.offset !== undefined ? { offset: input.offset } : {}),
     };
-    return {
-      entities: deps.resolver.listByKind(input.kind, query),
-      total: deps.store.countByKind(input.kind, query),
-    };
+    // This op reads the local canonical tables. A read_through Source keeps no
+    // rows there, so scoping the list to one is a question this surface cannot
+    // answer — and answering it with an empty list reads as "the Source has no
+    // records". Refuse, and name the surface that fetches them.
+    const readThrough = readThroughSourceIds(deps.store.listSources());
+    if (input.source_id !== undefined && readThrough.has(input.source_id)) {
+      throw new WorkEntityValidationError(
+        `source_id '${input.source_id}' is read_through and materializes no local rows — `
+          + "this generic list reads the canonical tables only. Use 'work.search' (or the "
+          + "Source's own provider list operation), which invokes the Source on demand.",
+        'source_id',
+      );
+    }
+    // Defensive residue filter, matching `work.search`: the boot migration
+    // purges rows when a Source flips to read_through, but an interrupted
+    // migration must never serve rows the declaration says do not exist.
+    const rows = deps.resolver.listByKind(input.kind, query);
+    const entities = rows.filter((entity) => !readThrough.has(entity.source_id));
+    // Keep `total` on the same basis as `entities`. The store count cannot
+    // express the exclusion, so subtract what this page actually dropped —
+    // exact in the normal case (no residue, nothing subtracted) and never
+    // over-reporting more residue than was observed.
+    const total = deps.store.countByKind(input.kind, query)
+      - (rows.length - entities.length);
+    return { entities, total };
   },
   workEntityGet: async (input: { kind: WorkEntityKind; id: string }) => {
     const entity = readWorkEntityInput(deps, input.kind, input.id);

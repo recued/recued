@@ -69,6 +69,7 @@ import {
   type CanonicalMessage,
   type InitialScanOptions,
   type InboundMailAttachmentPart,
+  type MailMessageDirection,
   type MailProvider,
   type MailSyncFailureKind,
   type MailSyncOutcomeListener,
@@ -188,6 +189,16 @@ const pickFolder = (labels: string[]): string => {
   return labels[0] ?? '';
 };
 
+/** Gmail system-label IDs are stable across UI languages. Prefer Draft/Sent
+ * over Inbox because a self-addressed or transitioning message can carry more
+ * than one system label. */
+export const gmailMessageDirection = (labels: readonly string[]): MailMessageDirection => {
+  if (labels.includes('DRAFT')) return 'draft';
+  if (labels.includes('SENT')) return 'outbound';
+  if (labels.includes('INBOX')) return 'inbound';
+  return 'unknown';
+};
+
 const base64UrlDecode = (s: string): Buffer => {
   const normalized = s.replace(/-/g, '+').replace(/_/g, '/');
   const padded = normalized.padEnd(normalized.length + ((4 - normalized.length % 4) % 4), '=');
@@ -299,6 +310,7 @@ export const canonicalizeGmail = async (
     subject: parsed.subject ?? '',
     thread_id: msg.threadId ?? '',
     folder_or_label: pickFolder(labels),
+    direction: gmailMessageDirection(labels),
     is_read: !labels.includes('UNREAD'),
     has_attachments: hasAttachments(parsed) || attachments.length > 0,
     received_at: receivedAt,
@@ -585,6 +597,7 @@ export const createGmailProvider = (
         fetcher,
       });
       if (second.ok) return second.data;
+      if (second.status === 404 && treat404AsAbsent) return null;
       onFailureStatus?.(second.status);
       noteReadFailure(second.status, `gmail ${url} → ${second.status}`, second.text);
       return null;
@@ -612,9 +625,15 @@ export const createGmailProvider = (
   };
 
   const fetchMessageRaw = async (id: string): Promise<GmailMessagePayload | null> => {
-    return getWithRetry<GmailMessagePayload>(
+    let failureStatus: number | undefined;
+    const message = await getWithRetry<GmailMessagePayload>(
       `${GMAIL_API_BASE}/messages/${id}?format=raw`,
+      { onFailureStatus: (status) => { failureStatus = status; } },
     );
+    if (message === null && failureStatus !== undefined) {
+      throw new Error(`gmail message ${id} read failed (${failureStatus})`);
+    }
+    return message;
   };
 
   const fetchMessageFull = async (id: string): Promise<GmailMessageFullPayload | null> => {
@@ -707,21 +726,31 @@ export const createGmailProvider = (
     id: string,
     kind: ProviderSyncEventKind,
     cb: ProviderSyncCallback,
-  ): Promise<void> => {
-    if (kind === 'deleted') {
-      await cb({ kind: 'deleted', source_id: id });
-      return;
-    }
+  ): Promise<boolean> => {
     pendingQueueSize++;
     try {
+      if (kind === 'deleted') {
+        await cb({ kind: 'deleted', source_id: id });
+        lastSuccessfulSyncAt = nowOf();
+        return true;
+      }
       const raw = await fetchMessageRaw(id);
-      if (!raw) return;
-      if (!applyLabelFilter(raw.labelIds)) return;
+      // A message that disappeared between history.list and messages.get is
+      // already in the desired absent state. It needs no callback and is safe
+      // to acknowledge; non-404 read failures throw from fetchMessageRaw.
+      if (!raw) return true;
+      if (!applyLabelFilter(raw.labelIds)) return true;
       const canonical = await hydrateGmailAttachments(await canonicalizeGmail(raw));
       await cb({ kind, source_id: canonical.source_id, message: canonical });
       lastSuccessfulSyncAt = nowOf();
+      return true;
     } catch (err) {
+      // The history cursor is the retry journal. Report the attempt as failed
+      // and tell the caller not to advance it; resolving here used to turn a
+      // transient detail/attachment/collection failure into permanent loss.
+      outcomes.noteFailure('transient');
       markError(`gmail ingest failed id=${id}`, err);
+      return false;
     } finally {
       pendingQueueSize = Math.max(0, pendingQueueSize - 1);
     }
@@ -735,24 +764,28 @@ export const createGmailProvider = (
     return opts.accountStore.get(historyIdKey());
   };
 
-  /** Drop the cursor so the next tick re-seeds from the live profile. Called only
-   *  when Gmail has rejected it as aged out — a cursor it will never accept
-   *  again, so keeping it means 404-ing forever. */
-  const clearHistoryWatermark = async (): Promise<void> => {
-    await opts.accountStore.delete(historyIdKey());
-  };
-
   // ── initial scan ────────────────────────────────────────────
   const runInitialScan = async (scanOpts: InitialScanOptions): Promise<void> => {
     // Capture historyId before listing — ensures we don't miss
     // deliveries that arrive between list + sync start. Gmail ordering
     // guarantees `history?startHistoryId=profile.historyId` returns
     // everything after the profile fetch.
-    const profile = await getWithRetry<GmailProfile>(`${GMAIL_API_BASE}/profile`);
-    if (profile) await writeHistoryWatermark(profile.historyId);
+    // Preserve the first pre-scan watermark across a failed backfill retry.
+    // Replacing it with "now" on every attempt loses changes (especially
+    // deletions) that happened after the first scan began.
+    if ((await readHistoryWatermark()) === null) {
+      const profile = await getWithRetry<GmailProfile>(`${GMAIL_API_BASE}/profile`, {
+        treat404AsAbsent: false,
+      });
+      if (!profile || typeof profile.historyId !== 'string' || profile.historyId.length === 0) {
+        throw new Error('gmail initial scan could not establish a history watermark');
+      }
+      await writeHistoryWatermark(profile.historyId);
+    }
 
     let pageToken: string | undefined;
     let aborted = false;
+    const failures: unknown[] = [];
     const q = `newer_than:${scanOpts.backfill_days}d`;
     const pagination = new ProviderPaginationGuard('gmail initial scan', {
       trustedBaseUrl: GMAIL_API_BASE,
@@ -762,20 +795,25 @@ export const createGmailProvider = (
       url.searchParams.set('q', q);
       url.searchParams.set('maxResults', '100');
       if (pageToken) url.searchParams.set('pageToken', pageToken);
-      const list = await getWithRetry<GmailMessageList>(pagination.claim(url.toString()));
-      if (!list) break;
+      const list = await getWithRetry<GmailMessageList>(pagination.claim(url.toString()), {
+        treat404AsAbsent: false,
+      });
+      if (!list) {
+        throw new Error('gmail initial scan could not fetch a complete message page');
+      }
       const ids = (list.messages ?? []).map((m) => m.id);
       for (const id of ids) {
-        const raw = await fetchMessageRaw(id);
-        if (!raw) continue;
-        if (!applyLabelFilter(raw.labelIds)) continue;
         try {
+          const raw = await fetchMessageRaw(id);
+          if (!raw) continue;
+          if (!applyLabelFilter(raw.labelIds)) continue;
           const canonical = await hydrateGmailAttachments(await canonicalizeGmail(raw));
           const cont = await scanOpts.onMessage(canonical);
           lastSuccessfulSyncAt = nowOf();
           if (!cont) { aborted = true; break; }
         } catch (err) {
           markError(`gmail canonicalize failed id=${id}`, err);
+          failures.push(err);
         }
       }
       if (aborted) break;
@@ -784,6 +822,9 @@ export const createGmailProvider = (
         'gmail initial scan',
       );
     } while (pageToken);
+    if (!aborted && failures.length > 0) {
+      throw new AggregateError(failures, 'gmail initial scan was incomplete');
+    }
   };
 
   // ── incremental poll ────────────────────────────────────────
@@ -798,6 +839,7 @@ export const createGmailProvider = (
     }
     let pageToken: string | undefined;
     let latestId = watermark;
+    let deliveryFailed = false;
     // Set when the history endpoint rejects our cursor as aged-out. Per-attempt
     // local, so a concurrent tick cannot clear or observe it.
     let cursorAgedOut = false;
@@ -821,38 +863,66 @@ export const createGmailProvider = (
       });
       if (!page) {
         if (cursorAgedOut) {
-          // RECOVER, don't just report. Clearing the watermark makes the next
-          // tick take the re-seed branch above and rebuild the cursor from the
-          // live profile; leaving it in place would 404 identically forever.
-          //
-          // ⚠ Honest limit: re-seeding resumes from NOW, so changes made while
-          // the cursor was aged out are not recovered by the history path. Gmail
-          // requires a full sync for that (a `collection.resync`), which this
-          // does not perform on its own — the reported failure is what surfaces
-          // the gap instead of hiding it.
-          await clearHistoryWatermark();
-          markError('gmail history cursor aged out — re-seeding on next tick', {
+          // A profile-only reseed makes the mailbox look healthy again while
+          // silently discarding every current message changed during the gap.
+          // Capture the replacement boundary first, replay a bounded full list
+          // through the same durable callback, and overwrite the invalid cursor
+          // only after that replay is acknowledged. If any step fails, retain
+          // the old cursor so the next tick retries this recovery path.
+          markError('gmail history cursor aged out — running recovery scan', {
             startHistoryId: watermark,
           });
+          try {
+            const profile = await getWithRetry<GmailProfile>(
+              `${GMAIL_API_BASE}/profile`,
+              { treat404AsAbsent: false },
+            );
+            if (
+              !profile
+              || typeof profile.historyId !== 'string'
+              || profile.historyId.length === 0
+            ) {
+              throw new Error('gmail recovery could not establish a replacement watermark');
+            }
+            await runInitialScan({
+              backfill_days: opts.config().backfill_days,
+              onMessage: async (message) => {
+                await cb({
+                  kind: 'updated',
+                  source_id: message.source_id,
+                  message,
+                });
+                return true;
+              },
+            });
+            await writeHistoryWatermark(profile.historyId);
+          } catch (err) {
+            outcomes.noteFailure(
+              err instanceof OAuthError
+                ? classifyOAuthFailure(err.status, err.oauth_error)
+                : 'transient',
+            );
+            markError('gmail history recovery scan failed', err);
+          }
         }
         return;
       }
       for (const entry of page.history ?? []) {
         for (const add of entry.messagesAdded ?? []) {
-          await fetchAndEmit(add.message.id, 'created', cb);
+          if (!(await fetchAndEmit(add.message.id, 'created', cb))) deliveryFailed = true;
         }
         for (const del of entry.messagesDeleted ?? []) {
-          await fetchAndEmit(del.message.id, 'deleted', cb);
+          if (!(await fetchAndEmit(del.message.id, 'deleted', cb))) deliveryFailed = true;
         }
         for (const la of entry.labelsAdded ?? []) {
           if (la.labelIds.includes(DELETED_LABEL)) {
-            await fetchAndEmit(la.message.id, 'deleted', cb);
+            if (!(await fetchAndEmit(la.message.id, 'deleted', cb))) deliveryFailed = true;
           } else {
-            await fetchAndEmit(la.message.id, 'updated', cb);
+            if (!(await fetchAndEmit(la.message.id, 'updated', cb))) deliveryFailed = true;
           }
         }
         for (const lr of entry.labelsRemoved ?? []) {
-          await fetchAndEmit(lr.message.id, 'updated', cb);
+          if (!(await fetchAndEmit(lr.message.id, 'updated', cb))) deliveryFailed = true;
         }
         if (entry.id && Number(entry.id) > Number(latestId)) latestId = entry.id;
       }
@@ -864,6 +934,12 @@ export const createGmailProvider = (
         latestId = page.historyId;
       }
     } while (pageToken);
+    // Keep the old historyId if any callback failed. Gmail will replay the
+    // drained history range on the next scheduled tick; successful callbacks
+    // are idempotent collection upserts/deletes, while the failed item gets
+    // another chance. A poison item remains visible as a failed outcome rather
+    // than being silently skipped.
+    if (deliveryFailed) return;
     if (latestId !== watermark) await writeHistoryWatermark(latestId);
     lastSuccessfulSyncAt = nowOf();
   };

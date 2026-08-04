@@ -137,6 +137,9 @@ import {
   RunModal,
   Upload,
   WORK_ENTITY_PAGE_STYLES,
+  WORK_ENTITY_DIALOG_DISCARD_GUARD_ATTR,
+  WORK_ENTITY_DIALOG_DISCARD_KEEP_ACTION,
+  WORK_ENTITY_DIALOG_DISCARD_COMMIT_ACTION,
   collapseToFreshestPerTopic,
   e,
   formatRemaining,
@@ -179,11 +182,15 @@ import { fileRefOptionsFromMirrorResults } from '../recipes/file-ref-picker.js';
 import {
   MEMORY_ADD_ACTION,
   MEMORY_COMPOSE_CANCEL_ACTION,
+  MEMORY_COMPOSE_DISCARD_COMMIT_ACTION,
+  MEMORY_COMPOSE_DISCARD_GUARD_ATTR,
+  MEMORY_COMPOSE_DISCARD_KEEP_ACTION,
   MEMORY_COMPOSE_SUBMIT_ACTION,
   MEMORY_DELETE_ACTION,
   MEMORY_DELETE_CANCEL_ACTION,
   MEMORY_DELETE_CONFIRM_ACTION,
   MEMORY_DETAIL_CLOSE_ACTION,
+  MEMORY_DETAIL_HEADING_ATTR,
   MEMORY_EDIT_ACTION,
   MEMORY_EXPORT_ACTION,
   MEMORY_FIELD_ATTR,
@@ -191,11 +198,15 @@ import {
   MEMORY_FILTER_VALUE_ATTR,
   MEMORY_IMPORT_ACTION,
   MEMORY_IMPORT_CANCEL_ACTION,
+  MEMORY_IMPORT_DISCARD_COMMIT_ACTION,
+  MEMORY_IMPORT_DISCARD_GUARD_ATTR,
+  MEMORY_IMPORT_DISCARD_KEEP_ACTION,
   MEMORY_IMPORT_SUBMIT_ACTION,
   MEMORY_LENS_SELECT_ACTION,
   MEMORY_LENS_STYLES,
   MEMORY_LENS_VALUE_ATTR,
   MEMORY_OPEN_ACTION,
+  MEMORY_OPEN_RUN_ACTION,
   MEMORY_ROW_ID_ATTR,
   memoryFilterActors,
   renderLensSwitcher,
@@ -210,10 +221,14 @@ import {
   COLLECTION_EXPLORER_STYLES,
   COLLECTION_SELECT_INSTANCE_ACTION,
   COLLECTION_OPEN_RECORD_ACTION,
+  COLLECTION_RETRY_ACTION,
+  COLLECTION_DETAIL_RETRY_ACTION,
   COLLECTION_DETAIL_CLOSE_ACTION,
   COLLECTION_DETAIL_HEADING_ATTR,
+  COLLECTION_DETAIL_RETRY_ATTR,
   COLLECTION_INSTANCE_SLUG_ATTR,
   COLLECTION_RECORD_ID_ATTR,
+  COLLECTION_RETRY_ATTR,
   type CollectionExplorerDetailState,
 } from './collection-explorer.js';
 import {
@@ -242,6 +257,7 @@ import {
   RECORDS_RETIRE_EVENT_ACTION,
   RECORDS_SELECT_KIND_ACTION,
   RECORDS_SELECT_NAMESPACE_ACTION,
+  RECORDS_TOGGLE_OUTBOX_ACTION,
   renderRecordsExplorer,
   type RecordsExplorerState,
 } from './records-explorer.js';
@@ -281,6 +297,8 @@ export const DATA_ROUTE_FORM_RESPONSE_ROW_ATTR =
   'data-recued-data-form-response-row';
 export const DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR =
   'data-recued-data-form-response-detail';
+export const DATA_ROUTE_FORM_RESPONSE_DETAIL_HEADING_ATTR =
+  'data-recued-data-form-response-detail-heading';
 export const DATA_ROUTE_FORM_RESPONSE_AUTOMATE_ATTR =
   'data-recued-data-form-response-automate';
 /** Opens the saved-automation picker for an already accepted response. */
@@ -300,6 +318,16 @@ export const DATA_ROUTE_FORM_RESPONSE_EMAIL_ATTR =
   'data-recued-data-form-response-email';
 export const DATA_ROUTE_FORM_RESPONSE_STATE_ATTR =
   'data-recued-data-form-response-state';
+export const DATA_ROUTE_FORM_RESPONSE_DISCARD_GUARD_ATTR =
+  'data-recued-data-form-response-discard-guard';
+export const DATA_ROUTE_FORM_RESPONSE_DISCARD_KEEP_ATTR =
+  'data-recued-data-form-response-discard-keep';
+export const DATA_ROUTE_FORM_RESPONSE_DISCARD_COMMIT_ATTR =
+  'data-recued-data-form-response-discard-commit';
+const DATA_ROUTE_FORM_RESPONSE_DISCARD_KEEP_ACTION =
+  'keep-form-response-draft';
+const DATA_ROUTE_FORM_RESPONSE_DISCARD_COMMIT_ACTION =
+  'discard-form-response-draft';
 /** R18 load-more — the "Showing N of M" + Load more footer under the contact
  *  list (present only while `loaded < total`). */
 export const DATA_ROUTE_CONTACT_LOAD_MORE_ATTR = 'data-recued-data-contact-load-more';
@@ -309,6 +337,14 @@ export const DATA_ROUTE_CONTACT_LOAD_MORE_ATTR = 'data-recued-data-contact-load-
  *  (bringing in more rows for the search to match). */
 export const DATA_ROUTE_WORK_ENTITY_LOAD_MORE_ATTR = 'data-recued-data-work-entity-load-more';
 export const DATA_ROUTE_CONTACT_DIALOG_ATTR = 'data-recued-data-contact-dialog';
+export const DATA_ROUTE_CONTACT_DISCARD_GUARD_ATTR =
+  'data-recued-data-contact-discard-guard';
+export const DATA_ROUTE_CONTACT_DISCARD_KEEP_ATTR =
+  'data-recued-data-contact-discard-keep';
+export const DATA_ROUTE_CONTACT_DISCARD_COMMIT_ATTR =
+  'data-recued-data-contact-discard-commit';
+const DATA_ROUTE_CONTACT_DISCARD_KEEP_ACTION = 'keep-contact-dialog';
+const DATA_ROUTE_CONTACT_DISCARD_COMMIT_ACTION = 'discard-contact-dialog';
 export const DATA_ROUTE_MIRROR_ATTR = 'data-recued-data-mirror-panel';
 /** D-172 Half-A "open" — the Files-tab "Download file" button (present only when
  *  the file-read caller is wired + a file is selected). */
@@ -326,6 +362,8 @@ export const DATA_ROUTE_UNAVAILABLE_ATTR = 'data-recued-data-unavailable';
  *  detail, below the identity + per-field provenance block. */
 export const DATA_ROUTE_CONTACT_DETAIL_ATTR =
   'data-recued-data-contact-detail';
+export const DATA_ROUTE_CONTACT_DETAIL_HEADING_ATTR =
+  'data-recued-data-contact-detail-heading';
 /** D-205 #2 — the per-field provenance block. THE reason this page exists: it is
  *  the only surface in the product where D-192 C-2's contribution ladder is
  *  visible ("org: Acme — from HubSpot", "name: … — you typed this"). Value =
@@ -345,6 +383,10 @@ export const DATA_ROUTE_CONTACT_SCAN_ATTR = 'data-recued-data-contact-scan';
 /** D-205 #2b — the live scan-progress line, fed by the `merge_scan_progress`
  *  broadcast. */
 export const DATA_ROUTE_SCAN_PROGRESS_ATTR = 'data-recued-data-scan-progress';
+/** Focusable durable receipt for a completed duplicate-contact scan. */
+export const DATA_ROUTE_SCAN_RESULT_ATTR = 'data-recued-data-scan-result';
+/** Focusable durable receipt for a reconciled merge decision. */
+export const DATA_ROUTE_MERGE_RESULT_ATTR = 'data-recued-data-merge-result';
 
 /** D-205 #2c — the per-Source health strip on the Contacts list. The first surface
  *  that reads the contact runner's per-cycle counters. */
@@ -361,6 +403,9 @@ export const DATA_ROUTE_CONTACT_SCAN_SEGMENT = 'scan';
  *  never collide with a contact id. */
 export const DATA_ROUTE_CONTACT_IMPORT_SEGMENT = 'import';
 export const DATA_ROUTE_CONTACT_IMPORT_ATTR = 'data-recued-data-contact-import';
+/** Focusable durable receipt for a completed contact-import mutation. */
+export const DATA_ROUTE_CONTACT_IMPORT_RESULT_ATTR =
+  'data-recued-data-contact-import-result';
 const DATA_ROUTE_IMPORT_TARGET_ATTR = 'data-import-target';
 const DATA_ROUTE_IMPORT_SOURCE_ATTR = 'data-import-source';
 
@@ -818,6 +863,9 @@ export interface BootstrapDataRouteOptions {
    *  → no download button (metadata-only drill-down). */
   fileReadCaller?: DataFileReadCaller;
   subscribe?: BroadcastSubscriber['on'];
+  /** Keep the shell router's cached hash aligned with successful in-page
+   *  History.replaceState writes, which do not emit hashchange. */
+  onHashSync?: (hash: string) => void;
   /** R18 — deep-link hydration (`#data/<tab>/<entity_id>`, R16). `initialTab`
    *  is validated against the known tabs (invalid → the default Contacts tab);
    *  `initialEntityId` opens that entity's timeline detail on the contact +
@@ -843,6 +891,12 @@ export interface BootstrapDataRouteOptions {
    *  re-fetch; coalesces a write burst into one refresh. Default 400ms;
    *  `<= 0` refreshes immediately (tests). */
   liveRefreshDebounceMs?: number;
+  /** Coalesces keyboard input in the server-backed Contacts search. Default
+   *  180ms; `<= 0` refreshes immediately for deterministic route tests. */
+  contactSearchDebounceMs?: number;
+  /** Coalesces keyboard input in the server-backed Bookings search. Default
+   *  180ms; client-filtered work-item kinds remain immediate. */
+  bookingSearchDebounceMs?: number;
   /** `Date.now`-compatible clock for the entity-detail panel's
    *  relative-time copy. Tests pass a fixed timestamp for determinism. */
   now?: () => number;
@@ -956,11 +1010,18 @@ interface ContactScanProgress {
   started_at: number;
 }
 
+/** Host-only busy-owner extension. Keeping the intersection local also lets the
+ *  webclient's write-free project-reference check consume an older ui-shared
+ *  declaration build while the source package change is validated separately. */
+type ContactMergeDialogState = MergeReviewDialogState & {
+  saving_action?: 'confirm' | 'reject';
+};
+
 /** D-205 #2b — the merge scan page (`#data/contact/scan`). */
 interface ContactScanState {
   /** The ui-shared dialog's own state — items / cursor / survivor overrides /
    *  saving / error. We own it; the dialog is a pure render of it. */
-  dialog: MergeReviewDialogState;
+  dialog: ContactMergeDialogState;
   /** Hydrating the candidate queue (`contact.merge.list` + the per-email gets). */
   loading: boolean;
   /** A `scan_now` is in flight. */
@@ -968,6 +1029,8 @@ interface ContactScanState {
   progress: ContactScanProgress | null;
   /** Outcome of the last completed scan, for the "what just happened" line. */
   last_scan: { iterated: number; surfaced_count: number } | null;
+  /** Last user-authored decision retained while its queue reconciliation paints. */
+  last_resolution: 'confirm' | 'reject' | null;
 }
 
 export interface DataRoute {
@@ -984,6 +1047,8 @@ export interface DataRoute {
   getLoadErrors(): DataLoadErrors;
   /** A user-started source write, import, scan, run, or save is settling. */
   hasInFlightWork(): boolean;
+  /** Contextual shell leave copy for an owned Records operation. */
+  inFlightWorkPrompt(): string | null;
   refresh(): void;
   whenLoaded(): Promise<void>;
   selectTab(tab: DataTabId): Promise<void>;
@@ -1253,7 +1318,8 @@ const DATA_ROUTE_STYLES = `
   border-color: var(--danger);
   color: var(--danger);
 }
-[${DATA_ROUTE_HOST_ATTR}] .data-button:disabled {
+[${DATA_ROUTE_HOST_ATTR}] .data-button:disabled,
+[${DATA_ROUTE_HOST_ATTR}] .data-button[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: .65;
 }
@@ -1445,6 +1511,24 @@ const DATA_ROUTE_STYLES = `
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+[${DATA_ROUTE_FORM_RESPONSE_DISCARD_GUARD_ATTR}] {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+  padding: 14px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: var(--danger-weak);
+}
+[${DATA_ROUTE_FORM_RESPONSE_DISCARD_GUARD_ATTR}] h3,
+[${DATA_ROUTE_FORM_RESPONSE_DISCARD_GUARD_ATTR}] p {
+  margin: 0;
+}
+[${DATA_ROUTE_HOST_ATTR}] .data-form-response-discard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
 @media (max-width: 640px) {
   [${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}] .data-response-automation {
     align-items: stretch;
@@ -1580,6 +1664,10 @@ const DATA_ROUTE_STYLES = `
 }
 [${DATA_ROUTE_HOST_ATTR}] .data-contact-detail-heading .data-section-title {
   margin: 0;
+}
+[${DATA_ROUTE_CONTACT_DETAIL_HEADING_ATTR}]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 [${DATA_ROUTE_HOST_ATTR}] .data-contact-detail-heading .data-row-meta,
 [${DATA_ROUTE_HOST_ATTR}] .data-contact-detail-heading .data-row-subtle {
@@ -1853,6 +1941,23 @@ const DATA_ROUTE_STYLES = `
   gap: 8px;
   justify-content: flex-end;
   margin-top: 12px;
+}
+[${DATA_ROUTE_CONTACT_DISCARD_GUARD_ATTR}] {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: var(--danger-weak);
+}
+[${DATA_ROUTE_CONTACT_DISCARD_GUARD_ATTR}] h3,
+[${DATA_ROUTE_CONTACT_DISCARD_GUARD_ATTR}] p {
+  margin: 0;
+}
+[${DATA_ROUTE_HOST_ATTR}] .data-contact-discard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 @media (max-width: 720px) {
   [${DATA_ROUTE_HOST_ATTR}] .data-header {
@@ -2350,6 +2455,9 @@ const emptyContactValues = (): ContactDialogValues => ({
   company: '',
 });
 
+const contactDialogFingerprint = (values: ContactDialogValues): string =>
+  JSON.stringify([values.email, values.name, values.phone, values.company]);
+
 const validateContactDialog = (
   values: ContactDialogValues,
 ): Partial<Record<keyof ContactDialogValues, string>> => {
@@ -2441,7 +2549,11 @@ const runIdFromTimelinePayload = (payload: unknown): string | null => {
 const runHref = (run_id: string): string =>
   serializeShellRoute('logs', run_id);
 
-const renderTabButton = (tab: DataTabId, active: DataTabId): string => `
+const renderTabButton = (
+  tab: DataTabId,
+  active: DataTabId,
+  locked: boolean,
+): string => `
   <button
     type="button"
     class="data-tab"
@@ -2450,6 +2562,7 @@ const renderTabButton = (tab: DataTabId, active: DataTabId): string => `
     ${DATA_ROUTE_ACTION_ATTR}="select-tab"
     ${DATA_ROUTE_TAB_ID_ATTR}="${e(tab)}"
     aria-selected="${tab === active ? 'true' : 'false'}"
+    ${locked && tab !== active ? 'aria-disabled="true"' : ''}
     ${tab === active ? 'data-active="true"' : ''}
   >${e(tabLabel(tab))}</button>
 `;
@@ -2460,23 +2573,24 @@ const renderTabGroup = (
   label: string,
   tabs: readonly DataTabId[],
   active: DataTabId,
+  locked: boolean,
 ): string => `
   <div class="data-tab-group">
     <span class="data-tab-group-label">${e(label)}</span>
     <div class="data-tabs" role="tablist" aria-label="${e(label)} collections">
-      ${tabs.map((tab) => renderTabButton(tab, active)).join('')}
+      ${tabs.map((tab) => renderTabButton(tab, active, locked)).join('')}
     </div>
   </div>
 `;
 
-const renderTabs = (active: DataTabId): string => `
+const renderTabs = (active: DataTabId, locked = false): string => `
   <div class="data-tab-groups">
-    ${renderTabGroup('Owned', DATA_OWN_IT_TABS, active)}
-    ${renderTabGroup('Received', DATA_RECEIVED_CLUSTER, active)}
-    ${renderTabGroup('Connected', DATA_MIRROR_TABS, active)}
-    ${renderTabGroup('Provenance', DATA_PROVENANCE_TABS, active)}
-    ${renderTabGroup('Storage', DATA_SHARED_TABS, active)}
-    ${renderTabGroup('Records', DATA_RECORDS_TABS, active)}
+    ${renderTabGroup('Owned', DATA_OWN_IT_TABS, active, locked)}
+    ${renderTabGroup('Received', DATA_RECEIVED_CLUSTER, active, locked)}
+    ${renderTabGroup('Connected', DATA_MIRROR_TABS, active, locked)}
+    ${renderTabGroup('Provenance', DATA_PROVENANCE_TABS, active, locked)}
+    ${renderTabGroup('Storage', DATA_SHARED_TABS, active, locked)}
+    ${renderTabGroup('Records', DATA_RECORDS_TABS, active, locked)}
   </div>
 `;
 
@@ -2487,7 +2601,10 @@ const renderErrors = (errors: DataLoadErrors): string =>
     <p ${DATA_ROUTE_SOURCE_ERROR_ATTR}="${e(key)}" role="alert">${e(message)}</p>
   `).join('');
 
-const renderContactDialog = (dialog: ContactDialogState | null): string => {
+const renderContactDialog = (
+  dialog: ContactDialogState | null,
+  discardGuardOpen: boolean,
+): string => {
   if (dialog === null) return '';
   const title = dialog.mode === 'create' ? 'New contact' : 'Edit contact';
   const error = (key: keyof ContactDialogValues): string =>
@@ -2498,28 +2615,84 @@ const renderContactDialog = (dialog: ContactDialogState | null): string => {
     dialog.submit_error !== null
       ? `<p class="data-error" role="alert">${e(dialog.submit_error)}</p>`
       : '';
+  const editorStateAttr = discardGuardOpen
+    ? ' inert aria-hidden="true"'
+    : '';
+  const discardGuard = discardGuardOpen
+    ? `
+        <section
+          ${DATA_ROUTE_CONTACT_DISCARD_GUARD_ATTR}
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="data-contact-discard-title"
+          aria-describedby="data-contact-discard-description"
+          tabindex="-1"
+        >
+          <h3 id="data-contact-discard-title">Discard your contact changes?</h3>
+          <p id="data-contact-discard-description">Your unfinished changes will be lost.</p>
+          <div class="data-contact-discard-actions">
+            <button type="button" class="data-button"
+              ${DATA_ROUTE_ACTION_ATTR}="${DATA_ROUTE_CONTACT_DISCARD_KEEP_ACTION}"
+              ${DATA_ROUTE_CONTACT_DISCARD_KEEP_ATTR}>Keep editing</button>
+            <button type="button" class="data-button"
+              ${DATA_ROUTE_ACTION_ATTR}="${DATA_ROUTE_CONTACT_DISCARD_COMMIT_ACTION}"
+              ${DATA_ROUTE_CONTACT_DISCARD_COMMIT_ATTR}>Discard changes</button>
+          </div>
+        </section>`
+    : '';
   return `
     <div ${DATA_ROUTE_CONTACT_DIALOG_ATTR}="${e(dialog.mode)}">
       <section class="data-dialog-panel" role="dialog" aria-modal="true" aria-label="${e(title)}">
-        <header class="data-dialog-header">
-          <h2 class="data-dialog-title">${e(title)}</h2>
-          <button type="button" class="data-button data-dialog-close"
-            ${DATA_ROUTE_ACTION_ATTR}="close-contact-dialog">Close</button>
-        </header>
-        <div class="data-form-grid">
-          ${renderContactField('email', 'Email', dialog.values.email, dialog.mode === 'edit', error('email'))}
-          ${renderContactField('name', 'Name', dialog.values.name, false, error('name'))}
-          ${renderContactField('phone', 'Phone', dialog.values.phone, false, error('phone'))}
-          ${renderContactField('company', 'Company', dialog.values.company, false, error('company'))}
+        <div class="data-contact-dialog-editor"${editorStateAttr}>
+          <header class="data-dialog-header">
+            <h2 class="data-dialog-title">${e(title)}</h2>
+            <button type="button" class="data-button data-dialog-close"
+              ${DATA_ROUTE_ACTION_ATTR}="close-contact-dialog"${dialog.submitting
+                ? ' aria-disabled="true"'
+                : ''}>Close</button>
+          </header>
+          <div class="data-form-grid">
+            ${renderContactField(
+              'email',
+              'Email',
+              dialog.values.email,
+              dialog.mode === 'edit' || dialog.submitting,
+              error('email'),
+            )}
+            ${renderContactField(
+              'name',
+              'Name',
+              dialog.values.name,
+              dialog.submitting,
+              error('name'),
+            )}
+            ${renderContactField(
+              'phone',
+              'Phone',
+              dialog.values.phone,
+              dialog.submitting,
+              error('phone'),
+            )}
+            ${renderContactField(
+              'company',
+              'Company',
+              dialog.values.company,
+              dialog.submitting,
+              error('company'),
+            )}
+          </div>
+          ${submitError}
+          <footer class="data-dialog-actions">
+            <button type="button" class="data-button data-dialog-cancel"
+              ${DATA_ROUTE_ACTION_ATTR}="close-contact-dialog"${dialog.submitting
+                ? ' aria-disabled="true"'
+                : ''}>Cancel</button>
+            <button type="button" class="data-button data-button--primary"
+              ${DATA_ROUTE_ACTION_ATTR}="submit-contact-dialog"
+              ${dialog.submitting ? 'aria-disabled="true" aria-busy="true"' : ''}>${dialog.submitting ? 'Saving…' : 'Save'}</button>
+          </footer>
         </div>
-        ${submitError}
-        <footer class="data-dialog-actions">
-          <button type="button" class="data-button"
-            ${DATA_ROUTE_ACTION_ATTR}="close-contact-dialog">Cancel</button>
-          <button type="button" class="data-button data-button--primary"
-            ${DATA_ROUTE_ACTION_ATTR}="submit-contact-dialog"
-            ${dialog.submitting ? 'disabled' : ''}>${dialog.submitting ? 'Saving...' : 'Save'}</button>
-        </footer>
+        ${discardGuard}
       </section>
     </div>
   `;
@@ -2841,6 +3014,7 @@ const renderContactLinks = (links: readonly PlatformIdEntry[]): string => {
 const renderContactDetailView = (
   state: ContactDetailState,
   loading: boolean,
+  openingEditor: boolean,
   now: number,
 ): string => {
   const contact = state.contact;
@@ -2875,14 +3049,16 @@ const renderContactDetailView = (
           ${DATA_ROUTE_ACTION_ATTR}="close-contact-detail">← Back to contacts</button>
         <button type="button" class="data-button"
           ${DATA_ROUTE_ACTION_ATTR}="open-edit-contact"
-          ${DATA_ROUTE_CONTACT_EMAIL_ATTR}="${e(state.email)}">Edit</button>
+          ${DATA_ROUTE_CONTACT_EMAIL_ATTR}="${e(state.email)}"${openingEditor
+            ? ' aria-disabled="true" aria-busy="true"'
+            : ''}>${openingEditor ? 'Opening editor…' : 'Edit'}</button>
       </div>
       <header class="data-contact-detail-header">
         <span class="data-contact-avatar data-contact-avatar--lg" aria-hidden="true">${e(
           contact !== null ? contactInitial(contact) : '@',
         )}</span>
         <span class="data-contact-detail-heading">
-          <h2 class="data-section-title">${e(heading)}</h2>
+          <h2 class="data-section-title" ${DATA_ROUTE_CONTACT_DETAIL_HEADING_ATTR} tabindex="-1">${e(heading)}</h2>
           <span class="data-row-meta">${e(state.email)}</span>
           ${contact !== null
             ? `<span class="data-row-subtle">${e(contactSourceLabel(contact.source))} · ${e(String(contact.interaction_count))} interactions</span>`
@@ -2913,7 +3089,9 @@ const renderLoadMoreFooter = (footerOpts: {
   return `<div class="data-list-footer" ${footerOpts.marker}>
       <span class="data-list-count">${footerOpts.loaded} of ${footerOpts.total} loaded</span>
       <button type="button" class="data-button"
-        ${DATA_ROUTE_ACTION_ATTR}="${footerOpts.action}"${footerOpts.loadingMore ? ' disabled' : ''}>
+        ${DATA_ROUTE_ACTION_ATTR}="${footerOpts.action}"${footerOpts.loadingMore
+          ? ' aria-disabled="true" aria-busy="true"'
+          : ''}>
         ${footerOpts.loadingMore ? 'Loading…' : 'Load more'}</button>
     </div>`;
 };
@@ -3159,6 +3337,7 @@ const renderImportOverviewRow = (s: ContactSourceHealth): string => {
 const renderFileImportPanel = (state: ContactImportState): string => {
   const f = state.file;
   const plan = f?.plan ?? null;
+  const applying = f?.busy === true && plan !== null;
 
   return `
   <section class="data-file-import">
@@ -3167,7 +3346,7 @@ const renderFileImportPanel = (state: ContactImportState): string => {
       <em>your</em> value for that field — the same as typing it in.</p>
     <input type="file" class="data-input" accept=".vcf,.csv,text/vcard,text/csv"
       ${DATA_ROUTE_ACTION_ATTR}="contact-import-file-pick"
-      aria-label="Choose a vCard or CSV file" />
+      aria-label="Choose a vCard or CSV file" ${applying ? 'disabled' : ''} />
 
     ${plan === null
       ? f?.busy === true
@@ -3194,7 +3373,7 @@ const renderFileImportPanel = (state: ContactImportState): string => {
         : `
         <label class="data-file-import-changes-toggle">
           <input type="checkbox" ${DATA_ROUTE_ACTION_ATTR}="contact-import-file-toggle-changes"
-            ${f!.apply_changes ? 'checked' : ''} />
+            ${f!.apply_changes ? 'checked' : ''} ${applying ? 'disabled' : ''} />
           ${e(
             `Also change ${plan.changes.length} contact${plan.changes.length === 1 ? '' : 's'} you already have`,
           )}
@@ -3218,7 +3397,11 @@ const renderFileImportPanel = (state: ContactImportState): string => {
       <div class="data-contact-toolbar">
         <button type="button" class="data-button data-button--primary"
           ${DATA_ROUTE_ACTION_ATTR}="contact-import-file-apply"
-          ${f!.busy || (plan.adds === 0 && !(f!.apply_changes && plan.changes.length > 0)) ? 'disabled' : ''}>
+          ${applying
+            ? 'aria-disabled="true" aria-busy="true"'
+            : plan.adds === 0 && !(f!.apply_changes && plan.changes.length > 0)
+              ? 'disabled'
+              : ''}>
           ${e(
             f!.busy
               ? 'Importing…'
@@ -3230,12 +3413,14 @@ const renderFileImportPanel = (state: ContactImportState): string => {
           )}
         </button>
         <button type="button" class="data-button"
-          ${DATA_ROUTE_ACTION_ATTR}="contact-import-file-clear">Cancel</button>
+          ${DATA_ROUTE_ACTION_ATTR}="contact-import-file-clear"
+          ${applying ? 'aria-disabled="true"' : ''}>Cancel</button>
       </div>`}
 
     ${f?.result == null
       ? ''
-      : `<p class="data-row-subtle" role="status">${e(
+      : `<p class="data-row-subtle" role="status" tabindex="-1"
+          ${DATA_ROUTE_CONTACT_IMPORT_RESULT_ATTR}>${e(
           `${f.result.added} added · ${f.result.changed} changed${
             f.result.skipped > 0 ? ` · ${f.result.skipped} left as they were` : ''
           }`,
@@ -3248,9 +3433,13 @@ const renderContactImportView = (
   sources: readonly ContactSourceHealth[],
   canUploadFile: boolean,
 ): string => {
+  const fileApplyPending =
+    state.file?.busy === true && state.file.plan !== null;
+  const importMutationPending = fileApplyPending || state.promoting;
   const back = `
     <button type="button" class="data-button"
-      ${DATA_ROUTE_ACTION_ATTR}="${state.source_id === null ? 'close-contact-import' : 'contact-import-overview'}">
+      ${DATA_ROUTE_ACTION_ATTR}="${state.source_id === null ? 'close-contact-import' : 'contact-import-overview'}"
+      ${importMutationPending ? 'aria-disabled="true"' : ''}>
       ${state.source_id === null ? 'Back to contacts' : 'All sources'}
     </button>`;
 
@@ -3290,17 +3479,22 @@ const renderContactImportView = (
         ${DATA_ROUTE_ACTION_ATTR}="contact-import-search"
         value="${e(state.query)}"
         placeholder="Search by name, email or company"
-        aria-label="Search this CRM" />
+        aria-label="Search this CRM" ${state.promoting ? 'disabled' : ''} />
       <button type="button" class="data-button data-button--primary"
         ${DATA_ROUTE_ACTION_ATTR}="contact-import-promote"
-        ${chosen === 0 || state.promoting ? 'disabled' : ''}>
+        ${state.promoting
+          ? 'aria-disabled="true" aria-busy="true"'
+          : chosen === 0 || state.loading
+            ? 'disabled'
+            : ''}>
         ${state.promoting ? 'Adding…' : `Add ${chosen === 0 ? '' : chosen} to my contacts`}
       </button>
     </div>
 
     ${state.result === null
       ? ''
-      : `<p class="data-row-subtle" role="status">${e(
+      : `<p class="data-row-subtle" role="status" tabindex="-1"
+          ${DATA_ROUTE_CONTACT_IMPORT_RESULT_ATTR}>${e(
           [
             `${state.result.created} added`,
             state.result.already_known > 0
@@ -3333,7 +3527,8 @@ const renderContactImportView = (
                    <input type="checkbox"
                      ${DATA_ROUTE_ACTION_ATTR}="contact-import-toggle"
                      ${DATA_ROUTE_IMPORT_TARGET_ATTR}="${e(c.target_id)}"
-                     ${state.selected.has(c.target_id) ? 'checked' : ''} />
+                     ${state.selected.has(c.target_id) ? 'checked' : ''}
+                     ${state.promoting ? 'disabled' : ''} />
                    <span class="data-row-title">${e(c.name ?? c.email)}</span>
                    <span class="data-row-subtle">${e(
                      [c.email, c.company, c.phone].filter((x) => x !== undefined).join(' · '),
@@ -3502,33 +3697,50 @@ const renderContactScanView = (
   now: number,
 ): string => {
   const pending = state.dialog.items.length;
-  const summary = state.loading
-    ? '<p class="data-loading">Loading possible duplicates...</p>'
-    : state.progress !== null
-      ? renderScanProgress(state.progress, now)
-      : state.last_scan !== null
-        ? `<p class="data-scan-progress" role="status" ${DATA_ROUTE_SCAN_PROGRESS_ATTR}>Compared ${e(
-            state.last_scan.iterated.toLocaleString(),
-          )} contacts · ${e(String(state.last_scan.surfaced_count))} new possible duplicate${
-            state.last_scan.surfaced_count === 1 ? '' : 's'
-          }.</p>`
+  const scanInProgress = state.scanning || state.progress !== null;
+  const mutationPending = state.scanning || state.dialog.saving;
+  const summary = state.progress !== null
+    ? renderScanProgress(state.progress, now)
+    : state.last_scan !== null
+      ? `<p class="data-scan-progress" role="status" tabindex="-1"
+          ${DATA_ROUTE_SCAN_PROGRESS_ATTR} ${DATA_ROUTE_SCAN_RESULT_ATTR}>Compared ${e(
+          state.last_scan.iterated.toLocaleString(),
+        )} contacts · ${e(String(state.last_scan.surfaced_count))} new possible duplicate${
+          state.last_scan.surfaced_count === 1 ? '' : 's'
+        }.</p>`
+      : state.loading
+        ? '<p class="data-loading">Loading possible duplicates...</p>'
         : '';
   const scanButton = canScan
     ? `<button type="button" class="data-button"
         ${DATA_ROUTE_ACTION_ATTR}="run-merge-scan"
-        ${state.scanning ? 'disabled' : ''}>${state.scanning ? 'Scanning…' : 'Scan again'}</button>`
+        ${scanInProgress
+          ? 'aria-disabled="true" aria-busy="true"'
+          : state.loading || state.dialog.saving
+            ? 'disabled'
+            : ''}>${scanInProgress ? 'Scanning…' : 'Scan again'}</button>`
     : '';
+  const resolutionReceipt = state.last_resolution === null
+    ? ''
+    : `<p class="data-scan-progress" role="status" tabindex="-1"
+        ${DATA_ROUTE_MERGE_RESULT_ATTR}>${
+        state.last_resolution === 'confirm'
+          ? 'Contacts merged'
+          : 'Marked as different'
+      } · ${state.loading ? 'Refreshing review queue…' : 'Review queue refreshed.'}</p>`;
   return `
     <section ${DATA_ROUTE_CONTACT_SCAN_ATTR}>
       <div class="data-contact-toolbar">
         <button type="button" class="data-button"
-          ${DATA_ROUTE_ACTION_ATTR}="close-contact-scan">← Back to contacts</button>
+          ${DATA_ROUTE_ACTION_ATTR}="close-contact-scan"
+          ${mutationPending ? 'aria-disabled="true"' : ''}>← Back to contacts</button>
         ${scanButton}
       </div>
       <h2 class="data-section-title">Possible duplicates</h2>
       <p class="data-row-subtle">Recued groups contacts that look like the same person. Nothing is merged until you say so, and a merge can be undone.</p>
       ${summary}
-      ${state.loading ? '' : renderMergeReviewDialog({
+      ${resolutionReceipt}
+      ${state.loading || scanInProgress ? '' : renderMergeReviewDialog({
         ...state.dialog,
         surface: 'notification',
         // ⛔ NOT declared: this host has not wired the DESTRUCTIVE vendor-side
@@ -3585,8 +3797,10 @@ const renderContactSurface = (
   loadingMore: boolean,
   search: string,
   dialog: ContactDialogState | null,
+  discardGuardOpen: boolean,
   contactDetail: ContactDetailState | null,
   loadingContactDetail: boolean,
+  openingContactEditEmail: string | null,
   contactScan: ContactScanState | null,
   canScan: boolean,
   canReviewMerges: boolean,
@@ -3608,7 +3822,12 @@ const renderContactSurface = (
   if (contactDetail !== null) {
     // The edit dialog is modal OVER the detail (opened by its Edit button), so
     // it has to render here too — not only on the list.
-    return `${renderContactDetailView(contactDetail, loadingContactDetail, now)}${renderContactDialog(dialog)}`;
+    return `${renderContactDetailView(
+      contactDetail,
+      loadingContactDetail,
+      openingContactEditEmail === contactDetail.email,
+      now,
+    )}${renderContactDialog(dialog, discardGuardOpen)}`;
   }
   return `
   <section>
@@ -3672,7 +3891,7 @@ const renderContactSurface = (
       total,
       loadingMore,
     })}
-    ${renderContactDialog(dialog)}
+    ${renderContactDialog(dialog, discardGuardOpen)}
   </section>
 `;
 };
@@ -3792,7 +4011,7 @@ const renderFormResponseAutomationPicker = (
   return `<section ${DATA_ROUTE_FORM_RESPONSE_RUN_PICKER_ATTR}="ready">
     <div class="data-response-run-heading">
       <div>
-        <h3>Run this response now</h3>
+        <h3 tabindex="-1">Run this response now</h3>
         <p>This is an explicit manual run. Review the prefilled routing context and recipe configuration before confirming; the acceptance event is not re-emitted.</p>
       </div>
     </div>
@@ -3824,21 +4043,112 @@ const renderFormResponseAutomationPicker = (
   </section>`;
 };
 
+interface FormResponseEditorDraft {
+  submissionId: string;
+  valuesText: string;
+  email: string;
+  lifecycle: string;
+}
+
+type FormResponseEditorControl = 'values' | 'email' | 'state' | 'save';
+
+interface FormResponseEditorFocus {
+  submissionId: string;
+  control: FormResponseEditorControl;
+  selectionStart: number | null;
+  selectionEnd: number | null;
+  selectionDirection: 'forward' | 'backward' | 'none' | null;
+}
+
+const formResponseEditorControlFrom = (
+  element: HTMLElement | null | undefined,
+): FormResponseEditorControl | null => {
+  if (element?.hasAttribute?.(DATA_ROUTE_FORM_RESPONSE_VALUES_ATTR) === true) {
+    return 'values';
+  }
+  if (element?.hasAttribute?.(DATA_ROUTE_FORM_RESPONSE_EMAIL_ATTR) === true) {
+    return 'email';
+  }
+  if (element?.hasAttribute?.(DATA_ROUTE_FORM_RESPONSE_STATE_ATTR) === true) {
+    return 'state';
+  }
+  return element?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'save-form-response'
+    ? 'save'
+    : null;
+};
+
+const formResponseEditorDraftFrom = (
+  response: FormResponse,
+): FormResponseEditorDraft => ({
+  submissionId: response.submission_id,
+  valuesText: JSON.stringify(response.values, null, 2),
+  email: response.visitor.email ?? '',
+  lifecycle: response.lifecycle_state,
+});
+
+const formResponseEditorFingerprint = (
+  draft: FormResponseEditorDraft,
+): string => JSON.stringify([
+  draft.submissionId,
+  draft.valuesText,
+  draft.email,
+  draft.lifecycle,
+]);
+
 const renderFormResponseDetail = (
   response: FormResponse,
   automationState: FormResponseAutomationPickerState,
   canRunAutomation: boolean,
   canEdit: boolean,
+  editorDraft: FormResponseEditorDraft | null,
   saving: boolean,
   saveError: string | null,
+  discardGuardOpen: boolean,
 ): string => {
   const fields = formResponseFields(response);
+  const draft = editorDraft?.submissionId === response.submission_id
+    ? editorDraft
+    : formResponseEditorDraftFrom(response);
+  const editorDisabled = saving ? ' disabled' : '';
+  const discoveringAutomation = automationState.status === 'loading';
+  const detailStateAttr = discardGuardOpen
+    ? ' inert aria-hidden="true"'
+    : '';
+  const discardGuard = discardGuardOpen
+    ? `
+      <section
+        ${DATA_ROUTE_FORM_RESPONSE_DISCARD_GUARD_ATTR}
+        role="alertdialog"
+        aria-modal="true"
+        aria-labelledby="data-form-response-discard-title"
+        aria-describedby="data-form-response-discard-description"
+        tabindex="-1"
+      >
+        <h3 id="data-form-response-discard-title">Discard your form-response changes?</h3>
+        <p id="data-form-response-discard-description">Your unfinished changes will be lost.</p>
+        <div class="data-form-response-discard-actions">
+          <button type="button" class="data-button"
+            ${DATA_ROUTE_ACTION_ATTR}="${DATA_ROUTE_FORM_RESPONSE_DISCARD_KEEP_ACTION}"
+            ${DATA_ROUTE_FORM_RESPONSE_DISCARD_KEEP_ATTR}>Keep editing</button>
+          <button type="button" class="data-button"
+            ${DATA_ROUTE_ACTION_ATTR}="${DATA_ROUTE_FORM_RESPONSE_DISCARD_COMMIT_ACTION}"
+            ${DATA_ROUTE_FORM_RESPONSE_DISCARD_COMMIT_ATTR}>Discard changes</button>
+        </div>
+      </section>`
+    : '';
   return `
     <section ${DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR}="${e(response.submission_id)}">
+      ${discardGuard}
+      <div class="data-form-response-detail-content"${detailStateAttr}>
       <button type="button" class="data-button"
-        ${DATA_ROUTE_ACTION_ATTR}="close-form-response">← Back to form responses</button>
+        ${DATA_ROUTE_ACTION_ATTR}="close-form-response"${saving
+          ? ' aria-disabled="true"'
+          : ''}>← Back to form responses</button>
       <div class="data-response-header">
-        <h2>${e(formResponseVisitorLabel(response))}</h2>
+        <h2
+          ${DATA_ROUTE_FORM_RESPONSE_DETAIL_HEADING_ATTR}
+          tabindex="-1"
+        >${e(formResponseVisitorLabel(response))}</h2>
         <span class="data-pill">${e(response.lifecycle_state.replace('_', ' '))}</span>
       </div>
       <dl class="data-response-meta">
@@ -3858,6 +4168,7 @@ const renderFormResponseDetail = (
         <div class="data-response-automation-actions">
           <a class="data-button data-button--primary"
             ${DATA_ROUTE_FORM_RESPONSE_AUTOMATE_ATTR}="${e(response.form_definition_id)}"
+            ${saving ? 'aria-disabled="true"' : ''}
             href="${e(serializeShellRoute(
               'kitchen',
               'new',
@@ -3867,7 +4178,11 @@ const renderFormResponseDetail = (
           ${canRunAutomation
             ? `<button type="button" class="data-button"
                 ${DATA_ROUTE_ACTION_ATTR}="discover-form-response-automations"
-                ${DATA_ROUTE_FORM_RESPONSE_RUN_ATTR}>Run this response</button>`
+                ${DATA_ROUTE_FORM_RESPONSE_RUN_ATTR}${discoveringAutomation
+                  ? ' aria-disabled="true" aria-busy="true"'
+                  : ''}>${discoveringAutomation
+                  ? 'Finding automations…'
+                  : 'Run this response'}</button>`
             : ''}
         </div>
       </div>
@@ -3889,23 +4204,26 @@ const renderFormResponseDetail = (
           <p class="data-row-subtle">This changes the owner-facing destination. The sealed Reception submission remains the original evidence.</p>
           <label>Email
             <input type="email" class="data-input" ${DATA_ROUTE_FORM_RESPONSE_EMAIL_ATTR}
-              value="${e(response.visitor.email ?? '')}" />
+              value="${e(draft.email)}"${editorDisabled} />
           </label>
           <label>Lifecycle
-            <select class="data-input" ${DATA_ROUTE_FORM_RESPONSE_STATE_ATTR}>
+            <select class="data-input" ${DATA_ROUTE_FORM_RESPONSE_STATE_ATTR}${editorDisabled}>
               ${FORM_RESPONSE_LIFECYCLE_STATES.map((state) =>
-                `<option value="${state}"${state === response.lifecycle_state ? ' selected' : ''}>${e(state.replace('_', ' '))}</option>`
+                `<option value="${state}"${state === draft.lifecycle ? ' selected' : ''}>${e(state.replace('_', ' '))}</option>`
               ).join('')}
             </select>
           </label>
           <label>Answers (JSON)
-            <textarea class="data-input" rows="12" ${DATA_ROUTE_FORM_RESPONSE_VALUES_ATTR}>${e(JSON.stringify(response.values, null, 2))}</textarea>
+            <textarea class="data-input" rows="12" ${DATA_ROUTE_FORM_RESPONSE_VALUES_ATTR}${editorDisabled}>${e(draft.valuesText)}</textarea>
           </label>
           <button type="button" class="data-button data-button--primary"
-            ${DATA_ROUTE_ACTION_ATTR}="save-form-response"${saving ? ' disabled' : ''}>${saving ? 'Saving…' : 'Save changes'}</button>
+            ${DATA_ROUTE_ACTION_ATTR}="save-form-response"${saving
+              ? ' aria-disabled="true" aria-busy="true"'
+              : ''}>${saving ? 'Saving…' : 'Save changes'}</button>
           ${saveError === null ? '' : `<p role="alert">${e(saveError)}</p>`}
         </section>
       ` : ''}
+      </div>
     </section>
   `;
 };
@@ -3921,10 +4239,12 @@ const renderFormResponseSurface = (
   automationState: FormResponseAutomationPickerState,
   canRunAutomation: boolean,
   canEdit: boolean,
+  editorDraft: FormResponseEditorDraft | null,
   saving: boolean,
   saveError: string | null,
+  discardGuardOpen: boolean,
   canExport: boolean,
-  exporting: boolean,
+  exportingFormat: 'json' | 'csv' | null,
 ): string => {
   if (detailId !== null) {
     if (loadingDetail) {
@@ -3948,8 +4268,10 @@ const renderFormResponseSurface = (
           automationState,
           canRunAutomation,
           canEdit,
+          editorDraft,
           saving,
           saveError,
+          discardGuardOpen,
         );
   }
 
@@ -3959,9 +4281,17 @@ const renderFormResponseSurface = (
         <h2 class="data-section-title">Form responses</h2>
         ${canExport ? `
           <button type="button" class="data-button" data-format="json"
-            ${DATA_ROUTE_ACTION_ATTR}="export-form-responses"${exporting ? ' disabled' : ''}>Export JSON</button>
+            ${DATA_ROUTE_ACTION_ATTR}="export-form-responses"${exportingFormat === null
+              ? ''
+              : ' aria-disabled="true"'}${exportingFormat === 'json'
+              ? ' aria-busy="true"'
+              : ''}>${exportingFormat === 'json' ? 'Exporting JSON…' : 'Export JSON'}</button>
           <button type="button" class="data-button" data-format="csv"
-            ${DATA_ROUTE_ACTION_ATTR}="export-form-responses"${exporting ? ' disabled' : ''}>Export CSV</button>
+            ${DATA_ROUTE_ACTION_ATTR}="export-form-responses"${exportingFormat === null
+              ? ''
+              : ' aria-disabled="true"'}${exportingFormat === 'csv'
+              ? ' aria-busy="true"'
+              : ''}>${exportingFormat === 'csv' ? 'Exporting CSV…' : 'Export CSV'}</button>
         ` : ''}
       </div>
       ${responses.length === 0
@@ -3984,7 +4314,9 @@ const renderFormResponseSurface = (
         <div class="data-list-footer" ${DATA_ROUTE_FORM_RESPONSE_LOAD_MORE_ATTR}>
           <span class="data-list-count">${responses.length} loaded</span>
           <button type="button" class="data-button"
-            ${DATA_ROUTE_ACTION_ATTR}="load-more-form-responses"${loadingMore ? ' disabled' : ''}>
+            ${DATA_ROUTE_ACTION_ATTR}="load-more-form-responses"${loadingMore
+              ? ' aria-disabled="true" aria-busy="true"'
+              : ''}>
             ${loadingMore ? 'Loading…' : 'Load more'}
           </button>
         </div>`}
@@ -4191,7 +4523,9 @@ const renderMirrorSurface = (
       />`}
       <button type="button" class="data-button data-button--primary"
         ${DATA_ROUTE_ACTION_ATTR}="load-timeline"
-        ${loadingTimeline ? 'disabled' : ''}>${loadingTimeline ? 'Loading...' : 'Open timeline'}</button>
+        ${loadingTimeline
+          ? 'aria-disabled="true" aria-busy="true"'
+          : ''}>${loadingTimeline ? 'Loading…' : 'Open timeline'}</button>
       ${downloadFileControl}
     </div>
     ${renderMirrorDrilldown(timeline, kind, timelineEntityId, now)}
@@ -4205,6 +4539,7 @@ const renderWorkEntitySurface = (
   entities: readonly WorkEntity[],
   total: number,
   loadingMore: boolean,
+  openingEntityId: string | null,
   bookingLifecycleFilter: BookingLifecycleState | 'all',
   bookingDetailId: string | null,
   bookingDetail: WorkEntityGetRpcResponse | null,
@@ -4213,6 +4548,7 @@ const renderWorkEntitySurface = (
   canMintManageLink: boolean,
   manageLinkBusy: boolean,
   manageLinkNotice: { kind: 'ok' | 'error'; text: string } | null,
+  discardGuardOpen: boolean,
 ): string => {
   const options = sourceOptionsForKind(sources, state.kind);
   const activeSourceId = state.dialog?.source_id ?? state.selected_source_id;
@@ -4231,6 +4567,7 @@ const renderWorkEntitySurface = (
           state: state.dialog,
           sources: options,
           ref_picker: true,
+          discard_guard: discardGuardOpen,
         });
     if (loadingBookingDetail) {
       return `<section class="work-entity-booking-detail" aria-busy="true">
@@ -4302,9 +4639,56 @@ const renderWorkEntitySurface = (
     ...(state.kind === 'booking'
       ? { booking_lifecycle_filter: bookingLifecycleFilter }
       : {}),
+    ...(openingEntityId !== null
+      ? { opening_entity_id: openingEntityId }
+      : {}),
+    discard_guard: discardGuardOpen,
     ...(footerHtml !== '' ? { footer_html: footerHtml } : {}),
   });
 };
+
+const stableWorkEntityDialogValue = (value: unknown): unknown => {
+  if (value === null || value === undefined) return undefined;
+  if (typeof value === 'string') {
+    const normalized = value.trim();
+    return normalized.length === 0 ? undefined : value;
+  }
+  if (Array.isArray(value)) {
+    const normalized = value
+      .map(stableWorkEntityDialogValue)
+      .filter((entry) => entry !== undefined);
+    return normalized.length === 0 ? undefined : normalized;
+  }
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const normalized = Object.fromEntries(
+      Object.keys(record)
+        .sort()
+        .map((key) => [key, stableWorkEntityDialogValue(record[key])])
+        .filter((entry) => entry[1] !== undefined),
+    );
+    return Object.keys(normalized).length === 0 ? undefined : normalized;
+  }
+  return value;
+};
+
+const workEntityDialogFingerprint = (
+  dialog: NonNullable<WorkEntityPageState['dialog']>,
+): string => JSON.stringify(stableWorkEntityDialogValue({
+  mode: dialog.mode,
+  entity_id: dialog.mode === 'edit' ? dialog.entity_id : null,
+  source_id: dialog.source_id,
+  values: dialog.values,
+}));
+
+const memoryComposeFingerprint = (compose: MemoryComposeState): string =>
+  JSON.stringify([
+    compose.mode,
+    compose.editId ?? null,
+    compose.kind,
+    compose.summary,
+    compose.body,
+  ]);
 
 const targetWithAttr = (ev: Event, attr: string): HTMLElement | null => {
   const rawTarget = ev.target as (Element & {
@@ -4367,6 +4751,7 @@ export const bootstrapDataRoute = (
   // Memory lens feed state — orthogonal to the Data tabs.
   let memoryEntries: MemoryListEntry[] = [];
   let memoryOriginFilter: MemoryOriginFilter = 'all';
+  let memoryFilteringOrigin: MemoryOriginFilter | null = null;
   let memoryLoading = false;
   let memoryError: string | undefined;
   // D-198 Slice 2 — the owner CRUD sub-state (compose form / detail view /
@@ -4380,10 +4765,25 @@ export const bootstrapDataRoute = (
     body: '',
     submitting: false,
   };
+  let memoryComposeBaseline: string | null = null;
+  let memoryComposeDiscardGuardOpen = false;
+  let memoryComposeReturnFocus:
+    | { kind: 'add' }
+    | { kind: 'edit'; memoryId: string }
+    | null = null;
   let memoryDetail: MemoryDetailState | null = null;
+  let memoryDetailReturnId: string | null = null;
+  let memoryDetailOpenSeq = 0;
+  let memoryEditOpeningId: string | null = null;
+  let memoryEditOpenSeq = 0;
+  let memoryEditError: { memoryId: string; message: string } | null = null;
   let memoryPendingDeleteId: string | undefined;
+  let memoryDeletingId: string | null = null;
+  let memoryDeleteError: { memoryId: string; message: string } | null = null;
   // D-198 Slice 3 — the import panel (paste JSON → memory.import).
   let memoryImport: MemoryImportState = { open: false, text: '', submitting: false };
+  let memoryImportBaseline: string | null = null;
+  let memoryImportDiscardGuardOpen = false;
   // D-198 Slice 3 — a memory-native export walk is in flight.
   let memoryExporting = false;
   // Writes are wired only when the whole CRUD caller set is present.
@@ -4396,6 +4796,10 @@ export const bootstrapDataRoute = (
     opts.initialTab !== undefined && isDataTab(opts.initialTab)
       ? opts.initialTab
       : 'contact';
+  // Identifies the tab represented by the current DOM. State changes before a
+  // repaint, so comparing this with `activeTab` prevents a focused source chip
+  // from one collection from claiming a same-named chip on another tab.
+  let renderedActiveTab = activeTab;
   // A run-verification handoff belongs to the exact item that was addressed.
   // Retire it as soon as the owner navigates away so an in-memory route cannot
   // accidentally carry "reviewed" choices onto a different tab or item after
@@ -4432,6 +4836,19 @@ export const bootstrapDataRoute = (
   // Bumped on each work-entity edit-dialog open; a fetch that resolves after a
   // newer open (or a tab switch) drops rather than installing a stale dialog.
   let workEntityDialogOpenSeq = 0;
+  let pendingWorkEntityDialogOpen: {
+    kind: WorkEntityKind;
+    id: string;
+  } | null = null;
+  let workEntityDialogReturnFocus:
+    | { mode: 'create'; kind: WorkEntityKind }
+    | { mode: 'edit'; kind: WorkEntityKind; id: string }
+    | null = null;
+  let workEntityDialogBaseline: string | null = null;
+  let workEntityDiscardGuardOpen = false;
+  let workEntityDiscardReturnFocus:
+    | { kind: 'close' | 'cancel' | 'field' | 'form'; field?: string }
+    | null = null;
   let bookingLifecycleFilter: BookingLifecycleState | 'all' = 'all';
   let bookingDetailId: string | null = null;
   let bookingDetail: WorkEntityGetRpcResponse | null = null;
@@ -4450,6 +4867,14 @@ export const bootstrapDataRoute = (
   // client-side search, which filters the loaded rows in `filterAndSortEntities`).
   let workEntityTotal = 0;
   let loadingMoreWorkEntities = false;
+  // Set at delegated-click time, before the promise-chain callback starts, so
+  // two same-tick activations cannot enqueue two successive pages.
+  let workEntityLoadMoreQueued = false;
+  let pendingWorkEntityLoadMoreFocusKind: WorkEntityKind | null = null;
+  let pendingLoadedWorkEntityKeys: Array<{
+    kind: WorkEntityKind;
+    id: string;
+  }> = [];
   let contacts: ContactRecord[] = [];
   // D-226 — keyed on canonical email, for the rows currently rendered.
   let contactRollups: Record<string, TimelineRollup[]> | undefined;
@@ -4457,18 +4882,50 @@ export const bootstrapDataRoute = (
   // R18 load-more — set while an append page (offset > 0) is in flight, so the
   // footer shows a spinner without flashing a loading state over the list.
   let loadingMoreContacts = false;
+  // Set at delegated-click time, before the promise-chain callback starts, so
+  // two same-tick activations cannot enqueue two successive contact pages.
+  let contactLoadMoreQueued = false;
+  let pendingContactLoadMoreFocus = false;
+  let pendingLoadedContactEmail: string | null = null;
   let contactSearch = '';
   let contactDialog: ContactDialogState | null = null;
+  let contactDialogReturnFocus:
+    | { kind: 'create' }
+    | { kind: 'edit'; email: string }
+    | null = null;
+  let contactDialogBaseline: string | null = null;
+  let contactDiscardGuardOpen = false;
+  let contactDiscardReturnFocus:
+    | { kind: 'close' | 'cancel' | 'field' | 'form'; field?: keyof ContactDialogValues }
+    | null = null;
   let formResponses: FormResponseListItem[] = [];
   let formResponseNextCursor: FormResponseListCursor | null = null;
   let loadingMoreFormResponses = false;
+  let formResponseLoadMoreQueued = false;
+  let pendingFormResponseLoadMoreFocus = false;
+  let pendingLoadedFormResponseIds: string[] = [];
   let formResponseDetailId: string | null = null;
   let formResponseDetail: FormResponse | null = null;
   let formResponseDetailError: string | null = null;
   let loadingFormResponseDetail = false;
+  let pendingFormResponseDetailFocusId: string | null = null;
+  // The detail editor is uncontrolled at the DOM edge, but route paints replace
+  // the whole subtree. Mirror every edit here so validation, automation reads,
+  // and save progress cannot silently restore the older server snapshot.
+  let formResponseEditorDraft: FormResponseEditorDraft | null = null;
+  let formResponseEditorBaseline: string | null = null;
+  let formResponseDiscardGuardOpen = false;
+  let formResponseDiscardReturnId: string | null = null;
+  let formResponseDiscardPendingTab: DataTabId | null = null;
+  let formResponseDiscardPendingHref: string | null = null;
+  let pendingFormResponseDiscardTabFocus: DataTabId | null = null;
+  let pendingFormResponseEditorFocus: {
+    submissionId: string;
+    control: FormResponseEditorControl;
+  } | null = null;
   let savingFormResponse = false;
   let formResponseSaveError: string | null = null;
-  let exportingFormResponses = false;
+  let exportingFormResponseFormat: 'json' | 'csv' | null = null;
   // Mutations without their own rendered busy state (deletes and the shared
   // run modal) still need to participate in the server-switch safety fence.
   let opaqueMutationsInFlight = 0;
@@ -4476,6 +4933,7 @@ export const bootstrapDataRoute = (
     status: 'idle',
   };
   let formResponseAutomationSeq = 0;
+  let pendingFormResponseAutomationPickerFocus = false;
   let formResponseRunModal: RunModal.RunModalHandle | null = null;
   // A response detail fetch may resolve after the owner opened a different
   // row or left the tab. Only the latest sequence may install its result.
@@ -4486,6 +4944,10 @@ export const bootstrapDataRoute = (
   // from the mirror-tab `timeline` above.
   let contactDetail: ContactDetailState | null = null;
   let loadingContactDetail = false;
+  let pendingContactDetailFocusEmail: string | null = null;
+  let contactEditOpenSeq = 0;
+  let openingContactEditEmail: string | null = null;
+  let pendingContactEditFocusEmail: string | null = null;
   // D-205 #2b — the merge scan page. Null when closed.
   let contactScan: ContactScanState | null = null;
   // D-205 #5b — `#data/contact/import`.
@@ -4514,6 +4976,7 @@ export const bootstrapDataRoute = (
   let contactSources: readonly ContactSourceHealth[] = [];
   let loading = true;
   let loadingTimeline = false;
+  let timelineLoadGeneration = 0;
   // D-172 Half-A "open" — a file download (data.file.read → browser save) is in
   // flight; disables the button + shows a spinner label.
   let downloadingFile = false;
@@ -4612,13 +5075,28 @@ export const bootstrapDataRoute = (
   // input's value + submit state. Reset whenever the detail changes so a stale
   // form never carries across events.
   let rescheduleForm: { value: string; submitting: boolean; error: string | null } | null = null;
+  let pendingRescheduleOpenFocusId: string | null = null;
   // D-210 Appendix B — the "Copy reschedule link" affordance state for the OPEN
   // calendar event. `busy` while the mint rpc is in flight; `notice` is the
   // post-copy line (the URL itself is only shown as a fallback when the clipboard
   // API is unavailable). Reset on detail change so a stale notice never carries.
   let explorerLoading = false;
   let explorerError: string | undefined;
+  let explorerErrorRetryable = false;
+  let explorerRetrying = false;
+  let pendingExplorerRetryFocus: DataTabId | null = null;
+  let explorerRetryGeneration = 0;
+  let explorerDetailRetryable = false;
+  let explorerDetailRetrying = false;
+  let pendingExplorerDetailRetryFocus: {
+    tab: DataTabId;
+    recordId: string;
+  } | null = null;
   let explorerSeq = 0;
+  let pendingExplorerRecordFocus: {
+    tab: DataTabId;
+    recordId: string;
+  } | null = null;
   let initialExplorerSlug =
     typeof opts.initialCollectionSlug === 'string'
     && opts.initialCollectionSlug.trim().length > 0
@@ -4644,8 +5122,17 @@ export const bootstrapDataRoute = (
     explorerDetail = null;
     explorerTimeline = null;
     rescheduleForm = null;
+    pendingRescheduleOpenFocusId = null;
     explorerLoading = false;
     explorerError = undefined;
+    explorerErrorRetryable = false;
+    explorerRetrying = false;
+    pendingExplorerRetryFocus = null;
+    explorerRetryGeneration += 1;
+    explorerDetailRetryable = false;
+    explorerDetailRetrying = false;
+    pendingExplorerDetailRetryFocus = null;
+    pendingExplorerRecordFocus = null;
     explorerSeq += 1; // abandon any in-flight explorer fetch
   };
 
@@ -4663,13 +5150,20 @@ export const bootstrapDataRoute = (
     detail: null,
     diagnostics: null,
     outbox: null,
+    outboxOpen: false,
+    outboxRefreshing: false,
     retention: {},
     loading: false,
+    loadingNamespaceKey: null,
+    loadingKind: null,
     deletePending: false,
     deleting: false,
     exporting: false,
+    exportingAction: null,
     retiringEventId: null,
+    retiringEventBusy: false,
     purgePending: false,
+    purgeConfirmation: '',
     purging: false,
     canDelete: opts.recordsDeleteCaller !== undefined,
     canExport: opts.recordsExportCaller !== undefined,
@@ -4690,19 +5184,192 @@ export const bootstrapDataRoute = (
       detail: null,
       diagnostics: null,
       outbox: null,
+      outboxOpen: false,
+      outboxRefreshing: false,
       retention: {},
       loading: false,
+      loadingNamespaceKey: null,
+      loadingKind: null,
       deletePending: false,
       deleting: false,
       exporting: false,
+      exportingAction: null,
       retiringEventId: null,
+      retiringEventBusy: false,
       purgePending: false,
+      purgeConfirmation: '',
       purging: false,
       canDelete: opts.recordsDeleteCaller !== undefined,
       canExport: opts.recordsExportCaller !== undefined,
       canRetireEvents: opts.recordsOutboxRetireCaller !== undefined,
       canPurge: opts.recordsPurgeCaller !== undefined,
     };
+  };
+  const activeRecordsAction = (): string | null => {
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    return active?.getAttribute?.(SHARED_ACTION_ATTR) ?? null;
+  };
+  interface RecordsFocusIdentity {
+    action: string;
+    tagName: string;
+    id: string | null;
+    kind: string | null;
+    namespace: string | null;
+    eventId: string | null;
+  }
+  const activeRecordsFocusIdentity = (): RecordsFocusIdentity | null => {
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    const action = active?.getAttribute?.(SHARED_ACTION_ATTR) ?? null;
+    if (active === null || active === undefined || action?.startsWith('records-') !== true) {
+      return null;
+    }
+    return {
+      action,
+      tagName: active.tagName,
+      id: active.getAttribute(RECORDS_ID_ATTR),
+      kind: active.getAttribute(RECORDS_KIND_ATTR),
+      namespace: active.getAttribute(RECORDS_NAMESPACE_ATTR),
+      eventId: active.getAttribute(RECORDS_EVENT_ID_ATTR),
+    };
+  };
+  const focusRecordsIdentity = (identity: RecordsFocusIdentity | null): boolean => {
+    if (identity === null) return false;
+    const queryable = routeRoot as unknown as {
+      querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
+    };
+    const target = Array.from(queryable.querySelectorAll?.(
+      `[${SHARED_ACTION_ATTR}="${identity.action}"]`,
+    ) ?? []).find((candidate) =>
+      candidate.tagName === identity.tagName
+      && (identity.id === null || candidate.getAttribute(RECORDS_ID_ATTR) === identity.id)
+      && (identity.kind === null || candidate.getAttribute(RECORDS_KIND_ATTR) === identity.kind)
+      && (identity.namespace === null
+        || candidate.getAttribute(RECORDS_NAMESPACE_ATTR) === identity.namespace)
+      && (identity.eventId === null
+        || candidate.getAttribute(RECORDS_EVENT_ID_ATTR) === identity.eventId));
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+    return target !== undefined;
+  };
+  const focusRecordsAction = (
+    action: string,
+    attribute?: string,
+    value?: string,
+  ): boolean => {
+    const queryable = routeRoot as unknown as {
+      querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
+    };
+    const candidates = Array.from(queryable.querySelectorAll?.(
+      `button[${SHARED_ACTION_ATTR}="${action}"]`,
+    ) ?? []);
+    const target = attribute === undefined
+      ? candidates[0]
+      : candidates.find((candidate) => candidate.getAttribute(attribute) === value);
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+    return target !== undefined;
+  };
+  const focusRecordsDetailHeading = (): boolean => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const heading = queryable.querySelector?.('#records-detail-title') ?? null;
+    heading?.focus?.({ preventScroll: true });
+    heading?.scrollIntoView?.({ block: 'nearest' });
+    return heading !== null;
+  };
+  const focusRecordsOutboxSummary = (): boolean => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const summary = queryable.querySelector?.(
+      `summary[${SHARED_ACTION_ATTR}="${RECORDS_TOGGLE_OUTBOX_ACTION}"]`,
+    ) ?? null;
+    summary?.focus?.({ preventScroll: true });
+    summary?.scrollIntoView?.({ block: 'nearest' });
+    return summary !== null;
+  };
+  const focusRecordsPurgeInput = (): boolean => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const input = queryable.querySelector?.(
+      `[${RECORDS_PURGE_CONFIRMATION_ATTR}]`,
+    ) ?? null;
+    input?.focus?.({ preventScroll: true });
+    input?.scrollIntoView?.({ block: 'nearest' });
+    return input !== null;
+  };
+  const focusRecordsTab = (): boolean => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const tab = queryable.querySelector?.(
+      `[${DATA_ROUTE_TAB_ATTR}="records"]`,
+    ) ?? null;
+    tab?.focus?.({ preventScroll: true });
+    tab?.scrollIntoView?.({ block: 'nearest' });
+    return tab !== null;
+  };
+
+  const recordsInFlightOwnerAction = (): string | null => {
+    if (recordsState.deleting) return RECORDS_CONFIRM_DELETE_ACTION;
+    if (recordsState.retiringEventBusy) {
+      return RECORDS_CONFIRM_RETIRE_EVENT_ACTION;
+    }
+    if (recordsState.purging) return RECORDS_CONFIRM_PURGE_ACTION;
+    if (recordsState.exporting && recordsState.exportingAction !== null) {
+      return recordsState.exportingAction;
+    }
+    if (recordsState.outboxRefreshing) return RECORDS_REFRESH_OUTBOX_ACTION;
+    return null;
+  };
+  const hasRecordsInFlightWork = (): boolean =>
+    recordsInFlightOwnerAction() !== null;
+  const focusRecordsInFlightOwner = (): void => {
+    const action = recordsInFlightOwnerAction();
+    if (action !== null) focusRecordsAction(action);
+  };
+  const focusRecordsListReturn = (recordId: string): void => {
+    if (focusRecordsAction(RECORDS_OPEN_RECORD_ACTION, RECORDS_ID_ATTR, recordId)) return;
+    if (
+      recordsState.selectedKind !== null
+      && focusRecordsAction(
+        RECORDS_SELECT_KIND_ACTION,
+        RECORDS_KIND_ATTR,
+        recordsState.selectedKind,
+      )
+    ) return;
+    const namespace = recordsState.selectedNamespace;
+    if (namespace !== null) {
+      focusRecordsAction(
+        RECORDS_SELECT_NAMESPACE_ACTION,
+        RECORDS_NAMESPACE_ATTR,
+        recordsOwnerKey(namespace.owner),
+      );
+    }
+  };
+  const focusContactScanOwner = (
+    owner: 'action' | 'result',
+  ): boolean => {
+    const selector = owner === 'action'
+      ? `[${DATA_ROUTE_ACTION_ATTR}="run-merge-scan"]`
+      : `[${DATA_ROUTE_SCAN_RESULT_ATTR}]`;
+    const target = routeRoot.querySelector?.(selector) as HTMLElement | null | undefined;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+    return target != null;
+  };
+  const focusContactMergeOwner = (
+    owner: 'contact-merge-confirm' | 'contact-merge-reject' | 'result',
+  ): boolean => {
+    const selector = owner === 'result'
+      ? `[${DATA_ROUTE_MERGE_RESULT_ATTR}]`
+      : `[${SHARED_ACTION_ATTR}="${owner}"]`;
+    const target = routeRoot.querySelector?.(selector) as HTMLElement | null | undefined;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+    return target != null;
   };
 
   /** D-200 — the same owner-trusted file inventory behind Data → Files,
@@ -4810,17 +5477,20 @@ export const bootstrapDataRoute = (
         <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="reschedule-open">Reschedule</button>
       </div>`;
     }
-    const disabled = form.submitting ? ' disabled' : '';
+    const inputDisabled = form.submitting
+      ? ' disabled aria-disabled="true"'
+      : '';
+    const actionDisabled = form.submitting ? ' aria-disabled="true"' : '';
     const err =
       form.error !== null
         ? `<p class="data-reschedule-error" role="alert">${e(form.error)}</p>`
         : '';
     return `<div class="data-reschedule-form">
       <label class="data-reschedule-label">New start
-        <input type="datetime-local" class="data-input" ${DATA_ROUTE_ACTION_ATTR}="reschedule-input" value="${e(form.value)}"${disabled} />
+        <input type="datetime-local" class="data-input" ${DATA_ROUTE_ACTION_ATTR}="reschedule-input" value="${e(form.value)}"${inputDisabled} />
       </label>
-      <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="reschedule-submit"${disabled}>${form.submitting ? 'Rescheduling…' : 'Save'}</button>
-      <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="reschedule-cancel"${disabled}>Cancel</button>
+      <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="reschedule-submit"${actionDisabled}${form.submitting ? ' aria-busy="true"' : ''}>${form.submitting ? 'Rescheduling…' : 'Save'}</button>
+      <button type="button" class="data-button" ${DATA_ROUTE_ACTION_ATTR}="reschedule-cancel"${actionDisabled}>Cancel</button>
       ${err}
     </div>`;
   };
@@ -4831,7 +5501,9 @@ export const bootstrapDataRoute = (
     const downloadControl =
       tab === 'files' && opts.fileReadCaller !== undefined
         ? `<button type="button" class="data-button" ${DATA_ROUTE_DOWNLOAD_FILE_ATTR}
-            ${DATA_ROUTE_ACTION_ATTR}="download-file"${downloadingFile ? ' disabled' : ''}>${
+            ${DATA_ROUTE_ACTION_ATTR}="download-file"${downloadingFile
+              ? ' aria-disabled="true" aria-busy="true"'
+              : ''}>${
             downloadingFile ? 'Downloading…' : 'Download file'
           }</button>`
         : '';
@@ -4888,6 +5560,10 @@ export const bootstrapDataRoute = (
       detail,
       loading: explorerLoading,
       ...(explorerError !== undefined ? { error: explorerError } : {}),
+      ...(explorerErrorRetryable ? { retryable: true } : {}),
+      ...(explorerRetrying ? { retrying: true } : {}),
+      ...(explorerDetailRetryable ? { detailRetryable: true } : {}),
+      ...(explorerDetailRetrying ? { detailRetrying: true } : {}),
       now: (opts.now ?? Date.now)(),
       actionAttr: DATA_ROUTE_ACTION_ATTR,
       ...(detailActions !== '' ? { detailActionsHtml: detailActions } : {}),
@@ -4992,6 +5668,438 @@ export const bootstrapDataRoute = (
 
   const render = (): void => {
     if (disposed) return;
+    // This route repaints with `innerHTML` as reads settle. Preserve ownership
+    // when a collection tab, collection source, work-entity search, response
+    // editor control, or timeline/reschedule control has focus: the replacement
+    // otherwise strands focus on
+    // <body> (and an uncontrolled field can lose its draft). A later repaint
+    // captures the live owner again, so moving to another control while a read
+    // is pending cancels the restoration naturally.
+    const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    const focusedContactScanOwnerKind: 'action' | 'result' | null = contactScan === null
+      ? null
+      : activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'run-merge-scan'
+        ? 'action'
+        : activeElement?.hasAttribute?.(DATA_ROUTE_SCAN_RESULT_ATTR) === true
+          ? 'result'
+          : null;
+    const activeContactMergeAction = activeElement?.getAttribute?.(
+      SHARED_ACTION_ATTR,
+    );
+    const focusedContactMergeOwner:
+      | 'contact-merge-confirm'
+      | 'contact-merge-reject'
+      | 'result'
+      | null = contactScan === null
+        ? null
+        : activeContactMergeAction === 'contact-merge-confirm'
+          || activeContactMergeAction === 'contact-merge-reject'
+          ? activeContactMergeAction
+          : activeElement?.hasAttribute?.(DATA_ROUTE_MERGE_RESULT_ATTR) === true
+            ? 'result'
+            : null;
+    const focusedContactImportFileOwner =
+      activeLens === 'data'
+      && activeTab === 'contact'
+      && contactImport?.source_id === null
+      && (
+        activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
+          === 'contact-import-file-apply'
+        || activeElement?.hasAttribute?.(
+          DATA_ROUTE_CONTACT_IMPORT_RESULT_ATTR,
+        ) === true
+      );
+    const focusedContactImportPromoteOwner =
+      activeLens === 'data'
+      && activeTab === 'contact'
+      && contactImport?.source_id != null
+      && (
+        activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
+          === 'contact-import-promote'
+        || activeElement?.hasAttribute?.(
+          DATA_ROUTE_CONTACT_IMPORT_RESULT_ATTR,
+        ) === true
+      );
+    const focusedFormResponseAutomationTrigger =
+      activeLens === 'data'
+      && renderedActiveTab === activeTab
+      && isReceivedTab(activeTab)
+      && formResponseDetailId !== null
+      && activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
+        === 'discover-form-response-automations';
+    if (pendingFormResponseAutomationPickerFocus) {
+      const liveOwnerMovedElsewhere =
+        activeElement !== null
+        && activeElement !== undefined
+        && activeElement !== doc.body
+        && activeElement.isConnected !== false;
+      if (
+        activeLens !== 'data'
+        || !isReceivedTab(activeTab)
+        || formResponseDetailId === null
+        || (!focusedFormResponseAutomationTrigger && liveOwnerMovedElsewhere)
+      ) {
+        pendingFormResponseAutomationPickerFocus = false;
+      }
+    }
+    const activeSearch = activeElement as HTMLInputElement | null | undefined;
+    const focusedWorkEntityRow =
+      activeLens === 'data'
+      && renderedActiveTab === activeTab
+      && isWorkEntityTab(activeTab)
+      && activeElement?.getAttribute?.(SHARED_ACTION_ATTR)
+        === 'open-edit-work-entity'
+      && activeElement.getAttribute('data-kind') === activeTab
+      && activeElement.getAttribute('data-entity-id') !== null
+        ? {
+            kind: activeTab,
+            id: activeElement.getAttribute('data-entity-id')!,
+          }
+        : null;
+    const focusedWorkEntityDialogSubmit =
+      workEntityState.dialog !== null
+      && activeElement?.getAttribute?.(SHARED_ACTION_ATTR)
+        === 'submit-work-entity-dialog';
+    const focusedContactDialogSubmit =
+      contactDialog !== null
+      && activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
+        === 'submit-contact-dialog';
+    const focusedTimelineTrigger =
+      activeLens === 'data'
+      && renderedActiveTab === activeTab
+      && isMirrorTab(activeTab)
+      && activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'load-timeline';
+    const focusedTimelineEntityInput =
+      activeLens === 'data'
+      && renderedActiveTab === activeTab
+      && isMirrorTab(activeTab)
+      && activeSearch?.hasAttribute?.(DATA_ROUTE_TIMELINE_ENTITY_ATTR) === true
+        ? {
+            selectionStart: activeSearch.selectionStart,
+            selectionEnd: activeSearch.selectionEnd,
+            selectionDirection: activeSearch.selectionDirection,
+          }
+        : null;
+    const focusedFileDownloadId =
+      activeLens === 'data'
+      && renderedActiveTab === activeTab
+      && activeTab === 'files'
+      && explorerDetail !== null
+      && activeElement?.hasAttribute?.(DATA_ROUTE_DOWNLOAD_FILE_ATTR) === true
+        ? explorerDetail.record_id
+        : null;
+    const focusedRescheduleControlRaw = activeElement?.getAttribute?.(
+      DATA_ROUTE_ACTION_ATTR,
+    );
+    const focusedRescheduleControl =
+      activeLens === 'data'
+      && renderedActiveTab === activeTab
+      && activeTab === 'calendar'
+      && explorerDetail !== null
+      && (
+        (
+          focusedRescheduleControlRaw === 'reschedule-open'
+          && rescheduleForm === null
+        )
+        || (
+          rescheduleForm !== null
+          && (
+            focusedRescheduleControlRaw === 'reschedule-input'
+            || focusedRescheduleControlRaw === 'reschedule-submit'
+            || focusedRescheduleControlRaw === 'reschedule-cancel'
+          )
+        )
+      )
+        ? {
+            recordId: explorerDetail.record_id,
+            action: focusedRescheduleControlRaw,
+          }
+        : null;
+    const focusedFormResponseExportFormatRaw =
+      activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
+        === 'export-form-responses'
+        ? activeElement.getAttribute('data-format')
+        : null;
+    const focusedFormResponseExportFormat =
+      activeLens === 'data'
+      && renderedActiveTab === activeTab
+      && isReceivedTab(activeTab)
+      && (
+        focusedFormResponseExportFormatRaw === 'json'
+        || focusedFormResponseExportFormatRaw === 'csv'
+      )
+        ? focusedFormResponseExportFormatRaw
+        : null;
+    const focusedFormResponseEditorControl =
+      activeLens === 'data'
+      && renderedActiveTab === activeTab
+      && isReceivedTab(activeTab)
+      && formResponseDetailId !== null
+        ? formResponseEditorControlFrom(activeElement)
+        : null;
+    const focusedFormResponseEditor: FormResponseEditorFocus | null =
+      focusedFormResponseEditorControl === null
+      || formResponseDetailId === null
+        ? null
+        : {
+            submissionId: formResponseDetailId,
+            control: focusedFormResponseEditorControl,
+            selectionStart:
+              focusedFormResponseEditorControl === 'values'
+              || focusedFormResponseEditorControl === 'email'
+                ? (activeElement as HTMLInputElement | HTMLTextAreaElement)
+                    .selectionStart
+                : null,
+            selectionEnd:
+              focusedFormResponseEditorControl === 'values'
+              || focusedFormResponseEditorControl === 'email'
+                ? (activeElement as HTMLInputElement | HTMLTextAreaElement)
+                    .selectionEnd
+                : null,
+            selectionDirection:
+              focusedFormResponseEditorControl === 'values'
+              || focusedFormResponseEditorControl === 'email'
+                ? (activeElement as HTMLInputElement | HTMLTextAreaElement)
+                    .selectionDirection
+                : null,
+          };
+    if (pendingFormResponseEditorFocus !== null) {
+      const liveOwnerMovedElsewhere =
+        activeElement !== null
+        && activeElement !== undefined
+        && activeElement !== doc.body
+        && activeElement.isConnected !== false;
+      if (
+        activeLens !== 'data'
+        || !isReceivedTab(activeTab)
+        || formResponseDetailId !== pendingFormResponseEditorFocus.submissionId
+        || (focusedFormResponseEditor === null && liveOwnerMovedElsewhere)
+      ) {
+        pendingFormResponseEditorFocus = null;
+      }
+    }
+    const focusedFormResponseDetailId =
+      activeLens === 'data'
+      && renderedActiveTab === activeTab
+      && isReceivedTab(activeTab)
+      && activeElement?.hasAttribute?.(
+        DATA_ROUTE_FORM_RESPONSE_DETAIL_HEADING_ATTR,
+      ) === true
+        ? formResponseDetailId
+        : null;
+    if (pendingFormResponseDetailFocusId !== null) {
+      const stillOwnedByRow =
+        isReceivedTab(renderedActiveTab)
+        && activeElement?.getAttribute?.(DATA_ROUTE_FORM_RESPONSE_ID_ATTR)
+          === pendingFormResponseDetailFocusId
+        && activeElement.getAttribute(DATA_ROUTE_ACTION_ATTR)
+          === 'open-form-response';
+      const liveOwnerMovedElsewhere =
+        activeElement !== null
+        && activeElement !== undefined
+        && activeElement !== doc.body
+        && activeElement.isConnected !== false;
+      if (
+        activeLens !== 'data'
+        || !isReceivedTab(activeTab)
+        || (!stillOwnedByRow && liveOwnerMovedElsewhere)
+      ) {
+        pendingFormResponseDetailFocusId = null;
+      }
+    }
+    if (pendingFormResponseLoadMoreFocus) {
+      const stillOwnedByLoadMore = activeElement?.getAttribute?.(
+        DATA_ROUTE_ACTION_ATTR,
+      ) === 'load-more-form-responses';
+      const liveOwnerMovedElsewhere =
+        activeElement !== null
+        && activeElement !== undefined
+        && activeElement !== doc.body
+        && activeElement.isConnected !== false;
+      if (
+        activeLens !== 'data'
+        || !isReceivedTab(activeTab)
+        || (!stillOwnedByLoadMore && liveOwnerMovedElsewhere)
+      ) {
+        pendingFormResponseLoadMoreFocus = false;
+        pendingLoadedFormResponseIds = [];
+      }
+    }
+    if (pendingWorkEntityLoadMoreFocusKind !== null) {
+      const stillOwnedByLoadMore = activeElement?.getAttribute?.(
+        DATA_ROUTE_ACTION_ATTR,
+      ) === 'load-more-work-entities';
+      const liveOwnerMovedElsewhere =
+        activeElement !== null
+        && activeElement !== undefined
+        && activeElement !== doc.body
+        && activeElement.isConnected !== false;
+      if (
+        activeLens !== 'data'
+        || activeTab !== pendingWorkEntityLoadMoreFocusKind
+        || (!stillOwnedByLoadMore && liveOwnerMovedElsewhere)
+      ) {
+        pendingWorkEntityLoadMoreFocusKind = null;
+        pendingLoadedWorkEntityKeys = [];
+      }
+    }
+    if (pendingContactLoadMoreFocus) {
+      const stillOwnedByLoadMore = activeElement?.getAttribute?.(
+        DATA_ROUTE_ACTION_ATTR,
+      ) === 'load-more-contacts';
+      const liveOwnerMovedElsewhere =
+        activeElement !== null
+        && activeElement !== undefined
+        && activeElement !== doc.body
+        && activeElement.isConnected !== false;
+      if (!stillOwnedByLoadMore && liveOwnerMovedElsewhere) {
+        pendingContactLoadMoreFocus = false;
+        pendingLoadedContactEmail = null;
+      }
+    }
+    const focusedContactDetailEmail =
+      activeLens === 'data'
+      && renderedActiveTab === activeTab
+      && activeTab === 'contact'
+      && activeElement?.hasAttribute?.(
+        DATA_ROUTE_CONTACT_DETAIL_HEADING_ATTR,
+      ) === true
+        ? contactDetail?.email ?? null
+        : null;
+    if (pendingContactDetailFocusEmail !== null) {
+      const stillOwnedByRow =
+        renderedActiveTab === 'contact'
+        && activeElement?.getAttribute?.(DATA_ROUTE_CONTACT_EMAIL_ATTR)
+          === pendingContactDetailFocusEmail
+        && activeElement.getAttribute(DATA_ROUTE_ACTION_ATTR)
+          === 'open-contact-detail';
+      const liveOwnerMovedElsewhere =
+        activeElement !== null
+        && activeElement !== undefined
+        && activeElement !== doc.body
+        && activeElement.isConnected !== false;
+      if (!stillOwnedByRow && liveOwnerMovedElsewhere) {
+        pendingContactDetailFocusEmail = null;
+      }
+    }
+    if (pendingContactEditFocusEmail !== null) {
+      const stillOwnedByEdit =
+        activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
+          === 'open-edit-contact'
+        && activeElement.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR)
+          === pendingContactEditFocusEmail;
+      const liveOwnerMovedElsewhere =
+        activeElement !== null
+        && activeElement !== undefined
+        && activeElement !== doc.body
+        && activeElement.isConnected !== false;
+      if (
+        activeLens !== 'data'
+        || activeTab !== 'contact'
+        || contactDetail?.email !== pendingContactEditFocusEmail
+        || (!stillOwnedByEdit && liveOwnerMovedElsewhere)
+      ) {
+        pendingContactEditFocusEmail = null;
+      }
+    }
+    const focusedSearch =
+      activeLens === 'data'
+      && renderedActiveTab === activeTab
+      && activeTab === 'contact'
+      && activeSearch?.hasAttribute?.(DATA_ROUTE_CONTACT_SEARCH_ATTR) === true
+        ? {
+            tab: activeTab,
+            kind: 'contact' as const,
+            selectionStart: activeSearch.selectionStart,
+            selectionEnd: activeSearch.selectionEnd,
+            selectionDirection: activeSearch.selectionDirection,
+          }
+        : activeLens === 'data'
+          && renderedActiveTab === activeTab
+          && isWorkEntityTab(activeTab)
+          && activeSearch?.getAttribute?.(SHARED_ACTION_ATTR)
+            === 'search-work-entities'
+          && activeSearch.getAttribute('data-kind') === activeTab
+            ? {
+                tab: activeTab,
+                kind: 'work-entity' as const,
+                selectionStart: activeSearch.selectionStart,
+                selectionEnd: activeSearch.selectionEnd,
+                selectionDirection: activeSearch.selectionDirection,
+              }
+            : null;
+    const focusedTabRaw = activeElement?.getAttribute?.(DATA_ROUTE_TAB_ATTR);
+    const focusedTab = focusedTabRaw !== null
+      && focusedTabRaw !== undefined
+      && isDataTab(focusedTabRaw)
+        ? focusedTabRaw
+        : null;
+    const focusedExplorerSlug =
+      activeLens === 'data'
+      && renderedActiveTab === activeTab
+      && isExplorerTab(activeTab)
+        ? activeElement?.getAttribute?.(COLLECTION_INSTANCE_SLUG_ATTR) ?? null
+        : null;
+    const focusedExplorerRetry =
+      activeLens === 'data'
+      && renderedActiveTab === activeTab
+      && (isExplorerTab(activeTab) || isSingleCollectionTab(activeTab))
+      && activeElement?.hasAttribute?.(COLLECTION_RETRY_ATTR) === true;
+    if (pendingExplorerRetryFocus !== null) {
+      const stillOwnedByRetry =
+        renderedActiveTab === pendingExplorerRetryFocus
+        && focusedExplorerRetry;
+      const liveOwnerMovedElsewhere =
+        activeElement !== null
+        && activeElement !== undefined
+        && activeElement !== doc.body
+        && activeElement.isConnected !== false;
+      if (!stillOwnedByRetry && liveOwnerMovedElsewhere) {
+        pendingExplorerRetryFocus = null;
+      }
+    }
+    const focusedExplorerDetailRetryId =
+      activeLens === 'data'
+      && renderedActiveTab === activeTab
+      && isExplorerTab(activeTab)
+      && activeElement?.hasAttribute?.(COLLECTION_DETAIL_RETRY_ATTR) === true
+        ? explorerDetail?.record_id ?? null
+        : null;
+    if (pendingExplorerDetailRetryFocus !== null) {
+      const stillOwnedByRetry =
+        renderedActiveTab === pendingExplorerDetailRetryFocus.tab
+        && focusedExplorerDetailRetryId
+          === pendingExplorerDetailRetryFocus.recordId;
+      const liveOwnerMovedElsewhere =
+        activeElement !== null
+        && activeElement !== undefined
+        && activeElement !== doc.body
+        && activeElement.isConnected !== false;
+      if (!stillOwnedByRetry && liveOwnerMovedElsewhere) {
+        pendingExplorerDetailRetryFocus = null;
+      }
+    }
+    const focusedExplorerDetailId =
+      activeLens === 'data'
+      && renderedActiveTab === activeTab
+      && (isExplorerTab(activeTab) || isSingleCollectionTab(activeTab))
+      && activeElement?.hasAttribute?.(COLLECTION_DETAIL_HEADING_ATTR) === true
+        ? explorerDetail?.record_id ?? null
+        : null;
+    if (pendingExplorerRecordFocus !== null) {
+      const stillOwnedByRow =
+        renderedActiveTab === pendingExplorerRecordFocus.tab
+        && activeElement?.getAttribute?.(COLLECTION_RECORD_ID_ATTR)
+          === pendingExplorerRecordFocus.recordId;
+      const liveOwnerMovedElsewhere =
+        activeElement !== null
+        && activeElement !== undefined
+        && activeElement !== doc.body
+        && activeElement.isConnected !== false;
+      if (!stillOwnedByRow && liveOwnerMovedElsewhere) {
+        pendingExplorerRecordFocus = null;
+      }
+    }
     const body = activeTab === 'contact'
       ? renderContactSurface(
           contacts,
@@ -5000,8 +6108,10 @@ export const bootstrapDataRoute = (
           loadingMoreContacts,
           contactSearch,
           contactDialog,
+          contactDiscardGuardOpen,
           contactDetail,
           loadingContactDetail,
+          openingContactEditEmail,
           contactScan,
           opts.contactMergeScanNowCaller !== undefined,
           canReviewMerges,
@@ -5025,10 +6135,12 @@ export const bootstrapDataRoute = (
               && opts.recipeExecuteCaller !== undefined,
             opts.formResponseUpdateCaller !== undefined
               && opts.formResponseSetStateCaller !== undefined,
+            formResponseEditorDraft,
             savingFormResponse,
             formResponseSaveError,
+            formResponseDiscardGuardOpen,
             opts.formResponseExportCaller !== undefined,
-            exportingFormResponses,
+            exportingFormResponseFormat,
           )
       : isWorkEntityTab(activeTab)
         ? renderWorkEntitySurface(
@@ -5038,6 +6150,9 @@ export const bootstrapDataRoute = (
             workEntities,
             workEntityTotal,
             loadingMoreWorkEntities,
+            pendingWorkEntityDialogOpen?.kind === activeTab
+              ? pendingWorkEntityDialogOpen.id
+              : null,
             bookingLifecycleFilter,
             bookingDetailId,
             bookingDetail,
@@ -5046,6 +6161,7 @@ export const bootstrapDataRoute = (
             opts.manageRescheduleLinkCaller !== undefined,
             bookingManageLinkBusy,
             bookingManageLinkNotice,
+            workEntityDiscardGuardOpen,
           )
         : activeTab === 'records'
           ? renderRecordsExplorer(recordsState)
@@ -5081,10 +6197,24 @@ export const bootstrapDataRoute = (
           runHref: (run_id: string) => serializeShellRoute('logs', run_id),
           // D-198 Slice 2/3 — owner CRUD + import sub-state + affordance gating.
           compose: memoryCompose,
+          composeDiscardGuard: memoryComposeDiscardGuardOpen,
           detail: memoryDetail,
           importPanel: memoryImport,
+          importDiscardGuard: memoryImportDiscardGuardOpen,
+          ...(memoryFilteringOrigin !== null
+            ? { filteringOrigin: memoryFilteringOrigin }
+            : {}),
           exporting: memoryExporting,
           ...(memoryPendingDeleteId !== undefined ? { pendingDeleteId: memoryPendingDeleteId } : {}),
+          ...(memoryDeletingId !== null ? { deletingId: memoryDeletingId } : {}),
+          ...(memoryDeleteError !== null
+            && memoryDeleteError.memoryId === memoryPendingDeleteId
+            ? { deleteError: memoryDeleteError.message }
+            : {}),
+          ...(memoryEditOpeningId !== null
+            ? { openingEditId: memoryEditOpeningId }
+            : {}),
+          ...(memoryEditError !== null ? { editError: memoryEditError } : {}),
           canWrite: memoryCanWrite,
         })
       : body;
@@ -5152,6 +6282,7 @@ export const bootstrapDataRoute = (
       || loadingBookingDetail
       || loadingWorkEntityDetail
       || explorerLoading
+      || explorerDetailRetrying
       || explorerDetail?.loading === true;
     const verificationNext =
       activeLogsReturn?.returnToChat === undefined
@@ -5166,18 +6297,589 @@ export const bootstrapDataRoute = (
         <h1 class="data-title" ${DATA_ROUTE_HEADING_ATTR}>Data</h1>
       </header>
       ${routeReturn}
-      ${renderLensSwitcher(activeLens, DATA_ROUTE_ACTION_ATTR)}
-      ${activeLens === 'memory' ? '' : renderTabs(activeTab)}
+      ${renderLensSwitcher(
+        activeLens,
+        DATA_ROUTE_ACTION_ATTR,
+        memoryExporting
+          || memoryFilteringOrigin !== null
+          || hasRecordsInFlightWork(),
+      )}
+      ${activeLens === 'memory'
+        ? ''
+        : renderTabs(
+            activeTab,
+            savingFormResponse
+              || formResponseDiscardGuardOpen
+              || hasRecordsInFlightWork(),
+          )}
       ${loading && activeLens !== 'memory' ? '<p class="data-loading">Loading data...</p>' : ''}
       ${renderErrors(errors)}
       ${lensBody}
       ${verificationNext}
     `;
+    renderedActiveTab = activeTab;
+    if (
+      focusedContactImportFileOwner
+      && activeLens === 'data'
+      && activeTab === 'contact'
+      && contactImport?.source_id === null
+    ) {
+      const replacement = (
+        contactImport.file?.plan != null
+          ? routeRoot.querySelector(
+              `[${DATA_ROUTE_ACTION_ATTR}="contact-import-file-apply"]`,
+            )
+          : contactImport.file?.result != null
+            ? routeRoot.querySelector(
+                `[${DATA_ROUTE_CONTACT_IMPORT_RESULT_ATTR}]`,
+              )
+            : null
+      ) as HTMLElement | null;
+      replacement?.focus?.({ preventScroll: true });
+      replacement?.scrollIntoView?.({ block: 'nearest' });
+    }
+    if (
+      focusedContactImportPromoteOwner
+      && activeLens === 'data'
+      && activeTab === 'contact'
+      && contactImport?.source_id != null
+    ) {
+      const replacement = (
+        contactImport.promoting || contactImport.result === null
+          ? routeRoot.querySelector(
+              `[${DATA_ROUTE_ACTION_ATTR}="contact-import-promote"]`,
+            )
+          : routeRoot.querySelector(
+              `[${DATA_ROUTE_CONTACT_IMPORT_RESULT_ATTR}]`,
+            )
+      ) as HTMLElement | null;
+      replacement?.focus?.({ preventScroll: true });
+      replacement?.scrollIntoView?.({ block: 'nearest' });
+    }
+    if (contactScan !== null && focusedContactScanOwnerKind !== null) {
+      focusContactScanOwner(focusedContactScanOwnerKind);
+    }
+    if (contactScan !== null && focusedContactMergeOwner !== null) {
+      focusContactMergeOwner(focusedContactMergeOwner);
+    }
+    if (focusedTab !== null && activeLens === 'data') {
+      const replacement = routeRoot.querySelector(
+        `[${DATA_ROUTE_TAB_ATTR}="${focusedTab}"]`,
+      ) as HTMLElement | null;
+      replacement?.focus?.({ preventScroll: true });
+    }
+    if (
+      focusedSearch !== null
+      && activeLens === 'data'
+      && activeTab === focusedSearch.tab
+    ) {
+      const replacement = focusedSearch.kind === 'contact'
+        ? routeRoot.querySelector<HTMLInputElement>(
+            `[${DATA_ROUTE_CONTACT_SEARCH_ATTR}]`,
+          )
+        : routeRoot.querySelector<HTMLInputElement>(
+            `input[${SHARED_ACTION_ATTR}="search-work-entities"]`
+            + `[data-kind="${focusedSearch.tab}"]`,
+          );
+      replacement?.focus?.({ preventScroll: true });
+      if (
+        replacement !== null
+        && focusedSearch.selectionStart !== null
+        && focusedSearch.selectionEnd !== null
+      ) {
+        const valueLength = replacement.value.length;
+        replacement.setSelectionRange(
+          Math.min(focusedSearch.selectionStart, valueLength),
+          Math.min(focusedSearch.selectionEnd, valueLength),
+          focusedSearch.selectionDirection ?? undefined,
+        );
+      }
+    }
+    if (
+      focusedWorkEntityRow !== null
+      && activeLens === 'data'
+      && activeTab === focusedWorkEntityRow.kind
+    ) {
+      const replacement = Array.from(routeRoot.querySelectorAll<HTMLElement>(
+        `[${SHARED_ACTION_ATTR}="open-edit-work-entity"]`,
+      )).find(
+        (candidate) =>
+          candidate.getAttribute('data-kind') === focusedWorkEntityRow.kind
+          && candidate.getAttribute('data-entity-id') === focusedWorkEntityRow.id,
+      ) ?? null;
+      replacement?.focus?.({ preventScroll: true });
+    }
+    if (
+      focusedWorkEntityDialogSubmit
+      && workEntityState.dialog !== null
+    ) {
+      const replacement = routeRoot.querySelector(
+        `[${SHARED_ACTION_ATTR}="submit-work-entity-dialog"]`,
+      ) as HTMLElement | null;
+      replacement?.focus?.({ preventScroll: true });
+    }
+    if (focusedContactDialogSubmit && contactDialog !== null) {
+      const replacement = routeRoot.querySelector(
+        `[${DATA_ROUTE_ACTION_ATTR}="submit-contact-dialog"]`,
+      ) as HTMLElement | null;
+      replacement?.focus?.({ preventScroll: true });
+    }
+    if (
+      focusedContactDetailEmail !== null
+      && activeLens === 'data'
+      && activeTab === 'contact'
+      && contactDetail?.email === focusedContactDetailEmail
+    ) {
+      const replacement = routeRoot.querySelector(
+        `[${DATA_ROUTE_CONTACT_DETAIL_HEADING_ATTR}]`,
+      ) as HTMLElement | null;
+      replacement?.focus?.({ preventScroll: true });
+    }
+    if (
+      pendingContactDetailFocusEmail !== null
+      && activeLens === 'data'
+      && activeTab === 'contact'
+      && contactDetail?.email === pendingContactDetailFocusEmail
+      && !loadingContactDetail
+    ) {
+      pendingContactDetailFocusEmail = null;
+      const heading = routeRoot.querySelector(
+        `[${DATA_ROUTE_CONTACT_DETAIL_HEADING_ATTR}]`,
+      ) as HTMLElement | null;
+      heading?.focus?.({ preventScroll: true });
+    }
+    if (
+      pendingContactEditFocusEmail !== null
+      && activeLens === 'data'
+      && activeTab === 'contact'
+      && contactDetail?.email === pendingContactEditFocusEmail
+    ) {
+      const edit = routeRoot.querySelector(
+        `[${DATA_ROUTE_ACTION_ATTR}="open-edit-contact"]`
+        + `[${DATA_ROUTE_CONTACT_EMAIL_ATTR}="${CSS.escape(
+          pendingContactEditFocusEmail,
+        )}"]`,
+      ) as HTMLElement | null;
+      edit?.focus?.({ preventScroll: true });
+      if (openingContactEditEmail !== pendingContactEditFocusEmail) {
+        pendingContactEditFocusEmail = null;
+      }
+    }
+    if (
+      focusedFormResponseDetailId !== null
+      && activeLens === 'data'
+      && isReceivedTab(activeTab)
+      && formResponseDetailId === focusedFormResponseDetailId
+    ) {
+      const replacement = routeRoot.querySelector(
+        `[${DATA_ROUTE_FORM_RESPONSE_DETAIL_HEADING_ATTR}]`,
+      ) as HTMLElement | null;
+      replacement?.focus?.({ preventScroll: true });
+    }
+    if (
+      pendingFormResponseDetailFocusId !== null
+      && activeLens === 'data'
+      && isReceivedTab(activeTab)
+      && formResponseDetailId === pendingFormResponseDetailFocusId
+      && !loadingFormResponseDetail
+    ) {
+      pendingFormResponseDetailFocusId = null;
+      const target = (
+        routeRoot.querySelector(
+          `[${DATA_ROUTE_FORM_RESPONSE_DETAIL_HEADING_ATTR}]`,
+        )
+        ?? routeRoot.querySelector(
+          `[${DATA_ROUTE_ACTION_ATTR}="close-form-response"]`,
+        )
+      ) as HTMLElement | null;
+      target?.focus?.({ preventScroll: true });
+    }
+    const formResponseEditorFocus = pendingFormResponseEditorFocus === null
+      ? focusedFormResponseEditor
+      : {
+          ...pendingFormResponseEditorFocus,
+          selectionStart: null,
+          selectionEnd: null,
+          selectionDirection: null,
+        };
+    if (
+      formResponseEditorFocus !== null
+      && activeLens === 'data'
+      && isReceivedTab(activeTab)
+      && formResponseDetailId === formResponseEditorFocus.submissionId
+    ) {
+      const selector = formResponseEditorFocus.control === 'values'
+        ? `[${DATA_ROUTE_FORM_RESPONSE_VALUES_ATTR}]`
+        : formResponseEditorFocus.control === 'email'
+          ? `[${DATA_ROUTE_FORM_RESPONSE_EMAIL_ATTR}]`
+          : formResponseEditorFocus.control === 'state'
+            ? `[${DATA_ROUTE_FORM_RESPONSE_STATE_ATTR}]`
+            : `[${DATA_ROUTE_ACTION_ATTR}="save-form-response"]`;
+      const replacement = routeRoot.querySelector(selector) as (
+        HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement | HTMLElement
+      ) | null;
+      replacement?.focus?.({ preventScroll: true });
+      if (
+        replacement !== null
+        && 'setSelectionRange' in replacement
+        && typeof replacement.setSelectionRange === 'function'
+        && formResponseEditorFocus.selectionStart !== null
+        && formResponseEditorFocus.selectionEnd !== null
+      ) {
+        const valueLength = replacement.value.length;
+        replacement.setSelectionRange(
+          Math.min(formResponseEditorFocus.selectionStart, valueLength),
+          Math.min(formResponseEditorFocus.selectionEnd, valueLength),
+          formResponseEditorFocus.selectionDirection ?? undefined,
+        );
+      }
+      if (
+        pendingFormResponseEditorFocus !== null
+        && replacement !== null
+      ) {
+        pendingFormResponseEditorFocus = null;
+      } else if (
+        pendingFormResponseEditorFocus !== null
+        && !loadingFormResponseDetail
+      ) {
+        const fallback = (
+          routeRoot.querySelector(
+            `[${DATA_ROUTE_FORM_RESPONSE_DETAIL_HEADING_ATTR}]`,
+          )
+          ?? routeRoot.querySelector(
+            `[${DATA_ROUTE_ACTION_ATTR}="close-form-response"]`,
+          )
+        ) as HTMLElement | null;
+        fallback?.focus?.({ preventScroll: true });
+        pendingFormResponseEditorFocus = null;
+      }
+    }
+    if (
+      focusedFormResponseExportFormat !== null
+      && activeLens === 'data'
+      && isReceivedTab(activeTab)
+      && formResponseDetailId === null
+    ) {
+      const replacement = routeRoot.querySelector(
+        `[${DATA_ROUTE_ACTION_ATTR}="export-form-responses"]`
+        + `[data-format="${focusedFormResponseExportFormat}"]`,
+      ) as HTMLElement | null;
+      replacement?.focus?.({ preventScroll: true });
+    }
+    if (
+      pendingFormResponseAutomationPickerFocus
+      && activeLens === 'data'
+      && isReceivedTab(activeTab)
+      && formResponseDetailId !== null
+    ) {
+      const automationStatus = formResponseAutomationState.status;
+      const picker = automationStatus === 'ready' || automationStatus === 'error'
+        ? routeRoot.querySelector(
+            `[${DATA_ROUTE_FORM_RESPONSE_RUN_PICKER_ATTR}="${automationStatus}"]`,
+          )
+        : null;
+      const target = (automationStatus === 'loading'
+        ? routeRoot.querySelector(`[${DATA_ROUTE_FORM_RESPONSE_RUN_ATTR}]`)
+        : automationStatus === 'ready'
+          ? picker?.querySelector('h3') ?? null
+          : automationStatus === 'error'
+            ? picker?.querySelector(
+                `[${DATA_ROUTE_ACTION_ATTR}="discover-form-response-automations"]`,
+              ) ?? null
+            : null) as HTMLElement | null;
+      if (target !== null) {
+        target.focus({ preventScroll: true });
+        if (automationStatus !== 'loading') {
+          pendingFormResponseAutomationPickerFocus = false;
+          target.scrollIntoView({ block: 'nearest' });
+        }
+      }
+    }
+    if (
+      focusedTimelineTrigger
+      && activeLens === 'data'
+      && isMirrorTab(activeTab)
+    ) {
+      const replacement = routeRoot.querySelector(
+        `[${DATA_ROUTE_ACTION_ATTR}="load-timeline"]`,
+      ) as HTMLElement | null;
+      replacement?.focus?.({ preventScroll: true });
+    }
+    if (
+      focusedTimelineEntityInput !== null
+      && activeLens === 'data'
+      && isMirrorTab(activeTab)
+    ) {
+      const replacement = routeRoot.querySelector<HTMLInputElement>(
+        `[${DATA_ROUTE_TIMELINE_ENTITY_ATTR}]`,
+      );
+      replacement?.focus?.({ preventScroll: true });
+      if (
+        replacement !== null
+        && focusedTimelineEntityInput.selectionStart !== null
+        && focusedTimelineEntityInput.selectionEnd !== null
+      ) {
+        const valueLength = replacement.value.length;
+        replacement.setSelectionRange(
+          Math.min(focusedTimelineEntityInput.selectionStart, valueLength),
+          Math.min(focusedTimelineEntityInput.selectionEnd, valueLength),
+          focusedTimelineEntityInput.selectionDirection ?? undefined,
+        );
+      }
+    }
+    if (
+      focusedFileDownloadId !== null
+      && activeLens === 'data'
+      && activeTab === 'files'
+      && explorerDetail?.record_id === focusedFileDownloadId
+    ) {
+      const replacement = routeRoot.querySelector(
+        `[${DATA_ROUTE_DOWNLOAD_FILE_ATTR}]`,
+      ) as HTMLElement | null;
+      replacement?.focus?.({ preventScroll: true });
+    }
+    if (
+      focusedRescheduleControl !== null
+      && activeLens === 'data'
+      && activeTab === 'calendar'
+      && explorerDetail?.record_id === focusedRescheduleControl.recordId
+      && (
+        (
+          focusedRescheduleControl.action === 'reschedule-open'
+          && rescheduleForm === null
+        )
+        || (
+          focusedRescheduleControl.action !== 'reschedule-open'
+          && rescheduleForm !== null
+        )
+      )
+    ) {
+      const replacement = routeRoot.querySelector?.(
+        `[${DATA_ROUTE_ACTION_ATTR}="${focusedRescheduleControl.action}"]`,
+      ) as HTMLElement | null | undefined;
+      replacement?.focus?.({ preventScroll: true });
+    }
+    if (
+      pendingRescheduleOpenFocusId !== null
+      && activeLens === 'data'
+      && activeTab === 'calendar'
+      && explorerDetail?.record_id === pendingRescheduleOpenFocusId
+      && explorerDetail.loading === false
+      && rescheduleForm === null
+    ) {
+      const replacement = routeRoot.querySelector?.(
+        `[${DATA_ROUTE_ACTION_ATTR}="reschedule-open"]`,
+      ) as HTMLElement | null | undefined;
+      replacement?.focus?.({ preventScroll: true });
+      if (replacement != null) pendingRescheduleOpenFocusId = null;
+    }
+    if (focusedExplorerSlug !== null && activeLens === 'data') {
+      const replacement = Array.from(
+        routeRoot.querySelectorAll<HTMLElement>(
+          `[${COLLECTION_INSTANCE_SLUG_ATTR}]`,
+        ),
+      ).find(
+        (candidate) =>
+          candidate.getAttribute(COLLECTION_INSTANCE_SLUG_ATTR)
+            === focusedExplorerSlug,
+      );
+      replacement?.focus?.({ preventScroll: true });
+    }
+    if (
+      pendingExplorerRetryFocus !== null
+      && activeLens === 'data'
+      && activeTab === pendingExplorerRetryFocus
+    ) {
+      const retry = routeRoot.querySelector(
+        `[${COLLECTION_RETRY_ATTR}]`,
+      ) as HTMLElement | null;
+      if (explorerRetrying) {
+        retry?.focus?.({ preventScroll: true });
+      } else {
+        const selectedSource = explorerSelectedSlug === null
+          ? null
+          : Array.from(routeRoot.querySelectorAll<HTMLElement>(
+              `[${COLLECTION_INSTANCE_SLUG_ATTR}]`,
+            )).find(
+              (candidate) => candidate.getAttribute(
+                COLLECTION_INSTANCE_SLUG_ATTR,
+              ) === explorerSelectedSlug,
+            ) ?? null;
+        const tab = routeRoot.querySelector(
+          `[${DATA_ROUTE_TAB_ATTR}="${activeTab}"]`,
+        ) as HTMLElement | null;
+        (retry ?? selectedSource ?? tab)?.focus?.({ preventScroll: true });
+        pendingExplorerRetryFocus = null;
+      }
+    }
+    if (
+      pendingExplorerDetailRetryFocus !== null
+      && activeLens === 'data'
+      && activeTab === pendingExplorerDetailRetryFocus.tab
+      && explorerDetail?.record_id
+        === pendingExplorerDetailRetryFocus.recordId
+    ) {
+      const retry = routeRoot.querySelector(
+        `[${COLLECTION_DETAIL_RETRY_ATTR}]`,
+      ) as HTMLElement | null;
+      if (explorerDetailRetrying) {
+        retry?.focus?.({ preventScroll: true });
+      } else {
+        const target = (
+          retry
+          ?? routeRoot.querySelector(`[${COLLECTION_DETAIL_HEADING_ATTR}]`)
+          ?? routeRoot.querySelector(
+            `[${DATA_ROUTE_ACTION_ATTR}="${COLLECTION_DETAIL_CLOSE_ACTION}"]`,
+          )
+        ) as HTMLElement | null;
+        target?.focus?.({ preventScroll: true });
+        pendingExplorerDetailRetryFocus = null;
+      }
+    }
+    if (
+      focusedExplorerDetailId !== null
+      && explorerDetail?.record_id === focusedExplorerDetailId
+      && activeLens === 'data'
+    ) {
+      const replacement = routeRoot.querySelector(
+        `[${COLLECTION_DETAIL_HEADING_ATTR}]`,
+      ) as HTMLElement | null;
+      replacement?.focus?.({ preventScroll: true });
+    }
+    if (
+      pendingExplorerRecordFocus !== null
+      && pendingExplorerRecordFocus.tab === activeTab
+      && explorerDetail?.record_id === pendingExplorerRecordFocus.recordId
+      && explorerDetail.loading === false
+    ) {
+      pendingExplorerRecordFocus = null;
+      const target = (
+        routeRoot.querySelector(`[${COLLECTION_DETAIL_HEADING_ATTR}]`)
+        ?? routeRoot.querySelector(
+          `[${DATA_ROUTE_ACTION_ATTR}="${COLLECTION_DETAIL_CLOSE_ACTION}"]`,
+        )
+      ) as HTMLElement | null;
+      target?.focus?.({ preventScroll: true });
+    }
+    if (pendingContactLoadMoreFocus) {
+      const loadMore = routeRoot.querySelector?.(
+        `[${DATA_ROUTE_ACTION_ATTR}="load-more-contacts"]`,
+      ) as HTMLElement | null | undefined;
+      if (loadingMoreContacts) {
+        loadMore?.focus?.({ preventScroll: true });
+      } else {
+        const appendedContact = pendingLoadedContactEmail === null
+          ? null
+          : Array.from(routeRoot.querySelectorAll<HTMLElement>(
+              `[${DATA_ROUTE_ACTION_ATTR}="open-contact-detail"]`,
+            )).find(
+              (candidate) =>
+                candidate.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR)
+                === pendingLoadedContactEmail,
+            ) ?? null;
+        const fallback = routeRoot.querySelector?.(
+          `[${DATA_ROUTE_TAB_ATTR}="contact"]`,
+        ) as HTMLElement | null | undefined;
+        (loadMore ?? appendedContact ?? fallback)?.focus?.({ preventScroll: true });
+        pendingContactLoadMoreFocus = false;
+        pendingLoadedContactEmail = null;
+      }
+    }
+    if (
+      pendingWorkEntityLoadMoreFocusKind !== null
+      && activeLens === 'data'
+      && activeTab === pendingWorkEntityLoadMoreFocusKind
+    ) {
+      const loadMore = routeRoot.querySelector?.(
+        `[${DATA_ROUTE_ACTION_ATTR}="load-more-work-entities"]`,
+      ) as HTMLElement | null | undefined;
+      if (loadingMoreWorkEntities) {
+        loadMore?.focus?.({ preventScroll: true });
+      } else {
+        const appendedEntity = Array.from(
+          routeRoot.querySelectorAll<HTMLElement>(
+            `[${SHARED_ACTION_ATTR}="open-edit-work-entity"],`
+            + `[${SHARED_ACTION_ATTR}="open-work-entity-detail"]`,
+          ),
+        ).find((candidate) => pendingLoadedWorkEntityKeys.some(
+          (key) =>
+            candidate.getAttribute('data-kind') === key.kind
+            && candidate.getAttribute('data-entity-id') === key.id,
+        )) ?? null;
+        const search = routeRoot.querySelector?.(
+          `input[${SHARED_ACTION_ATTR}="search-work-entities"]`
+          + `[data-kind="${pendingWorkEntityLoadMoreFocusKind}"]`,
+        ) as HTMLElement | null | undefined;
+        const fallback = routeRoot.querySelector?.(
+          `[${DATA_ROUTE_TAB_ATTR}="${pendingWorkEntityLoadMoreFocusKind}"]`,
+        ) as HTMLElement | null | undefined;
+        (loadMore ?? appendedEntity ?? search ?? fallback)?.focus?.({
+          preventScroll: true,
+        });
+        pendingWorkEntityLoadMoreFocusKind = null;
+        pendingLoadedWorkEntityKeys = [];
+      }
+    }
+    if (
+      pendingFormResponseLoadMoreFocus
+      && activeLens === 'data'
+      && isReceivedTab(activeTab)
+    ) {
+      const loadMore = routeRoot.querySelector?.(
+        `[${DATA_ROUTE_ACTION_ATTR}="load-more-form-responses"]`,
+      ) as HTMLElement | null | undefined;
+      if (loadingMoreFormResponses) {
+        loadMore?.focus?.({ preventScroll: true });
+      } else {
+        const appendedResponse = Array.from(
+          routeRoot.querySelectorAll<HTMLElement>(
+            `[${DATA_ROUTE_ACTION_ATTR}="open-form-response"]`,
+          ),
+        ).find((candidate) => pendingLoadedFormResponseIds.includes(
+          candidate.getAttribute(DATA_ROUTE_FORM_RESPONSE_ID_ATTR) ?? '',
+        )) ?? null;
+        const fallback = routeRoot.querySelector?.(
+          `[${DATA_ROUTE_TAB_ATTR}="form_response"]`,
+        ) as HTMLElement | null | undefined;
+        (loadMore ?? appendedResponse ?? fallback)?.focus?.({
+          preventScroll: true,
+        });
+        pendingFormResponseLoadMoreFocus = false;
+        pendingLoadedFormResponseIds = [];
+      }
+    }
     // Attach live pickers to any `data.contact` ref shells the work-entity
     // dialog just painted (no-op otherwise).
     mountWorkEntityRefPickers();
     // Attach (or rewire) the Files-tab upload widget (no-op elsewhere).
     mountUploadWidget();
+    if (memoryFilteringOrigin !== null) {
+      focusMemoryOriginFilter(memoryFilteringOrigin);
+    } else if (memoryExporting) {
+      focusMemoryExport();
+    } else if (memoryDeletingId !== null) {
+      focusMemoryDeleteConfirm(memoryDeletingId);
+    } else if (memoryEditOpeningId !== null) {
+      focusMemoryEditAction(memoryEditOpeningId);
+    } else if (memoryImportDiscardGuardOpen) {
+      focusMemoryImportDiscardGuard();
+    } else if (memoryComposeDiscardGuardOpen) {
+      focusMemoryComposeDiscardGuard();
+    } else if (formResponseDiscardGuardOpen) {
+      focusFormResponseDiscardGuard();
+    } else if (contactDiscardGuardOpen) {
+      focusContactDiscardGuard();
+    } else if (workEntityDiscardGuardOpen) {
+      focusWorkEntityDiscardGuard();
+    }
+    if (
+      pendingFormResponseDiscardTabFocus !== null
+      && activeLens === 'data'
+      && activeTab === pendingFormResponseDiscardTabFocus
+    ) {
+      focusDataTab(pendingFormResponseDiscardTabFocus);
+      if (!loading) pendingFormResponseDiscardTabFocus = null;
+    }
   };
 
   /** An exact run → Data address should land keyboard and screen-reader users
@@ -5290,6 +6992,16 @@ export const bootstrapDataRoute = (
         workEntityListRequest(workEntities.length),
       );
       if (disposed || generation !== loadGeneration) return;
+      const knownKeys = new Set(
+        workEntities.map((entity) => `${entity._kind}\u0000${entity.id}`),
+      );
+      pendingLoadedWorkEntityKeys = pendingWorkEntityLoadMoreFocusKind === null
+        ? []
+        : response.entities
+            .filter(
+              (entity) => !knownKeys.has(`${entity._kind}\u0000${entity.id}`),
+            )
+            .map((entity) => ({ kind: entity._kind, id: entity.id }));
       workEntities = [...workEntities, ...response.entities];
       workEntityTotal = response.total;
       if (errors.work_entities !== undefined) {
@@ -5381,6 +7093,12 @@ export const bootstrapDataRoute = (
       const response = await opts.contactListCaller(
         { ...contactListRequest(contacts.length), with_rollups: true });
       if (disposed || generation !== loadGeneration) return;
+      const knownEmails = new Set(contacts.map((contact) => contact.email));
+      pendingLoadedContactEmail = pendingContactLoadMoreFocus
+        ? response.contacts.find(
+            (contact) => !knownEmails.has(contact.email),
+          )?.email ?? null
+        : null;
       contacts = [...contacts, ...response.contacts];
       contactTotal = response.total;
       // ⛔ MERGED here, replaced on refresh — the two paths differ because the
@@ -5442,6 +7160,11 @@ export const bootstrapDataRoute = (
       });
       if (disposed || generation !== loadGeneration) return;
       const known = new Set(formResponses.map((row) => row.submission_id));
+      pendingLoadedFormResponseIds = pendingFormResponseLoadMoreFocus
+        ? response.responses
+            .filter((row) => !known.has(row.submission_id))
+            .map((row) => row.submission_id)
+        : [];
       formResponses = [
         ...formResponses,
         ...response.responses.filter((row) => !known.has(row.submission_id)),
@@ -5506,10 +7229,12 @@ export const bootstrapDataRoute = (
       if (disposed || seq !== explorerSeq) return;
       explorerRecords = records;
       explorerError = undefined;
+      explorerErrorRetryable = false;
     } catch (err) {
       if (disposed || seq !== explorerSeq) return;
       explorerRecords = [];
       explorerError = humanizeRpcError(err);
+      explorerErrorRetryable = true;
     }
   };
 
@@ -5522,7 +7247,13 @@ export const bootstrapDataRoute = (
     explorerInstances = [];
     explorerSelectedSlug = null;
     explorerDetail = null;
-    explorerError = undefined;
+    explorerDetailRetryable = false;
+    explorerDetailRetrying = false;
+    pendingExplorerDetailRetryFocus = null;
+    if (!explorerRetrying) {
+      explorerError = undefined;
+      explorerErrorRetryable = false;
+    }
     explorerLoading = true;
     const load = async (): Promise<CollectionRecord[] | null> => {
       if (tab === 'annotation') {
@@ -5542,14 +7273,17 @@ export const bootstrapDataRoute = (
       if (records === null) {
         explorerRecords = [];
         explorerError = 'This collection is not wired in this host.';
+        explorerErrorRetryable = false;
       } else {
         explorerRecords = records;
         explorerError = undefined;
+        explorerErrorRetryable = false;
       }
     } catch (err) {
       if (disposed || seq !== explorerSeq) return;
       explorerRecords = [];
       explorerError = humanizeRpcError(err);
+      explorerErrorRetryable = true;
     } finally {
       if (!disposed && seq === explorerSeq) explorerLoading = false;
     }
@@ -5639,7 +7373,13 @@ export const bootstrapDataRoute = (
     // does not.
     explorerCollection = (platform ?? (tab as CollectionPlatform)) as CanonicalCollectionName;
     explorerDetail = null;
-    explorerError = undefined;
+    explorerDetailRetryable = false;
+    explorerDetailRetrying = false;
+    pendingExplorerDetailRetryFocus = null;
+    if (!explorerRetrying) {
+      explorerError = undefined;
+      explorerErrorRetryable = false;
+    }
     explorerLoading = true;
     const caller = opts.collectionListInstancesCaller;
     if (platform === undefined || caller === undefined) {
@@ -5649,6 +7389,7 @@ export const bootstrapDataRoute = (
       explorerLoading = false;
       if (caller === undefined) {
         explorerError = 'The collection explorer is not wired in this host.';
+        explorerErrorRetryable = false;
       }
       return;
     }
@@ -5676,6 +7417,7 @@ export const bootstrapDataRoute = (
           resolution.kind === 'match' ? resolution.slug : null;
         if (resolution.kind !== 'match') {
           explorerError = resolution.message;
+          explorerErrorRetryable = false;
         }
       } else {
         explorerSelectedSlug =
@@ -5692,6 +7434,7 @@ export const bootstrapDataRoute = (
       if (requestedSlug !== null && explorerSelectedSlug === null) {
         explorerError =
           'The connected source for this cited record is no longer available.';
+        explorerErrorRetryable = false;
       }
       if (explorerSelectedSlug !== null) {
         await fetchExplorerRecords(platform, explorerSelectedSlug, seq);
@@ -5701,6 +7444,7 @@ export const bootstrapDataRoute = (
       explorerInstances = [];
       explorerRecords = [];
       explorerError = humanizeRpcError(err);
+      explorerErrorRetryable = true;
     } finally {
       if (!disposed && seq === explorerSeq) explorerLoading = false;
     }
@@ -5713,6 +7457,16 @@ export const bootstrapDataRoute = (
     explorerSelectedSlug = slug;
     explorerRecords = [];
     explorerDetail = null;
+    explorerDetailRetryable = false;
+    explorerDetailRetrying = false;
+    pendingExplorerDetailRetryFocus = null;
+    explorerError = undefined;
+    explorerErrorRetryable = false;
+    explorerRetrying = false;
+    pendingExplorerRetryFocus = null;
+    explorerRetryGeneration += 1;
+    pendingExplorerRecordFocus = null;
+    pendingRescheduleOpenFocusId = null;
     explorerLoading = true;
     render();
     syncDataHash(); // switching instance drops the open record → `#data/<tab>`
@@ -5730,40 +7484,59 @@ export const bootstrapDataRoute = (
     render();
   };
 
-  /** Open one record's detail (lazy `collection.get`). */
-  const openExplorerRecord = async (record_id: string): Promise<void> => {
-    retireRunVerificationForDifferentItem(activeTab, record_id);
-    if (isSingleCollectionTab(activeTab)) {
-      // The single-collection list already holds full records — no `get` rpc.
-      // Store ONLY the id; `renderExplorerTab` resolves it against the CURRENT
-      // `explorerRecords` each render, so a concurrent live refresh that swapped
-      // the list never leaves a stale detail (and a since-removed record shows
-      // the engine's "no longer exists" state).
-      explorerDetail = { record_id, loading: false };
-      render();
-      syncDataHash(); // reflect the open record as `#data/<tab>/<record_id>`
+  /** Retry the active explorer's instance + list read without making the owner
+   * leave the tab. The prior alert stays visible as context while the retry is
+   * busy; success returns focus to the selected source (or the tab when there
+   * is no selected source), and failure returns to Retry. */
+  const retryExplorer = async (): Promise<void> => {
+    if (
+      explorerRetrying
+      || !explorerErrorRetryable
+      || activeLens !== 'data'
+      || (!isExplorerTab(activeTab) && !isSingleCollectionTab(activeTab))
+    ) {
       return;
     }
-    const platform = EXPLORER_TAB_PLATFORM[activeTab];
-    const caller = opts.collectionGetCaller;
-    if (platform === undefined || explorerSelectedSlug === null) return;
-    const slug = explorerSelectedSlug;
-    explorerDetail = { record_id, loading: true };
+    const retryTab = activeTab;
+    const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    pendingExplorerRetryFocus =
+      activeElement?.hasAttribute?.(COLLECTION_RETRY_ATTR) === true
+        ? retryTab
+        : null;
+    const retryGeneration = ++explorerRetryGeneration;
+    explorerRetrying = true;
     render();
-    syncDataHash(); // reflect the open record as `#data/<tab>/<record_id>`
-    if (caller === undefined) {
-      explorerDetail = { record_id, loading: false, error: 'Record detail is not wired in this host.' };
-      render();
+    await loadExplorer(retryTab);
+    if (
+      disposed
+      || retryGeneration !== explorerRetryGeneration
+      || activeLens !== 'data'
+      || activeTab !== retryTab
+    ) {
       return;
     }
-    const seq = ++explorerSeq;
-    explorerTimeline = null; // drop the prior record's timeline
-    rescheduleForm = null; // D-210 R-4 — drop a stale reschedule form on record switch
+    explorerRetrying = false;
+    render();
+  };
+
+  /** Resolve one exact platform record after either the initial open or an
+   * inline retry. Both entry points share the same stale-response and calendar
+   * timeline behavior. */
+  const readExplorerRecord = async (
+    tab: DataTabId,
+    platform: CollectionPlatform,
+    slug: string,
+    record_id: string,
+    seq: number,
+    caller: NonNullable<BootstrapDataRouteOptions['collectionGetCaller']>,
+  ): Promise<void> => {
     let loadedRecord: CollectionRecord | null = null;
     try {
       const { record } = await caller({ platform, slug, record_id });
       if (disposed || seq !== explorerSeq) return;
       explorerDetail = { record_id, loading: false, record };
+      explorerDetailRetryable = false;
+      explorerDetailRetrying = false;
       loadedRecord = record;
       // The verification handoff has found its exact item. From here on,
       // switching accounts is ordinary browsing rather than repeatedly forcing
@@ -5771,7 +7544,7 @@ export const bootstrapDataRoute = (
       // owner can try another source after an ambiguous/partial resolution.
       if (
         record !== null
-        && activeTab === pendingExplorerVerificationTab
+        && tab === pendingExplorerVerificationTab
         && record_id === pendingExplorerVerificationRecordId
       ) {
         pendingExplorerVerificationRecordId = null;
@@ -5779,6 +7552,8 @@ export const bootstrapDataRoute = (
     } catch (err) {
       if (disposed || seq !== explorerSeq) return;
       explorerDetail = { record_id, loading: false, error: humanizeRpcError(err) };
+      explorerDetailRetryable = true;
+      explorerDetailRetrying = false;
     }
     render();
     // D-210 step 3 — after the record renders, lazily fetch a calendar event's
@@ -5806,22 +7581,142 @@ export const bootstrapDataRoute = (
     }
   };
 
+  /** Open one record's detail (lazy `collection.get`). */
+  const openExplorerRecord = async (record_id: string): Promise<void> => {
+    retireRunVerificationForDifferentItem(activeTab, record_id);
+    pendingRescheduleOpenFocusId = null;
+    explorerDetailRetryable = false;
+    explorerDetailRetrying = false;
+    pendingExplorerDetailRetryFocus = null;
+    const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    pendingExplorerRecordFocus =
+      renderedActiveTab === activeTab
+      && activeElement?.getAttribute?.(COLLECTION_RECORD_ID_ATTR) === record_id
+        ? { tab: activeTab, recordId: record_id }
+        : null;
+    if (isSingleCollectionTab(activeTab)) {
+      // The single-collection list already holds full records — no `get` rpc.
+      // Store ONLY the id; `renderExplorerTab` resolves it against the CURRENT
+      // `explorerRecords` each render, so a concurrent live refresh that swapped
+      // the list never leaves a stale detail (and a since-removed record shows
+      // the engine's "no longer exists" state).
+      explorerDetail = { record_id, loading: false };
+      render();
+      syncDataHash(); // reflect the open record as `#data/<tab>/<record_id>`
+      return;
+    }
+    const tab = activeTab;
+    const platform = EXPLORER_TAB_PLATFORM[tab];
+    const caller = opts.collectionGetCaller;
+    if (platform === undefined || explorerSelectedSlug === null) return;
+    const slug = explorerSelectedSlug;
+    explorerDetail = { record_id, loading: true };
+    render();
+    syncDataHash(); // reflect the open record as `#data/<tab>/<record_id>`
+    if (caller === undefined) {
+      explorerDetail = {
+        record_id,
+        loading: false,
+        error: 'Record detail is not wired in this host.',
+      };
+      render();
+      return;
+    }
+    const seq = ++explorerSeq;
+    explorerTimeline = null; // drop the prior record's timeline
+    rescheduleForm = null; // D-210 R-4 — drop a stale reschedule form on record switch
+    await readExplorerRecord(tab, platform, slug, record_id, seq, caller);
+  };
+
+  /** Retry an exact failed `collection.get` without dropping back to the list.
+   * The alert stays visible while busy. Focus follows Retry only while that
+   * control still owns it, then lands on Retry again or the loaded heading. */
+  const retryExplorerDetail = async (): Promise<void> => {
+    const detail = explorerDetail;
+    const tab = activeTab;
+    const platform = EXPLORER_TAB_PLATFORM[tab];
+    const caller = opts.collectionGetCaller;
+    if (
+      explorerDetailRetrying
+      || !explorerDetailRetryable
+      || detail === null
+      || detail.error === undefined
+      || activeLens !== 'data'
+      || !isExplorerTab(tab)
+      || platform === undefined
+      || explorerSelectedSlug === null
+      || caller === undefined
+    ) {
+      return;
+    }
+    const recordId = detail.record_id;
+    const slug = explorerSelectedSlug;
+    const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    pendingExplorerDetailRetryFocus =
+      renderedActiveTab === tab
+      && activeElement?.hasAttribute?.(COLLECTION_DETAIL_RETRY_ATTR) === true
+        ? { tab, recordId }
+        : null;
+    pendingExplorerRecordFocus = null;
+    explorerDetailRetrying = true;
+    const seq = ++explorerSeq;
+    render();
+    await readExplorerRecord(tab, platform, slug, recordId, seq, caller);
+  };
+
   const closeExplorerDetail = (): void => {
+    const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    const returnRecordId =
+      activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
+        === COLLECTION_DETAIL_CLOSE_ACTION
+        ? explorerDetail?.record_id ?? null
+        : null;
     retireRunVerification();
+    pendingExplorerRecordFocus = null;
     explorerDetail = null;
+    explorerDetailRetryable = false;
+    explorerDetailRetrying = false;
+    pendingExplorerDetailRetryFocus = null;
     explorerTimeline = null; // D-210 step 3 — drop the closed record's timeline
     rescheduleForm = null; // D-210 R-4 — drop the reschedule form on close
+    pendingRescheduleOpenFocusId = null;
     // Abandon any in-flight `collection.get` — without this bump its
     // `seq === explorerSeq` guard still passes and reinstates the detail view
     // (+ the Files download button) after the user navigated Back.
     explorerSeq += 1;
     render();
+    if (returnRecordId !== null) {
+      const row = Array.from(
+        routeRoot.querySelectorAll<HTMLElement>(
+          `[${COLLECTION_RECORD_ID_ATTR}]`,
+        ),
+      ).find(
+        (candidate) =>
+          candidate.getAttribute(COLLECTION_RECORD_ID_ATTR) === returnRecordId,
+      );
+      const source = explorerSelectedSlug === null
+        ? null
+        : Array.from(
+            routeRoot.querySelectorAll<HTMLElement>(
+              `[${COLLECTION_INSTANCE_SLUG_ATTR}]`,
+            ),
+          ).find(
+            (candidate) =>
+              candidate.getAttribute(COLLECTION_INSTANCE_SLUG_ATTR)
+                === explorerSelectedSlug,
+          ) ?? null;
+      const tab = routeRoot.querySelector(
+        `[${DATA_ROUTE_TAB_ATTR}="${activeTab}"]`,
+      ) as HTMLElement | null;
+      (row ?? source ?? tab)?.focus?.({ preventScroll: true });
+    }
     syncDataHash(); // back to the list → `#data/<tab>`
   };
 
   const loadRecordsNamespace = async (
     namespace: RecordsNamespaceView,
     preferredKind?: string,
+    returnFocusId?: string,
   ): Promise<void> => {
     const kindsCaller = opts.recordsKindListCaller;
     const searchCaller = opts.recordsSearchCaller;
@@ -5839,12 +7734,18 @@ export const bootstrapDataRoute = (
       loading: true,
       deletePending: false,
       deleting: false,
+      outboxRefreshing: false,
       retiringEventId: null,
+      retiringEventBusy: false,
       purgePending: false,
+      purgeConfirmation: '',
       purging: false,
       error: undefined,
     };
+    const focusedControl = activeRecordsFocusIdentity();
     render();
+    focusRecordsIdentity(focusedControl);
+    if (returnFocusId !== undefined) focusRecordsListReturn(returnFocusId);
     if (kindsCaller === undefined || searchCaller === undefined) {
       if (seq !== recordsSeq || disposed) return;
       recordsState = {
@@ -5903,7 +7804,7 @@ export const bootstrapDataRoute = (
     }
   };
 
-  const loadRecords = async (): Promise<void> => {
+  const loadRecords = async (returnFocusId?: string): Promise<void> => {
     const caller = opts.recordsNamespaceListCaller;
     const seq = ++recordsSeq;
     recordsState = { ...recordsState, loading: true, error: undefined };
@@ -5936,7 +7837,11 @@ export const bootstrapDataRoute = (
         loading: selected !== null,
       };
       if (selected === null) return;
-      await loadRecordsNamespace(selected, recordsState.selectedKind ?? undefined);
+      await loadRecordsNamespace(
+        selected,
+        recordsState.selectedKind ?? undefined,
+        returnFocusId,
+      );
     } catch (error) {
       if (disposed || seq !== recordsSeq) return;
       recordsState = {
@@ -5953,22 +7858,51 @@ export const bootstrapDataRoute = (
   };
 
   const selectRecordsNamespace = async (key: string): Promise<void> => {
+    if (
+      recordsState.loadingNamespaceKey !== null
+      || recordsState.loadingKind !== null
+    ) return;
     const selected = recordsState.namespaces.find((namespace) =>
       recordsOwnerKey(namespace.owner) === key);
-    if (selected === undefined) return;
+    const selectedKey = recordsState.selectedNamespace === null
+      ? null
+      : recordsOwnerKey(recordsState.selectedNamespace.owner);
+    if (
+      selected === undefined
+      || (selectedKey === key && recordsState.error === undefined)
+    ) return;
+    recordsState = {
+      ...recordsState,
+      loadingNamespaceKey: key,
+      loadingKind: null,
+      error: undefined,
+    };
     await loadRecordsNamespace(selected);
-    if (!disposed) render();
+    if (
+      disposed
+      || activeTab !== 'records'
+      || recordsState.selectedNamespace === null
+      || recordsOwnerKey(recordsState.selectedNamespace.owner) !== key
+    ) return;
+    const settledFocus = activeRecordsFocusIdentity();
+    recordsState = { ...recordsState, loadingNamespaceKey: null };
+    render();
+    focusRecordsIdentity(settledFocus);
   };
 
   const selectRecordsKind = async (kind: string): Promise<void> => {
     const namespace = recordsState.selectedNamespace;
     const caller = opts.recordsSearchCaller;
     if (
-      namespace === null
+      recordsState.loadingNamespaceKey !== null
+      || recordsState.loadingKind !== null
+      || namespace === null
       || caller === undefined
       || !recordsState.kinds.some((entry) => entry.kind === kind)
+      || (recordsState.selectedKind === kind && recordsState.error === undefined)
     ) return;
     const seq = ++recordsSeq;
+    const focusedControl = activeRecordsFocusIdentity();
     recordsState = {
       ...recordsState,
       selectedKind: kind,
@@ -5976,10 +7910,12 @@ export const bootstrapDataRoute = (
       detail: null,
       diagnostics: null,
       loading: true,
+      loadingKind: kind,
       error: undefined,
       deletePending: false,
     };
     render();
+    focusRecordsIdentity(focusedControl);
     try {
       const result = await caller({
         owner: namespace.owner,
@@ -5998,7 +7934,10 @@ export const bootstrapDataRoute = (
         error: humanizeRpcError(error),
       };
     }
+    const settledFocus = activeRecordsFocusIdentity();
+    recordsState = { ...recordsState, loadingKind: null };
     render();
+    focusRecordsIdentity(settledFocus);
   };
 
   const openRecordsRecord = async (id: string): Promise<void> => {
@@ -6006,9 +7945,15 @@ export const bootstrapDataRoute = (
     const entity = recordsState.selectedKind;
     const caller = opts.recordsGetCaller;
     if (namespace === null || entity === null || caller === undefined) return;
+    const carryFocus =
+      activeRecordsAction() === RECORDS_OPEN_RECORD_ACTION
+      && (doc.activeElement as HTMLElement | null)?.getAttribute(RECORDS_ID_ATTR) === id;
     const seq = ++recordsSeq;
     recordsState = { ...recordsState, loading: true, error: undefined, deletePending: false };
     render();
+    if (carryFocus) {
+      focusRecordsAction(RECORDS_OPEN_RECORD_ACTION, RECORDS_ID_ATTR, id);
+    }
     try {
       const { record, diagnostics } = await caller({ owner: namespace.owner, entity, id });
       if (disposed || seq !== recordsSeq) return;
@@ -6023,7 +7968,18 @@ export const bootstrapDataRoute = (
       if (disposed || seq !== recordsSeq) return;
       recordsState = { ...recordsState, loading: false, error: humanizeRpcError(error) };
     }
+    const stillOwnsFocus =
+      carryFocus
+      && activeRecordsAction() === RECORDS_OPEN_RECORD_ACTION
+      && (doc.activeElement as HTMLElement | null)?.getAttribute(RECORDS_ID_ATTR) === id;
     render();
+    if (stillOwnsFocus) {
+      if (recordsState.detail === null) {
+        focusRecordsAction(RECORDS_OPEN_RECORD_ACTION, RECORDS_ID_ATTR, id);
+      } else {
+        focusRecordsDetailHeading();
+      }
+    }
   };
 
   const confirmRecordsDelete = async (): Promise<void> => {
@@ -6035,9 +7991,16 @@ export const bootstrapDataRoute = (
       namespace === null || entity === null || record === null
       || caller === undefined || recordsState.deleting
     ) return;
+    const carriedAction = activeRecordsAction();
+    const carryFocus =
+      carriedAction === RECORDS_CONFIRM_DELETE_ACTION
+      || carriedAction === RECORDS_CANCEL_DELETE_ACTION;
+    let deleted = false;
+    let settledAction: string | null = null;
     const seq = ++recordsSeq;
     recordsState = { ...recordsState, deleting: true, error: undefined };
     render();
+    if (carryFocus) focusRecordsAction(carriedAction);
     try {
       await caller({
         owner: namespace.owner,
@@ -6047,6 +8010,13 @@ export const bootstrapDataRoute = (
         expected_revision: record._record.revision,
       });
       if (disposed || seq !== recordsSeq) return;
+      const activeAction = activeRecordsAction();
+      if (
+        activeAction === RECORDS_CONFIRM_DELETE_ACTION
+        || activeAction === RECORDS_CANCEL_DELETE_ACTION
+      ) {
+        settledAction = activeAction;
+      }
       recordsState = {
         ...recordsState,
         records: recordsState.records.filter((entry) => entry.id !== record.id),
@@ -6056,9 +8026,17 @@ export const bootstrapDataRoute = (
         deleting: false,
       };
       // Re-read namespace quota/generations after the atomic delete.
-      await loadRecords();
+      await loadRecords(settledAction === null ? undefined : record.id);
+      deleted = true;
     } catch (error) {
       if (disposed || seq !== recordsSeq) return;
+      const activeAction = activeRecordsAction();
+      if (
+        activeAction === RECORDS_CONFIRM_DELETE_ACTION
+        || activeAction === RECORDS_CANCEL_DELETE_ACTION
+      ) {
+        settledAction = activeAction;
+      }
       recordsState = {
         ...recordsState,
         deleting: false,
@@ -6066,6 +8044,13 @@ export const bootstrapDataRoute = (
       };
     }
     render();
+    if (settledAction !== null) {
+      if (deleted) {
+        focusRecordsListReturn(record.id);
+      } else if (!focusRecordsAction(settledAction)) {
+        focusRecordsAction(RECORDS_CONFIRM_DELETE_ACTION);
+      }
+    }
   };
 
   const downloadRecordsExport = (
@@ -6126,8 +8111,18 @@ export const bootstrapDataRoute = (
     const namespace = recordsState.selectedNamespace;
     const caller = opts.recordsExportCaller;
     if (namespace === null || caller === undefined || recordsState.exporting) return;
-    recordsState = { ...recordsState, exporting: true, error: undefined };
+    const action = entity === undefined
+      ? format === 'csv' ? RECORDS_EXPORT_PACK_CSV_ACTION : RECORDS_EXPORT_PACK_ACTION
+      : format === 'csv' ? RECORDS_EXPORT_KIND_CSV_ACTION : RECORDS_EXPORT_KIND_ACTION;
+    const carryFocus = activeRecordsAction() === action;
+    recordsState = {
+      ...recordsState,
+      exporting: true,
+      exportingAction: action,
+      error: undefined,
+    };
     render();
+    if (carryFocus) focusRecordsAction(action);
     try {
       const envelope = await caller({
         owner: namespace.owner,
@@ -6146,39 +8141,119 @@ export const bootstrapDataRoute = (
     } catch (error) {
       recordsState = { ...recordsState, error: humanizeRpcError(error) };
     } finally {
-      recordsState = { ...recordsState, exporting: false };
+      const stillOwnsFocus = activeRecordsAction() === action;
+      recordsState = {
+        ...recordsState,
+        exporting: false,
+        exportingAction: null,
+      };
       render();
+      if (stillOwnsFocus) focusRecordsAction(action);
     }
   };
 
   const refreshRecordsOutbox = async (): Promise<void> => {
     const namespace = recordsState.selectedNamespace;
     const caller = opts.recordsOutboxListCaller;
-    if (namespace === null || caller === undefined) return;
+    if (namespace === null || caller === undefined || recordsState.outboxRefreshing) return;
+    const initialFocus = activeRecordsFocusIdentity();
+    recordsState = {
+      ...recordsState,
+      outboxRefreshing: true,
+      error: undefined,
+    };
+    render();
+    focusRecordsIdentity(initialFocus);
     try {
       const outbox = await caller({ owner: namespace.owner, limit: 100 });
       if (disposed || recordsState.selectedNamespace === null
         || recordsOwnerKey(recordsState.selectedNamespace.owner) !== recordsOwnerKey(namespace.owner)) return;
-      recordsState = { ...recordsState, outbox, error: undefined };
+      recordsState = {
+        ...recordsState,
+        outbox,
+        outboxRefreshing: false,
+        error: undefined,
+      };
     } catch (error) {
-      recordsState = { ...recordsState, error: humanizeRpcError(error) };
+      if (disposed || recordsState.selectedNamespace === null
+        || recordsOwnerKey(recordsState.selectedNamespace.owner) !== recordsOwnerKey(namespace.owner)) return;
+      recordsState = {
+        ...recordsState,
+        outboxRefreshing: false,
+        error: humanizeRpcError(error),
+      };
     }
+    const settledFocus = activeRecordsFocusIdentity();
     render();
+    focusRecordsIdentity(settledFocus);
   };
 
   const retireRecordsEvent = async (eventId: string): Promise<void> => {
     const namespace = recordsState.selectedNamespace;
     const caller = opts.recordsOutboxRetireCaller;
-    if (namespace === null || caller === undefined || recordsState.retiringEventId !== eventId) return;
+    if (
+      namespace === null
+      || caller === undefined
+      || recordsState.retiringEventId !== eventId
+      || recordsState.retiringEventBusy
+    ) return;
+    const carriedAction = activeRecordsAction();
+    const carryFocus =
+      carriedAction === RECORDS_CONFIRM_RETIRE_EVENT_ACTION
+      || carriedAction === RECORDS_CANCEL_RETIRE_EVENT_ACTION;
+    recordsState = {
+      ...recordsState,
+      outboxOpen: true,
+      retiringEventBusy: true,
+      error: undefined,
+    };
+    render();
+    if (carryFocus) focusRecordsAction(carriedAction);
     try {
       await caller({ owner: namespace.owner, event_id: eventId, confirmation: eventId });
-      recordsState = { ...recordsState, retiringEventId: null, error: undefined };
-      await refreshRecordsOutbox();
+      if (
+        disposed
+        || recordsState.selectedNamespace === null
+        || recordsOwnerKey(recordsState.selectedNamespace.owner)
+          !== recordsOwnerKey(namespace.owner)
+      ) return;
+      const settledAction = activeRecordsAction();
+      const stillOwnsFocus =
+        settledAction === RECORDS_CONFIRM_RETIRE_EVENT_ACTION
+        || settledAction === RECORDS_CANCEL_RETIRE_EVENT_ACTION
+        || settledAction === RECORDS_TOGGLE_OUTBOX_ACTION;
+      recordsState = {
+        ...recordsState,
+        retiringEventId: null,
+        retiringEventBusy: false,
+        error: undefined,
+      };
       // The pending counter is part of the namespace/global quota snapshots.
-      await loadRecords();
-    } catch (error) {
-      recordsState = { ...recordsState, retiringEventId: null, error: humanizeRpcError(error) };
+      await loadRecords(stillOwnsFocus ? eventId : undefined);
       render();
+      if (stillOwnsFocus) focusRecordsOutboxSummary();
+    } catch (error) {
+      if (
+        disposed
+        || recordsState.selectedNamespace === null
+        || recordsOwnerKey(recordsState.selectedNamespace.owner)
+          !== recordsOwnerKey(namespace.owner)
+      ) return;
+      const settledAction = activeRecordsAction();
+      recordsState = {
+        ...recordsState,
+        retiringEventBusy: false,
+        error: humanizeRpcError(error),
+      };
+      render();
+      if (settledAction === RECORDS_TOGGLE_OUTBOX_ACTION) {
+        focusRecordsOutboxSummary();
+      } else if (
+        settledAction === RECORDS_CONFIRM_RETIRE_EVENT_ACTION
+        || settledAction === RECORDS_CANCEL_RETIRE_EVENT_ACTION
+      ) {
+        focusRecordsAction(settledAction);
+      }
     }
   };
 
@@ -6187,15 +8262,65 @@ export const bootstrapDataRoute = (
     const caller = opts.recordsPurgeCaller;
     if (namespace === null || namespace.state.state !== 'orphaned'
       || caller === undefined || recordsState.purging) return;
+    const expected = recordsOwnerKey(namespace.owner);
+    if (confirmation !== expected) {
+      recordsState = {
+        ...recordsState,
+        error: `Type ${expected} exactly to purge this namespace.`,
+      };
+      render();
+      focusRecordsPurgeInput();
+      return;
+    }
+    const carriedFocus = activeRecordsFocusIdentity();
+    const carriedInput = (doc.activeElement as HTMLElement | null)?.hasAttribute(
+      RECORDS_PURGE_CONFIRMATION_ATTR,
+    ) === true;
     recordsState = { ...recordsState, purging: true, error: undefined };
     render();
+    if (carriedInput) focusRecordsPurgeInput();
+    else focusRecordsIdentity(carriedFocus);
     try {
       await caller({ owner: namespace.owner, confirmation });
-      recordsState = { ...recordsState, purging: false, purgePending: false };
-      await loadRecords();
-    } catch (error) {
-      recordsState = { ...recordsState, purging: false, error: humanizeRpcError(error) };
+      if (
+        disposed
+        || recordsState.selectedNamespace === null
+        || recordsOwnerKey(recordsState.selectedNamespace.owner) !== expected
+      ) return;
+      const settledFocus = activeRecordsFocusIdentity();
+      const settledInput = (doc.activeElement as HTMLElement | null)?.hasAttribute(
+        RECORDS_PURGE_CONFIRMATION_ATTR,
+      ) === true;
+      const stillOwnsFocus = settledFocus !== null || settledInput;
+      recordsState = {
+        ...recordsState,
+        purging: false,
+        purgePending: false,
+        purgeConfirmation: '',
+      };
+      await loadRecords(stillOwnsFocus ? expected : undefined);
       render();
+      if (stillOwnsFocus && !focusRecordsIdentity(settledFocus)) {
+        focusRecordsTab();
+      }
+    } catch (error) {
+      if (
+        disposed
+        || recordsState.selectedNamespace === null
+        || recordsOwnerKey(recordsState.selectedNamespace.owner) !== expected
+      ) return;
+      const settledFocus = activeRecordsFocusIdentity();
+      const settledInput = (doc.activeElement as HTMLElement | null)?.hasAttribute(
+        RECORDS_PURGE_CONFIRMATION_ATTR,
+      ) === true;
+      recordsState = {
+        ...recordsState,
+        purging: false,
+        error: humanizeRpcError(error),
+      };
+      render();
+      if (settledInput) focusRecordsPurgeInput();
+      else focusRecordsIdentity(settledFocus);
     }
   };
 
@@ -6274,6 +8399,74 @@ export const bootstrapDataRoute = (
 
   const startRefresh = (): void => {
     pendingLoadPromise = refreshActive();
+  };
+
+  interface DebouncedRefresh {
+    schedule(stillCurrent: () => boolean): void;
+    cancel(): void;
+  }
+  const createDebouncedRefresh = (delayMs: number): DebouncedRefresh => {
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    let settleScheduled: (() => void) | null = null;
+    let scheduleGeneration = 0;
+    const cancel = (): void => {
+      scheduleGeneration += 1;
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      const settle = settleScheduled;
+      settleScheduled = null;
+      settle?.();
+    };
+    return {
+      cancel,
+      schedule: (stillCurrent): void => {
+        cancel();
+        const generation = scheduleGeneration;
+        // A response for an older query must not repaint during the debounce gap.
+        loadGeneration += 1;
+        if (delayMs <= 0) {
+          startRefresh();
+          return;
+        }
+        let settle!: () => void;
+        const scheduled = new Promise<void>((resolve) => {
+          settle = resolve;
+        });
+        settleScheduled = settle;
+        timer = setTimeout(() => {
+          timer = null;
+          if (settleScheduled === settle) settleScheduled = null;
+          if (
+            disposed
+            || generation !== scheduleGeneration
+            || !stillCurrent()
+          ) {
+            settle();
+            return;
+          }
+          const refresh = refreshActive();
+          pendingLoadPromise = refresh;
+          void refresh.then(settle, settle);
+        }, delayMs);
+        pendingLoadPromise = scheduled;
+      },
+    };
+  };
+  const contactSearchRefresh = createDebouncedRefresh(
+    opts.contactSearchDebounceMs ?? 180,
+  );
+  const bookingSearchRefresh = createDebouncedRefresh(
+    opts.bookingSearchDebounceMs ?? 180,
+  );
+
+  const scheduleContactSearchRefresh = (): void => {
+    const scheduledSearch = contactSearch;
+    contactSearchRefresh.schedule(() =>
+      activeLens === 'data'
+      && activeTab === 'contact'
+      && contactSearch === scheduledSearch);
   };
 
   // R18 — reflect the current (tab, open-entity) as `#data/<tab>/<id>` in the
@@ -6379,24 +8572,63 @@ export const bootstrapDataRoute = (
             : serializeShellRoute('data', activeTab, deepLinkEntity);
     try {
       history.replaceState(null, '', hash);
+      opts.onHashSync?.(hash);
     } catch {
       // Non-fatal — addressability degrades to in-page-only.
     }
   };
 
+  const cancelContactEditOpen = (): void => {
+    contactEditOpenSeq += 1;
+    openingContactEditEmail = null;
+    pendingContactEditFocusEmail = null;
+  };
+
   const selectTab = async (tab: DataTabId): Promise<void> => {
     if (activeTab === tab) return;
+    if (hasRecordsInFlightWork()) {
+      focusRecordsInFlightOwner();
+      return;
+    }
+    if (savingFormResponse) return;
+    if (formResponseDiscardGuardOpen) {
+      focusFormResponseDiscardGuard();
+      return;
+    }
+    if (memoryComposeDiscardGuardOpen) {
+      focusMemoryComposeDiscardGuard();
+      return;
+    }
+    if (
+      formResponseDetailId !== null
+      && hasUnsavedFormResponseEditor()
+    ) {
+      showFormResponseDiscardGuard(tab);
+      return;
+    }
     navigationGeneration += 1;
+    timelineLoadGeneration += 1;
+    loadingTimeline = false;
     retireRunVerification();
+    workEntityDialogOpenSeq += 1;
+    pendingWorkEntityDialogOpen = null;
+    workEntityDialogReturnFocus = null;
     loadingWorkEntityDetail = false;
+    cancelContactEditOpen();
     activeTab = tab;
     contactDialog = null;
+    contactDialogReturnFocus = null;
+    retireContactDialogDraft();
     resetFormResponseAutomation();
     formResponseDetailSeq += 1;
     formResponseDetailId = null;
     formResponseDetail = null;
+    formResponseEditorDraft = null;
+    retireFormResponseEditorDraft();
+    pendingFormResponseEditorFocus = null;
     formResponseDetailError = null;
     loadingFormResponseDetail = false;
+    formResponseSaveError = null;
     bookingDetailSeq += 1;
     bookingDetailId = null;
     bookingDetail = null;
@@ -6421,10 +8653,55 @@ export const bootstrapDataRoute = (
   // D-198 Slice 1b — switch the Data | Memory lens. Orthogonal to the tab; the
   // Data lens preserves its active tab + open detail when you come back.
   const selectLens = async (lens: 'data' | 'memory'): Promise<void> => {
+    if (hasRecordsInFlightWork()) {
+      focusRecordsInFlightOwner();
+      return;
+    }
+    if (memoryFilteringOrigin !== null) {
+      focusMemoryOriginFilter(memoryFilteringOrigin);
+      return;
+    }
+    if (memoryExporting) {
+      focusMemoryExport();
+      return;
+    }
     if (activeLens === lens) return;
+    if (savingFormResponse) return;
+    if (memoryDeletingId !== null) {
+      focusMemoryDeleteConfirm(memoryDeletingId);
+      return;
+    }
+    if (memoryEditOpeningId !== null) {
+      focusMemoryEditAction(memoryEditOpeningId);
+      return;
+    }
+    if (formResponseDiscardGuardOpen) {
+      focusFormResponseDiscardGuard();
+      return;
+    }
+    if (memoryComposeDiscardGuardOpen) {
+      focusMemoryComposeDiscardGuard();
+      return;
+    }
+    if (memoryImportDiscardGuardOpen) {
+      focusMemoryImportDiscardGuard();
+      return;
+    }
+    if (memoryCompose.submitting) {
+      focusMemoryComposeSave();
+      return;
+    }
+    if (memoryImport.submitting) {
+      focusMemoryImportSubmit();
+      return;
+    }
     navigationGeneration += 1;
     retireRunVerification();
+    workEntityDialogOpenSeq += 1;
+    pendingWorkEntityDialogOpen = null;
+    workEntityDialogReturnFocus = null;
     loadingWorkEntityDetail = false;
+    cancelContactEditOpen();
     if (lens === 'memory') closeFormResponseRunModal();
     activeLens = lens;
     syncDataHash();
@@ -6433,10 +8710,33 @@ export const bootstrapDataRoute = (
   };
 
   const setMemoryOriginFilter = async (filter: MemoryOriginFilter): Promise<void> => {
-    if (memoryOriginFilter === filter) return;
+    if (memoryFilteringOrigin !== null) {
+      focusMemoryOriginFilter(memoryFilteringOrigin);
+      return;
+    }
+    if (memoryExporting) {
+      focusMemoryExport();
+      return;
+    }
+    if (memoryOriginFilter === filter && memoryError === undefined) return;
+    if (memoryDeletingId !== null) {
+      focusMemoryDeleteConfirm(memoryDeletingId);
+      return;
+    }
+    if (memoryEditOpeningId !== null) {
+      focusMemoryEditAction(memoryEditOpeningId);
+      return;
+    }
     memoryOriginFilter = filter;
+    memoryFilteringOrigin = filter;
+    memoryEntries = [];
+    memoryError = undefined;
     pendingLoadPromise = refreshActive();
     await pendingLoadPromise;
+    if (disposed || memoryFilteringOrigin !== filter) return;
+    memoryFilteringOrigin = null;
+    render();
+    focusMemoryOriginFilter(filter);
   };
 
   // ── D-198 Slice 2 — owner memory CRUD (compose / detail / delete) ─────────
@@ -6445,12 +8745,15 @@ export const bootstrapDataRoute = (
    *  keeps state synced between renders; this is the belt-and-braces read at
    *  submit, mirroring `syncContactDialogFromDom`. */
   const syncMemoryComposeFromDom = (): void => {
-    if (!memoryCompose.open) return;
+    if (!memoryCompose.open || memoryCompose.submitting) return;
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => Element | null;
+    };
     const read = (field: string): string | undefined => {
-      const el = routeRoot.querySelector(
+      const el = queryable.querySelector?.(
         `[${MEMORY_FIELD_ATTR}="${field}"]`,
-      ) as HTMLInputElement | HTMLTextAreaElement | null;
-      return el === null ? undefined : el.value;
+      ) as HTMLInputElement | HTMLTextAreaElement | null | undefined;
+      return el === null || el === undefined ? undefined : el.value;
     };
     const kind = read('kind');
     const summary = read('summary');
@@ -6463,28 +8766,188 @@ export const bootstrapDataRoute = (
     };
   };
 
-  const openMemoryCompose = (): void => {
-    memoryCompose = { open: true, mode: 'create', kind: '', summary: '', body: '', submitting: false };
-    memoryDetail = null;
-    memoryPendingDeleteId = undefined;
-    render();
+  const focusMemoryComposeField = (field: 'kind' | 'summary' | 'body'): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const target = queryable.querySelector?.(
+      `[${MEMORY_FIELD_ATTR}="${field}"]`,
+    ) ?? null;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
   };
 
-  const cancelMemoryCompose = (): void => {
-    memoryCompose = { ...memoryCompose, open: false, submitting: false, error: undefined };
+  const focusMemoryComposeAction = (action: string): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const target = queryable.querySelector?.(
+      `[${DATA_ROUTE_ACTION_ATTR}="${action}"]`,
+    ) ?? null;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const focusMemoryComposeCancel = (): void => {
+    focusMemoryComposeAction(MEMORY_COMPOSE_CANCEL_ACTION);
+  };
+
+  const focusMemoryComposeSave = (): void => {
+    focusMemoryComposeAction(MEMORY_COMPOSE_SUBMIT_ACTION);
+  };
+
+  const focusMemoryComposeDiscardGuard = (): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const guard = queryable.querySelector?.(
+      `[${MEMORY_COMPOSE_DISCARD_GUARD_ATTR}]`,
+    ) ?? null;
+    guard?.focus?.({ preventScroll: true });
+    guard?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const focusMemoryComposeReturnTarget = (
+    origin: typeof memoryComposeReturnFocus,
+  ): void => {
+    if (origin === null) return;
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+      querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
+    };
+    const edit = origin.kind === 'edit'
+      ? Array.from(queryable.querySelectorAll?.(
+          `[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_EDIT_ACTION}"]`,
+        ) ?? []).find(
+          (candidate) =>
+            candidate.getAttribute(MEMORY_ROW_ID_ATTR) === origin.memoryId,
+        ) ?? null
+      : null;
+    const add = queryable.querySelector?.(
+      `[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_ADD_ACTION}"]`,
+    ) ?? null;
+    const lens = queryable.querySelector?.(
+      `[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_LENS_SELECT_ACTION}"]`
+      + `[${MEMORY_LENS_VALUE_ATTR}="memory"]`,
+    ) ?? null;
+    const target = edit ?? add ?? lens;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const focusMemoryEditAction = (memoryId: string): void => {
+    const queryable = routeRoot as unknown as {
+      querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
+    };
+    const target = Array.from(queryable.querySelectorAll?.(
+      `[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_EDIT_ACTION}"]`,
+    ) ?? []).find(
+      (candidate) => candidate.getAttribute(MEMORY_ROW_ID_ATTR) === memoryId,
+    ) ?? null;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const captureMemoryComposeBaseline = (): void => {
+    syncMemoryComposeFromDom();
+    memoryComposeBaseline = memoryCompose.open
+      ? memoryComposeFingerprint(memoryCompose)
+      : null;
+    memoryComposeDiscardGuardOpen = false;
+  };
+
+  const retireMemoryComposeDraft = (): void => {
+    memoryComposeBaseline = null;
+    memoryComposeDiscardGuardOpen = false;
+    memoryComposeReturnFocus = null;
+  };
+
+  const closeMemoryComposeDiscardGuard = (): void => {
+    if (!memoryComposeDiscardGuardOpen) return;
+    memoryComposeDiscardGuardOpen = false;
     render();
+    focusMemoryComposeCancel();
+  };
+
+  const showMemoryComposeDiscardGuard = (): void => {
+    if (memoryComposeDiscardGuardOpen) {
+      focusMemoryComposeDiscardGuard();
+      return;
+    }
+    memoryComposeDiscardGuardOpen = true;
+    render();
+    focusMemoryComposeDiscardGuard();
+  };
+
+  const hasUnsavedMemoryCompose = (): boolean => {
+    syncMemoryComposeFromDom();
+    return memoryCompose.open
+      && memoryComposeBaseline !== null
+      && memoryComposeFingerprint(memoryCompose) !== memoryComposeBaseline;
+  };
+
+  const openMemoryCompose = (): void => {
+    if (memoryCompose.submitting) return;
+    memoryComposeReturnFocus = { kind: 'add' };
+    memoryCompose = { open: true, mode: 'create', kind: '', summary: '', body: '', submitting: false };
+    memoryDetailOpenSeq += 1;
+    memoryDetail = null;
+    memoryDetailReturnId = null;
+    memoryPendingDeleteId = undefined;
+    render();
+    captureMemoryComposeBaseline();
+    focusMemoryComposeField('kind');
+  };
+
+  const cancelMemoryCompose = (discardChanges = false): void => {
+    if (!memoryCompose.open || memoryCompose.submitting) return;
+    if (memoryComposeDiscardGuardOpen && !discardChanges) {
+      closeMemoryComposeDiscardGuard();
+      return;
+    }
+    if (!discardChanges && hasUnsavedMemoryCompose()) {
+      showMemoryComposeDiscardGuard();
+      return;
+    }
+    const returnFocus = memoryComposeReturnFocus;
+    memoryCompose = { ...memoryCompose, open: false, submitting: false, error: undefined };
+    retireMemoryComposeDraft();
+    render();
+    focusMemoryComposeReturnTarget(returnFocus);
   };
 
   /** Open the compose form in EDIT mode, prefilled from the full entry
    *  (`memory.get` resolves the body). Own (`user_self`) rows only. */
   const openMemoryEdit = async (memory_id: string): Promise<void> => {
+    if (memoryEditOpeningId !== null) {
+      focusMemoryEditAction(memoryEditOpeningId);
+      return;
+    }
     const getCaller = opts.memoryGetCaller;
     if (getCaller === undefined) return;
+    const seq = ++memoryEditOpenSeq;
+    memoryEditOpeningId = memory_id;
+    memoryEditError = null;
     memoryPendingDeleteId = undefined;
+    render();
+    focusMemoryEditAction(memory_id);
     try {
       const entry = await getCaller({ memory_id });
-      if (disposed) return;
-      if (entry.origin_actor !== 'user_self') return; // view-only rows aren't editable
+      if (
+        disposed
+        || seq !== memoryEditOpenSeq
+        || memoryEditOpeningId !== memory_id
+      ) return;
+      if (entry.origin_actor !== 'user_self') {
+        memoryEditOpeningId = null;
+        memoryEditError = {
+          memoryId: memory_id,
+          message: 'Only your own memories can be edited.',
+        };
+        render();
+        focusMemoryEditAction(memory_id);
+        return;
+      }
       memoryCompose = {
         open: true,
         mode: 'edit',
@@ -6494,16 +8957,34 @@ export const bootstrapDataRoute = (
         body: entry.body ?? '',
         submitting: false,
       };
+      memoryEditOpeningId = null;
+      memoryEditError = null;
+      memoryComposeReturnFocus = { kind: 'edit', memoryId: memory_id };
+      memoryDetailOpenSeq += 1;
       memoryDetail = null;
+      memoryDetailReturnId = null;
       render();
+      captureMemoryComposeBaseline();
+      focusMemoryComposeField('kind');
     } catch (err) {
-      if (disposed) return;
-      memoryError = errMessage(err);
+      if (
+        disposed
+        || seq !== memoryEditOpenSeq
+        || memoryEditOpeningId !== memory_id
+      ) return;
+      memoryEditOpeningId = null;
+      memoryEditError = { memoryId: memory_id, message: errMessage(err) };
       render();
+      focusMemoryEditAction(memory_id);
     }
   };
 
   const submitMemoryCompose = async (): Promise<void> => {
+    if (
+      !memoryCompose.open
+      || memoryCompose.submitting
+      || memoryComposeDiscardGuardOpen
+    ) return;
     syncMemoryComposeFromDom();
     if (memoryCompose.kind.trim().length === 0) {
       memoryCompose = { ...memoryCompose, error: 'Kind is required.' };
@@ -6522,6 +9003,7 @@ export const bootstrapDataRoute = (
     const editId = memoryCompose.editId;
     memoryCompose = { ...memoryCompose, submitting: true, error: undefined };
     render();
+    focusMemoryComposeSave();
     try {
       if (isEdit && editId !== undefined && updateCaller !== undefined) {
         await updateCaller({ memory_id: editId, kind: draft.kind, summary: draft.summary, body: draft.body });
@@ -6533,66 +9015,215 @@ export const bootstrapDataRoute = (
         });
       }
       if (disposed) return;
+      const returnFocus = memoryComposeReturnFocus;
       memoryCompose = { open: false, mode: 'create', kind: '', summary: '', body: '', submitting: false };
+      retireMemoryComposeDraft();
       pendingLoadPromise = refreshActive();
       await pendingLoadPromise;
+      if (!disposed) focusMemoryComposeReturnTarget(returnFocus);
     } catch (err) {
       if (disposed) return;
       memoryCompose = { ...memoryCompose, submitting: false, error: errMessage(err) };
       render();
+      focusMemoryComposeSave();
     }
+  };
+
+  const focusMemoryDetailHeading = (): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const heading = queryable.querySelector?.(
+      `[${MEMORY_DETAIL_HEADING_ATTR}]`,
+    ) ?? null;
+    heading?.focus?.({ preventScroll: true });
+    heading?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const focusMemoryDetailReturnTarget = (memoryId: string | null): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+      querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
+    };
+    const view = memoryId === null
+      ? null
+      : Array.from(queryable.querySelectorAll?.(
+          `[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_OPEN_ACTION}"]`,
+        ) ?? []).find(
+          (candidate) => candidate.getAttribute(MEMORY_ROW_ID_ATTR) === memoryId,
+        ) ?? null;
+    const add = queryable.querySelector?.(
+      `[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_ADD_ACTION}"]`,
+    ) ?? null;
+    const target = view ?? add;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
   };
 
   /** Open the detail view; lazy-loads the full body via `memory.get`. */
   const openMemoryDetail = async (memory_id: string): Promise<void> => {
+    if (
+      memoryDetail?.memory_id === memory_id
+      && memoryDetail.loading
+    ) {
+      focusMemoryDetailHeading();
+      return;
+    }
     const getCaller = opts.memoryGetCaller;
     if (getCaller === undefined) return;
+    const seq = ++memoryDetailOpenSeq;
     memoryPendingDeleteId = undefined;
+    memoryDetailReturnId = memory_id;
     memoryDetail = { memory_id, loading: true };
     render();
+    focusMemoryDetailHeading();
     try {
       const entry = await getCaller({ memory_id });
-      if (disposed || memoryDetail?.memory_id !== memory_id) return;
+      if (
+        disposed
+        || seq !== memoryDetailOpenSeq
+        || memoryDetail?.memory_id !== memory_id
+      ) return;
       memoryDetail = { memory_id, loading: false, entry };
       render();
+      focusMemoryDetailHeading();
     } catch (err) {
-      if (disposed || memoryDetail?.memory_id !== memory_id) return;
+      if (
+        disposed
+        || seq !== memoryDetailOpenSeq
+        || memoryDetail?.memory_id !== memory_id
+      ) return;
       memoryDetail = { memory_id, loading: false, error: errMessage(err) };
       render();
+      focusMemoryDetailHeading();
     }
   };
 
   const closeMemoryDetail = (): void => {
+    if (memoryDeletingId !== null) {
+      focusMemoryDeleteConfirm(memoryDeletingId);
+      return;
+    }
+    const returnId = memoryDetailReturnId ?? memoryDetail?.memory_id ?? null;
+    memoryDetailOpenSeq += 1;
     memoryDetail = null;
+    memoryDetailReturnId = null;
     memoryPendingDeleteId = undefined;
     render();
+    focusMemoryDetailReturnTarget(returnId);
+  };
+
+  const focusMemoryRowAction = (action: string, memoryId: string): void => {
+    const queryable = routeRoot as unknown as {
+      querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
+    };
+    const target = Array.from(queryable.querySelectorAll?.(
+      `[${DATA_ROUTE_ACTION_ATTR}="${action}"]`,
+    ) ?? []).find(
+      (candidate) => candidate.getAttribute(MEMORY_ROW_ID_ATTR) === memoryId,
+    ) ?? null;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const focusMemoryDeleteConfirm = (memoryId: string): void => {
+    focusMemoryRowAction(MEMORY_DELETE_CONFIRM_ACTION, memoryId);
+  };
+
+  const focusMemoryOriginFilter = (filter: MemoryOriginFilter): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const target = queryable.querySelector?.(
+      `[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_FILTER_ACTION}"]`
+      + `[${MEMORY_FILTER_VALUE_ATTR}="${filter}"]`,
+    ) ?? null;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const focusMemoryDeleteCompletion = (): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const add = queryable.querySelector?.(
+      `[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_ADD_ACTION}"]`,
+    ) ?? null;
+    const filter = queryable.querySelector?.(
+      `[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_FILTER_ACTION}"]`
+      + `[${MEMORY_FILTER_VALUE_ATTR}="${memoryOriginFilter}"]`,
+    ) ?? null;
+    const lens = queryable.querySelector?.(
+      `[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_LENS_SELECT_ACTION}"]`
+      + `[${MEMORY_LENS_VALUE_ATTR}="memory"]`,
+    ) ?? null;
+    const target = add ?? filter ?? lens;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
   };
 
   const requestMemoryDelete = (memory_id: string): void => {
+    if (memoryDeletingId !== null) {
+      focusMemoryDeleteConfirm(memoryDeletingId);
+      return;
+    }
     memoryPendingDeleteId = memory_id;
+    memoryDeleteError = null;
+    memoryError = undefined;
     render();
+    focusMemoryDeleteConfirm(memory_id);
   };
 
   const cancelMemoryDelete = (): void => {
+    if (memoryDeletingId !== null) {
+      focusMemoryDeleteConfirm(memoryDeletingId);
+      return;
+    }
+    const memoryId = memoryPendingDeleteId;
     memoryPendingDeleteId = undefined;
+    memoryDeleteError = null;
     render();
+    if (memoryId !== undefined) {
+      focusMemoryRowAction(MEMORY_DELETE_ACTION, memoryId);
+    }
   };
 
   const confirmMemoryDelete = async (memory_id: string): Promise<void> => {
+    if (memoryDeletingId !== null) {
+      focusMemoryDeleteConfirm(memoryDeletingId);
+      return;
+    }
     const deleteCaller = opts.memoryDeleteCaller;
     if (deleteCaller === undefined) return;
-    memoryPendingDeleteId = undefined;
+    memoryPendingDeleteId = memory_id;
+    memoryDeletingId = memory_id;
+    memoryDeleteError = null;
+    memoryError = undefined;
     opaqueMutationsInFlight += 1;
+    render();
+    focusMemoryDeleteConfirm(memory_id);
     try {
       await deleteCaller({ memory_id });
       if (disposed) return;
-      if (memoryDetail?.memory_id === memory_id) memoryDetail = null;
+      if (memoryDetail?.memory_id === memory_id) {
+        memoryDetailOpenSeq += 1;
+        memoryDetail = null;
+        memoryDetailReturnId = null;
+      }
+      memoryPendingDeleteId = undefined;
+      memoryDeletingId = null;
+      memoryDeleteError = null;
       pendingLoadPromise = refreshActive();
+      focusMemoryDeleteCompletion();
       await pendingLoadPromise;
+      if (!disposed) focusMemoryDeleteCompletion();
     } catch (err) {
       if (disposed) return;
-      memoryError = errMessage(err);
+      memoryDeletingId = null;
+      memoryPendingDeleteId = memory_id;
+      memoryDeleteError = { memoryId: memory_id, message: errMessage(err) };
       render();
+      focusMemoryDeleteConfirm(memory_id);
     } finally {
       opaqueMutationsInFlight -= 1;
     }
@@ -6601,32 +9232,142 @@ export const bootstrapDataRoute = (
   // D-198 Slice 3 — bulk import (paste JSON → memory.import).
 
   const syncMemoryImportFromDom = (): void => {
-    if (!memoryImport.open) return;
-    const el = routeRoot.querySelector(
+    if (!memoryImport.open || memoryImport.submitting) return;
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => Element | null;
+    };
+    const el = queryable.querySelector?.(
       `[${MEMORY_FIELD_ATTR}="import"]`,
-    ) as HTMLTextAreaElement | null;
-    if (el !== null) memoryImport = { ...memoryImport, text: el.value };
+    ) as HTMLTextAreaElement | null | undefined;
+    if (el !== null && el !== undefined) {
+      memoryImport = { ...memoryImport, text: el.value };
+    }
+  };
+
+  const focusMemoryImportAction = (action: string): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const target = queryable.querySelector?.(
+      `[${DATA_ROUTE_ACTION_ATTR}="${action}"]`,
+    ) ?? null;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const focusMemoryImportField = (): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const target = queryable.querySelector?.(
+      `[${MEMORY_FIELD_ATTR}="import"]`,
+    ) ?? null;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const focusMemoryImportClose = (): void => {
+    focusMemoryImportAction(MEMORY_IMPORT_CANCEL_ACTION);
+  };
+
+  const focusMemoryImportSubmit = (): void => {
+    focusMemoryImportAction(MEMORY_IMPORT_SUBMIT_ACTION);
+  };
+
+  const focusMemoryImportOpener = (): void => {
+    focusMemoryImportAction(MEMORY_IMPORT_ACTION);
+  };
+
+  const focusMemoryImportDiscardGuard = (): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const guard = queryable.querySelector?.(
+      `[${MEMORY_IMPORT_DISCARD_GUARD_ATTR}]`,
+    ) ?? null;
+    guard?.focus?.({ preventScroll: true });
+    guard?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const captureMemoryImportBaseline = (): void => {
+    syncMemoryImportFromDom();
+    memoryImportBaseline = memoryImport.open ? memoryImport.text : null;
+    memoryImportDiscardGuardOpen = false;
+  };
+
+  const retireMemoryImportDraft = (): void => {
+    memoryImportBaseline = null;
+    memoryImportDiscardGuardOpen = false;
+  };
+
+  const closeMemoryImportDiscardGuard = (): void => {
+    if (!memoryImportDiscardGuardOpen) return;
+    memoryImportDiscardGuardOpen = false;
+    render();
+    focusMemoryImportClose();
+  };
+
+  const showMemoryImportDiscardGuard = (): void => {
+    if (memoryImportDiscardGuardOpen) {
+      focusMemoryImportDiscardGuard();
+      return;
+    }
+    memoryImportDiscardGuardOpen = true;
+    render();
+    focusMemoryImportDiscardGuard();
+  };
+
+  const hasUnsavedMemoryImport = (): boolean => {
+    syncMemoryImportFromDom();
+    return memoryImport.open
+      && memoryImportBaseline !== null
+      && memoryImport.text !== memoryImportBaseline;
   };
 
   const openMemoryImport = (): void => {
     memoryImport = { open: true, text: '', submitting: false };
     memoryCompose = { ...memoryCompose, open: false };
+    memoryDetailOpenSeq += 1;
     memoryDetail = null;
+    memoryDetailReturnId = null;
     memoryPendingDeleteId = undefined;
     render();
+    captureMemoryImportBaseline();
+    focusMemoryImportField();
   };
 
-  const cancelMemoryImport = (): void => {
+  const cancelMemoryImport = (discardChanges = false): void => {
+    if (!memoryImport.open) return;
+    if (memoryImport.submitting) {
+      focusMemoryImportSubmit();
+      return;
+    }
+    if (memoryImportDiscardGuardOpen && !discardChanges) {
+      closeMemoryImportDiscardGuard();
+      return;
+    }
+    if (!discardChanges && hasUnsavedMemoryImport()) {
+      showMemoryImportDiscardGuard();
+      return;
+    }
     memoryImport = { open: false, text: '', submitting: false };
+    retireMemoryImportDraft();
     render();
+    focusMemoryImportOpener();
   };
 
   const submitMemoryImport = async (): Promise<void> => {
+    if (
+      !memoryImport.open
+      || memoryImport.submitting
+      || memoryImportDiscardGuardOpen
+    ) return;
     syncMemoryImportFromDom();
     const importCaller = opts.memoryImportCaller;
     if (importCaller === undefined) {
       memoryImport = { ...memoryImport, error: 'Memory import is not wired in this host.' };
       render();
+      focusMemoryImportSubmit();
       return;
     }
     // Accept `{ entries: [...] }` (an export envelope) or a bare `[...]` array.
@@ -6641,26 +9382,34 @@ export const bootstrapDataRoute = (
     } catch {
       memoryImport = { ...memoryImport, error: 'Could not parse JSON — paste a valid export.' };
       render();
+      focusMemoryImportSubmit();
       return;
     }
     if (!Array.isArray(entries)) {
       memoryImport = { ...memoryImport, error: 'Expected an "entries" array (or a bare array).' };
       render();
+      focusMemoryImportSubmit();
       return;
     }
     memoryImport = { ...memoryImport, submitting: true, error: undefined, result: undefined };
     render();
+    focusMemoryImportSubmit();
     try {
       const result = await importCaller({ entries: entries as MemoryImportRequest['entries'] });
       if (disposed) return;
       // Keep the panel open showing the tally; the feed refreshes underneath.
       memoryImport = { ...memoryImport, submitting: false, result };
+      memoryImportBaseline = memoryImport.text;
+      memoryImportDiscardGuardOpen = false;
       pendingLoadPromise = refreshActive();
+      focusMemoryImportSubmit();
       await pendingLoadPromise;
+      if (!disposed) focusMemoryImportSubmit();
     } catch (err) {
       if (disposed) return;
       memoryImport = { ...memoryImport, submitting: false, error: errMessage(err) };
       render();
+      focusMemoryImportSubmit();
     }
   };
 
@@ -6693,18 +9442,34 @@ export const bootstrapDataRoute = (
     clickDownload(`data:application/json;charset=utf-8,${encodeURIComponent(json)}`);
   };
 
+  const focusMemoryExport = (): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const target = queryable.querySelector?.(
+      `[${DATA_ROUTE_ACTION_ATTR}="${MEMORY_EXPORT_ACTION}"]`,
+    ) ?? null;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+  };
+
   /** Memory-native export (§ export): walk the WHOLE feed under the active
    *  origin filter, resolve each body-carrying row's full body via `memory.get`
    *  (the feed ships only previews), assemble a `{ entries }` payload that
    *  `memory.import` round-trips, and download it. */
   const exportMemory = async (): Promise<void> => {
     const listCaller = opts.memoryListCaller;
-    if (listCaller === undefined || memoryExporting) return;
+    if (listCaller === undefined) return;
+    if (memoryExporting) {
+      focusMemoryExport();
+      return;
+    }
     const EXPORT_PAGE_SIZE = 200;
     const EXPORT_MAX_PAGES = 200; // hard walk cap (≤ 40k entries) — never loops
     memoryExporting = true;
     memoryError = undefined;
     render();
+    focusMemoryExport();
     try {
       const actors = memoryFilterActors(memoryOriginFilter);
       const listed: MemoryListEntry[] = [];
@@ -6755,6 +9520,7 @@ export const bootstrapDataRoute = (
       if (!disposed) {
         memoryExporting = false;
         render();
+        focusMemoryExport();
       }
     }
   };
@@ -6770,9 +9536,206 @@ export const bootstrapDataRoute = (
     return formDefinitionForKind(workEntityState.kind, activeSource);
   };
 
+  const focusWorkEntityDialog = (): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const dialog = queryable.querySelector?.('.work-entity-dialog') ?? null;
+    const form = dialog?.querySelector(
+      '.work-entity-dialog-form',
+    ) as HTMLElement | null;
+    const target = (form?.querySelector(
+      'input:not([type="hidden"]):not([disabled]):not([readonly]), '
+      + 'textarea:not([disabled]):not([readonly]), select:not([disabled])',
+    ) ?? dialog?.querySelector('.work-entity-dialog-title') ?? null) as (
+      HTMLElement | null
+    );
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const focusWorkEntityDialogField = (field: string): void => {
+    const queryable = routeRoot as unknown as {
+      querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
+    };
+    const owners = Array.from(queryable.querySelectorAll?.(
+      '.work-entity-dialog [data-form-field]',
+    ) ?? []).filter(
+      (candidate) => candidate.getAttribute('data-form-field') === field,
+    );
+    const direct = owners.find((candidate) =>
+      candidate.getAttribute('type') !== 'hidden'
+      && ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(candidate.tagName),
+    );
+    const nested = owners[0]?.closest('.form-renderer-row')?.querySelector(
+      'input:not([type="hidden"]):not([disabled]), textarea:not([disabled]), '
+      + 'select:not([disabled]), button:not([disabled])',
+    ) as HTMLElement | null | undefined;
+    const target = direct ?? nested ?? null;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const focusWorkEntityDialogReturnTarget = (): void => {
+    const origin = workEntityDialogReturnFocus;
+    workEntityDialogReturnFocus = null;
+    if (origin === null) return;
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+      querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
+    };
+    const action = origin.mode === 'create'
+      ? 'open-create-work-entity-dialog'
+      : origin.kind === 'booking'
+        ? 'edit-booking-detail'
+        : 'open-edit-work-entity';
+    const exact = Array.from(queryable.querySelectorAll?.(
+      `[${SHARED_ACTION_ATTR}="${action}"]`,
+    ) ?? []).find(
+      (candidate) =>
+        candidate.getAttribute('data-kind') === origin.kind
+        && (
+          origin.mode === 'create'
+          || candidate.getAttribute('data-entity-id') === origin.id
+        ),
+    ) ?? null;
+    const search = queryable.querySelector?.(
+      `input[${SHARED_ACTION_ATTR}="search-work-entities"]`
+      + `[data-kind="${origin.kind}"]`,
+    ) ?? null;
+    const tab = queryable.querySelector?.(
+      `[${DATA_ROUTE_TAB_ATTR}="${origin.kind}"]`,
+    ) ?? null;
+    const target = exact ?? search ?? tab;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const captureWorkEntityDialogBaseline = (): void => {
+    // Canonical defaults can be absent from a stored row but materialized by
+    // the renderer (for example Task priority). Decode the first paint through
+    // the same seam used at dismissal before calling it the clean baseline.
+    syncWorkEntityDialogFromDom();
+    workEntityDialogBaseline = workEntityState.dialog === null
+      ? null
+      : workEntityDialogFingerprint(workEntityState.dialog);
+    workEntityDiscardGuardOpen = false;
+    workEntityDiscardReturnFocus = null;
+  };
+
+  const retireWorkEntityDialogDraft = (): void => {
+    workEntityDialogBaseline = null;
+    workEntityDiscardGuardOpen = false;
+    workEntityDiscardReturnFocus = null;
+  };
+
+  const captureWorkEntityDiscardReturnFocus = (): void => {
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    const fieldOwner = active?.closest?.('[data-form-field]') as
+      | HTMLElement
+      | null
+      | undefined;
+    const field = active?.getAttribute?.('data-form-field')
+      ?? fieldOwner?.getAttribute('data-form-field')
+      ?? undefined;
+    workEntityDiscardReturnFocus = active?.classList?.contains(
+      'work-entity-dialog-close',
+    ) === true
+      ? { kind: 'close' }
+      : active?.classList?.contains('work-entity-dialog-cancel') === true
+        ? { kind: 'cancel' }
+        : field !== undefined
+          ? { kind: 'field', field }
+          : { kind: 'form' };
+  };
+
+  const focusWorkEntityDiscardReturnTarget = (): void => {
+    const owner = workEntityDiscardReturnFocus;
+    workEntityDiscardReturnFocus = null;
+    if (owner?.kind === 'close' || owner?.kind === 'cancel') {
+      const selector = owner.kind === 'close'
+        ? '.work-entity-dialog-close'
+        : '.work-entity-dialog-cancel';
+      const queryable = routeRoot as unknown as {
+        querySelector?: (selector: string) => HTMLElement | null;
+      };
+      const target = queryable.querySelector?.(selector) ?? null;
+      target?.focus?.({ preventScroll: true });
+      return;
+    }
+    if (owner?.kind === 'field' && owner.field !== undefined) {
+      focusWorkEntityDialogField(owner.field);
+      return;
+    }
+    focusWorkEntityDialog();
+  };
+
+  const focusWorkEntityDiscardGuard = (): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const guard = queryable.querySelector?.(
+      `[${WORK_ENTITY_DIALOG_DISCARD_GUARD_ATTR}]`,
+    ) ?? null;
+    guard?.focus?.({ preventScroll: true });
+    guard?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const closeWorkEntityDiscardGuard = (): void => {
+    if (!workEntityDiscardGuardOpen) return;
+    workEntityDiscardGuardOpen = false;
+    render();
+    focusWorkEntityDiscardReturnTarget();
+  };
+
+  const showWorkEntityDiscardGuard = (): void => {
+    if (workEntityDiscardGuardOpen) {
+      focusWorkEntityDiscardGuard();
+      return;
+    }
+    captureWorkEntityDiscardReturnFocus();
+    workEntityDiscardGuardOpen = true;
+    render();
+    focusWorkEntityDiscardGuard();
+  };
+
+  const hasUnsavedWorkEntityDialog = (): boolean => {
+    syncWorkEntityDialogFromDom();
+    return workEntityState.dialog !== null
+      && workEntityDialogBaseline !== null
+      && workEntityDialogFingerprint(workEntityState.dialog)
+        !== workEntityDialogBaseline;
+  };
+
+  const closeWorkEntityDialog = (discardChanges = false): void => {
+    if (
+      workEntityState.dialog === null
+      || workEntityState.dialog.submitting === true
+    ) return;
+    if (workEntityDiscardGuardOpen && !discardChanges) {
+      closeWorkEntityDiscardGuard();
+      return;
+    }
+    if (!discardChanges && hasUnsavedWorkEntityDialog()) {
+      showWorkEntityDiscardGuard();
+      return;
+    }
+    retireRunVerification();
+    workEntityDialogOpenSeq += 1;
+    pendingWorkEntityDialogOpen = null;
+    loadingWorkEntityDetail = false;
+    workEntityState = closeDialogTransition(workEntityState);
+    retireWorkEntityDialogDraft();
+    syncDataHash();
+    render();
+    focusWorkEntityDialogReturnTarget();
+  };
+
   const openCreateWorkEntityDialog = (): void => {
     retireRunVerification();
     loadingWorkEntityDetail = false;
+    pendingWorkEntityDialogOpen = null;
+    workEntityDialogReturnFocus = null;
     const sourceId = resolveCreateDialogSourceId(
       workEntityState.kind,
       workEntityState.selected_source_id,
@@ -6788,18 +9751,26 @@ export const bootstrapDataRoute = (
       sourceId,
       initialValuesForKind(workEntityState.kind),
     );
+    workEntityDialogReturnFocus = {
+      mode: 'create',
+      kind: workEntityState.kind,
+    };
     syncDataHash(); // create has no entity id → drops any prior edit id
     render();
+    captureWorkEntityDialogBaseline();
+    focusWorkEntityDialog();
   };
 
   const openEditWorkEntityDialog = async (
     kind: WorkEntityKind,
     id: string,
   ): Promise<void> => {
+    if (
+      pendingWorkEntityDialogOpen?.kind === kind
+      && pendingWorkEntityDialogOpen.id === id
+    ) return;
     retireRunVerificationForDifferentItem(kind, id);
     const seq = ++workEntityDialogOpenSeq;
-    loadingWorkEntityDetail = activeLogsReturn !== undefined;
-    if (loadingWorkEntityDetail) render();
     if (kind !== 'booking') {
       bookingDetailSeq += 1;
       bookingDetailId = null;
@@ -6812,6 +9783,10 @@ export const bootstrapDataRoute = (
       activeTab = kind;
       workEntityState = selectKindTransition(workEntityState, kind);
     }
+    pendingWorkEntityDialogOpen = { kind, id };
+    workEntityDialogReturnFocus = { mode: 'edit', kind, id };
+    loadingWorkEntityDetail = true;
+    render();
     let entity: WorkEntity | null =
       workEntities.find((row) => row._kind === kind && row.id === id) ?? null;
     if (opts.workEntityGetCaller !== undefined) {
@@ -6820,9 +9795,11 @@ export const bootstrapDataRoute = (
         entity = response.entity;
       } catch (err) {
         if (disposed || seq !== workEntityDialogOpenSeq) return;
+        pendingWorkEntityDialogOpen = null;
         loadingWorkEntityDetail = false;
         errors = { ...errors, work_entities: errMessage(err) };
         render();
+        focusWorkEntityDialogReturnTarget();
         return;
       }
     }
@@ -6830,9 +9807,11 @@ export const bootstrapDataRoute = (
     // in flight → don't install this now-stale dialog / URL.
     if (disposed || seq !== workEntityDialogOpenSeq || activeTab !== kind) return;
     if (entity === null) {
+      pendingWorkEntityDialogOpen = null;
       loadingWorkEntityDetail = false;
       errors = { ...errors, work_entities: `No ${kind} was returned for ${id}.` };
       render();
+      focusWorkEntityDialogReturnTarget();
       return;
     }
     workEntityState = openEditDialogTransition(
@@ -6850,9 +9829,12 @@ export const bootstrapDataRoute = (
         ...extensionValues,
       });
     }
+    pendingWorkEntityDialogOpen = null;
     loadingWorkEntityDetail = false;
     syncDataHash(); // the edit dialog's entity is now the addressable id
     render();
+    captureWorkEntityDialogBaseline();
+    focusWorkEntityDialog();
   };
 
   const openBookingDetail = async (id: string): Promise<void> => {
@@ -6863,6 +9845,7 @@ export const bootstrapDataRoute = (
       workEntityState = selectKindTransition(workEntityState, 'booking');
     }
     workEntityState = closeDialogTransition(workEntityState);
+    retireWorkEntityDialogDraft();
     bookingDetailId = id;
     bookingDetail = null;
     bookingDetailError = null;
@@ -6918,6 +9901,7 @@ export const bootstrapDataRoute = (
     loadingBookingDetail = false;
     resetBookingManageLinkState();
     workEntityState = closeDialogTransition(workEntityState);
+    retireWorkEntityDialogDraft();
     syncDataHash();
     render();
   };
@@ -7013,6 +9997,50 @@ export const bootstrapDataRoute = (
     workEntityState = setDialogValuesTransition(workEntityState, values);
   };
 
+  const focusWorkEntityArrayItem = (
+    field: string,
+    index: number,
+  ): void => {
+    const queryable = routeRoot as unknown as {
+      querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
+    };
+    const owner = Array.from(queryable.querySelectorAll?.(
+      '[data-form-array-item][data-form-array-index]',
+    ) ?? []).find(
+      (candidate) =>
+        candidate.getAttribute('data-form-array-item') === field
+        && candidate.getAttribute('data-form-array-index') === String(index),
+    ) ?? null;
+    const direct = owner !== null
+      && owner.getAttribute('type') !== 'hidden'
+      && ['INPUT', 'TEXTAREA', 'SELECT', 'BUTTON'].includes(owner.tagName)
+        ? owner
+        : null;
+    const picker = owner?.closest('[data-ref-picker]')?.querySelector(
+      '[data-ref-picker-input]',
+    ) as HTMLElement | null | undefined;
+    const nested = owner?.querySelector(
+      'input:not([type="hidden"]):not([disabled]), textarea:not([disabled]), '
+      + 'select:not([disabled]), button:not([disabled])',
+    ) as HTMLElement | null | undefined;
+    const target = direct ?? picker ?? nested ?? null;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const focusWorkEntityArrayAdd = (field: string): void => {
+    const queryable = routeRoot as unknown as {
+      querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
+    };
+    const target = Array.from(queryable.querySelectorAll?.(
+      '[data-form-array-add]',
+    ) ?? []).find(
+      (candidate) => candidate.getAttribute('data-form-array-add') === field,
+    ) ?? null;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+  };
+
   /** Append an empty row to a `data.contact` ref array (note/project
    *  related contacts). We snapshot the live DOM first so already-picked
    *  rows + other typed inputs survive the re-render, then re-render
@@ -7023,10 +10051,12 @@ export const bootstrapDataRoute = (
     if (workEntityState.dialog === null) return;
     const current = workEntityState.dialog.values[field];
     const next = Array.isArray(current) ? [...current, ''] : [''];
+    const addedIndex = next.length - 1;
     setWorkEntityDialogValues({
       ...workEntityState.dialog.values,
       [field]: next,
     });
+    focusWorkEntityArrayItem(field, addedIndex);
   };
 
   const removeWorkEntityArrayItem = (field: string, index: number): void => {
@@ -7036,15 +10066,24 @@ export const bootstrapDataRoute = (
     if (workEntityState.dialog === null) return;
     const current = workEntityState.dialog.values[field];
     if (!Array.isArray(current)) return;
+    if (index >= current.length) return;
     const next = current.filter((_, i) => i !== index);
     setWorkEntityDialogValues({
       ...workEntityState.dialog.values,
       [field]: next,
     });
+    if (next.length === 0) {
+      focusWorkEntityArrayAdd(field);
+    } else {
+      focusWorkEntityArrayItem(field, Math.min(index, next.length - 1));
+    }
   };
 
   const confirmWorkEntityDialog = async (): Promise<void> => {
-    if (workEntityState.dialog === null) return;
+    if (
+      workEntityState.dialog === null
+      || workEntityState.dialog.submitting === true
+    ) return;
     if (opts.workEntityUpsertCaller === undefined) {
       workEntityState = setDialogSubmitErrorTransition(
         workEntityState,
@@ -7057,11 +10096,15 @@ export const bootstrapDataRoute = (
     const definition = activeWorkEntityDefinition();
     const fieldErrors = validateForm(definition, workEntityState.dialog.values);
     if (fieldErrors.length > 0) {
+      const firstInvalidField = fieldErrors[0]?.field;
       workEntityState = setDialogErrorsTransition(
         workEntityState,
         validationMap(fieldErrors),
       );
       render();
+      if (firstInvalidField !== undefined) {
+        focusWorkEntityDialogField(firstInvalidField);
+      }
       return;
     }
 
@@ -7090,12 +10133,14 @@ export const bootstrapDataRoute = (
       workEntityState = closeDialogTransition(
         setDialogSubmittingTransition(workEntityState, false),
       );
+      retireWorkEntityDialogDraft();
       syncDataHash(); // dialog closed → drop the entity id from the URL
       pendingLoadPromise = refreshActive();
       await pendingLoadPromise;
       if (!disposed && request.kind === 'booking' && bookingDetailId !== null) {
         await openBookingDetail(bookingDetailId);
       }
+      if (!disposed) focusWorkEntityDialogReturnTarget();
     } catch (err) {
       if (disposed) return;
       workEntityState = setDialogSubmittingTransition(workEntityState, false);
@@ -7126,6 +10171,7 @@ export const bootstrapDataRoute = (
         && workEntityState.dialog.entity_id === id
       ) {
         workEntityState = closeDialogTransition(workEntityState);
+        retireWorkEntityDialogDraft();
         syncDataHash();
       }
       if (kind === 'booking' && bookingDetailId === id) {
@@ -7147,7 +10193,160 @@ export const bootstrapDataRoute = (
     }
   };
 
+  const focusContactDialogField = (
+    field: keyof ContactDialogValues,
+  ): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const input = queryable.querySelector?.(
+      `[${DATA_ROUTE_CONTACT_FIELD_ATTR}="${field}"]`,
+    ) ?? null;
+    input?.focus?.({ preventScroll: true });
+  };
+
+  const focusContactDialogReturnTarget = (): void => {
+    const origin = contactDialogReturnFocus;
+    contactDialogReturnFocus = null;
+    if (origin === null) return;
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+      querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
+    };
+    const trigger = origin.kind === 'create'
+      ? queryable.querySelector?.(
+          `[${DATA_ROUTE_ACTION_ATTR}="open-create-contact"]`,
+        ) ?? null
+      : Array.from(
+          queryable.querySelectorAll?.(
+            `[${DATA_ROUTE_CONTACT_EMAIL_ATTR}]`,
+          ) ?? [],
+        ).find(
+          (candidate) =>
+            candidate.getAttribute(DATA_ROUTE_ACTION_ATTR)
+              === 'open-edit-contact'
+            && candidate.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR)
+              === origin.email,
+        ) ?? null;
+    const fallback = origin.kind === 'edit'
+      ? queryable.querySelector?.(
+          `[${DATA_ROUTE_CONTACT_DETAIL_HEADING_ATTR}]`,
+        ) ?? null
+      : queryable.querySelector?.(
+          `[${DATA_ROUTE_CONTACT_SEARCH_ATTR}]`,
+        ) ?? null;
+    const tab = queryable.querySelector?.(
+      `[${DATA_ROUTE_TAB_ATTR}="contact"]`,
+    ) ?? null;
+    (trigger ?? fallback ?? tab)?.focus?.({ preventScroll: true });
+  };
+
+  const captureContactDialogBaseline = (): void => {
+    syncContactDialogFromDom();
+    contactDialogBaseline = contactDialog === null
+      ? null
+      : contactDialogFingerprint(contactDialog.values);
+    contactDiscardGuardOpen = false;
+    contactDiscardReturnFocus = null;
+  };
+
+  const retireContactDialogDraft = (): void => {
+    contactDialogBaseline = null;
+    contactDiscardGuardOpen = false;
+    contactDiscardReturnFocus = null;
+  };
+
+  const captureContactDiscardReturnFocus = (): void => {
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    const field = active?.getAttribute?.(DATA_ROUTE_CONTACT_FIELD_ATTR);
+    contactDiscardReturnFocus = active?.classList?.contains(
+      'data-dialog-close',
+    ) === true
+      ? { kind: 'close' }
+      : active?.classList?.contains('data-dialog-cancel') === true
+        ? { kind: 'cancel' }
+        : field !== null
+          && field !== undefined
+          && field in emptyContactValues()
+          ? { kind: 'field', field: field as keyof ContactDialogValues }
+          : { kind: 'form' };
+  };
+
+  const focusContactDiscardReturnTarget = (): void => {
+    const owner = contactDiscardReturnFocus;
+    contactDiscardReturnFocus = null;
+    if (owner?.kind === 'close' || owner?.kind === 'cancel') {
+      const selector = owner.kind === 'close'
+        ? '.data-dialog-close'
+        : '.data-dialog-cancel';
+      const queryable = routeRoot as unknown as {
+        querySelector?: (selector: string) => HTMLElement | null;
+      };
+      const target = queryable.querySelector?.(selector) ?? null;
+      target?.focus?.({ preventScroll: true });
+      return;
+    }
+    if (owner?.kind === 'field' && owner.field !== undefined) {
+      focusContactDialogField(owner.field);
+      return;
+    }
+    focusContactDialogField(contactDialog?.mode === 'edit' ? 'name' : 'email');
+  };
+
+  const focusContactDiscardGuard = (): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const guard = queryable.querySelector?.(
+      `[${DATA_ROUTE_CONTACT_DISCARD_GUARD_ATTR}]`,
+    ) ?? null;
+    guard?.focus?.({ preventScroll: true });
+    guard?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const closeContactDiscardGuard = (): void => {
+    if (!contactDiscardGuardOpen) return;
+    contactDiscardGuardOpen = false;
+    render();
+    focusContactDiscardReturnTarget();
+  };
+
+  const showContactDiscardGuard = (): void => {
+    if (contactDiscardGuardOpen) {
+      focusContactDiscardGuard();
+      return;
+    }
+    captureContactDiscardReturnFocus();
+    contactDiscardGuardOpen = true;
+    render();
+    focusContactDiscardGuard();
+  };
+
+  const hasUnsavedContactDialog = (): boolean => {
+    syncContactDialogFromDom();
+    return contactDialog !== null
+      && contactDialogBaseline !== null
+      && contactDialogFingerprint(contactDialog.values) !== contactDialogBaseline;
+  };
+
+  const closeContactDialog = (discardChanges = false): void => {
+    if (contactDialog === null || contactDialog.submitting) return;
+    if (contactDiscardGuardOpen && !discardChanges) {
+      closeContactDiscardGuard();
+      return;
+    }
+    if (!discardChanges && hasUnsavedContactDialog()) {
+      showContactDiscardGuard();
+      return;
+    }
+    contactDialog = null;
+    retireContactDialogDraft();
+    render();
+    focusContactDialogReturnTarget();
+  };
+
   const openCreateContactDialog = (): void => {
+    contactDialogReturnFocus = { kind: 'create' };
     contactDialog = {
       mode: 'create',
       values: emptyContactValues(),
@@ -7156,25 +10355,72 @@ export const bootstrapDataRoute = (
       submit_error: null,
     };
     render();
+    captureContactDialogBaseline();
+    focusContactDialogField('email');
   };
 
   const openEditContactDialog = async (email: string): Promise<void> => {
-    let contact = contacts.find((row) => row.email === email) ?? null;
+    const trimmed = email.trim();
+    if (
+      trimmed.length === 0
+      || openingContactEditEmail !== null
+      || contactDialog !== null
+    ) {
+      return;
+    }
+    const originDetailEmail = contactDetail?.email === trimmed ? trimmed : null;
+    const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    pendingContactEditFocusEmail =
+      activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
+        === 'open-edit-contact'
+      && activeElement.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR) === trimmed
+        ? trimmed
+        : null;
+    const seq = ++contactEditOpenSeq;
+    openingContactEditEmail = trimmed;
+    render();
+
+    let contact = contacts.find((row) => row.email === trimmed) ?? null;
     if (opts.contactGetCaller !== undefined) {
       try {
-        const response = await opts.contactGetCaller({ email });
+        const response = await opts.contactGetCaller({ email: trimmed });
         contact = response.contact;
       } catch (err) {
+        if (
+          disposed
+          || seq !== contactEditOpenSeq
+          || openingContactEditEmail !== trimmed
+          || (
+            originDetailEmail !== null
+            && contactDetail?.email !== originDetailEmail
+          )
+        ) return;
+        openingContactEditEmail = null;
         errors = { ...errors, contacts: errMessage(err) };
         render();
         return;
       }
     }
+    if (
+      disposed
+      || seq !== contactEditOpenSeq
+      || openingContactEditEmail !== trimmed
+      || (
+        originDetailEmail !== null
+        && contactDetail?.email !== originDetailEmail
+      )
+    ) return;
+    openingContactEditEmail = null;
     if (contact === null) {
-      errors = { ...errors, contacts: `No contact was returned for ${email}.` };
+      errors = {
+        ...errors,
+        contacts: `No contact was returned for ${trimmed}.`,
+      };
       render();
       return;
     }
+    pendingContactEditFocusEmail = null;
+    contactDialogReturnFocus = { kind: 'edit', email: trimmed };
     contactDialog = {
       mode: 'edit',
       values: contactValuesFromRecord(contact),
@@ -7183,12 +10429,14 @@ export const bootstrapDataRoute = (
       submit_error: null,
     };
     render();
+    captureContactDialogBaseline();
+    focusContactDialogField('name');
   };
 
   const setContactDialogValues = (
     values: Partial<ContactDialogValues>,
   ): void => {
-    if (contactDialog === null) return;
+    if (contactDialog === null || contactDialog.submitting) return;
     contactDialog = {
       ...contactDialog,
       values: { ...contactDialog.values, ...values },
@@ -7199,7 +10447,10 @@ export const bootstrapDataRoute = (
   };
 
   const syncContactDialogFromDom = (): void => {
-    if (contactDialog === null) return;
+    if (contactDialog === null || contactDialog.submitting) return;
+    // String-only test/host DOMs cannot be decoded; their route state is the
+    // canonical draft because no uncontrolled browser inputs exist there.
+    if (typeof routeRoot.querySelector !== 'function') return;
     const next = { ...contactDialog.values };
     for (const key of Object.keys(next) as Array<keyof ContactDialogValues>) {
       const input = routeRoot.querySelector(
@@ -7211,7 +10462,7 @@ export const bootstrapDataRoute = (
   };
 
   const confirmContactDialog = async (): Promise<void> => {
-    if (contactDialog === null) return;
+    if (contactDialog === null || contactDialog.submitting) return;
     if (opts.contactUpsertCaller === undefined) {
       contactDialog = {
         ...contactDialog,
@@ -7224,15 +10475,23 @@ export const bootstrapDataRoute = (
     if (hasContactErrors(dialogErrors)) {
       contactDialog = { ...contactDialog, errors: dialogErrors };
       render();
+      const firstInvalidField = (
+        ['email', 'name', 'phone', 'company'] as const
+      ).find((field) => dialogErrors[field] !== undefined);
+      if (firstInvalidField !== undefined) {
+        focusContactDialogField(firstInvalidField);
+      }
       return;
     }
+    const submittedValues = { ...contactDialog.values };
     contactDialog = { ...contactDialog, submitting: true, submit_error: null };
     render();
-    const editedEmail = contactDialog.values.email.trim();
+    const editedEmail = submittedValues.email.trim();
     try {
-      await opts.contactUpsertCaller(contactUpsertArgs(contactDialog.values));
+      await opts.contactUpsertCaller(contactUpsertArgs(submittedValues));
       if (disposed) return;
       contactDialog = null;
+      retireContactDialogDraft();
       pendingLoadPromise = refreshActive();
       await pendingLoadPromise;
       if (disposed) return;
@@ -7245,6 +10504,7 @@ export const bootstrapDataRoute = (
       if (contactDetail !== null && contactDetail.email === editedEmail) {
         await openContactDetail(editedEmail);
       }
+      if (!disposed) focusContactDialogReturnTarget();
     } catch (err) {
       if (disposed || contactDialog === null) return;
       contactDialog = {
@@ -7266,6 +10526,8 @@ export const bootstrapDataRoute = (
     try {
       await opts.contactDeleteCaller({ email });
       contactDialog = null;
+      contactDialogReturnFocus = null;
+      retireContactDialogDraft();
       pendingLoadPromise = refreshActive();
       await pendingLoadPromise;
     } catch (err) {
@@ -7285,6 +10547,7 @@ export const bootstrapDataRoute = (
   const resetFormResponseAutomation = (): void => {
     formResponseAutomationSeq += 1;
     formResponseAutomationState = { status: 'idle' };
+    pendingFormResponseAutomationPickerFocus = false;
     closeFormResponseRunModal();
   };
 
@@ -7295,6 +10558,7 @@ export const bootstrapDataRoute = (
       response === null
       || listCaller === undefined
       || opts.recipeExecuteCaller === undefined
+      || formResponseAutomationState.status === 'loading'
     ) {
       return;
     }
@@ -7391,14 +10655,160 @@ export const bootstrapDataRoute = (
     }
   };
 
+  const captureFormResponseEditorBaseline = (): void => {
+    formResponseEditorBaseline = formResponseEditorDraft === null
+      ? null
+      : formResponseEditorFingerprint(formResponseEditorDraft);
+    formResponseDiscardGuardOpen = false;
+    formResponseDiscardReturnId = null;
+    formResponseDiscardPendingTab = null;
+    formResponseDiscardPendingHref = null;
+    pendingFormResponseDiscardTabFocus = null;
+  };
+
+  const retireFormResponseEditorDraft = (): void => {
+    formResponseEditorBaseline = null;
+    formResponseDiscardGuardOpen = false;
+    formResponseDiscardReturnId = null;
+    formResponseDiscardPendingTab = null;
+    formResponseDiscardPendingHref = null;
+    pendingFormResponseDiscardTabFocus = null;
+  };
+
+  const syncFormResponseEditorDraftFromDom = (): void => {
+    const draft = formResponseEditorDraft;
+    if (
+      draft === null
+      || formResponseDetailId !== draft.submissionId
+      || savingFormResponse
+    ) return;
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const values = queryable.querySelector?.(
+      `[${DATA_ROUTE_FORM_RESPONSE_VALUES_ATTR}]`,
+    ) as HTMLTextAreaElement | null | undefined;
+    const email = queryable.querySelector?.(
+      `[${DATA_ROUTE_FORM_RESPONSE_EMAIL_ATTR}]`,
+    ) as HTMLInputElement | null | undefined;
+    const lifecycle = queryable.querySelector?.(
+      `[${DATA_ROUTE_FORM_RESPONSE_STATE_ATTR}]`,
+    ) as HTMLSelectElement | null | undefined;
+    formResponseEditorDraft = {
+      ...draft,
+      valuesText: values?.value ?? draft.valuesText,
+      email: email?.value ?? draft.email,
+      lifecycle: lifecycle?.value ?? draft.lifecycle,
+    };
+  };
+
+  const focusFormResponseBack = (): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const back = queryable.querySelector?.(
+      `[${DATA_ROUTE_ACTION_ATTR}="close-form-response"]`,
+    ) ?? null;
+    back?.focus?.({ preventScroll: true });
+    back?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const focusDataTab = (tab: DataTabId): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const target = queryable.querySelector?.(
+      `[${DATA_ROUTE_TAB_ATTR}="${tab}"]`,
+    ) ?? null;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const focusFormResponseAutomate = (): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const target = queryable.querySelector?.(
+      `[${DATA_ROUTE_FORM_RESPONSE_AUTOMATE_ATTR}]`,
+    ) ?? null;
+    target?.focus?.({ preventScroll: true });
+    target?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const focusFormResponseDiscardGuard = (): void => {
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const guard = queryable.querySelector?.(
+      `[${DATA_ROUTE_FORM_RESPONSE_DISCARD_GUARD_ATTR}]`,
+    ) ?? null;
+    guard?.focus?.({ preventScroll: true });
+    guard?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const closeFormResponseDiscardGuard = (): void => {
+    if (!formResponseDiscardGuardOpen) return;
+    const pendingTab = formResponseDiscardPendingTab;
+    const pendingHref = formResponseDiscardPendingHref;
+    formResponseDiscardGuardOpen = false;
+    formResponseDiscardReturnId = null;
+    formResponseDiscardPendingTab = null;
+    formResponseDiscardPendingHref = null;
+    render();
+    if (pendingTab !== null) focusDataTab(pendingTab);
+    else if (pendingHref !== null) focusFormResponseAutomate();
+    else focusFormResponseBack();
+  };
+
+  const showFormResponseDiscardGuard = (
+    pendingTab: DataTabId | null = null,
+    pendingHref: string | null = null,
+  ): void => {
+    if (formResponseDiscardGuardOpen) {
+      focusFormResponseDiscardGuard();
+      return;
+    }
+    formResponseDiscardReturnId = pendingTab === null && pendingHref === null
+      ? formResponseDetailId
+      : null;
+    formResponseDiscardPendingTab = pendingTab;
+    formResponseDiscardPendingHref = pendingHref;
+    formResponseDiscardGuardOpen = true;
+    render();
+    focusFormResponseDiscardGuard();
+  };
+
+  const hasUnsavedFormResponseEditor = (): boolean => {
+    syncFormResponseEditorDraftFromDom();
+    return formResponseEditorDraft !== null
+      && formResponseEditorBaseline !== null
+      && formResponseEditorFingerprint(formResponseEditorDraft)
+        !== formResponseEditorBaseline;
+  };
+
   const openFormResponse = async (submission_id: string): Promise<void> => {
     if (submission_id.trim().length === 0) return;
+    if (pendingFormResponseEditorFocus?.submissionId !== submission_id) {
+      pendingFormResponseEditorFocus = null;
+    }
+    const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    pendingFormResponseDetailFocusId =
+      isReceivedTab(renderedActiveTab)
+      && isReceivedTab(activeTab)
+      && activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
+        === 'open-form-response'
+      && activeElement.getAttribute(DATA_ROUTE_FORM_RESPONSE_ID_ATTR)
+        === submission_id
+        ? submission_id
+        : null;
     retireRunVerificationForDifferentItem(activeTab, submission_id);
     resetFormResponseAutomation();
+    retireFormResponseEditorDraft();
     const seq = ++formResponseDetailSeq;
     if (!isReceivedTab(activeTab)) activeTab = 'form_response';
     formResponseDetailId = submission_id;
     formResponseDetail = null;
+    formResponseEditorDraft = null;
     formResponseDetailError = null;
     loadingFormResponseDetail = true;
     savingFormResponse = false;
@@ -7421,6 +10831,10 @@ export const bootstrapDataRoute = (
         || formResponseDetailId !== submission_id
       ) return;
       formResponseDetail = result.response;
+      formResponseEditorDraft = result.response === null
+        ? null
+        : formResponseEditorDraftFrom(result.response);
+      captureFormResponseEditorBaseline();
       formResponseDetailError = null;
     } catch (err) {
       if (disposed || seq !== formResponseDetailSeq) return;
@@ -7436,12 +10850,31 @@ export const bootstrapDataRoute = (
     }
   };
 
-  const closeFormResponse = (): void => {
+  const closeFormResponse = (discardChanges = false): void => {
+    if (savingFormResponse) return;
+    if (formResponseDiscardGuardOpen && !discardChanges) {
+      closeFormResponseDiscardGuard();
+      return;
+    }
+    if (!discardChanges && hasUnsavedFormResponseEditor()) {
+      showFormResponseDiscardGuard();
+      return;
+    }
+    const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    const returnId = formResponseDiscardReturnId
+      ?? (activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
+        === 'close-form-response'
+        ? formResponseDetailId
+        : null);
     retireRunVerification();
     resetFormResponseAutomation();
+    pendingFormResponseDetailFocusId = null;
     formResponseDetailSeq += 1;
     formResponseDetailId = null;
     formResponseDetail = null;
+    formResponseEditorDraft = null;
+    retireFormResponseEditorDraft();
+    pendingFormResponseEditorFocus = null;
     formResponseDetailError = null;
     loadingFormResponseDetail = false;
     savingFormResponse = false;
@@ -7452,6 +10885,24 @@ export const bootstrapDataRoute = (
     }
     syncDataHash();
     render();
+    if (returnId !== null) {
+      const queryable = routeRoot as unknown as {
+        querySelector?: (selector: string) => HTMLElement | null;
+        querySelectorAll?: (selector: string) => ArrayLike<HTMLElement>;
+      };
+      const row = Array.from(
+        queryable.querySelectorAll?.(
+          `[${DATA_ROUTE_ACTION_ATTR}="open-form-response"]`,
+        ) ?? [],
+      ).find(
+        (candidate) =>
+          candidate.getAttribute(DATA_ROUTE_FORM_RESPONSE_ID_ATTR) === returnId,
+      );
+      const tab = queryable.querySelector?.(
+        `[${DATA_ROUTE_TAB_ATTR}="form_response"]`,
+      ) ?? null;
+      (row ?? tab)?.focus?.({ preventScroll: true });
+    }
   };
 
   const saveFormResponse = async (): Promise<void> => {
@@ -7472,6 +10923,12 @@ export const bootstrapDataRoute = (
       `[${DATA_ROUTE_FORM_RESPONSE_STATE_ATTR}]`,
     ) as HTMLSelectElement | null;
     if (valuesControl === null || emailControl === null || stateControl === null) return;
+    formResponseEditorDraft = {
+      submissionId: anchor.submission_id,
+      valuesText: valuesControl.value,
+      email: emailControl.value,
+      lifecycle: stateControl.value,
+    };
     let values: Record<string, unknown>;
     try {
       const parsed = JSON.parse(valuesControl.value) as unknown;
@@ -7483,11 +10940,19 @@ export const bootstrapDataRoute = (
       formResponseSaveError = error instanceof Error
         ? error.message
         : 'Answers must be valid JSON.';
+      pendingFormResponseEditorFocus = {
+        submissionId: anchor.submission_id,
+        control: 'values',
+      };
       render();
       return;
     }
     if (!FORM_RESPONSE_LIFECYCLE_STATES.includes(stateControl.value as FormResponseLifecycleState)) {
       formResponseSaveError = 'Choose a valid lifecycle state.';
+      pendingFormResponseEditorFocus = {
+        submissionId: anchor.submission_id,
+        control: 'state',
+      };
       render();
       return;
     }
@@ -7513,6 +10978,10 @@ export const bootstrapDataRoute = (
       }
       if (disposed || formResponseDetail !== anchor) return;
       formResponseDetail = response;
+      formResponseEditorDraft = response === null
+        ? null
+        : formResponseEditorDraftFrom(response);
+      captureFormResponseEditorBaseline();
       if (response === null) formResponseSaveError = 'This form response no longer exists.';
       pendingLoadPromise = refreshActive(true);
       await pendingLoadPromise;
@@ -7521,6 +10990,10 @@ export const bootstrapDataRoute = (
       formResponseSaveError = errMessage(error);
       // One of the two narrow mutations may have succeeded. Re-read so the
       // page never pretends the pre-save snapshot is still authoritative.
+      pendingFormResponseEditorFocus = {
+        submissionId: anchor.submission_id,
+        control: 'save',
+      };
       await openFormResponse(anchor.submission_id);
       if (!disposed) formResponseSaveError = errMessage(error);
     } finally {
@@ -7556,8 +11029,11 @@ export const bootstrapDataRoute = (
   };
 
   const exportFormResponses = async (format: 'json' | 'csv'): Promise<void> => {
-    if (opts.formResponseExportCaller === undefined || exportingFormResponses) return;
-    exportingFormResponses = true;
+    if (
+      opts.formResponseExportCaller === undefined
+      || exportingFormResponseFormat !== null
+    ) return;
+    exportingFormResponseFormat = format;
     if (errors.form_responses !== undefined) {
       errors = { ...errors };
       delete errors.form_responses;
@@ -7613,7 +11089,7 @@ export const bootstrapDataRoute = (
       if (!disposed) errors = { ...errors, form_responses: errMessage(error) };
     } finally {
       if (!disposed) {
-        exportingFormResponses = false;
+        exportingFormResponseFormat = null;
         render();
       }
     }
@@ -7623,17 +11099,20 @@ export const bootstrapDataRoute = (
     kind: MirrorDataKind,
     entity_id: string,
   ): Promise<void> => {
+    const requestGeneration = ++timelineLoadGeneration;
     retireRunVerificationForDifferentItem(kind, entity_id);
     activeTab = kind;
     timelineEntityId = entity_id;
     syncDataHash();
     if (opts.timelineCaller === undefined) {
+      loadingTimeline = false;
       errors = { ...errors, timeline: 'data.timeline caller is not wired in this host.' };
       render();
       return;
     }
     const trimmed = entity_id.trim();
     if (trimmed.length === 0) {
+      loadingTimeline = false;
       timeline = null;
       render();
       return;
@@ -7653,7 +11132,12 @@ export const bootstrapDataRoute = (
       // Stale guard — drop if the user navigated to a different tab / entity
       // while this was in flight (a live-update re-fetch can race a fresh user
       // selection; mirrors openContactDetail — codex R18 MEDIUM).
-      if (disposed || activeTab !== kind || timelineEntityId !== entity_id) return;
+      if (
+        disposed
+        || requestGeneration !== timelineLoadGeneration
+        || activeTab !== kind
+        || timelineEntityId !== entity_id
+      ) return;
       timeline = { kind, entity_id: resolved, response };
       timelineEntityId = resolved;
       // Re-sync now the id is normalized so the URL matches the rendered entity
@@ -7664,7 +11148,12 @@ export const bootstrapDataRoute = (
       errors = rest;
       render();
     } catch (err) {
-      if (disposed || activeTab !== kind || timelineEntityId !== entity_id) return;
+      if (
+        disposed
+        || requestGeneration !== timelineLoadGeneration
+        || activeTab !== kind
+        || timelineEntityId !== entity_id
+      ) return;
       timeline = { kind, entity_id: resolved, response: null };
       loadingTimeline = false;
       errors = { ...errors, timeline: errMessage(err) };
@@ -7683,6 +11172,16 @@ export const bootstrapDataRoute = (
   const openContactDetail = async (email: string): Promise<void> => {
     const trimmed = email.trim();
     if (trimmed.length === 0) return;
+    cancelContactEditOpen();
+    const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    pendingContactDetailFocusEmail =
+      renderedActiveTab === 'contact'
+      && activeTab === 'contact'
+      && activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
+        === 'open-contact-detail'
+      && activeElement.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR) === trimmed
+        ? trimmed
+        : null;
     retireRunVerificationForDifferentItem('contact', trimmed);
     // Mutually exclusive with the scan page — see `openContactScan`.
     contactScan = null;
@@ -7846,6 +11345,15 @@ export const bootstrapDataRoute = (
     }
   };
 
+  const focusRescheduleAction = (
+    action: 'reschedule-open' | 'reschedule-input' | 'reschedule-submit',
+  ): void => {
+    const target = routeRoot.querySelector?.(
+      `[${DATA_ROUTE_ACTION_ATTR}="${action}"]`,
+    ) as HTMLElement | null | undefined;
+    target?.focus?.({ preventScroll: true });
+  };
+
   /** D-210 R-4 — run the reschedule recipe for the OPEN calendar event with the
    *  form's new start; the end shifts by the current duration (length preserved).
    *  On success re-opens the record to refresh the detail + move-history timeline.
@@ -7862,12 +11370,14 @@ export const bootstrapDataRoute = (
     if (record === null || slug === null || sourceId.length === 0) {
       rescheduleForm = { ...rescheduleForm, error: 'This event cannot be rescheduled.' };
       render();
+      focusRescheduleAction('reschedule-input');
       return;
     }
     const newStart = new Date(rescheduleForm.value).getTime();
     if (!Number.isFinite(newStart)) {
       rescheduleForm = { ...rescheduleForm, error: 'Pick a valid new start time.' };
       render();
+      focusRescheduleAction('reschedule-input');
       return;
     }
     const hot = record.hot_fields;
@@ -7905,7 +11415,9 @@ export const bootstrapDataRoute = (
       }
       if (res.success) {
         rescheduleForm = null;
-        void openExplorerRecord(recordId); // refresh the detail + timeline
+        const refresh = openExplorerRecord(recordId); // refresh the detail + timeline
+        pendingRescheduleOpenFocusId = recordId;
+        void refresh;
         return;
       }
       rescheduleForm = { value: keepValue, submitting: false, error: 'Reschedule failed. Please try again.' };
@@ -7919,7 +11431,15 @@ export const bootstrapDataRoute = (
 
   const closeContactDetail = (): void => {
     if (contactDetail === null) return;
+    const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    const returnEmail =
+      activeElement?.getAttribute?.(DATA_ROUTE_ACTION_ATTR)
+        === 'close-contact-detail'
+        ? contactDetail.email
+        : null;
     retireRunVerification();
+    cancelContactEditOpen();
+    pendingContactDetailFocusEmail = null;
     contactDetail = null;
     loadingContactDetail = false;
     // The detail's failures die with the detail — carrying them back would show
@@ -7928,6 +11448,26 @@ export const bootstrapDataRoute = (
     errors = rest;
     syncDataHash();
     render();
+    if (returnEmail !== null) {
+      const row = Array.from(
+        routeRoot.querySelectorAll<HTMLElement>(
+          `[${DATA_ROUTE_CONTACT_EMAIL_ATTR}]`,
+        ),
+      ).find(
+        (candidate) =>
+          candidate.getAttribute(DATA_ROUTE_ACTION_ATTR)
+            === 'open-contact-detail'
+          && candidate.getAttribute(DATA_ROUTE_CONTACT_EMAIL_ATTR)
+            === returnEmail,
+      );
+      const search = routeRoot.querySelector(
+        `[${DATA_ROUTE_CONTACT_SEARCH_ATTR}]`,
+      ) as HTMLElement | null;
+      const tab = routeRoot.querySelector(
+        `[${DATA_ROUTE_TAB_ATTR}="contact"]`,
+      ) as HTMLElement | null;
+      (row ?? search ?? tab)?.focus?.({ preventScroll: true });
+    }
   };
 
   // ── D-205 #2b — the merge scan page ─────────────────────────────────────
@@ -8006,6 +11546,7 @@ export const bootstrapDataRoute = (
     // the renderer picks scan first — so leaving a detail open underneath would
     // silently resurrect it on close, and `currentDeepLinkEntity` would have two
     // candidate answers. Close it explicitly rather than mask it.
+    cancelContactEditOpen();
     contactDetail = null;
     loadingContactDetail = false;
     if (contactScan === null) {
@@ -8015,6 +11556,7 @@ export const bootstrapDataRoute = (
         scanning: false,
         progress: null,
         last_scan: null,
+        last_resolution: null,
       };
     }
     syncDataHash();
@@ -8033,6 +11575,13 @@ export const bootstrapDataRoute = (
    *  type into the search box faster than the round-trip, and a late response for an
    *  old query would silently overwrite a newer list. */
   let contactImportSeq = 0;
+  // A file picker can be used again while the prior preview is still parsing.
+  // Keep the derived plan attached to the exact pick that produced it.
+  let contactImportFilePreviewSeq = 0;
+  const contactImportFileApplyPending = (): boolean =>
+    contactImport?.file?.busy === true && contactImport.file.plan !== null;
+  const contactImportMutationPending = (): boolean =>
+    contactImport?.promoting === true || contactImportFileApplyPending();
   const loadImportCandidates = async (): Promise<void> => {
     const caller = opts.contactImportCandidatesCaller;
     if (caller === undefined || contactImport === null || contactImport.source_id === null) return;
@@ -8061,6 +11610,7 @@ export const bootstrapDataRoute = (
 
   const openContactImport = async (): Promise<void> => {
     if (!canImport && !canUploadFile) return;
+    cancelContactEditOpen();
     contactDetail = null;
     loadingContactDetail = false;
     contactScan = null;
@@ -8074,7 +11624,7 @@ export const bootstrapDataRoute = (
   };
 
   const closeContactImport = (): void => {
-    if (contactImport === null) return;
+    if (contactImport === null || contactImportMutationPending()) return;
     contactImport = null;
     contactImportSeq += 1;
     const { contact_import: _cleared, ...rest } = errors;
@@ -8088,7 +11638,12 @@ export const bootstrapDataRoute = (
    *  state between the two rpcs, and the client cannot hand back a plan it edited. */
   const previewImportFile = async (file: File): Promise<void> => {
     const caller = opts.contactImportFilePreviewCaller;
-    if (caller === undefined || contactImport === null) return;
+    if (
+      caller === undefined
+      || contactImport === null
+      || contactImportMutationPending()
+    ) return;
+    const previewSeq = ++contactImportFilePreviewSeq;
     contactImport = {
       ...contactImport,
       file: {
@@ -8107,13 +11662,21 @@ export const bootstrapDataRoute = (
     try {
       const text = await file.text();
       const plan = await caller({ text });
-      if (disposed || contactImport?.file == null) return;
+      if (
+        disposed
+        || previewSeq !== contactImportFilePreviewSeq
+        || contactImport?.file == null
+      ) return;
       contactImport = {
         ...contactImport,
         file: { ...contactImport.file, text, plan, busy: false },
       };
     } catch (err) {
-      if (disposed || contactImport?.file == null) return;
+      if (
+        disposed
+        || previewSeq !== contactImportFilePreviewSeq
+        || contactImport?.file == null
+      ) return;
       contactImport = { ...contactImport, file: null };
       errors = { ...errors, contact_import: errMessage(err) };
     }
@@ -8122,13 +11685,24 @@ export const bootstrapDataRoute = (
 
   const applyImportFile = async (): Promise<void> => {
     const caller = opts.contactImportFileApplyCaller;
-    if (caller === undefined || contactImport?.file == null || contactImport.file.busy) return;
-    const { text, apply_changes } = contactImport.file;
-    contactImport = { ...contactImport, file: { ...contactImport.file, busy: true } };
+    const currentFile = contactImport?.file ?? null;
+    if (
+      caller === undefined
+      || contactImport === null
+      || currentFile === null
+      || currentFile.busy
+      || currentFile.plan === null
+    ) return;
+    const { text, apply_changes } = currentFile;
+    // Keep an exact owner identity as well as locking the visible controls. If
+    // another route transition replaces the import state programmatically, the
+    // old response must not graft its receipt onto that newer view.
+    const applyingFile = { ...currentFile, busy: true };
+    contactImport = { ...contactImport, file: applyingFile };
     render();
     try {
       const res = await caller({ text, apply_changes });
-      if (disposed || contactImport?.file == null) return;
+      if (disposed || contactImport?.file !== applyingFile) return;
       contactImport = {
         ...contactImport,
         // The plan is spent — re-showing it would invite a second apply over contacts
@@ -8143,7 +11717,7 @@ export const bootstrapDataRoute = (
       if (!disposed) errors = { ...errors, ...nextErrors };
       render();
     } catch (err) {
-      if (disposed || contactImport?.file == null) return;
+      if (disposed || contactImport?.file !== applyingFile) return;
       contactImport = { ...contactImport, file: { ...contactImport.file, busy: false } };
       errors = { ...errors, contact_import: errMessage(err) };
       render();
@@ -8158,16 +11732,18 @@ export const bootstrapDataRoute = (
       || contactImport.source_id === null
       || contactImport.selected.size === 0
       || contactImport.promoting
+      || contactImport.loading
     ) {
       return;
     }
     const source_id = contactImport.source_id;
     const target_ids = [...contactImport.selected];
-    contactImport = { ...contactImport, promoting: true, result: null };
+    const promotingImport = { ...contactImport, promoting: true, result: null };
+    contactImport = promotingImport;
     render();
     try {
       const res = await caller({ source_id, target_ids });
-      if (disposed || contactImport === null) return;
+      if (disposed || contactImport !== promotingImport) return;
       contactImport = {
         ...contactImport,
         promoting: false,
@@ -8192,7 +11768,7 @@ export const bootstrapDataRoute = (
       if (!disposed) errors = { ...errors, ...nextErrors };
       render();
     } catch (err) {
-      if (disposed || contactImport === null) return;
+      if (disposed || contactImport !== promotingImport) return;
       contactImport = { ...contactImport, promoting: false };
       errors = { ...errors, contact_import: errMessage(err) };
       render();
@@ -8200,7 +11776,11 @@ export const bootstrapDataRoute = (
   };
 
   const closeContactScan = (): void => {
-    if (contactScan === null) return;
+    if (
+      contactScan === null
+      || contactScan.scanning
+      || contactScan.dialog.saving
+    ) return;
     contactScan = null;
     contactScanSeq += 1;
     const { contact_merge: _cleared, ...rest } = errors;
@@ -8214,11 +11794,19 @@ export const bootstrapDataRoute = (
    *  yields/completes, and then the queue is re-hydrated. */
   const runMergeScan = async (): Promise<void> => {
     const scanCaller = opts.contactMergeScanNowCaller;
-    if (contactScan === null || scanCaller === undefined || contactScan.scanning) return;
+    if (
+      contactScan === null
+      || scanCaller === undefined
+      || contactScan.scanning
+      || contactScan.progress !== null
+      || contactScan.loading
+      || contactScan.dialog.saving
+    ) return;
     contactScan = {
       ...contactScan,
       scanning: true,
       last_scan: null,
+      last_resolution: null,
       progress: {
         iterated: 0,
         total: null,
@@ -8236,19 +11824,30 @@ export const bootstrapDataRoute = (
       // user who just clicked "Find duplicates" is in.
       const result = await scanCaller({ mode: 'full' });
       if (disposed || contactScan === null) return;
+      const carryFocus =
+        (doc.activeElement as HTMLElement | null | undefined)?.getAttribute?.(
+          DATA_ROUTE_ACTION_ATTR,
+        ) === 'run-merge-scan';
       contactScan = {
         ...contactScan,
         scanning: false,
+        loading: true,
         progress: null,
         last_scan: { iterated: result.iterated, surfaced_count: result.surfaced_count },
       };
       render();
+      if (carryFocus) focusContactScanOwner('result');
       await hydrateMergeQueue();
     } catch (err) {
       if (disposed || contactScan === null) return;
+      const carryFocus =
+        (doc.activeElement as HTMLElement | null | undefined)?.getAttribute?.(
+          DATA_ROUTE_ACTION_ATTR,
+        ) === 'run-merge-scan';
       contactScan = { ...contactScan, scanning: false, progress: null };
       errors = { ...errors, contact_merge: errMessage(err) };
       render();
+      if (carryFocus) focusContactScanOwner('action');
     }
   };
 
@@ -8269,7 +11868,13 @@ export const bootstrapDataRoute = (
   };
 
   const setMergeSurvivor = (email: string): void => {
-    if (contactScan === null) return;
+    if (
+      contactScan === null
+      || contactScan.loading
+      || contactScan.scanning
+      || contactScan.progress !== null
+      || contactScan.dialog.saving
+    ) return;
     const trimmed = email.trim();
     if (trimmed.length === 0) return;
     contactScan = {
@@ -8286,7 +11891,13 @@ export const bootstrapDataRoute = (
   };
 
   const moveMergeCursor = (delta: number): void => {
-    if (contactScan === null) return;
+    if (
+      contactScan === null
+      || contactScan.loading
+      || contactScan.scanning
+      || contactScan.progress !== null
+      || contactScan.dialog.saving
+    ) return;
     const next = contactScan.dialog.cursor + delta;
     if (next < 0 || next >= contactScan.dialog.items.length) return;
     contactScan = {
@@ -8300,7 +11911,13 @@ export const bootstrapDataRoute = (
    *  candidate edges verbatim — see `buildMergeItems` for why the transitive
    *  closure would be a durable, invisible mistake. */
   const resolveMergeItem = async (resolution: 'confirm' | 'reject'): Promise<void> => {
-    if (contactScan === null || contactScan.dialog.saving) return;
+    if (
+      contactScan === null
+      || contactScan.loading
+      || contactScan.scanning
+      || contactScan.progress !== null
+      || contactScan.dialog.saving
+    ) return;
     const item = currentMergeItem();
     if (item === null) return;
     const caller =
@@ -8309,9 +11926,19 @@ export const bootstrapDataRoute = (
         : opts.contactMergeRejectCaller;
     if (caller === undefined) return;
     const candidateIds = item.candidates.map((c) => c.id);
+    const survivorEmail = currentSurvivor(item);
+    const mergeAction = resolution === 'confirm'
+      ? 'contact-merge-confirm' as const
+      : 'contact-merge-reject' as const;
     contactScan = {
       ...contactScan,
-      dialog: { ...contactScan.dialog, saving: true, error: null },
+      last_resolution: null,
+      dialog: {
+        ...contactScan.dialog,
+        saving: true,
+        saving_action: resolution,
+        error: null,
+      },
     };
     render();
     try {
@@ -8320,7 +11947,7 @@ export const bootstrapDataRoute = (
         if (confirmCaller === undefined) return;
         await confirmCaller({
           candidate_ids: candidateIds,
-          survivor_email: currentSurvivor(item),
+          survivor_email: survivorEmail,
         });
       } else {
         const rejectCaller = opts.contactMergeRejectCaller;
@@ -8328,10 +11955,22 @@ export const bootstrapDataRoute = (
         await rejectCaller({ candidate_ids: candidateIds });
       }
       if (disposed || contactScan === null) return;
+      const carryFocus =
+        (doc.activeElement as HTMLElement | null | undefined)?.getAttribute?.(
+          SHARED_ACTION_ATTR,
+        ) === mergeAction;
       contactScan = {
         ...contactScan,
-        dialog: { ...contactScan.dialog, saving: false },
+        loading: true,
+        last_resolution: resolution,
+        dialog: {
+          ...contactScan.dialog,
+          saving: false,
+          saving_action: undefined,
+        },
       };
+      render();
+      if (carryFocus) focusContactMergeOwner('result');
       // The resolved cluster leaves the pending queue, so re-hydrate rather than
       // splice locally: a confirm rewrites annotations + links onto the survivor
       // and can cascade, and the list behind us is now stale too.
@@ -8340,11 +11979,21 @@ export const bootstrapDataRoute = (
       pendingLoadPromise = refreshActive(true);
     } catch (err) {
       if (disposed || contactScan === null) return;
+      const carryFocus =
+        (doc.activeElement as HTMLElement | null | undefined)?.getAttribute?.(
+          SHARED_ACTION_ATTR,
+        ) === mergeAction;
       contactScan = {
         ...contactScan,
-        dialog: { ...contactScan.dialog, saving: false, error: errMessage(err) },
+        dialog: {
+          ...contactScan.dialog,
+          saving: false,
+          saving_action: undefined,
+          error: errMessage(err),
+        },
       };
       render();
+      if (carryFocus) focusContactMergeOwner(mergeAction);
     }
   };
 
@@ -8369,6 +12018,28 @@ export const bootstrapDataRoute = (
       return;
     }
 
+    const automateLink = targetWithAttr(
+      ev,
+      DATA_ROUTE_FORM_RESPONSE_AUTOMATE_ATTR,
+    );
+    if (automateLink !== null && formResponseDetail !== null) {
+      const href = automateLink.getAttribute('href');
+      if (savingFormResponse || (href !== null && hasUnsavedFormResponseEditor())) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        if (savingFormResponse) {
+          pendingFormResponseEditorFocus = {
+            submissionId: formResponseDetail.submission_id,
+            control: 'save',
+          };
+          render();
+        } else if (href !== null) {
+          showFormResponseDiscardGuard(null, href);
+        }
+        return;
+      }
+    }
+
     const target = targetWithAttr(ev, DATA_ROUTE_ACTION_ATTR)
       ?? targetWithAttr(ev, SHARED_ACTION_ATTR);
     if (target === null) return;
@@ -8376,6 +12047,24 @@ export const bootstrapDataRoute = (
       target.getAttribute(DATA_ROUTE_ACTION_ATTR)
       ?? target.getAttribute(SHARED_ACTION_ATTR)
       ?? '';
+    if (memoryDeletingId !== null && action.startsWith('memory-')) {
+      focusMemoryDeleteConfirm(memoryDeletingId);
+      return;
+    }
+    if (memoryFilteringOrigin !== null && action.startsWith('memory-')) {
+      ev.preventDefault();
+      focusMemoryOriginFilter(memoryFilteringOrigin);
+      return;
+    }
+    if (memoryExporting && action.startsWith('memory-')) {
+      ev.preventDefault();
+      focusMemoryExport();
+      return;
+    }
+    if (memoryEditOpeningId !== null && action.startsWith('memory-')) {
+      focusMemoryEditAction(memoryEditOpeningId);
+      return;
+    }
     if (action === 'select-tab') {
       const tab = target.getAttribute(DATA_ROUTE_TAB_ID_ATTR);
       if (tab !== null && isDataTab(tab)) void selectTab(tab);
@@ -8407,6 +12096,14 @@ export const bootstrapDataRoute = (
       void submitMemoryCompose();
       return;
     }
+    if (action === MEMORY_COMPOSE_DISCARD_KEEP_ACTION) {
+      closeMemoryComposeDiscardGuard();
+      return;
+    }
+    if (action === MEMORY_COMPOSE_DISCARD_COMMIT_ACTION) {
+      cancelMemoryCompose(true);
+      return;
+    }
     if (action === MEMORY_COMPOSE_CANCEL_ACTION) {
       cancelMemoryCompose();
       return;
@@ -8419,8 +12116,17 @@ export const bootstrapDataRoute = (
       void exportMemory();
       return;
     }
+    if (action === MEMORY_OPEN_RUN_ACTION) return;
     if (action === MEMORY_IMPORT_ACTION) {
       openMemoryImport();
+      return;
+    }
+    if (action === MEMORY_IMPORT_DISCARD_KEEP_ACTION) {
+      closeMemoryImportDiscardGuard();
+      return;
+    }
+    if (action === MEMORY_IMPORT_DISCARD_COMMIT_ACTION) {
+      cancelMemoryImport(true);
       return;
     }
     if (action === MEMORY_IMPORT_SUBMIT_ACTION) {
@@ -8450,28 +12156,40 @@ export const bootstrapDataRoute = (
     // D-221 — pack Records owner explorer. These actions call only the
     // `records.*` registered-pair control plane; none dispatch through a
     // recipe `data` namespace or through the agent-facing catalog executor.
+    const recordsNavigationLocked =
+      recordsState.deleting
+      || recordsState.retiringEventBusy
+      || recordsState.purging
+      || recordsState.loadingNamespaceKey !== null
+      || recordsState.loadingKind !== null;
     if (action === RECORDS_SELECT_NAMESPACE_ACTION) {
+      if (recordsNavigationLocked) return;
       const key = target.getAttribute(RECORDS_NAMESPACE_ATTR);
       if (key !== null) void selectRecordsNamespace(key);
       return;
     }
     if (action === RECORDS_SELECT_KIND_ACTION) {
+      if (recordsNavigationLocked) return;
       const kind = target.getAttribute(RECORDS_KIND_ATTR);
       if (kind !== null) void selectRecordsKind(kind);
       return;
     }
     if (action === RECORDS_OPEN_RECORD_ACTION) {
+      if (recordsNavigationLocked) return;
       const id = target.getAttribute(RECORDS_ID_ATTR);
       if (id !== null) void openRecordsRecord(id);
       return;
     }
     if (action === RECORDS_OPEN_REFERENCE_ACTION) {
+      if (recordsNavigationLocked) return;
       const kind = target.getAttribute(RECORDS_KIND_ATTR);
       const id = target.getAttribute(RECORDS_ID_ATTR);
       if (kind !== null && id !== null) void openRecordsReference(kind, id);
       return;
     }
     if (action === RECORDS_CLOSE_RECORD_ACTION) {
+      if (recordsNavigationLocked) return;
+      const recordId = recordsState.detail?.id ?? null;
       recordsSeq += 1;
       recordsState = {
         ...recordsState,
@@ -8482,73 +12200,133 @@ export const bootstrapDataRoute = (
         error: undefined,
       };
       render();
+      if (recordId !== null) focusRecordsListReturn(recordId);
       return;
     }
     if (action === RECORDS_DELETE_RECORD_ACTION) {
+      if (recordsNavigationLocked) return;
       recordsState = { ...recordsState, deletePending: true, error: undefined };
       render();
+      focusRecordsAction(RECORDS_CONFIRM_DELETE_ACTION);
       return;
     }
     if (action === RECORDS_CANCEL_DELETE_ACTION) {
+      if (recordsNavigationLocked) return;
       recordsState = { ...recordsState, deletePending: false, error: undefined };
       render();
+      focusRecordsAction(RECORDS_DELETE_RECORD_ACTION);
       return;
     }
     if (action === RECORDS_CONFIRM_DELETE_ACTION) {
+      if (recordsState.retiringEventBusy || recordsState.purging) return;
       void confirmRecordsDelete();
       return;
     }
     if (action === RECORDS_EXPORT_PACK_ACTION) {
+      if (recordsNavigationLocked) return;
       void exportRecords('json');
       return;
     }
     if (action === RECORDS_EXPORT_KIND_ACTION) {
+      if (recordsNavigationLocked) return;
       if (recordsState.selectedKind !== null) void exportRecords('json', recordsState.selectedKind);
       return;
     }
     if (action === RECORDS_EXPORT_PACK_CSV_ACTION) {
+      if (recordsNavigationLocked) return;
       void exportRecords('csv');
       return;
     }
     if (action === RECORDS_EXPORT_KIND_CSV_ACTION) {
+      if (recordsNavigationLocked) return;
       if (recordsState.selectedKind !== null) void exportRecords('csv', recordsState.selectedKind);
       return;
     }
     if (action === RECORDS_REFRESH_OUTBOX_ACTION) {
+      if (recordsNavigationLocked) return;
       void refreshRecordsOutbox();
       return;
     }
+    if (action === RECORDS_TOGGLE_OUTBOX_ACTION) {
+      ev.preventDefault();
+      if (recordsNavigationLocked) return;
+      recordsState = { ...recordsState, outboxOpen: !recordsState.outboxOpen };
+      render();
+      focusRecordsOutboxSummary();
+      return;
+    }
     if (action === RECORDS_RETIRE_EVENT_ACTION) {
+      if (recordsNavigationLocked) return;
       const eventId = target.getAttribute(RECORDS_EVENT_ID_ATTR);
       if (eventId !== null) {
-        recordsState = { ...recordsState, retiringEventId: eventId, error: undefined };
+        recordsState = {
+          ...recordsState,
+          outboxOpen: true,
+          retiringEventId: eventId,
+          retiringEventBusy: false,
+          error: undefined,
+        };
         render();
+        focusRecordsAction(
+          RECORDS_CONFIRM_RETIRE_EVENT_ACTION,
+          RECORDS_EVENT_ID_ATTR,
+          eventId,
+        );
       }
       return;
     }
     if (action === RECORDS_CANCEL_RETIRE_EVENT_ACTION) {
-      recordsState = { ...recordsState, retiringEventId: null };
+      if (recordsNavigationLocked) return;
+      const eventId = recordsState.retiringEventId;
+      recordsState = {
+        ...recordsState,
+        outboxOpen: true,
+        retiringEventId: null,
+        retiringEventBusy: false,
+      };
       render();
+      if (eventId !== null) {
+        focusRecordsAction(
+          RECORDS_RETIRE_EVENT_ACTION,
+          RECORDS_EVENT_ID_ATTR,
+          eventId,
+        );
+      }
       return;
     }
     if (action === RECORDS_CONFIRM_RETIRE_EVENT_ACTION) {
+      if (recordsState.deleting || recordsState.purging) return;
       const eventId = target.getAttribute(RECORDS_EVENT_ID_ATTR);
       if (eventId !== null) void retireRecordsEvent(eventId);
       return;
     }
     if (action === RECORDS_PURGE_ACTION) {
-      recordsState = { ...recordsState, purgePending: true, error: undefined };
+      if (recordsNavigationLocked) return;
+      recordsState = {
+        ...recordsState,
+        purgePending: true,
+        purgeConfirmation: '',
+        error: undefined,
+      };
       render();
+      focusRecordsPurgeInput();
       return;
     }
     if (action === RECORDS_CANCEL_PURGE_ACTION) {
-      recordsState = { ...recordsState, purgePending: false, error: undefined };
+      if (recordsNavigationLocked) return;
+      recordsState = {
+        ...recordsState,
+        purgePending: false,
+        purgeConfirmation: '',
+        error: undefined,
+      };
       render();
+      focusRecordsAction(RECORDS_PURGE_ACTION);
       return;
     }
     if (action === RECORDS_CONFIRM_PURGE_ACTION) {
-      const input = opts.root.querySelector<HTMLInputElement>(`[${RECORDS_PURGE_CONFIRMATION_ATTR}]`);
-      void purgeRecordsNamespace(input?.value ?? '');
+      if (recordsState.deleting || recordsState.retiringEventBusy) return;
+      void purgeRecordsNamespace(recordsState.purgeConfirmation);
       return;
     }
     // D-198 Slice 5 — collection explorer dispatch (mail / calendar / files).
@@ -8557,6 +12335,14 @@ export const bootstrapDataRoute = (
     // deferred continuation can't reinterpret the click under a tab the user
     // switched to meanwhile. The record detail is set synchronously (the button
     // paints at once); the async `collection.get` is `explorerSeq`-guarded.
+    if (action === COLLECTION_RETRY_ACTION) {
+      void retryExplorer();
+      return;
+    }
+    if (action === COLLECTION_DETAIL_RETRY_ACTION) {
+      void retryExplorerDetail();
+      return;
+    }
     if (action === COLLECTION_SELECT_INSTANCE_ACTION) {
       const slug = target.getAttribute(COLLECTION_INSTANCE_SLUG_ATTR);
       if (slug !== null) void selectExplorerInstance(slug);
@@ -8586,16 +12372,54 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === 'load-more-contacts') {
+      if (contactLoadMoreQueued || loadingMoreContacts) return;
       // Chain AFTER any in-flight load (a silent live-refresh) rather than
       // racing it: `loadMoreContacts` then computes `offset = contacts.length`
       // off the post-refresh list, not a stale one. `refreshActive` never
       // rejects, so the chain stays resolvable; `whenLoaded()` awaits it too.
-      pendingLoadPromise = pendingLoadPromise.then(() => loadMoreContacts());
+      contactLoadMoreQueued = true;
+      if (doc.activeElement === target) pendingContactLoadMoreFocus = true;
+      pendingLoadPromise = pendingLoadPromise.then(async () => {
+        try {
+          await loadMoreContacts();
+        } finally {
+          contactLoadMoreQueued = false;
+        }
+      });
       return;
     }
     if (action === 'open-form-response') {
       const submissionId = target.getAttribute(DATA_ROUTE_FORM_RESPONSE_ID_ATTR);
       if (submissionId !== null) void openFormResponse(submissionId);
+      return;
+    }
+    if (action === DATA_ROUTE_FORM_RESPONSE_DISCARD_KEEP_ACTION) {
+      closeFormResponseDiscardGuard();
+      return;
+    }
+    if (action === DATA_ROUTE_FORM_RESPONSE_DISCARD_COMMIT_ACTION) {
+      const pendingTab = formResponseDiscardPendingTab;
+      if (pendingTab !== null) {
+        retireFormResponseEditorDraft();
+        const navigation = selectTab(pendingTab);
+        pendingFormResponseDiscardTabFocus = pendingTab;
+        focusDataTab(pendingTab);
+        void navigation;
+        return;
+      }
+      const pendingHref = formResponseDiscardPendingHref;
+      if (pendingHref !== null) {
+        retireFormResponseEditorDraft();
+        const view = doc.defaultView;
+        if (view !== null && view !== undefined) {
+          view.location.hash = pendingHref;
+        } else {
+          render();
+          focusFormResponseAutomate();
+        }
+        return;
+      }
+      closeFormResponse(true);
       return;
     }
     if (action === 'close-form-response') {
@@ -8616,6 +12440,9 @@ export const bootstrapDataRoute = (
       // its own response/sequence guards. Do not queue behind an unrelated
       // silent list refresh that may still be in flight or replace the route's
       // main load promise.
+      if (doc.activeElement === target) {
+        pendingFormResponseAutomationPickerFocus = true;
+      }
       void discoverFormResponseAutomations();
       return;
     }
@@ -8627,11 +12454,33 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === 'load-more-form-responses') {
-      pendingLoadPromise = pendingLoadPromise.then(() => loadMoreFormResponses());
+      if (formResponseLoadMoreQueued || loadingMoreFormResponses) return;
+      formResponseLoadMoreQueued = true;
+      if (doc.activeElement === target && isReceivedTab(activeTab)) {
+        pendingFormResponseLoadMoreFocus = true;
+      }
+      pendingLoadPromise = pendingLoadPromise.then(async () => {
+        try {
+          await loadMoreFormResponses();
+        } finally {
+          formResponseLoadMoreQueued = false;
+        }
+      });
       return;
     }
     if (action === 'load-more-work-entities') {
-      pendingLoadPromise = pendingLoadPromise.then(() => loadMoreWorkEntities());
+      if (workEntityLoadMoreQueued || loadingMoreWorkEntities) return;
+      workEntityLoadMoreQueued = true;
+      if (doc.activeElement === target && isWorkEntityTab(activeTab)) {
+        pendingWorkEntityLoadMoreFocusKind = activeTab;
+      }
+      pendingLoadPromise = pendingLoadPromise.then(async () => {
+        try {
+          await loadMoreWorkEntities();
+        } finally {
+          workEntityLoadMoreQueued = false;
+        }
+      });
       return;
     }
     if (action === 'close-contact-detail') {
@@ -8650,7 +12499,7 @@ export const bootstrapDataRoute = (
     }
     // ── D-205 #5c — the file upload ──────────────────────────────────────
     if (action === 'contact-import-file-toggle-changes') {
-      if (contactImport?.file == null) return;
+      if (contactImport?.file == null || contactImportFileApplyPending()) return;
       contactImport = {
         ...contactImport,
         file: { ...contactImport.file, apply_changes: !contactImport.file.apply_changes },
@@ -8659,7 +12508,7 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === 'contact-import-file-clear') {
-      if (contactImport === null) return;
+      if (contactImport === null || contactImportFileApplyPending()) return;
       contactImport = { ...contactImport, file: null };
       render();
       return;
@@ -8673,14 +12522,19 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === 'contact-import-overview') {
+      if (contactImportMutationPending()) return;
       // Back to the Source list. Drop the selection with it: a tick made against one
       // CRM's list must never survive into another's, where the same `target_id`
       // would address a different person entirely.
-      if (contactImport !== null) contactImport = initialContactImportState();
+      if (contactImport !== null) {
+        contactImportSeq += 1;
+        contactImport = initialContactImportState();
+      }
       render();
       return;
     }
     if (action === 'contact-import-browse') {
+      if (contactImportMutationPending()) return;
       const source_id = target.getAttribute(DATA_ROUTE_IMPORT_SOURCE_ATTR) ?? '';
       if (source_id.length === 0 || contactImport === null) return;
       contactImport = { ...initialContactImportState(), source_id };
@@ -8689,7 +12543,11 @@ export const bootstrapDataRoute = (
     }
     if (action === 'contact-import-toggle') {
       const target_id = target.getAttribute(DATA_ROUTE_IMPORT_TARGET_ATTR) ?? '';
-      if (target_id.length === 0 || contactImport === null) return;
+      if (
+        target_id.length === 0
+        || contactImport === null
+        || contactImport.promoting
+      ) return;
       const selected = new Set(contactImport.selected);
       if (selected.has(target_id)) selected.delete(target_id);
       else selected.add(target_id);
@@ -8730,9 +12588,16 @@ export const bootstrapDataRoute = (
       moveMergeCursor(1);
       return;
     }
+    if (action === DATA_ROUTE_CONTACT_DISCARD_KEEP_ACTION) {
+      closeContactDiscardGuard();
+      return;
+    }
+    if (action === DATA_ROUTE_CONTACT_DISCARD_COMMIT_ACTION) {
+      closeContactDialog(true);
+      return;
+    }
     if (action === 'close-contact-dialog') {
-      contactDialog = null;
-      render();
+      closeContactDialog();
       return;
     }
     if (action === 'submit-contact-dialog') {
@@ -8741,12 +12606,15 @@ export const bootstrapDataRoute = (
       return;
     }
     if (action === 'load-timeline') {
-      if (isMirrorTab(activeTab)) void openTimelineDrilldown(activeTab, timelineEntityId);
+      if (!loadingTimeline && isMirrorTab(activeTab)) {
+        void openTimelineDrilldown(activeTab, timelineEntityId);
+      }
       return;
     }
     if (action === 'download-file') {
-      // Chain onto `pendingLoadPromise` so `whenLoaded()` awaits the read.
-      pendingLoadPromise = pendingLoadPromise.then(() => downloadFile());
+      // Begin synchronously so the state guard owns a second click/Enter before
+      // it can queue behind the first request and become a second download.
+      if (!downloadingFile) pendingLoadPromise = downloadFile();
       return;
     }
     if (action === 'open-create-work-entity-dialog') {
@@ -8780,21 +12648,21 @@ export const bootstrapDataRoute = (
       void copyBookingManageLink();
       return;
     }
+    if (action === WORK_ENTITY_DIALOG_DISCARD_KEEP_ACTION) {
+      closeWorkEntityDiscardGuard();
+      return;
+    }
+    if (action === WORK_ENTITY_DIALOG_DISCARD_COMMIT_ACTION) {
+      closeWorkEntityDialog(true);
+      return;
+    }
     if (action === 'close-work-entity-dialog') {
-      retireRunVerification();
-      loadingWorkEntityDetail = false;
-      workEntityState = closeDialogTransition(workEntityState);
-      syncDataHash(); // dialog closed → drop the entity id from the URL
-      render();
+      closeWorkEntityDialog();
       return;
     }
     if (action === 'close-work-entity-dialog-on-backdrop') {
       if (ev.target === target) {
-        retireRunVerification();
-        loadingWorkEntityDetail = false;
-        workEntityState = closeDialogTransition(workEntityState);
-        syncDataHash();
-        render();
+        closeWorkEntityDialog();
       }
       return;
     }
@@ -8808,11 +12676,14 @@ export const bootstrapDataRoute = (
         error: null,
       };
       render();
+      focusRescheduleAction('reschedule-input');
       return;
     }
     if (action === 'reschedule-cancel') {
+      if (rescheduleForm?.submitting === true) return;
       rescheduleForm = null;
       render();
+      focusRescheduleAction('reschedule-open');
       return;
     }
     if (action === 'reschedule-submit') {
@@ -8828,9 +12699,38 @@ export const bootstrapDataRoute = (
   const onInput = (ev: Event): void => {
     const target = ev.target as HTMLInputElement | HTMLTextAreaElement | null;
     if (target === null) return;
+    if (
+      typeof target.hasAttribute === 'function'
+      && target.hasAttribute(RECORDS_PURGE_CONFIRMATION_ATTR)
+      && recordsState.purgePending
+      && !recordsState.purging
+    ) {
+      recordsState = { ...recordsState, purgeConfirmation: target.value };
+      return;
+    }
+    if (
+      formResponseEditorDraft !== null
+      && formResponseDetailId === formResponseEditorDraft.submissionId
+      && typeof target.hasAttribute === 'function'
+    ) {
+      if (target.hasAttribute(DATA_ROUTE_FORM_RESPONSE_VALUES_ATTR)) {
+        formResponseEditorDraft = {
+          ...formResponseEditorDraft,
+          valuesText: target.value,
+        };
+        return;
+      }
+      if (target.hasAttribute(DATA_ROUTE_FORM_RESPONSE_EMAIL_ATTR)) {
+        formResponseEditorDraft = {
+          ...formResponseEditorDraft,
+          email: target.value,
+        };
+        return;
+      }
+    }
     if (typeof target.hasAttribute === 'function' && target.hasAttribute(DATA_ROUTE_CONTACT_SEARCH_ATTR)) {
       contactSearch = target.value;
-      if (activeTab === 'contact') startRefresh();
+      if (activeTab === 'contact') scheduleContactSearchRefresh();
       return;
     }
     // D-205 #5b — the import page's own search. Re-reads the STRANGER list, not the
@@ -8840,6 +12740,7 @@ export const bootstrapDataRoute = (
       typeof target.getAttribute === 'function'
       && target.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'contact-import-search'
       && contactImport !== null
+      && !contactImport.promoting
     ) {
       contactImport = { ...contactImport, query: target.value };
       void loadImportCandidates();
@@ -8852,6 +12753,7 @@ export const bootstrapDataRoute = (
       typeof target.getAttribute === 'function'
       && target.getAttribute(DATA_ROUTE_ACTION_ATTR) === 'reschedule-input'
       && rescheduleForm !== null
+      && !rescheduleForm.submitting
     ) {
       rescheduleForm = { ...rescheduleForm, value: target.value };
       return;
@@ -8873,7 +12775,12 @@ export const bootstrapDataRoute = (
         if (isWorkEntityTab(activeTab) && kind === workEntityState.kind) {
           workEntityState = applySearchTransition(workEntityState, target.value);
           if (workEntityState.kind === 'booking') {
-            pendingLoadPromise = refreshActive(true);
+            const scheduledSearch = workEntityState.search_query;
+            bookingSearchRefresh.schedule(() =>
+              activeLens === 'data'
+              && activeTab === 'booking'
+              && workEntityState.kind === 'booking'
+              && workEntityState.search_query === scheduledSearch);
           } else {
             render();
           }
@@ -8881,7 +12788,12 @@ export const bootstrapDataRoute = (
         return;
       }
       const contactField = target.getAttribute(DATA_ROUTE_CONTACT_FIELD_ATTR) as keyof ContactDialogValues | null;
-      if (contactDialog !== null && contactField !== null && contactField in contactDialog.values) {
+      if (
+        contactDialog !== null
+        && !contactDialog.submitting
+        && contactField !== null
+        && contactField in contactDialog.values
+      ) {
         contactDialog = {
           ...contactDialog,
           values: { ...contactDialog.values, [contactField]: target.value },
@@ -8891,16 +12803,39 @@ export const bootstrapDataRoute = (
       // D-198 Slice 2/3 — keep the compose / import forms synced with their
       // uncontrolled inputs (no render on keystroke, so typing never flickers).
       const memoryField = target.getAttribute(MEMORY_FIELD_ATTR);
-      if (memoryCompose.open && (memoryField === 'kind' || memoryField === 'summary' || memoryField === 'body')) {
+      if (
+        memoryCompose.open
+        && !memoryCompose.submitting
+        && !memoryComposeDiscardGuardOpen
+        && (memoryField === 'kind' || memoryField === 'summary' || memoryField === 'body')
+      ) {
         memoryCompose = { ...memoryCompose, [memoryField]: target.value };
         return;
       }
-      if (memoryImport.open && memoryField === 'import') {
-        memoryImport = { ...memoryImport, text: target.value };
+      if (
+        memoryImport.open
+        && !memoryImport.submitting
+        && !memoryImportDiscardGuardOpen
+        && memoryField === 'import'
+      ) {
+        memoryImport = {
+          open: true,
+          text: target.value,
+          submitting: false,
+        };
         return;
       }
       if (target.hasAttribute(DATA_ROUTE_TIMELINE_ENTITY_ATTR)) {
+        const changed = timelineEntityId !== target.value;
         timelineEntityId = target.value;
+        if (changed && loadingTimeline) {
+          timelineLoadGeneration += 1;
+          loadingTimeline = false;
+          timeline = null;
+          const { timeline: _timelineError, ...rest } = errors;
+          errors = rest;
+          render();
+        }
       }
     }
   };
@@ -8908,6 +12843,17 @@ export const bootstrapDataRoute = (
   const onChange = (ev: Event): void => {
     const target = ev.target as HTMLSelectElement | null;
     if (target === null || typeof target.getAttribute !== 'function') return;
+    if (
+      formResponseEditorDraft !== null
+      && formResponseDetailId === formResponseEditorDraft.submissionId
+      && target.hasAttribute(DATA_ROUTE_FORM_RESPONSE_STATE_ATTR)
+    ) {
+      formResponseEditorDraft = {
+        ...formResponseEditorDraft,
+        lifecycle: target.value,
+      };
+      return;
+    }
     const action = target.getAttribute(SHARED_ACTION_ATTR);
     // D-205 #2b — the multi-way survivor picker is a RADIO, so it must be handled
     // on `change`, not `click`: arrow-keying between radios moves the selection
@@ -8923,6 +12869,7 @@ export const bootstrapDataRoute = (
       const options = sourceOptionsForKind(sources, workEntityState.kind);
       const valid = new Set(options.map((option) => option.id));
       workEntityState = selectSourceTransition(workEntityState, target.value, valid);
+      bookingSearchRefresh.cancel();
       startRefresh();
       return;
     }
@@ -8930,6 +12877,7 @@ export const bootstrapDataRoute = (
       const next = target.value;
       if (next === 'all' || BOOKING_LIFECYCLE_STATES.includes(next as BookingLifecycleState)) {
         bookingLifecycleFilter = next as BookingLifecycleState | 'all';
+        bookingSearchRefresh.cancel();
         pendingLoadPromise = refreshActive(true);
       }
       return;
@@ -8940,9 +12888,95 @@ export const bootstrapDataRoute = (
     }
   };
 
+  const onKeyDown = (ev: KeyboardEvent): void => {
+    if (
+      !memoryImportDiscardGuardOpen
+      && !memoryComposeDiscardGuardOpen
+      && !formResponseDiscardGuardOpen
+      && contactDialog === null
+      && workEntityState.dialog === null
+    ) return;
+    const queryable = routeRoot as unknown as {
+      querySelector?: (selector: string) => HTMLElement | null;
+    };
+    const overlay = memoryImportDiscardGuardOpen
+      ? queryable.querySelector?.(
+          `[${MEMORY_IMPORT_DISCARD_GUARD_ATTR}]`,
+        ) ?? null
+      : memoryComposeDiscardGuardOpen
+      ? queryable.querySelector?.(
+          `[${MEMORY_COMPOSE_DISCARD_GUARD_ATTR}]`,
+        ) ?? null
+      : formResponseDiscardGuardOpen
+      ? queryable.querySelector?.(
+          `[${DATA_ROUTE_FORM_RESPONSE_DISCARD_GUARD_ATTR}]`,
+        ) ?? null
+      : contactDiscardGuardOpen
+      ? queryable.querySelector?.(
+          `[${DATA_ROUTE_CONTACT_DISCARD_GUARD_ATTR}]`,
+        ) ?? null
+      : workEntityDiscardGuardOpen
+      ? queryable.querySelector?.(
+          `[${WORK_ENTITY_DIALOG_DISCARD_GUARD_ATTR}]`,
+        ) ?? null
+      : contactDialog !== null
+        ? queryable.querySelector?.(`[${DATA_ROUTE_CONTACT_DIALOG_ATTR}]`) ?? null
+        : queryable.querySelector?.('.work-entity-dialog') ?? null;
+    if (overlay === null) return;
+    if (ev.key === 'Escape') {
+      ev.preventDefault();
+      ev.stopPropagation();
+      if (memoryImportDiscardGuardOpen) {
+        closeMemoryImportDiscardGuard();
+      } else if (memoryComposeDiscardGuardOpen) {
+        closeMemoryComposeDiscardGuard();
+      } else if (formResponseDiscardGuardOpen) {
+        closeFormResponseDiscardGuard();
+      } else if (contactDiscardGuardOpen) {
+        closeContactDiscardGuard();
+      } else if (workEntityDiscardGuardOpen) {
+        closeWorkEntityDiscardGuard();
+      } else if (contactDialog !== null) {
+        closeContactDialog();
+      } else {
+        closeWorkEntityDialog();
+      }
+      return;
+    }
+    if (ev.key !== 'Tab') return;
+    const focusable = Array.from(overlay.querySelectorAll<HTMLElement>(
+      'button:not([disabled]), input:not([disabled]), select:not([disabled]), '
+      + 'textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])',
+    )).filter(
+      (candidate) =>
+        !candidate.hasAttribute('hidden')
+        && candidate.getAttribute('aria-hidden') !== 'true',
+    );
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (first === undefined || last === undefined) {
+      ev.preventDefault();
+      return;
+    }
+    const activeElement = doc.activeElement;
+    if (activeElement === overlay) {
+      ev.preventDefault();
+      (ev.shiftKey ? last : first).focus({ preventScroll: true });
+      return;
+    }
+    if (ev.shiftKey && (activeElement === first || !overlay.contains(activeElement))) {
+      ev.preventDefault();
+      last.focus({ preventScroll: true });
+    } else if (!ev.shiftKey && (activeElement === last || !overlay.contains(activeElement))) {
+      ev.preventDefault();
+      first.focus({ preventScroll: true });
+    }
+  };
+
   routeRoot.addEventListener('click', onClick);
   routeRoot.addEventListener('input', onInput);
   routeRoot.addEventListener('change', onChange);
+  routeRoot.addEventListener('keydown', onKeyDown);
 
   startRefresh();
   // Bind the queued open to the route the user actually requested. Ordinary
@@ -9061,8 +13095,13 @@ export const bootstrapDataRoute = (
           started_at: (opts.now ?? Date.now)(),
         };
         if (event.op === 'complete') {
+          const carryFocus =
+            !contactScan.scanning
+            && (doc.activeElement as HTMLElement | null | undefined)
+              ?.getAttribute?.(DATA_ROUTE_ACTION_ATTR) === 'run-merge-scan';
           contactScan = {
             ...contactScan,
+            loading: true,
             progress: null,
             last_scan: {
               iterated: event.iterated,
@@ -9070,6 +13109,7 @@ export const bootstrapDataRoute = (
             },
           };
           render();
+          if (carryFocus) focusContactScanOwner('result');
           // The queue is what changed; re-hydrate it. (`scan_now`'s own resolve
           // does this too — `contactScanSeq` makes the duplicate hydrate a no-op
           // rather than a race.)
@@ -9102,6 +13142,27 @@ export const bootstrapDataRoute = (
     );
   }
 
+  const hasDataInFlightWork = (): boolean => opaqueMutationsInFlight > 0
+    || workEntityState.dialog?.submitting === true
+    || contactDialog?.submitting === true
+    || savingFormResponse
+    || exportingFormResponseFormat !== null
+    || bookingManageLinkBusy
+    || memoryCompose.submitting
+    || memoryImport.submitting
+    || memoryEditOpeningId !== null
+    || memoryFilteringOrigin !== null
+    || memoryExporting
+    || rescheduleForm?.submitting === true
+    || contactScan?.scanning === true
+    || contactScan?.dialog.saving === true
+    || contactImport?.promoting === true
+    || contactImport?.file?.busy === true
+    || hasRecordsInFlightWork()
+    || formResponseRunModal?.getState().executing === true
+    || formResponseRunModal?.getState().mutating === true
+    || formResponseRunModal?.getState().trigger_mutating === true;
+
   return {
     activeTab: () => activeTab,
     activeLens: () => activeLens,
@@ -9113,22 +13174,12 @@ export const bootstrapDataRoute = (
     workEntities: () => workEntities,
     timeline: () => timeline,
     getLoadErrors: () => errors,
-    hasInFlightWork: () => opaqueMutationsInFlight > 0
-      || workEntityState.dialog?.submitting === true
-      || contactDialog?.submitting === true
-      || savingFormResponse
-      || exportingFormResponses
-      || bookingManageLinkBusy
-      || memoryCompose.submitting
-      || memoryImport.submitting
-      || rescheduleForm?.submitting === true
-      || contactScan?.scanning === true
-      || contactScan?.dialog.saving === true
-      || contactImport?.promoting === true
-      || contactImport?.file?.busy === true
-      || formResponseRunModal?.getState().executing === true
-      || formResponseRunModal?.getState().mutating === true
-      || formResponseRunModal?.getState().trigger_mutating === true,
+    hasInFlightWork: hasDataInFlightWork,
+    inFlightWorkPrompt: () => hasRecordsInFlightWork()
+      ? 'A Records action is still in progress. Leave Data anyway?'
+      : hasDataInFlightWork()
+        ? 'A Data action is still in progress. Leave Data anyway?'
+        : null,
     refresh: startRefresh,
     whenLoaded: () => pendingLoadPromise,
     selectTab,
@@ -9161,12 +13212,12 @@ export const bootstrapDataRoute = (
     contactScan: () => contactScan,
     openContactImport,
     browseImportSource: async (source_id: string): Promise<void> => {
-      if (contactImport === null) return;
+      if (contactImport === null || contactImportMutationPending()) return;
       contactImport = { ...initialContactImportState(), source_id };
       await loadImportCandidates();
     },
     toggleImportTarget: (target_id: string): void => {
-      if (contactImport === null) return;
+      if (contactImport === null || contactImport.promoting) return;
       const selected = new Set(contactImport.selected);
       if (selected.has(target_id)) selected.delete(target_id);
       else selected.add(target_id);
@@ -9177,7 +13228,7 @@ export const bootstrapDataRoute = (
     previewImportFile,
     applyImportFile,
     setImportApplyChanges: (on: boolean): void => {
-      if (contactImport?.file == null) return;
+      if (contactImport?.file == null || contactImportFileApplyPending()) return;
       contactImport = { ...contactImport, file: { ...contactImport.file, apply_changes: on } };
       render();
     },
@@ -9185,6 +13236,8 @@ export const bootstrapDataRoute = (
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      contactSearchRefresh.cancel();
+      bookingSearchRefresh.cancel();
       if (liveRefreshTimer !== null) {
         clearTimeout(liveRefreshTimer);
         liveRefreshTimer = null;
@@ -9196,6 +13249,7 @@ export const bootstrapDataRoute = (
       routeRoot.removeEventListener('click', onClick);
       routeRoot.removeEventListener('input', onInput);
       routeRoot.removeEventListener('change', onChange);
+      routeRoot.removeEventListener('keydown', onKeyDown);
       try {
         opts.root.removeChild(routeRoot);
       } catch {

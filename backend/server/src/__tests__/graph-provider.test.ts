@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   canonicalizeGraph,
   createGraphProvider,
+  graphMessageDirectionForFolder,
   type GraphMessagePayload,
   type GraphProviderConfig,
 } from '../collections/mail/graph-provider.js';
@@ -177,6 +178,83 @@ describe('GraphProvider — initialScan', () => {
       url.includes('$select=') && url.includes('internetMessageHeaders'))).toBe(true);
   });
 
+  it('captures the delta watermark before backfill so arrivals during the scan replay', async () => {
+    const before = graphDeltaLink('before-scan');
+    const after = graphDeltaLink('after-scan');
+    const calls: string[] = [];
+    let listStarted = false;
+    const fetcher: HttpFetcher = async (url) => {
+      calls.push(url);
+      let body: unknown;
+      let status = 200;
+      if (url.includes('/messages/delta') && !url.includes('$deltatoken')) {
+        body = { value: [], '@odata.deltaLink': listStarted ? after : before };
+      } else if (url === before) {
+        body = {
+          value: [mkGraphMsg({ id: 'arrived-during-scan', subject: 'new arrival' })],
+          '@odata.deltaLink': after,
+        };
+      } else if (url.includes('/messages?')) {
+        listStarted = true;
+        body = { value: [] };
+      } else {
+        status = 404;
+        body = { error: 'unmapped', url };
+      }
+      return {
+        status,
+        ok: status >= 200 && status < 300,
+        async json() { return body; },
+        async text() { return JSON.stringify(body); },
+      };
+    };
+    const store = makeStore({
+      'graph.work.access_token': 'at',
+      'graph.work.expires_at': String(Date.now() + 3600_000),
+      'graph.work.refresh_token': 'rt',
+    });
+    const provider = createGraphProvider({
+      slug: 'work',
+      config: () => mkConfig(),
+      accountStore: store,
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    try {
+      await provider.connect();
+      await provider.initialScan({ backfill_days: 7, onMessage: async () => true });
+      const events: ProviderSyncEvent[] = [];
+      const stop = await provider.startSync(async (event) => { events.push(event); });
+      await stop();
+
+      expect(events).toEqual([
+        expect.objectContaining({ kind: 'updated', source_id: 'arrived-during-scan' }),
+      ]);
+      expect(calls.findIndex((url) => url.includes('/messages/delta')))
+        .toBeLessThan(calls.findIndex((url) => url.includes('/messages?')));
+    } finally {
+      await provider.close();
+    }
+  });
+
+  it('rejects an incomplete list page instead of completing the backfill', async () => {
+    h = newHarness({
+      routes: [
+        { match: (u) => u.includes('/messages/delta'),
+          response: { status: 200, body: { value: [], '@odata.deltaLink': graphDeltaLink('before-failure') } } },
+        { match: (u) => u.includes('/messages?'),
+          response: { status: 503, body: { error: 'temporarily unavailable' } } },
+      ],
+    });
+    await h.provider.connect();
+
+    await expect(h.provider.initialScan({
+      backfill_days: 7,
+      onMessage: async () => true,
+    })).rejects.toThrow("could not fetch folder 'inbox'");
+  });
+
   it('honors onMessage returning false', async () => {
     h = newHarness({
       routes: [
@@ -256,6 +334,8 @@ describe('GraphProvider — initialScan', () => {
     const attackerUrl = 'https://attacker.invalid/collect?cursor=mail';
     h = newHarness({
       routes: [
+        { match: (u) => u.includes('/messages/delta'),
+          response: { status: 200, body: { value: [], '@odata.deltaLink': graphDeltaLink('off-origin-list') } } },
         {
           match: (u) => u.includes('/messages?'),
           response: {
@@ -302,6 +382,8 @@ describe('GraphProvider — initialScan', () => {
     const page2Url = 'https://graph.microsoft.com/v1.0/me/messages?$skiptoken=repeat';
     h = newHarness({
       routes: [
+        { match: (u) => u.includes('/messages/delta'),
+          response: { status: 200, body: { value: [], '@odata.deltaLink': graphDeltaLink('repeat-list') } } },
         {
           match: (u) => u === page2Url,
           response: {
@@ -329,6 +411,8 @@ describe('GraphProvider — initialScan', () => {
   it('rejects a non-string nextLink instead of treating a partial list as exhausted', async () => {
     h = newHarness({
       routes: [
+        { match: (u) => u.includes('/messages/delta'),
+          response: { status: 200, body: { value: [], '@odata.deltaLink': graphDeltaLink('non-string-list') } } },
         {
           match: (u) => u.includes('/messages?'),
           response: {
@@ -454,6 +538,101 @@ describe('GraphProvider — incremental sync', () => {
     expect(h.store.data.get(DELTA_KEY)).toBe(graphDeltaLink('initial'));
   });
 
+  it('replays the replacement full state before replacing an expired delta cursor', async () => {
+    const expired = graphDeltaLink('expired');
+    const replacement = graphDeltaLink('replacement');
+    h = newHarness({
+      seed: { [DELTA_KEY]: expired },
+      routes: [
+        { match: (u) => u === expired,
+          response: { status: 410, body: { error: { code: 'syncStateNotFound' } } } },
+        { match: (u) => u.includes('/messages/delta'),
+          response: {
+            status: 200,
+            body: {
+              value: [mkGraphMsg({ id: 'recovered-id', subject: 'Recovered' })],
+              '@odata.deltaLink': replacement,
+            },
+          } },
+      ],
+    });
+    const outcomes: Array<{ ok: boolean }> = [];
+    h.provider.onSyncOutcome?.((outcome) => { outcomes.push(outcome); });
+    await h.provider.connect();
+
+    const events: ProviderSyncEvent[] = [];
+    const stopFirst = await h.provider.startSync(async (event) => { events.push(event); });
+    await stopFirst();
+    expect(events).toEqual([
+      expect.objectContaining({ kind: 'updated', source_id: 'recovered-id' }),
+    ]);
+    expect(h.store.data.get(DELTA_KEY)).toBe(replacement);
+    expect(outcomes.at(-1)).toMatchObject({ ok: false });
+  });
+
+  it('retains an expired delta cursor when its recovery replay is rejected', async () => {
+    const expired = graphDeltaLink('expired-retry');
+    h = newHarness({
+      seed: { [DELTA_KEY]: expired },
+      routes: [
+        { match: (u) => u === expired,
+          response: { status: 410, body: { error: { code: 'syncStateNotFound' } } } },
+        { match: (u) => u.includes('/messages/delta'),
+          response: {
+            status: 200,
+            body: {
+              value: [mkGraphMsg({ id: 'not-acked', subject: 'Retry recovery' })],
+              '@odata.deltaLink': graphDeltaLink('must-not-commit'),
+            },
+          } },
+      ],
+    });
+    await h.provider.connect();
+
+    const stop = await h.provider.startSync(async () => {
+      throw new Error('collection unavailable');
+    });
+    await stop();
+
+    expect(h.store.data.get(DELTA_KEY)).toBe(expired);
+  });
+
+  it('holds and replays the deltaLink after a collection callback rejects', async () => {
+    const prior = graphDeltaLink('prior');
+    const next = graphDeltaLink('next');
+    h = newHarness({
+      seed: { [DELTA_KEY]: prior },
+      routes: [{
+        match: (u) => u === prior,
+        response: {
+          status: 200,
+          body: {
+            value: [mkGraphMsg({ id: 'retry-id', subject: 'must replay' })],
+            '@odata.deltaLink': next,
+          },
+        },
+      }],
+    });
+    const outcomes: Array<{ ok: boolean }> = [];
+    h.provider.onSyncOutcome?.((outcome) => { outcomes.push(outcome); });
+    await h.provider.connect();
+
+    let attempts = 0;
+    const firstStop = await h.provider.startSync(async () => {
+      attempts++;
+      throw new Error('collection write failed');
+    });
+    await firstStop();
+    expect(h.store.data.get(DELTA_KEY)).toBe(prior);
+    expect(outcomes.at(-1)).toMatchObject({ ok: false });
+
+    const secondStop = await h.provider.startSync(async () => { attempts++; });
+    await secondStop();
+    expect(attempts).toBe(2);
+    expect(h.store.data.get(DELTA_KEY)).toBe(next);
+    expect(outcomes.at(-1)).toMatchObject({ ok: true });
+  });
+
   it('iterates across multiple folders from folder_filter', async () => {
     let inboxCalls = 0;
     let archiveCalls = 0;
@@ -558,11 +737,24 @@ describe('canonicalizeGraph', () => {
     expect(m.cc).toEqual(['c@x']);
     expect(m.thread_id).toBe('CONV');
     expect(m.folder_or_label).toBe('inbox');
+    expect(m.direction).toBe('inbound');
     expect(m.is_read).toBe(true);
     expect(m.has_attachments).toBe(true);
     expect(m.body_text).toBe('plain body');
     expect(m.body_html).toBeUndefined();
     expect(m.received_at).toBe(Date.parse('2026-04-10T00:00:00Z'));
+  });
+
+  it('derives direction from the queried well-known folder rather than opaque parentFolderId', () => {
+    const message = mkGraphMsg({ parentFolderId: 'AAMkOpaqueFolderId' });
+
+    expect(canonicalizeGraph(
+      message,
+      [],
+      graphMessageDirectionForFolder('sentitems'),
+    ).direction).toBe('outbound');
+    expect(graphMessageDirectionForFolder('drafts')).toBe('draft');
+    expect(graphMessageDirectionForFolder('AAMkOpaqueFolderId')).toBe('unknown');
   });
 
   it('strips HTML when body.contentType is html', () => {

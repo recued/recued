@@ -23,21 +23,21 @@
       "key": "platform",
       "filename": "daytona-platform-openapi.json",
       "url": "https://www.daytona.io/docs/openapi.json",
-      "sha256": "4154d7f3e6f3508870065ba90f4726e3e166b632f2fae4e0b0aa37ea139a9bb8",
-      "bytes": 405527,
+      "sha256": "348de5e60af592ea2bd8cc236dae83029f52bc81a7a11751546dd266adcb31da",
+      "bytes": 420464,
       "dialect": "openapi_3_1",
       "version": "3.0.0",
       "title": "Daytona",
       "api_version": "1.0",
-      "paths": 145,
-      "operations": 177
+      "paths": 150,
+      "operations": 184
     },
     {
       "key": "toolbox",
       "filename": "daytona-toolbox-openapi.json",
       "url": "https://www.daytona.io/docs/toolbox-openapi.json",
-      "sha256": "883f43ad3ae73deed07cd9a341c42ab26a8b2e8326f3577bee2bd0b786dd88ab",
-      "bytes": 129665,
+      "sha256": "e16ec2c7cec335cd2b7f9457868e595bc7ccb21a228192cafdd1bef4504d3345",
+      "bytes": 156153,
       "dialect": "swagger_2",
       "version": "2.0",
       "title": "Daytona Toolbox API",
@@ -83,52 +83,52 @@
     }
   ],
   "inventory": {
-    "operations": 288,
-    "selected_operations": 277,
-    "excluded_operations": 11,
+    "operations": 295,
+    "selected_operations": 283,
+    "excluded_operations": 12,
     "leaf_packs": 6,
     "workflows": 6,
     "connections": 5,
     "by_source": {
       "analytics": 8,
-      "platform": 177,
+      "platform": 184,
       "toolbox": 103
     },
     "by_pack": {
-      "daytona-sandboxes-storage": 60,
-      "daytona-runtime-services": 33,
+      "daytona-sandboxes-storage": 62,
+      "daytona-runtime-services": 37,
       "daytona-organizations-access": 56,
       "daytona-administration": 24,
       "daytona-toolbox": 96,
       "daytona-analytics": 8
     },
     "selected_by_connection": {
-      "daytona": 93,
+      "daytona": 99,
       "daytona_account": 56,
       "daytona_admin": 24,
       "daytona_analytics": 8,
       "daytona_toolbox": 96
     },
     "selected_by_risk": {
-      "admin": 68,
-      "destructive": 43,
-      "read": 130,
+      "admin": 70,
+      "destructive": 44,
+      "read": 133,
       "write": 36
     },
     "selected_by_approval": {
-      "always": 147,
-      "ask": 127,
+      "always": 150,
+      "ask": 130,
       "never": 3
     },
-    "raw_json_request_bodies": 85,
+    "raw_json_request_bodies": 88,
     "exact_decimal_parameters": 21,
     "csv_query_parameters": 0,
     "omitted_repeated_query_parameters": 6,
     "connection_owned_organization_headers": 17,
-    "omitted_api_key_scope_headers": 74,
+    "omitted_api_key_scope_headers": 79,
     "omitted_optional_complex_parameters": 20,
     "file_captures": 2,
-    "json_responses_with_exact_integer_mode": 224,
+    "json_responses_with_exact_integer_mode": 229,
     "paginated_operations": 9,
     "work_entity_sources": 0
   },
@@ -137,11 +137,12 @@
       "platform GET /sandbox/paginated",
       "platform GET /sandbox/{sandboxIdOrName}/build-logs",
       "platform GET /secret",
-      "platform GET /snapshots/{id}/build-logs"
+      "platform GET /snapshots/{id}/build-logs",
+      "platform POST /sandbox/{sandboxIdOrName}/backup"
     ],
     "unsupported_multipart_upload": [
       "toolbox POST /files/bulk-upload",
-      "toolbox POST /files/upload"
+      "toolbox POST /files/upload-v2"
     ],
     "unsupported_multipart_response": [
       "toolbox POST /files/bulk-download"
@@ -159,13 +160,14 @@
   },
   "exclusions": {
     "platform GET /sandbox/paginated": "The official contract marks this operation deprecated and publishes a current nondeprecated surface; retaining it would widen grants with a stale duplicate capability.",
+    "platform POST /sandbox/{sandboxIdOrName}/backup": "The official contract marks this operation deprecated and publishes a current nondeprecated surface; retaining it would widen grants with a stale duplicate capability.",
     "platform GET /sandbox/{sandboxIdOrName}/build-logs": "The official contract marks this operation deprecated and publishes a current nondeprecated surface; retaining it would widen grants with a stale duplicate capability.",
     "platform GET /snapshots/{id}/build-logs": "The official contract marks this operation deprecated and publishes a current nondeprecated surface; retaining it would widen grants with a stale duplicate capability.",
     "platform GET /secret": "The official contract marks this operation deprecated and publishes a current nondeprecated surface; retaining it would widen grants with a stale duplicate capability.",
     "toolbox POST /env": "The official contract declares a required environment-update body without any request media type, so the closed request-schema gate cannot express that body honestly and the composition transport refuses to guess a content type.",
     "toolbox POST /files/bulk-download": "The official route returns a multipart response from POST. The current fail-closed response_capture contract accepts GET downloads only, while ordinary JSON decoding would discard the file and error part boundaries.",
     "toolbox POST /files/bulk-upload": "The official contract requires a multipart/form-data multi-file upload, while the finite REST composition transport cannot construct that body or its repeated file parts honestly.",
-    "toolbox POST /files/upload": "The official contract requires a multipart/form-data file upload, while the finite REST composition transport cannot construct multipart request bodies without corrupting file bytes.",
+    "toolbox POST /files/upload-v2": "The official contract requires a multipart/form-data file upload, while the finite REST composition transport cannot construct multipart request bodies without corrupting file bytes.",
     "toolbox POST /init": "This route replaces the toolbox authentication token and initializes server telemetry. Daytona itself owns that sandbox bootstrap, so exposing it would let a recipe disrupt the enrolled credential boundary.",
     "toolbox GET /process/interpreter/execute": "The official contract returns HTTP 101 and streams interpreter execution over WebSocket; representing it as a finite JSON GET would silently discard the protocol and streamed results.",
     "toolbox GET /process/pty/{sessionId}/connect": "The official contract upgrades to WebSocket for interactive PTY I/O; the finite REST execution binding cannot preserve the duplex streaming session."
@@ -4114,6 +4116,19 @@
           "emitted_key": "query.includeErroredDeleted"
         },
         {
+          "name": "includeWarm",
+          "in": "query",
+          "required": false,
+          "schema_type": "boolean",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "collection_format": null,
+          "synthetic": false,
+          "serialization": "scalar",
+          "emitted_key": "query.includeWarm"
+        },
+        {
           "name": "states",
           "in": "query",
           "required": false,
@@ -4322,6 +4337,32 @@
           "emitted_key": "query.lastEventBefore"
         },
         {
+          "name": "autoDestroyAtAfter",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": "date-time",
+          "style": null,
+          "explode": null,
+          "collection_format": null,
+          "synthetic": false,
+          "serialization": "scalar",
+          "emitted_key": "query.autoDestroyAtAfter"
+        },
+        {
+          "name": "autoDestroyAtBefore",
+          "in": "query",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": "date-time",
+          "style": null,
+          "explode": null,
+          "collection_format": null,
+          "synthetic": false,
+          "serialization": "scalar",
+          "emitted_key": "query.autoDestroyAtBefore"
+        },
+        {
           "name": "sort",
           "in": "query",
           "required": false,
@@ -4392,6 +4433,11 @@
           "required": false
         },
         {
+          "key": "query.includeWarm",
+          "type": "boolean",
+          "required": false
+        },
+        {
           "key": "query.minCpu",
           "type": "number",
           "required": false
@@ -4448,6 +4494,16 @@
         },
         {
           "key": "query.lastEventBefore",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.autoDestroyAtAfter",
+          "type": "string",
+          "required": false
+        },
+        {
+          "key": "query.autoDestroyAtBefore",
           "type": "string",
           "required": false
         },
@@ -5763,10 +5819,10 @@
       "protocol": "openapi_3_1",
       "method": "POST",
       "contract_path": "/sandbox/{sandboxIdOrName}/backup",
-      "wire_path": "/sandbox/{sandboxIdOrName}/backup",
+      "wire_path": null,
       "operation_id": "createBackup",
       "tag": "sandbox",
-      "deprecated": false,
+      "deprecated": true,
       "security": [
         "bearer",
         "oauth2:openid,profile,email"
@@ -5787,7 +5843,7 @@
           "explode": null,
           "collection_format": null,
           "synthetic": false,
-          "serialization": "omitted_api_key_scope",
+          "serialization": "excluded",
           "emitted_key": null
         },
         {
@@ -5800,8 +5856,8 @@
           "explode": null,
           "collection_format": null,
           "synthetic": false,
-          "serialization": "scalar",
-          "emitted_key": "sandboxIdOrName"
+          "serialization": "excluded",
+          "emitted_key": null
         }
       ],
       "response_media": [
@@ -5809,30 +5865,19 @@
       ],
       "selected_response_media": "application/json",
       "success_status": "200",
-      "selected": true,
-      "admission_reason": "The hash-pinned official contract defines a finite HTTP request and response that the composition transport can preserve without inventing fields or weakening authorization.",
-      "exclusion_reason": null,
-      "exclusion_category": null,
-      "pack": "daytona-sandboxes-storage",
-      "connection": "daytona",
-      "op": "sandbox.create_backup",
-      "emitted_args": [
-        {
-          "key": "sandboxIdOrName",
-          "type": "string",
-          "required": true,
-          "affects_target": true
-        }
-      ],
-      "risk": "write",
-      "approval": "always",
-      "idempotency": "non_idempotent",
-      "static_headers": {
-        "Accept": "application/json"
-      },
-      "response_json": {
-        "unsafe_integers": "string"
-      },
+      "selected": false,
+      "admission_reason": null,
+      "exclusion_reason": "The official contract marks this operation deprecated and publishes a current nondeprecated surface; retaining it would widen grants with a stale duplicate capability.",
+      "exclusion_category": "deprecated_operation",
+      "pack": null,
+      "connection": null,
+      "op": null,
+      "emitted_args": [],
+      "risk": null,
+      "approval": null,
+      "idempotency": null,
+      "static_headers": null,
+      "response_json": null,
       "response_capture": null,
       "result_path": null,
       "pagination": null
@@ -6373,6 +6418,166 @@
       "pagination": null
     },
     {
+      "key": "platform GET /sandbox/{sandboxId}/signing-key",
+      "source": "platform",
+      "protocol": "openapi_3_1",
+      "method": "GET",
+      "contract_path": "/sandbox/{sandboxId}/signing-key",
+      "wire_path": "/sandbox/{sandboxId}/signing-key",
+      "operation_id": "getSandboxSigningKey",
+      "tag": "sandbox",
+      "deprecated": false,
+      "security": [
+        "bearer",
+        "oauth2:openid,profile,email"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "X-Daytona-Organization-ID",
+          "in": "header",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "collection_format": null,
+          "synthetic": false,
+          "serialization": "omitted_api_key_scope",
+          "emitted_key": null
+        },
+        {
+          "name": "sandboxId",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "collection_format": null,
+          "synthetic": false,
+          "serialization": "scalar",
+          "emitted_key": "sandboxId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "selected": true,
+      "admission_reason": "The hash-pinned official contract defines a finite HTTP request and response that the composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "daytona-sandboxes-storage",
+      "connection": "daytona",
+      "op": "sandbox.get_sandbox_signing_key",
+      "emitted_args": [
+        {
+          "key": "sandboxId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "response_capture": null,
+      "result_path": null,
+      "pagination": null
+    },
+    {
+      "key": "platform POST /sandbox/{sandboxId}/signing-key/rotate",
+      "source": "platform",
+      "protocol": "openapi_3_1",
+      "method": "POST",
+      "contract_path": "/sandbox/{sandboxId}/signing-key/rotate",
+      "wire_path": "/sandbox/{sandboxId}/signing-key/rotate",
+      "operation_id": "rotateSigningKey",
+      "tag": "sandbox",
+      "deprecated": false,
+      "security": [
+        "bearer",
+        "oauth2:openid,profile,email"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "X-Daytona-Organization-ID",
+          "in": "header",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "collection_format": null,
+          "synthetic": false,
+          "serialization": "omitted_api_key_scope",
+          "emitted_key": null
+        },
+        {
+          "name": "sandboxId",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "collection_format": null,
+          "synthetic": false,
+          "serialization": "scalar",
+          "emitted_key": "sandboxId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "selected": true,
+      "admission_reason": "The hash-pinned official contract defines a finite HTTP request and response that the composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "daytona-sandboxes-storage",
+      "connection": "daytona",
+      "op": "sandbox.rotate_signing_key",
+      "emitted_args": [
+        {
+          "key": "sandboxId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "response_capture": null,
+      "result_path": null,
+      "pagination": null
+    },
+    {
       "key": "platform POST /sandbox/{sandboxId}/last-activity",
       "source": "platform",
       "protocol": "openapi_3_1",
@@ -6386,11 +6591,13 @@
         "bearer",
         "oauth2:openid,profile,email"
       ],
-      "request_media": [],
-      "selected_request_media": null,
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
       "request_body_required": false,
-      "request_body_schema_type": null,
-      "request_body_mode": null,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
       "parameters": [
         {
           "name": "X-Daytona-Organization-ID",
@@ -6435,13 +6642,20 @@
           "type": "string",
           "required": true,
           "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": false,
+          "affects_target": true
         }
       ],
       "risk": "write",
       "approval": "always",
       "idempotency": "non_idempotent",
       "static_headers": {
-        "Accept": "application/json"
+        "Accept": "application/json",
+        "Content-Type": "application/json"
       },
       "response_json": null,
       "response_capture": null,
@@ -9997,6 +10211,73 @@
       "pagination": null
     },
     {
+      "key": "platform GET /preview/{sandboxId}/signing-key",
+      "source": "platform",
+      "protocol": "openapi_3_1",
+      "method": "GET",
+      "contract_path": "/preview/{sandboxId}/signing-key",
+      "wire_path": "/preview/{sandboxId}/signing-key",
+      "operation_id": "getSigningKey",
+      "tag": "preview",
+      "deprecated": false,
+      "security": [
+        "bearer",
+        "oauth2:openid,profile,email"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "sandboxId",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "collection_format": null,
+          "synthetic": false,
+          "serialization": "scalar",
+          "emitted_key": "sandboxId"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "selected": true,
+      "admission_reason": "The hash-pinned official contract defines a finite HTTP request and response that the composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "daytona-sandboxes-storage",
+      "connection": "daytona",
+      "op": "preview.get_signing_key",
+      "emitted_args": [
+        {
+          "key": "sandboxId",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "response_capture": null,
+      "result_path": null,
+      "pagination": null
+    },
+    {
       "key": "platform GET /preview/{sandboxId}/access",
       "source": "platform",
       "protocol": "openapi_3_1",
@@ -10891,6 +11172,301 @@
       "response_json": {
         "unsafe_integers": "string"
       },
+      "response_capture": null,
+      "result_path": null,
+      "pagination": null
+    },
+    {
+      "key": "platform GET /warm-pools",
+      "source": "platform",
+      "protocol": "openapi_3_1",
+      "method": "GET",
+      "contract_path": "/warm-pools",
+      "wire_path": "/warm-pools",
+      "operation_id": "listWarmPools",
+      "tag": "warm-pools",
+      "deprecated": false,
+      "security": [
+        "bearer",
+        "oauth2:openid,profile,email"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "X-Daytona-Organization-ID",
+          "in": "header",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "collection_format": null,
+          "synthetic": false,
+          "serialization": "omitted_api_key_scope",
+          "emitted_key": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "selected": true,
+      "admission_reason": "The hash-pinned official contract defines a finite HTTP request and response that the composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "daytona-runtime-services",
+      "connection": "daytona",
+      "op": "warm_pools.list_warm_pools",
+      "emitted_args": [],
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "response_capture": null,
+      "result_path": null,
+      "pagination": null
+    },
+    {
+      "key": "platform POST /warm-pools",
+      "source": "platform",
+      "protocol": "openapi_3_1",
+      "method": "POST",
+      "contract_path": "/warm-pools",
+      "wire_path": "/warm-pools",
+      "operation_id": "createWarmPool",
+      "tag": "warm-pools",
+      "deprecated": false,
+      "security": [
+        "bearer",
+        "oauth2:openid,profile,email"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "X-Daytona-Organization-ID",
+          "in": "header",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "collection_format": null,
+          "synthetic": false,
+          "serialization": "omitted_api_key_scope",
+          "emitted_key": null
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "201",
+      "selected": true,
+      "admission_reason": "The hash-pinned official contract defines a finite HTTP request and response that the composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "daytona-runtime-services",
+      "connection": "daytona",
+      "op": "warm_pools.create_warm_pool",
+      "emitted_args": [
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "response_capture": null,
+      "result_path": null,
+      "pagination": null
+    },
+    {
+      "key": "platform PATCH /warm-pools/{id}",
+      "source": "platform",
+      "protocol": "openapi_3_1",
+      "method": "PATCH",
+      "contract_path": "/warm-pools/{id}",
+      "wire_path": "/warm-pools/{id}",
+      "operation_id": "updateWarmPool",
+      "tag": "warm-pools",
+      "deprecated": false,
+      "security": [
+        "bearer",
+        "oauth2:openid,profile,email"
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "selected_request_media": "application/json",
+      "request_body_required": true,
+      "request_body_schema_type": "object",
+      "request_body_mode": "raw_json",
+      "parameters": [
+        {
+          "name": "X-Daytona-Organization-ID",
+          "in": "header",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "collection_format": null,
+          "synthetic": false,
+          "serialization": "omitted_api_key_scope",
+          "emitted_key": null
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "collection_format": null,
+          "synthetic": false,
+          "serialization": "scalar",
+          "emitted_key": "id"
+        }
+      ],
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "success_status": "200",
+      "selected": true,
+      "admission_reason": "The hash-pinned official contract defines a finite HTTP request and response that the composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "daytona-runtime-services",
+      "connection": "daytona",
+      "op": "warm_pools.update_warm_pool",
+      "emitted_args": [
+        {
+          "key": "id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body_raw",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "static_headers": {
+        "Accept": "application/json",
+        "Content-Type": "application/json"
+      },
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "response_capture": null,
+      "result_path": null,
+      "pagination": null
+    },
+    {
+      "key": "platform DELETE /warm-pools/{id}",
+      "source": "platform",
+      "protocol": "openapi_3_1",
+      "method": "DELETE",
+      "contract_path": "/warm-pools/{id}",
+      "wire_path": "/warm-pools/{id}",
+      "operation_id": "deleteWarmPool",
+      "tag": "warm-pools",
+      "deprecated": false,
+      "security": [
+        "bearer",
+        "oauth2:openid,profile,email"
+      ],
+      "request_media": [],
+      "selected_request_media": null,
+      "request_body_required": false,
+      "request_body_schema_type": null,
+      "request_body_mode": null,
+      "parameters": [
+        {
+          "name": "X-Daytona-Organization-ID",
+          "in": "header",
+          "required": false,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "collection_format": null,
+          "synthetic": false,
+          "serialization": "omitted_api_key_scope",
+          "emitted_key": null
+        },
+        {
+          "name": "id",
+          "in": "path",
+          "required": true,
+          "schema_type": "string",
+          "schema_format": null,
+          "style": null,
+          "explode": null,
+          "collection_format": null,
+          "synthetic": false,
+          "serialization": "scalar",
+          "emitted_key": "id"
+        }
+      ],
+      "response_media": [],
+      "selected_response_media": null,
+      "success_status": "204",
+      "selected": true,
+      "admission_reason": "The hash-pinned official contract defines a finite HTTP request and response that the composition transport can preserve without inventing fields or weakening authorization.",
+      "exclusion_reason": null,
+      "exclusion_category": null,
+      "pack": "daytona-runtime-services",
+      "connection": "daytona",
+      "op": "warm_pools.delete_warm_pool",
+      "emitted_args": [
+        {
+          "key": "id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "static_headers": {
+        "Accept": "application/json"
+      },
+      "response_json": null,
       "response_capture": null,
       "result_path": null,
       "pagination": null
@@ -18939,11 +19515,11 @@
       "pagination": null
     },
     {
-      "key": "toolbox POST /files/upload",
+      "key": "toolbox POST /files/upload-v2",
       "source": "toolbox",
       "protocol": "swagger_2",
       "method": "POST",
-      "contract_path": "/files/upload",
+      "contract_path": "/files/upload-v2",
       "wire_path": null,
       "operation_id": "UploadFile",
       "tag": "file-system",
@@ -18973,7 +19549,7 @@
         {
           "name": "file",
           "in": "formData",
-          "required": true,
+          "required": false,
           "schema_type": "file",
           "schema_format": null,
           "style": null,
@@ -18984,8 +19560,10 @@
           "emitted_key": null
         }
       ],
-      "response_media": [],
-      "selected_response_media": null,
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
       "success_status": "200",
       "selected": false,
       "admission_reason": null,
@@ -24465,13 +25043,13 @@
   "generated": [
     {
       "slug": "daytona-sandboxes-storage",
-      "operations": 60,
-      "composition_bytes": 87655
+      "operations": 62,
+      "composition_bytes": 89433
     },
     {
       "slug": "daytona-runtime-services",
-      "operations": 33,
-      "composition_bytes": 41614
+      "operations": 37,
+      "composition_bytes": 46611
     },
     {
       "slug": "daytona-organizations-access",
@@ -24481,7 +25059,7 @@
     {
       "slug": "daytona-administration",
       "operations": 24,
-      "composition_bytes": 29453
+      "composition_bytes": 29384
     },
     {
       "slug": "daytona-toolbox",

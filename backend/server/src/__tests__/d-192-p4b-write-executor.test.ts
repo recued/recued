@@ -45,6 +45,7 @@ import {
   createWorkEntityDispatchers,
   WorkEntityVendorWriteError,
   WorkEntityWriteConflictError,
+  WorkEntityWriteVerifyFailedError,
 } from '../work-entity-ingredients.js';
 import { createWorkEntityResolver } from '../work-entity-resolver.js';
 import {
@@ -354,7 +355,13 @@ const opOk = (record: Record<string, unknown>): GatedCatalogOperationOutcome => 
 const opError = (
   kind: 'config' | 'policy' | 'error' | 'unavailable',
   reason: string,
-): GatedCatalogOperationOutcome => ({ ok: false, kind, reason });
+  error_code?: 'API_NOT_FOUND',
+): GatedCatalogOperationOutcome => ({
+  ok: false,
+  kind,
+  reason,
+  ...(error_code !== undefined ? { error_code } : {}),
+});
 
 const scriptedOperation = (
   ...outcomes: GatedCatalogOperationOutcome[]
@@ -2022,6 +2029,73 @@ describe('dispatcher integration', () => {
       }),
     });
   });
+
+  it('tombstones locally only after the real executor positively proves remote absence', async () => {
+    const resolver = createWorkEntityResolver(store);
+    let executorRef: WorkEntitySourceWriteExecutor | null = null;
+    const dispatchers = createWorkEntityDispatchers({
+      store,
+      resolver,
+      getWriteExecutor: () => executorRef,
+      now: () => NOW + 100,
+    });
+    const prior = seedTask({
+      id: 'task-delete-e2e',
+      source_record_id: 'rid-delete-e2e',
+      title: 'Delete guard',
+      source_version_token: VERSION_1,
+    });
+    const declaration = taskDeclaration({
+      ops: {
+        list: 'task.list',
+        read: 'task.read',
+        update: 'task.update',
+        delete: 'task.delete',
+      },
+      op_bindings: {
+        read: { id_arg: 'taskId' },
+        update: { id_arg: 'taskId' },
+        delete: { id_arg: 'taskId' },
+      },
+    });
+    const survived = scriptedOperation(
+      opOk(vendorTask('rid-delete-e2e')),
+      opOk({}),
+      opOk(vendorTask('rid-delete-e2e')),
+    );
+    executorRef = makeExecutor({
+      declaration,
+      runOperation: survived.runOperation,
+    }).executor;
+
+    await expect(dispatchers.taskDelete({ id: prior.id }))
+      .rejects.toBeInstanceOf(WorkEntityWriteVerifyFailedError);
+    expect(readTask(prior.id)).toMatchObject({
+      title: 'Delete guard',
+      sync_state: 'live',
+    });
+    expect(readTask(prior.id).deleted_at).toBeUndefined();
+
+    // A later retry sees the provider record already absent. That typed proof
+    // safely completes the local half without reissuing the destructive call.
+    const alreadyGone = scriptedOperation(
+      opError('error', 'provider returned 404', 'API_NOT_FOUND'),
+    );
+    executorRef = makeExecutor({
+      declaration,
+      runOperation: alreadyGone.runOperation,
+    }).executor;
+
+    await expect(dispatchers.taskDelete({ id: prior.id })).resolves.toMatchObject({
+      ok: true,
+      tombstoned: true,
+    });
+    expect(readTask(prior.id)).toMatchObject({
+      sync_state: 'tombstoned',
+      deleted_at: NOW + 100,
+    });
+    expect(alreadyGone.invocations.map((request) => request.operationKey)).toEqual(['task.read']);
+  });
 });
 
 describe('dispatch create — source-dependency create args (Slice 5)', () => {
@@ -2547,6 +2621,7 @@ describe('dispatch delete — a 2xx is not proof', () => {
   it('REFUSES when the record survives the delete (soft delete / mis-mapped id_arg) — the next sync would resurrect it', async () => {
     const prior = seedForDelete();
     const script = scriptedOperation(
+      opOk(vendorTask('rid-del')),                           // preflight identity proof
       opOk({}),                                              // task.delete → 2xx
       opOk(vendorTask('rid-del', { title: 'Base title' })),  // read-back → STILL THERE
     );
@@ -2559,38 +2634,23 @@ describe('dispatch delete — a 2xx is not proof', () => {
     );
 
     expect(outcome).toMatchObject({ ok: false, kind: 'verify_failed' });
-    expect(outcome.reason).toContain('still returns record');
-    // The read-back must actually have been issued.
-    expect(script.invocations.map((i) => i.operationKey)).toEqual(['task.delete', 'task.read']);
-    expect(script.invocations[1]).toMatchObject({ stepId: 'write_verify', args: { taskId: 'rid-del' } });
+    expect(outcome.reason).toContain("still returns a record for 'rid-del'");
+    expect(script.invocations.map((i) => ({ op: i.operationKey, step: i.stepId }))).toEqual([
+      { op: 'task.read', step: 'write_preflight' },
+      { op: 'task.delete', step: 'source_write' },
+      { op: 'task.read', step: 'write_verify' },
+    ]);
+    expect(script.invocations[2]).toMatchObject({ args: { taskId: 'rid-del' } });
   });
 
-  it('SUCCEEDS when the read-back no longer finds the record', async () => {
+  it('SUCCEEDS only when the read-back carries the typed provider absence signal', async () => {
     const prior = seedForDelete();
-    const script = scriptedOperation(
-      opOk({}),                                  // task.delete → 2xx
-      opError('error', 'task.read returned 404'), // read-back → gone
-    );
-    const harness = makeExecutor({ declaration: deleteDecl(), runOperation: script.runOperation });
-
-    const outcome = await harness.executor.dispatch(prepareDelete(harness.executor), {
-      local_id: prior.id, prior, current: prior,
-    });
-
-    expect(outcome).toMatchObject({ ok: true, operation: 'delete' });
-  });
-
-  it('does NOT infer deletion from a TRANSIENT read failure — it refutes, it never confirms', async () => {
-    // The read-back carries no HTTP status, so a 404 (gone) is indistinguishable
-    // from a 500 (unknown). We therefore never invert it into "the read failed ⇒
-    // the record is gone" — that would fail OPEN on a transient. A failed
-    // read-back falls back to the 2xx, exactly as an unverifiable delete must.
-    const prior = seedForDelete();
-    const script = scriptedOperation(
-      opOk({}),
-      opError('unavailable', 'connection timed out'), // NOT proof of deletion
-    );
     const recordDeterministicVerification = vi.fn();
+    const script = scriptedOperation(
+      opOk(vendorTask('rid-del')),
+      opOk({}),
+      opError('error', 'task.read returned 404', 'API_NOT_FOUND'),
+    );
     const harness = makeExecutor({
       declaration: deleteDecl(),
       runOperation: script.runOperation,
@@ -2605,30 +2665,425 @@ describe('dispatch delete — a 2xx is not proof', () => {
       local_id: prior.id, prior, current: prior,
     });
 
-    // Falls back to the 2xx rather than erroring — but it never CLAIMED to have
-    // proven the record gone. The safety property is the refutation, not this.
     expect(outcome).toMatchObject({ ok: true, operation: 'delete' });
+    expect(recordDeterministicVerification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'passed',
+        postcondition_key: 'work_entity_vendor:task:delete',
+      }),
+    );
+  });
+
+  it('does NOT infer deletion from a transient post-delete read failure', async () => {
+    const prior = seedForDelete();
+    const script = scriptedOperation(
+      opOk(vendorTask('rid-del')),
+      opOk({}),
+      opError('unavailable', 'connection timed out'), // NOT proof of deletion
+    );
+    const recordDeterministicVerification = vi.fn();
+    const harness = makeExecutor({
+      declaration: deleteDecl(),
+      runOperation: script.runOperation,
+      recordDeterministicVerification,
+      getDeterministicVerificationContext: () => ({
+        session_id: 'chat-session',
+        turn_id: 'chat-turn',
+      }),
+    });
+
+    const outcome = requireDispatchFailure(
+      await harness.executor.dispatch(prepareDelete(harness.executor), {
+        local_id: prior.id, prior, current: prior,
+      }),
+    );
+
+    expect(outcome).toMatchObject({ ok: false, kind: 'error', staged: false });
+    expect(outcome.reason).toContain('could not confirm');
+    expect(outcome.reason).toContain('outcome is unknown');
     expect(recordDeterministicVerification).not.toHaveBeenCalled();
   });
 
-  it('a Source with no read binding still deletes on the 2xx alone (no regression)', async () => {
-    // A delete never needed a read op before, and must not start needing one.
-    const noReadDecl = deleteDecl({
-      ops: { list: 'task.list', delete: 'task.delete' },
-      op_bindings: { delete: { id_arg: 'taskId' } },
-    });
+  it('does not trust 404-looking error text without the typed provider code', async () => {
     const prior = seedForDelete();
-    const script = scriptedOperation(opOk({}));
-    const harness = makeExecutor({
-      declaration: noReadDecl,
-      runOperation: script.runOperation,
-    });
+    const script = scriptedOperation(
+      opOk(vendorTask('rid-del')),
+      opOk({}),
+      opError('error', 'task.read returned 404'),
+    );
+    const harness = makeExecutor({ declaration: deleteDecl(), runOperation: script.runOperation });
+
+    const outcome = requireDispatchFailure(
+      await harness.executor.dispatch(prepareDelete(harness.executor), {
+        local_id: prior.id, prior, current: prior,
+      }),
+    );
+
+    expect(outcome).toMatchObject({ ok: false, kind: 'error' });
+  });
+
+  it('fails before the destructive call when the verification read is unavailable', async () => {
+    const prior = seedForDelete();
+    const script = scriptedOperation(opError('unavailable', 'connection offline'));
+    const harness = makeExecutor({ declaration: deleteDecl(), runOperation: script.runOperation });
+
+    const outcome = requireDispatchFailure(
+      await harness.executor.dispatch(prepareDelete(harness.executor), {
+        local_id: prior.id, prior, current: prior,
+      }),
+    );
+
+    expect(outcome).toMatchObject({ ok: false, kind: 'error', staged: false });
+    expect(outcome.reason).toContain('read-before-delete failed');
+    expect(script.invocations.map((request) => request.operationKey)).toEqual(['task.read']);
+  });
+
+  it('fails before the destructive call when the targeted read returns another record', async () => {
+    const prior = seedForDelete();
+    const script = scriptedOperation(opOk(vendorTask('rid-other')));
+    const harness = makeExecutor({ declaration: deleteDecl(), runOperation: script.runOperation });
+
+    const outcome = requireDispatchFailure(
+      await harness.executor.dispatch(prepareDelete(harness.executor), {
+        local_id: prior.id, prior, current: prior,
+      }),
+    );
+
+    expect(outcome).toMatchObject({ ok: false, kind: 'error', staged: false });
+    expect(outcome.reason).toContain("returned record 'rid-other'");
+    expect(outcome.reason).toContain("expected 'rid-del'");
+    expect(script.invocations.map((request) => request.operationKey)).toEqual(['task.read']);
+  });
+
+  it('treats a preflight typed 404 as an idempotent crash retry and skips a second delete', async () => {
+    const prior = seedForDelete();
+    const script = scriptedOperation(
+      opError('error', 'already gone', 'API_NOT_FOUND'),
+    );
+    const harness = makeExecutor({ declaration: deleteDecl(), runOperation: script.runOperation });
 
     const outcome = await harness.executor.dispatch(prepareDelete(harness.executor), {
       local_id: prior.id, prior, current: prior,
     });
 
     expect(outcome).toMatchObject({ ok: true, operation: 'delete' });
-    expect(script.invocations.map((i) => i.operationKey)).toEqual(['task.delete']); // no read-back
+    expect(script.invocations.map((request) => ({
+      op: request.operationKey,
+      step: request.stepId,
+    }))).toEqual([{ op: 'task.read', step: 'write_preflight' }]);
+  });
+
+  it('settles an uncertain delete acknowledgement from the positive postcondition', async () => {
+    const prior = seedForDelete();
+    const script = scriptedOperation(
+      opOk(vendorTask('rid-del')),
+      opError('error', 'provider returned 500 after dispatch'),
+      opError('error', 'gone', 'API_NOT_FOUND'),
+    );
+    const harness = makeExecutor({ declaration: deleteDecl(), runOperation: script.runOperation });
+
+    const outcome = await harness.executor.dispatch(prepareDelete(harness.executor), {
+      local_id: prior.id, prior, current: prior,
+    });
+
+    expect(outcome).toMatchObject({ ok: true, operation: 'delete' });
+    expect(script.invocations.map((request) => request.operationKey)).toEqual([
+      'task.read',
+      'task.delete',
+      'task.read',
+    ]);
+  });
+
+  it('uses the live preflight version token for a conditional delete', async () => {
+    const declaration = deleteDecl({
+      op_bindings: {
+        read: { id_arg: 'taskId' },
+        update: { id_arg: 'taskId' },
+        delete: { id_arg: 'taskId', precondition_arg: 'ifMatch' },
+      },
+      write_policy: {
+        conditional_write: 'etag',
+        stale_write: 'manual_merge',
+        field_conflicts: 'manual_merge',
+      },
+    });
+    const prior = seedForDelete();
+    const script = scriptedOperation(
+      opOk(vendorTask('rid-del', { updatedAt: VERSION_2 })),
+      opOk({}),
+      opError('error', 'gone', 'API_NOT_FOUND'),
+    );
+    const harness = makeExecutor({ declaration, runOperation: script.runOperation });
+
+    await harness.executor.dispatch(prepareDelete(harness.executor), {
+      local_id: prior.id, prior, current: prior,
+    });
+
+    expect(script.invocations[1]?.args).toMatchObject({
+      taskId: 'rid-del',
+      ifMatch: VERSION_2,
+    });
+    expect(script.invocations[1]?.args).not.toMatchObject({ ifMatch: VERSION_1 });
+  });
+
+  it('requires a targeted read binding instead of falling back to the delete 2xx', () => {
+    const noReadDecl = deleteDecl({
+      ops: { list: 'task.list', read: 'task.read', delete: 'task.delete' },
+      op_bindings: { delete: { id_arg: 'taskId' } },
+    });
+    const harness = makeExecutor({ declaration: noReadDecl });
+
+    expect(harness.executor.prepare({
+      source_id: SOURCE_ID,
+      kind: 'task',
+      operation: 'delete',
+      patch: {},
+    })).toMatchObject({
+      ok: false,
+      kind: 'config',
+      reason: expect.stringContaining('binding'),
+    });
+  });
+
+  it('read-through delete also fails closed when its verification read is inconclusive', async () => {
+    const declaration = deleteDecl({
+      sync: { posture: 'read_through', mode: 'read_write', depth: 'meta' },
+      read_resolution: {
+        default: 'source',
+        wild_query: taskDeclaration().read_resolution.wild_query,
+      },
+    });
+    store.registerSource({
+      id: SOURCE_ID,
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      sync_posture: 'read_through',
+      source_label: 'HubSpot tasks (acme)',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    const recordDeterministicVerification = vi.fn();
+    const script = scriptedOperation(
+      opOk(vendorTask('rid-del')),
+      opOk({}),
+      opError('unavailable', 'verify timeout'),
+    );
+    const harness = makeExecutor({
+      declaration,
+      runOperation: script.runOperation,
+      recordDeterministicVerification,
+      getDeterministicVerificationContext: () => ({
+        session_id: 'chat-session',
+        turn_id: 'chat-turn',
+      }),
+    });
+    const prepared = requirePrepared(harness.executor.prepareReadThrough!({
+      source_id: SOURCE_ID,
+      kind: 'task',
+      operation: 'delete',
+      patch: {},
+    }));
+
+    const outcome = await harness.executor.dispatchReadThrough!(prepared, 'rid-del');
+
+    expect(outcome).toMatchObject({ ok: false, kind: 'error', staged: false });
+    expect(script.invocations.map((request) => ({
+      operationKey: request.operationKey,
+      stepId: request.stepId,
+    }))).toEqual([
+      { operationKey: 'task.read', stepId: 'write_preflight' },
+      { operationKey: 'task.delete', stepId: 'source_write' },
+      { operationKey: 'task.read', stepId: 'write_verify' },
+    ]);
+    expect(recordDeterministicVerification).not.toHaveBeenCalled();
+  });
+
+  it('read-through delete records a deterministic pass only after typed absence', async () => {
+    const declaration = deleteDecl({
+      sync: { posture: 'read_through', mode: 'read_write', depth: 'meta' },
+      read_resolution: {
+        default: 'source',
+        wild_query: taskDeclaration().read_resolution.wild_query,
+      },
+    });
+    store.registerSource({
+      id: SOURCE_ID,
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      sync_posture: 'read_through',
+      source_label: 'HubSpot tasks (acme)',
+      write_capable: true,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+    const recordDeterministicVerification = vi.fn();
+    const script = scriptedOperation(
+      opOk(vendorTask('rid-del')),
+      opOk({}),
+      opError('error', 'gone', 'API_NOT_FOUND'),
+    );
+    const harness = makeExecutor({
+      declaration,
+      runOperation: script.runOperation,
+      recordDeterministicVerification,
+      getDeterministicVerificationContext: () => ({
+        session_id: 'chat-session',
+        turn_id: 'chat-turn',
+      }),
+    });
+    const prepared = requirePrepared(harness.executor.prepareReadThrough!({
+      source_id: SOURCE_ID,
+      kind: 'task',
+      operation: 'delete',
+      patch: {},
+    }));
+
+    await expect(harness.executor.dispatchReadThrough!(prepared, 'rid-del'))
+      .resolves.toMatchObject({ ok: true, operation: 'delete' });
+    expect(recordDeterministicVerification).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'passed',
+        postcondition_key: 'work_entity_vendor:task:delete',
+      }),
+    );
+  });
+});
+
+// ────────────────────────────────────────────────────────────────
+// Read-through CREATE — the one read-through write with no incoming qualified
+// id. The vendor mints the record; its native id becomes the `we1` identity the
+// caller answers with. A mirrored create can tolerate an unprojectable response
+// (the row lands locally and the next sync cycle rewrites it); a read-through
+// Source has no row and no cycle, so the record is read back instead.
+// ────────────────────────────────────────────────────────────────
+
+describe('D-192 — read-through create', () => {
+  const readThroughDecl = (
+    overrides: Partial<KernelWorkEntitySourceDeclaration> = {},
+  ): KernelWorkEntitySourceDeclaration =>
+    taskDeclaration({
+      sync: { posture: 'read_through', mode: 'read_write', depth: 'meta' },
+      read_resolution: {
+        default: 'source',
+        wild_query: taskDeclaration().read_resolution.wild_query,
+      },
+      ...overrides,
+    });
+
+  const registerReadThroughSource = (): void => {
+    store.registerSource({
+      id: SOURCE_ID,
+      top_tier_kind: 'task',
+      source_kind: 'connection',
+      sync_posture: 'read_through',
+      source_label: 'HubSpot tasks (acme)',
+      write_capable: false,
+      mcp_exposed: false,
+      registered_at: NOW,
+    });
+  };
+
+  const prepareCreate = (
+    executor: WorkEntitySourceWriteExecutor,
+    patch: Record<string, unknown> = { title: 'Fresh task' },
+  ): WorkEntityVendorWritePrepared =>
+    requirePrepared(
+      executor.prepareReadThrough!({
+        source_id: SOURCE_ID,
+        kind: 'task',
+        operation: 'create',
+        patch,
+      }),
+    );
+
+  it('projects the create response and returns the vendor id, with no read-back', async () => {
+    registerReadThroughSource();
+    const script = scriptedOperation(opOk(vendorTask('rid-new', { title: 'Fresh task' })));
+    const harness = makeExecutor({
+      declaration: readThroughDecl(),
+      runOperation: script.runOperation,
+    });
+
+    const outcome = await harness.executor.dispatchReadThroughCreate!(
+      prepareCreate(harness.executor),
+    );
+
+    expect(outcome).toMatchObject({
+      ok: true,
+      operation: 'create',
+      source_record_id: 'rid-new',
+      verified: true,
+    });
+    // Real field values, from the vendor — never an echo of the request.
+    expect((outcome as { projected: { write: { title?: string } } }).projected.write.title)
+      .toBe('Fresh task');
+    // A projectable create response needs no second call.
+    expect(script.invocations.map((i) => ({ op: i.operationKey, step: i.stepId })))
+      .toEqual([{ op: 'task.create', step: 'source_write' }]);
+  });
+
+  it('reads the record back when the create response is not a full record', async () => {
+    registerReadThroughSource();
+    // Salesforce-shaped: the create response is an id envelope, not a record.
+    const script = scriptedOperation(
+      opOk({ id: 'rid-new', success: true }),
+      opOk(vendorTask('rid-new', { title: 'Fresh task' })),
+    );
+    const harness = makeExecutor({
+      declaration: readThroughDecl(),
+      runOperation: script.runOperation,
+    });
+
+    const outcome = await harness.executor.dispatchReadThroughCreate!(
+      prepareCreate(harness.executor),
+    );
+
+    expect(outcome).toMatchObject({ ok: true, operation: 'create', source_record_id: 'rid-new' });
+    expect(script.invocations.map((i) => ({ op: i.operationKey, step: i.stepId }))).toEqual([
+      { op: 'task.create', step: 'source_write' },
+      { op: 'task.read', step: 'write_verify' },
+    ]);
+  });
+
+  it('fails when the create response carries no id, and warns that a retry duplicates', async () => {
+    registerReadThroughSource();
+    const script = scriptedOperation(opOk({ success: true }));
+    const harness = makeExecutor({
+      declaration: readThroughDecl(),
+      runOperation: script.runOperation,
+    });
+
+    const outcome = await harness.executor.dispatchReadThroughCreate!(
+      prepareCreate(harness.executor),
+    );
+
+    expect(outcome).toMatchObject({ ok: false, kind: 'error', staged: false });
+    expect((outcome as { reason: string }).reason).toContain('a second one');
+  });
+
+  it('surfaces the created id when the record cannot be projected — a retry would duplicate', async () => {
+    registerReadThroughSource();
+    const script = scriptedOperation(
+      opOk({ id: 'rid-new', success: true }),        // id envelope, unprojectable
+      opError('unavailable', 'read-back timeout'),   // and the read-back fails
+    );
+    const harness = makeExecutor({
+      declaration: readThroughDecl(),
+      runOperation: script.runOperation,
+    });
+
+    const outcome = await harness.executor.dispatchReadThroughCreate!(
+      prepareCreate(harness.executor),
+    );
+
+    // The record EXISTS. Reporting a bare failure would invite a duplicating
+    // retry, so the id rides on the failure.
+    expect(outcome).toMatchObject({
+      ok: false,
+      kind: 'verify_failed',
+      staged: false,
+      source_record_id: 'rid-new',
+    });
   });
 });

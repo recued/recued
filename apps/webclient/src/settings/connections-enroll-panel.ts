@@ -74,6 +74,11 @@
  *  mirrors `reception-authoring-mount.ts` (innerHTML + dispatcher +
  *  silent field edits). */
 
+import {
+  runOAuthPopup,
+  defaultFoundationalOAuthEnv,
+  type FoundationalOAuthEnv,
+} from '../connections/foundational-oauth-popup.js';
 import type {
   BulkPackManifest,
   ConnectionAuth,
@@ -104,6 +109,10 @@ import type {
 } from '@recued/contracts';
 import {
   OAUTH_CLOUD_CALLBACK_URL,
+  buildOpenerRelayRedirectUri,
+  isLoopbackOrigin,
+  alternateOAuthCallbackUrl,
+  oauthCallbackUrlForPwa,
   CONNECTION_AUTH_TYPES,
   CONNECTION_CREDENTIAL_ROTATION_ATTEMPT_ID_REGEX,
   CONNECTION_CREDENTIAL_SAFE_STOP_TOKEN_REGEX,
@@ -455,6 +464,19 @@ export interface VendorOAuthPopupHandle {
  *  jwks write targets the POPUP's sessionStorage (see
  *  {@link VendorOAuthPopupHandle}), not the opener's, so no opener storage
  *  is needed here. */
+/** R26.2 Option B for vendor connections — the pure code-exchange rpc
+ *  (`collection.connection.completeVendorOAuth`). Absent ⇒ the loopback
+ *  self-serve path is not offered and the flow stays on `startVendorOAuth`. */
+export type ConnectionsCompleteVendorOAuthCaller = (args: {
+  vendor: string;
+  code: string;
+  redirect_uri: string;
+  client_id: string;
+  client_secret?: string;
+  authorize_url?: string;
+  token_endpoint?: string;
+}) => Promise<{ refresh_token: string; granted_scopes: string[]; instance_url?: string }>;
+
 export interface VendorOAuthBrowserEnv {
   open(url: string, target: string): VendorOAuthPopupHandle | null;
   setTimeout(handler: () => void, ms: number): unknown;
@@ -609,6 +631,15 @@ export interface MountConnectionsEnrollPanelOptions {
    *  `connection.vendor_oauth_completed` frame matching its own `flow_id`. */
   runStartVendorOAuth?: ConnectionsStartVendorOAuthCaller;
   runTakeVendorOAuthResult?: ConnectionsTakeVendorOAuthResultCaller;
+  /** R26.2 Option B — the pure code-exchange rpc. Wired ⇒ a LOOPBACK PWA runs
+   *  the dance entirely on this machine: the provider redirects to the
+   *  same-origin relay page the LAN webclient bundle already serves, the opener
+   *  takes the code, and this exchanges it. No public HTTPS server URL is
+   *  involved, which is what `startVendorOAuth` demands and a self-hosted server
+   *  at `127.0.0.1` cannot supply. */
+  runCompleteVendorOAuth?: ConnectionsCompleteVendorOAuthCaller;
+  /** Popup/message seam for the self-serve path. Defaults to the real window. */
+  foundationalOAuthEnv?: FoundationalOAuthEnv;
   subscribe?: BroadcastSubscriber['on'];
   /** OPTIONAL browser seam for the popup + sessionStorage + timers. Defaults
    *  to `globalThis.window`; injected in tests. */
@@ -674,6 +705,7 @@ export interface ConnectionsEnrollPanelMount {
 /** The `data-action` strings this host handles. */
 type ConnectionsEnrollAction =
   | 'connections-open-add'
+  | 'connections-retry-pack-context'
   | 'connections-pick-kind'
   | 'connections-pick-vendor'
   | 'connections-pick-subtype'
@@ -757,6 +789,10 @@ const GUIDE_URL_SELECTOR = '[data-connection-guide-url]';
 const GUIDE_PANEL_SELECTOR = '[data-connection-guide-panel]';
 const GUIDE_ERROR_SELECTOR = '[data-connection-guide-error]';
 const OAUTH_AUTHORIZE_SELECTOR = '[data-action="connections-authorize-vendor"]';
+const PACK_INVENTORY_RETRY_SELECTOR =
+  '[data-action="connections-retry-pack-context"]';
+const PACK_USAGE_SELECTOR = '[data-conn-pack-usage]';
+const OPEN_ADD_SELECTOR = '[data-action="connections-open-add"]';
 const VALID_KINDS: ReadonlySet<string> = new Set(['api', 'mcp', 'notification']);
 const ROTATION_UNAVAILABLE_COPY =
   'Safe credential rotation is not available on this server yet. Your current credentials were not changed; update the server, then retry.';
@@ -1203,7 +1239,9 @@ const oauthCorrection = (message: string): OAuthCorrection => {
   }
   if (normalized.includes('redirect_uri') || normalized.includes('redirect uri')) {
     return {
-      message: `The callback did not match. Register ${OAUTH_CLOUD_CALLBACK_URL} exactly in the provider app, then retry.`,
+      // Same defect d97baf6c7 fixed on the form: naming the CLOUD URL here sends
+      // a loopback owner to register a URI their flow will never use.
+      message: `The callback did not match. Register ${resolveOAuthCallbackUrlForThisPwa()} exactly in the provider app, then retry.`,
       fieldKey: null,
     };
   }
@@ -1355,6 +1393,31 @@ const VENDOR_OAUTH_TIMEOUT_MS = 5 * 60_000;
 /** sessionStorage key the cloud callback page reads the cached server-identity
  *  public key from. MUST match `oauth-callback.ts`'s `'oauth_jwks_' + flow_id`. */
 const oauthJwksKey = (flow_id: string): string => `oauth_jwks_${flow_id}`;
+
+/** The EXACT provider callback URL for THIS PWA's origin.
+ *
+ *  ⛔ Resolved from the live origin, never the cloud constant. `page.ts` used to
+ *  print `OAUTH_CLOUD_CALLBACK_URL` unconditionally beneath "Register this
+ *  unchanged in the provider app" — but `pickOAuthCallbackHost` sends a LOOPBACK
+ *  PWA's flow to its own origin (R26.2 Option B), so on a self-served
+ *  `127.0.0.1` webclient the printed URI and the used URI disagreed and the
+ *  provider answered `redirect_uri_mismatch`.
+ *
+ *  Falls back to the cloud URL off-browser, which is what a non-loopback PWA
+ *  resolves to anyway. */
+const resolveOAuthCallbackUrlForThisPwa = (): string => {
+  const origin = (globalThis as { location?: { origin?: string } }).location?.origin;
+  return typeof origin === 'string' && origin.length > 0
+    ? oauthCallbackUrlForPwa(origin)
+    : OAUTH_CLOUD_CALLBACK_URL;
+};
+
+/** The OTHER usable address's callback URL, when there is one to name. */
+const resolveOAuthCallbackAlternateForThisPwa = (): string | undefined => {
+  const origin = (globalThis as { location?: { origin?: string } }).location?.origin;
+  if (typeof origin !== 'string' || origin.length === 0) return undefined;
+  return alternateOAuthCallbackUrl(origin) ?? undefined;
+};
 
 /** Derive the default browser env from `globalThis.window`. Returns undefined
  *  in a non-browser host so the "Authorize" button falls back honestly. The
@@ -1618,6 +1681,13 @@ export const mountConnectionsEnrollPanel = (
       && state.dialog.editingId !== null
       ? `changes to ${state.dialog.editingId}`
       : 'this new connection setup';
+    // A completed provider consent lives ONLY in this draft until Save. The
+    // generic "credential fields cannot be restored" reads as "retype your
+    // secret" — it does not tell you that OK means going back through the
+    // provider's consent screen. Name the actual cost when there is one.
+    if (state.dialog.oauthGrantedScopes !== null) {
+      return `Discard ${subject}? The provider authorization you just completed has not been saved yet and will be discarded with it — you would have to authorize with the provider again. Select Cancel to stay and keep editing, or OK to discard.`;
+    }
     return `Discard ${subject}? Select Cancel to stay and keep editing, or OK to discard. Credential fields are not saved in your browser and cannot be restored after leaving.`;
   };
 
@@ -1813,6 +1883,47 @@ export const mountConnectionsEnrollPanel = (
     }
   };
 
+  /** Pack-context reads repaint the whole shared page. Preserve an unrelated
+   *  form field (including its caret) or exact delegated list action across
+   *  that background repaint; a Retry that owns focus is handled separately
+   *  because success advances it to the recovered content. */
+  const renderPreservingPackContextFocus = (): void => {
+    // ⛔ `?? null` IS LOAD-BEARING. `ownerDocument?.activeElement` yields
+    // UNDEFINED when either is absent, and the `as HTMLElement | null` cast
+    // said otherwise — so the `!== null` guards below passed and `.dataset`
+    // threw. Normalised here so the declared type is true and both guards
+    // mean what they read as. (The sibling above copes with `!= null`.)
+    const active = (host.ownerDocument?.activeElement ?? null) as HTMLElement | null;
+    if (
+      active !== null
+      && host.contains(active)
+      && active.dataset?.connField !== undefined
+    ) {
+      renderPreservingActiveField();
+      return;
+    }
+    const activeDataset = active !== null
+      && host.contains(active)
+      && active.dataset?.action !== undefined
+      ? Object.fromEntries(
+          Object.entries(active.dataset)
+            .filter((entry): entry is [string, string] => entry[1] !== undefined),
+        )
+      : null;
+    render();
+    const queryable = host as HTMLElement & {
+      querySelectorAll?: (selector: string) => NodeListOf<HTMLElement>;
+    };
+    if (activeDataset === null || typeof queryable.querySelectorAll !== 'function') return;
+    const replacement = [
+      ...(queryable.querySelectorAll('[data-action]') as NodeListOf<HTMLElement>),
+    ]
+      .find((candidate) => Object.entries(activeDataset).every(
+        ([key, value]) => candidate.dataset[key] === value,
+      ));
+    replacement?.focus?.({ preventScroll: true });
+  };
+
   // ── Email send-from options hydration (best-effort, D-165 P3) ──
   // Fills the email-notification `sender_mail_instance` picker's dynamic list
   // from `collection.mail.list` (send-capable slugs only). No-op without the
@@ -1898,6 +2009,19 @@ export const mountConnectionsEnrollPanel = (
     && opts.runTakeVendorOAuthResult !== undefined
     && opts.subscribe !== undefined
     && oauthEnv !== undefined;
+
+  /** R26.2 Option B — the loopback self-serve path is wired INDEPENDENTLY of the
+   *  cloud one, and deliberately so: it needs neither `startVendorOAuth` (whose
+   *  signed state demands a public server URL) nor `takeVendorOAuthResult` nor
+   *  the broadcast bus, because the code never leaves this machine. Gating it
+   *  behind `vendorOAuthWired()` would refuse a loopback-only host for missing
+   *  exactly the callers it has no use for. */
+  const loopbackSelfServeWired = (): boolean =>
+    opts.runCompleteVendorOAuth !== undefined
+    && oauthEnv !== undefined
+    && isLoopbackOrigin(
+      (opts.foundationalOAuthEnv ?? defaultFoundationalOAuthEnv()).origin,
+    );
 
   const focusOAuthCorrection = (
     fieldKey: ConnectionOAuthCredentialFieldKey | null,
@@ -2155,6 +2279,105 @@ export const mountConnectionsEnrollPanel = (
 
   /** Click handler — SYNCHRONOUS up to `window.open` so the popup survives the
    *  blocker, then hands off to the async driver. */
+  /** R26.2 Option B for vendor connections — the whole dance on this machine.
+   *
+   *  Runs INSTEAD of `startVendorOAuth` when the PWA is on loopback, because
+   *  that rpc refuses without a clean HTTPS server public URL: its signed state
+   *  carries one and both of its redirect choices end at
+   *  `<server_url>/oauth/complete`. A self-hosted server reached at
+   *  `http://127.0.0.1:<port>` has none, which is the "needs a reachable HTTPS
+   *  address" dead end.
+   *
+   *  Nothing here is new machinery. `runOAuthPopup` is the foundational flow's
+   *  driver (it mints the `frelay_` state, pins the sender origin and verifies
+   *  the full state for CSRF); the relay page is the one the LAN webclient
+   *  bundle already serves same-origin; and `completeVendorOAuth` is the
+   *  pure-exchange rpc that never needed a public server. Option B simply was
+   *  never pointed at vendor connections.
+   *
+   *  ⚠ `noQueryMarker: true`. Entra rejects a query string in a registered
+   *  redirect URI, and on the loopback page the marker is redundant anyway —
+   *  that page is opener-relay-only and discriminates on the state prefix. It
+   *  also makes the registered URI byte-identical to what the form prints. */
+  const runLoopbackSelfServeOAuth = async (
+    popup: VendorOAuthPopupHandle,
+    vendor: string,
+    values: Record<string, string>,
+  ): Promise<void> => {
+    const complete = opts.runCompleteVendorOAuth;
+    const fenv = opts.foundationalOAuthEnv ?? defaultFoundationalOAuthEnv();
+    if (complete === undefined) return;
+    const redirect_uri = buildOpenerRelayRedirectUri(fenv.origin, true);
+    const authorizeBase = (values['auth.authorize_url'] ?? '').trim();
+    const token_endpoint = (values['auth.token_endpoint'] ?? '').trim();
+    const client_id = (values['auth.client_id'] ?? '').trim();
+    const client_secret = (values['auth.client_secret'] ?? '').trim();
+    const scopes = (values['auth.scopes'] ?? '').trim();
+
+    state.dialog.oauthInFlight = true;
+    render();
+    const outcome = await runOAuthPopup(fenv, {
+      popup: popup as unknown as Parameters<typeof runOAuthPopup>[1]['popup'],
+      // Same-origin by construction on loopback: the relay page is served from
+      // this very origin, so the only sender we trust is ourselves.
+      expectedSenderOrigin: new URL(redirect_uri).origin,
+      buildAuthorizeUrl: (oauthState) => {
+        const url = new URL(authorizeBase);
+        url.searchParams.set('response_type', 'code');
+        url.searchParams.set('client_id', client_id);
+        url.searchParams.set('redirect_uri', redirect_uri);
+        url.searchParams.set('state', oauthState);
+        if (scopes.length > 0) url.searchParams.set('scope', scopes);
+        return url.toString();
+      },
+    });
+    if (disposed) return;
+    state.dialog.oauthInFlight = false;
+    if (!outcome.ok) {
+      setOAuthCorrection({
+        message: outcome.reason === 'popup_blocked'
+          ? 'Popup blocked. Allow popups for this Recued site, then try again; your credential entries are unchanged.'
+          : outcome.reason === 'denied'
+            ? 'The provider did not grant access. Check the app’s permissions, then retry.'
+            : `Authorization did not finish (${outcome.reason}). Your credential entries are unchanged.`,
+        fieldKey: null,
+      });
+      render();
+      focusOAuthCorrection(null);
+      return;
+    }
+    try {
+      const result = await complete({
+        vendor,
+        code: outcome.code,
+        redirect_uri,
+        client_id,
+        ...(client_secret.length > 0 ? { client_secret } : {}),
+        // Ignored for a registered vendor — the server always prefers its
+        // registry config, so these can never weaken one.
+        ...(authorizeBase.length > 0 ? { authorize_url: authorizeBase } : {}),
+        ...(token_endpoint.length > 0 ? { token_endpoint } : {}),
+      });
+      if (disposed) return;
+      state.dialog.values = applyVendorOAuthResultValues(
+        vendor,
+        state.dialog.values,
+        { refresh_token: result.refresh_token },
+        {},
+      );
+      state.dialog.oauthGrantedScopes = result.granted_scopes;
+      state.dialog.oauthError = null;
+      state.dialog.oauthErrorFieldKey = null;
+      state.dialog.oauthNeedsReauthorization = false;
+      render();
+    } catch (err) {
+      if (disposed) return;
+      setOAuthCorrection(oauthCorrection(humanizeRpcError(err)));
+      render();
+      focusOAuthCorrection(null);
+    }
+  };
+
   const startVendorOAuthFromClick = (): void => {
     const dialog = state.dialog;
     const vendor = dialog.vendor;
@@ -2165,7 +2388,7 @@ export const mountConnectionsEnrollPanel = (
       && dialog.kind === 'api'
       && dialog.values['auth.type'] === 'oauth2_refresh';
     if (
-      !vendorOAuthWired()
+      (!vendorOAuthWired() && !loopbackSelfServeWired())
       || oauthEnv === undefined
       || (vendor === null && !isGeneric)
     ) {
@@ -2181,7 +2404,24 @@ export const mountConnectionsEnrollPanel = (
     // `pendingOAuth` is assigned after the start RPC returns. The visible
     // in-flight bit also covers that pre-pending window so a delegated double
     // click cannot open two popups or launch two server flows.
-    if (dialog.saving || dialog.oauthInFlight || pendingOAuth !== null) return;
+    //
+    // ⛔ This used to be a BARE `return` — the click did nothing and said
+    // nothing. That is indistinguishable from a dead button, and it is reachable
+    // on a path that is not a double click: the failure handlers clear
+    // `oauthInFlight` only when `ctx.dialogGen === dialogGen`, so a generation
+    // bump mid-flight leaves the latch set and every later click silently does
+    // nothing. Whatever set it, the owner is owed a reason.
+    if (dialog.saving || dialog.oauthInFlight || pendingOAuth !== null) {
+      setOAuthCorrection({
+        message: dialog.saving
+          ? 'Saving this connection — wait for it to finish, then authorize.'
+          : 'An authorization attempt is already open. Finish or close the provider window, then try again.',
+        fieldKey: null,
+      });
+      render();
+      focusOAuthCorrection(null);
+      return;
+    }
     const readiness = connectionOAuthCredentialReadiness({
       vendor,
       kind: dialog.kind,
@@ -2227,6 +2467,15 @@ export const mountConnectionsEnrollPanel = (
       });
       render();
       focusOAuthCorrection(null);
+      return;
+    }
+    // R26.2 Option B — a LOOPBACK PWA finishes the dance on this machine and
+    // never touches `startVendorOAuth`, which would refuse for want of a public
+    // HTTPS server URL. Gated on the exchange caller being wired so an older
+    // host silently keeps the cloud path rather than opening a popup that
+    // cannot complete.
+    if (loopbackSelfServeWired()) {
+      void runLoopbackSelfServeOAuth(popup, vendor ?? GENERIC_OAUTH_VENDOR, dialog.values);
       return;
     }
     const client_secret = (dialog.values['auth.client_secret'] ?? '').trim();
@@ -2457,7 +2706,12 @@ export const mountConnectionsEnrollPanel = (
     // Preserve the recent-probe banner across a dialog close so the
     // post-save probe outcome stays visible above the list.
     const recentProbe = state.dialog.recentProbe ?? null;
-    state.dialog = { ...initialConnectionsDialogState(), recentProbe };
+    state.dialog = {
+      ...initialConnectionsDialogState(),
+      oauthCallbackUrl: resolveOAuthCallbackUrlForThisPwa(),
+      oauthCallbackAlternateUrl: resolveOAuthCallbackAlternateForThisPwa(),
+      recentProbe,
+    };
   };
 
   /** Begin an IN-PLACE dialog navigation (Back / pick a different kind or
@@ -4164,32 +4418,125 @@ export const mountConnectionsEnrollPanel = (
   };
 
   // ── installed-pack manifests — drives BOTH the Fork-1 B vendor-scope
-  // pre-fill AND the connection-detail "Used by packs" inverse pivot. Fetched
-  // once (best-effort) alongside the connection list; `null` until loaded / on
-  // failure (pre-fill skipped → the server unions; no "Used by packs" section).
+  // pre-fill AND the connection-detail "Used by packs" inverse pivot. The
+  // first read stays parallel with the connection list. A wired failure is a
+  // visible degraded projection with an explicit retry: `null` is not proof
+  // that no packs use these connections.
   let installedManifests: BulkPackManifest[] | null = null;
-  let packsFetchStarted = false;
-  const ensurePacksLoaded = (): Promise<void> => {
-    if (packsFetchStarted || opts.runPacksList === undefined) return Promise.resolve();
-    packsFetchStarted = true;
-    return opts
-      .runPacksList()
+  let packsFetchAttempted = false;
+  let packsFetchInFlight: Promise<void> | null = null;
+  let packsFetchGeneration = 0;
+  let packsRefreshPending = false;
+  const packRetryOwnsFocus = (): boolean => {
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    return active?.getAttribute?.('data-action')
+      === 'connections-retry-pack-context';
+  };
+  const focusRecoveredPackContext = (): void => {
+    if (typeof host.querySelector !== 'function') return;
+    const target = host.querySelector(PACK_USAGE_SELECTOR)
+      ?? host.querySelector(OPEN_ADD_SELECTOR);
+    (target as HTMLElement | null)?.focus?.();
+  };
+  const ensurePacksLoaded = (options: {
+    force?: boolean;
+    reclaimFocus?: boolean;
+  } = {}): Promise<void> => {
+    if (opts.runPacksList === undefined || installedManifests !== null) {
+      return Promise.resolve();
+    }
+    if (packsFetchInFlight !== null) return packsFetchInFlight;
+    if (packsFetchAttempted && options.force !== true) return Promise.resolve();
+    packsFetchAttempted = true;
+    if (options.force === true) {
+      state.packInventoryRecovery = {
+        phase: 'retrying',
+        message: state.packInventoryRecovery?.message ?? '',
+      };
+      if (options.reclaimFocus === true) {
+        render();
+        focusGuideTarget(PACK_INVENTORY_RETRY_SELECTOR);
+      } else {
+        renderPreservingPackContextFocus();
+      }
+    }
+    const generationAtDispatch = packsFetchGeneration;
+    const request = Promise.resolve()
+      .then(() => opts.runPacksList!())
       .then((r) => {
-        if (!disposed) {
+        if (!disposed && generationAtDispatch === packsFetchGeneration) {
+          // `manifest` is present only for installed packs, and this already
+          // wanted exactly those — the filter below narrows the type rather
+          // than changing what is collected.
           installedManifests = r.packs
             .filter((p) => p.installed)
-            .map((p) => p.manifest);
+            .map((p) => p.manifest)
+            .filter((m): m is BulkPackManifest => m !== undefined);
           // Surface to the renderer so each api connection row can show its
           // "Used by packs" coverage, and re-render — the connection list
           // typically painted before this best-effort fetch resolved.
           state.installedPackManifests = installedManifests;
-          render();
+          const reclaimFocus = packRetryOwnsFocus();
+          delete state.packInventoryRecovery;
+          if (reclaimFocus) {
+            render();
+            focusRecoveredPackContext();
+          } else {
+            renderPreservingPackContextFocus();
+          }
         }
       })
-      .catch(() => {
-        /* best-effort: leave null → pre-fill skipped, server unions */
+      .catch((error: unknown) => {
+        if (disposed || generationAtDispatch !== packsFetchGeneration) return;
+        const reclaimFocus = packRetryOwnsFocus();
+        state.packInventoryRecovery = {
+          phase: 'error',
+          message: errMessage(error),
+        };
+        if (reclaimFocus) {
+          render();
+          focusGuideTarget(PACK_INVENTORY_RETRY_SELECTOR);
+        } else {
+          renderPreservingPackContextFocus();
+        }
+      })
+      .finally(() => {
+        if (packsFetchInFlight !== request) return;
+        packsFetchInFlight = null;
+        if (!disposed && packsRefreshPending) {
+          packsRefreshPending = false;
+          packsFetchAttempted = false;
+          // Keep the original promise (including initial `whenLoaded`) open
+          // through the causally-later read that superseded it.
+          return ensurePacksLoaded({ reclaimFocus: packRetryOwnsFocus() });
+        }
       });
+    packsFetchInFlight = request;
+    return request;
   };
+
+  /** Pack broadcasts carry only the changed pack, while both consumers need
+   *  the complete installed roster. Invalidate and re-list; rapid events
+   *  coalesce behind the current request, and its generation guard prevents a
+   *  superseded middle snapshot from painting. */
+  const refreshPacksAfterBroadcast = (): void => {
+    if (disposed || opts.runPacksList === undefined) return;
+    packsFetchGeneration += 1;
+    installedManifests = null;
+    packsFetchAttempted = false;
+    if (packsFetchInFlight !== null) {
+      packsRefreshPending = true;
+      return;
+    }
+    void ensurePacksLoaded();
+  };
+  const packInventoryUnsubscribers: Array<() => void> = [];
+  if (opts.subscribe !== undefined && opts.runPacksList !== undefined) {
+    packInventoryUnsubscribers.push(
+      opts.subscribe('pack_installed', refreshPacksAfterBroadcast),
+      opts.subscribe('pack_uninstalled', refreshPacksAfterBroadcast),
+    );
+  }
 
   /** Fork 1 B — the pre-filled scopes for a registered vendor's editable field:
    *  the vendor const seed UNIONed with the installed packs' needs. Empty when
@@ -4359,6 +4706,8 @@ export const mountConnectionsEnrollPanel = (
     guideGeneration += 1;
     state.dialog = {
       ...initialConnectionsDialogState(),
+      oauthCallbackUrl: resolveOAuthCallbackUrlForThisPwa(),
+      oauthCallbackAlternateUrl: resolveOAuthCallbackAlternateForThisPwa(),
       stage: 'form',
       mode: 'create',
       kind: 'api',
@@ -6923,7 +7272,12 @@ export const mountConnectionsEnrollPanel = (
     invalidateCredentialSafeStopAcknowledgement();
     const patch = buildConnectionEditDialogPatch(view);
     editorRevision = connectionEditorRevision(view);
-    state.dialog = { ...initialConnectionsDialogState(), ...patch };
+    state.dialog = {
+      ...initialConnectionsDialogState(),
+      oauthCallbackUrl: resolveOAuthCallbackUrlForThisPwa(),
+      oauthCallbackAlternateUrl: resolveOAuthCallbackAlternateForThisPwa(),
+      ...patch,
+    };
     captureDialogDraftBaseline();
     if (
       rotationMarker !== null
@@ -7866,6 +8220,16 @@ export const mountConnectionsEnrollPanel = (
 
   // ── Action handlers ───────────────────────────────────────────
   const handlers: ActionHandlers<ConnectionsEnrollAction> = {
+    'connections-retry-pack-context': (_dataset, _event, element) => {
+      if (
+        state.packInventoryRecovery?.phase !== 'error'
+        || packsFetchInFlight !== null
+      ) return;
+      void ensurePacksLoaded({
+        force: true,
+        reclaimFocus: doc.activeElement === element,
+      });
+    },
     'connections-open-add': () => {
       if (!confirmDiscardConnectionDraft()) return;
       state.deleteConfirm = null; // opening the enroll dialog dismisses a delete confirm
@@ -9100,6 +9464,13 @@ export const mountConnectionsEnrollPanel = (
           // the subscriber owns its own teardown — never throw out of dispose
         }
         oauthUnsub = null;
+      }
+      for (const unsubscribe of packInventoryUnsubscribers.splice(0)) {
+        try {
+          unsubscribe();
+        } catch {
+          // The subscriber owns teardown; one listener cannot block the rest.
+        }
       }
       detachReconnect?.();
       credentialRotationTabUnsub?.();

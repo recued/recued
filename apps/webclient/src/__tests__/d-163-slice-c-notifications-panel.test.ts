@@ -48,6 +48,8 @@ import {
   NOTIFICATIONS_LIST_ERROR_ATTR,
   NOTIFICATIONS_PANEL_ATTR,
   NOTIFICATIONS_PANEL_STATE_ATTR,
+  NOTIFICATIONS_PHRASE_INPUT_ATTR,
+  NOTIFICATIONS_PHRASE_SAVE_ATTR,
   NOTIFICATIONS_RETRY_BTN_ATTR,
   NOTIFICATIONS_ROW_ATTR,
   NOTIFICATIONS_ROW_CHANNEL_ATTR,
@@ -163,6 +165,22 @@ const findByAttr = (root: FakeElement, attr: string): FakeElement | null => {
   for (const c of root.children) {
     const hit = findByAttr(c, attr);
     if (hit) return hit;
+  }
+  return null;
+};
+
+const findAxisToggle = (
+  root: FakeElement,
+  channel: NotificationChannelName,
+  axis: 'notification' | 'approval',
+): FakeElement | null => {
+  if (
+    root.getAttribute(NOTIFICATIONS_ROW_TOGGLE_BTN_ATTR) === channel
+    && root.getAttribute(NOTIFICATIONS_AXIS_ATTR) === axis
+  ) return root;
+  for (const child of root.children) {
+    const hit = findAxisToggle(child, channel, axis);
+    if (hit !== null) return hit;
   }
   return null;
 };
@@ -610,6 +628,18 @@ describe('mountNotificationsPanel', () => {
     await panel.whenLoaded();
     // Seeded from the describe response.
     expect(panel.getVerificationPhrase()).toBe('purple otter');
+    expect(panel.hasUnsavedChanges()).toBe(false);
+
+    const phraseInput = findByAttr(host, NOTIFICATIONS_PHRASE_INPUT_ATTR)!;
+    for (const listener of phraseInput.listeners.get('input') ?? []) {
+      listener({ target: { value: 'local draft' } });
+    }
+    expect(panel.hasUnsavedChanges()).toBe(true);
+    for (const listener of phraseInput.listeners.get('input') ?? []) {
+      listener({ target: { value: 'purple otter' } });
+    }
+    expect(panel.hasUnsavedChanges()).toBe(false);
+
     // Saving persists via the caller + reflects the confirmed value.
     await panel.savePhrase('green fox');
     expect(setPhrase).toHaveBeenCalledWith({ phrase: 'green fox' });
@@ -638,6 +668,51 @@ describe('mountNotificationsPanel', () => {
     await panel.whenLoaded();
     await panel.savePhrase('x'.repeat(200));
     expect(panel.getPhraseError()).toMatch(/80/);
+  });
+
+  it('keeps phrase Save focusable and single-flight while persisting', async () => {
+    const host = makeFakeElement('div');
+    const dispatch: {
+      resolve: (result: NotificationSetVerificationPhraseResult) => void;
+    } = { resolve: () => undefined };
+    const setPhrase = vi.fn(() =>
+      new Promise<NotificationSetVerificationPhraseResult>((resolve) => {
+        dispatch.resolve = resolve;
+      }));
+    const panel = mountNotificationsPanel({
+      host: host as unknown as HTMLElement,
+      document: makeFakeDocument() as unknown as Document,
+      runDescribe: async () => ({ rows: [uiRow] }),
+      runSetChannel: async () => ({ ok: false, reason: 'ui_fixed' }),
+      runSetVerificationPhrase: setPhrase,
+    });
+    await panel.whenLoaded();
+
+    const first = panel.savePhrase('green fox');
+    expect(panel.hasInFlightWork()).toBe(true);
+    const busy = findByAttr(host, NOTIFICATIONS_PHRASE_SAVE_ATTR);
+    expect(busy?.disabled).toBe(false);
+    expect(busy?.getAttribute('aria-disabled')).toBe('true');
+    expect(busy?.getAttribute('aria-busy')).toBe('true');
+    const second = panel.savePhrase('ignored duplicate');
+    expect(setPhrase).toHaveBeenCalledTimes(1);
+
+    dispatch.resolve({
+      ok: true,
+      settings: {
+        ui: true,
+        bridge: false,
+        slack: { notification: false, approval: false, messenger: false },
+        telegram: { notification: false, approval: false, messenger: false },
+        whatsapp: { notification: false, approval: false, messenger: false },
+        discord: { notification: false, approval: false, messenger: false },
+        email: { notification: false, approval: false, messenger: false },
+        verification_phrase: 'green fox',
+      },
+    });
+    await Promise.all([first, second]);
+    expect(panel.hasInFlightWork()).toBe(false);
+    expect(panel.getVerificationPhrase()).toBe('green fox');
   });
 
   it('R31 — a success on one axis does not clear a failure on the other axis of the same row', async () => {
@@ -770,13 +845,18 @@ describe('mountNotificationsPanel', () => {
     const host = makeFakeElement('div');
     const doc = makeFakeDocument();
     let attempt = 0;
+    const retryDispatch: {
+      resolve: (result: { rows: ReadonlyArray<NotificationChannelToggleView> }) => void;
+    } = { resolve: () => undefined };
     const panel = mountNotificationsPanel({
       host: host as unknown as HTMLElement,
       document: doc as unknown as Document,
       runDescribe: async () => {
         attempt += 1;
         if (attempt === 1) throw new Error('boom');
-        return { rows: fiveRows };
+        return new Promise((resolve) => {
+          retryDispatch.resolve = resolve;
+        });
       },
       runSetChannel: async () => ({ ok: false, reason: 'ui_fixed' }),
     });
@@ -787,6 +867,15 @@ describe('mountNotificationsPanel', () => {
     expect(findByAttr(host, NOTIFICATIONS_RETRY_BTN_ATTR)).not.toBeNull();
 
     panel.clickRetry();
+    expect(panel.getState()).toBe('loading');
+    const busyRetry = findByAttr(host, NOTIFICATIONS_RETRY_BTN_ATTR);
+    expect(busyRetry?.textContent).toBe('Retrying…');
+    expect(busyRetry?.disabled).toBe(false);
+    expect(busyRetry?.getAttribute('aria-disabled')).toBe('true');
+    expect(busyRetry?.getAttribute('aria-busy')).toBe('true');
+    panel.clickRetry();
+    expect(attempt).toBe(2);
+    retryDispatch.resolve({ rows: fiveRows });
     await panel.whenLoaded();
     expect(panel.getState()).toBe('ready');
     expect(panel.getRows()).toHaveLength(5);
@@ -859,13 +948,13 @@ describe('mountNotificationsPanel', () => {
     });
     await panel.whenLoaded();
     const first = panel.clickAxis('bridge', 'notification');
-    // The toggle button becomes `disabled` inside `toggleAxis` after the
-    // first click; `clickAxis` early-returns on `disabled` for the
-    // second click. So this re-entry is effectively a no-op at the
-    // click-handler layer — which is what we want: the dedupe guard in
-    // `toggleAxis`'s `pendingTogglePromises.get(channel::axis)` is exercised
-    // via the in-flight branch + the assertion below is the structural
-    // proof (only ONE setChannel call across both `clickAxis` calls).
+    expect(panel.hasInFlightWork()).toBe(true);
+    const busy = findAxisToggle(host, 'bridge', 'notification');
+    expect(busy?.disabled).toBe(false);
+    expect(busy?.getAttribute('aria-disabled')).toBe('true');
+    expect(busy?.getAttribute('aria-busy')).toBe('true');
+    // The replacement stays focusable; its handler and the pending-promise
+    // map remain the single-flight authority for a second activation.
     const second = panel.clickAxis('bridge', 'notification');
     dispatch.resolve({
       ok: true,
@@ -880,6 +969,7 @@ describe('mountNotificationsPanel', () => {
       },
     });
     await Promise.all([first, second]);
+    expect(panel.hasInFlightWork()).toBe(false);
     expect(setChannel).toHaveBeenCalledTimes(1);
   });
 

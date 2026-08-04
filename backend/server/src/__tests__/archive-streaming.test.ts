@@ -29,6 +29,7 @@ import {
 } from '../archive/archive-crypto.js';
 import { AEAD_TAG_LEN, IV_LEN } from '../archive/archive-format.js';
 import { applyRestore } from '../archive/archive-restore.js';
+import { EXPORT_DB_SCRATCH_PREFIX } from '../archive/archive-scratch.js';
 import { createBlobStore, type BlobStore } from '../storage/blob-store.js';
 
 const mkKey = (byte: number): Buffer => Buffer.alloc(32, byte);
@@ -175,7 +176,7 @@ describe('archive export — streamed db', () => {
 
 describe('archive export — temp hygiene', () => {
   const tempArtifacts = (dest: string): { dbTmp: boolean; partial: boolean } => ({
-    dbTmp: existsSync(`${dest}.db.tmp`),
+    dbTmp: readdirSync(h.dir).some((name) => name.startsWith(EXPORT_DB_SCRATCH_PREFIX)),
     partial: existsSync(`${dest}.partial`),
   });
 
@@ -231,6 +232,24 @@ describe('archive export — temp hygiene', () => {
     })).rejects.toThrow(/ARCHIVE_BLOB_MISSING/);
     expect(existsSync(dest)).toBe(false);
     expect(tempArtifacts(dest)).toEqual({ dbTmp: false, partial: false });
+  });
+
+  it('refuses a pre-existing partial without following or deleting it', async () => {
+    h = newHarness();
+    const dest = join(h.dir, 'occupied.recued.archive');
+    const partial = `${dest}.partial`;
+    writeFileSync(partial, 'belongs to another export');
+
+    await expect(exportArchive({
+      destPath: dest,
+      recoveryKey: mkKey(9),
+      db: h.db,
+      producerVersion: '0.2.0',
+    })).rejects.toMatchObject({ code: 'EEXIST' });
+    expect(readFileSync(partial, 'utf8')).toBe('belongs to another export');
+    expect(existsSync(dest)).toBe(false);
+    expect(readdirSync(h.dir).some((name) => name.startsWith(EXPORT_DB_SCRATCH_PREFIX)))
+      .toBe(false);
   });
 });
 

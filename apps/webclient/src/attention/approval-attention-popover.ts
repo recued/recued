@@ -58,6 +58,7 @@ import {
   type ServerControlActionOutcome,
   type ServerControlCurrentStateObservation,
 } from '../shell/server-pill-host.js';
+import { safeServerSwitchLandingHash } from '../shell/server-switch-continuity.js';
 
 export const ATTENTION_TOPBAR_HOST_ATTR = 'data-recued-attention-topbar';
 export const ATTENTION_TOPBAR_STYLES_MARKER =
@@ -87,6 +88,8 @@ export const ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR =
   'data-recued-attention-recovery-excursion-return-announcer';
 export const ATTENTION_RECOVERY_INTENT_CONTINUATION_ATTR =
   'data-recued-attention-recovery-intent-continuation';
+export const ATTENTION_RECOVERY_INTENT_EXPIRY_HANDOFF_ATTR =
+  'data-recued-attention-recovery-intent-expiry-handoff';
 export const ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME_ATTR =
   'data-recued-attention-recovery-intent-server-outcome';
 export const ATTENTION_RECOVERY_INTENT_SERVER_STATE_ATTR =
@@ -138,6 +141,37 @@ export const ATTENTION_TOPBAR_STYLES = `
   background: var(--accent-weak, rgba(14, 116, 144, 0.10));
   color: var(--accent, #0e7490);
 }
+[${ATTENTION_TOPBAR_HOST_ATTR}] .top-bar-attention--saved {
+  border-color: var(--border-strong, #d4d4d8);
+  background: var(--surface-sunk, #f4f6f8);
+  color: var(--accent, #0e7490);
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .top-bar-attention--ready {
+  border-color: var(--accent, #0e7490);
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .top-bar-attention--retry {
+  border-color: var(--warning, #9a6700);
+  color: var(--warning, #8a5a00);
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .top-bar-attention--diagnosis {
+  border-color: var(--warning, #9a6700);
+  color: var(--warning, #8a5a00);
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .top-bar-attention--decision,
+[${ATTENTION_TOPBAR_HOST_ATTR}] .top-bar-attention--closure {
+  border-color: var(--warning, #9a6700);
+  color: var(--warning, #8a5a00);
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .top-bar-attention--retry .top-bar-attention-quiet-indicator {
+  background: var(--warning, #9a6700);
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .top-bar-attention--diagnosis .top-bar-attention-quiet-indicator {
+  background: var(--warning, #9a6700);
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .top-bar-attention--decision .top-bar-attention-quiet-indicator,
+[${ATTENTION_TOPBAR_HOST_ATTR}] .top-bar-attention--closure .top-bar-attention-quiet-indicator {
+  background: var(--warning, #9a6700);
+}
 [${ATTENTION_TOPBAR_HOST_ATTR}] .top-bar-attention--open {
   box-shadow: 0 0 0 3px var(--accent-weak, rgba(14, 116, 144, 0.10));
 }
@@ -176,6 +210,16 @@ export const ATTENTION_TOPBAR_STYLES = `
   position: absolute;
   top: -5px;
   right: -5px;
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .top-bar-attention-quiet-indicator {
+  position: absolute;
+  top: 3px;
+  right: 3px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--surface, #ffffff);
+  border-radius: 999px;
+  background: var(--accent, #0e7490);
 }
 [${ATTENTION_TOPBAR_HOST_ATTR}] .webclient-attention-popover-frame {
   position: absolute;
@@ -352,7 +396,7 @@ export const ATTENTION_TOPBAR_STYLES = `
   background: var(--danger, #dc2626);
   color: var(--on-danger, #ffffff);
 }
-[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-action[disabled] {
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-row-action[aria-busy="true"] {
   cursor: wait;
   opacity: 0.72;
 }
@@ -441,6 +485,24 @@ export const ATTENTION_TOPBAR_STYLES = `
   border-left-color: var(--accent, #0e7490);
   background: var(--surface-sunk, #f4f6f8);
 }
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-continuation[data-deferred="true"],
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-expiry-handoff {
+  border-left-color: var(--border-strong, #d4d4d8);
+  background: var(--surface, #ffffff);
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-expiry-handoff[data-phase="retry"],
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-expiry-handoff[data-phase="handoff"],
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-expiry-handoff[data-phase="outcome"],
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-expiry-handoff[data-phase="closure"] {
+  border-left-color: var(--warning, #9a6700);
+  background: color-mix(in srgb, var(--warning, #9a6700) 7%, var(--surface, #ffffff));
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-expiry-handoff[data-phase="retry"] .attention-plan-resolution-title,
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-expiry-handoff[data-phase="handoff"] .attention-plan-resolution-title,
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-expiry-handoff[data-phase="outcome"] .attention-plan-resolution-title,
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-expiry-handoff[data-phase="closure"] .attention-plan-resolution-title {
+  color: var(--warning, #8a5a00);
+}
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-continuation[data-phase="awaiting_review_outcome"],
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-continuation[data-phase="verification_interrupted"],
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-recovery-intent-continuation[data-phase="verification_handoff"] {
@@ -466,6 +528,11 @@ export const ATTENTION_TOPBAR_STYLES = `
   color: var(--fg-muted, #71717a);
   font-size: 12px;
   line-height: 1.45;
+}
+[${ATTENTION_TOPBAR_HOST_ATTR}] .attention-plan-resolution-meta {
+  color: var(--fg-subtle, #8b8b94);
+  font-size: 11px;
+  line-height: 1.35;
 }
 [${ATTENTION_TOPBAR_HOST_ATTR}] .attention-plan-resolution-actions {
   display: flex;
@@ -660,6 +727,20 @@ export interface MountApprovalAttentionPopoverOptions {
   onKeepRecoveryIntentReviewBlocked?: (
     continuation: AttentionRecoveryIntentContinuation,
   ) => 'started' | 'missing' | 'unavailable';
+  /** Close a prepared exact-area check while retaining its durable marker
+   * unchanged. This never starts the check or retires the saved return. */
+  onDeferRecoveryIntentVerification?: (
+    continuation: AttentionRecoveryIntentContinuation,
+  ) => 'started' | 'missing' | 'unavailable';
+  /** Intent-free broad-area handoff after a deliberately deferred exact check
+   * expires. It stays quiet, caps explicit attempts at two, then points to the
+   * broad route or exact active server that owns diagnosis. */
+  initialRecoveryIntentExpiryHandoff?:
+    AttentionRecoveryIntentExpiryHandoff;
+  onReviewRecoveryIntentExpiryHandoff?: (
+    handoff: AttentionRecoveryIntentExpiryHandoff,
+  ) => 'started' | 'missing' | 'unavailable';
+  onDismissRecoveryIntentExpiryHandoff?: () => void;
   /** Explicit dismissal retires the privacy-safe session marker. */
   onDismissRecoveryIntentContinuation?: () => void;
   /** Deterministic relative-time/request-lineage seam. */
@@ -732,6 +813,39 @@ export interface AttentionRecoveryIntentContinuation {
   /** Same-tab current-state baseline from a stable fresh heartbeat. Kept
    * separate so it cannot rewrite an old action receipt into success. */
   readonly serverCurrentState?: ServerControlCurrentStateObservation;
+  /** Explicitly quiet posture for a prepared exact-area check. These bounded
+   * timestamps contain no route detail or prior intent beyond this card. */
+  readonly deferredAt?: number;
+  readonly expiresAt?: number;
+}
+
+export interface AttentionRecoveryIntentExpiryHandoff {
+  readonly serverProfileId: string;
+  readonly serverProfileLabel: string;
+  readonly landingHash: string;
+  readonly areaLabel: string;
+  readonly deferredAt: number;
+  readonly expiredAt: number;
+  readonly phase:
+    | 'ready'
+    | 'checking'
+    | 'retry'
+    | 'handoff'
+    | 'outcome'
+    | 'rechecking'
+    | 'closure';
+  /** Closed-list, presentation-only cause. Reload restores `interrupted`;
+   * raw transport errors and route-owned detail never enter this value. */
+  readonly retryReason?: 'offline' | 'unavailable' | 'interrupted';
+  /** The second unsuccessful explicit attempt stops retrying and chooses one
+   * broad, privacy-safe diagnosis owner. */
+  readonly diagnosisTarget?: 'area' | 'server';
+  /** Once the one post-diagnosis recheck is consumed, only broad orientation
+   * and explicit closure remain. */
+  readonly closureTarget?: 'area' | 'server';
+  /** A known connection blocker disables the one-shot check without
+   * consuming it. Reconnect may enable the button but never clicks it. */
+  readonly checkBlocker?: 'server';
 }
 
 export interface ApprovalAttentionPopoverMount {
@@ -742,6 +856,9 @@ export interface ApprovalAttentionPopoverMount {
     AttentionInactiveConnectionRecoveryHint
   >;
   isOpen(): boolean;
+  /** Approval, gateway-ask, or Chat-plan decisions whose authoritative
+   * outcome is not known yet. Queue reads are deliberately excluded. */
+  hasInFlightWork(): boolean;
   /** Open and focus Attention from another shell surface without synthesizing
    * a click. Reuses the same freshness boundary as the bell. */
   open(): void;
@@ -768,6 +885,11 @@ export interface ApprovalAttentionPopoverMount {
    * focus away from the exact destination that just took ownership. */
   completeRecoveryIntentContinuation(): void;
   getRecoveryIntentContinuation(): AttentionRecoveryIntentContinuation | null;
+  setRecoveryIntentExpiryHandoff(
+    value: AttentionRecoveryIntentExpiryHandoff | null,
+  ): void;
+  getRecoveryIntentExpiryHandoff():
+    AttentionRecoveryIntentExpiryHandoff | null;
   whenLoaded(): Promise<void>;
   dispose(): void;
 }
@@ -880,7 +1002,9 @@ const renderApprovalRow = (
   const tier = approval.risk_tier;
   const isDestructive = tier === 'destructive';
   const busy = resolving.has(approval.approval_id);
-  const busyAttrs = busy ? ' disabled aria-busy="true"' : '';
+  const busyAttrs = busy
+    ? ' aria-disabled="true" aria-busy="true"'
+    : '';
   const busyClass = busy ? ' is-busy' : '';
   const idAttr = escapeHtml(approval.approval_id);
   const recipeAttr = escapeHtml(approval.recipe_id);
@@ -1004,7 +1128,9 @@ const renderGatewayAskRow = (
   const optionButtons = ask.options
     .map((option) => {
       const label = option.label.trim() || option.id;
-      const busyAttrs = busy ? ' disabled aria-busy="true"' : '';
+      const busyAttrs = busy
+        ? ' aria-disabled="true" aria-busy="true"'
+        : '';
       const busyClass = busy ? ' is-busy' : '';
       return `
         <button type="button"
@@ -1044,7 +1170,9 @@ const renderChatPlanRow = (
   const busy = resolving.has(plan.plan_id);
   const freshReview = plan.retry_of_plan_id !== undefined;
   const payloadAvailable = plan.payload_available !== false;
-  const busyAttrs = busy ? ' disabled aria-busy="true"' : '';
+  const busyAttrs = busy
+    ? ' aria-disabled="true" aria-busy="true"'
+    : '';
   const approveAttrs =
     busyAttrs
     || (
@@ -1538,10 +1666,14 @@ const renderRecoveryIntentContinuation = (
   canReview: boolean,
   canRemediateConnection: boolean,
   canReviewServer: boolean,
+  now: number,
 ): string => {
   const waitingForConnection = value.phase === 'waiting_for_connection';
   const awaitingReviewOutcome = value.phase === 'awaiting_review_outcome';
   const verificationReady = value.phase === 'verification_ready';
+  const deferredVerification = verificationReady
+    && value.deferredAt !== undefined
+    && value.expiresAt !== undefined;
   const verificationInterrupted = value.phase === 'verification_interrupted';
   const verificationHandoff = value.phase === 'verification_handoff';
   const landingAction = value.intent === 'choose_again'
@@ -1590,7 +1722,9 @@ const renderRecoveryIntentContinuation = (
         ? serverOutcome?.title
           ?? `What happened after reviewing ${reviewedTargetLabel}?`
       : verificationReady
-        ? `Finish checking ${value.areaLabel}`
+        ? deferredVerification
+          ? `${value.areaLabel} check kept for later`
+          : `Finish checking ${value.areaLabel}`
       : verificationInterrupted
         ? 'Verification was interrupted'
       : verificationHandoff
@@ -1620,7 +1754,9 @@ const renderRecoveryIntentContinuation = (
         ? serverOutcome?.detail
           ?? `Recued won’t assume the direct review fixed the issue. If it looks resolved, run one fresh current-state check before returning to the exact place to ${landingAction} in ${value.areaLabel}. If it is still blocked, keep this reminder for later. No action or confirmation will replay.`
       : verificationReady
-        ? `The server re-review finished, but the final ${value.areaLabel} check did not. For privacy, Recued restored only where to return and that you wanted to ${landingAction}—not the server action, receipt, current state, or credentials. Check ${value.areaLabel} once on ${value.serverProfileLabel} when you’re ready, or close Attention to keep it for later. Nothing will replay.`
+        ? deferredVerification
+          ? `This exact check is saved quietly in this tab. Before ${landingActionGerund}, run one fresh ${value.areaLabel} check on ${value.serverProfileLabel}; or leave it here until it expires. Recued kept only the broad return and closed check—not the server action, receipt, current state, credentials, or provider detail. Nothing will run or replay on its own.`
+          : `The server re-review finished, but the final ${value.areaLabel} check did not. For privacy, Recued restored only where to return and that you wanted to ${landingAction}—not the server action, receipt, current state, or credentials. Check ${value.areaLabel} once on ${value.serverProfileLabel} when you’re ready, or choose Keep for later. Nothing will replay.`
       : verificationInterrupted
         ? `Recued did not finish checking ${value.areaLabel} after your review of ${reviewedTargetLabel}. Your “Looks resolved” outcome and exact return are still saved. Retry verification when ${value.serverProfileLabel} is available${canReviewInterruptedTarget ? `, or review ${reviewedTargetLabel} again` : ''}. It won’t retry on its own; no action or confirmation will replay.`
       : verificationHandoff
@@ -1723,6 +1859,12 @@ const renderRecoveryIntentContinuation = (
       data-action="resolve-recovery-intent-review"
       aria-label="${escapeHtml(`Check ${value.areaLabel} now on ${value.serverProfileLabel}; no prior action or receipt will replay`)}">
       Check ${escapeHtml(value.areaLabel)} now
+    </button>
+    <button type="button"
+      class="attention-row-action"
+      data-action="defer-recovery-intent-verification"
+      aria-label="${escapeHtml(`Keep the ${value.areaLabel} check for later on ${value.serverProfileLabel}`)}">
+      Keep for later
     </button>`;
   const connectionReviewAction = (primary: boolean): string =>
     canReviewServer
@@ -1781,10 +1923,24 @@ const renderRecoveryIntentContinuation = (
             aria-label="${escapeHtml(`Recheck ${value.areaLabel} on ${value.serverProfileLabel}`)}">
             Recheck area
           </button>`;
+  const deferredMeta = deferredVerification
+    ? (() => {
+        const ageMs = Math.max(0, now - value.deferredAt!);
+        const remainingMs = Math.max(0, value.expiresAt! - now);
+        const age = ageMs < 60_000
+          ? 'Kept for later just now'
+          : `Kept for later ${Math.max(1, Math.floor(ageMs / 60_000))} min ago`;
+        const remaining = remainingMs < 60_000
+          ? 'expires in under a minute'
+          : `expires in ${Math.max(1, Math.ceil(remainingMs / 60_000))} min`;
+        return `${age} · ${remaining}`;
+      })()
+    : null;
   return `
     <div class="attention-plan-resolution attention-recovery-intent-continuation"
       data-phase="${value.phase}"
       data-remediation="${value.remediation ?? 'none'}"
+      ${deferredVerification ? 'data-deferred="true"' : ''}
       ${value.reviewTarget === undefined
         ? ''
         : `data-review-target="${value.reviewTarget}"`}
@@ -1795,6 +1951,9 @@ const renderRecoveryIntentContinuation = (
       <div class="attention-plan-resolution-copy">
         <span class="attention-plan-resolution-title">${escapeHtml(title)}</span>
         <span class="attention-plan-resolution-detail">${escapeHtml(detail)}</span>
+        ${deferredMeta === null
+          ? ''
+          : `<span class="attention-plan-resolution-meta">${escapeHtml(deferredMeta)}</span>`}
       </div>
       <div class="attention-plan-resolution-actions">
         ${phaseActions}
@@ -1806,6 +1965,134 @@ const renderRecoveryIntentContinuation = (
             : value.remediation === 'escalated'
               ? 'Stop recovery'
               : 'Dismiss'}
+        </button>
+      </div>
+    </div>
+  `;
+};
+
+const renderRecoveryIntentExpiryHandoff = (
+  value: AttentionRecoveryIntentExpiryHandoff,
+  now: number,
+): string => {
+  const expiredMs = Math.max(0, now - value.expiredAt);
+  const expiredLabel = expiredMs < 60_000
+    ? 'Expired just now'
+    : `Expired ${Math.max(1, Math.floor(expiredMs / 60_000))} min ago`;
+  const checking = value.phase === 'checking';
+  const retry = value.phase === 'retry';
+  const handoff = value.phase === 'handoff';
+  const outcome = value.phase === 'outcome';
+  const rechecking = value.phase === 'rechecking';
+  const closure = value.phase === 'closure';
+  const busy = checking || rechecking;
+  const waitingForServer = outcome && value.checkBlocker === 'server';
+  const title = checking
+    ? `Checking current ${value.areaLabel}`
+    : rechecking
+      ? `Checking current ${value.areaLabel} once`
+      : outcome
+        ? waitingForServer
+          ? `Reconnect ${value.serverProfileLabel} before the fresh check`
+          : `${value.areaLabel} is ready for one fresh check`
+        : closure
+          ? value.closureTarget === 'server'
+            ? `${value.serverProfileLabel} interrupted the final check`
+            : `Current ${value.areaLabel} remains unconfirmed`
+          : handoff
+            ? value.diagnosisTarget === 'server'
+              ? `${value.serverProfileLabel} needs connection review`
+              : `${value.areaLabel} needs direct review`
+            : retry
+              ? `${value.areaLabel} couldn’t be refreshed`
+              : `Saved ${value.areaLabel} check expired`;
+  const detail = checking
+    ? `Recued is asking the current ${value.areaLabel} view for fresh information on ${value.serverProfileLabel}. The expired exact return remains removed, and no prior action or receipt will replay.`
+    : rechecking
+      ? `This is the single fresh current-area check you chose after reviewing ${value.serverProfileLabel}. It cannot restore the expired return or replay its prior action, and it will not become another retry.`
+      : outcome
+        ? waitingForServer
+          ? `You finished reviewing ${value.serverProfileLabel}, but it is not connected. Reconnect first, then choose one fresh current ${value.areaLabel} check or close this review. Reconnection will not start the check, restore the expired return, or replay an action.`
+          : `You finished reviewing ${value.serverProfileLabel}. Check current ${value.areaLabel} once with fresh information, or close this review now. The expired return stays discarded and no prior action or receipt will replay.`
+        : closure
+          ? value.closureTarget === 'server'
+            ? `The one-time current-area check ended when ${value.serverProfileLabel} became unavailable. No more check will run from this reminder. Open current ${value.areaLabel} without replaying saved work, or close the review.`
+            : `The one-time current-area check could not confirm fresh information. No more check will run from this reminder. Inspect current ${value.areaLabel} directly, or close the review.`
+          : handoff
+            ? value.diagnosisTarget === 'server'
+              ? `Recued stopped after two connection-blocked checks. Review the exact active server in Account before deciding what to do next. Opening it will not retry ${value.areaLabel}, restore the expired return, or replay an action.`
+              : `Recued stopped after two unsuccessful checks. Open current ${value.areaLabel} to inspect its latest status or error directly. This will not restore the expired return or separately replay its saved check.`
+            : retry
+              ? value.retryReason === 'offline'
+                ? `${value.serverProfileLabel} is offline, so Recued did not check ${value.areaLabel} again. Reconnect, then retry when you’re ready. The expired exact return remains removed and nothing will run automatically.`
+                : value.retryReason === 'interrupted'
+                  ? `The current ${value.areaLabel} check ended before Recued could confirm fresh information on ${value.serverProfileLabel}. Retry the broad area when you’re ready. The expired exact return remains removed and nothing will replay automatically.`
+                  : `Recued couldn’t confirm ${value.areaLabel} is current on ${value.serverProfileLabel}. Try the current area again when you’re ready; Recued will ask it for fresh information. The expired exact return remains removed, and no prior action or receipt will replay.`
+              : `The 30-minute exact return expired, so Recued discarded the prior intent and unfinished check. You can review ${value.areaLabel} as it is now on ${value.serverProfileLabel}. Nothing will run automatically, and no prior action or receipt will replay.`;
+  const actionLabel = outcome
+    ? waitingForServer
+      ? 'Waiting for server'
+      : `Check current ${value.areaLabel} once`
+    : closure
+      ? `Open current ${value.areaLabel}`
+      : handoff
+        ? value.diagnosisTarget === 'server'
+          ? 'Review server connection'
+          : `Open current ${value.areaLabel}`
+        : retry
+          ? `Retry current ${value.areaLabel}`
+          : `Review current ${value.areaLabel}`;
+  const actionAriaLabel = outcome
+    ? waitingForServer
+      ? `Waiting for ${value.serverProfileLabel} before one current ${value.areaLabel} check; reconnect will not start it`
+      : `Check current ${value.areaLabel} once; the expired intent and prior action will remain removed`
+    : closure
+      ? `Open current ${value.areaLabel} without another recovery check or replay`
+      : handoff && value.diagnosisTarget === 'server'
+        ? `Review ${value.serverProfileLabel} server connection; no expired intent or prior action will replay`
+        : `${actionLabel}; no expired intent or prior action will replay`;
+  const dismissLabel = outcome || closure
+    ? 'Close review'
+    : rechecking
+      ? 'Stop and close'
+      : 'Dismiss';
+  return `
+    <div class="attention-plan-resolution attention-recovery-intent-expiry-handoff"
+      ${ATTENTION_RECOVERY_INTENT_EXPIRY_HANDOFF_ATTR}
+      data-expired-at="${value.expiredAt}"
+      data-phase="${value.phase}"
+      ${value.retryReason === undefined
+        ? ''
+        : `data-retry-reason="${value.retryReason}"`}
+      ${value.diagnosisTarget === undefined
+        ? ''
+        : `data-diagnosis-target="${value.diagnosisTarget}"`}
+      ${value.closureTarget === undefined
+        ? ''
+        : `data-closure-target="${value.closureTarget}"`}
+      ${value.checkBlocker === undefined
+        ? ''
+        : `data-check-blocker="${value.checkBlocker}"`}
+      ${busy ? 'aria-busy="true"' : ''}>
+      <div class="attention-plan-resolution-copy">
+        <span class="attention-plan-resolution-title">${escapeHtml(title)}</span>
+        <span class="attention-plan-resolution-detail">${escapeHtml(detail)}</span>
+        <span class="attention-plan-resolution-meta">${escapeHtml(expiredLabel)} · exact return removed</span>
+      </div>
+      <div class="attention-plan-resolution-actions">
+        ${busy
+          ? ''
+          : `<button type="button"
+            class="attention-row-action attention-row-action--approve"
+            data-action="review-recovery-intent-expiry-handoff"
+            ${waitingForServer ? 'disabled' : ''}
+            aria-label="${escapeHtml(actionAriaLabel)}">
+            ${escapeHtml(actionLabel)}
+          </button>`}
+        <button type="button"
+          class="attention-row-action"
+          data-action="dismiss-recovery-intent-expiry-handoff">
+          ${dismissLabel}
         </button>
       </div>
     </div>
@@ -1830,6 +2117,8 @@ const renderUnifiedPopover = (state: {
   connectionRecoveryReview: ConnectionRecoveryReviewPresentation | null;
   recoveryExcursionReturn: AttentionRecoveryExcursionReturn | null;
   recoveryIntentContinuation: AttentionRecoveryIntentContinuation | null;
+  recoveryIntentExpiryHandoff:
+    AttentionRecoveryIntentExpiryHandoff | null;
   canReviewRecoveryIntentContinuation: boolean;
   canRemediateRecoveryIntentConnection: boolean;
   canReviewRecoveryIntentServer: boolean;
@@ -1896,6 +2185,7 @@ const renderUnifiedPopover = (state: {
       ? state.connectionRecoveryReview !== null
         || state.recoveryExcursionReturn !== null
         || state.recoveryIntentContinuation !== null
+        || state.recoveryIntentExpiryHandoff !== null
         ? ''
         : (
           state.loading
@@ -1941,15 +2231,43 @@ const renderUnifiedPopover = (state: {
     state.recoveryIntentContinuation === null
       ? null
       : serverControlOutcomePresentation(state.recoveryIntentContinuation);
+  const deferredRecoveryIntent =
+    state.recoveryIntentContinuation?.deferredAt !== undefined
+    && state.recoveryIntentContinuation.expiresAt !== undefined;
   const summary = state.connectionRecoveryReview?.phase === 'checking'
     ? `Rechecking ${state.connectionRecoveryReview.serverProfileLabel} for connection recovery.`
     : state.connectionRecoveryReview?.phase === 'retryable'
       ? `${state.connectionRecoveryReview.serverProfileLabel} still needs a fresh recovery check.`
       : state.connectionRecoveryReview?.phase === 'verified'
         ? `The fresh ${state.connectionRecoveryReview.serverProfileLabel} recovery check is complete.`
+        : state.recoveryIntentExpiryHandoff !== null
+            && state.blockingCount === 0
+          ? state.recoveryIntentExpiryHandoff.phase === 'checking'
+            ? `Checking current ${state.recoveryIntentExpiryHandoff.areaLabel}; the expired exact return remains removed.`
+            : state.recoveryIntentExpiryHandoff.phase === 'rechecking'
+              ? `Checking current ${state.recoveryIntentExpiryHandoff.areaLabel} once after server review.`
+            : state.recoveryIntentExpiryHandoff.phase === 'outcome'
+              ? state.recoveryIntentExpiryHandoff.checkBlocker === 'server'
+                ? `Server review is finished; reconnect before choosing one current ${state.recoveryIntentExpiryHandoff.areaLabel} check, or close the review.`
+                : `Server review is finished; choose one current ${state.recoveryIntentExpiryHandoff.areaLabel} check or close the review.`
+            : state.recoveryIntentExpiryHandoff.phase === 'closure'
+              ? `The one-time current ${state.recoveryIntentExpiryHandoff.areaLabel} check ended; inspect the area or close the review.`
+            : state.recoveryIntentExpiryHandoff.phase === 'handoff'
+              ? state.recoveryIntentExpiryHandoff.diagnosisTarget === 'server'
+                ? `Current ${state.recoveryIntentExpiryHandoff.areaLabel} could not be confirmed twice; review the exact active server.`
+                : `Current ${state.recoveryIntentExpiryHandoff.areaLabel} could not be confirmed twice; review the area directly.`
+            : state.recoveryIntentExpiryHandoff.phase === 'retry'
+              ? `Current ${state.recoveryIntentExpiryHandoff.areaLabel} could not be confirmed; retry when you’re ready.`
+              : `A saved ${state.recoveryIntentExpiryHandoff.areaLabel} check expired; review the current area when you’re ready.`
+        : deferredRecoveryIntent
+            && state.recoveryIntentContinuation !== null
+            && state.blockingCount === 0
+          ? `A ${state.recoveryIntentContinuation.areaLabel} check is saved quietly for later; nothing will run on its own.`
         : state.recoveryExcursionReturn !== null && state.blockingCount === 1
           ? `A saved return to ${state.recoveryExcursionReturn.serverProfileLabel} is ready to review.`
-          : state.recoveryIntentContinuation !== null && state.blockingCount === 1
+          : state.recoveryIntentContinuation !== null
+              && !deferredRecoveryIntent
+              && state.blockingCount === 1
             ? state.recoveryIntentContinuation.phase === 'checking'
               ? `Rechecking ${state.recoveryIntentContinuation.areaLabel} on ${state.recoveryIntentContinuation.serverProfileLabel}.`
               : state.recoveryIntentContinuation.phase === 'waiting_for_connection'
@@ -2026,6 +2344,13 @@ const renderUnifiedPopover = (state: {
               state.canReviewRecoveryIntentContinuation,
               state.canRemediateRecoveryIntentConnection,
               state.canReviewRecoveryIntentServer,
+              state.now,
+            )}
+        ${state.recoveryIntentExpiryHandoff === null
+          ? ''
+          : renderRecoveryIntentExpiryHandoff(
+              state.recoveryIntentExpiryHandoff,
+              state.now,
             )}
         ${state.planResolution === null ? '' : renderPlanResolution(state.planResolution)}
         ${pendingBody}
@@ -2113,6 +2438,7 @@ export const mountApprovalAttentionPopover = (
   let ignoreOutsideClickUntilNextTask = false;
   let outsideClickEnableTimer: ReturnType<typeof globalThis.setTimeout> | null =
     null;
+  let focusLeaveTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
   let approvalPhase: 'loading' | 'ready' | 'error' = 'loading';
   let askPhase: 'loading' | 'ready' | 'error' = 'loading';
   let connectionRecoveryPhase: 'loading' | 'ready' | 'error' =
@@ -2240,7 +2566,7 @@ export const mountApprovalAttentionPopover = (
       || value.serverProfileId.length > 256
       || value.landingHash.length === 0
       || value.landingHash.length > 512
-      || !value.landingHash.startsWith('#')
+      || safeServerSwitchLandingHash(value.landingHash) !== value.landingHash
       || (value.intent !== 'continue' && value.intent !== 'choose_again')
       || (
         value.phase !== 'ready'
@@ -2287,6 +2613,10 @@ export const mountApprovalAttentionPopover = (
             value.phase === 'awaiting_review_outcome'
             && opts.onKeepRecoveryIntentReviewBlocked === undefined
           )
+          || (
+            value.phase === 'verification_ready'
+            && opts.onDeferRecoveryIntentVerification === undefined
+          )
         )
       )
       || (
@@ -2308,6 +2638,19 @@ export const mountApprovalAttentionPopover = (
         value.phase !== 'verification_interrupted'
         && value.phase !== 'verification_handoff'
         && value.interruptionReason !== undefined
+      )
+      || (
+        (value.deferredAt === undefined) !== (value.expiresAt === undefined)
+      )
+      || (
+        value.deferredAt !== undefined
+        && (
+          value.phase !== 'verification_ready'
+          || !Number.isSafeInteger(value.deferredAt)
+          || value.deferredAt < 0
+          || !Number.isSafeInteger(value.expiresAt)
+          || value.expiresAt! <= value.deferredAt
+        )
       )
     ) return null;
     const profileLabel = value.serverProfileLabel.trim();
@@ -2348,11 +2691,103 @@ export const mountApprovalAttentionPopover = (
       ...(serverCurrentState === undefined
         ? {}
         : { serverCurrentState }),
+      ...(value.deferredAt === undefined
+        ? {}
+        : {
+            deferredAt: value.deferredAt,
+            expiresAt: value.expiresAt!,
+          }),
     };
   };
   let recoveryIntentContinuation = normalizeRecoveryIntentContinuation(
     opts.initialRecoveryIntentContinuation,
   );
+  const normalizeRecoveryIntentExpiryHandoff = (
+    value: AttentionRecoveryIntentExpiryHandoff | null | undefined,
+  ): AttentionRecoveryIntentExpiryHandoff | null => {
+    if (
+      value === null
+      || value === undefined
+      || opts.onReviewRecoveryIntentExpiryHandoff === undefined
+      || opts.onDismissRecoveryIntentExpiryHandoff === undefined
+      || value.serverProfileId.trim().length === 0
+      || value.serverProfileId.length > 256
+      || value.landingHash.length === 0
+      || value.landingHash.length > 512
+      || safeServerSwitchLandingHash(value.landingHash) !== value.landingHash
+      || !Number.isSafeInteger(value.deferredAt)
+      || value.deferredAt < 0
+      || !Number.isSafeInteger(value.expiredAt)
+      || value.expiredAt < value.deferredAt
+      || (
+        value.phase !== 'ready'
+        && value.phase !== 'checking'
+        && value.phase !== 'retry'
+        && value.phase !== 'handoff'
+        && value.phase !== 'outcome'
+        && value.phase !== 'rechecking'
+        && value.phase !== 'closure'
+      )
+      || (
+        value.phase === 'retry'
+          ? value.retryReason !== 'offline'
+            && value.retryReason !== 'unavailable'
+            && value.retryReason !== 'interrupted'
+          : value.retryReason !== undefined
+      )
+      || (
+        value.phase === 'handoff'
+          ? value.diagnosisTarget !== 'area'
+            && value.diagnosisTarget !== 'server'
+          : value.diagnosisTarget !== undefined
+      )
+      || (
+        value.phase === 'closure'
+          ? value.closureTarget !== 'area'
+            && value.closureTarget !== 'server'
+          : value.closureTarget !== undefined
+      )
+      || (
+        value.phase === 'outcome'
+          ? value.checkBlocker !== undefined
+            && value.checkBlocker !== 'server'
+          : value.checkBlocker !== undefined
+      )
+    ) return null;
+    const profileLabel = value.serverProfileLabel.trim();
+    const areaLabel = value.areaLabel.trim();
+    if (profileLabel.length === 0 || areaLabel.length === 0) return null;
+    return {
+      serverProfileId: value.serverProfileId,
+      serverProfileLabel: profileLabel,
+      landingHash: value.landingHash,
+      areaLabel,
+      deferredAt: value.deferredAt,
+      expiredAt: value.expiredAt,
+      phase: value.phase,
+      ...(value.retryReason === undefined
+        ? {}
+        : { retryReason: value.retryReason }),
+      ...(value.diagnosisTarget === undefined
+        ? {}
+        : { diagnosisTarget: value.diagnosisTarget }),
+      ...(value.closureTarget === undefined
+        ? {}
+        : { closureTarget: value.closureTarget }),
+      ...(value.checkBlocker === undefined
+        ? {}
+        : { checkBlocker: value.checkBlocker }),
+    };
+  };
+  let recoveryIntentExpiryHandoff = recoveryIntentContinuation === null
+    ? normalizeRecoveryIntentExpiryHandoff(
+        opts.initialRecoveryIntentExpiryHandoff,
+      )
+    : null;
+  // True only after this mounted tab starts the broad-area review. It lets an
+  // async checking/retry transition announce once even after Attention closes,
+  // while a cold restored retry remains deliberately quiet.
+  let recoveryIntentExpiryReviewStarted = false;
   let connectionRecoveryReview: ConnectionRecoveryReviewPresentation | null =
     (() => {
       const requested = opts.initialConnectionRecoveryReview;
@@ -2554,6 +2989,10 @@ export const mountApprovalAttentionPopover = (
       Math.floor(approvalPendingCountOverride ?? approvals.length),
     );
 
+  const quietCount = (): number =>
+    (recoveryIntentContinuation?.deferredAt === undefined ? 0 : 1)
+    + (recoveryIntentExpiryHandoff === null ? 0 : 1);
+
   const blockingCount = (): number =>
     approvalBlockingCount()
     + asks.length
@@ -2561,7 +3000,12 @@ export const mountApprovalAttentionPopover = (
     + connectionRecoveries.length
     + inactiveConnectionRecoveryHints.length
     + (recoveryExcursionReturn === null ? 0 : 1)
-    + (recoveryIntentContinuation === null ? 0 : 1);
+    + (
+      recoveryIntentContinuation === null
+        || recoveryIntentContinuation.deferredAt !== undefined
+        ? 0
+        : 1
+    );
 
   const render = (): void => {
     if (disposed) return;
@@ -2601,6 +3045,7 @@ export const mountApprovalAttentionPopover = (
       ? null
       : serverControlOutcomePresentation(recoveryIntentContinuation);
     const recoveryAnnouncement = recoveryIntentContinuation !== null
+      && recoveryIntentContinuation.deferredAt === undefined
       ? {
           key: JSON.stringify([
             'intent',
@@ -2625,7 +3070,7 @@ export const mountApprovalAttentionPopover = (
               ? recoveryIntentServerOutcome?.announcement
                 ?? `Review outcome needed for ${recoveryIntentContinuation.areaLabel}. Choose the Looks resolved option to run one fresh check, or keep the reminder if it is still blocked.`
             : recoveryIntentContinuation.phase === 'verification_ready'
-              ? `One fresh ${recoveryIntentContinuation.areaLabel} check remains. Only the saved return was restored—not the server action, receipt, current state, or credentials. Check the area when ready; nothing will replay.`
+              ? `One fresh ${recoveryIntentContinuation.areaLabel} check remains. Only the saved return was restored—not the server action, receipt, current state, or credentials. Check the area now or keep it for later; nothing will replay.`
             : recoveryIntentContinuation.phase === 'verification_interrupted'
               ? `Verification of ${recoveryIntentContinuation.areaLabel} was interrupted. It won’t retry on its own. Retry verification${interruptedReviewAgain}, or stop recovery.`
             : recoveryIntentContinuation.phase === 'verification_handoff'
@@ -2654,11 +3099,53 @@ export const mountApprovalAttentionPopover = (
             ]),
             copy: `A saved return to ${recoveryExcursionReturn.serverProfileLabel} is ready to review.`,
           }
+        : recoveryIntentExpiryHandoff !== null
+          ? {
+              key: JSON.stringify([
+                'intent-expiry',
+                recoveryIntentExpiryHandoff.serverProfileId,
+                recoveryIntentExpiryHandoff.landingHash,
+                recoveryIntentExpiryHandoff.deferredAt,
+                recoveryIntentExpiryHandoff.expiredAt,
+                recoveryIntentExpiryHandoff.phase,
+                recoveryIntentExpiryHandoff.retryReason ?? null,
+                recoveryIntentExpiryHandoff.diagnosisTarget ?? null,
+                recoveryIntentExpiryHandoff.closureTarget ?? null,
+                recoveryIntentExpiryHandoff.checkBlocker ?? null,
+              ]),
+              copy: recoveryIntentExpiryHandoff.phase === 'checking'
+                ? `Checking current ${recoveryIntentExpiryHandoff.areaLabel} on ${recoveryIntentExpiryHandoff.serverProfileLabel}. The expired exact return remains removed.`
+                : recoveryIntentExpiryHandoff.phase === 'rechecking'
+                  ? `Checking current ${recoveryIntentExpiryHandoff.areaLabel} once after reviewing ${recoveryIntentExpiryHandoff.serverProfileLabel}. No expired intent or prior action will replay.`
+                : recoveryIntentExpiryHandoff.phase === 'outcome'
+                  ? recoveryIntentExpiryHandoff.checkBlocker === 'server'
+                    ? `Server review finished. Reconnect ${recoveryIntentExpiryHandoff.serverProfileLabel} before choosing the one current ${recoveryIntentExpiryHandoff.areaLabel} check; reconnect will not start it.`
+                    : `Server review finished. Choose one fresh current ${recoveryIntentExpiryHandoff.areaLabel} check or close the review; nothing will run automatically.`
+                : recoveryIntentExpiryHandoff.phase === 'closure'
+                  ? `The one-time current ${recoveryIntentExpiryHandoff.areaLabel} check did not confirm fresh information. No more check will run from this reminder.`
+                : recoveryIntentExpiryHandoff.phase === 'handoff'
+                  ? recoveryIntentExpiryHandoff.diagnosisTarget === 'server'
+                    ? `Recued stopped after two unsuccessful ${recoveryIntentExpiryHandoff.areaLabel} checks. Review the exact ${recoveryIntentExpiryHandoff.serverProfileLabel} connection; nothing will retry automatically.`
+                    : `Recued stopped after two unsuccessful ${recoveryIntentExpiryHandoff.areaLabel} checks. Review the current area directly; nothing will retry automatically.`
+                : recoveryIntentExpiryHandoff.phase === 'retry'
+                  ? recoveryIntentExpiryHandoff.retryReason === 'offline'
+                    ? `${recoveryIntentExpiryHandoff.serverProfileLabel} is offline, so current ${recoveryIntentExpiryHandoff.areaLabel} was not checked. Reconnect, then retry when you’re ready.`
+                    : `Current ${recoveryIntentExpiryHandoff.areaLabel} could not be confirmed on ${recoveryIntentExpiryHandoff.serverProfileLabel}. Retry when you’re ready; nothing will run automatically.`
+                  : `A saved ${recoveryIntentExpiryHandoff.areaLabel} check expired. Review the current area when you’re ready; nothing will run automatically.`,
+            }
         : null;
     if (recoveryAnnouncement === null) {
       announcedRecoveryReturnKey = null;
       recoveryReturnAnnouncer.textContent = '';
-    } else if (open) {
+    } else if (
+      open
+      || (
+        recoveryIntentExpiryReviewStarted
+        && recoveryIntentContinuation === null
+        && recoveryExcursionReturn === null
+        && recoveryIntentExpiryHandoff !== null
+      )
+    ) {
       if (announcedRecoveryReturnKey !== recoveryAnnouncement.key) {
         announcedRecoveryReturnKey = recoveryAnnouncement.key;
         recoveryReturnAnnouncer.textContent = recoveryAnnouncement.copy;
@@ -2733,6 +3220,7 @@ export const mountApprovalAttentionPopover = (
             connectionRecoveryReview,
             recoveryExcursionReturn,
             recoveryIntentContinuation,
+            recoveryIntentExpiryHandoff,
             canReviewRecoveryIntentContinuation:
               opts.onReviewRecoveryIntentContinuation !== undefined,
             canRemediateRecoveryIntentConnection:
@@ -2746,7 +3234,25 @@ export const mountApprovalAttentionPopover = (
       : '';
     topbar.innerHTML = `
       <div class="webclient-attention-anchor">
-        ${renderAttentionSlot({ blockingCount: blockingCount(), open })}
+        ${renderAttentionSlot({
+          blockingCount: blockingCount(),
+          quietCount: quietCount(),
+          quietStatus: recoveryIntentExpiryHandoff === null
+            ? 'saved'
+            : recoveryIntentExpiryHandoff.phase === 'outcome'
+              ? 'decision'
+              : recoveryIntentExpiryHandoff.phase === 'closure'
+                ? 'closure'
+                : recoveryIntentExpiryHandoff.phase === 'handoff'
+              ? 'diagnosis'
+              : recoveryIntentExpiryHandoff.phase === 'retry'
+              ? 'retry'
+              : recoveryIntentExpiryHandoff.phase === 'checking'
+                  || recoveryIntentExpiryHandoff.phase === 'rechecking'
+                ? 'checking'
+                : 'ready',
+          open,
+        })}
         ${popover}
       </div>
     `;
@@ -3280,6 +3786,98 @@ export const mountApprovalAttentionPopover = (
       focusAttentionDialog();
       return;
     }
+    if (action === 'defer-recovery-intent-verification') {
+      event.preventDefault();
+      const continuation = recoveryIntentContinuation;
+      if (
+        continuation === null
+        || continuation.phase !== 'verification_ready'
+        || continuation.remediation !== 'escalated'
+        || continuation.reviewTarget !== 'server'
+      ) return;
+      let result: 'started' | 'missing' | 'unavailable' = 'unavailable';
+      try {
+        result = opts.onDeferRecoveryIntentVerification?.(continuation)
+          ?? 'unavailable';
+      } catch {
+        result = 'unavailable';
+      }
+      if (result === 'started') {
+        recoveryIntentActionError = null;
+        open = false;
+        render();
+        focusAttentionTrigger();
+        return;
+      }
+      if (result === 'missing') recoveryIntentContinuation = null;
+      recoveryIntentActionError = result === 'missing'
+        ? 'That saved check no longer matches this server or work area. The reminder was retired.'
+        : 'That check couldn’t be kept for later right now. It remains here unchanged; no check or prior action ran.';
+      render();
+      focusAttentionDialog();
+      return;
+    }
+    if (action === 'review-recovery-intent-expiry-handoff') {
+      event.preventDefault();
+      const handoff = recoveryIntentExpiryHandoff;
+      if (handoff === null || recoveryIntentContinuation !== null) return;
+      let result: 'started' | 'missing' | 'unavailable' = 'unavailable';
+      try {
+        result = opts.onReviewRecoveryIntentExpiryHandoff?.(handoff)
+          ?? 'unavailable';
+      } catch {
+        result = 'unavailable';
+      }
+      if (result === 'started') {
+        // A shell callback can synchronously publish `checking` or `retry`.
+        // Preserve that newer presentation; only consume the exact item the
+        // user clicked when no route-owned state replaced it.
+        if (recoveryIntentExpiryHandoff === handoff) {
+          recoveryIntentExpiryHandoff = null;
+        }
+        recoveryIntentExpiryReviewStarted = true;
+        recoveryIntentActionError = null;
+        open = false;
+        render();
+        focusAttentionTrigger();
+        return;
+      }
+      if (result === 'missing') {
+        recoveryIntentExpiryHandoff = null;
+        recoveryIntentExpiryReviewStarted = false;
+      }
+      recoveryIntentActionError = result === 'missing'
+        ? 'That expired check no longer matches this server or work area. The notice was retired.'
+        : handoff.phase === 'outcome'
+          ? `The one-time current ${handoff.areaLabel} check couldn’t start. The choice remains here; no expired intent or prior action ran.`
+          : handoff.phase === 'closure'
+            ? `Current ${handoff.areaLabel} can’t open right now. The closure choice remains here and no recovery check ran.`
+        : handoff.phase === 'handoff'
+          ? handoff.diagnosisTarget === 'server'
+            ? `The exact ${handoff.serverProfileLabel} diagnosis can’t open right now. The bounded notice remains here; finish any server-profile change, then try again or dismiss it.`
+            : `Current ${handoff.areaLabel} can’t open right now. The bounded notice remains here and no check ran; try again later or dismiss it.`
+          : handoff.phase === 'retry'
+          ? `That current ${handoff.areaLabel} retry couldn’t start right now. The expired check remains discarded; reconnect if needed, then try again or dismiss this notice.`
+          : `That current ${handoff.areaLabel} view can’t be opened right now. The expired check remains discarded; try again later or dismiss this notice.`;
+      render();
+      focusAttentionDialog();
+      return;
+    }
+    if (action === 'dismiss-recovery-intent-expiry-handoff') {
+      event.preventDefault();
+      if (recoveryIntentExpiryHandoff === null) return;
+      recoveryIntentExpiryHandoff = null;
+      recoveryIntentExpiryReviewStarted = false;
+      recoveryIntentActionError = null;
+      try {
+        opts.onDismissRecoveryIntentExpiryHandoff?.();
+      } catch {
+        // The local one-shot dismissal still wins if storage is denied.
+      }
+      render();
+      focusAttentionDialog();
+      return;
+    }
     if (action === 'remediate-recovery-intent-connection') {
       event.preventDefault();
       const continuation = recoveryIntentContinuation;
@@ -3460,7 +4058,7 @@ export const mountApprovalAttentionPopover = (
     if (action === 'approval-arm') {
       event.preventDefault();
       const approvalId = actionEl.getAttribute('data-approval-id');
-      if (approvalId !== null) {
+      if (approvalId !== null && !resolving.has(approvalId)) {
         armedApprovals.add(approvalId);
         render();
         focusAction({
@@ -3474,7 +4072,7 @@ export const mountApprovalAttentionPopover = (
     if (action === 'approval-disarm') {
       event.preventDefault();
       const approvalId = actionEl.getAttribute('data-approval-id');
-      if (approvalId !== null) {
+      if (approvalId !== null && !resolving.has(approvalId)) {
         armedApprovals.delete(approvalId);
         render();
         focusAction({
@@ -3542,6 +4140,40 @@ export const mountApprovalAttentionPopover = (
     closeAttention(false);
   };
 
+  const onDocumentFocusin = (event: FocusEvent): void => {
+    if (!open) return;
+    const dialog = queryTopbar(`[${ATTENTION_DIALOG_ATTR}]`);
+    if (
+      event.target !== null
+      && dialog?.contains(event.target as Node) === true
+    ) {
+      if (focusLeaveTimer !== null) {
+        globalThis.clearTimeout(focusLeaveTimer);
+        focusLeaveTimer = null;
+      }
+      return;
+    }
+    if (focusLeaveTimer !== null) globalThis.clearTimeout(focusLeaveTimer);
+    // Let a pointer gesture finish its click before dismissing. In particular,
+    // focusing the bell on pointerdown must not close and then reopen the
+    // popover when the bell's click handler runs. Keyboard focus departure has
+    // no following click, so the next task closes while preserving its target.
+    focusLeaveTimer = globalThis.setTimeout(() => {
+      focusLeaveTimer = null;
+      if (!open) return;
+      const currentDialog = queryTopbar(`[${ATTENTION_DIALOG_ATTR}]`);
+      const activeElement = (
+        doc as unknown as { activeElement?: HTMLElement | null }
+      ).activeElement;
+      if (
+        activeElement !== null
+        && activeElement !== undefined
+        && currentDialog?.contains(activeElement as Node) === true
+      ) return;
+      closeAttention(false);
+    }, 0);
+  };
+
   const onDocumentKeydown = (event: KeyboardEvent): void => {
     if (!open || event.key !== 'Escape') return;
     event.preventDefault();
@@ -3551,6 +4183,7 @@ export const mountApprovalAttentionPopover = (
 
   topbar.addEventListener('click', onClick);
   doc.addEventListener('click', onDocumentClick);
+  doc.addEventListener('focusin', onDocumentFocusin);
   doc.addEventListener('keydown', onDocumentKeydown);
   if (opts.onApprovalChanged !== undefined) {
     unsubscribers.push(opts.onApprovalChanged(onApprovalChanged));
@@ -3641,6 +4274,13 @@ export const mountApprovalAttentionPopover = (
     getInactiveConnectionRecoveryHints: () =>
       inactiveConnectionRecoveryHints,
     isOpen: () => open,
+    hasInFlightWork: () =>
+      !disposed
+      && (
+        resolving.size > 0
+        || resolvingAsks.size > 0
+        || resolvingPlans.size > 0
+      ),
     open: () => openAttention(true),
     refreshApprovals,
     refreshAsks,
@@ -3727,8 +4367,16 @@ export const mountApprovalAttentionPopover = (
             ?? null)
         && (normalized?.serverCurrentState?.state ?? null)
           === (recoveryIntentContinuation?.serverCurrentState?.state ?? null)
+        && (normalized?.deferredAt ?? null)
+          === (recoveryIntentContinuation?.deferredAt ?? null)
+        && (normalized?.expiresAt ?? null)
+          === (recoveryIntentContinuation?.expiresAt ?? null)
       ) return;
       recoveryIntentContinuation = normalized;
+      if (normalized !== null) {
+        recoveryIntentExpiryHandoff = null;
+        recoveryIntentExpiryReviewStarted = false;
+      }
       recoveryIntentActionError = null;
       render();
     },
@@ -3739,6 +4387,43 @@ export const mountApprovalAttentionPopover = (
       render();
     },
     getRecoveryIntentContinuation: () => recoveryIntentContinuation,
+    setRecoveryIntentExpiryHandoff: (value) => {
+      const normalized = normalizeRecoveryIntentExpiryHandoff(value);
+      // A consumed cross-route action can leave the adapter's local item null
+      // before the shell publishes its eventual outcome. An explicit clear is
+      // still authoritative even when the presentation is already null.
+      if (normalized === null) recoveryIntentExpiryReviewStarted = false;
+      if (
+        normalized?.serverProfileId
+          === recoveryIntentExpiryHandoff?.serverProfileId
+        && normalized?.serverProfileLabel
+          === recoveryIntentExpiryHandoff?.serverProfileLabel
+        && normalized?.landingHash
+          === recoveryIntentExpiryHandoff?.landingHash
+        && normalized?.areaLabel === recoveryIntentExpiryHandoff?.areaLabel
+        && normalized?.deferredAt
+          === recoveryIntentExpiryHandoff?.deferredAt
+        && normalized?.expiredAt
+          === recoveryIntentExpiryHandoff?.expiredAt
+        && normalized?.phase === recoveryIntentExpiryHandoff?.phase
+        && (normalized?.retryReason ?? null)
+          === (recoveryIntentExpiryHandoff?.retryReason ?? null)
+        && (normalized?.diagnosisTarget ?? null)
+          === (recoveryIntentExpiryHandoff?.diagnosisTarget ?? null)
+        && (normalized?.closureTarget ?? null)
+          === (recoveryIntentExpiryHandoff?.closureTarget ?? null)
+        && (normalized?.checkBlocker ?? null)
+          === (recoveryIntentExpiryHandoff?.checkBlocker ?? null)
+      ) return;
+      recoveryIntentExpiryHandoff = normalized;
+      if (normalized?.phase === 'ready') {
+        recoveryIntentExpiryReviewStarted = false;
+      }
+      if (normalized !== null) recoveryIntentContinuation = null;
+      recoveryIntentActionError = null;
+      render();
+    },
+    getRecoveryIntentExpiryHandoff: () => recoveryIntentExpiryHandoff,
     whenLoaded: async () => {
       await Promise.all([
         pendingApprovalLoad,
@@ -3756,8 +4441,13 @@ export const mountApprovalAttentionPopover = (
         outsideClickEnableTimer = null;
       }
       ignoreOutsideClickUntilNextTask = false;
+      if (focusLeaveTimer !== null) {
+        globalThis.clearTimeout(focusLeaveTimer);
+        focusLeaveTimer = null;
+      }
       topbar.removeEventListener('click', onClick);
       doc.removeEventListener('click', onDocumentClick);
+      doc.removeEventListener('focusin', onDocumentFocusin);
       doc.removeEventListener('keydown', onDocumentKeydown);
       for (const unsub of unsubscribers) {
         try {

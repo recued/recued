@@ -3,27 +3,27 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://docs.apollo.io/openapi/apollo-rest-api.json",
-      "bytes": 1029809,
-      "sha256": "c31476e23da1490e5d5cdd382abadd59a52966a06dd57e87c8b30178c63df26b",
+      "bytes": 1084052,
+      "sha256": "6fb96643d9c0c3f60323bccd5f7f2aa77a8bac9725c0941e746c8957d8a5d6d0",
       "openapi": "3.1.0",
       "api_version": "1.0",
       "retrieved_on": "2026-07-15",
       "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract."
     },
-    "official_operation_count": 76,
-    "official_unique_route_count": 76,
-    "admitted_unique_route_count": 76,
-    "declared_operation_count": 76,
+    "official_operation_count": 79,
+    "official_unique_route_count": 79,
+    "admitted_unique_route_count": 79,
+    "declared_operation_count": 79,
     "official_method_counts": {
       "GET": 26,
-      "PATCH": 5,
-      "POST": 43,
+      "PATCH": 6,
+      "POST": 45,
       "PUT": 2
     },
     "declared_method_counts": {
       "GET": 26,
-      "PATCH": 5,
-      "POST": 43,
+      "PATCH": 6,
+      "POST": 45,
       "PUT": 2
     },
     "compatibility_operation_count": 22,
@@ -69,9 +69,9 @@
       "sequence-readiness-brief-apollo": 2,
       "create-account-intake-apollo": 2,
       "create-contact-intake-apollo": 2,
-      "add-contacts-to-sequence-apollo": 2,
+      "add-contacts-to-sequence-apollo": 3,
       "create-follow-up-task-apollo": 2,
-      "create-deal-intake-apollo": 2
+      "create-deal-intake-apollo": 3
     },
     "repaired_compatibility_arguments": {
       "people.search": "body filters replaced by the documented query parameters",
@@ -79,25 +79,25 @@
       "task.search": "unsupported body filters replaced by documented query parameters",
       "email_account.search": "unsupported page/per_page arguments removed"
     },
-    "composition_bytes": 131185,
+    "composition_bytes": 131075,
     "risk_counts": {
       "admin": 7,
       "destructive": 1,
-      "read": 41,
-      "write": 27
+      "read": 43,
+      "write": 28
     },
     "approval_counts": {
-      "always": 30,
+      "always": 31,
       "ask": 5,
-      "never": 41
+      "never": 43
     },
     "idempotency_counts": {
-      "idempotent": 7,
+      "idempotent": 8,
       "non_idempotent": 38,
-      "safe": 31
+      "safe": 33
     },
     "pagination_counts": {
-      "none": 62,
+      "none": 65,
       "offset": 14
     },
     "result_path_counts": {
@@ -113,9 +113,10 @@
       "emailer_campaign": 6,
       "emailer_campaigns": 1,
       "emailer_message": 2,
-      "emailer_messages": 1,
+      "emailer_messages": 2,
       "emailer_schedules": 1,
-      "fields": 1,
+      "events": 1,
+      "fields": 2,
       "label": 2,
       "matches": 1,
       "news_articles": 1,
@@ -141,7 +142,7 @@
     },
     "body_mode_counts": {
       "none": 43,
-      "structured_json": 33
+      "structured_json": 36
     },
     "credit_consuming_operation_count": 11,
     "credit_consuming_operation_ids": [
@@ -157,43 +158,12 @@
       "people.enrich",
       "people.read"
     ],
-    "master_key_operation_count": 35,
+    "master_key_operation_count": 4,
     "master_key_operation_ids": [
-      "account.create",
-      "account.owner.bulk_update",
-      "account.read",
-      "account.update",
-      "account_stage.search",
       "call.create",
       "call.search",
       "call.update",
-      "contact.read",
-      "custom_field.search",
-      "deal.create",
-      "deal.read",
-      "deal.search",
-      "deal.update",
-      "deal_stage.search",
-      "email_account.search",
-      "field.search",
-      "label.search",
-      "organization.read",
-      "outreach_email.activity.read",
-      "people.read",
-      "people.search",
-      "sequence.activate",
-      "sequence.add_contacts",
-      "sequence.archive",
-      "sequence.contact_status.update",
-      "sequence.create",
-      "sequence.deactivate",
-      "sequence.search",
-      "sequence.update",
-      "task.bulk_create",
-      "task.create",
-      "task.search",
-      "usage.read",
-      "user.search"
+      "outreach_email.activity.read"
     ],
     "omitted_parameter_count": 8,
     "omitted_parameters": [
@@ -303,8 +273,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -453,8 +423,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -542,8 +512,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -606,8 +576,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -659,8 +629,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -859,7 +829,7 @@
         "total_entries"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "POST",
@@ -874,8 +844,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -1106,8 +1076,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -1162,8 +1132,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -1212,7 +1182,7 @@
         "account"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "PATCH",
@@ -1229,8 +1199,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -1289,7 +1259,7 @@
         "labels"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "POST",
@@ -1306,8 +1276,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -1380,8 +1350,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -1428,8 +1398,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -1488,8 +1458,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -1519,7 +1489,7 @@
         "accounts"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "GET",
@@ -1534,8 +1504,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -1548,7 +1518,7 @@
         "account_stages"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "POST",
@@ -1565,8 +1535,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -1682,8 +1652,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -1706,7 +1676,7 @@
         "labels"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "PATCH",
@@ -1723,8 +1693,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -1845,8 +1815,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -1885,8 +1855,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -1957,8 +1927,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -2003,8 +1973,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -2051,8 +2021,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -2104,8 +2074,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -2205,8 +2175,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -2234,8 +2204,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -2265,8 +2235,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -2315,7 +2285,7 @@
         "opportunity"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "GET",
@@ -2330,8 +2300,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -2377,7 +2347,7 @@
         "salesforce_users"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "GET",
@@ -2392,8 +2362,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -2415,7 +2385,7 @@
         "opportunity"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "PATCH",
@@ -2432,8 +2402,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -2486,7 +2456,7 @@
         "opportunity"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "GET",
@@ -2501,8 +2471,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -2515,7 +2485,7 @@
         "opportunity_stages"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "POST",
@@ -2530,8 +2500,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -2572,7 +2542,7 @@
         "pagination"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "POST",
@@ -2587,8 +2557,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -2752,7 +2722,7 @@
         "team"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "POST",
@@ -2767,8 +2737,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -2811,7 +2781,7 @@
         "num_contacts"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "POST",
@@ -2828,8 +2798,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -2959,7 +2929,7 @@
         "team"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "PUT",
@@ -2976,8 +2946,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -3065,7 +3035,7 @@
         "updated_at"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "POST",
@@ -3082,8 +3052,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -3137,7 +3107,7 @@
         "task"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "POST",
@@ -3154,8 +3124,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -3205,7 +3175,7 @@
         "tasks"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "GET",
@@ -3220,8 +3190,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -3260,8 +3230,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -3361,8 +3331,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -3408,8 +3378,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -3457,8 +3427,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -3509,7 +3479,7 @@
         "tasks"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "POST",
@@ -3526,8 +3496,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -3603,8 +3573,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -3636,6 +3606,48 @@
     },
     {
       "method": "POST",
+      "path": "/emailer_messages/get_content",
+      "operation_id": "outreach_email.content.read",
+      "vendor_operation_id": "get-email-content",
+      "tag": "Emailer Messages",
+      "summary": "Get Email Content",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "security_schemes": [
+        "apiKey",
+        "bearerAuth"
+      ],
+      "selected": true,
+      "operations": [
+        "outreach_email.content.read"
+      ],
+      "parameters": [],
+      "body_properties": [
+        {
+          "name": "ids",
+          "required": true,
+          "type": "array"
+        },
+        {
+          "name": "body_format",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "response_shape_source": "schema",
+      "response_top_level_keys": [
+        "emailer_messages"
+      ],
+      "credit_consuming": false,
+      "master_key_required": false
+    },
+    {
+      "method": "POST",
       "path": "/emailer_messages/email_send_status",
       "operation_id": "outreach_email.send_status",
       "vendor_operation_id": "check-email-send-status",
@@ -3649,8 +3661,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -3691,8 +3703,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -3724,7 +3736,7 @@
         "users"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "GET",
@@ -3739,8 +3751,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -3794,8 +3806,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -3808,7 +3820,7 @@
         "email_accounts"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "GET",
@@ -3823,8 +3835,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -3835,7 +3847,7 @@
       "response_shape_source": "schema",
       "response_top_level_keys": [],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "POST",
@@ -3852,8 +3864,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -3899,8 +3911,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -3950,8 +3962,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -4004,8 +4016,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -4048,7 +4060,7 @@
       "path": "/fields",
       "operation_id": "field.search",
       "vendor_operation_id": "get-a-list-of-fields",
-      "tag": "Miscellaneous",
+      "tag": "Fields",
       "summary": "Get a List of Fields",
       "request_media": [],
       "response_status": "200",
@@ -4056,8 +4068,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -4079,14 +4091,14 @@
         "fields"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "POST",
       "path": "/fields",
       "operation_id": "field.create",
       "vendor_operation_id": "create-a-custom-field",
-      "tag": "Miscellaneous",
+      "tag": "Fields",
       "summary": "Create a Custom Field",
       "request_media": [
         "application/json"
@@ -4096,8 +4108,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -4134,11 +4146,52 @@
       "master_key_required": false
     },
     {
+      "method": "PATCH",
+      "path": "/fields",
+      "operation_id": "field.update",
+      "vendor_operation_id": "update-a-custom-field",
+      "tag": "Fields",
+      "summary": "Update a Custom Field",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "security_schemes": [
+        "apiKey",
+        "bearerAuth"
+      ],
+      "selected": true,
+      "operations": [
+        "field.update"
+      ],
+      "parameters": [],
+      "body_properties": [
+        {
+          "name": "fields",
+          "required": true,
+          "type": "array"
+        }
+      ],
+      "response_shape_source": "schema",
+      "response_top_level_keys": [
+        "field_groups",
+        "fields",
+        "finder_views",
+        "picklist_value_sets",
+        "typed_custom_fields"
+      ],
+      "credit_consuming": false,
+      "master_key_required": false
+    },
+    {
       "method": "GET",
       "path": "/typed_custom_fields",
       "operation_id": "custom_field.search",
       "vendor_operation_id": "get-a-list-of-all-custom-fields",
-      "tag": "Miscellaneous",
+      "tag": "Fields",
       "summary": "Get a List of All Custom Fields",
       "request_media": [],
       "response_status": "200",
@@ -4146,8 +4199,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -4160,7 +4213,7 @@
         "typed_custom_fields"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "GET",
@@ -4175,8 +4228,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -4198,7 +4251,7 @@
         "organization"
       ],
       "credit_consuming": true,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "GET",
@@ -4213,8 +4266,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -4236,7 +4289,7 @@
         "person"
       ],
       "credit_consuming": true,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "GET",
@@ -4251,8 +4304,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -4276,7 +4329,7 @@
         "salesforce_users"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "GET",
@@ -4291,8 +4344,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -4422,8 +4475,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -4461,8 +4514,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -4598,8 +4651,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -4641,8 +4694,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -4653,7 +4706,7 @@
       "response_shape_source": "none",
       "response_top_level_keys": [],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "POST",
@@ -4668,8 +4721,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -4804,8 +4857,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -4947,8 +5000,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -5015,6 +5068,54 @@
     },
     {
       "method": "POST",
+      "path": "/emailer_campaigns/activity_feed",
+      "operation_id": "sequence.activity.read",
+      "vendor_operation_id": "get-contact-sequence-activity",
+      "tag": "Sequences",
+      "summary": "Get Contact Sequence Activity",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "security_schemes": [
+        "apiKey",
+        "bearerAuth"
+      ],
+      "selected": true,
+      "operations": [
+        "sequence.activity.read"
+      ],
+      "parameters": [],
+      "body_properties": [
+        {
+          "name": "contact_id",
+          "required": true,
+          "type": "string"
+        },
+        {
+          "name": "sequence_id",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "name": "per_page",
+          "required": false,
+          "type": "number"
+        }
+      ],
+      "response_shape_source": "schema",
+      "response_top_level_keys": [
+        "contact_id",
+        "events"
+      ],
+      "credit_consuming": false,
+      "master_key_required": false
+    },
+    {
+      "method": "POST",
       "path": "/emailer_campaigns/{sequence_id}/approve",
       "operation_id": "sequence.activate",
       "vendor_operation_id": "approve-sequence",
@@ -5026,8 +5127,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -5050,7 +5151,7 @@
         "emailer_steps"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "POST",
@@ -5065,8 +5166,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -5089,7 +5190,7 @@
         "emailer_steps"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "POST",
@@ -5104,8 +5205,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -5127,7 +5228,7 @@
         "emailer_campaign"
       ],
       "credit_consuming": false,
-      "master_key_required": true
+      "master_key_required": false
     },
     {
       "method": "GET",
@@ -5142,8 +5243,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -5270,8 +5371,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -5354,8 +5455,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -5453,8 +5554,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -5528,8 +5629,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -5574,8 +5675,8 @@
         "application/json"
       ],
       "security_schemes": [
-        "bearerAuth",
-        "apiKey"
+        "apiKey",
+        "bearerAuth"
       ],
       "selected": true,
       "operations": [
@@ -7240,6 +7341,30 @@
       "credit_consuming": false,
       "compatibility": false
     },
+    "field.update": {
+      "official_route": "PATCH /fields",
+      "method": "PATCH",
+      "path": "/api/v1/fields",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "args": [
+        {
+          "key": "body.fields",
+          "type": "array",
+          "required": true,
+          "affects_target": true
+        }
+      ],
+      "body_mode": "structured_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "fields",
+      "pagination": null,
+      "credit_consuming": false,
+      "compatibility": false
+    },
     "label.create": {
       "official_route": "POST /labels",
       "method": "POST",
@@ -7854,6 +7979,35 @@
       "credit_consuming": false,
       "compatibility": false
     },
+    "outreach_email.content.read": {
+      "official_route": "POST /emailer_messages/get_content",
+      "method": "POST",
+      "path": "/api/v1/emailer_messages/get_content",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "args": [
+        {
+          "key": "body.ids",
+          "type": "array",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.body_format",
+          "type": "string",
+          "affects_target": true
+        }
+      ],
+      "body_mode": "structured_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "emailer_messages",
+      "pagination": null,
+      "credit_consuming": false,
+      "compatibility": false
+    },
     "outreach_email.draft_create": {
       "official_route": "POST /emailer_messages",
       "method": "POST",
@@ -8342,6 +8496,39 @@
       "body_mode": "none",
       "request_media": [],
       "result_path": "emailer_campaign",
+      "pagination": null,
+      "credit_consuming": false,
+      "compatibility": false
+    },
+    "sequence.activity.read": {
+      "official_route": "POST /emailer_campaigns/activity_feed",
+      "method": "POST",
+      "path": "/api/v1/emailer_campaigns/activity_feed",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "args": [
+        {
+          "key": "body.contact_id",
+          "type": "string",
+          "required": true,
+          "affects_target": true
+        },
+        {
+          "key": "body.sequence_id",
+          "type": "string",
+          "affects_target": true
+        },
+        {
+          "key": "body.per_page",
+          "type": "number"
+        }
+      ],
+      "body_mode": "structured_json",
+      "request_media": [
+        "application/json"
+      ],
+      "result_path": "events",
       "pagination": null,
       "credit_consuming": false,
       "compatibility": false

@@ -71,7 +71,8 @@ import {
 import {
   connectionConfigOf,
   connectionVendorOf,
-  desiredWorkEntitySourcesFor,
+  desiredWorkEntitySourceBindingsForName,
+  resolveWorkEntitySourceBinding,
   workEntitySourceContractHash,
   type KernelWorkEntitySourceDeclaration,
 } from './work-entity-source-boot.js';
@@ -168,7 +169,10 @@ export interface WorkEntitySourceSyncDeps {
    *  upsert that does not re-register the task — is picked up on the next walk.
    *  Absent = no config (a list op with a bound arg then config-fails the
    *  cycle); a Source with no `op_arg_bindings.list` never consults it. */
-  resolveConnectionConfig?: (connection_name: string) => Record<string, unknown> | undefined;
+  resolveConnectionConfig?: (
+    connection_name: string,
+    source_id: string,
+  ) => Record<string, unknown> | undefined;
   /** D-192 source dependencies — the container-entity selection store. When
    *  wired, `resolve: 'persist'` dependencies resolve their bound list args here
    *  (auto-selecting a lone option). Absent = a Source declaring no persist deps
@@ -351,7 +355,7 @@ export const runWorkEntitySourceSync = async (
   // the config PER CYCLE so a value set after registration is picked up. A
   // bound-but-unset key degrades the cycle BEFORE the fetch (never a bad request
   // the vendor 400s on and the diff then reads as an empty authoritative walk).
-  const connectionConfig = deps.resolveConnectionConfig?.(connection_name);
+  const connectionConfig = deps.resolveConnectionConfig?.(connection_name, source_id);
   const listArgs = resolveConfigArgBindings(
     declaration.op_arg_bindings?.list,
     connectionConfig,
@@ -889,9 +893,16 @@ export const wireWorkEntitySourceSync = (
     // closure only re-registers on a declaration-hash change, so a config-only
     // upsert (setting the workspace/tasklist after enrollment) must be observed
     // at RUN time or the list op would config-fail until restart.
-    resolveConnectionConfig: (connection_name: string): Record<string, unknown> | undefined => {
-      const row = connectionStore.get('api', connection_name);
-      return row === null ? undefined : connectionConfigOf(row);
+    resolveConnectionConfig: (
+      _connection_name: string,
+      source_id: string,
+    ): Record<string, unknown> | undefined => {
+      const binding = resolveWorkEntitySourceBinding(
+        connectionStore,
+        source_id,
+        resolveCatalogManifest,
+      );
+      return binding === null ? undefined : connectionConfigOf(binding.row);
     },
     ...(input.edges ? { edges: input.edges } : {}),
     ...(input.edgeResolution ? { edgeResolution: input.edgeResolution } : {}),
@@ -906,16 +917,17 @@ export const wireWorkEntitySourceSync = (
   // pin) instead of skipping it — the stale closure the old skip-if-exists kept.
   const registered = new Map<string, Map<string, string>>();
 
-  const reconcile = (row: ConnectionRow | null, connection_name: string): void => {
-    const desired = row === null
-      ? []
-      : desiredWorkEntitySourcesFor(row, resolveCatalogManifest)
-          .filter((d) => d.sync_posture === 'records');
-    // P5 — the vendor rides each task's input so edge resolution can
-    // consult platform links + the `crm_alias` registry.
-    const vendor = row === null ? null : connectionVendorOf(row);
+  const reconcile = (connection_name: string): void => {
+    const desired = desiredWorkEntitySourceBindingsForName(
+      connectionStore,
+      connection_name,
+      resolveCatalogManifest,
+    ).filter((binding) => binding.desired.sync_posture === 'records');
     const desiredByTaskId = new Map(
-      desired.map((d) => [workEntitySourceSyncTaskId(d.id), d] as const),
+      desired.map((binding) => [
+        workEntitySourceSyncTaskId(binding.desired.id),
+        binding,
+      ] as const),
     );
     const current = registered.get(connection_name) ?? new Map<string, string>();
     // Deregister tasks no longer desired (vendor flip / declaration removal / delete).
@@ -927,7 +939,8 @@ export const wireWorkEntitySourceSync = (
     }
     // Register new tasks + RE-register any whose declaration changed, so a
     // reinstall's fresh declaration replaces the captured closure at once.
-    for (const [taskId, d] of desiredByTaskId) {
+    for (const [taskId, binding] of desiredByTaskId) {
+      const d = binding.desired;
       const hash = workEntitySourceContractHash(d.declaration);
       const alreadyRegistered = getHousekeepingTask(taskId) !== undefined;
       if (alreadyRegistered && current.get(taskId) === hash) continue;
@@ -936,7 +949,10 @@ export const wireWorkEntitySourceSync = (
         source_id: d.id,
         connection_name,
         declaration: d.declaration,
-        vendor,
+        // P5 — the vendor rides each task's input so edge resolution can
+        // consult platform links + the `crm_alias` registry. MCP rows have no
+        // vendor and therefore retain relationship hints without misrouting.
+        vendor: connectionVendorOf(binding.row),
       }));
       current.set(taskId, hash);
     }
@@ -944,20 +960,23 @@ export const wireWorkEntitySourceSync = (
     else registered.delete(connection_name);
   };
 
-  // Boot scan — every already-enrolled api connection.
-  for (const row of connectionStore.list({ kind: 'api' })) reconcile(row, row.name);
+  // Boot scan — every already-enrolled API/MCP connection name.
+  const bootNames = new Set([
+    ...connectionStore.list({ kind: 'api' }).map((row) => row.name),
+    ...connectionStore.list({ kind: 'mcp' }).map((row) => row.name),
+  ]);
+  for (const name of bootNames) reconcile(name);
 
-  // Future enrollments + vendor flips. Non-api upserts are ignored for
-  // the same reason the boot wire ignores them: a non-api row may
-  // coexist with an api row under the same name.
+  // Future enrollments + vendor flips. Recompute the full same-name union so
+  // an API and MCP row may coexist without sweeping each other's tasks.
   connectionStore.addOnUpsert((row) => {
-    if (row.kind === 'api') reconcile(row, row.name);
+    if (row.kind === 'api' || row.kind === 'mcp') reconcile(row.name);
   });
 
   // Deletions — the desired set is empty; every task this wire
   // registered for the name deregisters.
   connectionStore.addOnDelete((kind, name) => {
-    if (kind === 'api') reconcile(null, name);
+    if (kind === 'api' || kind === 'mcp') reconcile(name);
   });
 
   // D-192 — the by-name reconcile the install/uninstall deps drive post-commit
@@ -967,7 +986,7 @@ export const wireWorkEntitySourceSync = (
   // together — the boot reconcile re-registers the Source, this swaps the sync
   // task's stale declaration closure for the fresh one.
   const reconcileConnection = (connection_name: string): void => {
-    reconcile(connectionStore.get('api', connection_name), connection_name);
+    reconcile(connection_name);
   };
 
   return { reconcileConnection };

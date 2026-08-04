@@ -121,6 +121,8 @@ const DROPBOX_FIELDS: readonly ConnectionField[] = [
     key: 'auth.refresh_token',
     label: 'Refresh Token',
     type: 'secret',
+    // Filled by the OAuth dance (`applyVendorOAuthResultValues`), never typed.
+    autofilled: true,
     help:
       'Long-lived refresh token from the Dropbox OAuth flow — populated '
       + 'automatically by the in-app OAuth dance.',

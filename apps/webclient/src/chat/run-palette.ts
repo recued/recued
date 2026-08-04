@@ -96,6 +96,7 @@ export const RUN_PALETTE_CLOSE_ATTR = 'data-recued-run-palette-close';
 export const RUN_PALETTE_ACTION_ATTR = 'data-recued-run-palette-action';
 export const RUN_PALETTE_SEARCH_ATTR = 'data-recued-run-palette-search';
 export const RUN_PALETTE_RESULT_ATTR = 'data-recued-run-palette-result';
+export const RUN_PALETTE_RETRY_ATTR = 'data-recued-run-palette-retry';
 
 const RECIPE_PICKER_ID = 'run-palette-recipe';
 
@@ -131,6 +132,9 @@ export interface RunPaletteHandle {
   /** Select a recipe by id (drives the action area). The ref-picker's
    *  onChange routes here; tests call it directly. */
   selectRecipe(recipeId: string | null): void;
+  /** True while the palette or its nested Run modal owns a recipe write whose
+   *  outcome is not yet known. */
+  hasInFlightWork(): boolean;
   destroy(): void;
 }
 
@@ -180,6 +184,10 @@ const RUN_PALETTE_CHROME_STYLES = `
   font-weight: 600;
   cursor: pointer;
 }
+[${RUN_PALETTE_CLOSE_ATTR}][aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: .65;
+}
 [${RUN_PALETTE_OVERLAY_ATTR}] .run-palette-actions {
   display: grid;
   gap: 8px;
@@ -193,6 +201,10 @@ const RUN_PALETTE_CHROME_STYLES = `
 [${RUN_PALETTE_OVERLAY_ATTR}] .run-palette-state {
   font-size: 12px;
   color: var(--muted);
+}
+[${RUN_PALETTE_RESULT_ATTR}] {
+  font-size: 12px;
+  color: var(--fail);
 }
 [${RUN_PALETTE_OVERLAY_ATTR}] .run-palette-buttons {
   display: flex;
@@ -216,6 +228,10 @@ const RUN_PALETTE_CHROME_STYLES = `
 [${RUN_PALETTE_ACTION_ATTR}]:disabled {
   cursor: not-allowed;
   opacity: 0.55;
+}
+[${RUN_PALETTE_RETRY_ATTR}][aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 [${RUN_PALETTE_ACTION_ATTR}][data-variant="primary"] {
   border-color: var(--accent);
@@ -260,6 +276,10 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
   let childRunModal: RunModal.RunModalHandle | null = null;
   let focusTrap: FocusTrapHandle | null = null;
   let inventoryState: 'loading' | 'ready' | 'error' = 'loading';
+  let inventoryLoadPending = false;
+  let autoRunMutationPending = false;
+  let restoreAutoRunFocusFor: string | null = null;
+  let autoRunNotice: { recipeId: string; text: string } | null = null;
   let closed = false;
   const opener = (doc as Partial<Document>).activeElement as
     | HTMLElement
@@ -284,7 +304,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
   closeBtn.type = 'button';
   closeBtn.setAttribute(RUN_PALETTE_CLOSE_ATTR, '');
   closeBtn.textContent = 'Close';
-  closeBtn.addEventListener('click', () => closeSelf());
+  closeBtn.addEventListener('click', () => requestClose());
   header.appendChild(title);
   header.appendChild(closeBtn);
   panel.appendChild(header);
@@ -299,7 +319,7 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
 
   overlay.appendChild(panel);
   overlay.addEventListener('click', (ev) => {
-    if (ev.target === overlay) closeSelf();
+    if (ev.target === overlay) requestClose();
   });
 
   const recipeOptions = (): ReadonlyArray<RefPicker.RefPickerOption> =>
@@ -394,16 +414,46 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
 
   const toggleAutoRun = (recipeId: string, nextEnabled: boolean): void => {
     const update = opts.autoRunUpdate;
-    if (update === undefined) return;
+    if (update === undefined || autoRunMutationPending) return;
+    const activeElement = doc.activeElement;
+    restoreAutoRunFocusFor =
+      activeElement !== null
+      && actionArea.contains(activeElement)
+      && activeElement.hasAttribute(RUN_PALETTE_ACTION_ATTR)
+        ? recipeId
+        : null;
+    autoRunNotice = null;
+    autoRunMutationPending = true;
+    renderActions();
     void (async () => {
       try {
         await update({ recipe_id: recipeId, enabled: nextEnabled });
         if (closed) return;
         await loadAutoRun();
-        if (closed) return;
-        renderActions();
       } catch {
-        // Soft — leave the action area; a re-select re-reads state.
+        if (!closed) {
+          autoRunNotice = {
+            recipeId,
+            text: 'Couldn’t update auto-run. Try again.',
+          };
+        }
+      } finally {
+        const shouldRestoreFocus =
+          restoreAutoRunFocusFor === recipeId && selectedId === recipeId;
+        restoreAutoRunFocusFor = null;
+        autoRunMutationPending = false;
+        if (!closed) {
+          renderActions();
+          const currentFocus = doc.activeElement;
+          if (
+            shouldRestoreFocus
+            && (currentFocus === null || !overlay.contains(currentFocus))
+          ) {
+            actionArea
+              .querySelector<HTMLElement>(`[${RUN_PALETTE_ACTION_ATTR}]`)
+              ?.focus({ preventScroll: true });
+          }
+        }
       }
     })();
   };
@@ -423,11 +473,25 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
   };
 
   const renderActions = (): void => {
+    if (autoRunMutationPending) {
+      closeBtn.setAttribute('aria-disabled', 'true');
+    } else {
+      closeBtn.removeAttribute('aria-disabled');
+    }
+    actionArea.setAttribute(
+      'aria-busy',
+      autoRunMutationPending ? 'true' : 'false',
+    );
     clearChildren(actionArea);
     if (selectedId === null) {
       const note = doc.createElement('div');
       note.className = 'run-palette-empty';
-      note.setAttribute('role', 'status');
+      note.setAttribute(
+        'role',
+        inventoryState === 'error' && !inventoryLoadPending
+          ? 'alert'
+          : 'status',
+      );
       note.textContent = inventoryState === 'loading'
         ? 'Loading recipes…'
         : inventoryState === 'error'
@@ -437,11 +501,17 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
             : 'Find a recipe to run, schedule, or arm.';
       actionArea.appendChild(note);
       if (inventoryState === 'error') {
-        actionArea.appendChild(
-          actionButton('Try again', true, () => {
-            void load();
-          }),
+        const retry = actionButton(
+          inventoryLoadPending ? 'Trying again…' : 'Try again',
+          true,
+          () => { void load(true); },
         );
+        retry.setAttribute(RUN_PALETTE_RETRY_ATTR, '');
+        if (inventoryLoadPending) {
+          retry.setAttribute('aria-disabled', 'true');
+          retry.setAttribute('aria-busy', 'true');
+        }
+        actionArea.appendChild(retry);
       }
       if (
         inventoryState === 'ready'
@@ -488,12 +558,19 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
       stateLine.className = 'run-palette-state';
       stateLine.textContent = autoRunStateLabel(state);
       actionArea.appendChild(stateLine);
+      if (autoRunNotice?.recipeId === selectedId) {
+        const result = doc.createElement('div');
+        result.setAttribute(RUN_PALETTE_RESULT_ATTR, '');
+        result.setAttribute('role', 'status');
+        result.textContent = autoRunNotice.text;
+        actionArea.appendChild(result);
+      }
       const { label, nextEnabled } = autoRunToggle(state);
       const toggle = actionButton(label, true, () => {
         const id = selectedId;
         if (id !== null) toggleAutoRun(id, nextEnabled);
       });
-      if (opts.autoRunUpdate === undefined) {
+      if (opts.autoRunUpdate === undefined || autoRunMutationPending) {
         (toggle as HTMLButtonElement).disabled = true;
       }
       buttons.appendChild(toggle);
@@ -509,12 +586,16 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     if (opts.automationHref !== undefined) {
       link.setAttribute('href', opts.automationHref(entry.recipe_id));
     }
-    link.addEventListener('click', () => closeSelf());
+    // Keep the palette's ownership signal alive until the shell handles the
+    // link's route change. An unconditional close here could erase a pending
+    // auto-run write before Chat's leave guard had a chance to prompt.
+    link.addEventListener('click', () => requestClose());
     buttons.appendChild(link);
     actionArea.appendChild(buttons);
   };
 
   const selectRecipe = (recipeId: string | null): void => {
+    if (recipeId !== selectedId) autoRunNotice = null;
     selectedId = recipeId;
     renderActions();
   };
@@ -530,14 +611,29 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     }
   };
 
-  const load = async (): Promise<void> => {
-    inventoryState = 'loading';
-    selectedId = null;
-    recipes = [];
-    refPicker?.destroy();
-    refPicker = null;
-    searchHost.innerHTML = '';
+  const load = async (retrying = false): Promise<void> => {
+    if (inventoryLoadPending) return;
+    const activeElement = doc.activeElement;
+    const restoreRetryFocus =
+      retrying
+      && activeElement !== null
+      && actionArea.contains(activeElement)
+      && activeElement.hasAttribute(RUN_PALETTE_RETRY_ATTR);
+    inventoryLoadPending = true;
+    if (!retrying) {
+      inventoryState = 'loading';
+      selectedId = null;
+      recipes = [];
+      refPicker?.destroy();
+      refPicker = null;
+      searchHost.innerHTML = '';
+    }
     renderActions();
+    if (restoreRetryFocus) {
+      actionArea
+        .querySelector<HTMLElement>(`[${RUN_PALETTE_RETRY_ATTR}]`)
+        ?.focus({ preventScroll: true });
+    }
     try {
       const [{ recipes: loaded }] = await Promise.all([
         opts.recipeList(),
@@ -547,18 +643,39 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
       recipes = loaded;
       inventoryState = 'ready';
     } catch {
-      inventoryState = 'error';
+      if (!closed) inventoryState = 'error';
     }
+    inventoryLoadPending = false;
     if (closed) return;
     // A search box with no inventory is a dead control. Keep the palette to a
     // single recovery choice until recipes are actually available.
     if (inventoryState === 'ready' && recipes.length > 0) mountPicker();
+    const retryStillOwnsFocus =
+      restoreRetryFocus
+      && doc.activeElement !== null
+      && actionArea.contains(doc.activeElement)
+      && doc.activeElement.hasAttribute(RUN_PALETTE_RETRY_ATTR);
     renderActions();
+    if (retryStillOwnsFocus) {
+      const nextOwner = inventoryState === 'ready' && recipes.length > 0
+        ? searchHost.querySelector<HTMLElement>(
+            `[${RefPicker.REF_PICKER_INPUT_ATTR}]`,
+          )
+        : actionArea.querySelector<HTMLElement>(
+            `[${RUN_PALETTE_RETRY_ATTR}]`,
+          );
+      (nextOwner ?? closeBtn).focus({ preventScroll: true });
+    }
   };
 
   const onKey = (ev: KeyboardEvent): void => {
     // When a Run modal is stacked above, let IT own Escape.
-    if (ev.key === 'Escape' && childRunModal === null) closeSelf();
+    if (ev.key !== 'Escape' || childRunModal !== null) return;
+    if (autoRunMutationPending) {
+      ev.preventDefault?.();
+      return;
+    }
+    requestClose();
   };
 
   const closeSelf = (): void => {
@@ -573,6 +690,10 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
     overlay.remove();
     opener?.focus?.();
     opts.onClose?.();
+  };
+  const requestClose = (): void => {
+    if (autoRunMutationPending) return;
+    closeSelf();
   };
 
   // Initial paint — a loading-free shell; the picker + actions fill in
@@ -589,6 +710,12 @@ export const wireRunPalette = (opts: RunPaletteOptions): RunPaletteHandle => {
   return {
     element: overlay,
     selectRecipe,
+    hasInFlightWork: () =>
+      !closed
+      && (
+        autoRunMutationPending
+        || childRunModal?.hasInFlightWork() === true
+      ),
     destroy: closeSelf,
   };
 };

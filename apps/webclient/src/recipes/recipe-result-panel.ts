@@ -126,9 +126,13 @@ export const RECIPE_RESULT_PANEL_STYLES = `
   border-color: var(--danger);
   color: var(--danger);
 }
-[${RECIPE_RESULT_HOST_ATTR}] .recipes-button:disabled {
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-button:disabled,
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-button[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: .65;
+}
+[${RECIPE_RESULT_HOST_ATTR}] .recipes-button[aria-busy="true"] {
+  cursor: progress;
 }
 [${RECIPE_RESULT_HOST_ATTR}] .recipes-detail-section-title {
   margin: 0;
@@ -536,8 +540,11 @@ export interface RecipesResultPanelSnapshot {
   previous?: RecipesResultPanelSnapshot;
 }
 
+export type RecipesResultFilterAction = 'search' | 'next' | 'previous';
+
 export interface RecipesResultFilterState extends OutputFilterState {
   readonly busy: boolean;
+  readonly busy_action: RecipesResultFilterAction | null;
   readonly error: string | null;
 }
 
@@ -1534,7 +1541,11 @@ const renderTableResultSection = (
         <button type="button" class="recipes-button recipes-button--primary"
           ${RECIPES_ROUTE_ACTION_ATTR}="result-grid-submit"
           ${RECIPES_ROUTE_RESULT_GRID_ATTR}="${e(gridKey(recipeId, editDescriptor))}"${
-    canSubmitTableEdit(editState) ? '' : ' disabled'}>${e(
+    canSubmitTableEdit(editState)
+      ? ''
+      : editState.busy
+        ? ' aria-disabled="true" aria-busy="true"'
+        : ' aria-disabled="true" tabindex="-1"'}>${e(
       editState.busy ? 'Saving…' : editDescriptor.submit)}</button>
       </div>
     </div>
@@ -1742,7 +1753,12 @@ const renderFilterResultSection = (
   }
   const key = outputFilterKey(recipeId, descriptor);
   const initial = initialOutputFilterState(descriptor);
-  const state = states.get(key) ?? { ...initial, busy: false, error: null };
+  const state = states.get(key) ?? {
+    ...initial,
+    busy: false,
+    busy_action: null,
+    error: null,
+  };
   const rows = descriptor.fields.map((field) => {
     const definition = descriptor.definitions[field];
     if (definition === undefined) return '';
@@ -1759,18 +1775,28 @@ const renderFilterResultSection = (
   // (`state.dirty` below); the grid's loss is larger and had no guard at all.
   const pageDisabled = state.busy || state.dirty || gridsDirty;
   const searchDisabled = state.busy || gridsDirty;
+  const actionAttributes = (
+    action: RecipesResultFilterAction,
+    disabled: boolean,
+  ): string => state.busy && state.busy_action === action
+    ? ' aria-disabled="true" aria-busy="true"'
+    : disabled ? ' disabled' : '';
   const previous = descriptor.paging?.prev_cursor === undefined
     ? ''
     : `<button type="button" class="recipes-button"
         ${RECIPES_ROUTE_ACTION_ATTR}="result-filter-page:previous"
         ${RECIPES_ROUTE_RESULT_FILTER_ATTR}="${e(key)}"
-        ${RECIPES_ROUTE_RESULT_FILTER_PAGE_ATTR}="previous"${pageDisabled ? ' disabled' : ''}>Previous</button>`;
+        ${RECIPES_ROUTE_RESULT_FILTER_PAGE_ATTR}="previous"${actionAttributes(
+    'previous', pageDisabled)}>${state.busy_action === 'previous'
+    ? 'Loading previous page…' : 'Previous'}</button>`;
   const next = descriptor.paging?.next_cursor === undefined
     ? ''
     : `<button type="button" class="recipes-button"
         ${RECIPES_ROUTE_ACTION_ATTR}="result-filter-page:next"
         ${RECIPES_ROUTE_RESULT_FILTER_ATTR}="${e(key)}"
-        ${RECIPES_ROUTE_RESULT_FILTER_PAGE_ATTR}="next"${pageDisabled ? ' disabled' : ''}>Next</button>`;
+        ${RECIPES_ROUTE_RESULT_FILTER_PAGE_ATTR}="next"${actionAttributes(
+    'next', pageDisabled)}>${state.busy_action === 'next'
+    ? 'Loading next page…' : 'Next'}</button>`;
   const error = state.error === null
     ? ''
     : `<p role="alert" class="recipes-result-file-error"
@@ -1782,7 +1808,9 @@ const renderFilterResultSection = (
       <div class="recipes-result-actions">
         <button type="button" class="recipes-button recipes-button--primary"
           ${RECIPES_ROUTE_ACTION_ATTR}="result-filter-search"
-          ${RECIPES_ROUTE_RESULT_FILTER_ATTR}="${e(key)}"${searchDisabled ? ' disabled' : ''}>${e(state.busy ? 'Running…' : descriptor.submit)}</button>
+          ${RECIPES_ROUTE_RESULT_FILTER_ATTR}="${e(key)}"${actionAttributes(
+    'search', searchDisabled)}>${e(
+      state.busy_action === 'search' ? 'Running…' : descriptor.submit)}</button>
         ${previous}${next}
       </div>
       ${gridsDirty

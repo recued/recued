@@ -3,44 +3,44 @@
     "source": {
       "kind": "openapi",
       "url": "https://openapi.vercel.sh/",
-      "sha256": "e9ff511abde02251ecd81b191f10d5ac1b04274cecd62403a1f20942bf2aaa44",
-      "bytes": 9592381,
+      "sha256": "0b0420c2223a6fb463e2576ba1c4cb4e42a302ecdb314b7dd95bf25f3332b4ea",
+      "bytes": 9884462,
       "openapi": "3.0.3",
       "info_version": "0.0.1",
       "server": "https://api.vercel.com",
       "mutability": "The official URL is mutable; generation and publish revalidation fail closed unless its bytes still match this hash."
     },
-    "official_path_count": 262,
-    "official_operation_count": 357,
-    "admitted_operation_count": 336,
-    "excluded_operation_count": 21,
-    "unique_admitted_operation_id_count": 336,
-    "unique_admitted_method_path_count": 336,
+    "official_path_count": 272,
+    "official_operation_count": 377,
+    "admitted_operation_count": 342,
+    "excluded_operation_count": 35,
+    "unique_admitted_operation_id_count": 342,
+    "unique_admitted_method_path_count": 342,
     "official_method_counts": {
-      "GET": 149,
-      "POST": 103,
-      "DELETE": 48,
-      "PATCH": 39,
-      "PUT": 16,
-      "HEAD": 2
+      "GET": 155,
+      "POST": 107,
+      "DELETE": 53,
+      "PATCH": 40,
+      "PUT": 18,
+      "HEAD": 4
     },
     "admitted_method_counts": {
-      "GET": 140,
-      "POST": 96,
-      "DELETE": 47,
+      "GET": 141,
+      "POST": 99,
+      "DELETE": 49,
       "PATCH": 39,
       "PUT": 14
     },
     "pack_operation_counts": {
       "vercel": 25,
-      "vercel-delivery-runtime": 80,
-      "vercel-domains-networking": 51,
-      "vercel-data-configuration": 68,
+      "vercel-delivery-runtime": 81,
+      "vercel-domains-networking": 52,
+      "vercel-data-configuration": 72,
       "vercel-account-security": 49,
       "vercel-integrations-observability": 63
     },
     "pagination_counts": {
-      "none": 308,
+      "none": 314,
       "query_token": 27,
       "offset": 1
     },
@@ -57,6 +57,9 @@
       "application/x-ndjson"
     ],
     "authority_response_gap_operation_ids": [
+      "deleteByTeamSlugByProjectSlugByRepositoryNameBlobsByDigest",
+      "getByTeamSlugByProjectSlugByRepositoryNameBlobsByDigest",
+      "getByTeamSlugByProjectSlugByRepositoryNameManifestsByReference",
       "getDeploymentFileContents"
     ],
     "raw_body_operation_count": 18,
@@ -98,8 +101,8 @@
         "bearerToken",
         "oauth2"
       ],
-      "authenticated_operations": 340,
-      "no_security_declared_operations": 17
+      "authenticated_operations": 346,
+      "no_security_declared_operations": 31
     },
     "source_decision": {
       "admitted": false,
@@ -132,6 +135,17 @@
         "reason": "The composition REST binding admits GET, POST, PUT, PATCH, and DELETE but not HEAD. GET /v8/artifacts/{hash} remains available as the documented companion."
       },
       {
+        "operation_id": "createByTeamSlugByProjectSlugByRepositoryNameBlobsUploads",
+        "method": "POST",
+        "path": "/v2/{teamSlug}/{projectSlug}/{repositoryName}/blobs/uploads/",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "oci_registry_protocol",
+        "reason": "Docker Registry v2 / OCI distribution upload session start. This is a separate binary protocol that shares the Vercel host, not part of the JSON API this composition binds; it arrives untagged and would otherwise be filed under Integrations and Observability by the catch-all. Admitting it needs a binary-capable transport and its own review."
+      },
+      {
         "operation_id": "createObservabilityQuery",
         "method": "POST",
         "path": "/v2/observability/query",
@@ -156,6 +170,37 @@
         "reason": "New upstream POST that activates a firewall config version on production traffic (semantic-destructive candidate); its api-security tag is unpartitioned. Deferred pending policy curation; D-209 blocker resolution 2026-07-20."
       },
       {
+        "operation_id": "deleteByTeamSlugByProjectSlugByRepositoryNameBlobsByDigest",
+        "method": "DELETE",
+        "path": "/v2/{teamSlug}/{projectSlug}/{repositoryName}/blobs/{digest}",
+        "documented_request_media": [],
+        "documented_response_media": [],
+        "category": "oci_registry_protocol",
+        "reason": "Docker Registry v2 / OCI distribution blob delete. This is a separate binary protocol that shares the Vercel host, not part of the JSON API this composition binds; it arrives untagged and would otherwise be filed under Integrations and Observability by the catch-all. Admitting it needs a binary-capable transport and its own review."
+      },
+      {
+        "operation_id": "deleteByTeamSlugByProjectSlugByRepositoryNameBlobsUploadsByUuid",
+        "method": "DELETE",
+        "path": "/v2/{teamSlug}/{projectSlug}/{repositoryName}/blobs/uploads/{uuid}",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "oci_registry_protocol",
+        "reason": "Docker Registry v2 / OCI distribution upload session cancel. This is a separate binary protocol that shares the Vercel host, not part of the JSON API this composition binds; it arrives untagged and would otherwise be filed under Integrations and Observability by the catch-all. Admitting it needs a binary-capable transport and its own review."
+      },
+      {
+        "operation_id": "deleteByTeamSlugByProjectSlugByRepositoryNameManifestsByReference",
+        "method": "DELETE",
+        "path": "/v2/{teamSlug}/{projectSlug}/{repositoryName}/manifests/{reference}",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "oci_registry_protocol",
+        "reason": "Docker Registry v2 / OCI distribution manifest delete. This is a separate binary protocol that shares the Vercel host, not part of the JSON API this composition binds; it arrives untagged and would otherwise be filed under Integrations and Observability by the catch-all. Admitting it needs a binary-capable transport and its own review."
+      },
+      {
         "operation_id": "deleteSecurityFirewallConfigByConfigVersion",
         "method": "DELETE",
         "path": "/v1/security/firewall/config/{configVersion}",
@@ -176,6 +221,46 @@
         ],
         "category": "deferred_admission",
         "reason": "New upstream firewall rule-generation POST; its firewall tag is unpartitioned. Deferred pending policy curation; D-209 blocker resolution 2026-07-20."
+      },
+      {
+        "operation_id": "getByTeamSlugByProjectSlugByRepositoryNameBlobsByDigest",
+        "method": "GET",
+        "path": "/v2/{teamSlug}/{projectSlug}/{repositoryName}/blobs/{digest}",
+        "documented_request_media": [],
+        "documented_response_media": [],
+        "category": "oci_registry_protocol",
+        "reason": "Docker Registry v2 / OCI distribution blob download. This is a separate binary protocol that shares the Vercel host, not part of the JSON API this composition binds; it arrives untagged and would otherwise be filed under Integrations and Observability by the catch-all. Admitting it needs a binary-capable transport and its own review."
+      },
+      {
+        "operation_id": "getByTeamSlugByProjectSlugByRepositoryNameBlobsUploadsByUuid",
+        "method": "GET",
+        "path": "/v2/{teamSlug}/{projectSlug}/{repositoryName}/blobs/uploads/{uuid}",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "oci_registry_protocol",
+        "reason": "Docker Registry v2 / OCI distribution upload session status. This is a separate binary protocol that shares the Vercel host, not part of the JSON API this composition binds; it arrives untagged and would otherwise be filed under Integrations and Observability by the catch-all. Admitting it needs a binary-capable transport and its own review."
+      },
+      {
+        "operation_id": "getByTeamSlugByProjectSlugByRepositoryNameManifestsByReference",
+        "method": "GET",
+        "path": "/v2/{teamSlug}/{projectSlug}/{repositoryName}/manifests/{reference}",
+        "documented_request_media": [],
+        "documented_response_media": [],
+        "category": "oci_registry_protocol",
+        "reason": "Docker Registry v2 / OCI distribution manifest read. This is a separate binary protocol that shares the Vercel host, not part of the JSON API this composition binds; it arrives untagged and would otherwise be filed under Integrations and Observability by the catch-all. Admitting it needs a binary-capable transport and its own review."
+      },
+      {
+        "operation_id": "getByTeamSlugByProjectSlugByRepositoryNameTagsList",
+        "method": "GET",
+        "path": "/v2/{teamSlug}/{projectSlug}/{repositoryName}/tags/list",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "oci_registry_protocol",
+        "reason": "Docker Registry v2 / OCI distribution tag listing. This is a separate binary protocol that shares the Vercel host, not part of the JSON API this composition binds; it arrives untagged and would otherwise be filed under Integrations and Observability by the catch-all. Admitting it needs a binary-capable transport and its own review."
       },
       {
         "operation_id": "getCerts",
@@ -235,6 +320,17 @@
         "reason": "New upstream POST that mints a project credential. Deferred pending policy curation (credential-minting classification); D-209 blocker resolution 2026-07-20."
       },
       {
+        "operation_id": "getRoot",
+        "method": "GET",
+        "path": "/v2/",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "oci_registry_protocol",
+        "reason": "Docker Registry v2 / OCI distribution GET /v2/ — the registry API-version probe. This is a separate binary protocol that shares the Vercel host, not part of the JSON API this composition binds; it arrives untagged and would otherwise be filed under Integrations and Observability by the catch-all. Admitting it needs a binary-capable transport and its own review."
+      },
+      {
         "operation_id": "getRuntimeLogs",
         "method": "GET",
         "path": "/v1/projects/{projectId}/deployments/{deploymentId}/runtime-logs",
@@ -268,9 +364,31 @@
         "reason": "The only success media is application/x-ndjson and the endpoint streams command output in real time. Buffering it after response headers cannot provide a bounded, reliably terminating operation."
       },
       {
-        "operation_id": "headInstallationsByIntegrationConfigurationIdResourcesByResourceIdExperimentationEdgeConfig",
+        "operation_id": "headByTeamSlugByProjectSlugByRepositoryNameBlobsByDigest",
         "method": "HEAD",
-        "path": "/v1/installations/{integrationConfigurationId}/resources/{resourceId}/experimentation/edge-config",
+        "path": "/v2/{teamSlug}/{projectSlug}/{repositoryName}/blobs/{digest}",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "oci_registry_protocol",
+        "reason": "Docker Registry v2 / OCI distribution blob existence probe. This is a separate binary protocol that shares the Vercel host, not part of the JSON API this composition binds; it arrives untagged and would otherwise be filed under Integrations and Observability by the catch-all. Admitting it needs a binary-capable transport and its own review."
+      },
+      {
+        "operation_id": "headByTeamSlugByProjectSlugByRepositoryNameManifestsByReference",
+        "method": "HEAD",
+        "path": "/v2/{teamSlug}/{projectSlug}/{repositoryName}/manifests/{reference}",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "oci_registry_protocol",
+        "reason": "Docker Registry v2 / OCI distribution manifest existence probe. This is a separate binary protocol that shares the Vercel host, not part of the JSON API this composition binds; it arrives untagged and would otherwise be filed under Integrations and Observability by the catch-all. Admitting it needs a binary-capable transport and its own review."
+      },
+      {
+        "operation_id": "headInstallationsByIntegrationConfigurationIdResourcesByResourceIdExperimentationGlobalConfig",
+        "method": "HEAD",
+        "path": "/v1/installations/{integrationConfigurationId}/resources/{resourceId}/experimentation/global-config",
         "documented_request_media": [],
         "documented_response_media": [
           "application/json"
@@ -314,6 +432,28 @@
         "reason": "The route returns application/octet-stream from POST. Response file capture is deliberately limited to read-tier GET operations, so raw sandbox bytes cannot safely enter recipe values."
       },
       {
+        "operation_id": "replaceByTeamSlugByProjectSlugByRepositoryNameBlobsUploadsByUuid",
+        "method": "PUT",
+        "path": "/v2/{teamSlug}/{projectSlug}/{repositoryName}/blobs/uploads/{uuid}",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "oci_registry_protocol",
+        "reason": "Docker Registry v2 / OCI distribution upload session commit. This is a separate binary protocol that shares the Vercel host, not part of the JSON API this composition binds; it arrives untagged and would otherwise be filed under Integrations and Observability by the catch-all. Admitting it needs a binary-capable transport and its own review."
+      },
+      {
+        "operation_id": "replaceByTeamSlugByProjectSlugByRepositoryNameManifestsByReference",
+        "method": "PUT",
+        "path": "/v2/{teamSlug}/{projectSlug}/{repositoryName}/manifests/{reference}",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "oci_registry_protocol",
+        "reason": "Docker Registry v2 / OCI distribution manifest write. This is a separate binary protocol that shares the Vercel host, not part of the JSON API this composition binds; it arrives untagged and would otherwise be filed under Integrations and Observability by the catch-all. Admitting it needs a binary-capable transport and its own review."
+      },
+      {
         "operation_id": "replaceDomainsByDomainRecords",
         "method": "PUT",
         "path": "/domains/{domain}/records",
@@ -323,6 +463,17 @@
         ],
         "category": "deferred_admission",
         "reason": "New upstream route (PUT /domains/{domain}/records replaces ALL DNS records for a domain — destructive-shaped under a generic verb). Deferred pending policy curation; D-209 blocker resolution 2026-07-20."
+      },
+      {
+        "operation_id": "updateByTeamSlugByProjectSlugByRepositoryNameBlobsUploadsByUuid",
+        "method": "PATCH",
+        "path": "/v2/{teamSlug}/{projectSlug}/{repositoryName}/blobs/uploads/{uuid}",
+        "documented_request_media": [],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "oci_registry_protocol",
+        "reason": "Docker Registry v2 / OCI distribution chunked blob upload. This is a separate binary protocol that shares the Vercel host, not part of the JSON API this composition binds; it arrives untagged and would otherwise be filed under Integrations and Observability by the catch-all. Admitting it needs a binary-capable transport and its own review."
       },
       {
         "operation_id": "uploadArtifact",
@@ -596,6 +747,11 @@
         "operationId": "createConnectorAuthorizationRequest"
       }
     },
+    "/v1/connect/install/{connector}": {
+      "post": {
+        "operationId": "createConnectorInstallationRequest"
+      }
+    },
     "/v3/deployments/{idOrUrl}/events": {
       "get": {
         "operationId": "getDeploymentEvents"
@@ -839,7 +995,7 @@
         "operationId": "dangerouslyDeleteBySrcImages"
       }
     },
-    "/v1/edge-config": {
+    "/v1/global-config": {
       "get": {
         "operationId": "getEdgeConfigs"
       },
@@ -847,7 +1003,7 @@
         "operationId": "createEdgeConfig"
       }
     },
-    "/v1/edge-config/{edgeConfigId}": {
+    "/v1/global-config/{edgeConfigId}": {
       "get": {
         "operationId": "getEdgeConfig"
       },
@@ -858,7 +1014,7 @@
         "operationId": "deleteEdgeConfig"
       }
     },
-    "/v1/edge-config/{edgeConfigId}/items": {
+    "/v1/global-config/{edgeConfigId}/items": {
       "get": {
         "operationId": "getEdgeConfigItems"
       },
@@ -866,7 +1022,7 @@
         "operationId": "patchEdgeConfigItems"
       }
     },
-    "/v1/edge-config/{edgeConfigId}/schema": {
+    "/v1/global-config/{edgeConfigId}/schema": {
       "get": {
         "operationId": "getEdgeConfigSchema"
       },
@@ -877,12 +1033,12 @@
         "operationId": "deleteEdgeConfigSchema"
       }
     },
-    "/v1/edge-config/{edgeConfigId}/item/{edgeConfigItemKey}": {
+    "/v1/global-config/{edgeConfigId}/item/{edgeConfigItemKey}": {
       "get": {
         "operationId": "getEdgeConfigItem"
       }
     },
-    "/v1/edge-config/{edgeConfigId}/tokens": {
+    "/v1/global-config/{edgeConfigId}/tokens": {
       "get": {
         "operationId": "getEdgeConfigTokens"
       },
@@ -890,27 +1046,27 @@
         "operationId": "deleteEdgeConfigTokens"
       }
     },
-    "/v1/edge-config/{edgeConfigId}/token/{token}": {
+    "/v1/global-config/{edgeConfigId}/token/{token}": {
       "get": {
         "operationId": "getEdgeConfigToken"
       }
     },
-    "/v1/edge-config/{edgeConfigId}/token": {
+    "/v1/global-config/{edgeConfigId}/token": {
       "post": {
         "operationId": "createEdgeConfigToken"
       }
     },
-    "/v1/edge-config/{edgeConfigId}/backups/{edgeConfigBackupVersionId}": {
+    "/v1/global-config/{edgeConfigId}/backups/{edgeConfigBackupVersionId}": {
       "get": {
         "operationId": "getEdgeConfigBackup"
       }
     },
-    "/v1/edge-config/{edgeConfigId}/backups/{edgeConfigBackupVersionId}/restore": {
+    "/v1/global-config/{edgeConfigId}/backups/{edgeConfigBackupVersionId}/restore": {
       "post": {
         "operationId": "restoreEdgeConfigBackup"
       }
     },
-    "/v1/edge-config/{edgeConfigId}/backups": {
+    "/v1/global-config/{edgeConfigId}/backups": {
       "get": {
         "operationId": "getEdgeConfigBackups"
       }
@@ -1196,15 +1352,15 @@
         "operationId": "deleteInstallationsByIntegrationConfigurationIdResourcesByResourceIdExperimentationItemsByItemId"
       }
     },
-    "/v1/installations/{integrationConfigurationId}/resources/{resourceId}/experimentation/edge-config": {
+    "/v1/installations/{integrationConfigurationId}/resources/{resourceId}/experimentation/global-config": {
       "head": {
-        "operationId": "headInstallationsByIntegrationConfigurationIdResourcesByResourceIdExperimentationEdgeConfig"
+        "operationId": "headInstallationsByIntegrationConfigurationIdResourcesByResourceIdExperimentationGlobalConfig"
       },
       "get": {
-        "operationId": "getInstallationsByIntegrationConfigurationIdResourcesByResourceIdExperimentationEdgeConfig"
+        "operationId": "getInstallationsByIntegrationConfigurationIdResourcesByResourceIdExperimentationGlobalConfig"
       },
       "put": {
-        "operationId": "replaceInstallationsByIntegrationConfigurationIdResourcesByResourceIdExperimentationEdgeConfig"
+        "operationId": "replaceInstallationsByIntegrationConfigurationIdResourcesByResourceIdExperimentationGlobalConfig"
       }
     },
     "/v1/microfrontends/groups": {
@@ -1623,6 +1779,11 @@
         "operationId": "createSessionSnapshot"
       }
     },
+    "/v2/sandboxes/{name}/fork": {
+      "post": {
+        "operationId": "createSandboxesByNameFork"
+      }
+    },
     "/v1/security/attack-mode": {
       "post": {
         "operationId": "updateAttackChallengeMode"
@@ -1833,6 +1994,22 @@
         "operationId": "listRepositoryImages"
       }
     },
+    "/v1/vcr/repository/{idOrName}/permissions": {
+      "post": {
+        "operationId": "addRepositoryPermission"
+      },
+      "delete": {
+        "operationId": "removeRepositoryPermission"
+      },
+      "get": {
+        "operationId": "listRepositoryPermissions"
+      }
+    },
+    "/v1/vcr/repository/{idOrName}/permissions/all": {
+      "delete": {
+        "operationId": "clearRepositoryPermissions"
+      }
+    },
     "/v1/vcr/repository/{idOrName}/tags": {
       "get": {
         "operationId": "listRepositoryTags"
@@ -1851,6 +2028,60 @@
     "/v1/vcr/repository/{idOrName}/images/{imageId}": {
       "delete": {
         "operationId": "deleteRepositoryImage"
+      }
+    },
+    "/v2/": {
+      "get": {
+        "operationId": "getRoot"
+      }
+    },
+    "/v2/{teamSlug}/{projectSlug}/{repositoryName}/blobs/{digest}": {
+      "head": {
+        "operationId": "headByTeamSlugByProjectSlugByRepositoryNameBlobsByDigest"
+      },
+      "get": {
+        "operationId": "getByTeamSlugByProjectSlugByRepositoryNameBlobsByDigest"
+      },
+      "delete": {
+        "operationId": "deleteByTeamSlugByProjectSlugByRepositoryNameBlobsByDigest"
+      }
+    },
+    "/v2/{teamSlug}/{projectSlug}/{repositoryName}/blobs/uploads/{uuid}": {
+      "get": {
+        "operationId": "getByTeamSlugByProjectSlugByRepositoryNameBlobsUploadsByUuid"
+      },
+      "delete": {
+        "operationId": "deleteByTeamSlugByProjectSlugByRepositoryNameBlobsUploadsByUuid"
+      },
+      "patch": {
+        "operationId": "updateByTeamSlugByProjectSlugByRepositoryNameBlobsUploadsByUuid"
+      },
+      "put": {
+        "operationId": "replaceByTeamSlugByProjectSlugByRepositoryNameBlobsUploadsByUuid"
+      }
+    },
+    "/v2/{teamSlug}/{projectSlug}/{repositoryName}/blobs/uploads/": {
+      "post": {
+        "operationId": "createByTeamSlugByProjectSlugByRepositoryNameBlobsUploads"
+      }
+    },
+    "/v2/{teamSlug}/{projectSlug}/{repositoryName}/manifests/{reference}": {
+      "put": {
+        "operationId": "replaceByTeamSlugByProjectSlugByRepositoryNameManifestsByReference"
+      },
+      "head": {
+        "operationId": "headByTeamSlugByProjectSlugByRepositoryNameManifestsByReference"
+      },
+      "get": {
+        "operationId": "getByTeamSlugByProjectSlugByRepositoryNameManifestsByReference"
+      },
+      "delete": {
+        "operationId": "deleteByTeamSlugByProjectSlugByRepositoryNameManifestsByReference"
+      }
+    },
+    "/v2/{teamSlug}/{projectSlug}/{repositoryName}/tags/list": {
+      "get": {
+        "operationId": "getByTeamSlugByProjectSlugByRepositoryNameTagsList"
       }
     },
     "/web/insights/toggle": {
@@ -2337,7 +2568,7 @@
       "path": "/v1/ai-gateway/rules",
       "wire_path": "/v1/ai-gateway/rules",
       "tags": [
-        "api-ai-gateway"
+        "ai-gateway"
       ],
       "parameters": [
         {
@@ -2461,7 +2692,8 @@
         "schema_type": "object",
         "writable_properties": [
           "name",
-          "expiresAt"
+          "expiresAt",
+          "projectId"
         ],
         "raw_body": false
       },
@@ -2682,7 +2914,7 @@
       "path": "/v1/ai-gateway/rules",
       "wire_path": "/v1/ai-gateway/rules",
       "tags": [
-        "api-ai-gateway"
+        "ai-gateway"
       ],
       "parameters": [
         {
@@ -3426,7 +3658,7 @@
       "path": "/v1/observability/manage/configuration/projects",
       "wire_path": "/v1/observability/manage/configuration/projects",
       "tags": [
-        "api-observability"
+        "observability"
       ],
       "parameters": [
         {
@@ -4303,7 +4535,7 @@
       "path": "/v1/ai-gateway/rules",
       "wire_path": "/v1/ai-gateway/rules",
       "tags": [
-        "api-ai-gateway"
+        "ai-gateway"
       ],
       "parameters": [
         {
@@ -4810,6 +5042,9 @@
             "type": "number"
           },
           "parentId": {
+            "type": "string"
+          },
+          "orgRootTeamId": {
             "type": "string"
           }
         }
@@ -5665,7 +5900,7 @@
       "path": "/v1/ai-gateway/rules",
       "wire_path": "/v1/ai-gateway/rules",
       "tags": [
-        "api-ai-gateway"
+        "ai-gateway"
       ],
       "parameters": [
         {
@@ -5982,7 +6217,7 @@
       "path": "/v1/observability/manage/configuration/projects/{projectIdOrName}",
       "wire_path": "/v1/observability/manage/configuration/projects/{{project_id_or_name}}",
       "tags": [
-        "api-observability"
+        "observability"
       ],
       "parameters": [
         {
@@ -6126,6 +6361,96 @@
       "approval": "always",
       "idempotency": "idempotent"
     },
+    "vercel-data-configuration.add_repository_permission": {
+      "pack": "vercel-data-configuration",
+      "op": "add_repository_permission",
+      "operation_id": "addRepositoryPermission",
+      "method": "POST",
+      "path": "/v1/vcr/repository/{idOrName}/permissions",
+      "wire_path": "/v1/vcr/repository/{{id_or_name}}/permissions",
+      "tags": [
+        "vcr"
+      ],
+      "parameters": [
+        {
+          "name": "projectId",
+          "wire_name": "projectId",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.projectId",
+          "required": true,
+          "exposed": true,
+          "fixed": false
+        },
+        {
+          "name": "idOrName",
+          "wire_name": "idOrName",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "id_or_name",
+          "required": true,
+          "exposed": true,
+          "fixed": false
+        },
+        {
+          "name": "teamId",
+          "wire_name": "teamId",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.teamId",
+          "required": false,
+          "exposed": true,
+          "fixed": false
+        },
+        {
+          "name": "slug",
+          "wire_name": "slug",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.slug",
+          "required": false,
+          "exposed": true,
+          "fixed": false
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": "object",
+        "writable_properties": [
+          "teamId",
+          "teamSlug"
+        ],
+        "raw_body": false
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "permission": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": null,
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_capture": null,
+      "static_query": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
     "vercel-data-configuration.artifact_query": {
       "pack": "vercel-data-configuration",
       "op": "artifact_query",
@@ -6188,6 +6513,81 @@
       "risk": "read",
       "approval": "never",
       "idempotency": "safe"
+    },
+    "vercel-data-configuration.clear_repository_permissions": {
+      "pack": "vercel-data-configuration",
+      "op": "clear_repository_permissions",
+      "operation_id": "clearRepositoryPermissions",
+      "method": "DELETE",
+      "path": "/v1/vcr/repository/{idOrName}/permissions/all",
+      "wire_path": "/v1/vcr/repository/{{id_or_name}}/permissions/all",
+      "tags": [
+        "vcr"
+      ],
+      "parameters": [
+        {
+          "name": "projectId",
+          "wire_name": "projectId",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.projectId",
+          "required": true,
+          "exposed": true,
+          "fixed": false
+        },
+        {
+          "name": "idOrName",
+          "wire_name": "idOrName",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "id_or_name",
+          "required": true,
+          "exposed": true,
+          "fixed": false
+        },
+        {
+          "name": "teamId",
+          "wire_name": "teamId",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.teamId",
+          "required": false,
+          "exposed": true,
+          "fixed": false
+        },
+        {
+          "name": "slug",
+          "wire_name": "slug",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.slug",
+          "required": false,
+          "exposed": true,
+          "fixed": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": null,
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_capture": null,
+      "static_query": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
     },
     "vercel-data-configuration.create_custom_environment": {
       "pack": "vercel-data-configuration",
@@ -6299,10 +6699,10 @@
       "op": "create_edge_config",
       "operation_id": "createEdgeConfig",
       "method": "POST",
-      "path": "/v1/edge-config",
-      "wire_path": "/v1/edge-config",
+      "path": "/v1/global-config",
+      "wire_path": "/v1/global-config",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -6406,10 +6806,10 @@
       "op": "create_edge_config_token",
       "operation_id": "createEdgeConfigToken",
       "method": "POST",
-      "path": "/v1/edge-config/{edgeConfigId}/token",
-      "wire_path": "/v1/edge-config/{{edge_config_id}}/token",
+      "path": "/v1/global-config/{edgeConfigId}/token",
+      "wire_path": "/v1/global-config/{{edge_config_id}}/token",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -6568,6 +6968,9 @@
           },
           "experiment": {
             "type": "object"
+          },
+          "updatedBy": {
+            "type": "string"
           },
           "variants": {
             "type": "array"
@@ -7205,10 +7608,10 @@
       "op": "delete_edge_config",
       "operation_id": "deleteEdgeConfig",
       "method": "DELETE",
-      "path": "/v1/edge-config/{edgeConfigId}",
-      "wire_path": "/v1/edge-config/{{edge_config_id}}",
+      "path": "/v1/global-config/{edgeConfigId}",
+      "wire_path": "/v1/global-config/{{edge_config_id}}",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -7267,10 +7670,10 @@
       "op": "delete_edge_config_schema",
       "operation_id": "deleteEdgeConfigSchema",
       "method": "DELETE",
-      "path": "/v1/edge-config/{edgeConfigId}/schema",
-      "wire_path": "/v1/edge-config/{{edge_config_id}}/schema",
+      "path": "/v1/global-config/{edgeConfigId}/schema",
+      "wire_path": "/v1/global-config/{{edge_config_id}}/schema",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -7329,10 +7732,10 @@
       "op": "delete_edge_config_tokens",
       "operation_id": "deleteEdgeConfigTokens",
       "method": "DELETE",
-      "path": "/v1/edge-config/{edgeConfigId}/tokens",
-      "wire_path": "/v1/edge-config/{{edge_config_id}}/tokens",
+      "path": "/v1/global-config/{edgeConfigId}/tokens",
+      "wire_path": "/v1/global-config/{{edge_config_id}}/tokens",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -8151,10 +8554,10 @@
       "op": "get_edge_config",
       "operation_id": "getEdgeConfig",
       "method": "GET",
-      "path": "/v1/edge-config/{edgeConfigId}",
-      "wire_path": "/v1/edge-config/{{edge_config_id}}",
+      "path": "/v1/global-config/{edgeConfigId}",
+      "wire_path": "/v1/global-config/{{edge_config_id}}",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -8258,10 +8661,10 @@
       "op": "get_edge_config_backup",
       "operation_id": "getEdgeConfigBackup",
       "method": "GET",
-      "path": "/v1/edge-config/{edgeConfigId}/backups/{edgeConfigBackupVersionId}",
-      "wire_path": "/v1/edge-config/{{edge_config_id}}/backups/{{edge_config_backup_version_id}}",
+      "path": "/v1/global-config/{edgeConfigId}/backups/{edgeConfigBackupVersionId}",
+      "wire_path": "/v1/global-config/{{edge_config_id}}/backups/{{edge_config_backup_version_id}}",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -8349,10 +8752,10 @@
       "op": "get_edge_config_backups",
       "operation_id": "getEdgeConfigBackups",
       "method": "GET",
-      "path": "/v1/edge-config/{edgeConfigId}/backups",
-      "wire_path": "/v1/edge-config/{{edge_config_id}}/backups",
+      "path": "/v1/global-config/{edgeConfigId}/backups",
+      "wire_path": "/v1/global-config/{{edge_config_id}}/backups",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -8470,10 +8873,10 @@
       "op": "get_edge_config_item",
       "operation_id": "getEdgeConfigItem",
       "method": "GET",
-      "path": "/v1/edge-config/{edgeConfigId}/item/{edgeConfigItemKey}",
-      "wire_path": "/v1/edge-config/{{edge_config_id}}/item/{{edge_config_item_key}}",
+      "path": "/v1/global-config/{edgeConfigId}/item/{edgeConfigItemKey}",
+      "wire_path": "/v1/global-config/{{edge_config_id}}/item/{{edge_config_item_key}}",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -8564,10 +8967,10 @@
       "op": "get_edge_config_items",
       "operation_id": "getEdgeConfigItems",
       "method": "GET",
-      "path": "/v1/edge-config/{edgeConfigId}/items",
-      "wire_path": "/v1/edge-config/{{edge_config_id}}/items",
+      "path": "/v1/global-config/{edgeConfigId}/items",
+      "wire_path": "/v1/global-config/{{edge_config_id}}/items",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -8628,10 +9031,10 @@
       "op": "get_edge_config_schema",
       "operation_id": "getEdgeConfigSchema",
       "method": "GET",
-      "path": "/v1/edge-config/{edgeConfigId}/schema",
-      "wire_path": "/v1/edge-config/{{edge_config_id}}/schema",
+      "path": "/v1/global-config/{edgeConfigId}/schema",
+      "wire_path": "/v1/global-config/{{edge_config_id}}/schema",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -8692,10 +9095,10 @@
       "op": "get_edge_config_token",
       "operation_id": "getEdgeConfigToken",
       "method": "GET",
-      "path": "/v1/edge-config/{edgeConfigId}/token/{token}",
-      "wire_path": "/v1/edge-config/{{edge_config_id}}/token/{{token}}",
+      "path": "/v1/global-config/{edgeConfigId}/token/{token}",
+      "wire_path": "/v1/global-config/{{edge_config_id}}/token/{{token}}",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -8786,10 +9189,10 @@
       "op": "get_edge_config_tokens",
       "operation_id": "getEdgeConfigTokens",
       "method": "GET",
-      "path": "/v1/edge-config/{edgeConfigId}/tokens",
-      "wire_path": "/v1/edge-config/{{edge_config_id}}/tokens",
+      "path": "/v1/global-config/{edgeConfigId}/tokens",
+      "wire_path": "/v1/global-config/{{edge_config_id}}/tokens",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -8869,10 +9272,10 @@
       "op": "get_edge_configs",
       "operation_id": "getEdgeConfigs",
       "method": "GET",
-      "path": "/v1/edge-config",
-      "wire_path": "/v1/edge-config",
+      "path": "/v1/global-config",
+      "wire_path": "/v1/global-config",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -8904,10 +9307,53 @@
       ],
       "selected_response_media": "application/json",
       "response_schema": {
-        "type": "array",
-        "properties": {}
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "createdAt": {
+            "type": "number"
+          },
+          "createdBy": {
+            "type": "string"
+          },
+          "ownerId": {
+            "type": "string"
+          },
+          "slug": {
+            "type": "string"
+          },
+          "updatedAt": {
+            "type": "number"
+          },
+          "digest": {
+            "type": "string"
+          },
+          "purpose": {
+            "type": "object"
+          },
+          "deletedAt": {
+            "type": "number"
+          },
+          "transfer": {
+            "type": "object"
+          },
+          "schema": {
+            "type": "object"
+          },
+          "syncedToDynamoAt": {
+            "type": "number"
+          },
+          "sizeInBytes": {
+            "type": "number"
+          },
+          "itemCount": {
+            "type": "number"
+          }
+        }
       },
-      "result_path": "",
+      "result_path": null,
       "pagination": null,
       "accept": "application/json",
       "content_type": null,
@@ -9017,6 +9463,9 @@
           },
           "experiment": {
             "type": "object"
+          },
+          "updatedBy": {
+            "type": "string"
           },
           "variants": {
             "type": "array"
@@ -9270,9 +9719,6 @@
             "type": "boolean"
           },
           "environments": {
-            "type": "array"
-          },
-          "connections": {
             "type": "array"
           },
           "entities": {
@@ -10736,6 +11182,110 @@
       "approval": "never",
       "idempotency": "safe"
     },
+    "vercel-data-configuration.list_repository_permissions": {
+      "pack": "vercel-data-configuration",
+      "op": "list_repository_permissions",
+      "operation_id": "listRepositoryPermissions",
+      "method": "GET",
+      "path": "/v1/vcr/repository/{idOrName}/permissions",
+      "wire_path": "/v1/vcr/repository/{{id_or_name}}/permissions",
+      "tags": [
+        "vcr"
+      ],
+      "parameters": [
+        {
+          "name": "projectId",
+          "wire_name": "projectId",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.projectId",
+          "required": true,
+          "exposed": true,
+          "fixed": false
+        },
+        {
+          "name": "idOrName",
+          "wire_name": "idOrName",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "id_or_name",
+          "required": true,
+          "exposed": true,
+          "fixed": false
+        },
+        {
+          "name": "limit",
+          "wire_name": "limit",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "number",
+          "admitted_name": "query.limit",
+          "required": false,
+          "exposed": true,
+          "fixed": false
+        },
+        {
+          "name": "cursor",
+          "wire_name": "cursor",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.cursor",
+          "required": false,
+          "exposed": true,
+          "fixed": false
+        },
+        {
+          "name": "teamId",
+          "wire_name": "teamId",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.teamId",
+          "required": false,
+          "exposed": true,
+          "fixed": false
+        },
+        {
+          "name": "slug",
+          "wire_name": "slug",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.slug",
+          "required": false,
+          "exposed": true,
+          "fixed": false
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "permissions": {
+            "type": "array"
+          },
+          "nextCursor": {
+            "type": "string"
+          }
+        }
+      },
+      "result_path": "permissions",
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_capture": null,
+      "static_query": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
     "vercel-data-configuration.list_repository_tags": {
       "pack": "vercel-data-configuration",
       "op": "list_repository_tags",
@@ -11434,10 +11984,10 @@
       "op": "patch_edge_config_items",
       "operation_id": "patchEdgeConfigItems",
       "method": "PATCH",
-      "path": "/v1/edge-config/{edgeConfigId}/items",
-      "wire_path": "/v1/edge-config/{{edge_config_id}}/items",
+      "path": "/v1/global-config/{edgeConfigId}/items",
+      "wire_path": "/v1/global-config/{{edge_config_id}}/items",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -11512,10 +12062,10 @@
       "op": "patch_edge_config_schema",
       "operation_id": "patchEdgeConfigSchema",
       "method": "POST",
-      "path": "/v1/edge-config/{edgeConfigId}/schema",
-      "wire_path": "/v1/edge-config/{{edge_config_id}}/schema",
+      "path": "/v1/global-config/{edgeConfigId}/schema",
+      "wire_path": "/v1/global-config/{{edge_config_id}}/schema",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -11786,15 +12336,101 @@
       "approval": "always",
       "idempotency": "idempotent"
     },
+    "vercel-data-configuration.remove_repository_permission": {
+      "pack": "vercel-data-configuration",
+      "op": "remove_repository_permission",
+      "operation_id": "removeRepositoryPermission",
+      "method": "DELETE",
+      "path": "/v1/vcr/repository/{idOrName}/permissions",
+      "wire_path": "/v1/vcr/repository/{{id_or_name}}/permissions",
+      "tags": [
+        "vcr"
+      ],
+      "parameters": [
+        {
+          "name": "projectId",
+          "wire_name": "projectId",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.projectId",
+          "required": true,
+          "exposed": true,
+          "fixed": false
+        },
+        {
+          "name": "idOrName",
+          "wire_name": "idOrName",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "id_or_name",
+          "required": true,
+          "exposed": true,
+          "fixed": false
+        },
+        {
+          "name": "teamId",
+          "wire_name": "teamId",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.teamId",
+          "required": false,
+          "exposed": true,
+          "fixed": false
+        },
+        {
+          "name": "slug",
+          "wire_name": "slug",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.slug",
+          "required": false,
+          "exposed": true,
+          "fixed": false
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": "object",
+        "writable_properties": [
+          "teamId",
+          "teamSlug"
+        ],
+        "raw_body": false
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": null,
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_capture": null,
+      "static_query": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
     "vercel-data-configuration.restore_edge_config_backup": {
       "pack": "vercel-data-configuration",
       "op": "restore_edge_config_backup",
       "operation_id": "restoreEdgeConfigBackup",
       "method": "POST",
-      "path": "/v1/edge-config/{edgeConfigId}/backups/{edgeConfigBackupVersionId}/restore",
-      "wire_path": "/v1/edge-config/{{edge_config_id}}/backups/{{edge_config_backup_version_id}}/restore",
+      "path": "/v1/global-config/{edgeConfigId}/backups/{edgeConfigBackupVersionId}/restore",
+      "wire_path": "/v1/global-config/{{edge_config_id}}/backups/{{edge_config_backup_version_id}}/restore",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -12130,10 +12766,10 @@
       "op": "update_edge_config",
       "operation_id": "updateEdgeConfig",
       "method": "PUT",
-      "path": "/v1/edge-config/{edgeConfigId}",
-      "wire_path": "/v1/edge-config/{{edge_config_id}}",
+      "path": "/v1/global-config/{edgeConfigId}",
+      "wire_path": "/v1/global-config/{{edge_config_id}}",
       "tags": [
-        "edge-config"
+        "global-config"
       ],
       "parameters": [
         {
@@ -12361,6 +12997,9 @@
           },
           "experiment": {
             "type": "object"
+          },
+          "updatedBy": {
+            "type": "string"
           },
           "variants": {
             "type": "array"
@@ -12640,9 +13279,6 @@
             "type": "boolean"
           },
           "environments": {
-            "type": "array"
-          },
-          "connections": {
             "type": "array"
           },
           "entities": {
@@ -13508,6 +14144,7 @@
           "customEnvironmentSlugOrId",
           "deploymentId",
           "files",
+          "gitAccessToken",
           "gitMetadata",
           "gitSource",
           "meta",
@@ -13527,6 +14164,33 @@
       "response_schema": {
         "type": "object",
         "properties": {
+          "alias": {
+            "type": "array"
+          },
+          "aliasAssigned": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "readyState": {
+            "type": "string"
+          },
+          "aliasError": {
+            "type": "object"
+          },
+          "aliasWarning": {
+            "type": "object"
+          },
+          "errorCode": {
+            "type": "string"
+          },
+          "errorMessage": {
+            "type": "string"
+          },
           "aliasAssignedAt": {
             "type": "number"
           },
@@ -13545,6 +14209,9 @@
           "env": {
             "type": "array"
           },
+          "resourceConfig": {
+            "type": "object"
+          },
           "inspectorUrl": {
             "type": "string"
           },
@@ -13562,12 +14229,6 @@
           },
           "images": {
             "type": "object"
-          },
-          "alias": {
-            "type": "array"
-          },
-          "aliasAssigned": {
-            "type": "boolean"
           },
           "bootedAt": {
             "type": "number"
@@ -13623,29 +14284,14 @@
           "readyStateReason": {
             "type": "string"
           },
-          "aliasWarning": {
-            "type": "object"
-          },
-          "id": {
-            "type": "string"
-          },
           "createdAt": {
             "type": "number"
-          },
-          "readyState": {
-            "type": "string"
           },
           "name": {
             "type": "string"
           },
           "type": {
             "type": "string"
-          },
-          "errorMessage": {
-            "type": "string"
-          },
-          "aliasError": {
-            "type": "object"
           },
           "aliasFinal": {
             "type": "string"
@@ -13673,9 +14319,6 @@
           },
           "canceledAt": {
             "type": "number"
-          },
-          "errorCode": {
-            "type": "string"
           },
           "errorLink": {
             "type": "string"
@@ -13719,9 +14362,6 @@
           "source": {
             "type": "string"
           },
-          "target": {
-            "type": "string"
-          },
           "undeletedAt": {
             "type": "number"
           },
@@ -13742,9 +14382,6 @@
           },
           "plan": {
             "type": "string"
-          },
-          "platform": {
-            "type": "object"
           },
           "connectBuildsEnabled": {
             "type": "boolean"
@@ -13783,6 +14420,9 @@
             "type": "array"
           },
           "microfrontends": {
+            "type": "object"
+          },
+          "platform": {
             "type": "object"
           },
           "config": {
@@ -14149,6 +14789,9 @@
           "protectionConfig": {
             "type": "object"
           },
+          "sandbox": {
+            "type": "object"
+          },
           "productionDeploymentsFastLane": {
             "type": "boolean"
           },
@@ -14270,9 +14913,6 @@
             "type": "object"
           },
           "tier": {
-            "type": "string"
-          },
-          "flatRateTier": {
             "type": "string"
           },
           "usageStatus": {
@@ -14572,6 +15212,112 @@
           "runtime",
           "source",
           "projectId",
+          "ports",
+          "timeout",
+          "env",
+          "mounts",
+          "name",
+          "persistent",
+          "snapshotExpiration",
+          "keepLastSnapshots",
+          "tags"
+        ],
+        "raw_body": false
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "sandbox": {
+            "type": "object"
+          },
+          "session": {
+            "type": "object"
+          },
+          "routes": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": null,
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_capture": null,
+      "static_query": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    "vercel-delivery-runtime.create_sandboxes_by_name_fork": {
+      "pack": "vercel-delivery-runtime",
+      "op": "create_sandboxes_by_name_fork",
+      "operation_id": "createSandboxesByNameFork",
+      "method": "POST",
+      "path": "/v2/sandboxes/{name}/fork",
+      "wire_path": "/v2/sandboxes/{{name}}/fork",
+      "tags": [
+        "sandboxes"
+      ],
+      "parameters": [
+        {
+          "name": "name",
+          "wire_name": "name",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "name",
+          "required": true,
+          "exposed": true,
+          "fixed": false
+        },
+        {
+          "name": "projectId",
+          "wire_name": "projectId",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.projectId",
+          "required": false,
+          "exposed": true,
+          "fixed": false
+        },
+        {
+          "name": "teamId",
+          "wire_name": "teamId",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.teamId",
+          "required": false,
+          "exposed": true,
+          "fixed": false
+        },
+        {
+          "name": "slug",
+          "wire_name": "slug",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.slug",
+          "required": false,
+          "exposed": true,
+          "fixed": false
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": "object",
+        "writable_properties": [
+          "networkPolicy",
+          "image",
+          "resources",
           "ports",
           "timeout",
           "env",
@@ -16574,6 +17320,9 @@
             "type": "string"
           },
           "configurationId": {
+            "type": "string"
+          },
+          "visibility": {
             "type": "string"
           },
           "contentHint": {
@@ -19858,6 +20607,9 @@
           "protectionConfig": {
             "type": "object"
           },
+          "sandbox": {
+            "type": "object"
+          },
           "productionDeploymentsFastLane": {
             "type": "boolean"
           },
@@ -19979,9 +20731,6 @@
             "type": "object"
           },
           "tier": {
-            "type": "string"
-          },
-          "flatRateTier": {
             "type": "string"
           },
           "usageStatus": {
@@ -20267,6 +21016,9 @@
           "protectionConfig": {
             "type": "object"
           },
+          "sandbox": {
+            "type": "object"
+          },
           "productionDeploymentsFastLane": {
             "type": "boolean"
           },
@@ -20388,9 +21140,6 @@
             "type": "object"
           },
           "tier": {
-            "type": "string"
-          },
-          "flatRateTier": {
             "type": "string"
           },
           "usageStatus": {
@@ -21481,18 +22230,21 @@
         "selected_media": "application/json",
         "schema_type": "object",
         "writable_properties": [
+          "data",
+          "icon",
+          "backgroundColor",
+          "accentColor",
           "type",
           "service",
+          "connectionMethod",
+          "params",
+          "target",
           "uid",
           "name",
           "projectId",
           "environments",
           "triggers",
-          "events",
-          "icon",
-          "backgroundColor",
-          "accentColor",
-          "data"
+          "events"
         ],
         "raw_body": false
       },
@@ -21518,11 +22270,17 @@
           "deletedAt": {
             "type": "number"
           },
+          "reinstallAt": {
+            "type": "number"
+          },
           "createdBy": {
             "type": "object"
           },
           "updatedBy": {
             "type": "object"
+          },
+          "creationMode": {
+            "type": "string"
           },
           "public": {
             "type": "boolean"
@@ -21534,6 +22292,12 @@
             "type": "string"
           },
           "service": {
+            "type": "string"
+          },
+          "connectionMethod": {
+            "type": "string"
+          },
+          "target": {
             "type": "string"
           },
           "name": {
@@ -21709,6 +22473,87 @@
       "approval": "always",
       "idempotency": "non_idempotent"
     },
+    "vercel-domains-networking.create_connector_installation_request": {
+      "pack": "vercel-domains-networking",
+      "op": "create_connector_installation_request",
+      "operation_id": "createConnectorInstallationRequest",
+      "method": "POST",
+      "path": "/v1/connect/install/{connector}",
+      "wire_path": "/v1/connect/install/{{connector}}",
+      "tags": [
+        "connect"
+      ],
+      "parameters": [
+        {
+          "name": "connector",
+          "wire_name": "connector",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "connector",
+          "required": true,
+          "exposed": true,
+          "fixed": false
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": "object",
+        "writable_properties": [
+          "installationId",
+          "audience",
+          "scopes",
+          "resources",
+          "authorizationDetails",
+          "validityBufferMs",
+          "returnUrl",
+          "webhook",
+          "tenantId",
+          "deviceCode",
+          "expiresInMs"
+        ],
+        "raw_body": false
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string"
+          },
+          "request": {
+            "type": "string"
+          },
+          "verifier": {
+            "type": "string"
+          },
+          "deviceCode": {
+            "type": "string"
+          },
+          "expiresAt": {
+            "type": "number"
+          },
+          "connector": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": null,
+      "pagination": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_capture": null,
+      "static_query": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
     "vercel-domains-networking.create_network": {
       "pack": "vercel-domains-networking",
       "op": "create_network",
@@ -21781,6 +22626,9 @@
           },
           "egressIpAddresses": {
             "type": "array"
+          },
+          "egressCidrBlock": {
+            "type": "string"
           },
           "hostedZones": {
             "type": "object"
@@ -22480,6 +23328,12 @@
             "type": "string"
           },
           "externalSubject": {
+            "type": "string"
+          },
+          "authorizationId": {
+            "type": "string"
+          },
+          "tokenGroupId": {
             "type": "string"
           },
           "claims": {
@@ -24320,6 +25174,9 @@
           "egressIpAddresses": {
             "type": "array"
           },
+          "egressCidrBlock": {
+            "type": "string"
+          },
           "hostedZones": {
             "type": "object"
           },
@@ -25009,6 +25866,9 @@
           },
           "egressIpAddresses": {
             "type": "array"
+          },
+          "egressCidrBlock": {
+            "type": "string"
           },
           "hostedZones": {
             "type": "object"
@@ -25976,7 +26836,8 @@
           "projectId",
           "name",
           "expiresAt",
-          "aiGatewayQuota"
+          "aiGatewayQuota",
+          "metadata"
         ],
         "raw_body": false
       },
@@ -28186,13 +29047,13 @@
       "approval": "ask",
       "idempotency": "safe"
     },
-    "vercel-integrations-observability.get_installations_by_integration_configuration_id_resources_by_resource_id_experimentation_edge_config": {
+    "vercel-integrations-observability.get_installations_by_integration_configuration_id_resources_by_resource_id_experimentation_global_config": {
       "pack": "vercel-integrations-observability",
-      "op": "get_installations_by_integration_configuration_id_resources_by_resource_id_experimentation_edge_config",
-      "operation_id": "getInstallationsByIntegrationConfigurationIdResourcesByResourceIdExperimentationEdgeConfig",
+      "op": "get_installations_by_integration_configuration_id_resources_by_resource_id_experimentation_global_config",
+      "operation_id": "getInstallationsByIntegrationConfigurationIdResourcesByResourceIdExperimentationGlobalConfig",
       "method": "GET",
-      "path": "/v1/installations/{integrationConfigurationId}/resources/{resourceId}/experimentation/edge-config",
-      "wire_path": "/v1/installations/{{integration_configuration_id}}/resources/{{resource_id}}/experimentation/edge-config",
+      "path": "/v1/installations/{integrationConfigurationId}/resources/{resourceId}/experimentation/global-config",
+      "wire_path": "/v1/installations/{{integration_configuration_id}}/resources/{{resource_id}}/experimentation/global-config",
       "tags": [
         "marketplace"
       ],
@@ -29215,13 +30076,13 @@
       "approval": "always",
       "idempotency": "idempotent"
     },
-    "vercel-integrations-observability.replace_installations_by_integration_configuration_id_resources_by_resource_id_experimentation_edge_config": {
+    "vercel-integrations-observability.replace_installations_by_integration_configuration_id_resources_by_resource_id_experimentation_global_config": {
       "pack": "vercel-integrations-observability",
-      "op": "replace_installations_by_integration_configuration_id_resources_by_resource_id_experimentation_edge_config",
-      "operation_id": "replaceInstallationsByIntegrationConfigurationIdResourcesByResourceIdExperimentationEdgeConfig",
+      "op": "replace_installations_by_integration_configuration_id_resources_by_resource_id_experimentation_global_config",
+      "operation_id": "replaceInstallationsByIntegrationConfigurationIdResourcesByResourceIdExperimentationGlobalConfig",
       "method": "PUT",
-      "path": "/v1/installations/{integrationConfigurationId}/resources/{resourceId}/experimentation/edge-config",
-      "wire_path": "/v1/installations/{{integration_configuration_id}}/resources/{{resource_id}}/experimentation/edge-config",
+      "path": "/v1/installations/{integrationConfigurationId}/resources/{resourceId}/experimentation/global-config",
+      "wire_path": "/v1/installations/{{integration_configuration_id}}/resources/{{resource_id}}/experimentation/global-config",
       "tags": [
         "marketplace"
       ],
@@ -30644,6 +31505,9 @@
           "env": {
             "type": "array"
           },
+          "resourceConfig": {
+            "type": "object"
+          },
           "inspectorUrl": {
             "type": "string"
           },
@@ -30722,29 +31586,35 @@
           "readyStateReason": {
             "type": "string"
           },
+          "id": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "readyState": {
+            "type": "string"
+          },
+          "aliasError": {
+            "type": "object"
+          },
           "aliasWarning": {
             "type": "object"
           },
-          "id": {
+          "errorCode": {
+            "type": "string"
+          },
+          "errorMessage": {
             "type": "string"
           },
           "createdAt": {
             "type": "number"
-          },
-          "readyState": {
-            "type": "string"
           },
           "name": {
             "type": "string"
           },
           "type": {
             "type": "string"
-          },
-          "errorMessage": {
-            "type": "string"
-          },
-          "aliasError": {
-            "type": "object"
           },
           "aliasFinal": {
             "type": "string"
@@ -30772,9 +31642,6 @@
           },
           "canceledAt": {
             "type": "number"
-          },
-          "errorCode": {
-            "type": "string"
           },
           "errorLink": {
             "type": "string"
@@ -30818,9 +31685,6 @@
           "source": {
             "type": "string"
           },
-          "target": {
-            "type": "string"
-          },
           "undeletedAt": {
             "type": "number"
           },
@@ -30841,9 +31705,6 @@
           },
           "plan": {
             "type": "string"
-          },
-          "platform": {
-            "type": "object"
           },
           "connectBuildsEnabled": {
             "type": "boolean"
@@ -30882,6 +31743,9 @@
             "type": "array"
           },
           "microfrontends": {
+            "type": "object"
+          },
+          "platform": {
             "type": "object"
           },
           "config": {
@@ -31211,6 +32075,33 @@
       "response_schema": {
         "type": "object",
         "properties": {
+          "alias": {
+            "type": "array"
+          },
+          "aliasAssigned": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          },
+          "readyState": {
+            "type": "string"
+          },
+          "aliasError": {
+            "type": "object"
+          },
+          "aliasWarning": {
+            "type": "object"
+          },
+          "errorCode": {
+            "type": "string"
+          },
+          "errorMessage": {
+            "type": "string"
+          },
           "aliasAssignedAt": {
             "type": "number"
           },
@@ -31229,6 +32120,9 @@
           "env": {
             "type": "array"
           },
+          "resourceConfig": {
+            "type": "object"
+          },
           "inspectorUrl": {
             "type": "string"
           },
@@ -31246,12 +32140,6 @@
           },
           "images": {
             "type": "object"
-          },
-          "alias": {
-            "type": "array"
-          },
-          "aliasAssigned": {
-            "type": "boolean"
           },
           "bootedAt": {
             "type": "number"
@@ -31307,29 +32195,14 @@
           "readyStateReason": {
             "type": "string"
           },
-          "aliasWarning": {
-            "type": "object"
-          },
-          "id": {
-            "type": "string"
-          },
           "createdAt": {
             "type": "number"
-          },
-          "readyState": {
-            "type": "string"
           },
           "name": {
             "type": "string"
           },
           "type": {
             "type": "string"
-          },
-          "errorMessage": {
-            "type": "string"
-          },
-          "aliasError": {
-            "type": "object"
           },
           "aliasFinal": {
             "type": "string"
@@ -31357,9 +32230,6 @@
           },
           "canceledAt": {
             "type": "number"
-          },
-          "errorCode": {
-            "type": "string"
           },
           "errorLink": {
             "type": "string"
@@ -31403,9 +32273,6 @@
           "source": {
             "type": "string"
           },
-          "target": {
-            "type": "string"
-          },
           "undeletedAt": {
             "type": "number"
           },
@@ -31426,9 +32293,6 @@
           },
           "plan": {
             "type": "string"
-          },
-          "platform": {
-            "type": "object"
           },
           "connectBuildsEnabled": {
             "type": "boolean"
@@ -31467,6 +32331,9 @@
             "type": "array"
           },
           "microfrontends": {
+            "type": "object"
+          },
+          "platform": {
             "type": "object"
           },
           "config": {
@@ -32643,6 +33510,9 @@
           "configurationId": {
             "type": "string"
           },
+          "visibility": {
+            "type": "string"
+          },
           "contentHint": {
             "type": "object"
           },
@@ -32820,6 +33690,9 @@
           "gitBranch": {
             "type": "string"
           },
+          "visibility": {
+            "type": "string"
+          },
           "edgeConfigId": {
             "type": "string"
           },
@@ -32990,6 +33863,9 @@
             "type": "boolean"
           },
           "configurationId": {
+            "type": "string"
+          },
+          "visibility": {
             "type": "string"
           },
           "contentHint": {
@@ -33266,6 +34142,9 @@
           "protectionConfig": {
             "type": "object"
           },
+          "sandbox": {
+            "type": "object"
+          },
           "productionDeploymentsFastLane": {
             "type": "boolean"
           },
@@ -33387,9 +34266,6 @@
             "type": "object"
           },
           "tier": {
-            "type": "string"
-          },
-          "flatRateTier": {
             "type": "string"
           },
           "usageStatus": {
@@ -33905,6 +34781,9 @@
             "type": "number"
           },
           "parentId": {
+            "type": "string"
+          },
+          "orgRootTeamId": {
             "type": "string"
           }
         }

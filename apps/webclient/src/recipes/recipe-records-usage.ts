@@ -43,7 +43,11 @@ export interface RecordsUsagePack {
   slug: string;
   publisher: string;
   name: string;
-  manifest: BulkPackManifest;
+  /** Absent for an UNINSTALLED pack — `packs.list` forwards a manifest only
+   *  for installed packs (see `PackListEntry.manifest`). A pack with no
+   *  manifest contributes no operations, which is exactly the `unresolved`
+   *  outcome this module already models — not an empty one. */
+  manifest?: BulkPackManifest;
 }
 
 /** What an action does to STORED rows — the only three outcomes a person needs
@@ -148,7 +152,7 @@ const indexPackOperations = (
 ): Map<string, ResolvedOp> => {
   const byOpId = new Map<string, ResolvedOp>();
   for (const pack of packs) {
-    for (const content of pack.manifest.contents ?? []) {
+    for (const content of pack.manifest?.contents ?? []) {
       if (content.type !== 'composition') continue;
       for (const row of content.composition.operations ?? []) {
         if (typeof row?.op !== 'string' || row.op === '') continue;

@@ -1363,6 +1363,94 @@ describe('mountUpdatesPage', () => {
     m.dispose();
   });
 
+  it('guards only unresolved writes and keeps their initiating controls truthful', async () => {
+    const h = host();
+    const modeWrite = deferred<UpdateModeStatus>();
+    const apply = deferred<UpdateApplyResponse>();
+    const rollback = deferred<UpdateRollbackResponse>();
+    const runSetMode = vi.fn(() => modeWrite.promise);
+    const runApply = vi.fn(() => apply.promise);
+    const runRollback = vi.fn(() => rollback.promise);
+    const m = mountUpdatesPage({
+      host: h.asHost,
+      document: fakeDoc(),
+      runCheck: async () => AVAILABLE,
+      runGetMode: async () => MODE_AUTO,
+      runSetMode,
+      runApply,
+      runRollback,
+    });
+    await flush();
+    expect(m.hasInFlightWork()).toBe(false);
+
+    const mode = find(h.el, UPDATES_MODE_SELECT_ATTR)!;
+    mode.value = 'off';
+    fire(mode, 'change');
+    await flush();
+    expect(m.hasInFlightWork()).toBe(true);
+    expect(mode.value).toBe('off');
+    expect(mode.hasAttribute('disabled')).toBe(false);
+    expect(mode.getAttribute('aria-disabled')).toBe('true');
+    expect(mode.getAttribute('aria-busy')).toBe('true');
+    mode.value = 'auto';
+    fire(mode, 'change');
+    expect(mode.value).toBe('off');
+    expect(runSetMode).toHaveBeenCalledTimes(1);
+
+    modeWrite.resolve({ ...MODE_AUTO, mode: 'off', source: 'user' });
+    await flush();
+    expect(m.hasInFlightWork()).toBe(false);
+    expect(mode.value).toBe('off');
+    expect(mode.getAttribute('aria-disabled')).toBeNull();
+    expect(mode.getAttribute('aria-busy')).toBeNull();
+
+    fire(find(h.el, UPDATES_APPLY_BTN_ATTR)!, 'click');
+    await flush();
+    const pendingApply = find(h.el, UPDATES_APPLY_BTN_ATTR)!;
+    expect(m.hasInFlightWork()).toBe(true);
+    expect(pendingApply.hasAttribute('disabled')).toBe(false);
+    expect(pendingApply.getAttribute('aria-disabled')).toBe('true');
+    expect(pendingApply.getAttribute('aria-busy')).toBe('true');
+    fire(pendingApply, 'click');
+    expect(runApply).toHaveBeenCalledTimes(1);
+
+    apply.resolve({ status: 'deferred' });
+    await flush();
+    expect(m.hasInFlightWork()).toBe(false);
+
+    const rollbackButton = find(h.el, UPDATES_ROLLBACK_BTN_ATTR)!;
+    fire(rollbackButton, 'click');
+    await flush();
+    expect(m.hasInFlightWork()).toBe(true);
+    expect(rollbackButton.hasAttribute('disabled')).toBe(false);
+    expect(rollbackButton.getAttribute('aria-disabled')).toBe('true');
+    expect(rollbackButton.getAttribute('aria-busy')).toBe('true');
+    fire(rollbackButton, 'click');
+    expect(runRollback).toHaveBeenCalledTimes(1);
+
+    rollback.resolve({ status: 'refused' });
+    await flush();
+    expect(m.hasInFlightWork()).toBe(false);
+    expect(rollbackButton.getAttribute('aria-disabled')).toBeNull();
+    expect(rollbackButton.getAttribute('aria-busy')).toBeNull();
+    m.dispose();
+  });
+
+  it('does not classify availability or mode reads as guarded work', async () => {
+    const h = host();
+    const check = deferred<ReleaseCheckResponse>();
+    const mode = deferred<UpdateModeStatus>();
+    const m = mountUpdatesPage({
+      host: h.asHost,
+      document: fakeDoc(),
+      runCheck: () => check.promise,
+      runGetMode: () => mode.promise,
+    });
+    expect(m.getState().phase).toBe('checking');
+    expect(m.hasInFlightWork()).toBe(false);
+    m.dispose();
+  });
+
   it('update-available → shows version + fires availability true; apply → restarting', async () => {
     const h = host();
     const onAvailabilityChanged = vi.fn();
@@ -1505,21 +1593,34 @@ describe('mountUpdatesPage', () => {
     m.dispose();
   });
 
-  it('the Check button is disabled while a check is in flight', async () => {
+  it('keeps a manual Check focused, focusable, and single-flight while reading', async () => {
     const h = host();
-    let resolve: ((r: ReleaseCheckResponse) => void) | null = null;
-    const runCheck = vi.fn(
-      () =>
-        new Promise<ReleaseCheckResponse>((r) => {
-          resolve = r;
-        }),
-    );
+    const pending = deferred<ReleaseCheckResponse>();
+    const runCheck = vi.fn<() => Promise<ReleaseCheckResponse>>()
+      .mockResolvedValueOnce(UP_TO_DATE)
+      .mockImplementationOnce(() => pending.promise);
     const m = mountUpdatesPage({ host: h.asHost, document: fakeDoc(), runCheck });
     await flush();
-    expect(find(h.el, UPDATES_CHECK_BTN_ATTR)?.hasAttribute('disabled')).toBe(true);
-    (resolve as unknown as (r: ReleaseCheckResponse) => void)(UP_TO_DATE);
+
+    const check = find(h.el, UPDATES_CHECK_BTN_ATTR)!;
+    check.focus();
+    fire(check, 'click');
     await flush();
-    expect(find(h.el, UPDATES_CHECK_BTN_ATTR)?.hasAttribute('disabled')).toBe(false);
+    expect(check.textContent).toBe('Checking…');
+    expect(check.hasAttribute('disabled')).toBe(false);
+    expect(check.getAttribute('aria-disabled')).toBe('true');
+    expect(check.getAttribute('aria-busy')).toBe('true');
+    expect(check.focused).toBe(true);
+    fire(check, 'click');
+    fire(check, 'click');
+    expect(runCheck).toHaveBeenCalledTimes(2);
+
+    pending.resolve(UP_TO_DATE);
+    await flush();
+    expect(check.hasAttribute('disabled')).toBe(false);
+    expect(check.getAttribute('aria-disabled')).toBeNull();
+    expect(check.getAttribute('aria-busy')).toBeNull();
+    expect(check.focused).toBe(true);
     m.dispose();
   });
 

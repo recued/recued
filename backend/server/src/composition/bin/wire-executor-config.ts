@@ -25,6 +25,8 @@ import type { AuditLogStore } from '@recued/storage';
 import { IngredientError } from '@recued/ingredients';
 // D-207 slice 3d — the general no-resend fence.
 import {
+  contractPermitsDoorType,
+  isContractActive,
   isMailSendClaimSettled,
   mailSentReconciliationQueryFor,
   toPublicSellerTier,
@@ -51,6 +53,11 @@ import type { BlobStore } from '../../storage/blob-store.js';
 import type { EnrichmentStore } from '../../storage/enrichment-store.js';
 import type { AnnotationStore } from '../../storage/annotation-store.js';
 import type { ContactStore } from '../../storage/contact-store.js';
+import type { CrmRecordMirrorStore } from '../../storage/crm-record-mirror-store.js';
+import type {
+  ContactBusinessContextCalendarReader,
+  ContactBusinessContextCrmSource,
+} from '../../contact-business-context.js';
 import type { GatedReadGrantResolver } from '../../read-grant-checker.js';
 import type { CollectionRegistry } from '../../collections/registry.js';
 import type { MailCollection } from '../../collections/mail/mail-collection.js';
@@ -80,6 +87,7 @@ import type { RecipeStore } from '../../recipe-store.js';
 import type { ScheduleHandlerDeps } from '../../schedule-handler.js';
 import type { ChatInboundTokenStore } from '../../storage/chat-inbound-token-store.js';
 import type { ContractStore } from '../../storage/contract-store.js';
+import { createContractDefinitionStore } from '../../storage/contract-definition-store.js';
 import type { SellerClaimStore } from '../../storage/seller-claim-store.js';
 import { type SellerStore } from '../../storage/seller-store.js';
 import type { SellerOrderStore } from '../../storage/seller-order-store.js';
@@ -229,6 +237,23 @@ export interface ComposeExecutorConfigDeps {
    * because dbless/CLI harnesses do not compose the ingress substrate. */
   webhookEventReader?: ScopedWebhookEventReader | undefined;
   contactStore: ContactStore | undefined;
+  /** Optional existing-store readers for the zero-AI contact relationship
+   * projection. The dispatcher is present whenever the ordinary ContactStore
+   * or this narrower contact reader is present; missing family stores surface
+   * as explicit unavailable coverage. */
+  businessContextWorkEntityStore?: Pick<
+    WorkEntityStore,
+    'summarizeContactRelationships' | 'listSources'
+  > | undefined;
+  businessContextContactStore?: Pick<
+    ContactStore,
+    'resolveCanonicalEmail' | 'get' | 'addressSet' | 'countCompanyPeers'
+  > | undefined;
+  businessContextCrmMirrorStore?: Pick<CrmRecordMirrorStore, 'listByRef'> | undefined;
+  /** Optional table-only calendar reader for runtimes (notably stdio MCP) that
+   * intentionally do not compose a provider-owning CalendarStack. */
+  businessContextCalendars?: ContactBusinessContextCalendarReader | undefined;
+  getBoundCrmSources?: (() => readonly ContactBusinessContextCrmSource[]) | undefined;
   annotationDeps: AnnotationRpcDeps | undefined;
   db: Database.Database | undefined;
   annotationStore: AnnotationStore | undefined;
@@ -422,6 +447,9 @@ export const composeExecutorConfig = async (
       readSellerCustomerAfterClaimDelivery,
     };
   };
+  const mcpCallbackContractDefinitions = deps.contractStore
+    ? createContractDefinitionStore(deps.contractStore)
+    : undefined;
   return {
     manifests: deps.manifests,
     vault: deps.baseVault,
@@ -816,6 +844,33 @@ export const composeExecutorConfig = async (
             contactResolve: async (input) => {
               const { handleContactResolve } = await import('../../contact-handler.js');
               return handleContactResolve({ store: deps.contactStore! }, input);
+            },
+          }
+        : {}),
+      ...((deps.businessContextContactStore ?? deps.contactStore)
+        ? {
+            contactBusinessContext: async (input) => {
+              const { resolveContactBusinessContext } = await import(
+                '../../contact-business-context.js'
+              );
+              return resolveContactBusinessContext(
+                {
+                  contacts: deps.businessContextContactStore ?? deps.contactStore!,
+                  ...(deps.businessContextWorkEntityStore
+                    ? { workEntities: deps.businessContextWorkEntityStore }
+                    : {}),
+                  ...(deps.businessContextCalendars ?? deps.calendarStack
+                    ? { calendars: deps.businessContextCalendars ?? deps.calendarStack! }
+                    : {}),
+                  ...(deps.businessContextCrmMirrorStore
+                    ? { crmMirror: deps.businessContextCrmMirrorStore }
+                    : {}),
+                  ...(deps.getBoundCrmSources
+                    ? { getBoundCrmSources: deps.getBoundCrmSources }
+                    : {}),
+                },
+                input,
+              );
             },
           }
         : {}),
@@ -1297,6 +1352,30 @@ export const composeExecutorConfig = async (
           input as Parameters<typeof handleNotificationSend>[1],
         );
       },
+      ...(deps.sharedStore && deps.inboundTokenStore && mcpCallbackContractDefinitions
+        ? {
+            notificationRecipeCallback: async (input) => {
+              const { enqueueMcpRecipeCallback } = await import(
+                '../../mcp-recipe-callback.js'
+              );
+              return enqueueMcpRecipeCallback(
+                {
+                  store: deps.sharedStore!,
+                  inboundTokenStore: deps.inboundTokenStore!,
+                  isContractLive: (contract_id) => {
+                    const definition = mcpCallbackContractDefinitions.get(contract_id);
+                    return definition !== null && isContractActive(definition, Date.now());
+                  },
+                  permitsMcpDoor: (contract_id) => {
+                    const definition = mcpCallbackContractDefinitions.get(contract_id);
+                    return definition !== null && contractPermitsDoorType(definition, 'mcp');
+                  },
+                },
+                input,
+              );
+            },
+          }
+        : {}),
       scheduleRecipe: async (input) => {
         const scheduleDeps = deps.getScheduleDeps?.();
         if (!scheduleDeps) {

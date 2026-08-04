@@ -20,6 +20,8 @@ import {
 
 import {
   CONNECTIONS_ROUTE_CONTENT_ATTR,
+  CONNECTIONS_ROUTE_ENROLL_HOST_ATTR,
+  CONNECTIONS_ROUTE_GRANTS_SECTION_ATTR,
   CONNECTIONS_ROUTE_DESCRIPTION_ATTR,
   CONNECTIONS_ROUTE_HEADING_ATTR,
   CONNECTIONS_ROUTE_STYLES_MARKER,
@@ -585,7 +587,7 @@ describe('Connections route (R13–R16 restructure)', () => {
       initialTab: 'file',
       file: {
         list: vi.fn(async () => ({ instances: [] })),
-        enroll: vi.fn(async () => ({})),
+        enroll: vi.fn(async () => { throw new Error('unused'); }),
         delete: vi.fn(async () => ({ ok: true as const })),
       },
     });
@@ -641,7 +643,7 @@ describe('Connections route (R13–R16 restructure)', () => {
       ...callers,
     });
     await route.connectionsEnrollPanel()!.whenLoaded();
-    const content = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
+    const content = collectByAttr(root, CONNECTIONS_ROUTE_ENROLL_HOST_ATTR)[0]!;
 
     expect(route.hasUnsavedChanges()).toBe(false);
     expect(route.unsavedChangesPrompt()).toBeNull();
@@ -828,7 +830,7 @@ describe('Connections route (R13–R16 restructure)', () => {
       ...callers,
     });
     await route.connectionsEnrollPanel()!.whenLoaded();
-    const content = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
+    const content = collectByAttr(root, CONNECTIONS_ROUTE_ENROLL_HOST_ATTR)[0]!;
 
     clickAction(content, {
       action: 'connections-review-credential-rotation',
@@ -986,7 +988,7 @@ describe('Connections route (R13–R16 restructure)', () => {
         },
       });
     expect(triage).toHaveBeenCalledWith({ kind: 'api', name: 'guided-api' });
-    const content = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
+    const content = collectByAttr(root, CONNECTIONS_ROUTE_ENROLL_HOST_ATTR)[0]!;
     expect(content.innerHTML).toContain('same running version seen before');
     expect(content.innerHTML).toContain('Review server profile');
 
@@ -1043,6 +1045,9 @@ describe('Connections route (R13–R16 restructure)', () => {
     field(content, 'acctField', 'password', 'app-password');
     clickAction(content, { action: 'accounts-submit-form' });
     expect(route.hasInFlightWork()).toBe(true);
+    expect(route.inFlightWorkPrompt()).toBe(
+      'A connection action is still in progress. Leave Connections anyway?',
+    );
     finishEnroll({ slug: 'fastmail', send_capable: true });
     await tick();
 
@@ -1058,7 +1063,12 @@ describe('Connections route (R13–R16 restructure)', () => {
     });
     // Re-list after a successful enroll.
     expect(list).toHaveBeenCalledTimes(2);
+    expect(route.accountsPanel()!.getState().connectionSuccess).toEqual({
+      slug: 'fastmail',
+      providerId: 'imap',
+    });
     expect(route.hasInFlightWork()).toBe(false);
+    expect(route.inFlightWorkPrompt()).toBeNull();
 
     route.dispose();
     expect(root.children).toHaveLength(0);
@@ -1173,7 +1183,7 @@ describe('Connections route (R13–R16 restructure)', () => {
     await route.connectionsEnrollPanel()!.whenLoaded();
     expect(callers.connectionsEnrollListCaller).toHaveBeenCalledTimes(1);
 
-    const content = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
+    const content = collectByAttr(root, CONNECTIONS_ROUTE_ENROLL_HOST_ATTR)[0]!;
     clickAction(content, { action: 'connections-open-add' });
     clickAction(content, { action: 'connections-pick-kind', kind: 'api' });
     field(content, 'connField', 'auth.token', 'secret-123');
@@ -1255,7 +1265,10 @@ describe('Connections route (R13–R16 restructure)', () => {
 
     const first = bootstrapConnectionsRoute(routeOptions);
     await first.connectionsEnrollPanel()!.whenLoaded();
-    const firstContent = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
+    const firstContent = collectByAttr(
+      root,
+      CONNECTIONS_ROUTE_ENROLL_HOST_ATTR,
+    )[0]!;
     clickAction(firstContent, { action: 'connections-open-add' });
     clickAction(firstContent, { action: 'connections-pick-kind', kind: 'api' });
     field(firstContent, 'connField', 'auth.type', 'oauth2_refresh', 'SELECT');
@@ -1281,7 +1294,10 @@ describe('Connections route (R13–R16 restructure)', () => {
     expect(restored.setupGuide.resumeAvailable).toBe(true);
     expect(restored.values['auth.client_id']).toBeUndefined();
     expect(restored.values['auth.client_secret']).toBeUndefined();
-    const secondContent = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
+    const secondContent = collectByAttr(
+      root,
+      CONNECTIONS_ROUTE_ENROLL_HOST_ATTR,
+    )[0]!;
     expect(secondContent.innerHTML).toContain('Resume provider setup');
     clickAction(secondContent, { action: 'connections-guide-resume' });
     expect(second.connectionsEnrollPanel()!.getState().dialog.setupGuide.resumeAvailable)
@@ -3961,5 +3977,99 @@ describe('Connections route (R13–R16 restructure)', () => {
     expect(title?.textContent).toBe('Connections');
 
     route.dispose();
+  });
+});
+
+describe('operation grants — the surface R13 deleted and left rpc-only', () => {
+  const grantCallers = () => ({
+    connectionsListCaller: vi.fn(async () => ({ connections: [] })),
+    connectionsListGroupsCaller: vi.fn(async ({ name }: { name: string }) => ({
+      connection_name: name,
+      granted_groups: [],
+      allowed_operations: [],
+      available_groups: [],
+    })),
+    connectionsGrantGroupCaller: vi.fn(async () => { throw new Error('unused'); }),
+    connectionsRevokeGroupCaller: vi.fn(async () => { throw new Error('unused'); }),
+  });
+
+  it('renders the grants section in Apps & APIs when the callers are wired', () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    bootstrapConnectionsRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialTab: 'others',
+      ...grantCallers(),
+    } as never);
+    // Without this the only grant writer is a pack install, and Settings →
+    // Permissions can only TIGHTEN — so a hand-enrolled connection stays at
+    // `operation_not_granted` forever.
+    expect(collectByAttr(root, CONNECTIONS_ROUTE_GRANTS_SECTION_ATTR).length).toBe(1);
+  });
+
+  it('keeps grants outside the enroll panel replacement boundary', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const enroll = enrollCallers();
+    const grants = grantCallers();
+    const route = bootstrapConnectionsRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialTab: 'others',
+      ...enroll,
+      ...grants,
+      // Production reuses this exact list caller for both panels.
+      connectionsListCaller: enroll.connectionsEnrollListCaller,
+    } as never);
+
+    await Promise.all([
+      route.connectionsEnrollPanel()!.whenLoaded(),
+      route.connectionsGrantPanel()!.whenLoaded(),
+    ]);
+
+    const content = collectByAttr(root, CONNECTIONS_ROUTE_CONTENT_ATTR)[0]!;
+    const enrollHost = collectByAttr(
+      root,
+      CONNECTIONS_ROUTE_ENROLL_HOST_ATTR,
+    )[0]!;
+    const grantsSection = collectByAttr(
+      root,
+      CONNECTIONS_ROUTE_GRANTS_SECTION_ATTR,
+    )[0]!;
+    expect(enrollHost.parent).toBe(content);
+    expect(grantsSection.parent).toBe(content);
+    expect(enrollHost).not.toBe(grantsSection);
+    route.dispose();
+  });
+
+  it('⛔ omits it when the callers are absent — never a dead control', () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    bootstrapConnectionsRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialTab: 'others',
+    } as never);
+    expect(collectByAttr(root, CONNECTIONS_ROUTE_GRANTS_SECTION_ATTR).length).toBe(0);
+  });
+
+  it('⛔ never renders on a NON-Apps lane', () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    bootstrapConnectionsRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      initialTab: 'file',
+      file: {
+        list: vi.fn(async () => ({ instances: [] })),
+        enroll: vi.fn(async () => { throw new Error('unused'); }),
+        delete: vi.fn(async () => ({ ok: true as const })),
+      },
+      ...grantCallers(),
+    } as never);
+    // Grants are api-connection scoped; surfacing them under Files would offer
+    // to authorise operations on a substrate that has none.
+    expect(collectByAttr(root, CONNECTIONS_ROUTE_GRANTS_SECTION_ATTR).length).toBe(0);
   });
 });

@@ -1,18 +1,19 @@
-/** Crash-consistent restore swap for the realm db + D-212 bundle sidecar.
+/** Crash-consistent restore swap for the realm db, config, and D-212 bundle.
  *
- * A filesystem cannot atomically rename two files. Restoring the db and then
- * the dual-wrapped Master-DEK sidecar (or the reverse) therefore has a crash
- * window where boot could observe a mismatched pair. This tiny journal closes
- * that window:
+ * A filesystem cannot atomically rename multiple files (some config paths can
+ * even live on another filesystem). Restoring the db, config, and dual-wrapped
+ * Master-DEK sidecar therefore has crash windows where boot could observe a
+ * mismatched set. This journal closes them:
  *
  *   - while the staged db still exists, recovery rolls the old pair back;
  *   - once the staged db has been renamed onto the live path, recovery
- *     finishes publishing the new sidecar;
- *   - boot reconciles the journal before either SQLite or the sidecar opens.
+ *     finishes publishing the new config and sidecar;
+ *   - config is projected before the boot config snapshot escapes, and the full
+ *     journal is reconciled before either SQLite or the sidecar opens.
  *
- * The marker stores only a strictly validated basename + booleans. It never
- * supplies an arbitrary filesystem path, so corrupt/tampered marker contents
- * cannot redirect restore renames outside the realm db directory.
+ * The marker stores a strictly validated db basename and a hash binding the
+ * caller-supplied config path; it never supplies an arbitrary filesystem path,
+ * so corrupt/tampered marker contents cannot redirect restore renames.
  *
  * ⛔ THE JOURNAL ALSO OWNS THE RESTORE'S CAS PARKS. A restore that overlays a
  * live blob object parks the pre-restore original beside it, and whether that
@@ -29,8 +30,9 @@
  * How far "crash-consistent" reaches: a process crash is fully covered, since
  * every step is a rename and the journal makes both directions recoverable.
  * Power loss is covered as far as the platform allows — the marker write and
- * each batch of renames fsync the realm db directory (`durable-fs`), so the
- * directory entries land with the bytes. That fsync is best-effort and a no-op
+ * each batch of renames fsync the realm db and config directories
+ * (`durable-fs`), so the directory entries land with the bytes. That fsync is
+ * best-effort and a no-op
  * where a directory cannot be opened for it (Windows), and there the guarantee
  * narrows back to process-crash safety.
  *
@@ -44,28 +46,29 @@
  * both halves of a restore reach the same power-loss floor, not just the db.
  */
 
-import { randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import {
-  closeSync,
   existsSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
   readFileSync,
+  readdirSync,
   renameSync,
   unlinkSync,
-  writeSync,
 } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
-import { fsyncDir } from '../durable-fs.js';
-import { resolveServerBundlePath } from '../server-bundle-store.js';
+import { fsyncDir, writeFileAtomicSync } from '../durable-fs.js';
+import {
+  resolveServerBundlePath,
+  SERVER_BUNDLE_SIDECAR_SUFFIX,
+} from '../server-bundle-store.js';
 
 const MARKER_SUFFIX = '.restore-server-bundle-swap.json';
-const MARKER_VERSION = 1;
+const MARKER_VERSION = 2;
 const SQLITE_SIDECAR_SUFFIXES = ['-wal', '-shm'] as const;
 
 export interface BundleSwapMarker {
-  v: 1;
+  /** v1 markers predate config participation and remain readable so an update
+   *  can recover a restore interrupted on the previous server version. */
+  v: 1 | 2;
   staging_name: string;
   stamp: string;
   has_next_bundle: boolean;
@@ -73,6 +76,15 @@ export interface BundleSwapMarker {
   had_wal: boolean;
   had_shm: boolean;
   had_bundle: boolean;
+  /** v2: config is committed in the same direction as the database. The path
+   *  itself is never persisted; boot supplies its expected path and the marker
+   *  binds that path by hash, preserving the no-arbitrary-path journal rule. */
+  config?: {
+    path_sha256: string;
+    next_sha256: string;
+    previous_sha256?: string;
+    had_config: boolean;
+  };
 }
 
 export interface PreparedServerBundleSwap {
@@ -85,12 +97,42 @@ export interface PreparedServerBundleSwap {
   readonly walBackupPath: string;
   readonly shmBackupPath: string;
   readonly bundleBackupPath: string;
+  readonly configPath: string | null;
+  readonly stagedConfigPath: string | null;
+  readonly configBackupPath: string | null;
   readonly marker: BundleSwapMarker;
 }
 
 export interface ServerBundleSwapCommitResult {
   readonly dbBackupPath: string | null;
+  readonly configBackupPath: string | null;
+  readonly configWritten: boolean;
   readonly backups: string[];
+}
+
+/** Durable/mutation boundaries exposed for observability and subprocess fault
+ *  injection. Production callers omit the observer; tests terminate a child at
+ *  one named boundary and let a fresh process drive normal reconciliation. */
+export type ServerBundleSwapTransition =
+  | 'next_bundle_staged'
+  | 'next_config_staged'
+  | 'swap_marker_published'
+  | 'old_config_backed_up'
+  | 'old_db_parked'
+  | 'old_wal_parked'
+  | 'old_shm_parked'
+  | 'old_bundle_parked'
+  | 'old_artifacts_fsynced'
+  | 'new_db_published'
+  | 'new_db_fsynced'
+  | 'new_config_published'
+  | 'new_bundle_published'
+  | 'swap_renames_fsynced'
+  | 'parks_resolved'
+  | 'swap_marker_retired';
+
+export interface ServerBundleSwapObserver {
+  onTransition?: (transition: ServerBundleSwapTransition) => void;
 }
 
 export type ServerBundleSwapRecovery = 'none' | 'rolled_back' | 'completed';
@@ -152,39 +194,19 @@ const unlinkIfPresent = (path: string): void => {
   }
 };
 
-const writeAtomic = (path: string, body: Buffer, mode: number): void => {
-  const dir = dirname(path);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const tmpPath = join(
-    dir,
-    `.tmp-${basename(path)}-${process.pid}-${randomBytes(8).toString('hex')}`,
-  );
-  try {
-    const fd = openSync(tmpPath, 'wx', mode);
-    try {
-      let offset = 0;
-      while (offset < body.length) {
-        const written = writeSync(fd, body, offset, body.length - offset, null);
-        if (written === 0) throw new Error(`short write while publishing ${path}`);
-        offset += written;
-      }
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    renameSync(tmpPath, path);
-    // The marker + staged bundle are the journal recovery reads after a crash,
-    // so the NAME has to survive the crash too — fsyncing the bytes alone
-    // leaves the directory entry the rename created still only in page cache.
-    fsyncDir(dir);
-  } catch (err) {
-    try { unlinkSync(tmpPath); } catch { /* best-effort temp cleanup */ }
-    throw err;
-  }
+const retireMarker = (tx: PreparedServerBundleSwap): void => {
+  unlinkSync(tx.markerPath);
+  // Marker absence is itself the durable "nothing left to replay" state.
+  // Flushing only before unlink can resurrect the marker after power loss and
+  // make a settled transaction look live again on the next boot.
+  fsyncDir(dirname(tx.markerPath));
 };
 
 const markerBytes = (marker: BundleSwapMarker): Buffer =>
   Buffer.from(`${JSON.stringify(marker)}\n`, 'utf8');
+
+const sha256 = (value: string | Buffer): string =>
+  createHash('sha256').update(value).digest('hex');
 
 const isBoolean = (value: unknown): value is boolean =>
   typeof value === 'boolean';
@@ -215,8 +237,21 @@ const parseMarker = (dbPath: string, raw: string): BundleSwapMarker => {
   );
   const validStamp = typeof marker.stamp === 'string'
     && /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-[0-9a-f]{8}$/.test(marker.stamp);
+  const validConfig = marker.config === undefined || (
+    marker.v === 2
+    && typeof marker.config === 'object'
+    && marker.config !== null
+    && /^[0-9a-f]{64}$/.test(marker.config.path_sha256)
+    && /^[0-9a-f]{64}$/.test(marker.config.next_sha256)
+    && isBoolean(marker.config.had_config)
+    && (marker.config.had_config
+      ? typeof marker.config.previous_sha256 === 'string'
+        && /^[0-9a-f]{64}$/.test(marker.config.previous_sha256)
+      : marker.config.previous_sha256 === undefined)
+  );
   if (
-    marker.v !== MARKER_VERSION
+    (marker.v !== 1 && marker.v !== MARKER_VERSION)
+    || (marker.v === 1 && marker.config !== undefined)
     || typeof marker.staging_name !== 'string'
     || (!onlineName.test(marker.staging_name) && !offlineName.test(marker.staging_name))
     || !validStamp
@@ -225,6 +260,7 @@ const parseMarker = (dbPath: string, raw: string): BundleSwapMarker => {
     || !isBoolean(marker.had_wal)
     || !isBoolean(marker.had_shm)
     || !isBoolean(marker.had_bundle)
+    || !validConfig
   ) {
     throw new Error(
       `ARCHIVE_RESTORE_BUNDLE_SWAP_INVALID: marker for ${dbPath} has an invalid shape`,
@@ -236,10 +272,29 @@ const parseMarker = (dbPath: string, raw: string): BundleSwapMarker => {
 const transactionFromMarker = (
   dbPathInput: string,
   marker: BundleSwapMarker,
+  configPathInput?: string | null,
 ): PreparedServerBundleSwap => {
   const dbPath = resolve(dbPathInput);
   const stagingDbPath = join(dirname(dbPath), marker.staging_name);
   const bundlePath = resolveServerBundlePath(dbPath);
+  let configPath: string | null = null;
+  let stagedConfigPath: string | null = null;
+  let configBackupPath: string | null = null;
+  if (marker.config) {
+    if (!configPathInput) {
+      throw new Error(
+        `ARCHIVE_RESTORE_BUNDLE_SWAP_CONFIG_PATH_MISSING: marker for ${dbPath} requires its config path`,
+      );
+    }
+    configPath = resolve(configPathInput);
+    if (sha256(configPath) !== marker.config.path_sha256) {
+      throw new Error(
+        `ARCHIVE_RESTORE_BUNDLE_SWAP_CONFIG_PATH_CHANGED: supplied config path does not match the marker for ${dbPath}`,
+      );
+    }
+    stagedConfigPath = `${configPath}.restore-${marker.stamp}.tmp`;
+    configBackupPath = `${configPath}.bak-${marker.stamp}`;
+  }
   return {
     dbPath,
     stagingDbPath,
@@ -250,16 +305,103 @@ const transactionFromMarker = (
     walBackupPath: `${dbPath}-wal.bak-${marker.stamp}`,
     shmBackupPath: `${dbPath}-shm.bak-${marker.stamp}`,
     bundleBackupPath: `${bundlePath}.bak-${marker.stamp}`,
+    configPath,
+    stagedConfigPath,
+    configBackupPath,
     marker,
   };
 };
 
-const readTransaction = (dbPath: string): PreparedServerBundleSwap | null => {
+const readTransaction = (
+  dbPath: string,
+  configPath?: string | null,
+): PreparedServerBundleSwap | null => {
   const resolvedDbPath = resolve(dbPath);
   const markerPath = resolveServerBundleSwapMarkerPath(resolvedDbPath);
   if (!existsSync(markerPath)) return null;
   const marker = parseMarker(resolvedDbPath, readFileSync(markerPath, 'utf8'));
-  return transactionFromMarker(resolvedDbPath, marker);
+  return transactionFromMarker(resolvedDbPath, marker, configPath);
+};
+
+/** Reclaim whole-database restore staging that a hard kill left BEFORE the
+ *  durable swap marker existed.
+ *
+ *  Both restore doors stream a complete database beside the live one first.
+ *  Their ordinary catches remove it, but SIGKILL/OOM/power loss skips those
+ *  catches. Before this sweep, a keyless realm therefore left a full plaintext
+ *  database copy indefinitely, and every interrupted attempt leaked another.
+ *
+ *  A marker's named staging transaction is load-bearing: its presence selects
+ *  rollback rather than forward completion. Preserve that transaction and only
+ *  remove other names matching the exact nonce shapes this module accepts. The
+ *  marker has already been reconciled at the boot call site, but it may remain
+ *  deliberately when a CAS park could not be resolved. */
+export const sweepOrphanedRestoreStaging = (
+  dbPathInput: string,
+  configPath?: string | null,
+): number => {
+  const dbPath = resolve(dbPathInput);
+  const dir = dirname(dbPath);
+  const activeTx = readTransaction(dbPath, configPath);
+  const active = activeTx?.stagingDbPath;
+  const dbName = basename(dbPath);
+  const escapedDbName = dbName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const basePattern = `(?:${escapedDbName}\\.staging-[0-9a-f]{16}`
+    + `|${escapedDbName}\\.restore-[0-9a-f]{16}\\.tmp)`;
+  const artifactPattern = new RegExp(
+    `^(${basePattern})(?:-wal|-shm|${SERVER_BUNDLE_SIDECAR_SUFFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})?$`,
+  );
+  let names: string[];
+  try {
+    names = readdirSync(dir);
+  } catch {
+    return 0;
+  }
+
+  let removed = 0;
+  for (const name of names) {
+    const match = artifactPattern.exec(name);
+    if (!match) continue;
+    const transactionPath = join(dir, match[1]!);
+    if (active && transactionPath === active) continue;
+    try {
+      unlinkSync(join(dir, name));
+      removed += 1;
+    } catch {
+      /* best effort; boot must not fail over inert scratch cleanup */
+    }
+  }
+  if (removed > 0) fsyncDir(dir);
+
+  // Config staging can live outside the data directory. The live config is
+  // never moved before the database commit point, so an unjournaled stage is
+  // inert scratch and safe to reap; a marker-owned stage must survive so
+  // post-commit recovery can publish it.
+  if (configPath) {
+    const resolvedConfig = resolve(configPath);
+    const configDir = dirname(resolvedConfig);
+    const escapedConfigName = basename(resolvedConfig)
+      .replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const configPattern = new RegExp(
+      `^${escapedConfigName}\\.restore-`
+        + `\\d{4}-\\d{2}-\\d{2}T\\d{2}-\\d{2}-\\d{2}-\\d{3}Z-[0-9a-f]{8}\\.tmp$`,
+    );
+    let configNames: string[] = [];
+    try { configNames = readdirSync(configDir); } catch { /* best effort */ }
+    let configRemoved = 0;
+    for (const name of configNames) {
+      if (!configPattern.test(name)) continue;
+      const path = join(configDir, name);
+      if (activeTx?.stagedConfigPath === path) continue;
+      try {
+        unlinkSync(path);
+        removed += 1;
+        configRemoved += 1;
+      } catch { /* inert scratch cleanup never blocks boot */ }
+    }
+    if (configRemoved > 0) fsyncDir(configDir);
+  }
+  return removed;
 };
 
 const sameTransaction = (
@@ -268,6 +410,7 @@ const sameTransaction = (
 ): boolean =>
   expected.dbPath === actual.dbPath
   && expected.stagingDbPath === actual.stagingDbPath
+  && expected.configPath === actual.configPath
   && expected.marker.stamp === actual.marker.stamp;
 
 const assertPathState = (
@@ -289,6 +432,9 @@ const assertBackupTargetsFree = (tx: PreparedServerBundleSwap): void => {
     tx.walBackupPath,
     tx.shmBackupPath,
     tx.bundleBackupPath,
+    ...(tx.marker.config?.had_config && tx.configBackupPath
+      ? [tx.configBackupPath]
+      : []),
   ]) {
     if (existsSync(path)) {
       throw new Error(
@@ -298,14 +444,118 @@ const assertBackupTargetsFree = (tx: PreparedServerBundleSwap): void => {
   }
 };
 
+const requireConfigPaths = (tx: PreparedServerBundleSwap): {
+  configPath: string;
+  stagedConfigPath: string;
+  configBackupPath: string;
+} => {
+  if (!tx.configPath || !tx.stagedConfigPath || !tx.configBackupPath) {
+    throw new Error(
+      `ARCHIVE_RESTORE_BUNDLE_SWAP_CONFIG_PATH_MISSING: config transaction paths are incomplete for ${tx.dbPath}`,
+    );
+  }
+  return {
+    configPath: tx.configPath,
+    stagedConfigPath: tx.stagedConfigPath,
+    configBackupPath: tx.configBackupPath,
+  };
+};
+
+const hashFile = (path: string): string => sha256(readFileSync(path));
+
+/** Complete config publication once the database commit point has landed. */
+const settleConfigForward = (tx: PreparedServerBundleSwap): boolean => {
+  const config = tx.marker.config;
+  if (!config) return false;
+  const { configPath, stagedConfigPath } = requireConfigPaths(tx);
+  if (existsSync(stagedConfigPath)) {
+    if (hashFile(stagedConfigPath) !== config.next_sha256) {
+      throw new Error(
+        `ARCHIVE_RESTORE_BUNDLE_SWAP_INCOMPLETE: staged config changed for ${tx.dbPath}`,
+      );
+    }
+    // Same-directory atomic replace: the old config stays readable until this
+    // exact rename, and a retry can distinguish staged-vs-live by content hash.
+    renameSync(stagedConfigPath, configPath);
+    fsyncDir(dirname(configPath));
+    return true;
+  } else if (!existsSync(configPath) || hashFile(configPath) !== config.next_sha256) {
+    throw new Error(
+      `ARCHIVE_RESTORE_BUNDLE_SWAP_INCOMPLETE: neither staged nor published config matches ${tx.dbPath}`,
+    );
+  }
+  fsyncDir(dirname(configPath));
+  return false;
+};
+
+/** Keep/restore the pre-restore config when the database commit point did not
+ *  land. Commit copies (never moves) the old config, so the common crash path
+ *  already has the right live file; the backup handles a concurrent loss. */
+const settleConfigRollback = (tx: PreparedServerBundleSwap): boolean => {
+  const config = tx.marker.config;
+  if (!config) return false;
+  const { configPath, configBackupPath } = requireConfigPaths(tx);
+  if (config.had_config) {
+    const liveIsOld = existsSync(configPath)
+      && hashFile(configPath) === config.previous_sha256;
+    if (!liveIsOld) {
+      if (
+        !existsSync(configBackupPath)
+        || hashFile(configBackupPath) !== config.previous_sha256
+      ) {
+        throw new Error(
+          `ARCHIVE_RESTORE_BUNDLE_SWAP_INCOMPLETE: prior config is unavailable for ${tx.dbPath}`,
+        );
+      }
+      writeFileAtomicSync(configPath, readFileSync(configBackupPath));
+      return true;
+    }
+  } else if (existsSync(configPath)) {
+    // This shape is reachable in direct/offline callers that explicitly name an
+    // absent config path. Remove only the exact staged content; an unrelated file
+    // appearing concurrently is ambiguous and must fail closed.
+    if (hashFile(configPath) !== config.next_sha256) {
+      throw new Error(
+        `ARCHIVE_RESTORE_BUNDLE_SWAP_INCOMPLETE: unexpected config appeared for ${tx.dbPath}`,
+      );
+    }
+    unlinkSync(configPath);
+    fsyncDir(dirname(configPath));
+    return true;
+  }
+  return false;
+};
+
+/** Settle only the config member of an interrupted restore before the config
+ *  loader commits its in-memory boot snapshot. Full db/bundle/CAS reconciliation
+ *  still runs at the pre-storage boundary; this early, idempotent projection
+ *  prevents a crash after the database commit point from booting the new realm
+ *  under the old config that was live one rename earlier. Returns whether the
+ *  live config changed and the caller must load it again. */
+export const reconcileServerBundleSwapConfigBeforeLoad = (
+  dbPath: string,
+  configPath: string | null,
+): boolean => {
+  const tx = readTransaction(dbPath, configPath);
+  if (!tx?.marker.config) return false;
+  return existsSync(tx.stagingDbPath)
+    ? settleConfigRollback(tx)
+    : settleConfigForward(tx);
+};
+
+export interface ServerBundleSwapReconcileOptions {
+  configPath?: string | null;
+}
+
 /** Reconcile an interrupted db + bundle-sidecar swap before either is opened.
  *  `reclaimParks` resolves the restore's CAS parks under the verdict reached
  *  here, while the marker still exists — see the module header. */
 export const reconcileServerBundleSwap = (
   dbPathInput: string,
   reclaimParks: ReclaimSwapParks,
+  options: ServerBundleSwapReconcileOptions = {},
 ): ServerBundleSwapReconcileResult => {
-  const tx = readTransaction(dbPathInput);
+  const tx = readTransaction(dbPathInput, options.configPath);
   // No journal at all — nothing to decide and nothing left owing.
   if (!tx) return { recovery: 'none', retired: true };
 
@@ -335,6 +585,7 @@ export const reconcileServerBundleSwap = (
         `ARCHIVE_RESTORE_BUNDLE_SWAP_INCOMPLETE: keyless restore retained a bundle for ${tx.dbPath}`,
       );
     }
+    settleConfigForward(tx);
     // Same ordering rule the commit follows: the repair has to be durable
     // before the marker that would replay it is dropped. The parks are part of
     // that repair — the archive's objects are the live ones now, so the parked
@@ -345,7 +596,7 @@ export const reconcileServerBundleSwap = (
     // survived here with the marker deleted is unreadable state: the next boot
     // sees "park, no marker" and rolls PRE-restore bytes over the new database.
     const retired = reclaimParks(true);
-    if (retired) unlinkSync(tx.markerPath);
+    if (retired) retireMarker(tx);
     return { recovery: 'completed', retired };
   }
 
@@ -383,6 +634,7 @@ export const reconcileServerBundleSwap = (
   restoreOld(`${tx.dbPath}-wal`, tx.walBackupPath, tx.marker.had_wal, 'WAL');
   restoreOld(`${tx.dbPath}-shm`, tx.shmBackupPath, tx.marker.had_shm, 'SHM');
   restoreOld(tx.bundlePath, tx.bundleBackupPath, tx.marker.had_bundle, 'bundle');
+  settleConfigRollback(tx);
 
   // Remove the marker BEFORE deleting the new staged db. If cleanup is
   // interrupted, boot sees a valid old pair plus a harmless orphan rather than
@@ -399,15 +651,18 @@ export const reconcileServerBundleSwap = (
   // COMMITTED branch — reaping the very parks that still have to be restored.
   // They are one signal; they retire together or not at all.
   if (!reclaimParks(false)) return { recovery: 'rolled_back', retired: false };
-  unlinkSync(tx.markerPath);
+  retireMarker(tx);
   for (const path of [
     tx.stagingDbPath,
     `${tx.stagingDbPath}-wal`,
     `${tx.stagingDbPath}-shm`,
     tx.stagedBundlePath,
+    ...(tx.stagedConfigPath ? [tx.stagedConfigPath] : []),
   ]) {
     try { unlinkIfPresent(path); } catch { /* old live pair is already safe */ }
   }
+  fsyncDir(dirname(tx.dbPath));
+  if (tx.stagedConfigPath) fsyncDir(dirname(tx.stagedConfigPath));
   return { recovery: 'rolled_back', retired: true };
 };
 
@@ -417,6 +672,9 @@ export const prepareServerBundleSwap = (args: {
   stagingDbPath: string;
   stamp: string;
   nextBundle?: Buffer;
+  configPath?: string | null;
+  nextConfig?: Buffer;
+  observer?: ServerBundleSwapObserver;
 }): PreparedServerBundleSwap => {
   const dbPath = resolve(args.dbPath);
   const stagingDbPath = resolve(args.stagingDbPath);
@@ -450,6 +708,10 @@ export const prepareServerBundleSwap = (args: {
     );
   }
 
+  const configPath = args.nextConfig !== undefined && args.configPath
+    ? resolve(args.configPath)
+    : null;
+  const hadConfig = configPath ? existsSync(configPath) : false;
   const marker: BundleSwapMarker = {
     v: MARKER_VERSION,
     staging_name: basename(stagingDbPath),
@@ -459,6 +721,18 @@ export const prepareServerBundleSwap = (args: {
     had_wal: existsSync(`${dbPath}-wal`),
     had_shm: existsSync(`${dbPath}-shm`),
     had_bundle: existsSync(resolveServerBundlePath(dbPath)),
+    ...(configPath && args.nextConfig !== undefined
+      ? {
+          config: {
+            path_sha256: sha256(configPath),
+            next_sha256: sha256(args.nextConfig),
+            had_config: hadConfig,
+            ...(hadConfig
+              ? { previous_sha256: sha256(readFileSync(configPath)) }
+              : {}),
+          },
+        }
+      : {}),
   };
   // Encryption-posture invariant, re-derived from the EXACT fields the commit
   // will act on rather than from a filesystem probe taken earlier in the
@@ -477,21 +751,39 @@ export const prepareServerBundleSwap = (args: {
   // Validate the generated names/stamp through the exact same boundary used
   // after a crash; this prevents an implementation change from writing an
   // unrecoverable marker.
-  const tx = transactionFromMarker(dbPath, parseMarker(dbPath, JSON.stringify(marker)));
+  const tx = transactionFromMarker(
+    dbPath,
+    parseMarker(dbPath, JSON.stringify(marker)),
+    configPath,
+  );
   assertBackupTargetsFree(tx);
   if (existsSync(tx.stagedBundlePath)) {
     throw new Error(
       `ARCHIVE_RESTORE_BUNDLE_SWAP_STATE_CHANGED: staged bundle already exists at ${tx.stagedBundlePath}`,
     );
   }
+  if (tx.stagedConfigPath && existsSync(tx.stagedConfigPath)) {
+    throw new Error(
+      `ARCHIVE_RESTORE_BUNDLE_SWAP_STATE_CHANGED: staged config already exists at ${tx.stagedConfigPath}`,
+    );
+  }
 
   try {
-    if (args.nextBundle !== undefined) {
-      writeAtomic(tx.stagedBundlePath, args.nextBundle, 0o600);
+    if (tx.stagedConfigPath && args.nextConfig !== undefined) {
+      writeFileAtomicSync(tx.stagedConfigPath, args.nextConfig);
+      args.observer?.onTransition?.('next_config_staged');
     }
-    writeAtomic(tx.markerPath, markerBytes(marker), 0o600);
+    if (args.nextBundle !== undefined) {
+      writeFileAtomicSync(tx.stagedBundlePath, args.nextBundle);
+      args.observer?.onTransition?.('next_bundle_staged');
+    }
+    writeFileAtomicSync(tx.markerPath, markerBytes(marker));
+    args.observer?.onTransition?.('swap_marker_published');
   } catch (err) {
     try { unlinkIfPresent(tx.stagedBundlePath); } catch { /* best effort */ }
+    if (tx.stagedConfigPath) {
+      try { unlinkIfPresent(tx.stagedConfigPath); } catch { /* best effort */ }
+    }
     throw err;
   }
   return tx;
@@ -503,8 +795,9 @@ export const prepareServerBundleSwap = (args: {
 export const commitPreparedServerBundleSwap = (
   prepared: PreparedServerBundleSwap,
   reclaimParks: ReclaimSwapParks,
+  observer: ServerBundleSwapObserver = {},
 ): ServerBundleSwapCommitResult => {
-  const disk = readTransaction(prepared.dbPath);
+  const disk = readTransaction(prepared.dbPath, prepared.configPath);
   if (!disk || !sameTransaction(prepared, disk)) {
     throw new Error(
       `ARCHIVE_RESTORE_BUNDLE_SWAP_STATE_CHANGED: prepared marker changed for ${prepared.dbPath}`,
@@ -517,9 +810,16 @@ export const commitPreparedServerBundleSwap = (
     ...(tx.marker.had_wal ? [tx.walBackupPath] : []),
     ...(tx.marker.had_shm ? [tx.shmBackupPath] : []),
     ...(tx.marker.had_bundle ? [tx.bundleBackupPath] : []),
+    ...(tx.marker.config?.had_config && tx.configBackupPath
+      ? [tx.configBackupPath]
+      : []),
   ];
   const result: ServerBundleSwapCommitResult = {
     dbBackupPath: tx.marker.had_db ? tx.dbBackupPath : null,
+    configBackupPath: tx.marker.config?.had_config
+      ? tx.configBackupPath
+      : null,
+    configWritten: tx.marker.config !== undefined,
     backups,
   };
 
@@ -535,23 +835,74 @@ export const commitPreparedServerBundleSwap = (
       tx.marker.has_next_bundle,
       'staged bundle',
     );
+    if (tx.marker.config) {
+      const { configPath: liveConfig, stagedConfigPath, configBackupPath } = requireConfigPaths(tx);
+      assertPathState(liveConfig, tx.marker.config.had_config, 'live config');
+      assertPathState(stagedConfigPath, true, 'staged config');
+      assertPathState(configBackupPath, false, 'config backup');
+      if (hashFile(stagedConfigPath) !== tx.marker.config.next_sha256) {
+        throw new Error(
+          `ARCHIVE_RESTORE_BUNDLE_SWAP_STATE_CHANGED: staged config changed for ${tx.dbPath}`,
+        );
+      }
+      if (tx.marker.config.had_config) {
+        if (hashFile(liveConfig) !== tx.marker.config.previous_sha256) {
+          throw new Error(
+            `ARCHIVE_RESTORE_BUNDLE_SWAP_STATE_CHANGED: live config changed after restore staging for ${tx.dbPath}`,
+          );
+        }
+        writeFileAtomicSync(configBackupPath, readFileSync(liveConfig));
+        observer.onTransition?.('old_config_backed_up');
+      }
+    }
 
-    if (tx.marker.had_db) renameSync(tx.dbPath, tx.dbBackupPath);
-    if (tx.marker.had_wal) renameSync(`${tx.dbPath}-wal`, tx.walBackupPath);
-    if (tx.marker.had_shm) renameSync(`${tx.dbPath}-shm`, tx.shmBackupPath);
-    if (tx.marker.had_bundle) renameSync(tx.bundlePath, tx.bundleBackupPath);
+    if (tx.marker.had_db) {
+      renameSync(tx.dbPath, tx.dbBackupPath);
+      observer.onTransition?.('old_db_parked');
+    }
+    if (tx.marker.had_wal) {
+      renameSync(`${tx.dbPath}-wal`, tx.walBackupPath);
+      observer.onTransition?.('old_wal_parked');
+    }
+    if (tx.marker.had_shm) {
+      renameSync(`${tx.dbPath}-shm`, tx.shmBackupPath);
+      observer.onTransition?.('old_shm_parked');
+    }
+    if (tx.marker.had_bundle) {
+      renameSync(tx.bundlePath, tx.bundleBackupPath);
+      observer.onTransition?.('old_bundle_parked');
+    }
+
+    // Make the rollback set durable before publishing the replacement db. If
+    // power fails around the next rename, the marker can then decide from the
+    // atomic presence of `stagingDbPath`: present rolls back to this fsynced
+    // set; absent completes forward from the newly published database.
+    fsyncDir(dirname(tx.dbPath));
+    observer.onTransition?.('old_artifacts_fsynced');
 
     // Commit point: after this rename, crash recovery completes FORWARD.
     renameSync(tx.stagingDbPath, tx.dbPath);
+    observer.onTransition?.('new_db_published');
+    // Persist the commit verdict itself before publishing members that may live
+    // on another filesystem. Without this barrier a power loss could preserve
+    // new config while losing the db rename that made it authoritative.
+    fsyncDir(dirname(tx.dbPath));
+    observer.onTransition?.('new_db_fsynced');
+    if (tx.marker.config) {
+      const { configPath: liveConfig, stagedConfigPath } = requireConfigPaths(tx);
+      renameSync(stagedConfigPath, liveConfig);
+      fsyncDir(dirname(liveConfig));
+      observer.onTransition?.('new_config_published');
+    }
     if (tx.marker.has_next_bundle) {
       renameSync(tx.stagedBundlePath, tx.bundlePath);
+      observer.onTransition?.('new_bundle_published');
     }
-    // Every rename above lands in the realm db's directory (the staged db is
-    // required to be a sibling, and both bundle paths derive from a db path).
-    // fsync it once, BEFORE the marker goes away: the marker is what tells the
-    // next boot to finish the job, so it must not outlive the renames it
-    // describes only in page cache.
+    // Flush the matching bundle publication before the marker goes away. The
+    // db commit point and any cross-directory config rename were each flushed
+    // at their own phase boundary above.
     fsyncDir(dirname(tx.dbPath));
+    observer.onTransition?.('swap_renames_fsynced');
     // The archive's blobs are authoritative from the commit point above, so the
     // parked originals are dead weight — but ONLY this marker still knows that.
     // Reaping them after releasing it left a window where a kill in between
@@ -559,14 +910,20 @@ export const commitPreparedServerBundleSwap = (
     // restore and rolls the PRE-restore bytes back over the objects the new
     // database references. Inside the journal, a kill here simply leaves the
     // marker for boot to reconcile forward.
-    if (reclaimParks(true)) unlinkSync(tx.markerPath);
+    if (reclaimParks(true)) {
+      observer.onTransition?.('parks_resolved');
+      retireMarker(tx);
+      observer.onTransition?.('swap_marker_retired');
+    }
   } catch (err) {
     let recovery: ServerBundleSwapReconcileResult;
     try {
       // Pre-commit failures roll back; post-commit failures finish forward.
       // Same park list either way — this is OUR transaction, so its verdict is
       // exactly the one those parks are waiting on.
-      recovery = reconcileServerBundleSwap(tx.dbPath, reclaimParks);
+      recovery = reconcileServerBundleSwap(tx.dbPath, reclaimParks, {
+        configPath: tx.configPath,
+      });
     } catch (recoveryErr) {
       throw new AggregateError(
         [err, recoveryErr],

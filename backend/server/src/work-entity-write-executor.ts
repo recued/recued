@@ -329,8 +329,8 @@ export interface WorkEntityVendorWritePrepared {
     value: unknown;
     wire_value: unknown;
   }>;
-  /** Resolved per-phase ops. `read` present for update/complete
-   *  (mandatory read-before-write); `write` present for
+  /** Resolved per-phase ops. `read` present for update/complete/delete
+   *  (mandatory targeted preflight/verification); `write` present for
    *  create/update/complete/delete. */
   readOp?: ResolvedOp;
   writeOp: ResolvedOp;
@@ -431,6 +431,50 @@ export type WorkEntityVendorWriteDispatchOutcome =
       staged: true;
     };
 
+/** A write against a read-through Source has no local mirror row to stage or
+ * fold. The executor therefore returns the verified transient projection to
+ * the generic dispatcher, which can answer with the same Source-qualified id
+ * without persisting a canonical row. */
+export type WorkEntityReadThroughWriteDispatchOutcome =
+  | {
+      ok: true;
+      operation: 'update' | 'complete';
+      projected: ProjectedWorkEntityUpsert;
+      verified: true;
+    }
+  | {
+      /** A read-through CREATE. The vendor minted the record, so the outcome
+       *  carries its native id — that id is the only thing that can mint the
+       *  `we1` identity the caller answers with, and there is no sync cycle
+       *  behind a read-through Source to supply it later. */
+      ok: true;
+      operation: 'create';
+      source_record_id: string;
+      projected: ProjectedWorkEntityUpsert;
+      verified: true;
+    }
+  | { ok: true; operation: 'delete' }
+  | {
+      ok: false;
+      kind: 'config' | 'policy' | 'error';
+      reason: string;
+      staged: false;
+      /** Set when the vendor record WAS created before the failure. A
+       *  read-through create has no local row to point at, so this id is the
+       *  only handle on the new record — surfacing it is what stops a retry
+       *  from minting a duplicate. */
+      source_record_id?: string;
+    }
+  | {
+      ok: false;
+      kind: 'verify_failed';
+      reason: string;
+      unlanded_fields: string[];
+      staged: false;
+      /** As above — a created-but-unverifiable record is still a real record. */
+      source_record_id?: string;
+    };
+
 export interface WorkEntitySourceWriteExecutor {
   prepare(input: {
     source_id: string;
@@ -462,6 +506,40 @@ export interface WorkEntitySourceWriteExecutor {
     prepared: WorkEntityVendorWritePrepared,
     target?: WorkEntityVendorWriteTarget,
   ): Promise<WorkEntityVendorWriteDispatchOutcome>;
+  /** Resolve a mutation for a Source whose structural posture is
+   * `read_through`. This is deliberately separate from `prepare`: mirrored
+   * writes require a local pending-write target, while read-through writes must
+   * never create one.
+   *
+   * `create` is admitted here and dispatched through `dispatchReadThroughCreate`
+   * — it is the one read-through write with no incoming qualified id, because
+   * the id does not exist until the vendor mints it. Every OTHER slot goes to
+   * `dispatchReadThrough`, which requires the id its read returned. */
+  prepareReadThrough?(input: {
+    source_id: string;
+    kind: WorkEntityKind;
+    operation: WorkEntityVendorWriteOperation;
+    patch: Record<string, unknown>;
+    /** Create-only, mirroring `prepare` — a read-through Source resolves its
+     *  container dependencies exactly like a mirrored one; only the landing
+     *  differs. */
+    dependencyCreateArgs?: Record<string, unknown>;
+    preadmitted?: boolean;
+    execution_source?: ExecutionSource;
+  }): WorkEntityVendorWritePrepareResult;
+  /** Dispatch directly to the owning Source, with mandatory live pre-read and
+   * post-write verification, but no mirror upsert or warehouse event. */
+  dispatchReadThrough?(
+    prepared: WorkEntityVendorWritePrepared,
+    source_record_id: string,
+  ): Promise<WorkEntityReadThroughWriteDispatchOutcome>;
+  /** Dispatch a read-through CREATE: vendor-first, then project the new record
+   * so the caller can answer with a real `we1` identity and real field values.
+   * No read-before-write (there is nothing to read), and no local row — the
+   * projection is returned, never persisted. */
+  dispatchReadThroughCreate?(
+    prepared: WorkEntityVendorWritePrepared,
+  ): Promise<WorkEntityReadThroughWriteDispatchOutcome>;
   /** D-192 create-assist preflight (Slice 6a/6c) — resolve the source's
    *  `resolve: 'prompt'` container dependencies for a CREATE and collect the args
    *  they bind, to thread into `prepare({ …, dependencyCreateArgs })`. Auto-resolves
@@ -704,6 +782,34 @@ const projectedFieldValue = (
     : undefined;
 };
 
+/** Read-through has no last-synced local base. Its mandatory preflight
+ * projection is the base, so verification can still distinguish a field that
+ * landed (exactly or provider-normalised) from one the provider never moved. */
+const unlandedReadThroughPushedFields = (
+  prepared: WorkEntityVendorWritePrepared,
+  before: ProjectedWorkEntityUpsert,
+  after: ProjectedWorkEntityUpsert,
+): string[] => {
+  const { declaration } = prepared;
+  const unlanded: string[] = [];
+  for (const { field, wire_value } of prepared.pushable) {
+    const afterValue = atWireFidelity(
+      declaration,
+      field,
+      projectedFieldValue(after, declaration, field),
+    );
+    if (scalarEq(afterValue, wire_value)) continue;
+    const beforeValue = atWireFidelity(
+      declaration,
+      field,
+      projectedFieldValue(before, declaration, field),
+    );
+    if (!scalarEq(afterValue, beforeValue)) continue;
+    unlanded.push(field);
+  }
+  return unlanded;
+};
+
 /** The local row's value of the same field (the read-before-write
  *  BASE — the pre-edit row mirrors the last-synced vendor state). */
 const priorFieldValue = (
@@ -896,7 +1002,12 @@ const extractRecord = (
 
 export type WorkEntityTargetedReadOutcome =
   | { ok: true; record: Record<string, unknown> }
-  | { ok: false; kind: 'config' | 'policy' | 'error' | 'unavailable'; reason: string };
+  | {
+      ok: false;
+      kind: 'config' | 'policy' | 'error' | 'unavailable';
+      reason: string;
+      error_code?: 'API_NOT_FOUND';
+    };
 
 /** The dep subset a targeted READ needs — the read-resolution consumers
  *  (chat/MCP work-entity read tools) construct this without the write
@@ -1228,6 +1339,60 @@ export const createWorkEntitySourceWriteExecutor = (
     staged: false,
   });
 
+  /** Read-through routes have the same in-flight replacement hazard as mirror
+   * routes, but their registration authority must remain `read_through` rather
+   * than `records`. Re-check at every network boundary before accepting a
+   * response as belonging to the prepared Source. */
+  const readThroughSupersededReason = (
+    prepared: WorkEntityVendorWritePrepared,
+  ): string | null => {
+    const current = deps.resolveDeclaration(prepared.source_id);
+    if (current === null) {
+      return `source '${prepared.source_id}' no longer has a work-entity Source declaration`;
+    }
+    const declaredPosture = current.declaration.sync.posture ?? 'records';
+    const registryPosture = typeof deps.mirror.getSourceSyncPosture === 'function'
+      ? deps.mirror.getSourceSyncPosture(prepared.source_id)
+      : declaredPosture;
+    if (registryPosture !== 'read_through') {
+      return registryPosture === null
+        ? `source '${prepared.source_id}' is no longer registered for read-through access`
+        : `source '${prepared.source_id}' now has '${registryPosture}' posture, not 'read_through'`;
+    }
+    if (declaredPosture !== 'read_through') {
+      return `source '${prepared.source_id}' now declares '${declaredPosture}' posture, not 'read_through'`;
+    }
+    if (current.connection_name !== prepared.connection_name) {
+      return `source '${prepared.source_id}' is now bound to connection '${current.connection_name}', not '${prepared.connection_name}'`;
+    }
+    if (current.declaration.kind !== prepared.kind) {
+      return `source '${prepared.source_id}' now declares kind '${current.declaration.kind}', not '${prepared.kind}'`;
+    }
+    if (
+      workEntitySourceContractHash(current.declaration)
+      !== workEntitySourceContractHash(prepared.declaration)
+    ) {
+      return `source '${prepared.source_id}' declaration changed while the read-through write was in flight`;
+    }
+    return null;
+  };
+
+  const readThroughSupersededOutcome = (
+    prepared: WorkEntityVendorWritePrepared,
+    reason: string,
+    providerInteractionMayHaveCompleted: boolean,
+  ): WorkEntityReadThroughWriteDispatchOutcome => ({
+    ok: false,
+    kind: 'config',
+    reason:
+      `${reason}; the prepared read-through '${prepared.operation}' route is superseded. `
+      + (providerInteractionMayHaveCompleted
+        ? 'A provider interaction may already have completed, but its result was not accepted. '
+        : 'No provider mutation was sent after the declaration changed. ')
+      + 'Do not retry unchanged: run work.search and pass the returned qualified id unchanged.',
+    staged: false,
+  });
+
   /** Resolve the write context — declaration + bound catalog manifest + connection
    *  config — for a source. The config-fail SET shared by `prepare` and
    *  `resolveCreateDependencies` so create-assist resolution and the write itself
@@ -1235,6 +1400,7 @@ export const createWorkEntitySourceWriteExecutor = (
   const resolveWriteContext = (
     source_id: string,
     kind: MirrorKind,
+    expectedPosture: 'records' | 'read_through' = 'records',
   ):
     | {
         ok: true;
@@ -1253,12 +1419,22 @@ export const createWorkEntitySourceWriteExecutor = (
     if (declaration.kind !== kind) {
       return { ok: false, reason: `source '${source_id}' declares kind '${declaration.kind}', not '${kind}'` };
     }
-    if (declaration.sync.posture === 'read_through') {
+    const declaredPosture = declaration.sync.posture ?? 'records';
+    if (declaredPosture !== expectedPosture) {
+      if (declaredPosture === 'read_through') {
+        return {
+          ok: false,
+          reason:
+            `source '${source_id}' is read_through and has no generic local mutation target — `
+            + 'route its Source-qualified id through the read-through write path, or call the '
+            + 'matching provider operation directly',
+        };
+      }
       return {
         ok: false,
         reason:
-          `source '${source_id}' is read_through and has no generic local mutation target — `
-          + 'pass its Source-qualified id to the matching provider operation instead',
+          `source '${source_id}' is '${declaredPosture}', not '${expectedPosture}' — `
+          + 'read-through routing requires a Source-qualified remote id',
       };
     }
     if (declaration.sync.mode !== 'read_write') {
@@ -1283,7 +1459,10 @@ export const createWorkEntitySourceWriteExecutor = (
     };
   };
 
-  const prepare: WorkEntitySourceWriteExecutor['prepare'] = (input) => {
+  const prepareForPosture = (
+    input: Parameters<WorkEntitySourceWriteExecutor['prepare']>[0],
+    expectedPosture: 'records' | 'read_through',
+  ): WorkEntityVendorWritePrepareResult => {
     const { source_id, operation, patch } = input;
     if (!isWorkEntitySourceDeclarableKind(input.kind)) {
       return configFail(
@@ -1292,7 +1471,7 @@ export const createWorkEntitySourceWriteExecutor = (
     }
     const kind: MirrorKind = input.kind;
 
-    const ctxRes = resolveWriteContext(source_id, kind);
+    const ctxRes = resolveWriteContext(source_id, kind, expectedPosture);
     if (!ctxRes.ok) return configFail(ctxRes.reason);
     const { declaration, connection_name, connection_config, catalogSlug, manifest } = ctxRes;
 
@@ -1542,31 +1721,33 @@ export const createWorkEntitySourceWriteExecutor = (
         manifest.operations?.[writeOp.opKey]?.operation_id ?? writeOp.opKey,
       );
 
-    // Mandatory read-before-write (spec § Write policy) — update and
-    // complete preflight-read the vendor record; create has no record
-    // yet.
+    // Mandatory targeted read — update/complete need it for concurrency and
+    // identity checks; delete needs it before the side effect and afterwards
+    // to prove remote absence. A 2xx-only delete is never enough to authorize
+    // the caller's local tombstone.
     //
-    // D-192 — DELETE now resolves the read op too, but only to READ BACK
-    // afterwards (`dispatchDelete`): a 2xx is not proof a delete took, and a
-    // record that survives it gets resurrected by the next sync. Unlike
-    // update/complete the read is NOT mandatory here — a Source with no `read`
-    // op / no `op_bindings.read.id_arg` must still be able to delete, it just
-    // falls back to trusting the 2xx. So resolution failure leaves `readOp`
-    // undefined instead of config-failing the whole delete.
+    // D-192 — a READ-THROUGH create resolves the read op as well, and needs it:
+    // there is no local row and no sync cycle behind the Source, so a create
+    // response that is not itself a full record can only be projected by
+    // reading the record back (`dispatchReadThroughCreate`). A MIRRORED create
+    // still needs no read — its row lands locally and the next cycle rewrites
+    // it, which is exactly why this is posture-conditional and not a blanket
+    // widening.
     let readOp: ResolvedOp | undefined;
-    const readIsMandatory = operation === 'update' || operation === 'complete';
-    if (readIsMandatory || operation === 'delete') {
+    const readIsMandatory = operation === 'update'
+      || operation === 'complete'
+      || operation === 'delete'
+      || (operation === 'create' && expectedPosture === 'read_through');
+    if (readIsMandatory) {
       const resolvedRead = resolveOp(declaration, manifest, catalogSlug, 'read');
       if (!resolvedRead.ok) {
-        // DELETE: no read op ⇒ no read-back, fall back to the 2xx. NOT fatal —
-        // a delete never needed a read op before and must not start needing one.
-        if (readIsMandatory) return configFail(resolvedRead.reason);
+        return configFail(resolvedRead.reason);
       } else {
         // A config-scoped read (Google Tasks `tasklist`) needs the same scoping arg
         // on the read-before-write preflight as the read-tool escalation.
         const readWithArgs = withReadConfigArgs(resolvedRead.op, declaration, connection_config);
         if (!readWithArgs.ok) {
-          if (readIsMandatory) return configFail(readWithArgs.reason);
+          return configFail(readWithArgs.reason);
         } else {
           readOp = readWithArgs.op;
           // Source-dependency container reads (MS To Do `todoTaskListId`) — the write
@@ -1579,11 +1760,7 @@ export const createWorkEntitySourceWriteExecutor = (
           if (deps.dependencyStore !== undefined) {
             const depRead = resolvePersistDependencyReadArgs(deps.dependencyStore, source_id, declaration);
             if (!depRead.ok) {
-              if (readIsMandatory) return configFail(depRead.reason);
-              // DELETE: the read cannot be container-scoped ⇒ drop the read-back
-              // rather than fire an unscoped read (which would 404 and prove
-              // nothing) or fail a delete that used to work.
-              readOp = undefined;
+              return configFail(depRead.reason);
             } else if (Object.keys(depRead.readArgs).length > 0) {
               readOp = { ...readOp, configArgs: { ...(readOp.configArgs ?? {}), ...depRead.readArgs } };
             }
@@ -1616,6 +1793,30 @@ export const createWorkEntitySourceWriteExecutor = (
           : {}),
       },
     };
+  };
+
+  const prepare: WorkEntitySourceWriteExecutor['prepare'] = (input) =>
+    prepareForPosture(input, 'records');
+
+  const prepareReadThrough: NonNullable<WorkEntitySourceWriteExecutor['prepareReadThrough']> = (input) => {
+    const result = prepareForPosture(input, 'read_through');
+    if (
+      result.ok
+      && result.vendor_relevant
+      && result.prepared.readOp === undefined
+    ) {
+      // A create has no identity to preflight, but it still needs the read:
+      // there is no sync cycle behind a read-through Source, so a create
+      // response that is not a full record can only be projected by reading
+      // the record back. Without that the caller would get an id and no fields.
+      return configFail(
+        `read-through '${input.operation}' on source '${input.source_id}' requires a targeted read `
+        + (input.operation === 'create'
+          ? 'to project the created record — a read-through Source has no sync cycle to fill it in later'
+          : 'for identity preflight and post-write verification'),
+      );
+    }
+    return result;
   };
 
   /** Stage / restage the row's pending write. Bases come from the
@@ -1788,6 +1989,50 @@ export const createWorkEntitySourceWriteExecutor = (
         staged: false,
       };
     }
+
+    // Prove the verifier is usable BEFORE issuing the destructive call. This
+    // catches revoked read grants, broken container scope, and read-binding
+    // drift without first creating an acknowledged-but-unlanded local state.
+    // A typed 404 is also the crash-retry path: the prior attempt may have
+    // removed the provider record and crashed before the local tombstone.
+    const beforeRead = await runWorkEntitySourceTargetedRead(deps, {
+      prepared,
+      source_record_id: rid,
+      stepId: 'write_preflight',
+    });
+    const preflightSuperseded = supersededReason(prepared);
+    if (preflightSuperseded !== null) {
+      return supersededOutcome(prepared, preflightSuperseded, false);
+    }
+    if (!beforeRead.ok) {
+      if (beforeRead.error_code === 'API_NOT_FOUND') {
+        return { ok: true, operation: 'delete' };
+      }
+      return {
+        ok: false,
+        kind: beforeRead.kind === 'unavailable' ? 'error' : beforeRead.kind,
+        reason: `read-before-delete failed: ${beforeRead.reason}`,
+        staged: false,
+      };
+    }
+    const beforeId = getByDotPath(beforeRead.record, prepared.declaration.remote.id);
+    const beforeKey =
+      typeof beforeId === 'string'
+        ? beforeId
+        : typeof beforeId === 'number'
+          ? String(beforeId)
+          : '';
+    if (beforeKey !== rid) {
+      return {
+        ok: false,
+        kind: 'error',
+        reason:
+          `read-before-delete returned record '${beforeKey.length > 0 ? beforeKey : '<no id>'}'`
+          + ` — expected '${rid}' (catalog '${prepared.readOp?.opKey ?? 'read'}' drift?)`,
+        staged: false,
+      };
+    }
+
     const binding = prepared.writeOp.binding!;
     // Container scoping (MS To Do `list_id`) rides flat next to the id_arg; the
     // id_arg wins any key overlap — a scoping arg must never shadow the record id
@@ -1797,9 +2042,11 @@ export const createWorkEntitySourceWriteExecutor = (
       prepared.declaration.write_policy?.conditional_write !== undefined
       && prepared.declaration.write_policy.conditional_write !== 'none'
       && binding.precondition_arg !== undefined
-      && target.prior.source_version_token !== undefined
     ) {
-      args[binding.precondition_arg] = target.prior.source_version_token;
+      const token =
+        workEntitySourceVersionToken(prepared.declaration.remote.version, beforeRead.record)
+        ?? target.prior.source_version_token;
+      if (token !== undefined) args[binding.precondition_arg] = token;
     }
     const invoked = await run(deps.fetchDeps, {
       connection_name: prepared.connection_name,
@@ -1814,57 +2061,56 @@ export const createWorkEntitySourceWriteExecutor = (
     if (deleteSuperseded !== null) {
       return supersededOutcome(prepared, deleteSuperseded, true);
     }
-    if (!invoked.ok) {
-      return { ok: false, kind: invoked.kind === 'unavailable' ? 'error' : invoked.kind, reason: invoked.reason, staged: false };
+    if (!invoked.ok && (invoked.kind === 'config' || invoked.kind === 'policy')) {
+      return { ok: false, kind: invoked.kind, reason: invoked.reason, staged: false };
     }
 
-    // D-192 — ASSERT the delete landed. A 2xx is NOT proof: a vendor may 2xx a
-    // SOFT delete (the record stays readable), and a mis-mapped `id_arg` targets
-    // nothing while the vendor cheerfully returns 204. Either way the vendor
-    // record SURVIVES while we delete locally — and the next sync cycle
-    // RESURRECTS it. (`taskDelete` already orders the delete vendor-first for
-    // exactly this fear, but ordering alone never checked whether it worked.)
-    //
-    // This is a REFUTATION, deliberately — it can prove the delete FAILED, and
-    // it never claims to prove it succeeded. A read that SUCCEEDS and still
-    // returns the record proves the delete did not take. We do NOT invert that
-    // and read "the read failed ⇒ the record is gone": the operation outcome
-    // carries no HTTP status (`GatedCatalogOperationOutcome` is
-    // `{ok:false, kind, reason}`; the adapter's structured `API_NOT_FOUND` is
-    // flattened to a message), so a 404 (gone) is indistinguishable from a 500 /
-    // auth / network failure (unknown). Inferring deletion from a failed read
-    // would fail OPEN on a transient — the exact failure this guard exists to
-    // stop. Refuting is enough: BOTH real hazards (a soft delete, and a
-    // mis-mapped `id_arg` that targeted nothing) leave the record READABLE.
-    //
-    // Upgrade path: plumb the adapter's error code / HTTP status through the
-    // operation outcome and a 404 becomes a POSITIVE confirmation. Deferred —
-    // the engine normalizes error codes, so it needs its own empirical proof.
-    if (prepared.readOp?.binding !== undefined) {
-      const readBack = await runWorkEntitySourceTargetedRead(deps, {
-        prepared,
-        source_record_id: rid,
-        stepId: 'write_verify',
-      });
-      const verifySuperseded = supersededReason(prepared);
-      if (verifySuperseded !== null) {
-        return supersededOutcome(prepared, verifySuperseded, true);
-      }
-      if (readBack.ok) {
+    // The transport acknowledgement is never the success condition. A 2xx can
+    // accompany a soft/no-op delete, while a timeout or 5xx can arrive after the
+    // provider committed. Settle both cases by asserting the postcondition.
+    const readBack = await runWorkEntitySourceTargetedRead(deps, {
+      prepared,
+      source_record_id: rid,
+      stepId: 'write_verify',
+    });
+    const verifySuperseded = supersededReason(prepared);
+    if (verifySuperseded !== null) {
+      return supersededOutcome(prepared, verifySuperseded, true);
+    }
+    if (!readBack.ok && readBack.error_code === 'API_NOT_FOUND') {
+      return { ok: true, operation: 'delete' };
+    }
+    if (readBack.ok) {
+      if (!invoked.ok) {
         return {
           ok: false,
-          kind: 'verify_failed',
+          kind: 'error',
           reason:
-            `the vendor still returns record '${rid}' after '${prepared.writeOp.opKey}'`
-            + ' reported success — the delete did not take (a soft delete, or a mis-mapped'
-            + ' op_bindings id_arg targeting the wrong record). Refusing to delete locally:'
-            + ' the next sync cycle would resurrect it.',
-          unlanded_fields: [],
+            `'${prepared.writeOp.opKey}' failed (${invoked.reason}) and the provider still `
+            + `returns a record for '${rid}'. No local delete was applied.`,
           staged: false,
         };
       }
+      return {
+        ok: false,
+        kind: 'verify_failed',
+        reason:
+          `the vendor still returns a record for '${rid}' after '${prepared.writeOp.opKey}' `
+          + 'reported success'
+          + ' — refusing to delete locally because the next sync cycle would resurrect it',
+        unlanded_fields: [],
+        staged: false,
+      };
     }
-    return { ok: true, operation: 'delete' };
+    return {
+      ok: false,
+      kind: 'error',
+      reason:
+        `'${prepared.writeOp.opKey}' ${invoked.ok ? 'reported success' : `failed (${invoked.reason})`}, `
+        + `but the follow-up read could not confirm that record '${rid}' is absent `
+        + `(${readBack.reason}). The provider outcome is unknown; inspect provider state before retrying.`,
+      staged: false,
+    };
   };
 
   const dispatchUpdate = async (
@@ -2058,6 +2304,446 @@ export const createWorkEntitySourceWriteExecutor = (
     return { ok: true, operation, applied: 'pushed', verified: false };
   };
 
+  /** Read-through CREATE — vendor-first, and the vendor's id is the answer.
+   *
+   *  Shares `dispatchCreate`'s wire composition and id extraction; differs in
+   *  what happens after. A mirrored create can tolerate an unprojectable
+   *  response because the row lands locally and the next sync cycle rewrites
+   *  it. A read-through Source has no row and no cycle, so the record is read
+   *  back when the create response is not itself projectable — and if even
+   *  that fails, the failure NAMES the created id rather than looking like the
+   *  create never happened (which is what invites a duplicating retry). */
+  const dispatchReadThroughCreate: NonNullable<
+    WorkEntitySourceWriteExecutor['dispatchReadThroughCreate']
+  > = async (prepared) => {
+    const initialSuperseded = readThroughSupersededReason(prepared);
+    if (initialSuperseded !== null) {
+      return readThroughSupersededOutcome(prepared, initialSuperseded, false);
+    }
+    if (prepared.operation !== 'create') {
+      return {
+        ok: false,
+        kind: 'config',
+        reason: `dispatchReadThroughCreate received a '${prepared.operation}' route`,
+        staged: false,
+      };
+    }
+    const transport = prepared.writeOp.transport;
+    const composed = composeWireArgs(
+      [
+        ...prepared.pushable.map(
+          (p) => [pushableWireKey(transport, p.remote_path), p.wire_value] as const,
+        ),
+        ...Object.entries(prepared.createOpArgs ?? {}),
+      ],
+      transport,
+    );
+    if (!composed.ok) {
+      return { ok: false, kind: 'config', reason: composed.reason, staged: false };
+    }
+    const invoked = await run(deps.fetchDeps, {
+      connection_name: prepared.connection_name,
+      manifest: prepared.manifest,
+      catalogSlug: prepared.catalogSlug,
+      operationKey: prepared.writeOp.opKey,
+      args: composed.args,
+      auditRecipe: SOURCE_WRITE_RECIPE,
+      stepId: 'source_write',
+      ...(prepared.preflight_admitted === true ? { preflight_admitted: true } : {}),
+    });
+    const createSuperseded = readThroughSupersededReason(prepared);
+    if (createSuperseded !== null) {
+      return readThroughSupersededOutcome(prepared, createSuperseded, true);
+    }
+    if (!invoked.ok) {
+      return {
+        ok: false,
+        kind: invoked.kind === 'unavailable' ? 'error' : invoked.kind,
+        reason: invoked.reason,
+        staged: false,
+      };
+    }
+    const record = extractRecord(invoked.raw, prepared.writeOp.resultPath);
+    const createIdPath =
+      prepared.declaration.remote.create_response_id_field ?? prepared.declaration.remote.id;
+    const rawId = record !== null ? getByDotPath(record, createIdPath) : undefined;
+    const source_record_id =
+      typeof rawId === 'string' ? rawId : typeof rawId === 'number' ? String(rawId) : '';
+    if (source_record_id.length === 0) {
+      return {
+        ok: false,
+        kind: 'error',
+        reason:
+          `'${prepared.writeOp.opKey}' succeeded but the response carries no `
+          + `'${createIdPath}' record id — a read-through Source keeps no local row and runs no `
+          + 'sync cycle, so the new vendor record cannot be addressed. Find it at the provider '
+          + 'before retrying: a retry will create a second one',
+        staged: false,
+      };
+    }
+    // Project the create response when it is a full record; otherwise read the
+    // record back. Either way the caller gets real field values, never an echo
+    // of its own request.
+    let projected = record !== null ? projectFor(prepared, source_record_id, record) : null;
+    if (projected === null) {
+      const verifyRead = await runWorkEntitySourceTargetedRead(deps, {
+        prepared,
+        source_record_id,
+        stepId: 'write_verify',
+      });
+      const verifySuperseded = readThroughSupersededReason(prepared);
+      if (verifySuperseded !== null) {
+        return readThroughSupersededOutcome(prepared, verifySuperseded, true);
+      }
+      if (verifyRead.ok) projected = projectFor(prepared, source_record_id, verifyRead.record);
+    }
+    if (projected === null) {
+      return {
+        ok: false,
+        kind: 'verify_failed',
+        reason:
+          `'${prepared.writeOp.opKey}' created record '${source_record_id}', but the provider `
+          + 'result could not be projected into a canonical entity. The record EXISTS — retrying '
+          + 'will create a second one',
+        unlanded_fields: [...new Set(prepared.pushable.map((field) => field.field))],
+        staged: false,
+        source_record_id,
+      };
+    }
+    return { ok: true, operation: 'create', source_record_id, projected, verified: true };
+  };
+
+  const recordDeterministicOutcome = async (
+    prepared: WorkEntityVendorWritePrepared,
+    outcome: WorkEntityVendorWriteDispatchOutcome | WorkEntityReadThroughWriteDispatchOutcome,
+    targetIdentity: string,
+  ): Promise<void> => {
+    const context = deps.getDeterministicVerificationContext?.();
+    const verifiedPass = outcome.ok && (
+      outcome.operation === 'delete'
+      || (
+        (outcome.operation === 'update' || outcome.operation === 'complete')
+        && outcome.verified
+        && (!('applied' in outcome) || outcome.applied === 'pushed')
+      )
+    );
+    const verifiedFailure = !outcome.ok && outcome.kind === 'verify_failed';
+    if (
+      !context
+      || !deps.recordDeterministicVerification
+      || (!verifiedPass && !verifiedFailure)
+    ) {
+      return;
+    }
+    const kind = verifiedPass ? 'passed' as const : 'failed' as const;
+    const sourceEventId = createHash('sha256')
+      .update(JSON.stringify([
+        context.session_id,
+        context.turn_id,
+        prepared.source_id,
+        prepared.kind,
+        prepared.operation,
+        targetIdentity,
+        kind,
+      ]))
+      .digest('hex');
+    try {
+      await deps.recordDeterministicVerification({
+        session_id: context.session_id,
+        turn_id: context.turn_id,
+        kind,
+        postcondition_key:
+          `work_entity_vendor:${prepared.kind}:${prepared.operation}`,
+        source_event_id: sourceEventId,
+      });
+    } catch (error) {
+      console.error(
+        '[d214] deterministic verification recording failed',
+        error,
+      );
+    }
+  };
+
+  const dispatchReadThroughOnce: NonNullable<WorkEntitySourceWriteExecutor['dispatchReadThrough']> = async (
+    prepared,
+    source_record_id,
+  ) => {
+    const initialSuperseded = readThroughSupersededReason(prepared);
+    if (initialSuperseded !== null) {
+      return readThroughSupersededOutcome(prepared, initialSuperseded, false);
+    }
+    if (prepared.operation === 'create') {
+      return {
+        ok: false,
+        kind: 'config',
+        reason: 'a read-through write requires an existing Source-qualified remote id',
+        staged: false,
+      };
+    }
+    if (source_record_id.length === 0 || prepared.readOp?.binding === undefined) {
+      return {
+        ok: false,
+        kind: 'config',
+        reason: 'a read-through write requires a non-empty remote id and targeted read binding',
+        staged: false,
+      };
+    }
+
+    // The read is both an identity guard and the no-mirror concurrency base.
+    const beforeRead = await runWorkEntitySourceTargetedRead(deps, {
+      prepared,
+      source_record_id,
+      stepId: 'write_preflight',
+    });
+    const preflightSuperseded = readThroughSupersededReason(prepared);
+    if (preflightSuperseded !== null) {
+      return readThroughSupersededOutcome(prepared, preflightSuperseded, false);
+    }
+    if (!beforeRead.ok) {
+      // The prior attempt may have completed remotely and crashed before its
+      // caller returned. A typed absence result is the idempotent recovery path
+      // for a delete; every other read failure remains inconclusive.
+      if (prepared.operation === 'delete' && beforeRead.error_code === 'API_NOT_FOUND') {
+        return { ok: true, operation: 'delete' };
+      }
+      return {
+        ok: false,
+        kind: beforeRead.kind === 'unavailable' ? 'error' : beforeRead.kind,
+        reason: `read-before-write failed: ${beforeRead.reason}`,
+        staged: false,
+      };
+    }
+    const beforeId = getByDotPath(beforeRead.record, prepared.declaration.remote.id);
+    const beforeKey =
+      typeof beforeId === 'string'
+        ? beforeId
+        : typeof beforeId === 'number'
+          ? String(beforeId)
+          : '';
+    if (beforeKey !== source_record_id) {
+      return {
+        ok: false,
+        kind: 'error',
+        reason:
+          `read-before-write returned record '${beforeKey.length > 0 ? beforeKey : '<no id>'}'`
+          + ` — expected '${source_record_id}' (catalog '${prepared.readOp.opKey}' drift?)`,
+        staged: false,
+      };
+    }
+
+    const binding = prepared.writeOp.binding!;
+    if (prepared.operation === 'delete') {
+      const args: Record<string, unknown> = {
+        ...(prepared.writeOp.configArgs ?? {}),
+        [binding.id_arg]: source_record_id,
+      };
+      const conditional = prepared.declaration.write_policy?.conditional_write;
+      if (
+        conditional !== undefined
+        && conditional !== 'none'
+        && binding.precondition_arg !== undefined
+      ) {
+        const token = workEntitySourceVersionToken(
+          prepared.declaration.remote.version,
+          beforeRead.record,
+        );
+        if (token !== undefined) args[binding.precondition_arg] = token;
+      }
+      const deleted = await run(deps.fetchDeps, {
+        connection_name: prepared.connection_name,
+        manifest: prepared.manifest,
+        catalogSlug: prepared.catalogSlug,
+        operationKey: prepared.writeOp.opKey,
+        args,
+        auditRecipe: SOURCE_WRITE_RECIPE,
+        stepId: 'source_write',
+      });
+      const deleteSuperseded = readThroughSupersededReason(prepared);
+      if (deleteSuperseded !== null) {
+        return readThroughSupersededOutcome(prepared, deleteSuperseded, true);
+      }
+      if (!deleted.ok && (deleted.kind === 'config' || deleted.kind === 'policy')) {
+        return {
+          ok: false,
+          kind: deleted.kind,
+          reason: deleted.reason,
+          staged: false,
+        };
+      }
+      const readBack = await runWorkEntitySourceTargetedRead(deps, {
+        prepared,
+        source_record_id,
+        stepId: 'write_verify',
+      });
+      const verifySuperseded = readThroughSupersededReason(prepared);
+      if (verifySuperseded !== null) {
+        return readThroughSupersededOutcome(prepared, verifySuperseded, true);
+      }
+      if (!readBack.ok && readBack.error_code === 'API_NOT_FOUND') {
+        return { ok: true, operation: 'delete' };
+      }
+      if (readBack.ok) {
+        if (!deleted.ok) {
+          return {
+            ok: false,
+            kind: 'error',
+            reason:
+              `'${prepared.writeOp.opKey}' failed (${deleted.reason}) and the provider still `
+              + `returns record '${source_record_id}'. No local delete was applied.`,
+            staged: false,
+          };
+        }
+        return {
+          ok: false,
+          kind: 'verify_failed',
+          reason:
+            `the provider still returns record '${source_record_id}' after `
+            + `'${prepared.writeOp.opKey}' `
+            + 'reported success'
+            + ' — the delete did not take',
+          unlanded_fields: [],
+          staged: false,
+        };
+      }
+      return {
+        ok: false,
+        kind: 'error',
+        reason:
+          `'${prepared.writeOp.opKey}' ${deleted.ok ? 'reported success' : `failed (${deleted.reason})`}, `
+          + `but the follow-up read could not confirm that record '${source_record_id}' is absent `
+          + `(${readBack.reason}). The provider outcome is unknown; inspect provider state before retrying.`,
+        staged: false,
+      };
+    }
+
+    const before = projectFor(prepared, source_record_id, beforeRead.record);
+    if (before === null) {
+      return {
+        ok: false,
+        kind: 'error',
+        reason:
+          `read-before-write record '${source_record_id}' failed canonical projection; `
+          + 'a read-through write cannot establish a verification base',
+        staged: false,
+      };
+    }
+
+    const transport = prepared.writeOp.transport;
+    const entries: Array<readonly [string, unknown]> = [
+      ...prepared.pushable.map(
+        (field) => [pushableWireKey(transport, field.remote_path), field.wire_value] as const,
+      ),
+      ...Object.entries(prepared.writeOp.configArgs ?? {}),
+      [binding.id_arg, source_record_id] as const,
+    ];
+    const conditional = prepared.declaration.write_policy?.conditional_write;
+    if (
+      conditional !== undefined
+      && conditional !== 'none'
+      && binding.precondition_arg !== undefined
+    ) {
+      const token = workEntitySourceVersionToken(
+        prepared.declaration.remote.version,
+        beforeRead.record,
+      );
+      if (token !== undefined) entries.push([binding.precondition_arg, token] as const);
+    }
+    const composed = composeWireArgs(entries, transport);
+    if (!composed.ok) {
+      return { ok: false, kind: 'config', reason: composed.reason, staged: false };
+    }
+    const written = await run(deps.fetchDeps, {
+      connection_name: prepared.connection_name,
+      manifest: prepared.manifest,
+      catalogSlug: prepared.catalogSlug,
+      operationKey: prepared.writeOp.opKey,
+      args: composed.args,
+      auditRecipe: SOURCE_WRITE_RECIPE,
+      stepId: 'source_write',
+    });
+    const writeSuperseded = readThroughSupersededReason(prepared);
+    if (writeSuperseded !== null) {
+      return readThroughSupersededOutcome(prepared, writeSuperseded, true);
+    }
+    if (!written.ok) {
+      return {
+        ok: false,
+        kind: written.kind === 'unavailable' ? 'error' : written.kind,
+        reason: written.reason,
+        staged: false,
+      };
+    }
+
+    let projected: ProjectedWorkEntityUpsert | null = null;
+    const responseRecord = extractRecord(written.raw, prepared.writeOp.resultPath);
+    if (responseRecord !== null) {
+      projected = projectFor(prepared, source_record_id, responseRecord);
+    }
+    if (projected === null) {
+      const verifyRead = await runWorkEntitySourceTargetedRead(deps, {
+        prepared,
+        source_record_id,
+        stepId: 'write_verify',
+      });
+      const verifySuperseded = readThroughSupersededReason(prepared);
+      if (verifySuperseded !== null) {
+        return readThroughSupersededOutcome(prepared, verifySuperseded, true);
+      }
+      if (verifyRead.ok) {
+        projected = projectFor(prepared, source_record_id, verifyRead.record);
+      }
+    }
+    if (projected === null) {
+      return {
+        ok: false,
+        kind: 'verify_failed',
+        reason:
+          `'${prepared.writeOp.opKey}' reported success, but the provider result could not `
+          + `verify record '${source_record_id}'`,
+        unlanded_fields: [...new Set(prepared.pushable.map((field) => field.field))],
+        staged: false,
+      };
+    }
+    const unlanded = unlandedReadThroughPushedFields(prepared, before, projected);
+    if (unlanded.length > 0) {
+      return {
+        ok: false,
+        kind: 'verify_failed',
+        reason:
+          `the provider does not hold the pushed value for `
+          + `${unlanded.map((field) => `'${field}'`).join(', ')} after `
+          + `'${prepared.writeOp.opKey}' reported success`,
+        unlanded_fields: unlanded,
+        staged: false,
+      };
+    }
+    return {
+      ok: true,
+      operation: prepared.operation,
+      projected,
+      verified: true,
+    };
+  };
+
+  const dispatchReadThrough: NonNullable<WorkEntitySourceWriteExecutor['dispatchReadThrough']> = async (
+    prepared,
+    source_record_id,
+  ) => {
+    const outcome = await dispatchReadThroughOnce(prepared, source_record_id);
+    if (outcome.ok) {
+      const finalSuperseded = readThroughSupersededReason(prepared);
+      if (finalSuperseded !== null) {
+        return readThroughSupersededOutcome(
+          prepared,
+          finalSuperseded,
+          outcome.operation === 'delete' || outcome.operation === 'update' || outcome.operation === 'complete',
+        );
+      }
+    }
+    await recordDeterministicOutcome(prepared, outcome, source_record_id);
+    return outcome;
+  };
+
   const dispatch: WorkEntitySourceWriteExecutor['dispatch'] = async (
     prepared,
     target,
@@ -2081,47 +2767,6 @@ export const createWorkEntitySourceWriteExecutor = (
       outcome = await dispatchUpdate(prepared, target);
     }
 
-    const context = deps.getDeterministicVerificationContext?.();
-    const verifiedPass =
-      outcome.ok
-      && (outcome.operation === 'update'
-        || outcome.operation === 'complete')
-      && outcome.applied === 'pushed'
-      && outcome.verified;
-    const verifiedFailure = !outcome.ok && outcome.kind === 'verify_failed';
-    if (
-      context
-      && deps.recordDeterministicVerification
-      && (verifiedPass || verifiedFailure)
-    ) {
-      const kind = verifiedPass ? 'passed' as const : 'failed' as const;
-      const sourceEventId = createHash('sha256')
-        .update(JSON.stringify([
-          context.session_id,
-          context.turn_id,
-          prepared.source_id,
-          prepared.kind,
-          prepared.operation,
-          target?.local_id ?? '',
-          kind,
-        ]))
-        .digest('hex');
-      try {
-        await deps.recordDeterministicVerification({
-          session_id: context.session_id,
-          turn_id: context.turn_id,
-          kind,
-          postcondition_key:
-            `work_entity_vendor:${prepared.kind}:${prepared.operation}`,
-          source_event_id: sourceEventId,
-        });
-      } catch (error) {
-        console.error(
-          '[d214] deterministic verification recording failed',
-          error,
-        );
-      }
-    }
     if (outcome.ok) {
       const finalSuperseded = supersededReason(prepared);
       if (finalSuperseded !== null) {
@@ -2136,6 +2781,7 @@ export const createWorkEntitySourceWriteExecutor = (
         );
       }
     }
+    await recordDeterministicOutcome(prepared, outcome, target?.local_id ?? '');
     return outcome;
   };
 
@@ -2316,6 +2962,13 @@ export const createWorkEntitySourceWriteExecutor = (
     };
 
   return {
-    prepare, dispatch, resolveCreateDependencies, executeCreatePlan, tryFastTrackCreatePlan,
+    prepare,
+    dispatch,
+    prepareReadThrough,
+    dispatchReadThrough,
+    dispatchReadThroughCreate,
+    resolveCreateDependencies,
+    executeCreatePlan,
+    tryFastTrackCreatePlan,
   };
 };

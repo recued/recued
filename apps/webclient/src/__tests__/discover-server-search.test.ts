@@ -205,6 +205,66 @@ describe('discover-panel — server search', () => {
     panel.dispose();
   });
 
+  it('invalidates an in-flight response as soon as a newer search is queued', async () => {
+    vi.useFakeTimers();
+    const host = makeEl('div');
+    const pending = new Map<string, (outcome: DiscoverSearchOutcome<Row>) => void>();
+    const search = vi.fn((q: DiscoverQuery): Promise<DiscoverSearchOutcome<Row>> => {
+      if (q.search === '') return Promise.resolve(page([r('initial')]));
+      return new Promise((resolve) => pending.set(q.search, resolve));
+    });
+    const panel = mountDiscoverPanel(baseOpts(host, search, { searchDebounceMs: 100 }));
+
+    try {
+      await panel.whenIdle();
+      panel.setSearch('first');
+      await vi.advanceTimersByTimeAsync(100);
+      expect(pending.has('first')).toBe(true);
+
+      // The visible query has moved on, but its request has not started yet.
+      // Resolving the old request in this debounce window must not paint its
+      // cards underneath the newer search text.
+      panel.setSearch('second');
+      pending.get('first')!(page([r('first-result')]));
+      await Promise.resolve();
+      expect(cardIds(host)).toEqual(['initial']);
+
+      await vi.advanceTimersByTimeAsync(100);
+      pending.get('second')!(page([r('second-result')]));
+      await panel.whenIdle();
+      expect(cardIds(host)).toEqual(['second-result']);
+    } finally {
+      panel.dispose();
+      vi.useRealTimers();
+    }
+  });
+
+  it('settles an idle waiter when its queued search is superseded', async () => {
+    vi.useFakeTimers();
+    const host = makeEl('div');
+    const search = vi.fn(async (q: DiscoverQuery) => page([r(q.search || 'initial')]));
+    const panel = mountDiscoverPanel(baseOpts(host, search, { searchDebounceMs: 100 }));
+
+    try {
+      await panel.whenIdle();
+      panel.setSearch('first');
+      let settled = false;
+      const waiting = panel.whenIdle().then(() => { settled = true; });
+
+      panel.setSearch('second');
+      await vi.advanceTimersByTimeAsync(100);
+      await panel.whenIdle();
+      await Promise.resolve();
+
+      expect(settled).toBe(true);
+      await waiting;
+      expect(search).toHaveBeenLastCalledWith(expect.objectContaining({ search: 'second' }));
+    } finally {
+      panel.dispose();
+      vi.useRealTimers();
+    }
+  });
+
   it('drives "N updates available" from the roster versions, not the visible page', async () => {
     const host = makeEl('div');
     // The page shows ONE row, but two installed ids have newer catalogue
@@ -288,6 +348,38 @@ describe('discover-panel — server search', () => {
     expect(status.getAttribute(DISCOVER_PANEL_NOTICE_ATTR)).toBe('error');
     expect(statusText(host)).toContain('search down');
     expect(byAttr(host, DISCOVER_PANEL_RETRY_ATTR)).toHaveLength(1);
+    panel.dispose();
+  });
+
+  it('keeps an explicit marketplace retry visible and single-flight', async () => {
+    const host = makeEl('div');
+    let resolveRetry!: (outcome: DiscoverSearchOutcome<Row>) => void;
+    const retryResult = new Promise<DiscoverSearchOutcome<Row>>((resolve) => {
+      resolveRetry = resolve;
+    });
+    const search = vi.fn<
+      (query: DiscoverQuery) => Promise<DiscoverSearchOutcome<Row>>
+    >()
+      .mockResolvedValueOnce({ status: 'error', message: 'search down' })
+      .mockImplementation(() => retryResult);
+    const fetchCatalog = vi.fn(async () => ({
+      status: 'error',
+      message: 'offline too',
+    }));
+    const panel = mountDiscoverPanel(baseOpts(host, search, { fetchCatalog }));
+    await panel.whenIdle();
+
+    const firstRetry = panel.retry();
+    const duplicateRetry = panel.retry();
+    expect(search).toHaveBeenCalledTimes(2);
+    const busyRetry = byAttr(host, DISCOVER_PANEL_RETRY_ATTR)[0];
+    expect(busyRetry?.textContent).toBe('Retrying…');
+    expect(busyRetry?.getAttribute('aria-disabled')).toBe('true');
+    expect(busyRetry?.getAttribute('aria-busy')).toBe('true');
+
+    resolveRetry(page([r('served')]));
+    await Promise.all([firstRetry, duplicateRetry]);
+    expect(cardIds(host)).toEqual(['served']);
     panel.dispose();
   });
 
@@ -467,6 +559,173 @@ describe('recipe-discovery — server search', () => {
     const facetKeys = new Set(chips.map((c: any) => c.getAttribute('data-facet')));
     expect(facetKeys.has('type')).toBe(false);
     expect(facetKeys.has('platform')).toBe(true);
+    dispose();
+  });
+});
+
+/** ⛔ Live-drive regression. "Installed only" swapped the SOURCE from the
+ *  marketplace to the local roster and stopped there — it never filtered.
+ *  `packs.list` returns the WHOLE bundled corpus (~950 rows, each carrying its
+ *  own `installed` flag), not an installed-only roster, so the toggle showed
+ *  every pack on disk and reported the corpus size as the count. The premise was
+ *  written into a comment ("the roster IS the complete set of installed packs")
+ *  and was simply false.
+ *
+ *  No test covered the FILTER — `packs-surface.test.ts` drives the toggle's
+ *  plumbing (aria-pressed, the busy guard, the failure rollback) and never looks
+ *  at which rows come back. */
+describe('pack-discovery — Installed only actually filters', () => {
+  it('returns only owned packs, and counts only those', async () => {
+    const host = makeEl('div');
+    const search = vi.fn(async (): Promise<DiscoverSearchOutcome<CatalogPackRow>> => ({
+      status: 'ok',
+      page: {
+        rows: [cpr({ slug: 'sales-pack', version: 2 })],
+        total: 1, totalPages: 1, page: 1, facets: {},
+      },
+    }));
+    const { panel, dispose, setInstalledOnly } = mountPackDiscovery({
+      host: host as unknown as HTMLElement,
+      document: fakeDoc(),
+      onSelect: vi.fn(),
+      listInstalled: async () => ({
+        packs: [
+          { slug: 'owned', version: 1, installed: true, manifest: { tags: [] } },
+          // Owned at a DIFFERENT version than the disk bundle — still owned.
+          { slug: 'owned-other-version', version: 3, installed: false, installed_any_version: true, manifest: { tags: [] } },
+          // The corpus. Present in `packs[]`, NOT installed — the rows that used
+          // to flood the filtered view.
+          { slug: 'corpus-a', version: 1, installed: false, manifest: { tags: [] } },
+          { slug: 'corpus-b', version: 1, installed: false, manifest: { tags: [] } },
+        ],
+        // A marketplace pack absent from `packs[]` entirely — the one case a
+        // corpus scan cannot find, so it must be synthesized.
+        installed_versions: [{ slug: 'mkt-owned', version: 7 }],
+      }),
+      search: search as never,
+      fetchVersions: vi.fn(async () => ({ status: 'ok' as const, versions: new Map() })),
+      searchDebounceMs: 0,
+    } as never);
+    await panel.whenIdle();
+    const searchesBeforeToggle = search.mock.calls.length;
+
+    await setInstalledOnly(true);
+    await panel.whenIdle();
+
+    expect(cardIds(host).sort()).toEqual(
+      ['mkt-owned', 'owned', 'owned-other-version'],
+    );
+    // The count is the whole point of the complaint: it read 4 (the corpus),
+    // not 3 (what you own).
+    expect(panel.getTotal()).toBe(3);
+    // ⛔ And the marketplace is not consulted for a filtered page — the roster is
+    // the complete answer, so a network round-trip here would be both wasted and
+    // wrong (the marketplace cannot know what THIS server has installed).
+    expect(search.mock.calls.length).toBe(searchesBeforeToggle);
+
+    // Negative control: switching back restores the marketplace page.
+    await setInstalledOnly(false);
+    await panel.whenIdle();
+    expect(cardIds(host)).toContain('sales-pack');
+    dispose();
+  });
+});
+
+/** 🔑 Your own packs are the DEFAULT view. Browsing a marketplace is occasional;
+ *  reaching for a pack you already installed is daily, and the toggle made the
+ *  daily case the one that costs a click — every single visit. */
+describe('pack-discovery — installed packs lead by default', () => {
+  const mountWith = (
+    packs: ReadonlyArray<Record<string, unknown>>,
+    search: ReturnType<typeof vi.fn>,
+  ) => {
+    const host = makeEl('div');
+    const seen: boolean[] = [];
+    const m = mountPackDiscovery({
+      host: host as unknown as HTMLElement,
+      document: fakeDoc(),
+      onSelect: vi.fn(),
+      listInstalled: async () => ({ packs }),
+      search: search as never,
+      fetchVersions: vi.fn(async () => ({ status: 'ok' as const, versions: new Map() })),
+      searchDebounceMs: 0,
+    } as never) as unknown as {
+      panel: { whenIdle: () => Promise<void> };
+      setInstalledOnly: (on: boolean) => Promise<void>;
+      onInstalledOnlyChange: (cb: (on: boolean) => void) => void;
+      dispose: () => void;
+    };
+    m.onInstalledOnlyChange((on) => seen.push(on));
+    return { host, seen, ...m };
+  };
+  const marketplace = () => vi.fn(async (): Promise<DiscoverSearchOutcome<CatalogPackRow>> => ({
+    status: 'ok',
+    page: {
+      rows: [cpr({ slug: 'sales-pack', version: 2 })],
+      total: 1, totalPages: 1, page: 1, facets: {},
+    },
+  }));
+
+  it('opens on the installed packs, with no toggle press', async () => {
+    const { host, seen, panel, dispose } = mountWith([
+      { slug: 'owned', version: 1, installed: true, manifest: { tags: [] } },
+      { slug: 'corpus-a', version: 1, installed: false, manifest: { tags: [] } },
+    ], marketplace());
+    await panel.whenIdle();
+    expect(cardIds(host)).toEqual(['owned']);
+    // ⛔ And the control is told, or it would claim "off" while the list filters
+    // and the user's first press would appear to do nothing.
+    expect(seen).toEqual([true]);
+    dispose();
+  });
+
+  it('a server with nothing installed still opens on the marketplace', async () => {
+    // Negative control. Defaulting into an empty list is a worse first run than
+    // no default at all.
+    const { host, seen, panel, dispose } = mountWith([
+      { slug: 'corpus-a', version: 1, installed: false, manifest: { tags: [] } },
+    ], marketplace());
+    await panel.whenIdle();
+    expect(cardIds(host)).toContain('sales-pack');
+    expect(seen).toEqual([]);
+    dispose();
+  });
+
+  it('⛔ a press made BEFORE the roster lands is not undone by the default', async () => {
+    // The real race the user-set guard exists for. The toggle is on screen from
+    // mount, but the default cannot be decided until the roster arrives — so a
+    // press in that window would be silently reverted a moment later. Note this
+    // is NOT covered by pressing after `whenIdle()`: by then the default has
+    // already run once and its own once-guard would mask a missing user guard.
+    const { host, panel, setInstalledOnly, dispose } = mountWith([
+      { slug: 'owned', version: 1, installed: true, manifest: { tags: [] } },
+    ], marketplace());
+    await setInstalledOnly(false); // no `whenIdle()` first — that is the point
+    await panel.whenIdle();
+    expect(cardIds(host)).toContain('sales-pack');
+    expect(cardIds(host)).not.toEqual(['owned']);
+    dispose();
+  });
+
+  it('⛔ never yanks a user back out of the marketplace they opened', async () => {
+    // The default must decide ONCE. A later query run — a keystroke, a
+    // `pack_installed` broadcast — re-enters the same code path, and without the
+    // user-set guard it would re-apply the default and undo the press.
+    const search = marketplace();
+    const { host, panel, setInstalledOnly, dispose } = mountWith([
+      { slug: 'owned', version: 1, installed: true, manifest: { tags: [] } },
+    ], search);
+    await panel.whenIdle();
+    expect(cardIds(host)).toEqual(['owned']);
+
+    await setInstalledOnly(false);
+    await panel.whenIdle();
+    expect(cardIds(host)).toContain('sales-pack');
+
+    // Re-run the query the way a broadcast refresh would.
+    await (panel as unknown as { refresh: () => Promise<void> }).refresh();
+    await panel.whenIdle();
+    expect(cardIds(host)).toContain('sales-pack');
     dispose();
   });
 });

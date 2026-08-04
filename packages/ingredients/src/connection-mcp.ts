@@ -23,11 +23,11 @@
  *      `{ status: 'ok' | 'tool_error',
  *         result: <tool result | resource contents | resource list>,
  *         headers: undefined }`
- *      A JSON-RPC error envelope from the server (the tool ran but
- *      raised) maps to `tool_error` so wrapper recipes can branch on
- *      it without unwrapping the JSON-RPC envelope. Network failures
- *      and HTTP-level errors throw `IngredientError` (NETWORK_ERROR
- *      / STEP_TIMEOUT / ACTION_DELIVERY_UNCERTAIN).
+ *      A JSON-RPC error envelope, or an MCP `tools/call` result carrying
+ *      `isError: true`, maps to `tool_error` so wrapper recipes can branch
+ *      without unwrapping either protocol error shape. Network failures and
+ *      HTTP-level errors throw `IngredientError` (NETWORK_ERROR / STEP_TIMEOUT
+ *      / ACTION_DELIVERY_UNCERTAIN).
  *
  *  Connection record shape (per spec § A.5 + § 2.4):
  *    - `record.config.transport`: 'sse' | 'websocket' | 'stdio'.
@@ -136,17 +136,31 @@ interface McpClient {
 }
 
 /** Map a JSON-RPC response envelope to the spec § 4.2 output shape —
- *  shared by both transports. A server-returned error envelope (the call
- *  reached the server but the tool / resource raised) maps to
- *  `tool_error`, so callers branch on `status` without unwrapping the
- *  JSON-RPC error shape; otherwise `result` carries the tool result /
- *  resource contents / resource list. */
+ * shared by all transports. A server-returned error envelope, or the MCP
+ * `CallToolResult.isError` form, maps to `tool_error`; otherwise `result`
+ * carries the tool result / resource contents / resource list. */
 const envelopeToShape = (
   envelope: JsonRpcResponse,
-): { status: 'ok' | 'tool_error'; result: unknown; headers: undefined } =>
-  envelope.error
-    ? { status: 'tool_error', result: envelope.error, headers: undefined }
-    : { status: 'ok', result: envelope.result, headers: undefined };
+  isToolCall: boolean,
+): { status: 'ok' | 'tool_error'; result: unknown; headers: undefined } => {
+  if (envelope.error) {
+    return { status: 'tool_error', result: envelope.error, headers: undefined };
+  }
+  // MCP tools/call reports an invoked-tool failure inside a successful
+  // JSON-RPC result (`CallToolResult.isError`), not as a JSON-RPC error
+  // envelope. Treating that as `ok` makes downstream result-path extraction
+  // hide the real peer refusal behind a misleading "path missing" error.
+  if (
+    isToolCall
+    && envelope.result !== null
+    && typeof envelope.result === 'object'
+    && !Array.isArray(envelope.result)
+    && (envelope.result as { isError?: unknown }).isError === true
+  ) {
+    return { status: 'tool_error', result: envelope.result, headers: undefined };
+  }
+  return { status: 'ok', result: envelope.result, headers: undefined };
+};
 
 /** Per-dispatch params shared by the websocket + stdio paths (hoisted
  *  above the transport branch in the handler so both reuse one definition). */
@@ -1230,7 +1244,7 @@ export const createConnectionMcpHandler = (
       // Pool bump after a successful wire.
       const entry = clientPool.get(record.pk);
       if (entry) entry.last_used_at = now();
-      return envelopeToShape(envelope);
+      return envelopeToShape(envelope, d.method === 'tools/call');
     } catch (e) {
       evictIfDead(record.pk);
       if (e instanceof IngredientError) throw e;
@@ -1316,7 +1330,7 @@ export const createConnectionMcpHandler = (
       ctx?.setBytes(bytesIn, bytesOut);
       const entry = clientPool.get(record.pk);
       if (entry) entry.last_used_at = now();
-      return envelopeToShape(envelope);
+      return envelopeToShape(envelope, d.method === 'tools/call');
     } catch (e) {
       evictIfDead(record.pk);
       if (e instanceof IngredientError) throw e;
@@ -1597,6 +1611,6 @@ export const createConnectionMcpHandler = (
     // ────────────── shape ──────────────
     // Spec § 4.2 — shared `envelopeToShape` (see its JSDoc); identical
     // mapping for the websocket path.
-    return envelopeToShape(envelope);
+    return envelopeToShape(envelope, method === 'tools/call');
   };
 };

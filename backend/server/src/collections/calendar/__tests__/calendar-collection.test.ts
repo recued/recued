@@ -129,6 +129,10 @@ interface Harness {
 
 const newHarness = (
   configOverrides: Partial<CalendarCollectionConfig> = {},
+  options: {
+    failBlobPut?: boolean;
+    blobPutGate?: { started(): void; wait: Promise<void> };
+  } = {},
 ): Harness => {
   const dir = mkdtempSync(join(tmpdir(), 'cal-collection-'));
   const dataDir = join(dir, 'data');
@@ -136,7 +140,18 @@ const newHarness = (
   const db = new Database(join(dataDir, 't.db'));
   db.pragma('journal_mode = WAL');
   const gate = createStorageGate({ quota: BIG_QUOTA, reservePct: 10, surface: 'collection:calendar:work' });
-  const blobs = createBlobStore(join(dataDir, 'blobs'));
+  const baseBlobs = createBlobStore(join(dataDir, 'blobs'));
+  const blobs: BlobStore = options.failBlobPut || options.blobPutGate
+    ? {
+        ...baseBlobs,
+        async put(bytes) {
+          if (options.failBlobPut) throw new Error('blob store unavailable');
+          options.blobPutGate?.started();
+          await options.blobPutGate?.wait;
+          return baseBlobs.put(bytes);
+        },
+      }
+    : baseBlobs;
   const bus = createWarehouseEventBus();
   const events: WarehouseEvent[] = [];
   bus.subscribe('**', (e) => { events.push(e); });
@@ -297,10 +312,58 @@ describe('CalendarCollection — live sync', () => {
     expect(h.collection.table.get('evt-1')).toBeNull();
   });
 
-  it('logs an error counter bump but does not throw on missing payload', async () => {
+  it('rejects a missing payload so the provider cannot acknowledge it', async () => {
     await h.collection.sync.start();
-    await h.control.pushSyncEvent({ kind: 'created', source_id: 'broken' });
+    await expect(h.control.pushSyncEvent({ kind: 'created', source_id: 'broken' }))
+      .rejects.toThrow('missing its payload');
     expect(h.collection.health().error_count_24h).toBeGreaterThan(0);
+  });
+
+  it('rejects a live event when durable description storage fails', async () => {
+    await h.close();
+    h = newHarness({}, { failBlobPut: true });
+    await h.collection.sync.start();
+    const description = 'x'.repeat(70 * 1024);
+
+    await expect(h.control.pushSyncEvent({
+      kind: 'created',
+      source_id: 'blob-failure',
+      payload: {
+        event: baseEvent({ source_id: 'blob-failure', description }),
+        description_bytes: Buffer.byteLength(description, 'utf8'),
+      },
+    })).rejects.toThrow('blob store unavailable');
+
+    expect(h.collection.table.get('blob-failure')).toBeNull();
+    expect(h.collection.health().error_count_24h).toBeGreaterThan(0);
+  });
+
+  it('does not acknowledge a description write that outlives its sync generation', async () => {
+    await h.close();
+    let release!: () => void;
+    let markStarted!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    h = newHarness({}, {
+      blobPutGate: { started: markStarted, wait },
+    });
+    await h.collection.sync.start();
+    const description = 'x'.repeat(70 * 1024);
+    const delivering = h.control.pushSyncEvent({
+      kind: 'created',
+      source_id: 'stale-generation',
+      payload: {
+        event: baseEvent({ source_id: 'stale-generation', description }),
+        description_bytes: Buffer.byteLength(description, 'utf8'),
+      },
+    });
+    await started;
+
+    await h.collection.sync.stop();
+    release();
+
+    await expect(delivering).rejects.toThrow('generation is no longer active');
+    expect(h.collection.table.get('stale-generation')).toBeNull();
   });
 
   // D-124 Phase 1 — prev passthrough on updated/deleted.

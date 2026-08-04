@@ -29,6 +29,16 @@ export type CollectionDetailRenderer = 'mail' | 'calendar' | 'file' | 'json';
 export interface CollectionDisplaySchema {
   /** Field name shown as the row "title" in the list view. */
   primary_field: string;
+  /** Tried in order when `primary_field` is absent from the record, BEFORE the
+   *  renderer's last-resort `record_id`. Exists because one canonical
+   *  collection can hold more than one record SHAPE: `file` covers both a
+   *  watched-folder entry (which has `path`) and an inbound upload / tool
+   *  output (`DataFileHotFields` — filename/mime_type/size, no `path`). Without
+   *  a chain the second shape titles every row with its 32-hex `record_id`,
+   *  which reads as an id column rather than a missing field. Ordered
+   *  most-specific first; an entry that is absent everywhere is inert, not an
+   *  error. */
+  primary_field_fallbacks?: readonly string[];
   /** Additional fields shown as small columns / sub-text in the list
    *  view. Order matters — first entry is rendered nearest to the
    *  primary field. Length kept short (≤4) so rows stay readable in
@@ -73,6 +83,9 @@ export const COLLECTION_DISPLAY_SCHEMAS: Readonly<
   },
   file: {
     primary_field: 'path',
+    // A watched-folder entry has `path`; an inbound upload / captured tool
+    // output does not — it carries `filename`. Both are `data.file`.
+    primary_field_fallbacks: ['filename'],
     summary_fields: ['size', 'mime_type', 'mtime'],
     detail_renderer: 'file',
   },

@@ -19,8 +19,9 @@
  *     and synthetic recipe id. */
 
 import { describe, expect, it } from 'vitest';
-import type { ExecutionSource, RecipeDefinition } from '@recued/contracts';
+import type { ExecutionSource, IngredientManifest, RecipeDefinition } from '@recued/contracts';
 import type { ExecutionContext } from '@recued/engine';
+import { IngredientError } from '@recued/ingredients';
 
 import {
   runGatedCatalogOperation,
@@ -49,6 +50,33 @@ const MANIFEST = {
   risk_tier: 'read',
   operations: { 'task.read': { operation_id: 'task.read', risk_tier: 'read' } },
 } as never;
+
+const REAL_GATE_MANIFEST = {
+  slug: 'ctx-catalog',
+  name: 'Context catalog',
+  description: 'Real-gate typed-error fixture',
+  author: 'recued',
+  kind: 'connection',
+  category: 'data',
+  risk_tier: 'read',
+  input: {},
+  output: {},
+  operations: { 'task.read': { operation_id: 'task.read', risk_tier: 'read' } },
+  surfaces: {
+    api: {
+      transport: 'rest',
+      default_base_url: 'https://api.example.test',
+      auth: { kind: 'none' },
+      executes: {
+        'task.read': {
+          kind: 'rest',
+          method: 'GET',
+          path_template: '/tasks/{task_id}',
+        },
+      },
+    },
+  },
+} as unknown as IngredientManifest;
 
 interface CapturedInvoke {
   ctx: ExecutionContext;
@@ -158,6 +186,82 @@ describe('D-192 — runGatedCatalogOperation ctx derivation (the threading pin)'
       step_id: 'source_sync',
       recipe_id: 'work-entity-source-read',
       actor: 'system',
+    });
+  });
+
+  it('preserves only the typed API_NOT_FOUND signal across the gated outcome seam', async () => {
+    const { deps } = harness();
+    deps.invokeCatalogOperation = (async () => {
+      throw Object.assign(new Error('provider returned 404'), { code: 'API_NOT_FOUND' });
+    }) as never;
+
+    const outcome = await runGatedCatalogOperation(deps, {
+      connection_name: 'acme',
+      manifest: MANIFEST,
+      catalogSlug: 'ctx-catalog',
+      operationKey: 'task.read',
+      args: { task_id: 'gone' },
+      auditRecipe: AUDIT_RECIPE,
+      stepId: 'write_verify',
+    });
+
+    expect(outcome).toEqual({
+      ok: false,
+      kind: 'error',
+      reason: 'provider returned 404',
+      error_code: 'API_NOT_FOUND',
+    });
+
+    deps.invokeCatalogOperation = (async () => {
+      throw Object.assign(new Error('provider returned 500'), { code: 'API_RATE_LIMITED' });
+    }) as never;
+    const other = await runGatedCatalogOperation(deps, {
+      connection_name: 'acme',
+      manifest: MANIFEST,
+      catalogSlug: 'ctx-catalog',
+      operationKey: 'task.read',
+      args: { task_id: 'unknown' },
+      auditRecipe: AUDIT_RECIPE,
+      stepId: 'write_verify',
+    });
+    expect(other).toEqual({
+      ok: false,
+      kind: 'error',
+      reason: 'provider returned 500',
+    });
+  });
+
+  it('preserves API_NOT_FOUND through the real catalog gateway and engine call', async () => {
+    const deps = {
+      executorConfig: {
+        manifests: { get: () => REAL_GATE_MANIFEST },
+      },
+      profiles: {
+        get: () => ({
+          allowed_operations: ['task.read'],
+          catalog_slug: REAL_GATE_MANIFEST.slug,
+        }),
+      },
+      buildExecutor: () => (async () => {
+        throw new IngredientError('API_NOT_FOUND', 'provider returned 404');
+      }) as never,
+    } as unknown as SourceMirrorFetchDeps;
+
+    const outcome = await runGatedCatalogOperation(deps, {
+      connection_name: 'acme',
+      manifest: REAL_GATE_MANIFEST,
+      catalogSlug: REAL_GATE_MANIFEST.slug,
+      operationKey: 'task.read',
+      args: { task_id: 'gone' },
+      auditRecipe: AUDIT_RECIPE,
+      stepId: 'write_verify',
+    });
+
+    expect(outcome).toMatchObject({
+      ok: false,
+      kind: 'error',
+      reason: 'provider returned 404',
+      error_code: 'API_NOT_FOUND',
     });
   });
 });

@@ -21,6 +21,8 @@ import {
   OAUTH_OPENER_RELAY_STATE_PREFIX,
   OAUTH_CLOUD_CALLBACK_ORIGIN,
   OAUTH_CLOUD_CALLBACK_URL,
+  alternateOAuthCallbackUrl,
+  oauthCallbackUrlForPwa,
   WEBCLIENT_OAUTH_CALLBACK_PATH,
   WEBCLIENT_PATH_PREFIX,
   GOOGLE_AUTHORIZE_URL,
@@ -312,5 +314,66 @@ describe('isOpenerRelayCallback', () => {
     ).toBe(true);
     expect(isOpenerRelayCallback(new URLSearchParams('code=x&state=y'))).toBe(false);
     expect(isOpenerRelayCallback(new URLSearchParams('recued_relay=server'))).toBe(false);
+  });
+});
+
+describe('oauthCallbackUrlForPwa — the URL the form tells you to REGISTER', () => {
+  it('a LOOPBACK PWA registers its OWN origin, not the cloud', () => {
+    // The bug this closes: the form printed the cloud URL under "Register this
+    // unchanged", while `pickOAuthCallbackHost` sent the flow to the PWA's own
+    // origin — so the provider answered `redirect_uri_mismatch`.
+    for (const origin of ['http://127.0.0.1:7841', 'http://localhost:7841', 'http://[::1]:7841']) {
+      expect(oauthCallbackUrlForPwa(origin), origin)
+        .toBe(`${origin}${WEBCLIENT_OAUTH_CALLBACK_PATH}`);
+    }
+  });
+
+  it('a non-loopback PWA still registers the cloud URL', () => {
+    for (const origin of ['https://app.recued.com', 'http://192.168.1.10:7841', 'https://recued.example.com']) {
+      expect(oauthCallbackUrlForPwa(origin), origin).toBe(OAUTH_CLOUD_CALLBACK_URL);
+    }
+  });
+
+  it('🔑 never disagrees with the host the popup driver actually uses', () => {
+    // The whole point: one rule, not two copies. A printed URL that drifts from
+    // `pickOAuthCallbackHost` is the defect, so assert they agree by
+    // construction rather than by matching literals.
+    for (const origin of [
+      'http://127.0.0.1:7841',
+      'http://localhost:3000',
+      'https://app.recued.com',
+      'http://192.168.1.10:7841',
+    ]) {
+      expect(oauthCallbackUrlForPwa(origin).startsWith(pickOAuthCallbackHost(origin)), origin)
+        .toBe(true);
+    }
+  });
+});
+
+describe('alternateOAuthCallbackUrl — the URL the OTHER address needs', () => {
+  it('names the cloud URL when you are on loopback', () => {
+    // Verified against a live server: the local callback is
+    // `/webclient/oauth-callback.html` and the cloud one is `/oauth-callback`
+    // — different path AND extension, so neither is guessable from the other.
+    // An owner who registers one and later opens the other address gets
+    // `redirect_uri_mismatch` with nothing on screen to explain it.
+    expect(alternateOAuthCallbackUrl('http://127.0.0.1:7841')).toBe(OAUTH_CLOUD_CALLBACK_URL);
+    expect(alternateOAuthCallbackUrl('http://localhost:3000')).toBe(OAUTH_CLOUD_CALLBACK_URL);
+  });
+
+  it('names nothing when the cloud URL is ALREADY the one shown', () => {
+    // On any non-loopback origin `oauthCallbackUrlForPwa` already resolves to
+    // the cloud URL, so a "register this too" note would point at the value
+    // directly above it.
+    for (const origin of ['https://app.recued.com', 'https://recued.example.com']) {
+      expect(alternateOAuthCallbackUrl(origin), origin).toBeNull();
+      expect(oauthCallbackUrlForPwa(origin), origin).toBe(OAUTH_CLOUD_CALLBACK_URL);
+    }
+  });
+
+  it('🔑 the two URLs are never equal when both are shown', () => {
+    // The note only earns its space if it says something new.
+    const origin = 'http://127.0.0.1:7841';
+    expect(alternateOAuthCallbackUrl(origin)).not.toBe(oauthCallbackUrlForPwa(origin));
   });
 });

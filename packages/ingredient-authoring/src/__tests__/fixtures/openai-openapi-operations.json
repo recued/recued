@@ -2,27 +2,27 @@
   "_extract": {
     "source": {
       "kind": "openapi",
-      "url": "https://raw.githubusercontent.com/openai/openai-openapi/master/openapi.yaml",
-      "sha256": "0bf136e5f8e135a04f4b4bda93c13e75d83e98954da48ccb1e3b4b080b47b068",
-      "bytes": 2811146,
+      "url": "https://raw.githubusercontent.com/openai/openai-openapi/d4fb706e6e05d4cc9f1b33ca59b6e4f3e8edd439/openapi.yaml",
+      "sha256": "c974959f3f1a82d0c405c7d067e0bd0a32912901cddee7ce6b3b896ac5c82a90",
+      "bytes": 2845527,
       "openapi": "3.1.0",
       "info_version": "2.3.0",
       "server": "https://api.openai.com/v1",
-      "mutability": "The official master URL is mutable; generation and publish revalidation fail closed unless its bytes still match this reviewed hash."
+      "mutability": "The pin is a COMMIT-pinned raw URL, not a branch ref: the content at this address cannot change. Generation and publish revalidation still fail closed on any byte/hash mismatch, but a re-pin here is a deliberate move to a newer commit rather than maintenance forced by the vendor republishing."
     },
-    "official_path_count": 179,
-    "official_operation_count": 281,
-    "admitted_operation_count": 211,
+    "official_path_count": 182,
+    "official_operation_count": 288,
+    "admitted_operation_count": 218,
     "excluded_operation_count": 70,
     "official_method_counts": {
-      "GET": 120,
-      "POST": 120,
-      "DELETE": 41
+      "GET": 122,
+      "POST": 123,
+      "DELETE": 43
     },
     "admitted_method_counts": {
-      "GET": 101,
-      "POST": 75,
-      "DELETE": 35
+      "GET": 103,
+      "POST": 78,
+      "DELETE": 37
     },
     "pack_operation_counts": {
       "openai": 10,
@@ -30,26 +30,26 @@
       "openai-data-retrieval": 59,
       "openai-training-batches": 15,
       "openai-organization-observability": 26,
-      "openai-organization-access": 84
+      "openai-organization-access": 91
     },
     "risk_counts": {
-      "read": 111,
-      "destructive": 44,
+      "read": 113,
+      "destructive": 46,
       "write": 24,
-      "admin": 32
+      "admin": 35
     },
     "approval_counts": {
       "never": 8,
-      "ask": 103,
-      "always": 100
+      "ask": 105,
+      "always": 105
     },
     "idempotency_counts": {
-      "safe": 111,
-      "idempotent": 35,
-      "non_idempotent": 65
+      "safe": 113,
+      "idempotent": 37,
+      "non_idempotent": 68
     },
     "pagination_counts": {
-      "none": 157,
+      "none": 164,
       "body_cursor": 43,
       "query_token": 11
     },
@@ -123,7 +123,7 @@
         "reason": "omitted_safe_subset"
       }
     ],
-    "raw_json_operation_count": 56,
+    "raw_json_operation_count": 59,
     "safe_request_subsets": [
       {
         "operation_id": "Compactconversation",
@@ -349,12 +349,12 @@
     ],
     "auth": {
       "official": {
-        "ApiKeyAuth": 168,
-        "AdminApiKeyAuth": 113
+        "ApiKeyAuth": 169,
+        "AdminApiKeyAuth": 119
       },
       "admitted": {
         "openai": 101,
-        "openai_admin": 110
+        "openai_admin": 117
       },
       "connection_isolation": "Application API key operations use openai; organization Admin API key operations use openai_admin."
     },
@@ -376,8 +376,8 @@
     "exclusion_category_counts": {
       "deprecated_assistants_api": 23,
       "unsupported_post_binary_or_stream": 1,
-      "unsupported_multipart_request": 8,
-      "credential_bearing_response": 5,
+      "unsupported_multipart_request": 9,
+      "credential_bearing_response": 4,
       "undocumented_content_response": 1,
       "credential_bearing_required_request": 1,
       "deprecated_evals_platform": 12,
@@ -587,22 +587,6 @@
         "reason": "The response can include a newly created project service-account API key value. Ordinary operation results are not a secret result channel."
       },
       {
-        "operation_id": "create-project-service-account-api-key",
-        "method": "POST",
-        "path": "/organization/projects/{project_id}/service_accounts/{service_account_id}/api_keys",
-        "tags": [
-          "Projects"
-        ],
-        "documented_request_media": [
-          "application/json"
-        ],
-        "documented_response_media": [
-          "application/json"
-        ],
-        "category": "credential_bearing_response",
-        "reason": "The response returns the complete newly created service-account API key value. Ordinary operation results are not a secret result channel."
-      },
-      {
         "operation_id": "create-realtime-call",
         "method": "POST",
         "path": "/realtime/calls",
@@ -712,6 +696,20 @@
         ],
         "category": "credential_bearing_response",
         "reason": "The ChatKit session response includes an ephemeral client_secret. Ordinary operation results are not a secret result channel."
+      },
+      {
+        "operation_id": "Createcontentprovenancecheck",
+        "method": "POST",
+        "path": "/content_provenance_checks",
+        "tags": [],
+        "documented_request_media": [
+          "multipart/form-data"
+        ],
+        "documented_response_media": [
+          "application/json"
+        ],
+        "category": "unsupported_multipart_request",
+        "reason": "The route requires multipart/form-data. The current REST composition cannot construct multipart or SDP request bodies faithfully."
       },
       {
         "operation_id": "createConversationItems",
@@ -2007,11 +2005,6 @@
         "operationId": "delete-project-service-account"
       }
     },
-    "/organization/projects/{project_id}/service_accounts/{service_account_id}/api_keys": {
-      "post": {
-        "operationId": "create-project-service-account-api-key"
-      }
-    },
     "/organization/projects/{project_id}/spend_alerts": {
       "get": {
         "operationId": "list-project-spend-alerts"
@@ -2467,6 +2460,38 @@
       },
       "delete": {
         "operationId": "deleteConversation"
+      }
+    },
+    "/organization/spend_limit": {
+      "get": {
+        "operationId": "Getorganizationspendlimit"
+      },
+      "post": {
+        "operationId": "Updateorganizationspendlimit"
+      },
+      "delete": {
+        "operationId": "Deleteorganizationspendlimit"
+      }
+    },
+    "/organization/projects/{project_id}/spend_limit": {
+      "get": {
+        "operationId": "Getprojectspendlimit"
+      },
+      "post": {
+        "operationId": "Updateprojectspendlimit"
+      },
+      "delete": {
+        "operationId": "Deleteprojectspendlimit"
+      }
+    },
+    "/organization/projects/{project_id}/service_accounts/{service_account_id}/api_keys": {
+      "post": {
+        "operationId": "CreateanAPIkeyforaserviceaccount"
+      }
+    },
+    "/content_provenance_checks": {
+      "post": {
+        "operationId": "Createcontentprovenancecheck"
       }
     },
     "/videos": {
@@ -6426,7 +6451,7 @@
       "approval": "always",
       "idempotency": "non_idempotent",
       "request_schema_sha256": "fde455fc1ba9ec2b2f360d89064ab0725e50cf3d153c19c38e8eafaa22f81781",
-      "response_schema_sha256": "dd261d048b1ef545298a5710d96f8b7017751fe2fa10ea7cb5c51ef89bcc4af3"
+      "response_schema_sha256": "92eb03ed5b9158cfe35f242f55fa0b2a76563a7dd6273800d5df692dffc317a7"
     },
     "openai-inference-responses.responses.delete_response": {
       "pack": "openai-inference-responses",
@@ -10603,6 +10628,264 @@
       "request_schema_sha256": "0d780ce5d4c7a97702f81d3d96cda92800af9e25ed70ea91a49bb711ec63d6c3",
       "response_schema_sha256": "36d9a2bf0017fabeee5962592c0a1900aa05dfce132e10965e178f6f25b95f1f"
     },
+    "openai-organization-access.untagged.createan_ap_ikeyforaserviceaccount": {
+      "pack": "openai-organization-access",
+      "op": "untagged.createan_ap_ikeyforaserviceaccount",
+      "operation_id": "CreateanAPIkeyforaserviceaccount",
+      "method": "POST",
+      "path": "/organization/projects/{project_id}/service_accounts/{service_account_id}/api_keys",
+      "wire_path": "/organization/projects/{{project_id}}/service_accounts/{{service_account_id}}/api_keys",
+      "tags": [],
+      "security": [
+        "AdminApiKeyAuth"
+      ],
+      "parameters": [
+        {
+          "name": "project_id",
+          "in": "path",
+          "required": true,
+          "documented_type": "string",
+          "admitted_key": "project_id",
+          "admitted_type": "string",
+          "serialization": "scalar"
+        },
+        {
+          "name": "service_account_id",
+          "in": "path",
+          "required": true,
+          "documented_type": "string",
+          "admitted_key": "service_account_id",
+          "admitted_type": "string",
+          "serialization": "scalar"
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "body_mode": "raw_json",
+        "omitted_top_level_fields": [],
+        "restricted_text_message_fields": [],
+        "request_schema_closed": true
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "request_schema_sha256": "791105d979f53d05cdc4b41f2d98843ccbf589fbee043c41a2337d7b09af5f1b",
+      "response_schema_sha256": "056781bab3cbc96cb6d64847f56937520dcabc901b3dfd290e7f579716e681f8"
+    },
+    "openai-organization-access.untagged.deleteorganizationspendlimit": {
+      "pack": "openai-organization-access",
+      "op": "untagged.deleteorganizationspendlimit",
+      "operation_id": "Deleteorganizationspendlimit",
+      "method": "DELETE",
+      "path": "/organization/spend_limit",
+      "wire_path": "/organization/spend_limit",
+      "tags": [],
+      "security": [
+        "AdminApiKeyAuth"
+      ],
+      "parameters": [],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "request_schema_sha256": null,
+      "response_schema_sha256": "68b78ea3d157d546c110f153a17cf9493315985cb6891799e97856d68b78de55"
+    },
+    "openai-organization-access.untagged.deleteprojectspendlimit": {
+      "pack": "openai-organization-access",
+      "op": "untagged.deleteprojectspendlimit",
+      "operation_id": "Deleteprojectspendlimit",
+      "method": "DELETE",
+      "path": "/organization/projects/{project_id}/spend_limit",
+      "wire_path": "/organization/projects/{{project_id}}/spend_limit",
+      "tags": [],
+      "security": [
+        "AdminApiKeyAuth"
+      ],
+      "parameters": [
+        {
+          "name": "project_id",
+          "in": "path",
+          "required": true,
+          "documented_type": "string",
+          "admitted_key": "project_id",
+          "admitted_type": "string",
+          "serialization": "scalar"
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "request_schema_sha256": "40e9a7877de6116d240f69dcda189c586ba4e580bf07a9254ebeefbd8e772a49",
+      "response_schema_sha256": "fb3d6640af13d87ab7cf30727e7591bb0fb956dafc3e8ebf6a14e670c9c90d0b"
+    },
+    "openai-organization-access.untagged.getorganizationspendlimit": {
+      "pack": "openai-organization-access",
+      "op": "untagged.getorganizationspendlimit",
+      "operation_id": "Getorganizationspendlimit",
+      "method": "GET",
+      "path": "/organization/spend_limit",
+      "wire_path": "/organization/spend_limit",
+      "tags": [],
+      "security": [
+        "AdminApiKeyAuth"
+      ],
+      "parameters": [],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination": null,
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe",
+      "request_schema_sha256": null,
+      "response_schema_sha256": "4cda44fb59f80c82985e73daea5187a71d1d90ef43938df2bd5d0c1252063bfa"
+    },
+    "openai-organization-access.untagged.getprojectspendlimit": {
+      "pack": "openai-organization-access",
+      "op": "untagged.getprojectspendlimit",
+      "operation_id": "Getprojectspendlimit",
+      "method": "GET",
+      "path": "/organization/projects/{project_id}/spend_limit",
+      "wire_path": "/organization/projects/{{project_id}}/spend_limit",
+      "tags": [],
+      "security": [
+        "AdminApiKeyAuth"
+      ],
+      "parameters": [
+        {
+          "name": "project_id",
+          "in": "path",
+          "required": true,
+          "documented_type": "string",
+          "admitted_key": "project_id",
+          "admitted_type": "string",
+          "serialization": "scalar"
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination": null,
+      "risk": "read",
+      "approval": "ask",
+      "idempotency": "safe",
+      "request_schema_sha256": "40e9a7877de6116d240f69dcda189c586ba4e580bf07a9254ebeefbd8e772a49",
+      "response_schema_sha256": "6aa908fb33cac298ef8d0db122047f20fbb2720b0ae257bb9292f5b378e8aafa"
+    },
+    "openai-organization-access.untagged.updateorganizationspendlimit": {
+      "pack": "openai-organization-access",
+      "op": "untagged.updateorganizationspendlimit",
+      "operation_id": "Updateorganizationspendlimit",
+      "method": "POST",
+      "path": "/organization/spend_limit",
+      "wire_path": "/organization/spend_limit",
+      "tags": [],
+      "security": [
+        "AdminApiKeyAuth"
+      ],
+      "parameters": [],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "body_mode": "raw_json",
+        "omitted_top_level_fields": [],
+        "restricted_text_message_fields": [],
+        "request_schema_closed": true
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "request_schema_sha256": "81783f8a70457e2e3e23069840ddbb9c8cb8665b646ead48f7ee816565c5c4eb",
+      "response_schema_sha256": "4cda44fb59f80c82985e73daea5187a71d1d90ef43938df2bd5d0c1252063bfa"
+    },
+    "openai-organization-access.untagged.updateprojectspendlimit": {
+      "pack": "openai-organization-access",
+      "op": "untagged.updateprojectspendlimit",
+      "operation_id": "Updateprojectspendlimit",
+      "method": "POST",
+      "path": "/organization/projects/{project_id}/spend_limit",
+      "wire_path": "/organization/projects/{{project_id}}/spend_limit",
+      "tags": [],
+      "security": [
+        "AdminApiKeyAuth"
+      ],
+      "parameters": [
+        {
+          "name": "project_id",
+          "in": "path",
+          "required": true,
+          "documented_type": "string",
+          "admitted_key": "project_id",
+          "admitted_type": "string",
+          "serialization": "scalar"
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "body_mode": "raw_json",
+        "omitted_top_level_fields": [],
+        "restricted_text_message_fields": [],
+        "request_schema_closed": true
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_capture": null,
+      "result_path": null,
+      "pagination": null,
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "request_schema_sha256": "008130dbc69a1c1f2ab4d8e4d34be7d8aa05bc069ce4a38a6cab15fb4f7a4b03",
+      "response_schema_sha256": "6aa908fb33cac298ef8d0db122047f20fbb2720b0ae257bb9292f5b378e8aafa"
+    },
     "openai-organization-access.user_organization_role_assignments.assign_user_role": {
       "pack": "openai-organization-access",
       "op": "user_organization_role_assignments.assign_user_role",
@@ -14492,7 +14775,7 @@
       "approval": "ask",
       "idempotency": "safe",
       "request_schema_sha256": null,
-      "response_schema_sha256": "dd261d048b1ef545298a5710d96f8b7017751fe2fa10ea7cb5c51ef89bcc4af3"
+      "response_schema_sha256": "92eb03ed5b9158cfe35f242f55fa0b2a76563a7dd6273800d5df692dffc317a7"
     },
     "openai.response.read": {
       "pack": "openai",
@@ -14566,7 +14849,7 @@
       "approval": "ask",
       "idempotency": "safe",
       "request_schema_sha256": "fde455fc1ba9ec2b2f360d89064ab0725e50cf3d153c19c38e8eafaa22f81781",
-      "response_schema_sha256": "dd261d048b1ef545298a5710d96f8b7017751fe2fa10ea7cb5c51ef89bcc4af3"
+      "response_schema_sha256": "92eb03ed5b9158cfe35f242f55fa0b2a76563a7dd6273800d5df692dffc317a7"
     }
   }
 }

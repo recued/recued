@@ -87,9 +87,9 @@
     },
     "official_operation_count": 497,
     "nondeprecated_operation_count": 490,
-    "admitted_operation_count": 489,
+    "admitted_operation_count": 488,
     "deprecated_operation_count": 7,
-    "transport_exclusion_count": 1,
+    "transport_exclusion_count": 2,
     "official_method_counts": {
       "DELETE": 78,
       "GET": 240,
@@ -102,7 +102,7 @@
       "GET": 236,
       "PATCH": 45,
       "POST": 100,
-      "PUT": 31
+      "PUT": 30
     },
     "official_lifecycle_counts": {
       "Deprecated": 7,
@@ -113,7 +113,7 @@
     },
     "admitted_lifecycle_counts": {
       "Early Access": 19,
-      "General Availability": 292,
+      "General Availability": 291,
       "Preview": 23,
       "Unspecified": 155
     },
@@ -127,7 +127,7 @@
       "sts": 1
     },
     "admitted_profile_counts": {
-      "cloud": 279,
+      "cloud": 278,
       "flink": 29,
       "kafka": 75,
       "partner": 8,
@@ -310,7 +310,7 @@
       "Key Encryption Keys (v1)": 7,
       "Keys (byok/v1)": 5,
       "Lifecycle (connect/v1)": 3,
-      "Managed Connector Plugins (connect/v1)": 3,
+      "Managed Connector Plugins (connect/v1)": 2,
       "Materialized Table Versions (sql/v1)": 2,
       "Materialized Tables (sql/v1)": 5,
       "Modes (v1)": 5,
@@ -369,7 +369,7 @@
       "confluent-cloud-identity-access": 60,
       "confluent-cloud-networking": 64,
       "confluent-cloud-clusters-compute": 37,
-      "confluent-cloud-connectors-artifacts": 55,
+      "confluent-cloud-connectors-artifacts": 54,
       "confluent-cloud-notifications-sharing": 63,
       "confluent-resource-tableflow": 17,
       "confluent-kafka-cluster": 75,
@@ -382,7 +382,7 @@
       "confluent-cloud-identity-access": 125925,
       "confluent-cloud-networking": 172439,
       "confluent-cloud-clusters-compute": 87354,
-      "confluent-cloud-connectors-artifacts": 127842,
+      "confluent-cloud-connectors-artifacts": 124408,
       "confluent-cloud-notifications-sharing": 133454,
       "confluent-resource-tableflow": 45929,
       "confluent-kafka-cluster": 168829,
@@ -393,17 +393,17 @@
     },
     "body_mode_counts": {
       "none": 324,
-      "raw_json": 164,
+      "raw_json": 163,
       "structured_form": 1
     },
     "response_body_mode_counts": {
       "file_ref": 2,
-      "json": 387,
+      "json": 386,
       "none": 91,
       "vendor_json_text": 9
     },
     "success_status_counts": {
-      "200": 346,
+      "200": 345,
       "201": 35,
       "202": 30,
       "204": 78
@@ -411,16 +411,16 @@
     "risk_counts": {
       "admin": 147,
       "destructive": 98,
-      "read": 244
+      "read": 243
     },
     "approval_counts": {
       "always": 245,
-      "never": 244
+      "never": 243
     },
     "idempotency_counts": {
       "idempotent": 151,
       "non_idempotent": 94,
-      "safe": 244
+      "safe": 243
     },
     "profiles": {
       "cloud": {
@@ -618,15 +618,14 @@
       "exact_path_parameter_contract": true,
       "operation_id_uniqueness": true,
       "official_request_body_required_count": 18,
-      "effective_request_body_required_count": 165,
-      "json_body_operation_count": 164,
+      "effective_request_body_required_count": 164,
+      "json_body_operation_count": 163,
       "structured_form_operation_count": 1,
       "binary_capture_operation_count": 2,
       "vendor_json_text_operation_count": 9,
       "schema_registry_security_omission_count": 22,
       "literal_query_path_operation_keys": [
-        "GET /connect/v1/environments/{environment_id}/clusters/{kafka_cluster_id}/connectors?expand=info,status,id",
-        "PUT /connect/v1/environments/{environment_id}/clusters/{kafka_cluster_id}/connector-plugins/{plugin_name}/config/translate?mask_sensitive=true"
+        "GET /connect/v1/environments/{environment_id}/clusters/{kafka_cluster_id}/connectors?expand=info,status,id"
       ],
       "exact_decimal_parameters": [
         "GET /artifact/v1/flink-artifacts:page_size",
@@ -795,7 +794,6 @@
         "POST /dek-registry/v1/keks/{name}/test",
         "POST /pim/v2/integrations:validate",
         "POST /subjects/{subject}",
-        "PUT /connect/v1/environments/{environment_id}/clusters/{kafka_cluster_id}/connector-plugins/{plugin_name}/config/translate?mask_sensitive=true",
         "PUT /connect/v1/environments/{environment_id}/clusters/{kafka_cluster_id}/connector-plugins/{plugin_name}/config/validate"
       ],
       "empty_success_operation_count": 91
@@ -22931,7 +22929,7 @@
         "application/json"
       ],
       "official_request_body_required": false,
-      "effective_request_body_required": true,
+      "effective_request_body_required": false,
       "request_body_types": [
         "object"
       ],
@@ -22948,11 +22946,11 @@
       "response_media": [
         "application/json"
       ],
-      "selected": true,
-      "exclusion": null,
-      "exclusion_reason": null,
-      "pack": "confluent-cloud-connectors-artifacts",
-      "op": "managed_connector_plugins_connect_v1.translate_connectv1_connector_plugin"
+      "selected": false,
+      "exclusion": "transport_unbuildable",
+      "exclusion_reason": "Confluent keys this route WITH a query string — `…/config/translate?mask_sensitive=true` — which is malformed OpenAPI, and unlike its sibling `…/connectors?expand=…` there is NO clean `…/config/translate` key in the document. The operation is therefore unprovable by construction: the publish op-prover matches (method, path) against the document's own keys, and the only key naming this route is one no path may legally have. Excluded rather than shipped unprovable, which blocks publish for the whole pack. No recipe in the corpus referenced it (checked against a known-positive grep). Re-admit it the moment Confluent keys the route without the query text.",
+      "pack": null,
+      "op": null
     },
     {
       "key": "PUT /connect/v1/environments/{environment_id}/clusters/{kafka_cluster_id}/connector-plugins/{plugin_name}/config/validate",
@@ -59210,114 +59208,6 @@
       ],
       "server": "https://psrc-00000.region.provider.confluent.cloud",
       "literal_query_fold": null
-    },
-    "PUT /connect/v1/environments/{environment_id}/clusters/{kafka_cluster_id}/connector-plugins/{plugin_name}/config/translate?mask_sensitive=true": {
-      "key": "PUT /connect/v1/environments/{environment_id}/clusters/{kafka_cluster_id}/connector-plugins/{plugin_name}/config/translate?mask_sensitive=true",
-      "operation_id": "translateConnectv1ConnectorPlugin",
-      "pack": "confluent-cloud-connectors-artifacts",
-      "profile": "cloud",
-      "op": "managed_connector_plugins_connect_v1.translate_connectv1_connector_plugin",
-      "method": "PUT",
-      "path": "/connect/v1/environments/{environment_id}/clusters/{kafka_cluster_id}/connector-plugins/{plugin_name}/config/translate?mask_sensitive=true",
-      "wire_path": "/connect/v1/environments/{environment_id}/clusters/{kafka_cluster_id}/connector-plugins/{plugin_name}/config/translate",
-      "tag": "Managed Connector Plugins (connect/v1)",
-      "lifecycle": "General Availability",
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe",
-      "parameters": [
-        {
-          "in": "path",
-          "wire_name": "plugin_name",
-          "required": true,
-          "official_types": [
-            "string"
-          ],
-          "admitted_key": "plugin_name",
-          "admitted_type": "string",
-          "serialization": "scalar",
-          "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
-          "exact_integer": false
-        },
-        {
-          "in": "path",
-          "wire_name": "environment_id",
-          "required": true,
-          "official_types": [
-            "string"
-          ],
-          "admitted_key": "environment_id",
-          "admitted_type": "string",
-          "serialization": "scalar",
-          "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
-          "exact_integer": false
-        },
-        {
-          "in": "path",
-          "wire_name": "kafka_cluster_id",
-          "required": true,
-          "official_types": [
-            "string"
-          ],
-          "admitted_key": "kafka_cluster_id",
-          "admitted_type": "string",
-          "serialization": "scalar",
-          "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
-          "exact_integer": false
-        },
-        {
-          "in": "query",
-          "wire_name": "mask_sensitive",
-          "required": false,
-          "official_types": [
-            "string"
-          ],
-          "admitted_key": "query.mask_sensitive",
-          "admitted_type": "string",
-          "serialization": "scalar",
-          "authority": "official_openapi_parameter",
-          "dropped_pattern": false,
-          "exact_integer": false
-        }
-      ],
-      "request_media": [
-        "application/json"
-      ],
-      "selected_request_media": "application/json",
-      "official_request_body_required": false,
-      "effective_request_body_required": true,
-      "request_body_types": [
-        "object"
-      ],
-      "request_body_mode": "raw_json",
-      "success_status": "200",
-      "response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_body_mode": "json",
-      "empty_success_statuses": [],
-      "result_path": null,
-      "pagination": null,
-      "response_capture": null,
-      "security": [
-        {
-          "cloud-api-key": []
-        },
-        {
-          "confluent-sts-access-token": []
-        }
-      ],
-      "server": "https://api.confluent.cloud",
-      "literal_query_fold": {
-        "documentPath": "/connect/v1/environments/{environment_id}/clusters/{kafka_cluster_id}/connector-plugins/{plugin_name}/config/translate",
-        "staticQuery": {
-          "mask_sensitive": "true"
-        }
-      }
     },
     "PUT /connect/v1/environments/{environment_id}/clusters/{kafka_cluster_id}/connector-plugins/{plugin_name}/config/validate": {
       "key": "PUT /connect/v1/environments/{environment_id}/clusters/{kafka_cluster_id}/connector-plugins/{plugin_name}/config/validate",

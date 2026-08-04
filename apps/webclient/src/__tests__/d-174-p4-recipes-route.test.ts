@@ -19,6 +19,7 @@ import {
   RECIPES_ROUTE_CONNECTIONS_LINK_ATTR,
   RECIPES_ROUTE_DEFINITION_ATTR,
   RECIPES_ROUTE_DETAIL_ATTR,
+  RECIPES_ROUTE_DETAIL_HEADING_ATTR,
   RECIPES_ROUTE_EDIT_LINK_ATTR,
   RECIPES_ROUTE_FROM_PACK_ATTR,
   RECIPES_ROUTE_RECORDS_ATTR,
@@ -28,6 +29,7 @@ import {
   RECIPES_ROUTE_KITCHEN_LINK_ATTR,
   RECIPES_ROUTE_COUNT_ATTR,
   RECIPES_ROUTE_PAGER_ATTR,
+  RECIPES_ROUTE_PAGER_CONTROL_ATTR,
   RECIPES_ROUTE_RECIPE_CARD_ATTR,
   RECIPES_ROUTE_RECIPE_TRIGGER_ATTR,
   RECIPES_ROUTE_RELATED_ATTR,
@@ -43,6 +45,9 @@ import {
   RECIPES_ROUTE_RUNNABILITY_ATTR,
   RECIPES_ROUTE_RUNS_LINK_ATTR,
   RECIPES_ROUTE_AUTOMATION_LINK_ATTR,
+  RECIPES_ROUTE_AUTO_RUN_ERROR_ATTR,
+  RECIPES_ROUTE_BUNDLE_RETRY_ATTR,
+  RECIPES_ROUTE_BUNDLE_STATUS_ATTR,
   RECIPES_ROUTE_STYLES_MARKER,
   bootstrapRecipesRoute,
   type RecipeExecuteCaller,
@@ -359,6 +364,7 @@ const mountRoute = (overrides: {
   recipeConfigSetCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['recipeConfigSetCaller'];
   recipeCatalogCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['recipeCatalogCaller'];
   packCatalogCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['packCatalogCaller'];
+  packRecipeRefsCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['packRecipeRefsCaller'];
   packsListCaller?: Parameters<typeof bootstrapRecipesRoute>[0]['packsListCaller'];
   subscribe?: Parameters<typeof bootstrapRecipesRoute>[0]['subscribe'];
   initialRecipeId?: string;
@@ -445,6 +451,9 @@ const mountRoute = (overrides: {
       : {}),
     ...(overrides.packCatalogCaller !== undefined
       ? { packCatalogCaller: overrides.packCatalogCaller }
+      : {}),
+    ...(overrides.packRecipeRefsCaller !== undefined
+      ? { packRecipeRefsCaller: overrides.packRecipeRefsCaller }
       : {}),
     ...(overrides.packsListCaller !== undefined
       ? { packsListCaller: overrides.packsListCaller }
@@ -538,6 +547,36 @@ describe('R24 — Recipes route: list view', () => {
     expect(shell.innerHTML).not.toContain('Installed packs');
     expect(shell.innerHTML).not.toContain('Exposed tools');
     expect(rig.route.selectedRecipe()).toBeNull();
+
+    rig.route.dispose();
+  });
+
+  it('keeps Refresh focusable while blocking duplicate in-flight reads', async () => {
+    const secondRead = deferred<Awaited<ReturnType<RecipesListCaller>>>();
+    let calls = 0;
+    const recipesListCaller = vi.fn<RecipesListCaller>(async () => {
+      calls += 1;
+      if (calls === 1) return { recipes: [recipeEntry()] };
+      return secondRead.promise;
+    });
+    const rig = mountRoute({ recipesListCaller });
+    await rig.route.whenLoaded();
+
+    clickRecipeAction(rig.root, 'refresh', '');
+    expect(recipesListCaller).toHaveBeenCalledTimes(2);
+    expect(shellHtml(rig.root)).toContain(
+      'aria-disabled="true" aria-busy="true"',
+    );
+    expect(shellHtml(rig.root)).toContain('Refreshing…');
+
+    clickRecipeAction(rig.root, 'refresh', '');
+    expect(recipesListCaller).toHaveBeenCalledTimes(2);
+
+    secondRead.resolve({ recipes: [recipeEntry()] });
+    await rig.route.whenLoaded();
+    expect(shellHtml(rig.root)).toContain(
+      'aria-disabled="false" aria-busy="false"',
+    );
 
     rig.route.dispose();
   });
@@ -885,6 +924,8 @@ describe('R24 — Recipes route: list view', () => {
     expect(html).toContain(`${RECIPES_ROUTE_COUNT_ATTR}`);
     expect(html).toContain('Showing 1–24 of 50 recipes');
     expect(html).toContain(`${RECIPES_ROUTE_PAGER_ATTR}`);
+    expect(html.match(new RegExp(`${RECIPES_ROUTE_PAGER_CONTROL_ATTR}=`, 'g')))
+      .toHaveLength(2);
     expect(html).toContain('Page 1 of 3');
 
     clickRecipeAction(rig.root, 'recipe-page', '', { 'data-page': '3' });
@@ -932,6 +973,9 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     expect(rig.route.selectedRecipe()).toBe('daily-brief');
     const html = shellHtml(rig.root);
     expect(html).toContain(`${RECIPES_ROUTE_DETAIL_ATTR}="daily-brief"`);
+    expect(html).toContain(
+      `${RECIPES_ROUTE_DETAIL_HEADING_ATTR}="daily-brief" tabindex="-1"`,
+    );
     expect(html).toContain(RECIPES_ROUTE_BACK_ATTR);
     expect(html).toContain('Summarize today.'); // full description on the detail
     expect(html).toContain(RECIPES_ROUTE_DEFINITION_ATTR);
@@ -997,7 +1041,7 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     rig.route.closeDetail();
     expect(rig.route.selectedRecipe()).toBeNull();
     const list = shellHtml(rig.root);
-    expect(list).toContain(RECIPES_ROUTE_HEADING_ATTR);
+    expect(list).toContain(`${RECIPES_ROUTE_HEADING_ATTR} tabindex="-1"`);
     expect(list).not.toContain(RECIPES_ROUTE_DETAIL_ATTR);
 
     rig.route.dispose();
@@ -1055,6 +1099,87 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     expect(html).toContain('href="#kitchen/recipe/daily-brief"');
     expect(html).not.toContain('coming soon');
     expect(html).not.toContain('disabled>Edit in Kitchen');
+
+    rig.route.dispose();
+  });
+
+  it('keeps Config focusable, blocks duplicate reads, and reports a retryable failure', async () => {
+    const configRead = deferred<{ config_overlay: Record<string, unknown> }>();
+    const recipeConfigGetCaller = vi.fn(() => configRead.promise);
+    const rig = mountRoute({
+      initialRecipeId: 'daily-brief',
+      recipeConfigGetCaller,
+      recipeConfigSetCaller: vi.fn(async () => ({ config_overlay: {} })),
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('daily-brief', {
+          recipe: recipeDefinition('daily-brief', {
+            variables: { limit: 25 },
+          }),
+        })],
+      })),
+    });
+    await rig.route.whenLoaded();
+
+    clickRecipeAction(rig.root, 'open-recipe-config', 'daily-brief');
+    clickRecipeAction(rig.root, 'open-recipe-config', 'daily-brief');
+
+    expect(recipeConfigGetCaller).toHaveBeenCalledTimes(1);
+    const pendingButton = shellHtml(rig.root).match(
+      /<button type="button" class="recipes-button"[\s\S]*?data-recued-recipes-action="open-recipe-config"[\s\S]*?<\/button>/,
+    )?.[0];
+    expect(pendingButton).toContain('aria-disabled="true" aria-busy="true"');
+    expect(pendingButton).not.toContain(' disabled');
+    expect(pendingButton).toContain('Loading config…');
+
+    configRead.reject(new Error('read failed'));
+    await vi.waitFor(() => expect(shellHtml(rig.root)).not.toContain('Loading config…'));
+    expect(shellHtml(rig.root)).toContain('>Config</button>');
+    expect(shellHtml(rig.root)).toContain('role="alert"');
+    expect(shellHtml(rig.root)).toContain(
+      'load config: read failed. Try Config again.',
+    );
+
+    rig.route.dispose();
+  });
+
+  it('retires a Config read when the same recipe is reopened', async () => {
+    const firstRead = deferred<{ config_overlay: Record<string, unknown> }>();
+    const secondRead = deferred<{ config_overlay: Record<string, unknown> }>();
+    const recipeConfigGetCaller = vi.fn()
+      .mockImplementationOnce(() => firstRead.promise)
+      .mockImplementationOnce(() => secondRead.promise);
+    const rig = mountRoute({
+      initialRecipeId: 'daily-brief',
+      recipeConfigGetCaller,
+      recipeConfigSetCaller: vi.fn(async () => ({ config_overlay: {} })),
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('daily-brief', {
+          recipe: recipeDefinition('daily-brief', {
+            variables: { limit: 25 },
+          }),
+        })],
+      })),
+    });
+    await rig.route.whenLoaded();
+
+    clickRecipeAction(rig.root, 'open-recipe-config', 'daily-brief');
+    expect(recipeConfigGetCaller).toHaveBeenCalledTimes(1);
+    rig.route.closeDetail();
+    rig.route.openRecipe('daily-brief');
+    expect(shellHtml(rig.root)).toContain('>Config</button>');
+    expect(shellHtml(rig.root)).not.toContain('Loading config…');
+
+    clickRecipeAction(rig.root, 'open-recipe-config', 'daily-brief');
+    expect(recipeConfigGetCaller).toHaveBeenCalledTimes(2);
+    firstRead.reject(new Error('stale read failed'));
+    await firstRead.promise.catch(() => undefined);
+    await Promise.resolve();
+    expect(shellHtml(rig.root)).toContain('Loading config…');
+    expect(shellHtml(rig.root)).not.toContain('stale read failed');
+
+    secondRead.reject(new Error('current read failed'));
+    await vi.waitFor(() => expect(shellHtml(rig.root)).not.toContain('Loading config…'));
+    expect(shellHtml(rig.root)).toContain('load config: current read failed');
 
     rig.route.dispose();
   });
@@ -1233,6 +1358,105 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     rig.route.dispose();
   });
 
+  it('keeps a related auto-run mutation single-flight and reports failures in place', async () => {
+    const bundle = 'recued-core/pipeline-response';
+    const bundledRecipe = (
+      recipe_id: string,
+      name: string,
+      withAutoRun = false,
+    ) => recipeDefinition(recipe_id, {
+      metadata: {
+        name,
+        description: `${name} description`,
+        author: 'recued-core',
+        supported_platforms: [],
+        tags: ['bundle'],
+        recipe_bundle: bundle,
+      },
+      ...(withAutoRun
+        ? { auto_run: { interval_ms: 60_000, dynamic: false } }
+        : {}),
+    });
+    type AutoRunUpdateCaller = NonNullable<
+      Parameters<typeof bootstrapRecipesRoute>[0]['autoRunUpdateCaller']
+    >;
+    const update = deferred<Awaited<ReturnType<AutoRunUpdateCaller>>>();
+    const autoRunUpdateCaller = vi.fn<AutoRunUpdateCaller>(() => update.promise);
+    const confirm = vi.fn(() => false);
+    const rig = mountRoute({
+      confirm,
+      initialRecipeId: 'watch-pipeline',
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [
+          recipeEntry('watch-pipeline', {
+            recipe: bundledRecipe('watch-pipeline', 'Watch pipeline'),
+          }),
+          recipeEntry('close-action', {
+            recipe: bundledRecipe('close-action', 'Close action', true),
+          }),
+        ],
+      })),
+      autoRunListCaller: vi.fn(async () => ({
+        entries: [{
+          recipe_id: 'close-action',
+          publisher_id: 'recued-core',
+          recipe_name: 'Close action',
+          interval_ms: 60_000,
+          dynamic: false,
+          enabled: true,
+          auto_disabled: false,
+          consecutive_failures: 0,
+          last_failure_at: null,
+          last_failure_reason: null,
+          next_run_at: null,
+          last_started_at: null,
+          last_finished_at: null,
+          config_overlay: {},
+          variables: {},
+        }],
+      })),
+      autoRunUpdateCaller,
+    });
+    await rig.route.whenLoaded();
+
+    clickRecipeAction(rig.root, 'toggle-auto-run:off', 'close-action');
+    const busyRow = shellHtml(rig.root).match(
+      /<li data-recued-recipes-related-row="close-action">[\s\S]*?<\/li>/,
+    )?.[0] ?? '';
+    expect(busyRow).toContain('Pausing auto-run…');
+    expect(busyRow).toContain('aria-disabled="true" aria-busy="true"');
+    expect(busyRow).not.toMatch(/\sdisabled(?:[ >])/);
+    expect(rig.route.hasInFlightWork()).toBe(true);
+    expect(rig.route.inFlightWorkPrompt()).toBe(
+      'A recipe action is still in progress. Leave Recipes anyway?',
+    );
+
+    rig.route.closeDetail();
+    expect(confirm).toHaveBeenCalledWith(
+      'A recipe action is still in progress. Leave this recipe anyway?',
+    );
+    expect(rig.route.selectedRecipe()).toBe('watch-pipeline');
+
+    clickRecipeAction(rig.root, 'toggle-auto-run:off', 'close-action');
+    expect(autoRunUpdateCaller).toHaveBeenCalledTimes(1);
+
+    update.reject(new Error('server unavailable'));
+    await vi.waitFor(() => {
+      const html = shellHtml(rig.root);
+      expect(html).toContain(
+        `${RECIPES_ROUTE_AUTO_RUN_ERROR_ATTR}="close-action"`,
+      );
+      expect(html).toContain(
+        'Couldn’t update auto-run: server unavailable',
+      );
+      expect(html).toContain('Pause auto-run');
+    });
+    expect(rig.route.hasInFlightWork()).toBe(false);
+    expect(rig.route.inFlightWorkPrompt()).toBeNull();
+
+    rig.route.dispose();
+  });
+
   it('offers the directly named pack when only part of a recipe_bundle is installed', async () => {
     const bundle = 'recued-core/task-closure';
     const selected = recipeDefinition('create-task', {
@@ -1379,6 +1603,126 @@ describe('R24 — Recipes route: list -> detail (delta 1)', () => {
     rig.route.dispose();
   });
 
+  it('recovers failed carrier membership once and keeps the verified handoff through Refresh', async () => {
+    const bundle = 'recued-core/task-closure';
+    const selected = recipeDefinition('create-task', {
+      metadata: {
+        name: 'Create task',
+        description: '',
+        author: 'recued-core',
+        supported_platforms: [],
+        recipe_bundle: bundle,
+      },
+    });
+    const catalogRows = ['create-task', 'watch-task'].map((recipe_id) => ({
+      recipe_id,
+      publisher_id: 'recued-core',
+      name: recipe_id,
+      description: '',
+      type: 'recipe',
+      version: 1,
+      platforms: [] as string[],
+      tags: [] as string[],
+      download_count: 0,
+      rating_avg: 0,
+      rating_count: 0,
+      created_at: '',
+      depends_on: [] as string[],
+      recipe_bundle: bundle,
+    }));
+    const membership = deferred<Array<{ slug: string; version: number }>>();
+    let packVersion = 1;
+    const packRecipeRefsCaller = vi.fn()
+      .mockResolvedValueOnce([])
+      .mockImplementationOnce(async () => membership.promise);
+    const rig = mountRoute({
+      initialRecipeId: 'create-task',
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('create-task', { recipe: selected })],
+      })),
+      recipeCatalogCaller: vi.fn(async () => ({
+        status: 'ok' as const,
+        rows: catalogRows,
+      })),
+      packCatalogCaller: vi.fn(async () => ({
+        status: 'ok' as const,
+        rows: [{
+          slug: 'task-closure',
+          publisher_id: 'recued-core',
+          name: 'Task Closure Loop',
+          description: '',
+          version: packVersion,
+          pack_kind: 'app_pack',
+          tags: [],
+          download_count: 0,
+          item_count: 2,
+          recipe_refs: [],
+          created_at: '',
+        }],
+      })),
+      packRecipeRefsCaller,
+    });
+    await rig.route.whenLoaded();
+
+    expect(packRecipeRefsCaller).toHaveBeenCalledTimes(1);
+    expect(shellHtml(rig.root)).toContain(
+      `${RECIPES_ROUTE_BUNDLE_STATUS_ATTR}="task-closure"`,
+    );
+    expect(shellHtml(rig.root)).toContain('Couldn’t verify this recipe’s workflow pack contents.');
+    expect(shellHtml(rig.root)).toContain(
+      `${RECIPES_ROUTE_BUNDLE_RETRY_ATTR}="task-closure"`,
+    );
+    expect(shellHtml(rig.root)).not.toContain(
+      'data-recued-recipes-bundle-pack="task-closure"',
+    );
+
+    clickRecipeAction(rig.root, 'retry-bundle-carrier', 'create-task');
+    expect(packRecipeRefsCaller).toHaveBeenCalledTimes(2);
+    expect(shellHtml(rig.root)).toContain('Retrying workflow pack contents…');
+    const busyRetry = shellHtml(rig.root).match(
+      /<button[^>]*data-recued-recipes-bundle-retry="task-closure"[^>]*>Retrying…<\/button>/,
+    )?.[0] ?? '';
+    expect(busyRetry).toContain('aria-disabled="true"');
+    expect(busyRetry).toContain('aria-busy="true"');
+    expect(busyRetry).not.toMatch(/\sdisabled(?:[ >])/);
+
+    clickRecipeAction(rig.root, 'retry-bundle-carrier', 'create-task');
+    clickRecipeAction(rig.root, 'retry-bundle-carrier', 'create-task');
+    expect(packRecipeRefsCaller).toHaveBeenCalledTimes(2);
+
+    membership.resolve([
+      { slug: 'create-task', version: 1 },
+      { slug: 'watch-task', version: 1 },
+    ]);
+    await vi.waitFor(() => {
+      expect(shellHtml(rig.root)).toContain(
+        'data-recued-recipes-bundle-pack="task-closure"',
+      );
+    });
+    expect(shellHtml(rig.root)).not.toContain(RECIPES_ROUTE_BUNDLE_STATUS_ATTR);
+
+    rig.route.refresh();
+    await rig.route.whenLoaded();
+    expect(packRecipeRefsCaller).toHaveBeenCalledTimes(2);
+    expect(shellHtml(rig.root)).toContain(
+      'data-recued-recipes-bundle-pack="task-closure"',
+    );
+
+    packVersion = 2;
+    packRecipeRefsCaller.mockResolvedValueOnce([
+      { slug: 'create-task', version: 1 },
+      { slug: 'watch-task', version: 1 },
+    ]);
+    rig.route.refresh();
+    await rig.route.whenLoaded();
+    expect(packRecipeRefsCaller).toHaveBeenCalledTimes(3);
+    expect(shellHtml(rig.root)).toContain(
+      'data-recued-recipes-bundle-pack="task-closure"',
+    );
+
+    rig.route.dispose();
+  });
+
   it('does not render a related-recipes panel for unbundled recipes', async () => {
     const rig = mountRoute({ initialRecipeId: 'daily-brief' });
     await rig.route.whenLoaded();
@@ -1411,6 +1755,27 @@ describe('R24 — Recipes route: exposure is per-contract, no toggle', () => {
 });
 
 describe('R24 — Recipes route: run + schedule modal', () => {
+  it('retains the modal owner while a recipe command is pending', async () => {
+    const execution = deferred<ServerExecuteResponse>();
+    const rig = mountRoute({
+      recipeExecuteCaller: vi.fn(() => execution.promise),
+    });
+    await rig.route.whenLoaded();
+
+    rig.route.openRunModal('daily-brief');
+    const pending = rig.route.confirmRun();
+    expect(rig.route.hasInFlightWork()).toBe(true);
+    expect(rig.route.inFlightWorkPrompt()).toBe(
+      'A recipe action is still in progress. Leave Recipes anyway?',
+    );
+
+    execution.resolve(executeResponse());
+    await pending;
+    expect(rig.route.hasInFlightWork()).toBe(false);
+    expect(rig.route.inFlightWorkPrompt()).toBeNull();
+    rig.route.dispose();
+  });
+
   it('forwards the recipe-owned Records search so record_ref renders as a picker', async () => {
     const entry = recipeEntry('open-rental-contract', {
       recipe: recipeDefinition('open-rental-contract', {
@@ -3788,13 +4153,17 @@ describe('R24 — targeting guard (design § 8) — run modal warn + disable', (
 
 describe('D-222 — recipe detail defaults and resolved output filters', () => {
   it('runs a defaulted-primitive-only recipe directly and keeps an override path', async () => {
-    const execute = vi.fn<RecipeExecuteCaller>(async () => executeResponse({
+    const execution = deferred<ServerExecuteResponse>();
+    const execute = vi.fn<RecipeExecuteCaller>(() => execution.promise);
+    const confirm = vi.fn(() => false);
+    const response = executeResponse({
       recipe_id: 'primitive-defaults',
       output: { render: [], sidebar: [] },
-    }));
+    });
     const rig = mountRoute({
       initialRecipeId: 'primitive-defaults',
       recipeExecuteCaller: execute,
+      confirm,
       recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
         recipes: [recipeEntry('primitive-defaults', {
           recipe: recipeDefinition('primitive-defaults', {
@@ -3812,10 +4181,80 @@ describe('D-222 — recipe detail defaults and resolved output filters', () => {
     clickRecipeAction(rig.root, 'run-defaults', 'primitive-defaults');
     await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
     expect(execute).toHaveBeenCalledWith({ recipe_id: 'primitive-defaults', config: {} });
+    const pendingButton = shellHtml(rig.root).match(
+      /<button type="button" class="recipes-button recipes-button--primary"[\s\S]*?<\/button>/,
+    )?.[0];
+    expect(pendingButton).toContain('aria-disabled="true" aria-busy="true"');
+    expect(pendingButton).not.toContain(' disabled');
+    expect(pendingButton).toContain('Running…');
+    expect(rig.route.hasInFlightWork()).toBe(true);
+    expect(rig.route.inFlightWorkPrompt()).toBe(
+      'A recipe action is still in progress. Leave Recipes anyway?',
+    );
+
+    rig.route.closeDetail();
+    expect(confirm).toHaveBeenCalledWith(
+      'A recipe action is still in progress. Leave this recipe anyway?',
+    );
+    expect(rig.route.selectedRecipe()).toBe('primitive-defaults');
+
+    clickRecipeAction(rig.root, 'run-defaults', 'primitive-defaults');
+    expect(execute).toHaveBeenCalledTimes(1);
+
+    execution.resolve(response);
+    await vi.waitFor(() => expect(shellHtml(rig.root)).toContain('Run completed'));
+    expect(shellHtml(rig.root)).not.toContain('aria-disabled="true" aria-busy="true"');
+    expect(rig.route.hasInFlightWork()).toBe(false);
+    expect(rig.route.inFlightWorkPrompt()).toBeNull();
 
     clickRecipeAction(rig.root, 'open-run', 'primitive-defaults');
     expect(runModalHtml(rig.root)).toContain('<summary>Run with overrides</summary>');
     expect(runModalHtml(rig.root)).toContain('data-recued-run-modal-config');
+
+    rig.route.dispose();
+  });
+
+  it('rejects a default run result from an earlier visit to the same recipe', async () => {
+    const firstExecution = deferred<ServerExecuteResponse>();
+    const secondExecution = deferred<ServerExecuteResponse>();
+    const execute = vi.fn<RecipeExecuteCaller>()
+      .mockImplementationOnce(() => firstExecution.promise)
+      .mockImplementationOnce(() => secondExecution.promise);
+    const rig = mountRoute({
+      initialRecipeId: 'primitive-defaults',
+      recipeExecuteCaller: execute,
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('primitive-defaults', {
+          recipe: recipeDefinition('primitive-defaults', {
+            variables: { limit: 25, include_closed: false },
+          }),
+        })],
+      })),
+    });
+    await rig.route.whenLoaded();
+
+    clickRecipeAction(rig.root, 'run-defaults', 'primitive-defaults');
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(1));
+    rig.route.closeDetail();
+    rig.route.openRecipe('primitive-defaults');
+    clickRecipeAction(rig.root, 'run-defaults', 'primitive-defaults');
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
+
+    firstExecution.resolve(executeResponse({
+      recipe_id: 'primitive-defaults',
+      recipe_hash: 'first-visit-result',
+    }));
+    await vi.waitFor(() => expect(firstExecution.promise).resolves.toBeDefined());
+    expect(rig.route.resultPanel()).toBeNull();
+    expect(shellHtml(rig.root)).toContain('Running…');
+
+    secondExecution.resolve(executeResponse({
+      recipe_id: 'primitive-defaults',
+      recipe_hash: 'current-visit-result',
+    }));
+    await vi.waitFor(() => expect(rig.route.resultPanel()?.result.recipe_hash)
+      .toBe('current-visit-result'));
+    expect(shellHtml(rig.root)).not.toContain('Running…');
 
     rig.route.dispose();
   });
@@ -3962,6 +4401,77 @@ describe('D-222 — recipe detail defaults and resolved output filters', () => {
     expect(shellHtml(rig.root).match(/<td>one-row<\/td>/g)).toHaveLength(1);
 
     rig.route.dispose();
+  });
+
+  it('keeps a pending result page owned through detail navigation', async () => {
+    const result = executeResponse({
+      recipe_id: 'job-board',
+      output: { render: [{
+        type: 'filter',
+        data: {},
+        filter: {
+          section_index: 0,
+          recipe_hash: 'stored-job-board-hash',
+          fields: ['status'],
+          hidden: ['cursor'],
+          submit: 'Search jobs',
+          definitions: {
+            status: { label: 'Status', type: 'text', default: 'open' },
+            cursor: '',
+          },
+          values: { status: 'open', cursor: '' },
+          paging: { next_cursor: 'next-token' },
+        },
+      }], sidebar: [] },
+    });
+    const paged = deferred<ServerExecuteResponse>();
+    const execute = vi.fn<RecipeExecuteCaller>()
+      .mockResolvedValueOnce(result)
+      .mockImplementationOnce(() => paged.promise);
+    const confirm = vi.fn(() => false);
+    const rig = mountRoute({
+      initialRecipeId: 'job-board',
+      recipeExecuteCaller: execute,
+      confirm,
+      recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
+        recipes: [recipeEntry('job-board', {
+          recipe: recipeDefinition('job-board', {
+            variables: {
+              status: { label: 'Status', type: 'text', default: 'open' } as never,
+              cursor: '',
+            },
+          }),
+        })],
+      })),
+    });
+    await rig.route.whenLoaded();
+    rig.route.openRunModal('job-board');
+    await rig.route.confirmRun();
+
+    const page = rig.route.submitResultFilter(
+      rig.route.resultFilterKeys()[0]!,
+      'next',
+    );
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
+    expect(shellHtml(rig.root)).toContain('Loading next page…');
+    expect(shellHtml(rig.root)).toMatch(
+      /result-filter-page:next[^>]*aria-disabled="true" aria-busy="true"/,
+    );
+    expect(rig.route.hasInFlightWork()).toBe(true);
+    expect(rig.route.inFlightWorkPrompt()).toBe(
+      'A recipe action is still in progress. Leave Recipes anyway?',
+    );
+
+    rig.route.closeDetail();
+    expect(confirm).toHaveBeenCalledWith(
+      'A recipe action is still in progress. Leave this recipe anyway?',
+    );
+    expect(rig.route.selectedRecipe()).toBe('job-board');
+
+    paged.resolve(result);
+    await page;
+    expect(rig.route.hasInFlightWork()).toBe(false);
+    expect(rig.route.inFlightWorkPrompt()).toBeNull();
   });
 });
 
@@ -4159,9 +4669,13 @@ describe('the editable grid in the result panel', () => {
     },
   });
 
-  const mountGrid = (execute: RecipeExecuteCaller) => mountRoute({
+  const mountGrid = (
+    execute: RecipeExecuteCaller,
+    confirm?: (message?: string) => boolean,
+  ) => mountRoute({
     initialRecipeId: 'collect',
     recipeExecuteCaller: execute,
+    ...(confirm !== undefined ? { confirm } : {}),
     recipesListCaller: vi.fn<RecipesListCaller>(async () => ({
       recipes: [recipeEntry('collect', {
         recipe: recipeDefinition('collect', {
@@ -4209,6 +4723,58 @@ describe('the editable grid in the result panel', () => {
     expect(html).toContain('1 row · Unsaved changes');
     expect(html).toContain('data-dirty="true"');
     expect(html).not.toMatch(/result-grid-submit[^>]*disabled/);
+  });
+
+  it('keeps dirty rows and their save owned through detail navigation', async () => {
+    const saved = deferred<ServerExecuteResponse>();
+    const execute = vi.fn<RecipeExecuteCaller>()
+      .mockResolvedValueOnce(
+        GRID_RESULT([{ contract_ref: 'rental_contract/rec_1', amount: '' }]) as never,
+      )
+      .mockImplementationOnce(() => saved.promise);
+    const confirm = vi.fn(() => false);
+    const rig = mountGrid(execute, confirm);
+    await rig.route.whenLoaded();
+    rig.route.openRunModal('collect');
+    await rig.route.confirmRun();
+
+    const key = rig.route.resultGridKeys()[0]!;
+    rig.route.setResultGridCell(key, 0, 'amount', '800.00');
+    expect(rig.route.hasUnsavedChanges()).toBe(true);
+    expect(rig.route.unsavedChangesPrompt()).toBe(
+      'This recipe result has unsaved table changes. Leave Recipes anyway?',
+    );
+
+    rig.route.closeDetail();
+    expect(confirm).toHaveBeenNthCalledWith(
+      1,
+      'This recipe result has unsaved table changes. Leave this recipe anyway?',
+    );
+    expect(rig.route.selectedRecipe()).toBe('collect');
+
+    const save = rig.route.submitResultGrid(key);
+    await vi.waitFor(() => expect(execute).toHaveBeenCalledTimes(2));
+    expect(rig.route.hasInFlightWork()).toBe(true);
+    expect(rig.route.inFlightWorkPrompt()).toBe(
+      'A recipe action is still in progress. Leave Recipes anyway?',
+    );
+    expect(rig.route.hasUnsavedChanges()).toBe(true);
+
+    rig.route.closeDetail();
+    expect(confirm).toHaveBeenNthCalledWith(
+      2,
+      'A recipe action is still in progress. Leave this recipe anyway?',
+    );
+    expect(rig.route.selectedRecipe()).toBe('collect');
+
+    saved.resolve(
+      GRID_RESULT([{ contract_ref: 'rental_contract/rec_1', amount: '800.00' }]) as never,
+    );
+    await save;
+    expect(rig.route.hasInFlightWork()).toBe(false);
+    expect(rig.route.inFlightWorkPrompt()).toBeNull();
+    expect(rig.route.hasUnsavedChanges()).toBe(false);
+    expect(rig.route.unsavedChangesPrompt()).toBeNull();
   });
 
   it('refuses an untouched submit at the dispatch seam too', async () => {

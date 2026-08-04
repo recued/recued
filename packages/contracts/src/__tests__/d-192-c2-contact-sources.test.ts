@@ -293,21 +293,32 @@ describe('D-192 C-2 slice 5 — the shipped registry', () => {
     expect(assertContactSourceRegistryBinding(CONTACT_SOURCE_DECLARATIONS)).toEqual([]);
   });
 
-  it('declares the three CRMs + the ONE contact book — and MS Graph / CardDAV are still absent', () => {
+  it('declares the three CRMs + the TWO contact books — and CardDAV is still absent', () => {
     // ⚠ D-205 #4c — `google` landed, and it arrived the way this test used to demand:
     // in the SAME commit as its leaf, with `supplies` read off a field map that
     // exists (the `google-contacts` pack's `entities.person`).
+    //
+    // `microsoft` landed the same way: with `graph-people-leaf.ts` and the
+    // `microsoft-contacts` pack's `entities.contact` in the same change.
     expect([...listContactSourceVendors()]).toEqual([
       'hubspot',
       'salesforce',
       'google',
       'pipedrive',
+      'microsoft',
     ]);
     expect(isDeclaredContactSourceVendor('google')).toBe(true);
+    expect(isDeclaredContactSourceVendor('microsoft')).toBe(true);
     // Still absent, for the ORIGINAL reason: no leaf. `supplies` is a promise the
     // runner verifies per record, so promising the shape of an API nobody has read
-    // fails EVERY record on the FIRST cycle. They land with their leaves.
+    // fails EVERY record on the FIRST cycle. It lands with its leaf.
     expect(isDeclaredContactSourceVendor('carddav')).toBe(false);
+    // ⚠ Kept deliberately after `microsoft` landed, and it now guards something
+    // DIFFERENT: the Microsoft contact book is declared under the vendor slug
+    // `microsoft` — the one the whole shipped Graph pack family already uses
+    // (`outlook`, `onedrive`, `teams`, `planner`). `msgraph` must stay undeclared so
+    // a second Microsoft entry cannot appear under a parallel slug and split the
+    // connection row-match.
     expect(isDeclaredContactSourceVendor('msgraph')).toBe(false);
   });
 

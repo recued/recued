@@ -8,10 +8,17 @@ import {
 
 import {
   createResultActionRegistry,
+  RECIPES_ROUTE_ACTION_ATTR,
+  RECIPES_ROUTE_RESULT_FILTER_ATTR,
   RECIPES_ROUTE_RESULT_GRID_ATTR,
   renderRecipeResultSection,
 } from '../recipes/recipe-result-panel.js';
 import {
+  captureResultFilterActionFocus,
+  captureResultTableEditSubmitFocus,
+  restoreResultFilterActionFocus,
+  restoreResultTableEditSubmitFocus,
+  syncResultTableEditChrome,
   wireResultTableEditRefPickers,
 } from '../recipes/result-table-edit-host.js';
 
@@ -29,6 +36,9 @@ class FakeNode {
   parentElement: FakeNode | null = null;
   value = '';
   innerHTML = '';
+  disabled = false;
+  tabIndex = 0;
+  focused = false;
 
   setAttribute(name: string, value: string): void {
     this.attrs.set(name, value);
@@ -40,6 +50,10 @@ class FakeNode {
 
   removeAttribute(name: string): void {
     this.attrs.delete(name);
+  }
+
+  focus(): void {
+    this.focused = true;
   }
 
   append(child: FakeNode): FakeNode {
@@ -102,6 +116,75 @@ const settle = async (): Promise<void> => {
 };
 
 describe('shared result table edit host', () => {
+  it('restores the exact filter action and crosses a terminal page boundary', () => {
+    const key = 'sheet:stored-sheet-hash:1';
+    const current = new FakeNode();
+    const next = current.append(new FakeNode());
+    next.setAttribute(RECIPES_ROUTE_ACTION_ATTR, 'result-filter-page:next');
+    next.setAttribute(RECIPES_ROUTE_RESULT_FILTER_ATTR, key);
+    const focused = captureResultFilterActionFocus(
+      next as unknown as HTMLElement,
+    );
+    expect(focused).toEqual({ action: 'next', filterKey: key });
+    expect(restoreResultFilterActionFocus(
+      current as unknown as HTMLElement,
+      focused,
+    )).toBe(true);
+    expect(next.focused).toBe(true);
+
+    const lastPage = new FakeNode();
+    const previous = lastPage.append(new FakeNode());
+    previous.setAttribute(
+      RECIPES_ROUTE_ACTION_ATTR,
+      'result-filter-page:previous',
+    );
+    previous.setAttribute(RECIPES_ROUTE_RESULT_FILTER_ATTR, key);
+    expect(restoreResultFilterActionFocus(
+      lastPage as unknown as HTMLElement,
+      focused,
+    )).toBe(true);
+    expect(previous.focused).toBe(true);
+  });
+
+  it('keeps Save focusable through busy and restores it by grid key', () => {
+    const root = new FakeNode();
+    const grid = root.append(new FakeNode());
+    grid.setAttribute(RECIPES_ROUTE_RESULT_GRID_ATTR, 'sheet#grid-0');
+    const submit = grid.append(new FakeNode());
+    submit.setAttribute(RECIPES_ROUTE_ACTION_ATTR, 'result-grid-submit');
+    submit.setAttribute(RECIPES_ROUTE_RESULT_GRID_ATTR, 'sheet#grid-0');
+
+    const clean = {
+      rows: [], baseline: [], busy: false, error: null, dirty: false,
+    };
+    syncResultTableEditChrome(
+      grid as unknown as HTMLElement,
+      clean,
+    );
+    expect(submit.disabled).toBe(false);
+    expect(submit.getAttribute('aria-disabled')).toBe('true');
+    expect(submit.tabIndex).toBe(-1);
+
+    syncResultTableEditChrome(
+      grid as unknown as HTMLElement,
+      { ...clean, busy: true, dirty: true },
+    );
+    expect(submit.disabled).toBe(false);
+    expect(submit.getAttribute('aria-disabled')).toBe('true');
+    expect(submit.getAttribute('aria-busy')).toBe('true');
+    expect(submit.tabIndex).toBe(0);
+
+    const key = captureResultTableEditSubmitFocus(
+      submit as unknown as HTMLElement,
+    );
+    expect(key).toBe('sheet#grid-0');
+    expect(restoreResultTableEditSubmitFocus(
+      root as unknown as HTMLElement,
+      key,
+    )).toBe(true);
+    expect(submit.focused).toBe(true);
+  });
+
   it('upgrades a ref-valued editable column to a scoped picker when the host can search', () => {
     const section = {
       type: 'table',

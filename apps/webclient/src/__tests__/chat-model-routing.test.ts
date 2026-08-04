@@ -173,6 +173,30 @@ describe('§ A.14 slot-aware chat model sources', () => {
     expect(matchChatModelSource(options, { current: 'byok' })?.id).toBe('slot_1');
   });
 
+  it('prefers the exact persisted slot when two byok slots share a speed', () => {
+    const options = buildChatModelSourceOptions({
+      slot_1: {
+        provider: 'ollama',
+        model: 'qwen',
+        base_url: 'http://localhost:11434/v1',
+        speed: 'fast',
+      },
+      slot_2: {
+        provider: 'openai',
+        model: 'gpt',
+        has_key: true,
+        speed: 'fast',
+      },
+    });
+    expect(
+      matchChatModelSource(options, {
+        current: 'byok',
+        model_hint: 'fast',
+        source_id: 'slot_2',
+      })?.id,
+    ).toBe('slot_2');
+  });
+
   it('matches a local-base_url slot like any byok slot (locality is display-only)', () => {
     // slot_1 is a LOCAL ollama slot, slot_2 is remote. Post-D-191 both are
     // `layer: 'byok'`; locality is detection-only (not a routing distinction,

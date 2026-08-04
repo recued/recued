@@ -191,16 +191,18 @@ const renderFilters = (
 ): string => {
   const kindButtons = KIND_FILTERS.map((filter) => {
     const active = filter.id === kind ? ' reception-records-chip--active' : '';
-    return `<button type="button" class="reception-records-chip${active}" ${RECEPTION_RECORDS_KIND_ATTR}="${filter.id}">${escapeHtml(filter.label)}</button>`;
+    const pressed = filter.id === kind ? 'true' : 'false';
+    return `<button type="button" class="reception-records-chip${active}" aria-pressed="${pressed}" ${RECEPTION_RECORDS_KIND_ATTR}="${filter.id}">${escapeHtml(filter.label)}</button>`;
   }).join('');
   const outcomeButtons = OUTCOME_FILTERS.map((filter) => {
     const active = filter.id === outcome ? ' reception-records-chip--active' : '';
-    return `<button type="button" class="reception-records-chip${active}" ${RECEPTION_RECORDS_OUTCOME_ATTR}="${filter.id}">${escapeHtml(filter.label)}</button>`;
+    const pressed = filter.id === outcome ? 'true' : 'false';
+    return `<button type="button" class="reception-records-chip${active}" aria-pressed="${pressed}" ${RECEPTION_RECORDS_OUTCOME_ATTR}="${filter.id}">${escapeHtml(filter.label)}</button>`;
   }).join('');
   return `
     <div class="reception-records-filters">
-      <div class="reception-records-chipset">${kindButtons}</div>
-      <div class="reception-records-chipset">${outcomeButtons}</div>
+      <div class="reception-records-chipset" role="group" aria-label="Record kind">${kindButtons}</div>
+      <div class="reception-records-chipset" role="group" aria-label="Record outcome">${outcomeButtons}</div>
     </div>
   `;
 };
@@ -212,6 +214,7 @@ export const RECEPTION_RECORDS_STYLES = `
 .reception-records-chipset { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-sunk); }
 .reception-records-chip { appearance: none; min-height: 30px; padding: 5px 12px; border: 0; border-radius: 7px; background: transparent; color: var(--fg-muted); font-size: 12px; font-weight: 640; cursor: pointer; }
 .reception-records-chip:hover { color: var(--fg); }
+.reception-records-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .reception-records-chip--active { background: var(--surface); color: var(--fg); box-shadow: 0 1px 3px rgba(24, 24, 27, 0.10); }
 .reception-records-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .reception-records-row { display: grid; gap: 6px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 11px; background: var(--surface); }
@@ -254,21 +257,80 @@ export const mountReceptionRecordsPanel = (
   let model: ReceptionRecordsModel = emptyModel;
   let loading = true;
   let error: string | null = null;
+  let retrying = false;
   let disposed = false;
   // ⚠ Generation guard — filter clicks can land while an earlier fetch is in flight, and the
   // slower response must not paint over the newer filter's answer.
   let generation = 0;
 
-  const render = (): void => {
+  type FilterFocus =
+    | { axis: 'kind'; value: ReceptionRecordsKindFilter }
+    | { axis: 'outcome'; value: ReceptionRecordsOutcomeFilter };
+
+  const filterButton = (focus: FilterFocus): HTMLButtonElement | null => {
+    // The compact unit-test DOM intentionally does not parse `innerHTML`; production browsers
+    // do. Keeping this lookup optional lets the string-rendering tests exercise the same path.
+    const querySelector = (
+      root as HTMLElement & {
+        querySelector?: <T extends Element>(selectors: string) => T | null;
+      }
+    ).querySelector;
+    if (typeof querySelector !== 'function') return null;
+    const attr = focus.axis === 'kind'
+      ? RECEPTION_RECORDS_KIND_ATTR
+      : RECEPTION_RECORDS_OUTCOME_ATTR;
+    return querySelector.call(
+      root,
+      `[${attr}="${focus.value}"]`,
+    ) as HTMLButtonElement | null;
+  };
+
+  const ownsFilterFocus = (focus: FilterFocus): boolean => {
+    const activeElement = (doc as Document & { activeElement?: Element | null }).activeElement;
+    return activeElement != null && activeElement === filterButton(focus);
+  };
+
+  const restoreFilterFocus = (focus: FilterFocus | null): void => {
+    if (focus === null) return;
+    filterButton(focus)?.focus?.({ preventScroll: true });
+  };
+
+  const retryButton = (): HTMLButtonElement | null => {
+    const querySelector = (
+      root as HTMLElement & {
+        querySelector?: <T extends Element>(selectors: string) => T | null;
+      }
+    ).querySelector;
+    if (typeof querySelector !== 'function') return null;
+    return querySelector.call(
+      root,
+      `[${RECEPTION_RECORDS_RETRY_ATTR}]`,
+    ) as HTMLButtonElement | null;
+  };
+
+  const ownsRetryFocus = (): boolean => {
+    const activeElement = (doc as Document & { activeElement?: Element | null }).activeElement;
+    return activeElement != null && activeElement === retryButton();
+  };
+
+  const render = (
+    focus: FilterFocus | null = null,
+    focusRetry = false,
+  ): void => {
     if (disposed) return;
     const summary = loading
       ? 'Loading records...'
       : model.total === 0
         ? ''
         : `${String(model.total)} shown, ${String(model.waiting_count)} waiting`;
+    const errorRole = retrying ? 'status' : 'alert';
+    const retryStateAttrs = retrying
+      ? ' aria-disabled="true" aria-busy="true"'
+      : '';
+    const retryLabel = retrying ? 'Retrying…' : 'Retry';
     const errorBlock =
       error !== null
-        ? `<div class="reception-records-error" ${RECEPTION_RECORDS_ERROR_ATTR}>${escapeHtml(error)} <button type="button" ${RECEPTION_RECORDS_RETRY_ATTR}>Retry</button></div>`
+        ? `<div class="reception-records-error" role="${errorRole}" ${RECEPTION_RECORDS_ERROR_ATTR}>${escapeHtml(error)} <button type="button" ${RECEPTION_RECORDS_RETRY_ATTR}${retryStateAttrs}>${retryLabel}</button></div>`
         : '';
     // ⛔ Truncation is SURFACED, never swallowed — on a reception list "I see all of them" has
     // to be either true or visibly false (contract note on `truncated`).
@@ -306,13 +368,26 @@ export const mountReceptionRecordsPanel = (
         ${body}
       </div>
     `;
+    restoreFilterFocus(focus);
+    if (focusRetry) retryButton()?.focus?.({ preventScroll: true });
   };
 
-  const load = async (): Promise<void> => {
+  const load = async (
+    focus: FilterFocus | null = null,
+    retryFocus = false,
+  ): Promise<void> => {
     const mine = ++generation;
+    const retryOwned = retryFocus && ownsRetryFocus();
     loading = true;
-    error = null;
-    render();
+    if (retryFocus) retrying = true;
+    else {
+      retrying = false;
+      error = null;
+    }
+    // A filter action replaces its own button in the loading paint. Restore that exact control
+    // immediately, then only carry focus through the async result if the replacement still owns
+    // it; a user who moves elsewhere while waiting must not have focus stolen back.
+    render(focus, retryOwned);
     try {
       const result: ReceptionRecordListResult = await opts.conn(
         'reception.record.list',
@@ -327,13 +402,27 @@ export const mountReceptionRecordsPanel = (
         outcome,
         now: now(),
       });
+      const retryStillOwned = retryOwned && ownsRetryFocus();
       loading = false;
-      render();
+      retrying = false;
+      error = null;
+      render(
+        retryStillOwned
+          ? { axis: 'kind', value: kind }
+          : focus !== null && ownsFilterFocus(focus)
+            ? focus
+            : null,
+      );
     } catch (err) {
       if (disposed || mine !== generation) return;
+      const retryStillOwned = retryOwned && ownsRetryFocus();
       loading = false;
+      retrying = false;
       error = errMessage(err);
-      render();
+      render(
+        focus !== null && ownsFilterFocus(focus) ? focus : null,
+        retryStillOwned,
+      );
     }
   };
 
@@ -343,17 +432,18 @@ export const mountReceptionRecordsPanel = (
     const nextKind = target.getAttribute(RECEPTION_RECORDS_KIND_ATTR);
     if (nextKind !== null) {
       kind = nextKind as ReceptionRecordsKindFilter;
-      void load();
+      void load({ axis: 'kind', value: kind });
       return;
     }
     const nextOutcome = target.getAttribute(RECEPTION_RECORDS_OUTCOME_ATTR);
     if (nextOutcome !== null) {
       outcome = nextOutcome as ReceptionRecordsOutcomeFilter;
-      void load();
+      void load({ axis: 'outcome', value: outcome });
       return;
     }
     if (target.getAttribute(RECEPTION_RECORDS_RETRY_ATTR) !== null) {
-      void load();
+      if (loading) return;
+      void load(null, true);
     }
   };
 

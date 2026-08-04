@@ -35,6 +35,17 @@ import {
 import { e } from '../template.js';
 import { renderForm } from '../form-renderer/render.js';
 
+export const WORK_ENTITY_DIALOG_DISCARD_GUARD_ATTR =
+  'data-recued-data-work-entity-discard-guard';
+export const WORK_ENTITY_DIALOG_DISCARD_KEEP_ATTR =
+  'data-recued-data-work-entity-discard-keep';
+export const WORK_ENTITY_DIALOG_DISCARD_COMMIT_ATTR =
+  'data-recued-data-work-entity-discard-commit';
+export const WORK_ENTITY_DIALOG_DISCARD_KEEP_ACTION =
+  'keep-work-entity-dialog';
+export const WORK_ENTITY_DIALOG_DISCARD_COMMIT_ACTION =
+  'discard-work-entity-dialog';
+
 export interface WorkEntityDialogProps {
   kind: WorkEntityKind;
   /** PA5 `FormDefinition` — caller passes whichever generator output
@@ -50,6 +61,8 @@ export interface WorkEntityDialogProps {
    *  must ATTACH them after render via `wireRefPicker`). Default false
    *  — only the data route, which wires the pickers, opts in. */
   ref_picker?: boolean;
+  /** Replace the editor's interactive layer with a local discard review. */
+  discard_guard?: boolean;
 }
 
 /** Render the dialog. The dialog body is wrapped in a backdrop +
@@ -77,10 +90,40 @@ export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => 
   // against a missing target.
   const cannotSubmitForCreate =
     props.state.mode === 'create' && writableForCreate.length === 0;
-  const submitDisabled =
-    props.state.submitting === true || cannotSubmitForCreate;
-  const submittingAttr = submitDisabled ? ' disabled' : '';
+  const submitStateAttr = props.state.submitting === true
+    ? ' aria-disabled="true" aria-busy="true"'
+    : cannotSubmitForCreate
+      ? ' disabled'
+      : '';
   const submitLabel = props.state.submitting === true ? 'Saving…' : 'Save';
+  const closeStateAttr = props.state.submitting === true
+    ? ' aria-disabled="true"'
+    : '';
+  const editorStateAttr = props.discard_guard === true
+    ? ' inert aria-hidden="true"'
+    : '';
+  const discardGuard = props.discard_guard === true
+    ? `
+        <section
+          ${WORK_ENTITY_DIALOG_DISCARD_GUARD_ATTR}
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="work-entity-dialog-discard-title"
+          aria-describedby="work-entity-dialog-discard-description"
+          tabindex="-1"
+        >
+          <h3 id="work-entity-dialog-discard-title">Discard your ${e(spec.singular_label.toLowerCase())} changes?</h3>
+          <p id="work-entity-dialog-discard-description">Your unfinished changes will be lost.</p>
+          <div class="work-entity-dialog-discard-actions">
+            <button type="button"
+              data-action="${WORK_ENTITY_DIALOG_DISCARD_KEEP_ACTION}"
+              ${WORK_ENTITY_DIALOG_DISCARD_KEEP_ATTR}>Keep editing</button>
+            <button type="button"
+              data-action="${WORK_ENTITY_DIALOG_DISCARD_COMMIT_ACTION}"
+              ${WORK_ENTITY_DIALOG_DISCARD_COMMIT_ATTR}>Discard changes</button>
+          </div>
+        </section>`
+    : '';
   return `
     <div
       class="work-entity-dialog-backdrop"
@@ -95,16 +138,17 @@ export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => 
         data-mode="${e(props.state.mode)}"
         data-kind="${e(props.kind)}"
       >
-        <header class="work-entity-dialog-header">
-          <h2 class="work-entity-dialog-title" id="work-entity-dialog-title">${e(title)}</h2>
+        <header class="work-entity-dialog-header"${editorStateAttr}>
+          <h2 class="work-entity-dialog-title" id="work-entity-dialog-title" tabindex="-1">${e(title)}</h2>
           <button
             type="button"
             class="work-entity-dialog-close"
             data-action="close-work-entity-dialog"
             aria-label="Close"
+            ${closeStateAttr}
           >×</button>
         </header>
-        <form class="work-entity-dialog-form" data-form-kind="${e(props.kind)}">
+        <form class="work-entity-dialog-form" data-form-kind="${e(props.kind)}"${editorStateAttr}>
           ${sourcePicker}
           ${renderForm(props.definition, {
             values: props.state.values,
@@ -117,14 +161,16 @@ export const renderWorkEntityDialog = (props: WorkEntityDialogProps): string => 
               type="button"
               class="work-entity-dialog-cancel"
               data-action="close-work-entity-dialog"
+              ${closeStateAttr}
             >Cancel</button>
             <button
               type="button"
               class="work-entity-dialog-submit"
-              data-action="submit-work-entity-dialog"${submittingAttr}
+              data-action="submit-work-entity-dialog"${submitStateAttr}
             >${e(submitLabel)}</button>
           </footer>
         </form>
+        ${discardGuard}
       </div>
     </div>
   `;

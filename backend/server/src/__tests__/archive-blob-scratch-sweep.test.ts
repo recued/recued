@@ -5,8 +5,10 @@ import { basename, join } from 'node:path';
 
 import {
   exportBlobScratchPath,
+  exportDatabaseScratchPath,
+  previewDatabaseScratchPath,
   restoreBlobScratchPath,
-  sweepBlobScratch,
+  sweepArchiveScratch,
 } from '../archive/archive-scratch.js';
 
 const dirs: string[] = [];
@@ -33,7 +35,7 @@ describe('archive blob scratch sweep', () => {
     writeFileSync(exported, 'plaintext blob');
     writeFileSync(restored, 'plaintext blob');
 
-    expect(sweepBlobScratch(dir)).toBe(2);
+    expect(sweepArchiveScratch(dir)).toBe(2);
     expect(existsSync(exported)).toBe(false);
     expect(existsSync(restored)).toBe(false);
   });
@@ -47,11 +49,13 @@ describe('archive blob scratch sweep', () => {
       exportBlobScratchPath(dir, 'b'.repeat(64)),
       restoreBlobScratchPath(dir),
       restoreBlobScratchPath(dir),
+      exportDatabaseScratchPath(dir),
+      previewDatabaseScratchPath(dir),
     ]) {
       writeFileSync(path, 'plaintext blob');
     }
 
-    expect(sweepBlobScratch(dir)).toBe(4);
+    expect(sweepArchiveScratch(dir)).toBe(6);
     expect(readdirSync(dir)).toEqual([]);
   });
 
@@ -64,8 +68,8 @@ describe('archive blob scratch sweep', () => {
       'recued.db.staging-0123456789abcdef',
       'recued-server.lock',
       'config.toml',
-      // An export's own temps: the archive is encrypted and the `VACUUM INTO`
-      // copy keeps the source cipher, so neither is ours to reap.
+      // Legacy/user names that merely resemble old export temps are not current
+      // scratch-builder output and must not be swept by a broad substring.
       'recued-2024-01-01.recued.archive.partial',
       'recued-2024-01-01.recued.archive.db.tmp',
       // The CAS publish temp — swept inside the shard dirs by `sweepOrphans`,
@@ -76,14 +80,14 @@ describe('archive blob scratch sweep', () => {
     const scratch = exportBlobScratchPath(dir, HASH);
     writeFileSync(scratch, 'plaintext blob');
 
-    expect(sweepBlobScratch(dir)).toBe(1);
+    expect(sweepArchiveScratch(dir)).toBe(1);
     expect(readdirSync(dir).sort()).toEqual([...keep].sort());
     expect(existsSync(scratch)).toBe(false);
   });
 
   it('reports nothing swept for a data dir that is not there', () => {
     const dir = newDataDir();
-    expect(sweepBlobScratch(join(dir, 'absent'))).toBe(0);
+    expect(sweepArchiveScratch(join(dir, 'absent'))).toBe(0);
   });
 
   it('gives each scratch file a fresh name so concurrent blobs cannot collide', () => {
@@ -93,6 +97,8 @@ describe('archive blob scratch sweep', () => {
       basename(exportBlobScratchPath(dir, HASH)),
       basename(restoreBlobScratchPath(dir)),
       basename(restoreBlobScratchPath(dir)),
+      basename(exportDatabaseScratchPath(dir)),
+      basename(previewDatabaseScratchPath(dir)),
     ];
     expect(new Set(names).size).toBe(names.length);
   });

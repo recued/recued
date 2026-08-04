@@ -112,7 +112,11 @@ import {
   type OutputTableEditState,
 } from '@recued/ui-shared';
 import {
+  captureResultFilterActionFocus,
+  captureResultTableEditSubmitFocus,
   readResultTableEditCellInput,
+  restoreResultFilterActionFocus,
+  restoreResultTableEditSubmitFocus,
   syncResultTableEditChrome,
   wireResultTableEditRefPickers,
 } from '../recipes/result-table-edit-host.js';
@@ -188,6 +192,11 @@ export interface MountPackAppViewOptions {
 export interface PackAppViewMount {
   /** The open view's recipe id, or null when the pack has no views. */
   activeViewId(): string | null;
+  /** True while a run, result action, grid save, or file read still owns this
+   *  view. Hosts use this to keep navigation from silently disposing it. */
+  hasInFlightWork(): boolean;
+  /** True while an editable result table contains work not yet saved. */
+  hasUnsavedChanges(): boolean;
   /** Re-run the open view after an external refresh signal. In-workspace task
    *  results manage their own return-and-refresh lifecycle. */
   refresh(): void;
@@ -251,6 +260,7 @@ export const mountPackAppView = (
    *  overwrite, which here would show Customers under the Contracts tab. */
   let runToken = 0;
   let busy = false;
+  let busyOwner: 'refresh' | null = null;
   let error: string | null = null;
   /** The currently displayed run, including the bounded return chain used when
    *  an action opens a detail/receipt over a browse view. */
@@ -284,6 +294,12 @@ export const mountPackAppView = (
   let gridStates: ReadonlyMap<string, OutputTableEditState> = new Map();
   let gridRefPickers: RefPicker.RefPickerHandle[] = [];
 
+  const hasInFlightWork = (): boolean =>
+    busy
+    || fileBusy.size > 0
+    || [...filterStates.values()].some((state) => state.busy)
+    || [...gridStates.values()].some((state) => state.busy);
+
   const currentResult = (): ServerExecuteResponse | null =>
     resultPanel?.result ?? null;
 
@@ -300,6 +316,7 @@ export const mountPackAppView = (
         states.set(outputFilterKey(next.recipe_id, descriptor), {
           ...initialOutputFilterState(descriptor),
           busy: false,
+          busy_action: null,
           error: null,
         });
       }
@@ -327,7 +344,12 @@ export const mountPackAppView = (
       return {
         descriptor,
         state: filterStates.get(key)
-          ?? { ...initialOutputFilterState(descriptor), busy: false, error: null },
+          ?? {
+            ...initialOutputFilterState(descriptor),
+            busy: false,
+            busy_action: null,
+            error: null,
+          },
       };
     }
     return null;
@@ -354,13 +376,14 @@ export const mountPackAppView = (
   const errMessage = (err: unknown): string =>
     err instanceof Error ? err.message : String(err);
 
-  const runActiveView = (): void => {
+  const runActiveView = (owner: 'refresh' | null = null): void => {
     const recipeId = activeViewId;
     const execute = opts.execute;
     if (recipeId === null || execute === undefined) return;
     runToken += 1;
     const token = runToken;
     busy = true;
+    busyOwner = owner;
     error = null;
     paint();
     void execute({
@@ -388,6 +411,7 @@ export const mountPackAppView = (
       .finally(() => {
         if (disposed || token !== runToken) return;
         busy = false;
+        busyOwner = null;
         paint();
       });
   };
@@ -430,6 +454,7 @@ export const mountPackAppView = (
           filterStates = new Map(filterStates).set(filterKey, {
             ...state,
             busy: false,
+            busy_action: null,
             error: errMessage(err),
           });
         }
@@ -454,6 +479,7 @@ export const mountPackAppView = (
       filterStates = new Map(filterStates).set(key, {
         ...active.state,
         busy: false,
+        busy_action: null,
         error: 'Running is not available on this server yet.',
       });
       paint();
@@ -476,7 +502,7 @@ export const mountPackAppView = (
     }
     if (run === null) return; // no cursor that way — not an error
     filterStates = new Map(filterStates).set(key, {
-      ...active.state, busy: true, error: null,
+      ...active.state, busy: true, busy_action: mode, error: null,
     });
     runDisplayedResult(key, { config: run.config, invocation: run.invocation });
   };
@@ -653,9 +679,14 @@ export const mountPackAppView = (
     const recipe = displayedRecipe();
     if (recipe === null) return '';
     const taskResult = showingTaskResult();
+    const refreshOwnsWork = busy && busyOwner === 'refresh';
+    const refreshAttributes = refreshOwnsWork
+      ? ' aria-disabled="true" aria-busy="true"'
+      : hasInFlightWork() ? ' disabled' : '';
+    const refreshLabel = refreshOwnsWork ? 'Refreshing…' : 'Refresh';
     const refresh = !taskResult && activeViewId !== null && opts.execute !== undefined
       ? `<button type="button" class="rx-btn rx-btn-secondary rx-btn-sm pack-app-refresh"
-          ${PACK_APP_REFRESH_ATTR}="">Refresh</button>`
+          ${PACK_APP_REFRESH_ATTR}=""${refreshAttributes}>${refreshLabel}</button>`
       : '';
     const stale = taskResult && viewNeedsRefresh
       ? '<p class="pack-app-context-status">Your browse view will refresh when you return.</p>'
@@ -791,6 +822,15 @@ export const mountPackAppView = (
 
   const paint = (): void => {
     if (disposed) return;
+    const focusedRefresh = (
+      doc.activeElement as HTMLElement | null | undefined
+    )?.hasAttribute?.(PACK_APP_REFRESH_ATTR) === true;
+    const focusedResultFilterAction = captureResultFilterActionFocus(
+      doc.activeElement,
+    );
+    const focusedResultGridSubmitKey = captureResultTableEditSubmitFocus(
+      doc.activeElement,
+    );
     for (const picker of gridRefPickers.splice(0)) picker.destroy();
     root.innerHTML = `
       ${renderMissing()}
@@ -824,6 +864,14 @@ export const mountPackAppView = (
         },
       });
     }
+    restoreResultTableEditSubmitFocus(root, focusedResultGridSubmitKey);
+    restoreResultFilterActionFocus(root, focusedResultFilterAction);
+    if (focusedRefresh) {
+      const refresh = root.querySelector(
+        `[${PACK_APP_REFRESH_ATTR}]`,
+      ) as HTMLElement | null;
+      refresh?.focus({ preventScroll: true });
+    }
   };
 
   const openPackRecipe = (
@@ -832,8 +880,19 @@ export const mountPackAppView = (
     sourceRecipeId: string | null = entry.recipe_id,
   ): void => {
     const open = opts.openRunModal;
-    if (open === undefined) return;
-    if ([...gridStates.values()].some((state) => state.busy)) return;
+    if (open === undefined) {
+      // The operations row is gated on this same caller, so a rendered button
+      // whose open path is unwired means the two disagree — say so rather than
+      // absorbing the press.
+      error = 'This view cannot open a run on this server.';
+      paint();
+      return;
+    }
+    if ([...gridStates.values()].some((state) => state.busy)) {
+      error = 'A table is still saving. Wait for it to finish, then try again.';
+      paint();
+      return;
+    }
     // A completed task replaces the current result. Refuse to make a dirty
     // editable table collateral damage of that navigation.
     if (!mayDiscardGridEdits()) return;
@@ -847,6 +906,7 @@ export const mountPackAppView = (
       if (disposed) return;
       runToken += 1;
       busy = false;
+      busyOwner = null;
       error = null;
       const previous = withoutRenderedRecipe(
         resultPanel ?? undefined,
@@ -1018,9 +1078,8 @@ export const mountPackAppView = (
     }
     const refresh = target.closest(`[${PACK_APP_REFRESH_ATTR}]`) as HTMLElement | null;
     if (refresh !== null) {
-      if (![...gridStates.values()].some((state) => state.busy)
-          && mayDiscardGridEdits()) {
-        runActiveView();
+      if (!hasInFlightWork() && mayDiscardGridEdits()) {
+        runActiveView('refresh');
       }
       return;
     }
@@ -1030,7 +1089,19 @@ export const mountPackAppView = (
       const entry = [...surface.lookups, ...surface.operations].find(
         (o: PackAppRecipe) => o.recipe_id === id,
       )?.entry;
-      if (entry !== undefined) openPackRecipe(entry);
+      // ⛔ A button that answers nothing is the worst failure this surface has.
+      // The lookup runs over the SAME list the buttons were rendered from, so a
+      // miss should be impossible — which is exactly why it must not be silent
+      // if it ever happens. "Nothing happened" is unreportable and undebuggable;
+      // a named refusal is both.
+      if (entry === undefined) {
+        error = id === null
+          ? 'That control is missing its target — reopen this pack.'
+          : `“${id}” is no longer in this pack’s installed roster. Reopen this pack, or reinstall it from Manage.`;
+        paint();
+        return;
+      }
+      openPackRecipe(entry);
     }
   };
 
@@ -1069,6 +1140,7 @@ export const mountPackAppView = (
         active.descriptor, active.state, variableKey, readWidgetValue(target),
       ),
       busy: false,
+      busy_action: null,
       error: null,
     });
   };
@@ -1083,9 +1155,11 @@ export const mountPackAppView = (
 
   return {
     activeViewId: () => activeViewId,
+    hasInFlightWork,
+    hasUnsavedChanges: () => anyTableEditDirty(gridStates),
     refresh: () => {
-      if ([...gridStates.values()].some((state) => state.busy)) return;
-      if (mayDiscardGridEdits()) runActiveView();
+      if (hasInFlightWork()) return;
+      if (mayDiscardGridEdits()) runActiveView('refresh');
     },
     adopt: (host: HTMLElement) => {
       if (disposed || root.parentNode === host) return;

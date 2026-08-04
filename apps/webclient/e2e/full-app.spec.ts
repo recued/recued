@@ -43,8 +43,12 @@ const SERVER_SWITCH_CONTINUITY_SESSION_KEY =
   'recued.webclient.server-switch-continuity.v1';
 const RECOVERY_INTENT_CONTINUATION_SESSION_KEY =
   'recued.webclient.recovery-intent-continuation.v1';
+const RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY =
+  'recued.webclient.recovery-intent-deferred-check.v4';
 const RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY =
   'recued.webclient.recovery-intent-review-verification.v2';
+const RECOVERY_INTENT_CONTINUATION_MAX_AGE_MS = 30 * 60_000;
+const FIXED_NOW = 1_700_000_000_000;
 
 const SHELL_HOST = 'data-recued-webclient-shell';
 const SHELL_CONTENT = 'data-recued-webclient-content';
@@ -52,10 +56,17 @@ const SHELL_TOPBAR = 'data-recued-webclient-topbar';
 const ATTENTION_TOPBAR = 'data-recued-attention-topbar';
 const ATTENTION_DIALOG = 'data-recued-attention-dialog';
 const ATTENTION_CLOSE = 'data-recued-attention-close-button';
+const ATTENTION_ERROR = 'data-recued-attention-error';
+const LIVE_CONTROL_TOGGLE = 'data-recued-live-control-toggle';
+const LIVE_CONTROL_PANEL = 'data-recued-live-control-panel';
+const LIVE_CONTROL_CLOSE = 'data-recued-live-control-close';
+const LIVE_CONTROL_RUN_CONTROL = 'data-recued-live-control-run-control';
 const ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME =
   'data-recued-attention-recovery-intent-server-outcome';
 const ATTENTION_RECOVERY_INTENT_SERVER_STATE =
   'data-recued-attention-recovery-intent-server-state';
+const ATTENTION_RECOVERY_INTENT_EXPIRY_HANDOFF =
+  'data-recued-attention-recovery-intent-expiry-handoff';
 const CONNECTION_BANNER = 'data-recued-connection-banner';
 const CONNECTION_BANNER_ACTION = 'data-recued-connection-banner-action';
 const CONNECTION_STATUS_ANNOUNCER = 'data-recued-connection-status-announcer';
@@ -110,21 +121,46 @@ const SERVER_PROFILE_RENAME = 'data-recued-server-switcher-rename';
 const SERVER_PROFILE_RENAME_FORM = 'data-recued-server-switcher-rename-form';
 const SERVER_PROFILE_RENAME_INPUT = 'data-recued-server-switcher-rename-input';
 const SERVER_PROFILE_RENAME_SAVE = 'data-recued-server-switcher-rename-save';
+const SERVER_PROFILE_REMOVE = 'data-recued-server-switcher-remove';
+const SERVER_PROFILE_REMOVE_CONFIRM =
+  'data-recued-server-switcher-remove-confirm';
+const SERVER_PROFILE_REMOVE_LOCAL =
+  'data-recued-server-switcher-remove-local';
+const SERVER_PROFILE_MENU = 'data-recued-server-switcher-menu';
+const SERVER_PROFILE_ANNOUNCER = 'data-recued-server-switcher-announcer';
 const DRAWER_TOGGLE = 'data-recued-webclient-drawer-toggle';
 const DRAWER = 'data-recued-webclient-drawer';
 const DRAWER_OPEN = 'data-recued-webclient-drawer-open';
 const DRAWER_LINK = 'data-recued-webclient-drawer-link';
+const DRAWER_ACTION = 'data-recued-webclient-drawer-action';
+const CREATE_OVERLAY = 'data-recued-create-overlay';
+const CREATE_OVERLAY_DISCARD_GUARD =
+  'data-recued-create-overlay-discard-guard';
+const CREATE_OVERLAY_DISCARD_KEEP =
+  'data-recued-create-overlay-discard-keep';
+const CREATE_OVERLAY_DISCARD_COMMIT =
+  'data-recued-create-overlay-discard-commit';
 const CHAT_ACTIVATION = 'data-recued-chat-route-activation';
 const CHAT_ACTIVATION_CARD = 'data-recued-chat-route-activation-card';
 const CHAT_ACTIVATION_ACTION = 'data-recued-chat-route-activation-action';
 const CHAT_INPUT = 'data-recued-chat-route-input';
 const CHAT_SEND = 'data-recued-chat-route-send';
+const CHAT_ERROR = 'data-recued-chat-route-error';
+const CHAT_NEW_SESSION = 'data-recued-chat-route-new-session';
+const CHAT_MODEL_PICKER = 'data-recued-chat-route-model-picker';
+const CHAT_COMPOSER_MORE = 'data-recued-chat-route-composer-more';
+const CHAT_COMPOSER_ACTION = 'data-recued-chat-route-composer-action';
 const CHAT_MESSAGE = 'data-recued-chat-route-message';
 const CHAT_SESSION_ROW = 'data-recued-chat-route-session-row';
 const CHAT_SESSION_ACTIONS = 'data-recued-chat-route-session-actions';
+const CHAT_SESSION_EXPORT = 'data-recued-chat-route-session-export';
+const CHAT_SESSION_DELETE = 'data-recued-chat-route-session-delete';
+const CHAT_SESSION_DELETE_CONFIRM =
+  'data-recued-chat-route-session-delete-confirm';
 const CHAT_HISTORY_LANDING = 'data-recued-chat-route-history-landing';
 const CHAT_HISTORY_CONTINUE = 'data-recued-chat-route-history-continue';
 const CHAT_HISTORY_SEARCH = 'data-recued-chat-route-history-search';
+const CHAT_HISTORY_DRAFT_GUARD = 'data-recued-chat-route-history-draft-guard';
 const CHAT_AI_UNAVAILABLE = 'data-recued-chat-route-ai-unavailable';
 const CHAT_SOURCE_HANDOFF = 'data-recued-chat-source-handoff';
 const CHAT_SOURCE_ACTION = 'data-recued-chat-source-action';
@@ -144,6 +180,7 @@ const CHAT_FOLLOWUP_CONTEXT_CLEAR =
   'data-recued-chat-followup-context-clear';
 const CHAT_PLAN_CARD = 'data-recued-chat-route-plan-card';
 const CHAT_PLAN_APPROVE = 'data-recued-chat-route-plan-approve';
+const CHAT_PLAN_CANCEL = 'data-recued-chat-route-plan-cancel';
 const CHAT_PLAN_CONTINUE = 'data-recued-chat-route-plan-continue';
 const CHAT_PLAN_CONTEXT = 'data-recued-chat-route-plan-context';
 const CHAT_DATA_DIAGNOSIS_ANSWER =
@@ -157,18 +194,165 @@ const CHAT_SETUP_SUBMIT = 'data-recued-ai-models-chat-setup-submit';
 const CONNECTIONS_ROUTE = 'data-recued-connections-route';
 const CONNECTIONS_DESCRIPTION = 'data-recued-connections-route-description';
 const CONNECTIONS_TABS = 'data-recued-connections-route-tabs';
+const CONNECTIONS_GRANTS = 'data-recued-connections-route-grants';
+const CONNECTIONS_GRANT_TOGGLE = 'data-recued-conn-grant-toggle';
+const CONNECTIONS_PACK_INVENTORY = 'data-connections-pack-inventory';
+const CONNECTIONS_PACK_INVENTORY_RETRY =
+  'data-connections-pack-inventory-retry';
 const ACCOUNTS_EMPTY = 'data-accounts-empty';
 const ACCOUNT_CONNECTION_SUCCESS = 'data-accounts-connection-success';
 const OAUTH_APP_STATE = 'data-oauth-app-state';
 const OAUTH_CRED_FIELD = 'data-oauth-cred-field';
 const DATA_CHAT_RETURN = 'data-recued-data-route-chat-return';
 const DATA_DETAIL_HEADING = 'data-recued-collection-detail-heading';
+const DATA_TAB = 'data-recued-data-route-tab';
+const DATA_CONTACT_ROW = 'data-recued-data-contact-row';
+const DATA_CONTACT_DETAIL_HEADING = 'data-recued-data-contact-detail-heading';
+const DATA_CONTACT_LOAD_MORE = 'data-recued-data-contact-load-more';
+const DATA_CONTACT_DISCARD_GUARD = 'data-recued-data-contact-discard-guard';
+const DATA_CONTACT_DISCARD_KEEP = 'data-recued-data-contact-discard-keep';
+const DATA_CONTACT_DISCARD_COMMIT = 'data-recued-data-contact-discard-commit';
+const DATA_CONTACT_IMPORT = 'data-recued-data-contact-import';
+const DATA_CONTACT_IMPORT_RESULT =
+  'data-recued-data-contact-import-result';
+const DATA_CONTACT_SCAN = 'data-recued-data-contact-scan';
+const DATA_SCAN_RESULT = 'data-recued-data-scan-result';
+const DATA_MERGE_RESULT = 'data-recued-data-merge-result';
+const DATA_WORK_ENTITY_LOAD_MORE = 'data-recued-data-work-entity-load-more';
+const DATA_WORK_ENTITY_DISCARD_GUARD =
+  'data-recued-data-work-entity-discard-guard';
+const DATA_WORK_ENTITY_DISCARD_KEEP =
+  'data-recued-data-work-entity-discard-keep';
+const DATA_WORK_ENTITY_DISCARD_COMMIT =
+  'data-recued-data-work-entity-discard-commit';
+const DATA_FORM_RESPONSE_LOAD_MORE = 'data-recued-data-form-response-load-more';
+const DATA_FORM_RESPONSE_DETAIL_HEADING =
+  'data-recued-data-form-response-detail-heading';
+const DATA_FORM_RESPONSE_VALUES = 'data-recued-data-form-response-values';
+const DATA_FORM_RESPONSE_EMAIL = 'data-recued-data-form-response-email';
+const DATA_FORM_RESPONSE_STATE = 'data-recued-data-form-response-state';
+const DATA_FORM_RESPONSE_DISCARD_GUARD =
+  'data-recued-data-form-response-discard-guard';
+const DATA_FORM_RESPONSE_DISCARD_KEEP =
+  'data-recued-data-form-response-discard-keep';
+const DATA_FORM_RESPONSE_DISCARD_COMMIT =
+  'data-recued-data-form-response-discard-commit';
+const DATA_MEMORY_COMPOSE_DISCARD_GUARD =
+  'data-recued-memory-compose-discard-guard';
+const DATA_MEMORY_COMPOSE_DISCARD_KEEP =
+  'data-recued-memory-compose-discard-keep';
+const DATA_MEMORY_COMPOSE_DISCARD_COMMIT =
+  'data-recued-memory-compose-discard-commit';
+const DATA_MEMORY_IMPORT_DISCARD_GUARD =
+  'data-recued-memory-import-discard-guard';
+const DATA_MEMORY_IMPORT_DISCARD_KEEP =
+  'data-recued-memory-import-discard-keep';
+const DATA_MEMORY_IMPORT_DISCARD_COMMIT =
+  'data-recued-memory-import-discard-commit';
+const DATA_MEMORY_DETAIL_HEADING = 'data-recued-memory-detail-heading';
+const DATA_FORM_RESPONSE_RUN = 'data-recued-data-form-response-run';
+const DATA_FORM_RESPONSE_RUN_PICKER =
+  'data-recued-data-form-response-run-picker';
+const DATA_COLLECTION_SLUG = 'data-collection-slug';
+const DATA_COLLECTION_RECORD = 'data-collection-record';
+const DATA_DOWNLOAD_FILE = 'data-recued-data-download-file';
+const AUTOMATION_SUBNAV = 'data-recued-automation-subnav';
+const AUTOMATION_STATUS_FILTER = 'data-recued-automation-status-filter';
+const AUTOMATION_ORIGIN_FILTER = 'data-recued-automation-origin-filter';
+const AUTOMATION_ROW = 'data-recued-automation-row';
+const AUTOMATION_RETRY = 'data-recued-automation-retry';
+const AUTOMATION_ADD_ERROR = 'data-recued-automation-add-error';
+const AUTOMATION_ADD_RETRY = 'data-recued-automation-add-retry';
+const AUTOMATION_DISH_HISTORY = 'data-recued-dish-history';
+const AUTOMATION_DISH_HISTORY_ERROR = 'data-recued-dish-history-error';
+const AUTOMATION_DISH_HISTORY_RETRY = 'data-recued-dish-history-retry';
 const DATA_VERIFICATION_ACTION =
   'data-recued-data-route-verification-action';
+const CONTRACTS_DETAIL_HEADING = 'data-recued-contracts-detail-heading';
+const CONTRACTS_DETAIL_TAB = 'data-recued-contracts-tab';
+const CONTRACTS_DETAIL_TAB_BODY = 'data-recued-contracts-tab-body';
 const LOGS_OUTCOME = 'data-recued-logs-outcome';
 const LOGS_AFFECTED_ITEMS = 'data-recued-logs-affected-items';
+const LOGS_DETAIL_HEADING = 'data-recued-logs-detail-heading';
+const LOGS_LOAD_MORE = 'data-recued-logs-load-more';
+const LOGS_ROW = 'data-recued-logs-row';
+const LOGS_ACTION = 'data-recued-logs-action';
+const LOGS_ACTIVE_ROW = 'data-recued-logs-active-row';
+const LOGS_PASS_ROW = 'data-recued-logs-pass-row';
+const LOGS_ERROR = 'data-recued-logs-error';
+const APPROVALS_REFRESH = 'data-recued-approvals-refresh';
+const RECEPTION_INBOX_ROW = 'data-recued-reception-inbox-row';
+const RECEPTION_INBOX_DETAIL_HEADING =
+  'data-recued-reception-inbox-detail-heading';
+const RECEPTION_INBOX_REFRESH = 'data-recued-reception-inbox-refresh';
+const RECEPTION_INBOX_DESTINATION_ERROR =
+  'data-recued-reception-inbox-destination-error';
+const RECEPTION_INBOX_DESTINATION_RETRY =
+  'data-recued-reception-inbox-destination-retry';
+const RECEPTION_RECORDS_ERROR = 'data-recued-reception-records-error';
+const RECEPTION_RECORDS_KIND = 'data-recued-reception-records-kind';
+const RECEPTION_RECORDS_RETRY = 'data-recued-reception-records-retry';
+const RECEPTION_RESPONSES_ERROR = 'data-recued-reception-response-error';
+const RECEPTION_RESPONSES_RETRY = 'data-recued-reception-response-retry';
+const RECEPTION_RESPONSE_DETAIL_RETRY =
+  'data-recued-reception-response-detail-retry';
+const SETTINGS_NAV = 'data-recued-settings-nav';
+const SETTINGS_NAV_ITEM = 'data-recued-settings-nav-item';
+const SETTINGS_SUBTAB = 'data-recued-settings-subtab';
+const CLEAR_THIS_BROWSER_CLEAR = 'data-recued-clear-this-browser-clear';
+const CLEAR_THIS_BROWSER_CONFIRM = 'data-recued-clear-this-browser-confirm';
+const CLEAR_THIS_BROWSER_CANCEL = 'data-recued-clear-this-browser-cancel';
+const CLEAR_THIS_BROWSER_RETRY = 'data-recued-clear-this-browser-retry';
+const CLEAR_THIS_BROWSER_RELOAD = 'data-recued-clear-this-browser-reload';
+const CLEAR_THIS_BROWSER_STATUS = 'data-recued-clear-this-browser-status';
+const ARCHIVE_BACKUP_START = 'data-recued-archive-backup-start';
+const ARCHIVE_RESTORE_START = 'data-recued-archive-restore-start';
+const ARCHIVE_BACKUP_MNEMONIC = 'data-recued-archive-backup-mnemonic';
+const ARCHIVE_BACKUP_RUN = 'data-recued-archive-backup-run';
+const ARCHIVE_BACKUP_PROGRESS = 'data-recued-archive-backup-progress';
+const ARCHIVE_RESTORE_UPLOAD_INPUT = 'data-recued-archive-restore-upload';
+const ARCHIVE_RESTORE_PATH = 'data-recued-archive-restore-path';
+const ARCHIVE_RESTORE_MNEMONIC = 'data-recued-archive-restore-mnemonic';
+const ARCHIVE_RESTORE_PREVIEW = 'data-recued-archive-restore-preview';
+const ARCHIVE_RESTORE_ARM = 'data-recued-archive-restore-arm';
+const ARCHIVE_RESTORE_COMMIT = 'data-recued-archive-restore-commit';
+const ARCHIVE_PASSPORT_START = 'data-recued-archive-passport-start';
+const ARCHIVE_BACKUP_BUSY = 'data-recued-archive-backup-busy';
+const ARCHIVE_BACKUP_CANCEL = 'data-recued-archive-backup-cancel';
+const TRANSPARENCY_TOGGLE = 'data-recued-transparency-toggle';
+const LEARNING_TOGGLE = 'data-recued-learning-toggle';
+const LEARNING_CASE = 'data-recued-learning-case';
+const LEARNING_CASES_EMPTY = 'data-recued-learning-cases-empty';
+const LEARNING_CASES_ERROR = 'data-recued-learning-cases-error';
+const LEARNING_DRAFT = 'data-recued-learning-draft';
+const LEARNING_DRAFT_CONFIRM = 'data-recued-learning-draft-confirm';
+const LEARNING_DRAFT_ERROR = 'data-recued-learning-draft-error';
+const LEARNING_DRAFT_PROMPT = 'data-recued-learning-draft-prompt';
+const LEARNING_DRAFT_ROUTE = 'data-recued-execution-case-draft';
+const LEARNING_FORGET = 'data-recued-learning-forget';
+const LEARNING_FORGET_ERROR = 'data-recued-learning-forget-error';
+const UPDATES_CHECK = 'data-recued-updates-check';
+const UPDATES_STATUS = 'data-recued-updates-status';
+const UPDATES_ERROR = 'data-recued-updates-error';
+const UPDATES_APPLY = 'data-recued-updates-apply';
+const UPDATES_ROLLBACK = 'data-recued-updates-rollback';
+const AI_MODELS_TAB = 'data-recued-ai-models-tab';
+const AI_MODELS_PROMPT_TEXT = 'data-recued-ai-models-prompt-text';
+const AI_MODELS_PROMPT_ROLE = 'data-recued-ai-models-prompt-role';
+const AI_MODELS_PROMPT_SAVE = 'data-recued-ai-models-prompt-save';
+const AI_MODELS_PROMPT_SECTION = 'data-recued-ai-models-prompt';
+const AI_MODELS_PROMPT_BADGE = 'data-recued-ai-models-prompt-badge';
+const AI_MODELS_SLOT_CLEAR_DIALOG = 'data-recued-ai-models-slot-clear-dialog';
+const AI_MODELS_SLOT_CLEAR_CANCEL = 'data-recued-ai-models-slot-clear-cancel';
+const AI_MODELS_SLOT_CLEAR_CONFIRM = 'data-recued-ai-models-slot-clear-confirm';
 const RUN_PALETTE = 'data-recued-run-palette';
 const RUN_PALETTE_CLOSE = 'data-recued-run-palette-close';
+const RUN_PALETTE_ACTION = 'data-recued-run-palette-action';
+const RUN_PALETTE_RESULT = 'data-recued-run-palette-result';
+const RUN_PALETTE_RETRY = 'data-recued-run-palette-retry';
+const PACKS_INSTALLED_ONLY = 'data-recued-packs-surface-installed-only';
+const NOTIFY_TOAST = 'data-recued-notify-toast';
+const NOTIFY_TOAST_DISMISS = 'data-recued-notify-toast-dismiss';
 const PAIR_REAUTH_NOTICE = 'data-recued-pair-code-input-reauth-notice';
 const PAIR_RECOVERY_HELP = 'data-recued-pair-code-input-recovery-help';
 const PAIR_RECOVERY_CORRECTION =
@@ -295,6 +479,105 @@ test('boots the full app + mounts the persistent shell on the chat home', async 
   await expect(page.locator('[data-recued-chat-route]')).toBeVisible();
 });
 
+test('a new notification preserves the focused existing toast action', async ({ page }) => {
+  const notify = (text: string, cursor: number) => page.evaluate(
+    ({ text: body, cursor: eventCursor }) => window.__app.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'notification.notify',
+        title: 'Background work',
+        text: body,
+        cursor: eventCursor,
+      },
+    }),
+    { text, cursor },
+  );
+
+  await notify('First finished', 1);
+  const firstDismiss = page.locator(`[${NOTIFY_TOAST_DISMISS}="toast-1"]`);
+  await firstDismiss.focus();
+  await expect(firstDismiss).toBeFocused();
+
+  await notify('Second finished', 2);
+
+  await expect(page.locator(`[${NOTIFY_TOAST}]`)).toHaveCount(2);
+  await expect(firstDismiss).toBeFocused();
+});
+
+test('dismissing a notification advances focus through the toast stack', async ({ page }) => {
+  for (let cursor = 1; cursor <= 2; cursor += 1) {
+    await page.evaluate((eventCursor) => window.__app.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'notification.notify',
+        title: 'Background work',
+        text: `Finished item ${eventCursor}`,
+        cursor: eventCursor,
+      },
+    }), cursor);
+  }
+
+  const newest = page.locator(`[${NOTIFY_TOAST_DISMISS}="toast-2"]`);
+  const successor = page.locator(`[${NOTIFY_TOAST_DISMISS}="toast-1"]`);
+  await newest.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(page.locator(`[${NOTIFY_TOAST}="toast-2"]`)).toHaveCount(0);
+  await expect(successor).toBeVisible();
+  await expect(successor).toBeFocused();
+});
+
+test('a focused notification does not auto-dismiss its action', async ({ page }) => {
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'notification.notify',
+      title: 'Background work',
+      text: 'Focused notice',
+      cursor: 1,
+    },
+  }));
+  const dismiss = page.locator(`[${NOTIFY_TOAST_DISMISS}="toast-1"]`);
+  await dismiss.focus();
+
+  await page.waitForTimeout(6_250);
+
+  await expect(page.locator(`[${NOTIFY_TOAST}="toast-1"]`)).toBeVisible();
+  await expect(dismiss).toBeFocused();
+});
+
+test('a notification burst preserves the focused toast within its cap', async ({ page }) => {
+  for (let cursor = 1; cursor <= 4; cursor += 1) {
+    await page.evaluate((eventCursor) => window.__app.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'notification.notify',
+        title: 'Burst',
+        text: `Notice ${eventCursor}`,
+        cursor: eventCursor,
+      },
+    }), cursor);
+  }
+  const oldestDismiss = page.locator(
+    `[${NOTIFY_TOAST_DISMISS}="toast-1"]`,
+  );
+  await oldestDismiss.focus();
+
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'notification.notify',
+      title: 'Burst',
+      text: 'Notice 5',
+      cursor: 5,
+    },
+  }));
+
+  await expect(page.locator(`[${NOTIFY_TOAST}]`)).toHaveCount(4);
+  await expect(page.locator(`[${NOTIFY_TOAST}="toast-2"]`)).toHaveCount(0);
+  await expect(oldestDismiss).toBeFocused();
+});
+
 test('the Attention bell is a focused, responsive queue with an exact handoff', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto(`${HARNESS_URL}?attention=pending`);
@@ -367,10 +650,262 @@ test('the Attention bell is a focused, responsive queue with an exact handoff', 
   await expect(dialog).toHaveCount(0);
 
   await bell.click();
+  await expect(dialog).toBeVisible();
+  await bell.click();
+  await expect(dialog).toHaveCount(0);
+
+  await bell.click();
   await dialog.getByRole('link', { name: 'Open approvals' }).click();
   await expect(page).toHaveURL(/#approvals$/);
   await expect(page.locator('[data-recued-approvals-route]')).toBeVisible();
   await expect(page.locator(`[${ATTENTION_DIALOG}]`)).toHaveCount(0);
+});
+
+test('the Attention popover closes when keyboard focus leaves it', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?attention=pending`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const bell = page.getByRole('button', {
+    name: '2 items need your attention',
+  });
+  await bell.click();
+
+  const dialog = page.locator(`[${ATTENTION_DIALOG}]`);
+  const handoff = dialog.getByRole('link', { name: 'Open approvals' });
+  await handoff.focus();
+  await page.keyboard.press('Tab');
+
+  await expect(dialog).toHaveCount(0);
+  await expect(page.locator(`[${ACCOUNT_MENU_TRIGGER}]`)).toBeFocused();
+});
+
+test('Attention inline decisions retain exact pending ownership', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?attention=pending&attention_action_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  await page.getByRole('button', {
+    name: '2 items need your attention',
+  }).click();
+  const dialog = page.locator(`[${ATTENTION_DIALOG}]`);
+  const approve = dialog.getByRole('button', {
+    name: "Approve: Update Acme's account owner in HubSpot",
+  });
+  await approve.focus();
+  await page.keyboard.press('Enter');
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('approval.resolve'))).toBe(1);
+
+  expect(await approve.evaluate((button) => ({
+    disabled: button.hasAttribute('disabled'),
+    ariaDisabled: button.getAttribute('aria-disabled'),
+    ariaBusy: button.getAttribute('aria-busy'),
+    focused: button === document.activeElement,
+  }))).toEqual({
+    disabled: false,
+    ariaDisabled: 'true',
+    ariaBusy: 'true',
+    focused: true,
+  });
+  await approve.dispatchEvent('click');
+  await approve.dispatchEvent('click');
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('approval.resolve'))).toBe(1);
+
+  await expect(approve).toHaveCount(0);
+  const answer = dialog.getByRole('button', {
+    name: 'Approve: Send the customer follow-up?',
+  });
+  await answer.focus();
+  await page.keyboard.press('Enter');
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('notification.submitAnswer'))).toBe(1);
+  expect(await answer.evaluate((button) => ({
+    disabled: button.hasAttribute('disabled'),
+    ariaDisabled: button.getAttribute('aria-disabled'),
+    ariaBusy: button.getAttribute('aria-busy'),
+    focused: button === document.activeElement,
+  }))).toEqual({
+    disabled: false,
+    ariaDisabled: 'true',
+    ariaBusy: 'true',
+    focused: true,
+  });
+  await answer.dispatchEvent('click');
+  await answer.dispatchEvent('click');
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('notification.submitAnswer'))).toBe(1);
+});
+
+test('Attention protects an unresolved decision from tab unload', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?attention=pending&attention_action_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.getByRole('button', {
+    name: '2 items need your attention',
+  }).click();
+
+  const approve = page.locator(`[${ATTENTION_DIALOG}]`).getByRole('button', {
+    name: "Approve: Update Acme's account owner in HubSpot",
+  });
+  await approve.click();
+  await expect(approve).toHaveAttribute('aria-busy', 'true');
+  expect(await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    return window.dispatchEvent(event);
+  })).toBe(false);
+
+  await expect(approve).toHaveCount(0);
+  expect(await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    return window.dispatchEvent(event);
+  })).toBe(true);
+});
+
+test('Attention returns a failed inline approval to its exact action', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?attention=pending&attention_action_response=slow`
+    + '&approval_resolve_response=fail',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${ATTENTION_TOPBAR}] .top-bar-attention-bell`).click();
+
+  const dialog = page.locator(`[${ATTENTION_DIALOG}]`);
+  const reject = dialog.getByRole('button', {
+    name: "Reject: Update Acme's account owner in HubSpot",
+  });
+  await reject.focus();
+  await page.keyboard.press('Enter');
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('approval.resolve'))).toBe(1);
+  await expect(reject).toHaveAttribute('aria-disabled', 'true');
+  await expect(reject).toHaveAttribute('aria-busy', 'true');
+  await expect(reject).toBeFocused();
+
+  await expect(dialog.locator(`[${ATTENTION_ERROR}]`)).toContainText(
+    "Couldn't update approval: The approval decision could not be saved.",
+  );
+  await expect(reject).not.toHaveAttribute('aria-disabled');
+  await expect(reject).not.toHaveAttribute('aria-busy');
+  await expect(reject).toBeFocused();
+});
+
+test('Attention Chat-plan decisions retain exact pending ownership', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?attention=plan&attention_action_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${ATTENTION_TOPBAR}] .top-bar-attention-bell`).click();
+
+  const dialog = page.locator(`[${ATTENTION_DIALOG}]`);
+  const approve = dialog.getByRole('button', {
+    name: 'Approve: Mail send',
+  });
+  await approve.focus();
+  await page.keyboard.press('Enter');
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('chat.plan.approve'))).toBe(1);
+  expect(await approve.evaluate((button) => ({
+    disabled: button.hasAttribute('disabled'),
+    ariaDisabled: button.getAttribute('aria-disabled'),
+    ariaBusy: button.getAttribute('aria-busy'),
+    focused: button === document.activeElement,
+  }))).toEqual({
+    disabled: false,
+    ariaDisabled: 'true',
+    ariaBusy: 'true',
+    focused: true,
+  });
+  await approve.dispatchEvent('click');
+  await approve.dispatchEvent('click');
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('chat.plan.approve'))).toBe(1);
+});
+
+test('Attention keeps destructive confirmation armed while resolving', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?attention=destructive&attention_action_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${ATTENTION_TOPBAR}] .top-bar-attention-bell`).click();
+
+  const dialog = page.locator(`[${ATTENTION_DIALOG}]`);
+  await dialog.getByRole('button', {
+    name: "Approve: Update Acme's account owner in HubSpot",
+  }).click();
+  const confirm = dialog.getByRole('button', {
+    name: "Confirm: Update Acme's account owner in HubSpot",
+  });
+  const cancel = dialog.getByRole('button', {
+    name: "Cancel confirmation: Update Acme's account owner in HubSpot",
+  });
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('approval.resolve'))).toBe(1);
+  await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+  await expect(confirm).toHaveAttribute('aria-busy', 'true');
+  await expect(confirm).toBeFocused();
+  await cancel.dispatchEvent('click');
+  await expect(confirm).toBeVisible();
+  await expect(confirm).toBeFocused();
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('approval.resolve'))).toBe(1);
+});
+
+test('the Account popover closes when keyboard focus leaves it', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const trigger = page.locator(`[${ACCOUNT_MENU_TRIGGER}]`);
+  await trigger.click();
+
+  const dialog = page.locator(`[${ACCOUNT_MENU_POPOVER}]`);
+  await expect(dialog).toBeVisible();
+  await trigger.click();
+  await expect(dialog).toBeHidden();
+  await trigger.click();
+
+  const addServer = dialog.getByRole('button', {
+    name: 'Add another server…',
+  });
+  await addServer.focus();
+  await page.keyboard.press('Tab');
+
+  await expect(dialog).toBeHidden();
+  await expect(page.getByRole('button', { name: 'New chat' })).toBeFocused();
+});
+
+test('the connection banner preserves focus when recovery retires its action', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => {
+    window.__app.setServerAvailable(false);
+    window.__app.fireState('closed');
+  });
+
+  const action = page.locator(`[${CONNECTION_BANNER_ACTION}]`);
+  await expect(action).toBeVisible();
+  await action.focus();
+  await expect(action).toBeFocused();
+
+  await page.evaluate(() => {
+    window.__app.setServerAvailable(true);
+    window.__app.fireState('connected');
+  });
+
+  await expect(action).toBeHidden();
+  await expect(page.locator(`[${ACCOUNT_MENU_TRIGGER}]`)).toBeFocused();
 });
 
 test('bounded verification lands on one exact Account diagnosis and returns explicitly', async ({ page }) => {
@@ -887,9 +1422,10 @@ test('reconciles an unresolved receipt with current server state without replayi
   await page.waitForFunction(() => window.__app?.ready === true);
   expect(await page.evaluate(() =>
     window.__app.rpcCallCount('server.setPaused'))).toBe(0);
-  const restoredBell = page.getByRole('button', {
-    name: '1 item needs your attention',
-  });
+  const restoredBell = page.locator('[data-action="open-attention"]');
+  await expect(restoredBell).toHaveAccessibleName(
+    '1 item needs your attention',
+  );
   await restoredBell.click();
   const restoredAttention = page.locator(`[${ATTENTION_DIALOG}]`);
   const readyCheck = restoredAttention.locator(
@@ -918,12 +1454,78 @@ test('reconciles an unresolved receipt with current server state without replayi
     name: /Check Contracts now on .* no prior action or receipt will replay/,
   });
   await expect(resumedVerify).toHaveText('Check Contracts now');
+  const keepForLater = readyCheck.getByRole('button', {
+    name: /Keep the Contracts check for later on/,
+  });
+  await expect(keepForLater).toHaveText('Keep for later');
+  const readsBeforeReconnect = await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts'));
+  const routeBeforeDefer = page.url();
+  const markersBeforeDefer = await page.evaluate(([parentKey, checkKey]) => ({
+    parent: window.sessionStorage.getItem(parentKey),
+    check: window.sessionStorage.getItem(checkKey),
+  }), [
+    RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+    RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+  ] as const);
+
+  await keepForLater.click();
+  await expect(restoredAttention).toBeHidden();
+  await expect(restoredBell).toBeFocused();
+  await expect(restoredBell).toHaveAccessibleName(
+    'No items need your attention; 1 item saved for later',
+  );
+  await expect(restoredBell).toHaveClass(/top-bar-attention--saved/);
+  await expect(restoredBell).not.toHaveClass(/top-bar-attention--ready/);
+  await expect(restoredBell.locator(
+    '.top-bar-attention-quiet-indicator',
+  )).toHaveCount(0);
+  await expect(restoredBell.locator('.top-bar-attention-badge')).toHaveCount(0);
+  expect(page.url()).toBe(routeBeforeDefer);
+  expect(await page.evaluate(([parentKey, checkKey]) => ({
+    parent: window.sessionStorage.getItem(parentKey),
+    check: window.sessionStorage.getItem(checkKey),
+  }), [
+    RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+    RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+  ] as const)).toEqual(markersBeforeDefer);
+  expect(await page.evaluate((key) => {
+    const raw = window.sessionStorage.getItem(key);
+    return raw === null ? null : JSON.parse(raw) as unknown;
+  }, RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY)).toEqual({
+    v: 4,
+    profile_id: expect.any(String),
+    landing_hash: '#contracts',
+    paused_at: FIXED_NOW,
+    deferred_at: FIXED_NOW,
+    review_started_at: null,
+    attempt_count: 0,
+    diagnosis_target: null,
+    diagnosis_outcome: null,
+  });
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts')))
+    .toBe(readsBeforeReconnect);
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('server.setPaused'))).toBe(0);
+
+  // Reopening Attention returns to the same explicit choice. Deferral neither
+  // retires the exact-area obligation nor replays the historical receipt.
+  await restoredBell.click();
+  await expect(readyCheck).toBeVisible();
+  await expect(readyCheck).toHaveAttribute('data-deferred', 'true');
+  await expect(readyCheck).toContainText('Contracts check kept for later');
+  await expect(readyCheck).toContainText(
+    'Kept for later just now · expires in 30 min',
+  );
+  await expect(keepForLater).toBeVisible();
+  await expect(readyCheck.locator(
+    `[${ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME}]`,
+  )).toHaveCount(0);
   await page.screenshot({
     path: `${ARTIFACTS}/full-app-attention-reconciliation-reentry-mobile.png`,
     fullPage: false,
   });
-  const readsBeforeReconnect = await page.evaluate(() =>
-    window.__app.rpcCallCount('collection.contract.listContracts'));
   await page.evaluate(() => window.__app.fireState('reconnecting'));
   await page.evaluate(() => window.__app.fireState('connected'));
   await page.waitForTimeout(50);
@@ -947,6 +1549,10 @@ test('reconciles an unresolved receipt with current server state without replayi
     (key) => window.sessionStorage.getItem(key),
     RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
   )).toBeNull();
+  expect(await page.evaluate(
+    (key) => window.sessionStorage.getItem(key),
+    RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+  )).toBeNull();
   // The populated route has multiple panels backed by listContracts. Their
   // supporting reads may settle alongside the route-owned retry, but closure
   // must not leave a polling/retry loop behind.
@@ -956,6 +1562,660 @@ test('reconciles an unresolved receipt with current server state without replayi
   expect(await page.evaluate(() =>
     window.__app.rpcCallCount('collection.contract.listContracts')))
     .toBe(readsAfterClosure);
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('server.setPaused'))).toBe(0);
+});
+
+test('expires a deferred check into one quiet intent-free current-area review', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?journey=bounded-verification&server_profiles=multiple#chat`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  await page.evaluate(([
+    parentKey,
+    checkKey,
+    deferredKey,
+    fixedNow,
+    maxAge,
+  ]) => {
+    const current = window.sessionStorage.getItem(parentKey);
+    if (current === null) throw new Error('missing bounded parent marker');
+    const profileId = (JSON.parse(current) as { profile_id: string }).profile_id;
+    const pausedAt = fixedNow - maxAge;
+    window.sessionStorage.setItem(parentKey, JSON.stringify({
+      v: 1,
+      profile_id: profileId,
+      landing_hash: '#contracts',
+      intent: 'choose_again',
+      paused_at: pausedAt,
+    }));
+    window.sessionStorage.setItem(checkKey, JSON.stringify({
+      v: 2,
+      profile_id: profileId,
+      landing_hash: '#contracts',
+      intent: 'choose_again',
+      paused_at: pausedAt,
+      review_target: 'server',
+      state: 'ready',
+      interruption_count: 0,
+      last_interruption: null,
+    }));
+    window.sessionStorage.setItem(deferredKey, JSON.stringify({
+      v: 4,
+      profile_id: profileId,
+      landing_hash: '#contracts',
+      paused_at: pausedAt,
+      deferred_at: pausedAt + 5 * 60_000,
+      review_started_at: null,
+      attempt_count: 0,
+      diagnosis_target: null,
+      diagnosis_outcome: null,
+    }));
+  }, [
+    RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+    RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+    FIXED_NOW,
+    RECOVERY_INTENT_CONTINUATION_MAX_AGE_MS,
+  ] as const);
+  await page.reload();
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const bell = page.locator('[data-action="open-attention"]');
+  await expect(bell).toHaveAccessibleName(
+    'No items need your attention; 1 saved item ready to review',
+  );
+  await expect(bell).toHaveClass(/top-bar-attention--saved/);
+  await expect(bell).toHaveClass(/top-bar-attention--ready/);
+  await expect(bell.locator('.top-bar-attention-quiet-indicator')).toBeVisible();
+  await expect(bell.locator('.top-bar-attention-badge')).toHaveCount(0);
+  await expect(page).toHaveURL(/#chat$/);
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('server.setPaused'))).toBe(0);
+  expect(await page.evaluate(
+    (key) => window.sessionStorage.getItem(key),
+    RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+  )).toBeNull();
+  expect(await page.evaluate(
+    (key) => window.sessionStorage.getItem(key),
+    RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+  )).toBeNull();
+
+  await bell.click();
+  const attention = page.locator(`[${ATTENTION_DIALOG}]`);
+  const expiry = attention.locator(
+    `[${ATTENTION_RECOVERY_INTENT_EXPIRY_HANDOFF}]`,
+  );
+  await expect(expiry).toBeVisible();
+  await expect(expiry).toContainText('Saved Contracts check expired');
+  await expect(expiry).toContainText(
+    'discarded the prior intent and unfinished check',
+  );
+  await expect(expiry).toContainText('Expired just now · exact return removed');
+  await expect(expiry).not.toContainText('choose_again');
+  await expect(expiry.locator(
+    `[${ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME}]`,
+  )).toHaveCount(0);
+  await expect(expiry.locator(
+    `[${ATTENTION_RECOVERY_INTENT_SERVER_STATE}]`,
+  )).toHaveCount(0);
+  const reviewCurrent = expiry.getByRole('button', {
+    name: /Review current Contracts; no expired intent or prior action will replay/,
+  });
+  await expect(reviewCurrent).toHaveText('Review current Contracts');
+  await page.screenshot({
+    path: `${ARTIFACTS}/full-app-attention-deferred-expiry-mobile.png`,
+    fullPage: false,
+  });
+
+  const readsBeforeReview = await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts'));
+  expect(readsBeforeReview).toBe(0);
+  await reviewCurrent.click();
+  await expect(page).toHaveURL(/#contracts$/);
+  await expect(attention).toBeHidden();
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts')))
+    .toBeGreaterThan(readsBeforeReview);
+  await expect(page.locator('[data-recued-contracts-route-heading]'))
+    .toBeFocused();
+  await expect.poll(() => page.evaluate(
+    (key) => window.sessionStorage.getItem(key),
+    RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+  )).toBeNull();
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('server.setPaused'))).toBe(0);
+
+  // The bounded harness seeds only when its query is present. Removing that
+  // test-only seed proves the consumed notice does not return on a cold boot.
+  await page.evaluate(() => {
+    window.history.replaceState(null, '', `${window.location.pathname}#contracts`);
+  });
+  await page.reload();
+  await page.waitForFunction(() => window.__app?.ready === true);
+  const coldBell = page.locator('[data-action="open-attention"]');
+  await expect(coldBell).toHaveAccessibleName('No items need your attention');
+  await coldBell.click();
+  await expect(page.locator(
+    `[${ATTENTION_RECOVERY_INTENT_EXPIRY_HANDOFF}]`,
+  )).toHaveCount(0);
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('server.setPaused'))).toBe(0);
+});
+
+test('keeps one quiet route-owned retry when an expired current-area review is unavailable', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?journey=bounded-verification&server_profiles=multiple&contract_read_failures=1#chat`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  await page.evaluate(([
+    parentKey,
+    checkKey,
+    deferredKey,
+    fixedNow,
+    maxAge,
+  ]) => {
+    const current = window.sessionStorage.getItem(parentKey);
+    if (current === null) throw new Error('missing bounded parent marker');
+    const profileId = (JSON.parse(current) as { profile_id: string }).profile_id;
+    const pausedAt = fixedNow - maxAge;
+    window.sessionStorage.setItem(parentKey, JSON.stringify({
+      v: 1,
+      profile_id: profileId,
+      landing_hash: '#contracts',
+      intent: 'choose_again',
+      paused_at: pausedAt,
+    }));
+    window.sessionStorage.setItem(checkKey, JSON.stringify({
+      v: 2,
+      profile_id: profileId,
+      landing_hash: '#contracts',
+      intent: 'choose_again',
+      paused_at: pausedAt,
+      review_target: 'server',
+      state: 'ready',
+      interruption_count: 0,
+      last_interruption: null,
+    }));
+    window.sessionStorage.setItem(deferredKey, JSON.stringify({
+      v: 4,
+      profile_id: profileId,
+      landing_hash: '#contracts',
+      paused_at: pausedAt,
+      deferred_at: pausedAt + 5 * 60_000,
+      review_started_at: null,
+      attempt_count: 0,
+      diagnosis_target: null,
+      diagnosis_outcome: null,
+    }));
+  }, [
+    RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+    RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+    FIXED_NOW,
+    RECOVERY_INTENT_CONTINUATION_MAX_AGE_MS,
+  ] as const);
+  await page.reload();
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const bell = page.locator('[data-action="open-attention"]');
+  await bell.click();
+  const attention = page.locator(`[${ATTENTION_DIALOG}]`);
+  const expiry = attention.locator(
+    `[${ATTENTION_RECOVERY_INTENT_EXPIRY_HANDOFF}]`,
+  );
+  const reviewCurrent = expiry.getByRole('button', {
+    name: /Review current Contracts; no expired intent or prior action will replay/,
+  });
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts'))).toBe(0);
+  await reviewCurrent.click();
+
+  await expect(page).toHaveURL(/#contracts$/);
+  await expect(attention).toBeHidden();
+  await expect(bell).toHaveAccessibleName(
+    'No items need your attention; 1 saved review needs retry',
+  );
+  await expect(bell).toHaveClass(/top-bar-attention--retry/);
+  await expect(bell.locator('.top-bar-attention-badge')).toHaveCount(0);
+  await expect(page.locator('[data-recued-contracts-error]')).toBeFocused();
+
+  const readsAfterFailure = await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts'));
+  const storedRetry = await page.evaluate(
+    (key) => window.sessionStorage.getItem(key),
+    RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+  );
+  expect(storedRetry).not.toBeNull();
+  expect(JSON.parse(storedRetry!)).toMatchObject({
+    v: 4,
+    landing_hash: '#contracts',
+    review_started_at: FIXED_NOW,
+    attempt_count: 1,
+    diagnosis_target: null,
+    diagnosis_outcome: null,
+  });
+  expect(storedRetry).not.toMatch(
+    /choose_again|intent|credential|receipt|record|provider|private harness/i,
+  );
+
+  await bell.click();
+  await expect(expiry).toHaveAttribute('data-phase', 'retry');
+  await expect(expiry).toHaveAttribute('data-retry-reason', 'unavailable');
+  await expect(expiry).toContainText('Contracts couldn’t be refreshed');
+  await expect(expiry).toContainText('Try the current area again');
+  await expect(expiry).not.toContainText('private harness current-area failure');
+  const retry = expiry.getByRole('button', {
+    name: /Retry current Contracts; no expired intent or prior action will replay/,
+  });
+  await page.screenshot({
+    path: `${ARTIFACTS}/full-app-attention-expired-review-retry-mobile.png`,
+    fullPage: false,
+  });
+
+  await page.evaluate(() => {
+    window.__app.fireState('reconnecting');
+    window.__app.fireState('connected');
+  });
+  await page.waitForTimeout(50);
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts')))
+    .toBe(readsAfterFailure);
+
+  await retry.click();
+  await expect(attention).toBeHidden();
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts')))
+    .toBeGreaterThan(readsAfterFailure);
+  await expect.poll(() => page.evaluate(
+    (key) => window.sessionStorage.getItem(key),
+    RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+  )).toBeNull();
+  await expect(page.locator('[data-recued-contracts-route-heading]'))
+    .toBeFocused();
+  await expect(bell).toHaveAccessibleName('No items need your attention');
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('server.setPaused'))).toBe(0);
+});
+
+test('bounds a repeated expired-area retry to direct route diagnosis', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?journey=bounded-verification&server_profiles=multiple&contract_read_failures=100#chat`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  await page.evaluate(([
+    parentKey,
+    checkKey,
+    deferredKey,
+    fixedNow,
+    maxAge,
+  ]) => {
+    const current = window.sessionStorage.getItem(parentKey);
+    if (current === null) throw new Error('missing bounded parent marker');
+    const profileId = (JSON.parse(current) as { profile_id: string }).profile_id;
+    const pausedAt = fixedNow - maxAge;
+    window.sessionStorage.setItem(parentKey, JSON.stringify({
+      v: 1,
+      profile_id: profileId,
+      landing_hash: '#contracts',
+      intent: 'choose_again',
+      paused_at: pausedAt,
+    }));
+    window.sessionStorage.setItem(checkKey, JSON.stringify({
+      v: 2,
+      profile_id: profileId,
+      landing_hash: '#contracts',
+      intent: 'choose_again',
+      paused_at: pausedAt,
+      review_target: 'server',
+      state: 'ready',
+      interruption_count: 0,
+      last_interruption: null,
+    }));
+    window.sessionStorage.setItem(deferredKey, JSON.stringify({
+      v: 4,
+      profile_id: profileId,
+      landing_hash: '#contracts',
+      paused_at: pausedAt,
+      deferred_at: pausedAt + 5 * 60_000,
+      review_started_at: null,
+      attempt_count: 0,
+      diagnosis_target: null,
+      diagnosis_outcome: null,
+    }));
+  }, [
+    RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+    RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+    FIXED_NOW,
+    RECOVERY_INTENT_CONTINUATION_MAX_AGE_MS,
+  ] as const);
+  await page.reload();
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const bell = page.locator('[data-action="open-attention"]');
+  const attention = page.locator(`[${ATTENTION_DIALOG}]`);
+  const expiry = attention.locator(
+    `[${ATTENTION_RECOVERY_INTENT_EXPIRY_HANDOFF}]`,
+  );
+  await bell.click();
+  await expiry.getByRole('button', {
+    name: /Review current Contracts; no expired intent or prior action will replay/,
+  }).click();
+  await expect(bell).toHaveAccessibleName(
+    'No items need your attention; 1 saved review needs retry',
+  );
+
+  await bell.click();
+  await expiry.getByRole('button', {
+    name: /Retry current Contracts; no expired intent or prior action will replay/,
+  }).click();
+  await expect(bell).toHaveAccessibleName(
+    'No items need your attention; 1 saved review needs diagnosis',
+  );
+  await expect(bell).toHaveClass(/top-bar-attention--diagnosis/);
+  await expect(bell.locator('.top-bar-attention-badge')).toHaveCount(0);
+  const readsAtLimit = await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts'));
+
+  await bell.click();
+  await expect(expiry).toHaveAttribute('data-phase', 'handoff');
+  await expect(expiry).toHaveAttribute('data-diagnosis-target', 'area');
+  await expect(expiry).toContainText('Contracts needs direct review');
+  await expect(expiry).toContainText(
+    'Recued stopped after two unsuccessful checks',
+  );
+  await expect(expiry).not.toContainText('private harness current-area failure');
+  const directReview = expiry.getByRole('button', {
+    name: /Open current Contracts; no expired intent or prior action will replay/,
+  });
+  await page.screenshot({
+    path: `${ARTIFACTS}/full-app-attention-expired-review-diagnosis-mobile.png`,
+    fullPage: false,
+  });
+
+  await page.evaluate(() => {
+    window.__app.fireState('reconnecting');
+    window.__app.fireState('connected');
+  });
+  await page.waitForTimeout(50);
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts')))
+    .toBe(readsAtLimit);
+
+  await directReview.click();
+  await expect(attention).toBeHidden();
+  await expect(page.locator('[data-recued-contracts-error]')).toBeFocused();
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts')))
+    .toBe(readsAtLimit);
+  await expect(bell).toHaveAccessibleName('No items need your attention');
+  await expect.poll(() => page.evaluate(
+    (key) => window.sessionStorage.getItem(key),
+    RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+  )).toBeNull();
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('server.setPaused'))).toBe(0);
+});
+
+test('bounds a repeated offline expired-area retry to exact server diagnosis', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?journey=bounded-verification&server_profiles=multiple#chat`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  await page.evaluate(([
+    parentKey,
+    checkKey,
+    deferredKey,
+    fixedNow,
+    maxAge,
+  ]) => {
+    const current = window.sessionStorage.getItem(parentKey);
+    if (current === null) throw new Error('missing bounded parent marker');
+    const profileId = (JSON.parse(current) as { profile_id: string }).profile_id;
+    const pausedAt = fixedNow - maxAge;
+    window.sessionStorage.setItem(parentKey, JSON.stringify({
+      v: 1,
+      profile_id: profileId,
+      landing_hash: '#contracts',
+      intent: 'choose_again',
+      paused_at: pausedAt,
+    }));
+    window.sessionStorage.setItem(checkKey, JSON.stringify({
+      v: 2,
+      profile_id: profileId,
+      landing_hash: '#contracts',
+      intent: 'choose_again',
+      paused_at: pausedAt,
+      review_target: 'server',
+      state: 'ready',
+      interruption_count: 0,
+      last_interruption: null,
+    }));
+    window.sessionStorage.setItem(deferredKey, JSON.stringify({
+      v: 4,
+      profile_id: profileId,
+      landing_hash: '#contracts',
+      paused_at: pausedAt,
+      deferred_at: pausedAt + 5 * 60_000,
+      review_started_at: fixedNow,
+      attempt_count: 1,
+      diagnosis_target: null,
+      diagnosis_outcome: null,
+    }));
+  }, [
+    RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+    RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+    FIXED_NOW,
+    RECOVERY_INTENT_CONTINUATION_MAX_AGE_MS,
+  ] as const);
+  await page.reload();
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => {
+    window.__app.setServerAvailable(false);
+    window.__app.fireState('closed');
+  });
+  await expect(page.locator(`[${CONNECTION_BANNER}]`)).toBeVisible();
+
+  const bell = page.locator('[data-action="open-attention"]');
+  const attention = page.locator(`[${ATTENTION_DIALOG}]`);
+  const expiry = attention.locator(
+    `[${ATTENTION_RECOVERY_INTENT_EXPIRY_HANDOFF}]`,
+  );
+  const readsBeforeDiagnosis = await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts'));
+  await bell.click();
+  await expiry.getByRole('button', {
+    name: /Retry current Contracts; no expired intent or prior action will replay/,
+  }).click();
+  await expect(bell).toHaveAccessibleName(
+    'No items need your attention; 1 saved review needs diagnosis',
+  );
+  await expect(bell).toHaveClass(/top-bar-attention--diagnosis/);
+
+  await bell.click();
+  await expect(expiry).toHaveAttribute('data-phase', 'handoff');
+  await expect(expiry).toHaveAttribute('data-diagnosis-target', 'server');
+  await expect(expiry).toContainText('needs connection review');
+  await expect(expiry).toContainText(
+    'Recued stopped after two connection-blocked checks',
+  );
+  await expiry.getByRole('button', {
+    name: /Review .*; no expired intent or prior action will replay/,
+  }).click();
+
+  const account = page.locator(`[${ACCOUNT_MENU_POPOVER}]`);
+  const diagnosis = account.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS}]`,
+  );
+  const diagnosisTitle = diagnosis.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_TITLE}]`,
+  );
+  await expect(account).toBeVisible();
+  await expect(diagnosis).toBeVisible();
+  await expect(diagnosisTitle).toBeFocused();
+  await expect(diagnosisTitle).toContainText('for Contracts');
+  await expect(diagnosis).toContainText(
+    'stopped after two unsuccessful current Contracts checks',
+  );
+  await expect(diagnosis).toContainText(
+    'This review will not retry Contracts',
+  );
+  await expect(diagnosis.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_STATUS}]`,
+  )).toContainText('is not reachable');
+  const finish = diagnosis.locator(
+    `[${ACCOUNT_MENU_CONNECTION_DIAGNOSIS_RETURN}]`,
+  );
+  await expect(finish).toHaveText('Choose check or close');
+  await page.screenshot({
+    path: `${ARTIFACTS}/full-app-attention-expired-review-server-diagnosis-mobile.png`,
+    fullPage: false,
+  });
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts')))
+    .toBe(readsBeforeDiagnosis);
+
+  await finish.click();
+  await expect(account).toBeHidden();
+  await expect(attention).toBeVisible();
+  await expect(attention.locator(`[${ATTENTION_CLOSE}]`)).toBeFocused();
+  await expect(bell).toHaveAccessibleName(
+    'No items need your attention; 1 saved review needs a decision',
+  );
+  await expect(bell).toHaveClass(/top-bar-attention--decision/);
+  await expect(expiry).toHaveAttribute('data-phase', 'outcome');
+  await expect(expiry).toHaveAttribute('data-check-blocker', 'server');
+  await expect(expiry).toContainText('before the fresh check');
+  const waitingForServer = expiry.getByRole('button', {
+    name: /Waiting for .* before one current Contracts check; reconnect will not start it/,
+  });
+  await expect(waitingForServer).toHaveText('Waiting for server');
+  await expect(waitingForServer).toBeDisabled();
+  const closeReview = expiry.getByRole('button', { name: 'Close review' });
+  await expect(closeReview).toBeVisible();
+  await page.screenshot({
+    path: `${ARTIFACTS}/full-app-attention-expired-review-outcome-mobile.png`,
+    fullPage: false,
+  });
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts')))
+    .toBe(readsBeforeDiagnosis);
+  await closeReview.click();
+  await expect(bell).toHaveAccessibleName('No items need your attention');
+  await expect.poll(() => page.evaluate(
+    (key) => window.sessionStorage.getItem(key),
+    RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+  )).toBeNull();
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('server.setPaused'))).toBe(0);
+});
+
+test('runs one deliberate post-diagnosis current-area check without reviving expired work', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?journey=bounded-verification&server_profiles=multiple#chat`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  await page.evaluate(([
+    parentKey,
+    checkKey,
+    deferredKey,
+    fixedNow,
+    maxAge,
+  ]) => {
+    const current = window.sessionStorage.getItem(parentKey);
+    if (current === null) throw new Error('missing bounded parent marker');
+    const profileId = (JSON.parse(current) as { profile_id: string }).profile_id;
+    const pausedAt = fixedNow - maxAge;
+    window.sessionStorage.setItem(parentKey, JSON.stringify({
+      v: 1,
+      profile_id: profileId,
+      landing_hash: '#contracts',
+      intent: 'choose_again',
+      paused_at: pausedAt,
+    }));
+    window.sessionStorage.setItem(checkKey, JSON.stringify({
+      v: 2,
+      profile_id: profileId,
+      landing_hash: '#contracts',
+      intent: 'choose_again',
+      paused_at: pausedAt,
+      review_target: 'server',
+      state: 'ready',
+      interruption_count: 0,
+      last_interruption: null,
+    }));
+    window.sessionStorage.setItem(deferredKey, JSON.stringify({
+      v: 4,
+      profile_id: profileId,
+      landing_hash: '#contracts',
+      paused_at: pausedAt,
+      deferred_at: pausedAt + 5 * 60_000,
+      review_started_at: fixedNow,
+      attempt_count: 2,
+      diagnosis_target: 'server',
+      diagnosis_outcome: 'choose',
+    }));
+  }, [
+    RECOVERY_INTENT_CONTINUATION_SESSION_KEY,
+    RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY,
+    RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+    FIXED_NOW,
+    RECOVERY_INTENT_CONTINUATION_MAX_AGE_MS,
+  ] as const);
+  await page.reload();
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const bell = page.locator('[data-action="open-attention"]');
+  const attention = page.locator(`[${ATTENTION_DIALOG}]`);
+  const expiry = attention.locator(
+    `[${ATTENTION_RECOVERY_INTENT_EXPIRY_HANDOFF}]`,
+  );
+  await expect(bell).toHaveAccessibleName(
+    'No items need your attention; 1 saved review needs a decision',
+  );
+  const readsBefore = await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts'));
+  await bell.click();
+  await expect(expiry).toHaveAttribute('data-phase', 'outcome');
+  await expiry.getByRole('button', {
+    name: /Check current Contracts once; the expired intent and prior action will remain removed/,
+  }).click();
+
+  await expect(attention).toBeHidden();
+  await expect.poll(() => new URL(page.url()).hash).toBe('#contracts');
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts')))
+    .toBeGreaterThan(readsBefore);
+  await expect.poll(() => page.evaluate(
+    (key) => window.sessionStorage.getItem(key),
+    RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+  )).toBeNull();
+  await expect(page.locator(
+    '[data-recued-contracts-route-heading]',
+  )).toBeFocused();
+  await expect(bell).toHaveAccessibleName('No items need your attention');
+  const readsAfter = await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts'));
+  await page.evaluate(() => {
+    window.__app.fireState('reconnecting');
+    window.__app.fireState('connected');
+  });
+  await page.waitForTimeout(100);
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.listContracts')))
+    .toBe(readsAfter);
   expect(await page.evaluate(() =>
     window.__app.rpcCallCount('server.setPaused'))).toBe(0);
 });
@@ -1154,6 +2414,35 @@ test('Account server profiles own connection status, recovery, and the return on
   await expect(page).toHaveURL(/#settings\/account$/);
   await page.waitForFunction(() => window.__app.activeRoute() === 'settings');
   await expect(dialog).toBeHidden();
+});
+
+test('Account keeps the surviving profile roster open after forgetting another server', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?server_profiles=multiple`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const account = page.locator(`[${ACCOUNT_MENU_TRIGGER}]`);
+  await account.click();
+  const dialog = page.locator(`[${ACCOUNT_MENU_POPOVER}]`);
+  const profiles = dialog.locator(`[${SERVER_PROFILE_ITEM}]`);
+  const office = profiles.filter({ hasText: 'Office server' });
+  await office.locator('..').locator(`[${SERVER_PROFILE_REMOVE}]`).click();
+
+  const removal = dialog.locator(`[${SERVER_PROFILE_REMOVE_CONFIRM}]`);
+  await expect(removal).toHaveAccessibleName('Remove Office server?');
+  await expect(removal.getByRole('button', { name: 'Cancel' })).toBeFocused();
+  await removal.locator(`[${SERVER_PROFILE_REMOVE_LOCAL}]`).click();
+
+  await expect(dialog).toBeVisible();
+  await expect(account).toHaveAttribute('aria-expanded', 'true');
+  await expect(removal).toHaveCount(0);
+  await expect(profiles).toHaveCount(1);
+  await expect(profiles).not.toContainText('Office server');
+  await expect(dialog.locator(`[${SERVER_PROFILE_MENU}]`)).toBeFocused();
+  await expect(dialog.locator(`[${SERVER_PROFILE_ANNOUNCER}]`))
+    .toContainText('no longer saved on this browser');
+  await expect(
+    dialog.locator(`[${SERVER_PROFILE_ITEM}][aria-current="true"]`),
+  ).toContainText('alice');
 });
 
 test('a deliberate server switch protects the draft boundary and returns to a clean target area once', async ({ page }) => {
@@ -6112,6 +7401,140 @@ test('Set up Chat saves a model, returns to Chat, and focuses the starter prompt
   });
 });
 
+test('Set up Chat owns its two-stage model handoff', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?ai=empty&ai_slot_save_response=slow&ai_default_model_pref_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => {
+    window.__app.setHash('#settings/ai-models/setup/start');
+  });
+
+  const setup = page.locator(`[${CHAT_SETUP}]`);
+  const provider = setup.getByRole('combobox', {
+    name: 'Provider',
+    exact: true,
+  });
+  const key = page.locator(`[${CHAT_SETUP_KEY}]`);
+  const submit = page.locator(`[${CHAT_SETUP_SUBMIT}="new"]`);
+  await key.fill('sk-two-stage-test');
+  await submit.focus();
+  await page.keyboard.press('Enter');
+
+  expect(await submit.evaluate((button) => ({
+    text: button.textContent,
+    ariaDisabled: button.getAttribute('aria-disabled'),
+    ariaBusy: button.getAttribute('aria-busy'),
+    nativeDisabled: (button as HTMLButtonElement).disabled,
+    focused: document.activeElement === button,
+  }))).toEqual({
+    text: 'Saving setup…',
+    ariaDisabled: 'true',
+    ariaBusy: 'true',
+    nativeDisabled: false,
+    focused: true,
+  });
+  await expect(provider).toBeDisabled();
+  await expect(key).toHaveAttribute('readonly', '');
+  await submit.evaluate((button) => {
+    (button as HTMLElement).click();
+    (button as HTMLElement).click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('server.setLLMSlot')),
+  ).toBe(1);
+
+  const finishing = page.locator(
+    '[data-recued-ai-models-chat-setup-status="saving"]',
+  );
+  await expect(finishing).toHaveText('Finishing Chat setup…');
+  await expect(finishing).toHaveAttribute('tabindex', '-1');
+  await expect(finishing).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('chat.default_model_pref.set'),
+    ),
+  ).toBe(1);
+
+  await expect(page).toHaveURL(/#chat\/start$/);
+  await expect(page.locator(`[${CHAT_INPUT}]`)).toBeFocused();
+});
+
+test('Set up Chat returns a rejected slot write to the exact draft', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?ai=empty&ai_slot_save_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => {
+    window.__app.setHash('#settings/ai-models/setup/start');
+  });
+
+  const provider = page.getByRole('combobox', {
+    name: 'Provider',
+    exact: true,
+  });
+  const key = page.locator(`[${CHAT_SETUP_KEY}]`);
+  const submit = page.locator(`[${CHAT_SETUP_SUBMIT}="new"]`);
+  await key.fill('sk-retry-this-key');
+  await submit.focus();
+  await page.keyboard.press('Enter');
+  await expect(submit).toHaveText('Saving setup…');
+  await expect(submit).toBeFocused();
+
+  await expect(page.locator(
+    '[data-recued-ai-models-chat-setup-error="save"]',
+  )).toHaveText('Model slot save unavailable.');
+  await expect(key).toHaveValue('sk-retry-this-key');
+  await expect(key).not.toHaveAttribute('readonly');
+  await expect(provider).toBeEnabled();
+  await expect(submit).toHaveText('Save and start chatting');
+  await expect(submit).not.toHaveAttribute('aria-disabled');
+  await expect(submit).not.toHaveAttribute('aria-busy');
+  await expect(submit).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setLLMSlot'),
+  )).toBe(1);
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('chat.default_model_pref.set'),
+  )).toBe(0);
+});
+
+test('Set up Chat returns a rejected default handoff to its surviving action', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?ai=empty&ai_slot_save_response=slow&ai_default_model_pref_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => {
+    window.__app.setHash('#settings/ai-models/setup/start');
+  });
+
+  await page.locator(`[${CHAT_SETUP_KEY}]`).fill('sk-saved-before-default');
+  const save = page.locator(`[${CHAT_SETUP_SUBMIT}="new"]`);
+  await save.focus();
+  await page.keyboard.press('Enter');
+
+  const finishing = page.locator(
+    '[data-recued-ai-models-chat-setup-status="saving"]',
+  );
+  await expect(finishing).toHaveText('Finishing Chat setup…');
+  await expect(finishing).toBeFocused();
+
+  await expect(page.locator(
+    '[data-recued-ai-models-chat-setup-error="save"]',
+  )).toHaveText('Default model preference unavailable.');
+  const retry = page.locator(`[${CHAT_SETUP_SUBMIT}="existing"]`);
+  await expect(retry).toHaveText('Use this model and start chatting');
+  await expect(retry).toBeEnabled();
+  await expect(retry).toBeFocused();
+  await expect(page).toHaveURL(/#settings\/ai-models\/setup\/start$/);
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setLLMSlot'),
+  )).toBe(1);
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('chat.default_model_pref.set'),
+  )).toBe(1);
+});
+
 test('Set up Chat returns a connected source to its useful first question', async ({ page }) => {
   await page.goto(`${HARNESS_URL}?ai=empty&connection=source-ready`);
   await page.waitForFunction(() => window.__app?.ready === true);
@@ -6142,6 +7565,41 @@ test('Set up Chat returns a connected source to its useful first question', asyn
   );
   await expect(page.locator(`[${CHAT_INPUT}]`)).toBeFocused();
   await expect(page.locator(`[${CHAT_ACTIVATION}]`)).toHaveCount(0);
+});
+
+test('Chat keeps an explicit source check focused through readiness', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?connection=source-check`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => {
+    window.__app.setHash('#chat/source/mail/gmail/work');
+  });
+
+  const handoff = page.locator(`[${CHAT_SOURCE_HANDOFF}]`);
+  await expect(handoff).toHaveAttribute('data-state', 'pending');
+  const initialReads = await page.evaluate(
+    () => window.__app.rpcCallCount('collection.mail.list'),
+  );
+  const check = handoff.getByRole('button', { name: 'Check now' });
+  await check.focus();
+  await page.keyboard.press('Enter');
+
+  const checking = handoff.getByRole('button', { name: 'Checking…' });
+  await expect(checking).toBeFocused();
+  await expect(checking).not.toHaveAttribute('disabled');
+  await expect(checking).toHaveAttribute('aria-disabled', 'true');
+  await expect(checking).toHaveAttribute('aria-busy', 'true');
+  await checking.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('collection.mail.list'),
+  )).toBe(initialReads + 1);
+
+  await expect(handoff).toHaveAttribute('data-state', 'ready');
+  await expect(handoff.getByRole('button', {
+    name: 'Review first question',
+  })).toBeFocused();
 });
 
 test('Set up Chat returns an existing user to the thread they repaired', async ({ page }) => {
@@ -6207,7 +7665,9 @@ test('a returning user can find, continue, reload, and leave an exact chat', asy
   const sessionActions = page.locator(
     `[${CHAT_SESSION_ACTIONS}="chat_1"]`,
   );
-  await sessionActions.locator('summary').click();
+  const sessionActionTrigger = sessionActions.locator('summary');
+  await sessionActionTrigger.click();
+  await expect(sessionActions).toHaveJSProperty('open', true);
   const resultsBounds = await page.locator('.chat-history-results').boundingBox();
   const menuBounds = await sessionActions
     .locator('.chat-session-action-menu')
@@ -6217,7 +7677,15 @@ test('a returning user can find, continue, reload, and leave an exact chat', asy
   expect(menuBounds!.y).toBeGreaterThanOrEqual(resultsBounds!.y - 0.5);
   expect(menuBounds!.y + menuBounds!.height)
     .toBeLessThanOrEqual(resultsBounds!.y + resultsBounds!.height + 0.5);
-  await sessionActions.locator('summary').click();
+  await page.keyboard.press('Escape');
+  await expect(sessionActions).toHaveJSProperty('open', false);
+  await expect(sessionActionTrigger).toBeFocused();
+
+  await sessionActionTrigger.click();
+  await expect(sessionActions).toHaveJSProperty('open', true);
+  await search.click();
+  await expect(sessionActions).toHaveJSProperty('open', false);
+  await expect(search).toBeFocused();
 
   await page.locator(`[${CHAT_HISTORY_CONTINUE}]`).click();
   await expect(page).toHaveURL(/#chat\/session\/chat_1$/);
@@ -6243,9 +7711,771 @@ test('a returning user can find, continue, reload, and leave an exact chat', asy
     .toHaveAttribute('aria-current', 'page');
 });
 
+test('Chat preserves history search focus through a live session refresh', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?chat=session`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const search = page.locator(`[${CHAT_HISTORY_SEARCH}]`);
+  await search.fill('planning');
+  await expect(search).toBeFocused();
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('chat.sessions.list'),
+  );
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'chat.session_changed',
+      session_id: 'chat_1',
+      field: 'title',
+      value: 'Planning chat',
+      cursor: 1,
+    },
+  }));
+
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('chat.sessions.list')),
+  ).toBe(before + 1);
+  await expect(search).toHaveValue('planning');
+  await expect(search).toBeFocused();
+  await expect(page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`)).toHaveCount(1);
+});
+
+test('Chat preserves exact history row focus through a live session refresh', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?chat=session`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const row = page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`);
+  await row.focus();
+  await expect(row).toBeFocused();
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('chat.sessions.list'),
+  );
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'chat.session_changed',
+      session_id: 'chat_1',
+      field: 'title',
+      value: 'Planning chat',
+      cursor: 1,
+    },
+  }));
+
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('chat.sessions.list')),
+  ).toBe(before + 1);
+  await expect(row).toBeFocused();
+});
+
+test('Chat preserves an open history action through a live session refresh', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?chat=session`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const actions = page.locator(`[${CHAT_SESSION_ACTIONS}="chat_1"]`);
+  await actions.locator('summary').click();
+  const deleteAction = actions.getByRole('button', { name: 'Delete chat' });
+  await deleteAction.focus();
+  await expect(actions).toHaveJSProperty('open', true);
+  await expect(deleteAction).toBeFocused();
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('chat.sessions.list'),
+  );
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'chat.session_changed',
+      session_id: 'chat_1',
+      field: 'title',
+      value: 'Planning chat',
+      cursor: 1,
+    },
+  }));
+
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('chat.sessions.list')),
+  ).toBe(before + 1);
+  await expect(actions).toHaveJSProperty('open', true);
+  await expect(deleteAction).toBeFocused();
+});
+
+test('Chat keeps a slow history open focused and single-flight', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?chat=session&chat_session_open_response=slow#chat`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const row = page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`);
+  await row.focus();
+  await page.keyboard.press('Enter');
+  await expect(row).toHaveAttribute('aria-disabled', 'true');
+  await expect(row).toHaveAttribute('aria-busy', 'true');
+  await expect(row).not.toHaveAttribute('disabled');
+  await expect(row).toContainText('Opening…');
+  await expect(row).toBeFocused();
+  await row.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('chat.session.get'),
+  )).toBe(1);
+
+  await expect(page).toHaveURL(/#chat\/session\/chat_1$/);
+  await expect(page.locator(`[${CHAT_INPUT}]`)).toBeFocused();
+});
+
+test('Chat returns a rejected history open to the exact row', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?chat=session&chat_session_open_response=fail-slow#chat`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const row = page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`);
+  await row.focus();
+  await page.keyboard.press('Enter');
+  await expect(row).toContainText('Opening…');
+  await expect(row).toBeFocused();
+
+  await expect(page.locator(`[${CHAT_ERROR}]`)).toBeVisible();
+  await expect(row).not.toContainText('Opening…');
+  await expect(row).not.toHaveAttribute('aria-disabled');
+  await expect(row).not.toHaveAttribute('aria-busy');
+  await expect(row).not.toHaveAttribute('disabled');
+  await expect(row).toBeFocused();
+  await expect(page).toHaveURL(/#chat$/);
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('chat.session.get'),
+  )).toBe(1);
+});
+
+test('Chat keeps slow Continue focused and blocks competing new-chat intent', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?chat=session&chat_session_open_response=slow#chat`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const continueChat = page.locator(`[${CHAT_HISTORY_CONTINUE}]`);
+  await continueChat.focus();
+  await page.keyboard.press('Enter');
+  await expect(continueChat).toHaveText('Opening chat…');
+  await expect(continueChat).toHaveAttribute('aria-disabled', 'true');
+  await expect(continueChat).toHaveAttribute('aria-busy', 'true');
+  await expect(continueChat).not.toHaveAttribute('disabled');
+  await expect(continueChat).toBeFocused();
+  const sidebarNew = page.locator(`[${CHAT_NEW_SESSION}]`);
+  const startNew = page.getByRole('button', { name: 'Start a new chat' });
+  await expect(sidebarNew).toHaveAttribute('aria-disabled', 'true');
+  await expect(startNew).toHaveAttribute('aria-disabled', 'true');
+  await continueChat.evaluate((button) => button.click());
+  await sidebarNew.evaluate((button) => button.click());
+  await startNew.evaluate((button) => button.click());
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('chat.session.get'),
+  )).toBe(1);
+  await expect(page).toHaveURL(/#chat$/);
+
+  await expect(page).toHaveURL(/#chat\/session\/chat_1$/);
+  await expect(page.locator(`[${CHAT_INPUT}]`)).toBeFocused();
+});
+
+test('Chat returns rejected Continue to its exact retry command', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?chat=session&chat_session_open_response=fail-slow#chat`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const continueChat = page.locator(`[${CHAT_HISTORY_CONTINUE}]`);
+  await continueChat.focus();
+  await page.keyboard.press('Enter');
+  await expect(continueChat).toHaveText('Opening chat…');
+  await expect(continueChat).toBeFocused();
+
+  await expect(page.locator(`[${CHAT_ERROR}]`)).toBeVisible();
+  await expect(continueChat).toHaveText('Continue chat');
+  await expect(continueChat).not.toHaveAttribute('aria-disabled');
+  await expect(continueChat).not.toHaveAttribute('aria-busy');
+  await expect(continueChat).not.toHaveAttribute('disabled');
+  await expect(continueChat).toBeFocused();
+  await expect(page).toHaveURL(/#chat$/);
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('chat.session.get'),
+  )).toBe(1);
+});
+
+test('Chat keeps pending export feedback visible, focused, and single-flight', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?chat=session`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const actions = page.locator(`[${CHAT_SESSION_ACTIONS}="chat_1"]`);
+  await actions.locator('summary').click();
+  const exportAction = actions.locator(
+    `[${CHAT_SESSION_EXPORT}="chat_1"]`,
+  );
+  await exportAction.click();
+
+  await expect(actions).toHaveAttribute('open', '');
+  await expect(exportAction).toHaveText('Exporting…');
+  await expect(exportAction).toHaveAttribute('aria-disabled', 'true');
+  await expect(exportAction).toHaveAttribute('aria-busy', 'true');
+  await expect(exportAction).not.toHaveAttribute('disabled', '');
+  await expect(exportAction).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('chat.session.export'),
+  )).toBe(1);
+
+  await page.keyboard.press('Enter');
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('chat.session.export'),
+  )).toBe(1);
+});
+
+test('Chat keeps a pending delete confirmation focused and single-flight', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?chat=session`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const actions = page.locator(`[${CHAT_SESSION_ACTIONS}="chat_1"]`);
+  await actions.locator('summary').click();
+  await actions.getByRole('button', { name: 'Delete chat' }).click();
+  const confirm = page.locator(
+    `[${CHAT_SESSION_DELETE_CONFIRM}="chat_1"]`,
+  );
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  await expect(confirm).toHaveText('Deleting…');
+  await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+  await expect(confirm).toHaveAttribute('aria-busy', 'true');
+  await expect(confirm).not.toHaveAttribute('disabled', '');
+  await expect(confirm).toBeFocused();
+  const newChat = page.locator(`[${CHAT_NEW_SESSION}]`);
+  await expect(newChat).toHaveAttribute('aria-disabled', 'true');
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('chat.session.delete'),
+  )).toBe(1);
+
+  await page.keyboard.press('Enter');
+  await newChat.dispatchEvent('click');
+  await expect(confirm).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('chat.session.delete'),
+  )).toBe(1);
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    window.__app.setHash('#data');
+  });
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A chat history action is still in progress. Leave Chat anyway?',
+  );
+  await expect.poll(
+    () => page.evaluate(() => window.location.hash),
+  ).toBe('');
+  await expect(confirm).toBeFocused();
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Chat returns rejected history actions to visible retry controls', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?chat=session&chat_history_action_response=fail`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const actions = page.locator(`[${CHAT_SESSION_ACTIONS}="chat_1"]`);
+  await actions.locator('summary').click();
+  const exportAction = actions.locator(`[${CHAT_SESSION_EXPORT}="chat_1"]`);
+  await exportAction.click();
+
+  await expect(page.getByRole('alert')).toContainText(
+    "Couldn't export this chat",
+  );
+  await expect(actions).toHaveAttribute('open', '');
+  await expect(exportAction).toBeFocused();
+  await expect(exportAction).toBeInViewport();
+
+  const deleteAction = actions.locator(`[${CHAT_SESSION_DELETE}="chat_1"]`);
+  await deleteAction.click();
+  const confirm = page.locator(
+    `[${CHAT_SESSION_DELETE_CONFIRM}="chat_1"]`,
+  );
+  await confirm.click();
+
+  await expect(page.getByRole('alert')).toContainText(
+    "Couldn't delete this chat",
+  );
+  await expect(actions).toHaveAttribute('open', '');
+  await expect(deleteAction).toBeFocused();
+  await expect(deleteAction).toBeInViewport();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('chat.session.export'),
+  )).toBe(1);
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('chat.session.delete'),
+  )).toBe(1);
+});
+
+test('Chat Escape cancels the unsent-draft guard and returns to writing', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?chat=session#chat/session/chat_1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const input = page.locator(`[${CHAT_INPUT}]`);
+  await input.fill('Keep this unfinished thought');
+  const newChat = page.locator(`[${CHAT_NEW_SESSION}]`);
+  await newChat.focus();
+  await page.keyboard.press('Enter');
+
+  const guard = page.locator(`[${CHAT_HISTORY_DRAFT_GUARD}]`);
+  await expect(guard).toBeVisible();
+  await expect(guard).toBeFocused();
+  await page.keyboard.press('Escape');
+
+  await expect(guard).toHaveCount(0);
+  await expect(input).toHaveValue('Keep this unfinished thought');
+  await expect(input).toBeFocused();
+  await expect(page).toHaveURL(/#chat\/session\/chat_1$/);
+});
+
+test('New chat on a blank draft returns focus to the composer', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?chat=session#chat/new`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const input = page.locator(`[${CHAT_INPUT}]`);
+  const newChat = page.locator(`[${CHAT_NEW_SESSION}]`);
+  await newChat.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(page).toHaveURL(/#chat\/new$/);
+  await expect(input).toBeFocused();
+  await expect.poll(async () => page.evaluate(() =>
+    window.__app.rpcCallCount('chat.session.create'))).toBe(0);
+});
+
+test('Chat model selection retains focus in drafts and saved sessions', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?ai=two&chat=session#chat/new`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const picker = page.locator(`[${CHAT_MODEL_PICKER}]`);
+  await expect(picker.locator('option')).toHaveCount(2);
+  await picker.focus();
+  await picker.selectOption('slot_2');
+  await expect(picker).toHaveValue('slot_2');
+  await expect(picker).toBeFocused();
+
+  await page.evaluate(() => window.__app.setHash('#chat/session/chat_1'));
+  await expect(page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`))
+    .toHaveAttribute('aria-current', 'page');
+  await picker.focus();
+  await picker.selectOption('slot_2');
+  await expect.poll(async () => page.evaluate(() =>
+    window.__app.rpcCallCount('chat.session.set_model_pref'))).toBe(1);
+  await expect(picker).toHaveValue('slot_2');
+  await expect(picker).toBeFocused();
+});
+
+test('Chat keeps an exact same-speed model slot through live updates', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?ai=two&chat=session&chat_model_sources=same-speed-slot-2#chat/session/chat_1`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const picker = page.locator(`[${CHAT_MODEL_PICKER}]`);
+  await expect(picker.locator('option')).toHaveCount(2);
+  await expect(picker).toHaveValue('slot_2');
+  await picker.focus();
+
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'chat.session_changed',
+      session_id: 'chat_1',
+      field: 'model_pref',
+      value: {
+        current: 'byok',
+        model_hint: 'fast',
+        source_id: 'slot_1',
+        overridden: true,
+      },
+      cursor: 101,
+    },
+  }));
+  await expect(picker).toHaveValue('slot_1');
+  await expect(picker).toBeFocused();
+
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'chat.session_changed',
+      session_id: 'chat_1',
+      field: 'model_pref',
+      value: {
+        current: 'byok',
+        model_hint: 'fast',
+        source_id: 'slot_2',
+        overridden: true,
+      },
+      cursor: 102,
+    },
+  }));
+  await expect(picker).toHaveValue('slot_2');
+  await expect(picker).toBeFocused();
+});
+
+test('Chat serializes rapid model changes with the latest choice visible', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?ai=two&chat=session&chat_model_pref_response=slow#chat/session/chat_1`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const picker = page.locator(`[${CHAT_MODEL_PICKER}]`);
+  await expect(picker).toHaveValue('slot_1');
+  await picker.focus();
+  await picker.selectOption('slot_2');
+  await expect(picker).toHaveValue('slot_2');
+  await expect(picker).toHaveAttribute('aria-busy', 'true');
+  await expect(picker).toBeFocused();
+
+  await picker.selectOption('slot_1');
+  await expect(picker).toHaveValue('slot_1');
+  await expect(picker).toHaveAttribute('aria-busy', 'true');
+  await expect(picker).toBeFocused();
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('chat.session.set_model_pref'))).toBe(1);
+
+  await expect.poll(async () => page.evaluate(() =>
+    window.__app.rpcCallCount('chat.session.set_model_pref'))).toBe(2);
+  await expect(picker).not.toHaveAttribute('aria-busy', 'true');
+  await expect(picker).toHaveValue('slot_1');
+  await expect(picker).toBeFocused();
+});
+
+test('Chat retains a model change across tab and route leave', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?ai=two&chat=session&chat_model_pref_response=slow`
+    + '#chat/session/chat_1',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const picker = page.locator(`[${CHAT_MODEL_PICKER}]`);
+  await picker.focus();
+  await picker.selectOption('slot_2');
+  await expect(picker).toHaveAttribute('aria-busy', 'true');
+  expect(await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    return window.dispatchEvent(event);
+  })).toBe(false);
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    window.__app.setHash('#data');
+  });
+
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A Chat model change is still in progress. Leave Chat anyway?',
+  );
+  await expect.poll(() => page.evaluate(() => window.location.hash))
+    .toBe('#chat/session/chat_1');
+  await expect(picker).toHaveValue('slot_2');
+  await expect(picker).toBeFocused();
+  await expect(picker).not.toHaveAttribute('aria-busy', 'true');
+
+  expect(await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    return window.dispatchEvent(event);
+  })).toBe(true);
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Chat announces a rejected send and keeps its draft ready to retry', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?chat=session&chat_send_response=fail-once#chat/session/chat_1`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const input = page.locator(`[${CHAT_INPUT}]`);
+  const send = page.locator(`[${CHAT_SEND}]`);
+  await input.fill('Keep this retryable message');
+  await send.click();
+
+  const error = page.locator(`[${CHAT_ERROR}]`);
+  await expect(error).toBeVisible();
+  await expect(error).toBeInViewport();
+  await expect(error).toHaveAttribute('role', 'alert');
+  await expect(input).toHaveValue('Keep this retryable message');
+  await expect(input).toBeFocused();
+  await expect(send).toBeEnabled();
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('chat.send'))).toBe(1);
+
+  await send.click();
+  await expect.poll(async () => page.evaluate(() =>
+    window.__app.rpcCallCount('chat.send'))).toBe(2);
+  await expect(error).toHaveCount(0);
+  await expect(input).toHaveValue('');
+  await expect(input).toBeFocused();
+});
+
+test('Chat exposes Send only when the composer has a message', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?chat=session#chat/new`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const input = page.locator(`[${CHAT_INPUT}]`);
+  const send = page.locator(`[${CHAT_SEND}]`);
+  await expect(input).toHaveValue('');
+  await expect(send).toBeDisabled();
+
+  await input.fill('   ');
+  await expect(send).toBeDisabled();
+  await input.fill('Draft the customer follow-up');
+  await expect(send).toBeEnabled();
+  await input.fill('');
+  await expect(send).toBeDisabled();
+  expect(await page.evaluate(() => ({
+    sessions: window.__app.rpcCallCount('chat.session.create'),
+    sends: window.__app.rpcCallCount('chat.send'),
+  }))).toEqual({ sessions: 0, sends: 0 });
+});
+
+test('Chat sends from the keyboard without stealing multiline entry', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?chat=session#chat/session/chat_1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const input = page.locator(`[${CHAT_INPUT}]`);
+  const send = page.locator(`[${CHAT_SEND}]`);
+  await expect(send).toHaveAttribute(
+    'aria-keyshortcuts',
+    'Control+Enter Meta+Enter',
+  );
+  await input.fill('First line');
+  await page.keyboard.press('Shift+Enter');
+  await page.keyboard.type('Second line');
+  await expect(input).toHaveValue('First line\nSecond line');
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('chat.send'))).toBe(0);
+
+  await page.keyboard.press('Control+Enter');
+  await expect.poll(async () => page.evaluate(() =>
+    window.__app.rpcCallCount('chat.send'))).toBe(1);
+  await expect(send).toHaveText('Sending...');
+  await expect(input).toHaveValue('');
+  await expect(input).toBeFocused();
+
+  await input.fill('Queued next thought');
+  await page.keyboard.press('Control+Enter');
+  expect(await page.evaluate(() =>
+    window.__app.rpcCallCount('chat.send'))).toBe(1);
+  await expect(input).toHaveValue('Queued next thought');
+});
+
+test('Chat send keeps the editable composer through ack and completion', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?chat=session#chat/session/chat_1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const input = page.locator(`[${CHAT_INPUT}]`);
+  const send = page.locator(`[${CHAT_SEND}]`);
+  await input.fill('Follow up on this plan');
+  await send.focus();
+  await page.keyboard.press('Enter');
+  await expect.poll(async () => page.evaluate(() =>
+    window.__app.rpcCallCount('chat.send'))).toBe(1);
+  await expect(send).toHaveText('Sending...');
+  await expect(input).toHaveValue('');
+  await expect(input).toBeFocused();
+
+  await input.fill('Keep this next thought');
+  const newChat = page.locator(`[${CHAT_NEW_SESSION}]`);
+  const activeHistory = page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`);
+  await expect(newChat).toHaveAttribute('aria-disabled', 'true');
+  await expect(newChat).not.toHaveAttribute('disabled');
+  await expect(activeHistory).toHaveAttribute('aria-disabled', 'true');
+  await expect(activeHistory).not.toHaveAttribute('disabled');
+  await newChat.dispatchEvent('click');
+  await activeHistory.dispatchEvent('click');
+  await expect(page.locator(`[${CHAT_HISTORY_DRAFT_GUARD}]`)).toHaveCount(0);
+  await expect(page).toHaveURL(/#chat\/session\/chat_1$/);
+  await expect(input).toHaveValue('Keep this next thought');
+  await expect(input).toBeFocused();
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'chat.message_complete',
+      session_id: 'chat_1',
+      turn_id: 'turn_plan_continue_1',
+      final: {
+        id: 'msg_send_focus',
+        session_id: 'chat_1',
+        role: 'assistant',
+        content: 'The first answer is complete.',
+        target_server: 'self',
+        picker_at_send: {
+          display_name: 'This server',
+          signature: {
+            server_kind: 'recued',
+            version: 'test',
+            instance_id: 'server-send-focus',
+          },
+        },
+        model_used: {
+          provider: 'openai',
+          model_id: 'gpt-4.1-mini',
+        },
+        contributor: 'model',
+        ts: 1_700_000_000_010,
+      },
+      cursor: 1,
+    },
+  }));
+
+  await expect(send).toHaveText('Send');
+  await expect(input).toHaveValue('Keep this next thought');
+  await expect(input).toBeFocused();
+  await expect(newChat).not.toHaveAttribute('aria-disabled');
+  await expect(activeHistory).not.toHaveAttribute('aria-disabled');
+  await newChat.click();
+  await expect(page.locator(`[${CHAT_HISTORY_DRAFT_GUARD}]`)).toBeFocused();
+  await expect(input).toHaveValue('Keep this next thought');
+});
+
+test('Chat preserves its Activity disclosure through owner and live repaints', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?chat=session#chat/session/chat_1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'chat.tool_call_started',
+      session_id: 'chat_1',
+      turn_id: 'turn_activity_focus',
+      tool_name: 'mail.search',
+      tier: 1,
+      args: { query: 'needs attention' },
+      cursor: 1,
+    },
+  }));
+
+  const toggle = page.locator('[data-recued-chat-route-activity-toggle]');
+  await expect(toggle).toHaveText('▾ Activity (1)');
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(toggle).toHaveText('▸ Activity (1)');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(toggle).toBeFocused();
+
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'chat.tool_call_completed',
+      session_id: 'chat_1',
+      turn_id: 'turn_activity_focus',
+      tool_name: 'mail.search',
+      tier: 1,
+      status: 'ok',
+      result_ref: 'chat_1:turn_activity_focus:mail.search',
+      cursor: 2,
+    },
+  }));
+  await expect(toggle).toHaveText('▸ Activity (1)');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await expect(toggle).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(toggle).toHaveText('▾ Activity (1)');
+  await expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  await expect(toggle).toBeFocused();
+  await expect(page.locator('[data-recued-chat-route-activity-row]'))
+    .toContainText('used mail.search');
+});
+
+test('the docked Chat composer action menu dismisses predictably', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?chat=session#chat/session/chat_1`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const input = page.locator(`[${CHAT_INPUT}]`);
+  await input.fill('Check the composer actions');
+  await page.locator(`[${CHAT_SEND}]`).click();
+
+  const more = page.locator(`[${CHAT_COMPOSER_MORE}]`);
+  const trigger = more.locator('summary');
+  await expect(more).toBeVisible();
+  await expect(more).toContainText('Run a recipe');
+  await expect(more).toContainText('Create');
+
+  await trigger.click();
+  await expect(more).toHaveJSProperty('open', true);
+  await page.keyboard.press('Escape');
+  await expect(more).toHaveJSProperty('open', false);
+  await expect(trigger).toBeFocused();
+
+  await trigger.click();
+  await expect(more).toHaveJSProperty('open', true);
+  await input.click();
+  await expect(more).toHaveJSProperty('open', false);
+  await expect(input).toBeFocused();
+});
+
+test('a docked Chat child overlay returns focus to the visible action trigger', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?chat=session#chat/session/chat_1`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  await page.locator(`[${CHAT_INPUT}]`).fill('Open the run palette');
+  await page.locator(`[${CHAT_SEND}]`).click();
+
+  const more = page.locator(`[${CHAT_COMPOSER_MORE}]`);
+  const trigger = more.locator('summary');
+  await trigger.click();
+  const run = more.locator(`[${CHAT_COMPOSER_ACTION}="run"]`);
+  await run.focus();
+  await page.keyboard.press('Enter');
+
+  const overlay = page.locator(`[${RUN_PALETTE}]`);
+  await expect(overlay).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  await expect(overlay).toHaveCount(0);
+  await expect(more).toHaveJSProperty('open', false);
+  await expect(trigger).toBeFocused();
+});
+
 test('a reviewed write stays explicit from approval through the Chat handoff', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`${HARNESS_URL}?chat=session`);
+  await page.goto(`${HARNESS_URL}?chat=session&chat_plan_response=slow`);
   await page.waitForFunction(() => window.__app?.ready === true);
 
   const session = page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`);
@@ -6329,7 +8559,25 @@ test('a reviewed write stays explicit from approval through the Chat handoff', a
     fullPage: true,
   });
 
-  await card.locator(`[${CHAT_PLAN_APPROVE}]`).click();
+  const approve = card.locator(`[${CHAT_PLAN_APPROVE}]`);
+  await approve.focus();
+  await approve.click();
+  await expect(approve).toHaveText('Approving…');
+  await expect(approve).toBeFocused();
+  await expect(approve).not.toHaveAttribute('disabled');
+  await expect(approve).toHaveAttribute('aria-disabled', 'true');
+  await expect(approve).toHaveAttribute('aria-busy', 'true');
+  await expect(card.locator(`[${CHAT_PLAN_CANCEL}]`)).toHaveAttribute(
+    'aria-disabled',
+    'true',
+  );
+  await approve.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('chat.plan.approve'),
+  )).toBe(1);
   await expect(card).toHaveAttribute('data-status', 'approved');
   await expect(card).toContainText('Approved once');
   await expect(card).toContainText(
@@ -6382,7 +8630,9 @@ test('a reviewed write stays explicit from approval through the Chat handoff', a
 
 test('a safe-check closure keeps focus on its durable receipt', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto(`${HARNESS_URL}?chat=session`);
+  await page.goto(
+    `${HARNESS_URL}?chat=session&chat_diagnosis_response=slow`,
+  );
   await page.waitForFunction(() => window.__app?.ready === true);
   await page.locator(`[${CHAT_SESSION_ROW}="chat_1"]`).click();
 
@@ -6442,16 +8692,10251 @@ test('a safe-check closure keeps focus on its durable receipt', async ({ page })
 
   const receipt = page.locator(`[${CHAT_DATA_DIAGNOSIS_ANSWER}]`);
   await expect(receipt).toBeVisible();
-  await receipt
-    .locator(
-      `[${CHAT_DATA_DIAGNOSIS_ANSWER_ACTION}]`
-      + '[data-action="resolve-resolved"]',
-    )
-    .click();
+  const closeResolved = receipt.locator(
+    `[${CHAT_DATA_DIAGNOSIS_ANSWER_ACTION}]`
+    + '[data-action="resolve-resolved"]',
+  );
+  await closeResolved.focus();
+  await closeResolved.click();
+  await expect(closeResolved).toHaveText('Saving…');
+  await expect(closeResolved).toBeFocused();
+  await expect(closeResolved).not.toHaveAttribute('disabled');
+  await expect(closeResolved).toHaveAttribute('aria-disabled', 'true');
+  await expect(closeResolved).toHaveAttribute('aria-busy', 'true');
+  await expect(receipt.locator(
+    `[${CHAT_DATA_DIAGNOSIS_ANSWER_ACTION}]`
+    + '[data-action="resolve-still_uncertain"]',
+  )).toHaveAttribute('aria-disabled', 'true');
+  await closeResolved.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('chat.data_diagnosis.resolve'),
+  )).toBe(1);
   await expect(receipt).toHaveAttribute('data-resolution', 'resolved');
   await expect(receipt).toHaveAttribute('tabindex', '-1');
   await expect(receipt).toHaveAttribute('role', 'status');
   await expect(receipt).toBeFocused();
+});
+
+test('Data keeps keyboard focus on a collection tab through its repaint', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#data'));
+
+  const tasks = page.locator(`[${DATA_TAB}="task"]`);
+  await expect(tasks).toBeVisible();
+  await tasks.focus();
+  await expect(tasks).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  await expect(page).toHaveURL(/#data\/task$/);
+  await expect(tasks).toHaveAttribute('data-active', 'true');
+  await expect(tasks).toBeFocused();
+});
+
+test('Data keeps a contact file apply visible, owned, and single-flight', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=contact-import&contact_import_apply_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact/import'));
+
+  const importView = page.locator(`[${DATA_CONTACT_IMPORT}]`);
+  const picker = page.getByLabel('Choose a vCard or CSV file');
+  await expect(importView).toBeVisible();
+  await picker.setInputFiles({
+    name: 'contacts.vcf',
+    mimeType: 'text/vcard',
+    buffer: Buffer.from('BEGIN:VCARD\nFN:Bob Smith\nEND:VCARD'),
+  });
+
+  const changes = page.getByRole('checkbox', {
+    name: 'Also change 1 contact you already have',
+  });
+  await expect(changes).toBeVisible();
+  await changes.check();
+  const apply = importView.locator(
+    '[data-recued-data-action="contact-import-file-apply"]',
+  );
+  await expect(apply).toHaveText('Import 2 new and 1 change');
+  await apply.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(apply).toHaveText('Importing…');
+  await expect(apply).toBeFocused();
+  await expect(apply).not.toHaveAttribute('disabled');
+  await expect(apply).toHaveAttribute('aria-disabled', 'true');
+  await expect(apply).toHaveAttribute('aria-busy', 'true');
+  await expect(picker).toBeDisabled();
+  await expect(changes).toBeDisabled();
+  const cancel = importView.getByRole('button', { name: 'Cancel', exact: true });
+  const back = importView.getByRole('button', { name: 'Back to contacts' });
+  await expect(cancel).toHaveAttribute('aria-disabled', 'true');
+  await expect(back).toHaveAttribute('aria-disabled', 'true');
+
+  // Synthetic dispatch bypasses browser affordances, so these assertions also
+  // prove the imperative guards retain the exact visible owner.
+  await cancel.dispatchEvent('click');
+  await back.dispatchEvent('click');
+  await apply.dispatchEvent('click');
+  await apply.dispatchEvent('click');
+  await expect(importView).toBeVisible();
+  await expect(apply).toBeFocused();
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('contact.import.file_apply'),
+  )).toBe(1);
+
+  const receipt = page.locator(`[${DATA_CONTACT_IMPORT_RESULT}]`);
+  await expect(receipt).toHaveText('2 added · 1 changed');
+  await expect(receipt).toHaveAttribute('role', 'status');
+  await expect(receipt).toHaveAttribute('tabindex', '-1');
+  await expect(receipt).toBeFocused();
+});
+
+test('Data keeps CRM contact promotion attached to its reviewed selection', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=contact-promote&contact_import_promote_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact/import'));
+
+  const importView = page.locator(`[${DATA_CONTACT_IMPORT}]`);
+  await importView.getByRole('button', { name: 'Browse & add' }).click();
+  const carol = importView.getByRole('checkbox', { name: /Carol Jones/ });
+  const dave = importView.getByRole('checkbox', { name: /Dave Lee/ });
+  await expect(carol).toBeVisible();
+  await carol.check();
+
+  const promote = importView.locator(
+    '[data-recued-data-action="contact-import-promote"]',
+  );
+  await expect(promote).toHaveText('Add 1 to my contacts');
+  await promote.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(promote).toHaveText('Adding…');
+  await expect(promote).toBeFocused();
+  await expect(promote).not.toHaveAttribute('disabled');
+  await expect(promote).toHaveAttribute('aria-disabled', 'true');
+  await expect(promote).toHaveAttribute('aria-busy', 'true');
+  await expect(importView.getByLabel('Search this CRM')).toBeDisabled();
+  await expect(carol).toBeDisabled();
+  await expect(dave).toBeDisabled();
+  const back = importView.getByRole('button', { name: 'All sources' });
+  await expect(back).toHaveAttribute('aria-disabled', 'true');
+
+  await dave.dispatchEvent('click');
+  await back.dispatchEvent('click');
+  await promote.dispatchEvent('click');
+  await promote.dispatchEvent('click');
+  await expect(importView.getByRole('heading', { name: 'Add from HubSpot (work)' }))
+    .toBeVisible();
+  await expect(carol).toBeChecked();
+  await expect(dave).not.toBeChecked();
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('contact.import.promote'),
+  )).toBe(1);
+
+  const receipt = page.locator(`[${DATA_CONTACT_IMPORT_RESULT}]`);
+  await expect(receipt).toHaveText('1 added');
+  await expect(receipt).toHaveAttribute('role', 'status');
+  await expect(receipt).toHaveAttribute('tabindex', '-1');
+  await expect(receipt).toBeFocused();
+});
+
+test('Data keeps duplicate scanning owned and withholds its stale review queue', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=contact-scan&contact_scan_response=slow`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact/scan'));
+
+  const scanView = page.locator(`[${DATA_CONTACT_SCAN}]`);
+  const review = page.getByRole('dialog', { name: 'Contact merge review' });
+  await expect(scanView).toBeVisible();
+  await expect(review).toBeVisible();
+  const scan = scanView.locator(
+    '[data-recued-data-action="run-merge-scan"]',
+  );
+  await scan.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(scan).toHaveText('Scanning…');
+  await expect(scan).toBeFocused();
+  await expect(scan).not.toHaveAttribute('disabled');
+  await expect(scan).toHaveAttribute('aria-disabled', 'true');
+  await expect(scan).toHaveAttribute('aria-busy', 'true');
+  await expect(review).toHaveCount(0);
+  const back = scanView.getByRole('button', { name: /Back to contacts/ });
+  await expect(back).toHaveAttribute('aria-disabled', 'true');
+
+  await back.dispatchEvent('click');
+  await scan.dispatchEvent('click');
+  await scan.dispatchEvent('click');
+  await expect(scanView).toBeVisible();
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('contact.merge.scan_now'),
+  )).toBe(1);
+
+  const receipt = page.locator(`[${DATA_SCAN_RESULT}]`);
+  await expect(receipt).toContainText('Compared 42 contacts');
+  await expect(receipt).toContainText('1 new possible duplicate');
+  await expect(receipt).toHaveAttribute('role', 'status');
+  await expect(receipt).toHaveAttribute('tabindex', '-1');
+  await expect(receipt).toBeFocused();
+  await expect(review).toBeVisible();
+});
+
+test('Data keeps a merge decision owned through queue reconciliation', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=contact-merge&contact_merge_response=slow`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact/scan'));
+
+  const scanView = page.locator(`[${DATA_CONTACT_SCAN}]`);
+  const review = page.getByRole('dialog', { name: 'Contact merge review' });
+  await expect(review.locator(
+    '.merge-review-card[data-email="alice.a@example.test"]',
+  )).toContainText('Alice Archer');
+  await expect(review.locator(
+    '.merge-review-card[data-email="alice.b@example.test"]',
+  )).toContainText('Alice A.');
+  const reject = review.locator('[data-action="contact-merge-reject"]');
+  await reject.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(reject).toHaveText('Marking as different…');
+  await expect(reject).toBeFocused();
+  await expect(reject).not.toHaveAttribute('disabled');
+  await expect(reject).toHaveAttribute('aria-disabled', 'true');
+  await expect(reject).toHaveAttribute('aria-busy', 'true');
+  await expect(review.locator('[data-action="contact-merge-confirm"]'))
+    .toBeDisabled();
+  const survivorChoices = review.locator(
+    '[data-action="contact-merge-set-survivor"]',
+  );
+  await expect(survivorChoices).toHaveCount(2);
+  await expect(survivorChoices.nth(0)).toBeDisabled();
+  await expect(survivorChoices.nth(1)).toBeDisabled();
+  const back = scanView.getByRole('button', { name: /Back to contacts/ });
+  const scan = scanView.locator('[data-recued-data-action="run-merge-scan"]');
+  await expect(back).toHaveAttribute('aria-disabled', 'true');
+  await expect(scan).toBeDisabled();
+
+  await survivorChoices.nth(0).dispatchEvent('click');
+  await back.dispatchEvent('click');
+  await scan.dispatchEvent('click');
+  await reject.dispatchEvent('click');
+  await reject.dispatchEvent('click');
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('contact.merge.reject'),
+  )).toBe(1);
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('contact.merge.scan_now'),
+  )).toBe(0);
+
+  const receipt = page.locator(`[${DATA_MERGE_RESULT}]`);
+  await expect(receipt).toContainText('Marked as different');
+  await expect(receipt).toContainText('Review queue refreshed');
+  await expect(receipt).toHaveAttribute('role', 'status');
+  await expect(receipt).toHaveAttribute('tabindex', '-1');
+  await expect(receipt).toBeFocused();
+  await expect(review.getByText('No pending merge candidates')).toBeVisible();
+});
+
+test('Data task search accepts continuous keyboard input', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#data/task'));
+
+  const search = page.locator(
+    'input[data-action="search-work-entities"][data-kind="task"]',
+  );
+  await expect(search).toBeVisible();
+  await search.focus();
+  await expect(search).toBeFocused();
+  await page.keyboard.type('budget');
+
+  await expect(search).toHaveValue('budget');
+  await expect(search).toBeFocused();
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.press('ArrowLeft');
+  await page.keyboard.type('X');
+  await expect(search).toHaveValue('budgXet');
+  await expect(search).toBeFocused();
+});
+
+test('Data booking search coalesces server reads while typing', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=work-entities-paged#data/booking`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const search = page.locator(
+    'input[data-action="search-work-entities"][data-kind="booking"]',
+  );
+  await expect(search).toBeVisible();
+  const callsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('work_entity.list'),
+  );
+  await search.focus();
+  await page.keyboard.type('opaque');
+
+  await expect(search).toHaveValue('opaque');
+  await expect(search).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('work_entity.list')),
+  ).toBe(callsBefore + 1);
+});
+
+test('Data moves focus into New Task and restores its opener on Escape', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=work-entities-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/task'));
+
+  const trigger = page.getByRole('button', { name: '+ New Task', exact: true });
+  await trigger.focus();
+  await page.keyboard.press('Enter');
+
+  const dialog = page.getByRole('dialog', { name: 'New Task' });
+  const title = dialog.getByLabel('Title');
+  await expect(title).toBeFocused();
+  await expect(title).toBeInViewport();
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test('Data protects an unfinished task create from Escape', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=work-entities-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/task'));
+
+  const trigger = page.getByRole('button', { name: '+ New Task', exact: true });
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: 'New Task' });
+  const title = dialog.getByLabel('Title');
+  await title.fill('Unfinished new task');
+  await page.keyboard.press('Escape');
+
+  const guard = page.locator(`[${DATA_WORK_ENTITY_DISCARD_GUARD}]`);
+  await expect(guard).toBeFocused();
+  await page.locator(`[${DATA_WORK_ENTITY_DISCARD_KEEP}]`).click();
+  await expect(guard).toHaveCount(0);
+  await expect(title).toHaveValue('Unfinished new task');
+  await expect(title).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(guard).toBeFocused();
+  await page.locator(`[${DATA_WORK_ENTITY_DISCARD_COMMIT}]`).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test('Data contact search retains its keyboard query while refreshing', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  const search = page.getByRole('searchbox', { name: 'Search contacts' });
+  await expect(search).toBeVisible();
+  const contactsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('contact.list'),
+  );
+  const sourcesBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('contact.source.list'),
+  );
+  await search.focus();
+  await expect(search).toBeFocused();
+  await page.keyboard.type('mary');
+
+  await expect(search).toHaveValue('mary');
+  await expect(search).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('contact.list')),
+  ).toBe(contactsBefore + 1);
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('contact.source.list')),
+  ).toBe(sourcesBefore + 1);
+});
+
+test('Data moves keyboard focus into the New contact dialog', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  const trigger = page.getByRole('button', { name: 'New contact', exact: true });
+  await trigger.focus();
+  await expect(trigger).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  const dialog = page.getByRole('dialog', { name: 'New contact' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel('Email')).toBeFocused();
+});
+
+test('Data restores the New contact trigger when its dialog closes', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  const trigger = page.getByRole('button', { name: 'New contact', exact: true });
+  await trigger.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog', { name: 'New contact' });
+  await expect(dialog.getByLabel('Email')).toBeFocused();
+
+  const close = dialog.getByRole('button', { name: 'Close', exact: true });
+  await close.focus();
+  await expect(close).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test('Data protects an unfinished contact create from dismissal', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  const trigger = page.getByRole('button', { name: 'New contact', exact: true });
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: 'New contact' });
+  const email = dialog.getByLabel('Email');
+  await email.fill('unfinished@example.test');
+  await page.keyboard.press('Escape');
+
+  const guard = page.locator(`[${DATA_CONTACT_DISCARD_GUARD}]`);
+  await expect(dialog).toBeVisible();
+  await expect(guard).toHaveAttribute('role', 'alertdialog');
+  await expect(guard).toBeFocused();
+  await expect(dialog.locator('.data-contact-dialog-editor'))
+    .toHaveAttribute('inert', '');
+  await page.keyboard.press('Escape');
+  await expect(guard).toHaveCount(0);
+  await expect(email).toHaveValue('unfinished@example.test');
+  await expect(email).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(guard).toBeFocused();
+  const keep = page.locator(`[${DATA_CONTACT_DISCARD_KEEP}]`);
+  await page.keyboard.press('Tab');
+  await expect(keep).toBeFocused();
+  await keep.click();
+  await expect(guard).toHaveCount(0);
+  await expect(email).toHaveValue('unfinished@example.test');
+  await expect(email).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(guard).toBeFocused();
+  const discard = page.locator(`[${DATA_CONTACT_DISCARD_COMMIT}]`);
+  await page.keyboard.press('Shift+Tab');
+  await expect(discard).toBeFocused();
+  await discard.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test('Data keeps Tab navigation inside the Contact dialog', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  await page.getByRole('button', { name: 'New contact', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New contact' });
+  const close = dialog.getByRole('button', { name: 'Close', exact: true });
+  const save = dialog.getByRole('button', { name: 'Save', exact: true });
+  await close.focus();
+  await expect(close).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+
+  await expect(save).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(close).toBeFocused();
+});
+
+test('Data closes the Contact dialog with Escape and restores its trigger', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  const trigger = page.getByRole('button', { name: 'New contact', exact: true });
+  await trigger.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.getByRole('dialog', { name: 'New contact' });
+  await expect(dialog.getByLabel('Email')).toBeFocused();
+  await page.keyboard.press('Escape');
+
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test('Data focuses the invalid Contact field after validation', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  await page.getByRole('button', { name: 'New contact', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New contact' });
+  const save = dialog.getByRole('button', { name: 'Save', exact: true });
+  await save.focus();
+  await expect(save).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  await expect(dialog.getByRole('alert')).toHaveText('Email is required.');
+  await expect(dialog.getByLabel('Email')).toBeFocused();
+});
+
+test('Data moves keyboard focus into the editable Contact field', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=contacts&contact_edit_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  await page.locator(
+    `[${DATA_CONTACT_ROW}="mary@example.test"] button`,
+  ).click();
+  const edit = page.getByRole('button', { name: 'Edit', exact: true });
+  await edit.focus();
+  await expect(edit).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('contact.get'))).toBe(2);
+  const opening = page.locator(
+    '[data-recued-data-action="open-edit-contact"]',
+  );
+  expect(await opening.evaluate((button) => ({
+    text: button.textContent?.trim(),
+    disabled: button.hasAttribute('disabled'),
+    ariaDisabled: button.getAttribute('aria-disabled'),
+    ariaBusy: button.getAttribute('aria-busy'),
+    focused: button === document.activeElement,
+  }))).toEqual({
+    text: 'Opening editor…',
+    disabled: false,
+    ariaDisabled: 'true',
+    ariaBusy: 'true',
+    focused: true,
+  });
+  await opening.dispatchEvent('click');
+  await opening.dispatchEvent('click');
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('contact.get'))).toBe(2);
+
+  const dialog = page.getByRole('dialog', { name: 'Edit contact' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByLabel('Email')).toHaveAttribute('readonly', '');
+  await expect(dialog.getByLabel('Name')).toBeFocused();
+
+  const cancel = dialog.getByRole('button', { name: 'Cancel', exact: true });
+  await cancel.focus();
+  await page.keyboard.press('Enter');
+  await expect(dialog).toHaveCount(0);
+  await expect(edit).toBeFocused();
+});
+
+test('Data protects an unfinished contact edit from Cancel', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=contacts`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  await page.locator(
+    `[${DATA_CONTACT_ROW}="mary@example.test"] button`,
+  ).click();
+  const edit = page.getByRole('button', { name: 'Edit', exact: true });
+  await edit.click();
+  const dialog = page.getByRole('dialog', { name: 'Edit contact' });
+  const name = dialog.getByLabel('Name');
+  const cancel = dialog.getByRole('button', { name: 'Cancel', exact: true });
+  await name.fill('Unfinished Mary');
+  await cancel.focus();
+  await page.keyboard.press('Enter');
+
+  const guard = page.locator(`[${DATA_CONTACT_DISCARD_GUARD}]`);
+  await expect(guard).toBeFocused();
+  await page.locator(`[${DATA_CONTACT_DISCARD_KEEP}]`).click();
+  await expect(guard).toHaveCount(0);
+  await expect(name).toHaveValue('Unfinished Mary');
+  await expect(cancel).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(guard).toBeFocused();
+  await page.locator(`[${DATA_CONTACT_DISCARD_COMMIT}]`).click();
+  await expect(dialog).toHaveCount(0);
+  await expect(edit).toBeFocused();
+});
+
+test('Data does not reopen Contact edit after leaving its detail', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=contacts&contact_edit_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  const row = page.locator(
+    `[${DATA_CONTACT_ROW}="mary@example.test"] button`,
+  );
+  await row.click();
+  await expect(page.locator(`[${DATA_CONTACT_DETAIL_HEADING}]`)).toBeVisible();
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('contact.get'))).toBe(2);
+
+  const back = page.getByRole('button', {
+    name: '← Back to contacts',
+    exact: true,
+  });
+  await back.focus();
+  await page.keyboard.press('Enter');
+  await expect(row).toBeFocused();
+  await page.waitForTimeout(900);
+
+  await expect(page.getByRole('dialog', { name: 'Edit contact' })).toHaveCount(0);
+  await expect(row).toBeFocused();
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('contact.get'))).toBe(2);
+});
+
+test('Data restores failed Contact edit focus without opening a dialog', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=contacts&contact_edit_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  await page.locator(
+    `[${DATA_CONTACT_ROW}="mary@example.test"] button`,
+  ).click();
+  await expect(page.locator(`[${DATA_CONTACT_DETAIL_HEADING}]`)).toBeVisible();
+  const edit = page.getByRole('button', { name: 'Edit', exact: true });
+  await edit.focus();
+  await page.keyboard.press('Enter');
+
+  const opening = page.getByRole('button', {
+    name: 'Opening editor…',
+    exact: true,
+  });
+  await expect(opening).toBeFocused();
+  await expect(page.getByRole('alert')).toHaveText(
+    'Contact editor unavailable.',
+  );
+  await expect(page.getByRole('dialog', { name: 'Edit contact' })).toHaveCount(0);
+  await expect(edit).toBeFocused();
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('contact.get'))).toBe(2);
+});
+
+test('Data restores Contact edit focus after a successful save', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=contacts`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  await page.locator(
+    `[${DATA_CONTACT_ROW}="mary@example.test"] button`,
+  ).click();
+  const edit = page.getByRole('button', { name: 'Edit', exact: true });
+  await edit.click();
+  const dialog = page.getByRole('dialog', { name: 'Edit contact' });
+  await dialog.getByLabel('Name').fill('Mary Updated');
+  const save = dialog.getByRole('button', { name: 'Save', exact: true });
+  await save.focus();
+  await expect(save).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('contact.upsert'))).toBe(1);
+  await expect(dialog).toHaveCount(0);
+  await expect(edit).toBeFocused();
+});
+
+test('Data restores the New contact trigger after a successful save', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=contacts`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  const trigger = page.getByRole('button', { name: 'New contact', exact: true });
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: 'New contact' });
+  await dialog.getByLabel('Email').fill('new@example.test');
+  await dialog.getByLabel('Name').fill('New Person');
+  const save = dialog.getByRole('button', { name: 'Save', exact: true });
+  await save.focus();
+  await page.keyboard.press('Enter');
+
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('contact.upsert'))).toBe(1);
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test('Data keeps Contact save focused and single-flight', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=contacts&compose_commit_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  const trigger = page.getByRole('button', { name: 'New contact', exact: true });
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: 'New contact' });
+  const email = dialog.getByLabel('Email');
+  const name = dialog.getByLabel('Name');
+  await email.fill('single-flight@example.test');
+  await name.fill('Single Flight');
+  const save = dialog.locator(
+    '[data-recued-data-action="submit-contact-dialog"]',
+  );
+  await save.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(save).toHaveText('Saving…');
+  await expect(save).toHaveAttribute('aria-disabled', 'true');
+  await expect(save).toHaveAttribute('aria-busy', 'true');
+  await expect(save).not.toHaveAttribute('disabled', '');
+  await expect(save).toBeFocused();
+  await expect(email).toHaveAttribute('readonly', '');
+  await expect(name).toHaveAttribute('readonly', '');
+  await expect(dialog.getByLabel('Phone')).toHaveAttribute('readonly', '');
+  await expect(dialog.getByLabel('Company')).toHaveAttribute('readonly', '');
+  const close = dialog.getByRole('button', { name: 'Close', exact: true });
+  const cancel = dialog.getByRole('button', { name: 'Cancel', exact: true });
+  await expect(close).toHaveAttribute('aria-disabled', 'true');
+  await expect(cancel).toHaveAttribute('aria-disabled', 'true');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeVisible();
+  await expect(save).toBeFocused();
+  await close.dispatchEvent('click');
+  await cancel.dispatchEvent('click');
+  await expect(dialog).toBeVisible();
+  await expect(save).toBeFocused();
+  await save.dispatchEvent('click');
+  await save.dispatchEvent('click');
+
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('contact.upsert'))).toBe(1);
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+});
+
+test('Data retains a Contact save across tab and route leave', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=contacts&compose_commit_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  const trigger = page.getByRole('button', { name: 'New contact', exact: true });
+  await trigger.click();
+  const dialog = page.getByRole('dialog', { name: 'New contact' });
+  await dialog.getByLabel('Email').fill('owned-save@example.test');
+  await dialog.getByLabel('Name').fill('Owned Save');
+  const save = dialog.locator(
+    '[data-recued-data-action="submit-contact-dialog"]',
+  );
+  await save.focus();
+  await page.keyboard.press('Enter');
+  await expect(save).toHaveText('Saving…');
+  expect(await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    return window.dispatchEvent(event);
+  })).toBe(false);
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    window.__app.setHash('#chat');
+  });
+
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A Data action is still in progress. Leave Data anyway?',
+  );
+  await expect.poll(() => page.evaluate(() => window.location.hash))
+    .toBe('#data/contact');
+  await expect(dialog).toBeVisible();
+  await expect(save).toBeFocused();
+
+  await expect(dialog).toHaveCount(0);
+  await expect(trigger).toBeFocused();
+  expect(await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    return window.dispatchEvent(event);
+  })).toBe(true);
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  await expect(page).toHaveURL(/#chat$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Data restores failed Contact save focus and draft', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=contacts&compose_commit_response=slow&contact_save_response=fail`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  await page.getByRole('button', { name: 'New contact', exact: true }).click();
+  const dialog = page.getByRole('dialog', { name: 'New contact' });
+  const email = dialog.getByLabel('Email');
+  const name = dialog.getByLabel('Name');
+  await email.fill('retry@example.test');
+  await name.fill('Retry Person');
+  const save = dialog.locator(
+    '[data-recued-data-action="submit-contact-dialog"]',
+  );
+  await save.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(save).toHaveText('Saving…');
+  await expect(save).toBeFocused();
+  await expect(dialog.getByRole('alert')).toHaveText(
+    'Contact save unavailable.',
+  );
+  await expect(save).toHaveText('Save');
+  await expect(save).toBeFocused();
+  await expect(email).toHaveValue('retry@example.test');
+  await expect(name).toHaveValue('Retry Person');
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('contact.upsert'))).toBe(1);
+});
+
+test('Data hands keyboard focus from a contact row to its loaded detail', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=contacts`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  const row = page.locator(
+    `[${DATA_CONTACT_ROW}="mary@example.test"] button`,
+  );
+  await expect(row).toBeVisible();
+  await row.focus();
+  await expect(row).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  const heading = page.locator(`[${DATA_CONTACT_DETAIL_HEADING}]`);
+  await expect(heading).toHaveText('Mary Rivera');
+  await expect(heading).toBeFocused();
+});
+
+test('Data renders a prior in-page hash after opening contact detail', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=contacts`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  const row = page.locator(
+    `[${DATA_CONTACT_ROW}="mary@example.test"] button`,
+  );
+  await row.click();
+  const heading = page.locator(`[${DATA_CONTACT_DETAIL_HEADING}]`);
+  await expect(heading).toHaveText('Mary Rivera');
+  await expect(page).toHaveURL(/#data\/contact\/mary%40example\.test$/);
+
+  // Opening the detail used replaceState. Returning to the hash shown before
+  // that in-page write must not normalize-equal a stale shell cache and no-op.
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+  await expect(page).toHaveURL(/#data\/contact$/);
+  await expect(heading).toHaveCount(0);
+  await expect(row).toBeVisible();
+});
+
+test('Data returns keyboard focus from contact detail to its exact row', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=contacts`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  const row = page.locator(
+    `[${DATA_CONTACT_ROW}="mary@example.test"] button`,
+  );
+  await row.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator(`[${DATA_CONTACT_DETAIL_HEADING}]`)).toBeFocused();
+
+  const back = page.getByRole('button', {
+    name: '← Back to contacts',
+    exact: true,
+  });
+  await back.focus();
+  await expect(back).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  await expect(row).toBeVisible();
+  await expect(row).toBeFocused();
+});
+
+test('Data guards contact pagination and advances focus on the final page', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=contacts-paged&data_pagination_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/contact'));
+
+  const loadMore = page.locator(`[${DATA_CONTACT_LOAD_MORE}] button`);
+  await expect(loadMore).toBeVisible();
+  await loadMore.focus();
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('contact.list'),
+  );
+  await page.evaluate((attr) => {
+    document.querySelector<HTMLElement>(`[${attr}] button`)?.click();
+    document.querySelector<HTMLElement>(`[${attr}] button`)?.click();
+  }, DATA_CONTACT_LOAD_MORE);
+
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('contact.list')),
+  ).toBe(before + 1);
+  expect(await loadMore.evaluate((button) => ({
+    text: button.textContent?.trim(),
+    disabled: button.hasAttribute('disabled'),
+    ariaDisabled: button.getAttribute('aria-disabled'),
+    ariaBusy: button.getAttribute('aria-busy'),
+    focused: button === document.activeElement,
+  }))).toEqual({
+    text: 'Loading…',
+    disabled: false,
+    ariaDisabled: 'true',
+    ariaBusy: 'true',
+    focused: true,
+  });
+
+  const second = page.locator(
+    `[${DATA_CONTACT_ROW}="john@example.test"] button`,
+  );
+  await expect(second).toBeVisible();
+  await expect(page.locator(
+    `[${DATA_CONTACT_ROW}="zoe@example.test"]`,
+  )).toHaveCount(0);
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('contact.list')),
+  ).toBe(before + 1);
+  await expect(loadMore).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  const final = page.locator(
+    `[${DATA_CONTACT_ROW}="zoe@example.test"] button`,
+  );
+  await expect(final).toBeVisible();
+  await expect(page.locator(`[${DATA_CONTACT_LOAD_MORE}]`)).toHaveCount(0);
+  await expect(final).toBeFocused();
+});
+
+test('Data guards task pagination and advances focus on the final page', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=work-entities-paged&data_pagination_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/task'));
+
+  const loadMore = page.locator(`[${DATA_WORK_ENTITY_LOAD_MORE}] button`);
+  await expect(loadMore).toBeVisible();
+  await loadMore.focus();
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('work_entity.list'),
+  );
+  await page.evaluate((attr) => {
+    document.querySelector<HTMLElement>(`[${attr}] button`)?.click();
+    document.querySelector<HTMLElement>(`[${attr}] button`)?.click();
+  }, DATA_WORK_ENTITY_LOAD_MORE);
+
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('work_entity.list')),
+  ).toBe(before + 1);
+  expect(await loadMore.evaluate((button) => ({
+    text: button.textContent?.trim(),
+    disabled: button.hasAttribute('disabled'),
+    ariaDisabled: button.getAttribute('aria-disabled'),
+    ariaBusy: button.getAttribute('aria-busy'),
+    focused: button === document.activeElement,
+  }))).toEqual({
+    text: 'Loading…',
+    disabled: false,
+    ariaDisabled: 'true',
+    ariaBusy: 'true',
+    focused: true,
+  });
+
+  const second = page.locator(
+    '[data-action="open-edit-work-entity"][data-entity-id="task-1"]',
+  );
+  await expect(second).toBeVisible();
+  await expect(page.locator('[data-entity-id="task-2"]')).toHaveCount(0);
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('work_entity.list')),
+  ).toBe(before + 1);
+  await expect(loadMore).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  const final = page.locator(
+    '[data-action="open-edit-work-entity"][data-entity-id="task-2"]',
+  );
+  await expect(final).toBeVisible();
+  await expect(page.locator(`[${DATA_WORK_ENTITY_LOAD_MORE}]`)).toHaveCount(0);
+  await expect(final).toBeFocused();
+});
+
+test('Data carries task-row focus through edit loading and back from the dialog', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=work-entities-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/task'));
+
+  const row = page.locator(
+    '[data-action="open-edit-work-entity"][data-entity-id="task-0"]',
+  );
+  const readsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('work_entity.get'),
+  );
+  await row.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(row).toHaveAttribute('aria-disabled', 'true');
+  await expect(row).toHaveAttribute('aria-busy', 'true');
+  await expect(row).not.toHaveAttribute('disabled');
+  await expect(row).toContainText('Opening…');
+  await expect(row).toBeFocused();
+  await row.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('work_entity.get')),
+  ).toBe(readsBefore + 1);
+
+  const dialog = page.getByRole('dialog', { name: 'Edit Task' });
+  const title = dialog.getByLabel('Title');
+  await expect(title).toHaveValue('Task 0');
+  await expect(title).toBeFocused();
+  await expect(title).toBeInViewport();
+
+  const close = dialog.getByRole('button', { name: 'Close', exact: true });
+  const save = dialog.getByRole('button', { name: 'Save', exact: true });
+  await close.focus();
+  await page.keyboard.press('Shift+Tab');
+  await expect(save).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(close).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(row).toBeFocused();
+});
+
+test('Data protects an unfinished task edit from dismissal', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=work-entities-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/task'));
+
+  const row = page.locator(
+    '[data-action="open-edit-work-entity"][data-entity-id="task-0"]',
+  );
+  await row.click();
+  const dialog = page.getByRole('dialog', { name: 'Edit Task' });
+  const title = dialog.getByLabel('Title');
+  const close = dialog.getByRole('button', { name: 'Close', exact: true });
+  await title.fill('Unfinished task edit');
+  await close.focus();
+  await page.keyboard.press('Enter');
+
+  const guard = page.locator(`[${DATA_WORK_ENTITY_DISCARD_GUARD}]`);
+  await expect(dialog).toBeVisible();
+  await expect(guard).toHaveAttribute('role', 'alertdialog');
+  await expect(guard).toBeFocused();
+  await expect(guard).toContainText('Discard your task changes?');
+
+  await page.keyboard.press('Escape');
+  await expect(guard).toHaveCount(0);
+  await expect(title).toHaveValue('Unfinished task edit');
+  await expect(close).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(guard).toBeFocused();
+  await page.locator(`[${DATA_WORK_ENTITY_DISCARD_KEEP}]`).click();
+  await expect(guard).toHaveCount(0);
+  await expect(close).toBeFocused();
+  await expect(title).toHaveValue('Unfinished task edit');
+
+  await page.keyboard.press('Enter');
+  const discard = page.locator(`[${DATA_WORK_ENTITY_DISCARD_COMMIT}]`);
+  await expect(discard).toHaveText('Discard changes');
+  await discard.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(row).toContainText('Task 0');
+  await expect(row).toBeFocused();
+});
+
+test('Data focuses a newly added task relationship without losing the draft', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=work-entities-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/task'));
+
+  await page.locator(
+    '[data-action="open-edit-work-entity"][data-entity-id="task-0"]',
+  ).click();
+  const dialog = page.getByRole('dialog', { name: 'Edit Task' });
+  const title = dialog.getByLabel('Title');
+  await title.fill('Draft survives repaint');
+  const add = dialog.locator('[data-form-array-add="blocks_task"]');
+  await add.focus();
+  await page.keyboard.press('Enter');
+
+  const entry = dialog.locator(
+    '[data-form-array-item="blocks_task"][data-form-array-index="0"]',
+  );
+  await expect(entry).toHaveCount(1);
+  await expect(entry).toBeFocused();
+  await expect(entry).toBeInViewport();
+  await expect(title).toHaveValue('Draft survives repaint');
+});
+
+test('Data restores task relationship removal focus to a survivor or Add', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=work-entities-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/task'));
+
+  await page.locator(
+    '[data-action="open-edit-work-entity"][data-entity-id="task-0"]',
+  ).click();
+  const dialog = page.getByRole('dialog', { name: 'Edit Task' });
+  const title = dialog.getByLabel('Title');
+  await title.fill('Removal draft survives');
+  const add = dialog.locator('[data-form-array-add="blocks_task"]');
+  await add.click();
+  await dialog.locator(
+    '[data-form-array-item="blocks_task"][data-form-array-index="0"]',
+  ).fill('task-a');
+  await add.click();
+  await dialog.locator(
+    '[data-form-array-item="blocks_task"][data-form-array-index="1"]',
+  ).fill('task-b');
+
+  const firstRemove = dialog.locator(
+    '[data-form-array-remove="blocks_task"][data-form-array-index="0"]',
+  );
+  await firstRemove.focus();
+  await page.keyboard.press('Enter');
+  const survivor = dialog.locator(
+    '[data-form-array-item="blocks_task"][data-form-array-index="0"]',
+  );
+  await expect(survivor).toHaveValue('task-b');
+  await expect(survivor).toBeFocused();
+  await expect(survivor).toBeInViewport();
+  await expect(title).toHaveValue('Removal draft survives');
+
+  const lastRemove = dialog.locator(
+    '[data-form-array-remove="blocks_task"][data-form-array-index="0"]',
+  );
+  await lastRemove.focus();
+  await page.keyboard.press('Enter');
+  await expect(survivor).toHaveCount(0);
+  await expect(add).toBeFocused();
+  await expect(add).toBeInViewport();
+  await expect(title).toHaveValue('Removal draft survives');
+});
+
+test('Data keeps task save visible, single-flight, and returns focus to the updated row', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=work-entities-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/task'));
+
+  const row = page.locator(
+    '[data-action="open-edit-work-entity"][data-entity-id="task-0"]',
+  );
+  await row.click();
+  const dialog = page.getByRole('dialog', { name: 'Edit Task' });
+  await dialog.getByLabel('Title').fill('Task polished');
+  const save = dialog.locator(
+    '[data-action="submit-work-entity-dialog"]',
+  );
+  const writesBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('work_entity.upsert'),
+  );
+  await save.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(save).toHaveText('Saving…');
+  await expect(save).toHaveAttribute('aria-disabled', 'true');
+  await expect(save).toHaveAttribute('aria-busy', 'true');
+  await expect(save).not.toHaveAttribute('disabled');
+  await expect(save).toBeFocused();
+  const close = dialog.getByRole('button', { name: 'Close', exact: true });
+  const cancel = dialog.getByRole('button', { name: 'Cancel', exact: true });
+  await expect(close).toHaveAttribute('aria-disabled', 'true');
+  await expect(cancel).toHaveAttribute('aria-disabled', 'true');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeVisible();
+  await expect(save).toBeFocused();
+  await close.dispatchEvent('click');
+  await cancel.dispatchEvent('click');
+  await page.locator('.work-entity-dialog-backdrop').dispatchEvent('click');
+  await expect(dialog).toBeVisible();
+  await expect(save).toBeFocused();
+  await save.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('work_entity.upsert')),
+  ).toBe(writesBefore + 1);
+
+  await expect(dialog).toHaveCount(0);
+  await expect(row).toContainText('Task polished');
+  await expect(row).toBeFocused();
+});
+
+test('Data moves task validation ownership to the first invalid field', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=work-entities-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/task'));
+
+  await page.locator(
+    '[data-action="open-edit-work-entity"][data-entity-id="task-0"]',
+  ).click();
+  const dialog = page.getByRole('dialog', { name: 'Edit Task' });
+  const title = dialog.getByLabel('Title');
+  await title.fill('');
+  const writesBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('work_entity.upsert'),
+  );
+  const save = dialog.locator(
+    '[data-action="submit-work-entity-dialog"]',
+  );
+  await save.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(dialog.getByRole('alert')).toBeVisible();
+  await expect(title).toHaveAttribute('aria-invalid', 'true');
+  await expect(title).toHaveValue('');
+  await expect(title).toBeFocused();
+  await expect(title).toBeInViewport();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('work_entity.upsert')),
+  ).toBe(writesBefore);
+});
+
+test('Data guards form-response pagination and advances focus on the final page', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=form-responses-paged&data_pagination_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/form_response'));
+
+  const loadMore = page.locator(`[${DATA_FORM_RESPONSE_LOAD_MORE}] button`);
+  await expect(loadMore).toBeVisible();
+  await loadMore.focus();
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('form_response.list'),
+  );
+  await page.evaluate((attr) => {
+    document.querySelector<HTMLElement>(`[${attr}] button`)?.click();
+    document.querySelector<HTMLElement>(`[${attr}] button`)?.click();
+  }, DATA_FORM_RESPONSE_LOAD_MORE);
+
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('form_response.list')),
+  ).toBe(before + 1);
+  expect(await loadMore.evaluate((button) => ({
+    text: button.textContent?.trim(),
+    disabled: button.hasAttribute('disabled'),
+    ariaDisabled: button.getAttribute('aria-disabled'),
+    ariaBusy: button.getAttribute('aria-busy'),
+    focused: button === document.activeElement,
+  }))).toEqual({
+    text: 'Loading…',
+    disabled: false,
+    ariaDisabled: 'true',
+    ariaBusy: 'true',
+    focused: true,
+  });
+
+  const second = page.locator(
+    '[data-recued-data-form-response-row="submission-1"] button',
+  );
+  await expect(second).toBeVisible();
+  await expect(page.locator(
+    '[data-recued-data-form-response-row="submission-2"]',
+  )).toHaveCount(0);
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('form_response.list')),
+  ).toBe(before + 1);
+  await expect(loadMore).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  const final = page.locator(
+    '[data-recued-data-form-response-row="submission-2"] button',
+  );
+  await expect(final).toBeVisible();
+  await expect(page.locator(`[${DATA_FORM_RESPONSE_LOAD_MORE}]`)).toHaveCount(0);
+  await expect(final).toBeFocused();
+});
+
+test('Data hands form-response focus into detail and returns it to the row', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/form_response'));
+
+  const row = page.locator(
+    '[data-recued-data-form-response-row="submission-0"] button',
+  );
+  await expect(row).toBeVisible();
+  await row.focus();
+  await page.keyboard.press('Enter');
+
+  const heading = page.locator(`[${DATA_FORM_RESPONSE_DETAIL_HEADING}]`);
+  await expect(heading).toHaveText('visitor-0@example.test');
+  await expect(heading).toBeFocused();
+
+  const back = page.getByRole('button', {
+    name: '← Back to form responses',
+    exact: true,
+  });
+  await back.focus();
+  await page.keyboard.press('Enter');
+  await expect(row).toBeVisible();
+  await expect(row).toBeFocused();
+});
+
+test('Data protects unfinished form-response edits from Back', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/form_response'));
+
+  const row = page.locator(
+    '[data-recued-data-form-response-row="submission-0"] button',
+  );
+  await row.click();
+  const detail = page.locator(`[${DATA_FORM_RESPONSE_DETAIL_HEADING}]`);
+  const email = page.locator(`[${DATA_FORM_RESPONSE_EMAIL}]`);
+  const back = page.getByRole('button', {
+    name: '← Back to form responses',
+    exact: true,
+  });
+  await email.fill('unfinished@example.test');
+  await back.focus();
+  await page.keyboard.press('Enter');
+
+  const guard = page.locator(`[${DATA_FORM_RESPONSE_DISCARD_GUARD}]`);
+  await expect(detail).toBeVisible();
+  await expect(guard).toHaveAttribute('role', 'alertdialog');
+  await expect(guard).toBeFocused();
+  await expect(page.locator('.data-form-response-detail-content'))
+    .toHaveAttribute('inert', '');
+  const contactTab = page.locator(`[${DATA_TAB}="contact"]`);
+  await expect(contactTab).toHaveAttribute('aria-disabled', 'true');
+  await contactTab.dispatchEvent('click');
+  await expect(guard).toBeFocused();
+  await expect(detail).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(guard).toHaveCount(0);
+  await expect(email).toHaveValue('unfinished@example.test');
+  await expect(back).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(guard).toBeFocused();
+  const keep = page.locator(`[${DATA_FORM_RESPONSE_DISCARD_KEEP}]`);
+  await page.keyboard.press('Tab');
+  await expect(keep).toBeFocused();
+  await keep.click();
+  await expect(guard).toHaveCount(0);
+  await expect(email).toHaveValue('unfinished@example.test');
+  await expect(back).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(guard).toBeFocused();
+  const discard = page.locator(`[${DATA_FORM_RESPONSE_DISCARD_COMMIT}]`);
+  await page.keyboard.press('Shift+Tab');
+  await expect(discard).toBeFocused();
+  await discard.click();
+  await expect(detail).toHaveCount(0);
+  await expect(row).toBeFocused();
+});
+
+test('Data protects unfinished form-response edits from tab switches', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/form_response'));
+  await page.locator(
+    '[data-recued-data-form-response-row="submission-0"] button',
+  ).click();
+
+  const detail = page.locator(`[${DATA_FORM_RESPONSE_DETAIL_HEADING}]`);
+  const email = page.locator(`[${DATA_FORM_RESPONSE_EMAIL}]`);
+  const contactTab = page.locator(`[${DATA_TAB}="contact"]`);
+  await email.fill('tab-switch-draft@example.test');
+  await contactTab.focus();
+  await page.keyboard.press('Enter');
+
+  const guard = page.locator(`[${DATA_FORM_RESPONSE_DISCARD_GUARD}]`);
+  await expect(detail).toBeVisible();
+  await expect(guard).toBeFocused();
+  await expect(page.locator(`[${DATA_TAB}="form_response"]`))
+    .toHaveAttribute('aria-selected', 'true');
+
+  await page.locator(`[${DATA_FORM_RESPONSE_DISCARD_KEEP}]`).click();
+  await expect(guard).toHaveCount(0);
+  await expect(email).toHaveValue('tab-switch-draft@example.test');
+  await expect(contactTab).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(guard).toBeFocused();
+  await page.locator(`[${DATA_FORM_RESPONSE_DISCARD_COMMIT}]`).click();
+  await expect(contactTab).toHaveAttribute('aria-selected', 'true');
+  await expect(detail).toHaveCount(0);
+  await expect(contactTab).toBeFocused();
+});
+
+test('Data protects unfinished form-response edits before Kitchen handoff', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/form_response'));
+  await page.locator(
+    '[data-recued-data-form-response-row="submission-0"] button',
+  ).click();
+
+  const detail = page.locator(`[${DATA_FORM_RESPONSE_DETAIL_HEADING}]`);
+  const email = page.locator(`[${DATA_FORM_RESPONSE_EMAIL}]`);
+  const automate = page.getByRole('link', { name: 'Automate this form' });
+  await email.fill('kitchen-handoff-draft@example.test');
+  await automate.focus();
+  await page.keyboard.press('Enter');
+
+  const guard = page.locator(`[${DATA_FORM_RESPONSE_DISCARD_GUARD}]`);
+  await expect(detail).toBeVisible();
+  await expect(guard).toBeFocused();
+  await expect(page).toHaveURL(/#data\/form_response\/submission-0$/);
+
+  await page.locator(`[${DATA_FORM_RESPONSE_DISCARD_KEEP}]`).click();
+  await expect(guard).toHaveCount(0);
+  await expect(email).toHaveValue('kitchen-handoff-draft@example.test');
+  await expect(automate).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(guard).toBeFocused();
+  await page.locator(`[${DATA_FORM_RESPONSE_DISCARD_COMMIT}]`).click();
+  await expect(page).toHaveURL(/#kitchen\/new\/form-response\/project-intake$/);
+  await expect(detail).toHaveCount(0);
+});
+
+test('Data advances owned focus into form-response automation discovery', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/form_response'));
+  await page.locator(
+    '[data-recued-data-form-response-row="submission-0"] button',
+  ).click();
+
+  const discover = page.locator(`[${DATA_FORM_RESPONSE_RUN}]`);
+  const readsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('recipe.list'),
+  );
+  await discover.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(discover).toHaveText('Finding automations…');
+  await expect(discover).toHaveAttribute('aria-disabled', 'true');
+  await expect(discover).toHaveAttribute('aria-busy', 'true');
+  await expect(discover).not.toHaveAttribute('disabled');
+  await expect(discover).toBeFocused();
+  await discover.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('recipe.list')),
+  ).toBe(readsBefore + 1);
+
+  const picker = page.locator(`[${DATA_FORM_RESPONSE_RUN_PICKER}="ready"]`);
+  const heading = picker.getByRole('heading', { level: 3 });
+  await expect(heading).toHaveText('Run this response now');
+  await expect(heading).toBeFocused();
+  await expect(heading).toBeInViewport();
+});
+
+test('Data preserves form-response drafts and save ownership', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/form_response'));
+  await page.locator(
+    '[data-recued-data-form-response-row="submission-0"] button',
+  ).click();
+
+  const values = page.locator(`[${DATA_FORM_RESPONSE_VALUES}]`);
+  const email = page.locator(`[${DATA_FORM_RESPONSE_EMAIL}]`);
+  const lifecycle = page.locator(`[${DATA_FORM_RESPONSE_STATE}]`);
+  const save = page.locator(
+    'button[data-recued-data-action="save-form-response"]',
+  );
+
+  await values.fill('["not an object"]');
+  await save.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('alert')).toContainText(
+    'Answers must be a JSON object',
+  );
+  await expect(values).toHaveValue('["not an object"]');
+  await expect(values).toBeFocused();
+
+  await values.fill('{"project":"Owner revised"}');
+  await email.fill('corrected@example.test');
+  await lifecycle.selectOption('in_review');
+  await save.focus();
+  await page.keyboard.press('Enter');
+  await expect(save).toHaveText('Saving…');
+  await expect(save).toHaveAttribute('aria-disabled', 'true');
+  await expect(save).toHaveAttribute('aria-busy', 'true');
+  await expect(save).not.toBeDisabled();
+  await expect(save).toBeFocused();
+
+  await expect(save).toHaveText('Save changes');
+  await expect(save).toBeFocused();
+  await expect(values).toHaveValue('{\n  "project": "Owner revised"\n}');
+  await expect(email).toHaveValue('corrected@example.test');
+  await expect(lifecycle).toHaveValue('in_review');
+});
+
+test('Data keeps form-response navigation attached while saving', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/form_response'));
+  await page.locator(
+    '[data-recued-data-form-response-row="submission-0"] button',
+  ).click();
+
+  const heading = page.locator(`[${DATA_FORM_RESPONSE_DETAIL_HEADING}]`);
+  const email = page.locator(`[${DATA_FORM_RESPONSE_EMAIL}]`);
+  const save = page.locator(
+    'button[data-recued-data-action="save-form-response"]',
+  );
+  const back = page.getByRole('button', {
+    name: '← Back to form responses',
+    exact: true,
+  });
+  const automate = page.getByRole('link', { name: 'Automate this form' });
+  const contactTab = page.locator(`[${DATA_TAB}="contact"]`);
+  await email.fill('saving@example.test');
+  await save.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(save).toHaveText('Saving…');
+  await expect(back).toHaveAttribute('aria-disabled', 'true');
+  await expect(automate).toHaveAttribute('aria-disabled', 'true');
+  await expect(contactTab).toHaveAttribute('aria-disabled', 'true');
+  await back.dispatchEvent('click');
+  await automate.dispatchEvent('click');
+  await contactTab.dispatchEvent('click');
+  await expect(heading).toBeVisible();
+  await expect(page).toHaveURL(/#data\/form_response\/submission-0$/);
+  await expect(page.locator(`[${DATA_TAB}="form_response"]`))
+    .toHaveAttribute('aria-selected', 'true');
+
+  await expect(save).toHaveText('Save changes');
+  await expect(back).not.toHaveAttribute('aria-disabled');
+  await expect(automate).not.toHaveAttribute('aria-disabled');
+  await expect(contactTab).not.toHaveAttribute('aria-disabled');
+});
+
+test('Data keeps form-response export visible, focused, and single-flight', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/form_response'));
+
+  const csv = page.locator(
+    'button[data-recued-data-action="export-form-responses"][data-format="csv"]',
+  );
+  const json = page.locator(
+    'button[data-recued-data-action="export-form-responses"][data-format="json"]',
+  );
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('form_response.export'),
+  );
+  const download = page.waitForEvent('download');
+  await csv.focus();
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Enter');
+
+  await Promise.all([
+    expect(csv).toHaveText('Exporting CSV…'),
+    expect(csv).toHaveAttribute('aria-disabled', 'true'),
+    expect(csv).toHaveAttribute('aria-busy', 'true'),
+    expect(csv).not.toHaveAttribute('disabled'),
+    expect(csv).toBeFocused(),
+    expect(json).toHaveAttribute('aria-disabled', 'true'),
+    expect(json).not.toHaveAttribute('aria-busy'),
+  ]);
+
+  await expect(csv).toHaveText('Export CSV');
+  await expect(csv).toBeFocused();
+  expect((await download).suggestedFilename()).toBe('form-responses.csv');
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('form_response.export'),
+    ),
+  ).toBe(before + 1);
+});
+
+test('Data protects an unfinished Memory compose from Cancel', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=memory`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/memory'));
+
+  const add = page.getByRole('button', { name: 'Add memory', exact: true });
+  await add.click();
+  const form = page.getByRole('form', { name: 'New memory' });
+  const kind = form.getByLabel('Kind');
+  const body = form.getByLabel('Body');
+  const cancel = form.getByRole('button', { name: 'Cancel', exact: true });
+  await kind.fill('preference');
+  await body.fill('Keep answers concise');
+  await cancel.focus();
+  await page.keyboard.press('Enter');
+
+  const guard = page.locator(`[${DATA_MEMORY_COMPOSE_DISCARD_GUARD}]`);
+  const keep = page.locator(`[${DATA_MEMORY_COMPOSE_DISCARD_KEEP}]`);
+  const discard = page.locator(`[${DATA_MEMORY_COMPOSE_DISCARD_COMMIT}]`);
+  await expect(form).toBeVisible();
+  await expect(guard).toHaveAttribute('role', 'alertdialog');
+  await expect(guard).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(keep).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(discard).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(guard).toHaveCount(0);
+  await expect(kind).toHaveValue('preference');
+  await expect(body).toHaveValue('Keep answers concise');
+  await expect(cancel).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(guard).toBeFocused();
+  await keep.click();
+  await expect(guard).toHaveCount(0);
+  await expect(cancel).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(guard).toBeFocused();
+  await discard.click();
+  await expect(form).toHaveCount(0);
+  await expect(add).toBeFocused();
+});
+
+test('Data protects an unfinished Memory import from Close', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=memory`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/memory'));
+
+  const opener = page.locator(
+    'button[data-recued-data-action="memory-import"]',
+  );
+  await opener.click();
+  const form = page.getByRole('form', { name: 'Import memory' });
+  const input = form.getByLabel('JSON');
+  const close = form.locator(
+    'button[data-recued-data-action="memory-import-cancel"]',
+  );
+  await input.fill(
+    '{"entries":[{"origin_actor":"user_self","kind":"note","body":"unfinished import"}]}',
+  );
+  await close.focus();
+  await page.keyboard.press('Enter');
+
+  const guard = page.locator(`[${DATA_MEMORY_IMPORT_DISCARD_GUARD}]`);
+  const keep = page.locator(`[${DATA_MEMORY_IMPORT_DISCARD_KEEP}]`);
+  const discard = page.locator(`[${DATA_MEMORY_IMPORT_DISCARD_COMMIT}]`);
+  await expect(form).toBeVisible();
+  await expect(guard).toHaveAttribute('role', 'alertdialog');
+  await expect(guard).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(keep).toBeFocused();
+  await page.keyboard.press('Shift+Tab');
+  await expect(discard).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(guard).toHaveCount(0);
+  await expect(input).toContainText('unfinished import');
+  await expect(close).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(guard).toBeFocused();
+  await keep.click();
+  await expect(guard).toHaveCount(0);
+  await expect(close).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(guard).toBeFocused();
+  await discard.click();
+  await expect(form).toHaveCount(0);
+  await expect(opener).toBeFocused();
+});
+
+test('Data keeps a Memory import visible, focused, and single-flight', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?data=memory`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/memory'));
+
+  await page.locator(
+    'button[data-recued-data-action="memory-import"]',
+  ).click();
+  const form = page.getByRole('form', { name: 'Import memory' });
+  const input = form.getByLabel('JSON');
+  const close = form.locator(
+    'button[data-recued-data-action="memory-import-cancel"]',
+  );
+  const submit = form.locator(
+    'button[data-recued-data-action="memory-import-submit"]',
+  );
+  await input.fill(
+    '{"entries":[{"origin_actor":"user_self","kind":"note","body":"pending import"}]}',
+  );
+  await submit.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(submit).toHaveText('Importing…');
+  await expect(submit).toHaveAttribute('aria-disabled', 'true');
+  await expect(submit).toHaveAttribute('aria-busy', 'true');
+  await expect(submit).not.toHaveAttribute('disabled');
+  await expect(submit).toBeFocused();
+  await expect(input).toHaveAttribute('readonly', '');
+  await expect(close).toHaveAttribute('aria-disabled', 'true');
+  await expect(close).not.toHaveAttribute('disabled');
+
+  await page.keyboard.press('Enter');
+  // Dispatch directly because Playwright correctly treats aria-disabled as
+  // non-actionable; the delegated handler still needs to reject a synthetic
+  // or assistive-tech activation without hiding the pending operation.
+  await close.dispatchEvent('click');
+  await expect(form).toBeVisible();
+  await expect(submit).toBeFocused();
+  await page.getByRole('button', { name: 'Data', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Memory', exact: true }))
+    .toHaveAttribute('aria-pressed', 'true');
+  await expect(submit).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('memory.import')),
+  ).toBe(1);
+});
+
+test('Data owns Memory Delete and Forget from review through completion', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=memory-rows&memory_delete_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/memory'));
+
+  const ownRow = page.locator('.memory-row').filter({
+    hasText: 'Concise answers',
+  });
+  const remove = ownRow.getByRole('button', { name: 'Delete', exact: true });
+  await remove.focus();
+  await page.keyboard.press('Enter');
+  const confirm = ownRow.locator(
+    'button[data-recued-data-action="memory-delete-confirm"]',
+  );
+  const cancel = ownRow.locator(
+    'button[data-recued-data-action="memory-delete-cancel"]',
+  );
+  await expect(confirm).toHaveText('Confirm');
+  await expect(confirm).toBeFocused();
+  await cancel.click();
+  await expect(remove).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(confirm).toHaveText('Deleting…');
+  await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+  await expect(confirm).toHaveAttribute('aria-busy', 'true');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
+  await expect(cancel).toHaveAttribute('aria-disabled', 'true');
+  await expect(cancel).not.toHaveAttribute('disabled');
+
+  await page.keyboard.press('Enter');
+  await cancel.dispatchEvent('click');
+  await page.getByRole('button', { name: 'Data', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Memory', exact: true }))
+    .toHaveAttribute('aria-pressed', 'true');
+  await expect(confirm).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('memory.delete')),
+  ).toBe(1);
+
+  await expect(ownRow).toHaveCount(0);
+  const add = page.getByRole('button', { name: 'Add memory', exact: true });
+  await expect(add).toBeFocused();
+
+  const systemRow = page.locator('.memory-row[data-origin="system"]');
+  await expect(systemRow).toContainText('Recipe execution remembered');
+  const forget = systemRow.getByRole('button', { name: 'Forget', exact: true });
+  await forget.focus();
+  await page.keyboard.press('Enter');
+  const forgetConfirm = systemRow.locator(
+    'button[data-recued-data-action="memory-delete-confirm"]',
+  );
+  await expect(forgetConfirm).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(forgetConfirm).toHaveText('Forgetting…');
+  await expect(forgetConfirm).toBeFocused();
+  await expect(systemRow).toHaveClass(/is-redacted/);
+  await expect(systemRow).toContainText('Redacted');
+  await expect(add).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('memory.delete')),
+  ).toBe(2);
+});
+
+test('Data keeps a failed Memory Delete retryable and focused', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?data=memory-rows&memory_delete_response=fail-once-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/memory'));
+
+  const row = page.locator('.memory-row').filter({ hasText: 'Concise answers' });
+  await row.getByRole('button', { name: 'Delete', exact: true }).click();
+  const confirm = row.locator(
+    'button[data-recued-data-action="memory-delete-confirm"]',
+  );
+  await confirm.focus();
+  await page.keyboard.press('Enter');
+  await expect(confirm).toHaveText('Deleting…');
+  await expect(confirm).toBeFocused();
+
+  await expect(row.getByRole('alert')).toHaveText(
+    'Memory delete temporarily unavailable.',
+  );
+  await expect(confirm).toHaveText('Confirm');
+  await expect(confirm).toBeFocused();
+  await expect(row).toContainText('Concise answers');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('memory.delete')),
+  ).toBe(1);
+
+  await page.keyboard.press('Enter');
+  await expect(confirm).toHaveText('Deleting…');
+  await expect(row).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Add memory', exact: true }))
+    .toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('memory.delete')),
+  ).toBe(2);
+});
+
+test('Data owns Memory detail loading and returns Back to the exact row', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?data=memory-rows&memory_get_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/memory'));
+
+  const row = page.locator('.memory-row').filter({ hasText: 'Concise answers' });
+  const view = row.getByRole('button', { name: 'View', exact: true });
+  await view.focus();
+  await page.keyboard.press('Enter');
+  const detail = page.getByRole('region', { name: 'Memory detail' });
+  const heading = detail.locator(`[${DATA_MEMORY_DETAIL_HEADING}]`);
+  await expect(detail).toContainText('Loading memory…');
+  await expect(heading).toBeFocused();
+
+  await detail.getByRole('button', { name: '← Back', exact: true }).click();
+  await expect(detail).toHaveCount(0);
+  await expect(view).toBeFocused();
+  await page.waitForTimeout(850);
+  await expect(detail).toHaveCount(0);
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('memory.get')),
+  ).toBe(1);
+
+  await page.keyboard.press('Enter');
+  await expect(detail).toContainText('Loading memory…');
+  await expect(heading).toBeFocused();
+  await expect(detail).toContainText('Keep answers concise and direct.');
+  await expect(heading).toBeFocused();
+  await detail.getByRole('button', { name: '← Back', exact: true }).click();
+  await expect(view).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('memory.get')),
+  ).toBe(2);
+});
+
+test('Data keeps a failed Memory detail owned through a successful retry', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?data=memory-rows&memory_get_response=fail-once-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/memory'));
+
+  const row = page.locator('.memory-row').filter({ hasText: 'Concise answers' });
+  const view = row.getByRole('button', { name: 'View', exact: true });
+  await view.click();
+  const detail = page.getByRole('region', { name: 'Memory detail' });
+  const heading = detail.locator(`[${DATA_MEMORY_DETAIL_HEADING}]`);
+  await expect(heading).toBeFocused();
+  await expect(detail.getByRole('alert')).toHaveText(
+    'Memory entry temporarily unavailable.',
+  );
+  await expect(heading).toBeFocused();
+
+  await detail.getByRole('button', { name: '← Back', exact: true }).click();
+  await expect(view).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(heading).toBeFocused();
+  await expect(detail).toContainText('Keep answers concise and direct.');
+  await expect(heading).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('memory.get')),
+  ).toBe(2);
+});
+
+test('Data owns Memory Edit prefill and keeps it single-flight', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?data=memory-rows&memory_get_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/memory'));
+
+  const row = page.locator('.memory-row').filter({ hasText: 'Concise answers' });
+  const edit = row.locator(
+    'button[data-recued-data-action="memory-edit"]',
+  );
+  const remove = row.locator(
+    'button[data-recued-data-action="memory-delete"]',
+  );
+  await edit.focus();
+  await page.keyboard.press('Enter');
+  await expect(edit).toHaveText('Opening…');
+  await expect(edit).toHaveAttribute('aria-disabled', 'true');
+  await expect(edit).toHaveAttribute('aria-busy', 'true');
+  await expect(edit).not.toHaveAttribute('disabled');
+  await expect(edit).toBeFocused();
+  await expect(remove).toHaveAttribute('aria-disabled', 'true');
+
+  await page.keyboard.press('Enter');
+  await remove.dispatchEvent('click');
+  await page.getByRole('button', { name: 'Data', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Memory', exact: true }))
+    .toHaveAttribute('aria-pressed', 'true');
+  await expect(edit).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('memory.get')),
+  ).toBe(1);
+
+  const form = page.getByRole('form', { name: 'Edit memory' });
+  await expect(form).toBeVisible();
+  await expect(form.getByLabel('Kind')).toHaveValue('preference');
+  await expect(form.getByLabel('Body')).toHaveValue(
+    'Keep answers concise and direct.',
+  );
+  await expect(form.getByLabel('Kind')).toBeFocused();
+  await form.getByRole('button', { name: 'Cancel', exact: true }).click();
+  await expect(edit).toHaveText('Edit');
+  await expect(edit).toBeFocused();
+});
+
+test('Data keeps a failed Memory Edit prefill local and retryable', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?data=memory-rows&memory_get_response=fail-once-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/memory'));
+
+  const row = page.locator('.memory-row').filter({ hasText: 'Concise answers' });
+  const edit = row.locator(
+    'button[data-recued-data-action="memory-edit"]',
+  );
+  await edit.click();
+  await expect(edit).toHaveText('Opening…');
+  await expect(edit).toBeFocused();
+  await expect(row.getByRole('alert')).toHaveText(
+    'Memory entry temporarily unavailable.',
+  );
+  await expect(edit).toHaveText('Edit');
+  await expect(edit).toBeFocused();
+  await expect(row).toContainText('Concise answers');
+
+  await page.keyboard.press('Enter');
+  await expect(edit).toHaveText('Opening…');
+  const form = page.getByRole('form', { name: 'Edit memory' });
+  await expect(form).toBeVisible();
+  await expect(form.getByLabel('Kind')).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('memory.get')),
+  ).toBe(2);
+});
+
+test('Data keeps Memory Export visible, focused, and single-flight', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?data=memory-rows&memory_get_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/memory'));
+
+  const exportButton = page.locator(
+    'button[data-recued-data-action="memory-export"]',
+  );
+  const importButton = page.locator(
+    'button[data-recued-data-action="memory-import"]',
+  );
+  const addButton = page.locator(
+    'button[data-recued-data-action="memory-add"]',
+  );
+  const dataLens = page.getByRole('button', { name: 'Data', exact: true });
+  const memoryLens = page.getByRole('button', { name: 'Memory', exact: true });
+  const allFilter = page.getByRole('button', { name: 'All', exact: true });
+  const youFilter = page.getByRole('button', { name: 'You', exact: true });
+  const openRun = page.getByRole('link', { name: 'Open run', exact: true });
+  const download = page.waitForEvent('download');
+
+  await exportButton.focus();
+  await page.keyboard.press('Enter');
+  await Promise.all([
+    expect(exportButton).toHaveText('Exporting…'),
+    expect(exportButton).toHaveAttribute('aria-disabled', 'true'),
+    expect(exportButton).toHaveAttribute('aria-busy', 'true'),
+    expect(exportButton).not.toHaveAttribute('disabled'),
+    expect(exportButton).toBeFocused(),
+    expect(importButton).toHaveAttribute('aria-disabled', 'true'),
+    expect(addButton).toHaveAttribute('aria-disabled', 'true'),
+    expect(dataLens).toHaveAttribute('aria-disabled', 'true'),
+    expect(memoryLens).toHaveAttribute('aria-disabled', 'true'),
+    expect(allFilter).toHaveAttribute('aria-disabled', 'true'),
+    expect(youFilter).toHaveAttribute('aria-disabled', 'true'),
+    expect(openRun).toHaveAttribute('aria-disabled', 'true'),
+  ]);
+
+  await page.keyboard.press('Enter');
+  await importButton.dispatchEvent('click');
+  await addButton.dispatchEvent('click');
+  await dataLens.dispatchEvent('click');
+  await youFilter.dispatchEvent('click');
+  await openRun.dispatchEvent('click');
+  await expect(page).toHaveURL(/#data\/memory$/);
+  await expect(memoryLens).toHaveAttribute('aria-pressed', 'true');
+  await expect(allFilter).toHaveAttribute('aria-pressed', 'true');
+  await expect(exportButton).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('memory.list')),
+  ).toBe(2);
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('memory.get')),
+  ).toBe(1);
+
+  expect((await download).suggestedFilename()).toMatch(
+    /^recued-memory-\d{4}-\d{2}-\d{2}\.json$/,
+  );
+  await expect(exportButton).toHaveText('Export');
+  await expect(exportButton).not.toHaveAttribute('aria-busy');
+  await expect(exportButton).toBeFocused();
+});
+
+test('Data keeps a failed Memory Export focused and retryable', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?data=memory-rows&memory_list_response=fail-once-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/memory'));
+
+  const exportButton = page.locator(
+    'button[data-recued-data-action="memory-export"]',
+  );
+  await exportButton.focus();
+  await page.keyboard.press('Enter');
+  await expect(exportButton).toHaveText('Exporting…');
+  await expect(exportButton).toBeFocused();
+
+  await expect(page.getByRole('alert')).toHaveText(
+    'Memory export temporarily unavailable.',
+  );
+  await expect(exportButton).toHaveText('Export');
+  await expect(exportButton).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('memory.list')),
+  ).toBe(2);
+
+  const download = page.waitForEvent('download');
+  await page.keyboard.press('Enter');
+  await expect(exportButton).toHaveText('Exporting…');
+  await expect(exportButton).toBeFocused();
+  expect((await download).suggestedFilename()).toMatch(
+    /^recued-memory-\d{4}-\d{2}-\d{2}\.json$/,
+  );
+  await expect(exportButton).toHaveText('Export');
+  await expect(exportButton).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('memory.list')),
+  ).toBe(3);
+});
+
+test('Data owns Memory origin filtering and withholds stale rows', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?data=memory-rows&memory_list_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/memory'));
+  await expect(page.locator('.memory-row')).toHaveCount(2);
+
+  const filter = (value: string) => page.locator(
+    `button[data-recued-data-action="memory-filter"][data-memory-filter="${value}"]`,
+  );
+  const all = filter('all');
+  const you = filter('user_self');
+  const system = filter('system');
+  const exportButton = page.locator(
+    'button[data-recued-data-action="memory-export"]',
+  );
+  const addButton = page.locator(
+    'button[data-recued-data-action="memory-add"]',
+  );
+  const dataLens = page.getByRole('button', { name: 'Data', exact: true });
+  const memoryLens = page.getByRole('button', { name: 'Memory', exact: true });
+
+  await you.focus();
+  await page.keyboard.press('Enter');
+  await Promise.all([
+    expect(you).toHaveText('You…'),
+    expect(you).toHaveAttribute('aria-pressed', 'true'),
+    expect(you).toHaveAttribute('aria-disabled', 'true'),
+    expect(you).toHaveAttribute('aria-busy', 'true'),
+    expect(you).toBeFocused(),
+    expect(all).toHaveAttribute('aria-disabled', 'true'),
+    expect(system).toHaveAttribute('aria-disabled', 'true'),
+    expect(exportButton).toHaveAttribute('aria-disabled', 'true'),
+    expect(addButton).toHaveAttribute('aria-disabled', 'true'),
+    expect(dataLens).toHaveAttribute('aria-disabled', 'true'),
+    expect(memoryLens).toHaveAttribute('aria-disabled', 'true'),
+    expect(page.getByText('Loading memory…', { exact: true })).toBeVisible(),
+    expect(page.locator('.memory-row')).toHaveCount(0),
+  ]);
+
+  await page.keyboard.press('Enter');
+  await system.dispatchEvent('click');
+  await exportButton.dispatchEvent('click');
+  await addButton.dispatchEvent('click');
+  await dataLens.dispatchEvent('click');
+  await expect(memoryLens).toHaveAttribute('aria-pressed', 'true');
+  await expect(you).toHaveAttribute('aria-pressed', 'true');
+  await expect(you).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('memory.list')),
+  ).toBe(2);
+
+  await expect(you).toHaveText('You');
+  await expect(you).not.toHaveAttribute('aria-busy');
+  await expect(you).not.toHaveAttribute('aria-disabled');
+  await expect(you).toBeFocused();
+  await expect(page.locator('.memory-row')).toHaveCount(1);
+  await expect(page.locator('.memory-row')).toContainText('Concise answers');
+  await expect(page.locator('.memory-row')).not.toContainText(
+    'Recipe execution remembered',
+  );
+});
+
+test('Data retries the selected Memory origin after a failed refresh', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?data=memory-rows&memory_list_response=filter-fail-once-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/memory'));
+  await expect(page.locator('.memory-row')).toHaveCount(2);
+
+  const you = page.locator(
+    'button[data-recued-data-action="memory-filter"][data-memory-filter="user_self"]',
+  );
+  await you.focus();
+  await page.keyboard.press('Enter');
+  await expect(you).toHaveText('You…');
+  await expect(you).toBeFocused();
+  await expect(page.getByRole('alert')).toHaveText(
+    'Memory filter temporarily unavailable.',
+  );
+  await expect(you).toHaveText('You');
+  await expect(you).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('memory.list')),
+  ).toBe(2);
+
+  await page.keyboard.press('Enter');
+  await expect(you).toHaveText('You…');
+  await expect(you).toBeFocused();
+  await expect(page.locator('.memory-row')).toHaveCount(1);
+  await expect(page.locator('.memory-row')).toContainText('Concise answers');
+  await expect(you).toHaveText('You');
+  await expect(you).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('memory.list')),
+  ).toBe(3);
+});
+
+test('Data opens Records with the keyboard and returns focus to the exact row', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?data=records`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/records'));
+
+  const record = page.getByRole('button', {
+    name: 'Open record job-1',
+    exact: true,
+  });
+  await expect(record).toBeVisible();
+  await record.focus();
+  await page.keyboard.press('Enter');
+
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('records.get')),
+  ).toBe(1);
+  const heading = page.locator('#records-detail-title');
+  await expect(heading).toHaveText('job-1');
+  await expect(heading).toBeFocused();
+
+  const back = page.locator('[data-action="records-close-record"]');
+  await back.focus();
+  await page.keyboard.press('Enter');
+  await expect(record).toBeVisible();
+  await expect(record).toBeFocused();
+});
+
+test('Data keeps a Records delete owned and reconciles its list once', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?data=records&records_delete_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/records'));
+
+  const record = page.getByRole('button', {
+    name: 'Open record job-1',
+    exact: true,
+  });
+  await record.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('#records-detail-title')).toBeFocused();
+
+  const request = page.locator('[data-action="records-delete-record"]');
+  await request.focus();
+  await page.keyboard.press('Enter');
+  const confirm = page.locator('[data-action="records-confirm-delete"]');
+  const cancel = page.locator('[data-action="records-cancel-delete"]');
+  const back = page.locator('[data-action="records-close-record"]');
+  const namespace = page.locator(
+    '[data-action="records-select-namespace"][data-records-namespace="publisher-a/same-board"]',
+  );
+  const kind = page.locator(
+    '[data-action="records-select-kind"][data-records-kind="job"]',
+  );
+  const reference = page.locator(
+    '[data-action="records-open-reference"][data-records-id="job-0"]',
+  );
+  const outbox = page.locator('.records-outbox');
+  const outboxSummary = outbox.locator('summary');
+  const outboxRefresh = page.locator('[data-action="records-refresh-outbox"]');
+  const retire = page.locator('[data-action="records-retire-event"]');
+  const contactTab = page.locator(
+    '[data-recued-data-route-tab="contact"]',
+  );
+  const memoryLens = page.locator('[data-memory-lens="memory"]');
+  await expect(confirm).toHaveText('Delete record');
+  await expect(confirm).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(confirm).toHaveText('Deleting…');
+  await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+  await expect(confirm).toHaveAttribute('aria-busy', 'true');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
+  await expect(cancel).toHaveAttribute('aria-disabled', 'true');
+  await expect(cancel).not.toHaveAttribute('disabled');
+  await expect(back).toHaveAttribute('aria-disabled', 'true');
+  await expect(namespace).toHaveAttribute('aria-disabled', 'true');
+  await expect(kind).toHaveAttribute('aria-disabled', 'true');
+  await expect(reference).toHaveAttribute('aria-disabled', 'true');
+  await expect(outboxSummary).toHaveAttribute('aria-disabled', 'true');
+  await expect(outboxRefresh).toHaveAttribute('aria-disabled', 'true');
+  await expect(retire).toHaveAttribute('aria-disabled', 'true');
+  await expect(contactTab).toHaveAttribute('aria-disabled', 'true');
+  await expect(memoryLens).toHaveAttribute('aria-disabled', 'true');
+
+  await confirm.dispatchEvent('click');
+  await confirm.dispatchEvent('click');
+  await cancel.dispatchEvent('click');
+  await back.dispatchEvent('click');
+  await namespace.dispatchEvent('click');
+  await kind.dispatchEvent('click');
+  await reference.dispatchEvent('click');
+  await outboxSummary.dispatchEvent('click');
+  await outboxRefresh.dispatchEvent('click');
+  await retire.dispatchEvent('click');
+  await contactTab.dispatchEvent('click');
+  await memoryLens.dispatchEvent('click');
+  await expect(page.locator('#records-detail-title')).toHaveText('job-1');
+  await expect(outbox).not.toHaveAttribute('open');
+  await expect(memoryLens).toHaveAttribute('aria-pressed', 'false');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('records.delete')),
+  ).toBe(1);
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    window.__app.setHash('#packs');
+  });
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A Records action is still in progress. Leave Data anyway?',
+  );
+  await expect(page).toHaveURL(/#data\/records$/);
+  await expect(confirm).toBeFocused();
+
+  await expect(page.getByText('No records in this kind.')).toBeVisible();
+  await expect(record).toHaveCount(0);
+  await expect(kind).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('records.namespace.list')),
+  ).toBe(2);
+
+  await page.evaluate(() => window.__app.setHash('#packs'));
+  await expect(page).toHaveURL(/#packs$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Data keeps Records exports focused and single-flight', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?data=records&records_export_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/records'));
+
+  const cases = [
+    {
+      action: 'records-export-pack',
+      label: 'Export pack JSON',
+      filename: 'publisher-a-same-board-records.json',
+    },
+    {
+      action: 'records-export-kind-csv',
+      label: 'Export kind CSV',
+      filename: 'publisher-a-same-board-job-records.csv',
+    },
+  ] as const;
+  const exports = page.locator('[data-action^="records-export-"]');
+  await expect(exports).toHaveCount(4);
+  let calls = await page.evaluate(
+    () => window.__app.rpcCallCount('records.export'),
+  );
+
+  for (const candidate of cases) {
+    const owner = page.locator(`[data-action="${candidate.action}"]`);
+    const download = page.waitForEvent('download');
+    await owner.focus();
+    await page.keyboard.press('Enter');
+
+    await expect(owner).toHaveText('Exporting…');
+    await expect(owner).toHaveAttribute('aria-disabled', 'true');
+    await expect(owner).toHaveAttribute('aria-busy', 'true');
+    await expect(owner).not.toHaveAttribute('disabled');
+    await expect(owner).toBeFocused();
+    for (let index = 0; index < 4; index += 1) {
+      const button = exports.nth(index);
+      await expect(button).toHaveAttribute('aria-disabled', 'true');
+      await expect(button).not.toHaveAttribute('disabled');
+      if (await button.getAttribute('data-action') !== candidate.action) {
+        await expect(button).not.toHaveAttribute('aria-busy');
+      }
+    }
+
+    await owner.dispatchEvent('click');
+    await owner.dispatchEvent('click');
+    await exports.nth(1).dispatchEvent('click');
+    await expect.poll(
+      () => page.evaluate(() => window.__app.rpcCallCount('records.export')),
+    ).toBe(calls + 1);
+
+    expect((await download).suggestedFilename()).toBe(candidate.filename);
+    await expect(owner).toHaveText(candidate.label);
+    await expect(owner).not.toHaveAttribute('aria-disabled');
+    await expect(owner).not.toHaveAttribute('aria-busy');
+    await expect(owner).toBeFocused();
+    calls += 1;
+  }
+});
+
+test('Data keeps Records event retirement visible, owned, and single-flight', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?data=records&records_retire_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/records'));
+
+  const outbox = page.locator('.records-outbox');
+  const summary = outbox.locator('summary');
+  await expect(outbox).not.toHaveAttribute('open');
+  await summary.focus();
+  await page.keyboard.press('Enter');
+  await expect(outbox).toHaveAttribute('open', '');
+  await expect(summary).toBeFocused();
+
+  const arm = page.locator(
+    '[data-action="records-retire-event"][data-records-event-id="event-job-1"]',
+  );
+  await arm.focus();
+  await page.keyboard.press('Enter');
+  const confirm = page.locator(
+    '[data-action="records-confirm-retire-event"]',
+  );
+  const cancel = page.locator(
+    '[data-action="records-cancel-retire-event"]',
+  );
+  await expect(outbox).toHaveAttribute('open', '');
+  await expect(confirm).toBeFocused();
+
+  await cancel.focus();
+  await page.keyboard.press('Enter');
+  await expect(outbox).toHaveAttribute('open', '');
+  await expect(arm).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(confirm).toHaveText('Retiring…');
+  await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+  await expect(confirm).toHaveAttribute('aria-busy', 'true');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
+  await expect(cancel).toHaveAttribute('aria-disabled', 'true');
+  await expect(summary).toHaveAttribute('aria-disabled', 'true');
+  const refresh = page.locator('[data-action="records-refresh-outbox"]');
+  const namespace = page.locator('[data-action="records-select-namespace"]');
+  const kind = page.locator('[data-action="records-select-kind"]');
+  const record = page.getByRole('button', {
+    name: 'Open record job-1',
+    exact: true,
+  });
+  await expect(refresh).toHaveAttribute('aria-disabled', 'true');
+  await expect(namespace).toHaveAttribute('aria-disabled', 'true');
+  await expect(kind).toHaveAttribute('aria-disabled', 'true');
+  await expect(record).toHaveAttribute('aria-disabled', 'true');
+
+  await confirm.dispatchEvent('click');
+  await confirm.dispatchEvent('click');
+  await cancel.dispatchEvent('click');
+  await summary.dispatchEvent('click');
+  await refresh.dispatchEvent('click');
+  await namespace.dispatchEvent('click');
+  await kind.dispatchEvent('click');
+  await record.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('records.outbox.retire'),
+    ),
+  ).toBe(1);
+  await expect(outbox).toHaveAttribute('open', '');
+  await expect(confirm).toBeFocused();
+
+  await expect(summary).toContainText('0 pending · 1 dead-lettered');
+  await expect(summary).toBeFocused();
+  await expect(outbox.locator('li[data-status="dead_letter"]')).toHaveCount(1);
+  await expect(confirm).toHaveCount(0);
+  await expect(arm).toHaveCount(0);
+  await expect(page.getByText('Loading Records…')).toHaveCount(0);
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('records.namespace.list')),
+  ).toBe(2);
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('records.outbox.list')),
+  ).toBe(2);
+});
+
+test('Data keeps Records outbox refresh focused and single-flight', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?data=records&records_outbox_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/records'));
+
+  const outbox = page.locator('.records-outbox');
+  const summary = outbox.locator('summary');
+  await summary.focus();
+  await page.keyboard.press('Enter');
+  const refresh = page.locator('[data-action="records-refresh-outbox"]');
+  await refresh.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(refresh).toHaveText('Refreshing…');
+  await expect(refresh).toHaveAttribute('aria-disabled', 'true');
+  await expect(refresh).toHaveAttribute('aria-busy', 'true');
+  await expect(refresh).not.toHaveAttribute('disabled');
+  await expect(refresh).toBeFocused();
+  await refresh.dispatchEvent('click');
+  await refresh.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('records.outbox.list')),
+  ).toBe(2);
+
+  await expect(refresh).toHaveText('Refresh drain status');
+  await expect(refresh).not.toHaveAttribute('aria-disabled');
+  await expect(refresh).not.toHaveAttribute('aria-busy');
+  await expect(refresh).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(refresh).toHaveText('Refreshing…');
+  await summary.focus();
+  await page.keyboard.press('Enter');
+  await expect(outbox).not.toHaveAttribute('open');
+  await expect(summary).toBeFocused();
+  await expect(refresh).toHaveText('Refresh drain status');
+  await expect(summary).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('records.outbox.list')),
+  ).toBe(3);
+});
+
+test('Data preserves and owns orphaned Records namespace purge', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?data=records-orphaned&records_purge_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/records'));
+
+  const arm = page.locator('[data-action="records-purge"]');
+  await arm.focus();
+  await page.keyboard.press('Enter');
+  const input = page.locator('[data-records-purge-confirmation]');
+  const confirm = page.locator('[data-action="records-confirm-purge"]');
+  const cancel = page.locator('[data-action="records-cancel-purge"]');
+  await expect(input).toBeFocused();
+
+  await input.fill('wrong/ref');
+  await confirm.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.getByRole('alert').filter({
+    hasText: 'Type publisher-a/same-board exactly to purge this namespace.',
+  })).toHaveText('Type publisher-a/same-board exactly to purge this namespace.');
+  await expect(input).toHaveValue('wrong/ref');
+  await expect(input).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('records.purge')),
+  ).toBe(0);
+
+  await cancel.focus();
+  await page.keyboard.press('Enter');
+  await expect(arm).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(input).toBeFocused();
+  await input.fill('publisher-a/same-board');
+  await confirm.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(confirm).toHaveText('Purging…');
+  await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+  await expect(confirm).toHaveAttribute('aria-busy', 'true');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
+  await expect(cancel).toHaveAttribute('aria-disabled', 'true');
+  await expect(cancel).not.toHaveAttribute('disabled');
+  await expect(input).toHaveValue('publisher-a/same-board');
+  await expect(input).toHaveAttribute('readonly', '');
+  await expect(input).toHaveAttribute('aria-disabled', 'true');
+  const namespace = page.locator('[data-action="records-select-namespace"]');
+  const kind = page.locator('[data-action="records-select-kind"]');
+  const exportPack = page.locator('[data-action="records-export-pack"]');
+  const outboxSummary = page.locator('.records-outbox summary');
+  await expect(namespace).toHaveAttribute('aria-disabled', 'true');
+  await expect(kind).toHaveAttribute('aria-disabled', 'true');
+  await expect(exportPack).toHaveAttribute('aria-disabled', 'true');
+  await expect(outboxSummary).toHaveAttribute('aria-disabled', 'true');
+
+  await confirm.dispatchEvent('click');
+  await confirm.dispatchEvent('click');
+  await cancel.dispatchEvent('click');
+  await namespace.dispatchEvent('click');
+  await kind.dispatchEvent('click');
+  await exportPack.dispatchEvent('click');
+  await outboxSummary.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('records.purge')),
+  ).toBe(1);
+  await expect(confirm).toBeFocused();
+  await expect(input).toHaveValue('publisher-a/same-board');
+
+  await expect(page.getByText(
+    'No pack-owned Records are installed or retained.',
+  )).toBeVisible();
+  await expect(confirm).toHaveCount(0);
+  await expect(arm).toHaveCount(0);
+  const recordsTab = page.locator(
+    '[data-recued-data-route-tab="records"]',
+  );
+  await expect(recordsTab).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('records.namespace.list')),
+  ).toBe(2);
+});
+
+test('Data keeps Records namespace and kind switching focused and single-flight', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?data=records-navigation&records_navigation_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/records'));
+
+  const namespaceA = page.locator(
+    '[data-action="records-select-namespace"][data-records-namespace="publisher-a/same-board"]',
+  );
+  const namespaceB = page.locator(
+    '[data-action="records-select-namespace"][data-records-namespace="publisher-b/same-board"]',
+  );
+  await expect(page.getByRole('button', {
+    name: 'Open record invoice-1',
+    exact: true,
+  })).toBeVisible();
+  const kindReads = await page.evaluate(
+    () => window.__app.rpcCallCount('records.kind.list'),
+  );
+
+  await namespaceA.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(100);
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('records.kind.list'),
+  )).toBe(kindReads);
+  await expect(namespaceA).toBeFocused();
+
+  await namespaceB.focus();
+  await page.keyboard.press('Enter');
+  await expect(namespaceB).toHaveAttribute('aria-disabled', 'true');
+  await expect(namespaceB).toHaveAttribute('aria-busy', 'true');
+  await expect(namespaceB).not.toHaveAttribute('disabled');
+  await expect(namespaceB).toBeFocused();
+  await expect(namespaceA).toHaveAttribute('aria-disabled', 'true');
+  await expect(namespaceA).not.toHaveAttribute('aria-busy');
+  await namespaceB.dispatchEvent('click');
+  await namespaceB.dispatchEvent('click');
+  await namespaceA.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('records.kind.list')),
+  ).toBe(kindReads + 1);
+
+  await expect(page.getByRole('button', {
+    name: 'Open record invoice-1',
+    exact: true,
+  })).toBeVisible();
+  await expect(namespaceB).not.toHaveAttribute('aria-disabled');
+  await expect(namespaceB).not.toHaveAttribute('aria-busy');
+  await expect(namespaceB).toBeFocused();
+
+  const invoiceKind = page.locator(
+    '[data-action="records-select-kind"][data-records-kind="invoice"]',
+  );
+  const jobKind = page.locator(
+    '[data-action="records-select-kind"][data-records-kind="job"]',
+  );
+  const searches = await page.evaluate(
+    () => window.__app.rpcCallCount('records.search'),
+  );
+  await jobKind.focus();
+  await page.keyboard.press('Enter');
+  await expect(jobKind).toHaveAttribute('aria-disabled', 'true');
+  await expect(jobKind).toHaveAttribute('aria-busy', 'true');
+  await expect(jobKind).not.toHaveAttribute('disabled');
+  await expect(jobKind).toBeFocused();
+  await expect(invoiceKind).toHaveAttribute('aria-disabled', 'true');
+  await expect(invoiceKind).not.toHaveAttribute('aria-busy');
+  await jobKind.dispatchEvent('click');
+  await jobKind.dispatchEvent('click');
+  await invoiceKind.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('records.search')),
+  ).toBe(searches + 1);
+
+  await expect(page.getByRole('button', {
+    name: 'Open record job-b',
+    exact: true,
+  })).toBeVisible();
+  await expect(jobKind).not.toHaveAttribute('aria-disabled');
+  await expect(jobKind).not.toHaveAttribute('aria-busy');
+  await expect(jobKind).toBeFocused();
+
+  const settledSearches = await page.evaluate(
+    () => window.__app.rpcCallCount('records.search'),
+  );
+  await page.keyboard.press('Enter');
+  await page.waitForTimeout(100);
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('records.search'),
+  )).toBe(settledSearches);
+  await expect(jobKind).toBeFocused();
+});
+
+test('Data keeps the CRM timeline trigger focused through its load', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?data=timeline`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/crm'));
+
+  const entity = page.getByRole('textbox', { name: 'Entity' });
+  await entity.fill('crm-1');
+  const open = page.locator(
+    'button[data-recued-data-action="load-timeline"]',
+  );
+  await open.focus();
+  await expect(open).toBeFocused();
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Enter');
+
+  await Promise.all([
+    expect(open).toHaveText('Loading…'),
+    expect(open).toHaveAttribute('aria-disabled', 'true'),
+    expect(open).toHaveAttribute('aria-busy', 'true'),
+    expect(open).not.toHaveAttribute('disabled'),
+    expect(open).toBeFocused(),
+  ]);
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('data.timeline')),
+  ).toBe(1);
+
+  await entity.focus();
+  await entity.evaluate((input: HTMLInputElement) => {
+    input.setSelectionRange(input.value.length, input.value.length);
+  });
+  await page.keyboard.type('2');
+  await expect(entity).toHaveValue('crm-12');
+  await expect(entity).toBeFocused();
+  await expect(open).toHaveText('Open timeline');
+  await expect(open).not.toHaveAttribute('aria-disabled');
+  await expect(open).not.toHaveAttribute('aria-busy');
+
+  await open.focus();
+  await page.keyboard.press('Enter');
+  await expect(open).toHaveText('Loading…');
+  await expect(open).toBeFocused();
+
+  await expect(open).toHaveText('Open timeline');
+  await expect(open).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('data.timeline')),
+  ).toBe(2);
+});
+
+test('Data keeps file download visible, focused, and single-flight', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?data=file-download`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/files'));
+
+  const record = page.locator(
+    `[${DATA_COLLECTION_RECORD}="file:0123456789abcdef0123456789abcdef"]`,
+  );
+  await record.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator(`[${DATA_DETAIL_HEADING}]`)).toBeFocused();
+
+  const download = page.locator(`[${DATA_DOWNLOAD_FILE}]`);
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('data.file.read'),
+  );
+  const saved = page.waitForEvent('download');
+  await download.focus();
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Enter');
+
+  await Promise.all([
+    expect(download).toHaveText('Downloading…'),
+    expect(download).toHaveAttribute('aria-disabled', 'true'),
+    expect(download).toHaveAttribute('aria-busy', 'true'),
+    expect(download).not.toHaveAttribute('disabled'),
+    expect(download).toBeFocused(),
+  ]);
+
+  await expect(download).toHaveText('Download file');
+  await expect(download).toBeFocused();
+  expect((await saved).suggestedFilename()).toBe('quarterly-plan.txt');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('data.file.read')),
+  ).toBe(before + 1);
+});
+
+test('Data preserves calendar reschedule ownership', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?journey=verification&recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/calendar'));
+
+  const record = page.locator(`[${DATA_COLLECTION_RECORD}="event-1"]`);
+  await record.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator(`[${DATA_DETAIL_HEADING}]`)).toBeFocused();
+
+  const open = page.getByRole('button', { name: 'Reschedule', exact: true });
+  await open.focus();
+  await page.keyboard.press('Enter');
+  const input = page.locator(
+    'input[data-recued-data-action="reschedule-input"]',
+  );
+  await expect(input).toBeFocused();
+  await input.fill('2026-08-03T09:30');
+
+  const save = page.locator(
+    'button[data-recued-data-action="reschedule-submit"]',
+  );
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('execute'),
+  );
+  await save.focus();
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Enter');
+  await Promise.all([
+    expect(save).toHaveText('Rescheduling…'),
+    expect(save).toHaveAttribute('aria-disabled', 'true'),
+    expect(save).toHaveAttribute('aria-busy', 'true'),
+    expect(save).not.toHaveAttribute('disabled'),
+    expect(save).toBeFocused(),
+  ]);
+
+  await expect(open).toBeVisible();
+  await expect(open).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('execute')),
+  ).toBe(before + 1);
+
+  await page.keyboard.press('Enter');
+  await expect(input).toBeFocused();
+  const cancel = page.getByRole('button', { name: 'Cancel', exact: true });
+  await cancel.focus();
+  await page.keyboard.press('Enter');
+  await expect(open).toBeFocused();
+});
+
+test('Data keeps keyboard focus on a collection source through record loading', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?connection=source-answer`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/mail'));
+
+  const work = page.locator(`[${DATA_COLLECTION_SLUG}="work"]`);
+  await expect(work).toBeVisible();
+  await work.focus();
+  await expect(work).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  await expect(work).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByText('Quarterly planning', { exact: true })).toBeVisible();
+  await expect(work).toBeFocused();
+});
+
+test('Data keeps collection list recovery focused and retryable', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?connection=source-answer`
+    + '&collection_list_response=fail-twice-slow-retry',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/mail'));
+
+  const work = page.locator(`[${DATA_COLLECTION_SLUG}="work"]`);
+  await work.focus();
+  await page.keyboard.press('Enter');
+  const alert = page.getByRole('alert');
+  await expect(alert).toHaveText('Mail records are temporarily unavailable.');
+  const retry = page.locator(
+    '[data-recued-data-action="collection-retry"]',
+  );
+  await expect(retry).toHaveText('Retry');
+  const callsAfterInitialFailure = await page.evaluate(
+    () => window.__app.rpcCallCount('collection.list'),
+  );
+  await retry.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await retry.evaluate((button) => {
+    (button as HTMLButtonElement).click();
+    (button as HTMLButtonElement).click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('collection.list')),
+  ).toBe(callsAfterInitialFailure + 1);
+
+  await expect(alert).toHaveText('Mail records are temporarily unavailable.');
+  await expect(retry).toHaveText('Retry');
+  await expect(retry).not.toHaveAttribute('aria-disabled');
+  await expect(retry).not.toHaveAttribute('aria-busy');
+  await expect(retry).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(retry).toHaveText('Retrying…');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('collection.list')),
+  ).toBe(callsAfterInitialFailure + 2);
+  await expect(page.getByText('Quarterly planning', { exact: true })).toBeVisible();
+  await expect(alert).toHaveCount(0);
+  await expect(work).toBeFocused();
+});
+
+test('Data keeps collection detail recovery focused and retryable', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?connection=source-answer`
+    + '&collection_get_response=fail-thrice-slow-retry',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/mail'));
+
+  await page.locator(`[${DATA_COLLECTION_SLUG}="work"]`).click();
+  const record = page.locator(`[${DATA_COLLECTION_RECORD}="mail-1"]`);
+  await record.focus();
+  await page.keyboard.press('Enter');
+
+  const alert = page.getByRole('alert');
+  await expect(alert).toHaveText(
+    'Mail record detail is temporarily unavailable.',
+  );
+  const retry = page.locator(
+    '[data-recued-data-action="collection-detail-retry"]',
+  );
+  await expect(retry).toHaveText('Retry');
+  const callsAfterInitialFailure = await page.evaluate(
+    () => window.__app.rpcCallCount('collection.get'),
+  );
+  await retry.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await retry.evaluate((button) => {
+    (button as HTMLButtonElement).click();
+    (button as HTMLButtonElement).click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('collection.get')),
+  ).toBe(callsAfterInitialFailure + 1);
+
+  await expect(alert).toHaveText(
+    'Mail record detail is temporarily unavailable.',
+  );
+  await expect(retry).toHaveText('Retry');
+  await expect(retry).not.toHaveAttribute('aria-disabled');
+  await expect(retry).not.toHaveAttribute('aria-busy');
+  await expect(retry).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(retry).toHaveText('Retrying…');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('collection.get')),
+  ).toBe(callsAfterInitialFailure + 2);
+  const mailTab = page.locator(`[${DATA_TAB}="mail"]`);
+  await mailTab.focus();
+  await expect(mailTab).toBeFocused();
+  await expect(retry).toHaveText('Retry');
+  await expect(alert).toHaveText(
+    'Mail record detail is temporarily unavailable.',
+  );
+  await expect(mailTab).toBeFocused();
+
+  await retry.focus();
+  await page.keyboard.press('Enter');
+  await expect(retry).toHaveText('Retrying…');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('collection.get')),
+  ).toBe(callsAfterInitialFailure + 3);
+  const heading = page.locator(`[${DATA_DETAIL_HEADING}]`);
+  await expect(heading).toHaveText('Quarterly planning');
+  await expect(heading).toBeFocused();
+  await expect(alert).toHaveCount(0);
+});
+
+test('Data hands keyboard focus from a record row to its loaded detail', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?connection=source-answer`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/mail'));
+
+  await page.locator(`[${DATA_COLLECTION_SLUG}="work"]`).click();
+  const record = page.locator(`[${DATA_COLLECTION_RECORD}="mail-1"]`);
+  await expect(record).toBeVisible();
+  await record.focus();
+  await expect(record).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  const heading = page.locator(`[${DATA_DETAIL_HEADING}]`);
+  await expect(heading).toHaveText('Quarterly planning');
+  await expect(heading).toBeFocused();
+});
+
+test('Data returns keyboard focus from record detail to its exact row', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?connection=source-answer`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#data/mail'));
+
+  await page.locator(`[${DATA_COLLECTION_SLUG}="work"]`).click();
+  const record = page.locator(`[${DATA_COLLECTION_RECORD}="mail-1"]`);
+  await record.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator(`[${DATA_DETAIL_HEADING}]`)).toBeFocused();
+
+  const back = page.getByRole('button', { name: '← Back', exact: true });
+  await back.focus();
+  await expect(back).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  await expect(record).toBeVisible();
+  await expect(record).toBeFocused();
+});
+
+test('Automation keeps keyboard focus on a section tab through its repaint', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#automation'));
+
+  const triggers = page.locator(`[${AUTOMATION_SUBNAV}="triggers"]`);
+  await expect(triggers).toBeVisible();
+  await triggers.focus();
+  await expect(triggers).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  await expect(page).toHaveURL(/#automation\/triggers$/);
+  await expect(triggers).toHaveAttribute('aria-selected', 'true');
+  await expect(triggers).toBeFocused();
+});
+
+test('Automation keeps keyboard focus on its status filter through repaint', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#automation'));
+
+  const status = page.locator(`[${AUTOMATION_STATUS_FILTER}]`);
+  await expect(status).toBeVisible();
+  await status.focus();
+  await expect(status).toBeFocused();
+  await status.selectOption('on');
+
+  await expect(status).toHaveValue('on');
+  await expect(status).toBeFocused();
+});
+
+test('Automation keeps keyboard focus on its origin filter through repaint', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#automation/triggers'));
+
+  const origin = page.locator(`[${AUTOMATION_ORIGIN_FILTER}]`);
+  await expect(origin).toBeVisible();
+  await origin.focus();
+  await expect(origin).toBeFocused();
+  await origin.selectOption('user');
+
+  await expect(origin).toHaveValue('user');
+  await expect(origin).toBeFocused();
+});
+
+test('Automation keeps a failed Schedules Retry focused and single-flight', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?automation=rules&automation_list_response=fail-once-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/schedules'));
+
+  const error = page.locator('[data-recued-automation-error="schedule"]');
+  await expect(error).toHaveAttribute('role', 'alert');
+  await expect(error).toContainText('Schedules are temporarily unavailable.');
+  const retry = page.locator(`[${AUTOMATION_RETRY}="schedules"]`);
+  await expect(retry).toHaveText('Retry');
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('schedules.list'),
+  );
+  await retry.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await retry.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('schedules.list')),
+  ).toBe(before + 1);
+
+  await expect(error).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Details', exact: true }))
+    .toBeVisible();
+  await expect(page.locator(`[${AUTOMATION_SUBNAV}="schedules"]`))
+    .toBeFocused();
+});
+
+test('Automation returns a failed Schedules Retry to its alert action', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?automation=rules&automation_list_response=fail-twice-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/schedules'));
+
+  const retry = page.locator(`[${AUTOMATION_RETRY}="schedules"]`);
+  await retry.focus();
+  await page.keyboard.press('Enter');
+  await expect(retry).toHaveText('Retrying…');
+
+  await expect(retry).toHaveText('Retry');
+  await expect(retry).not.toHaveAttribute('aria-disabled');
+  await expect(retry).not.toHaveAttribute('aria-busy');
+  await expect(retry).toBeFocused();
+  await expect(page.locator('[data-recued-automation-error="schedule"]'))
+    .toHaveAttribute('role', 'alert');
+});
+
+test('Automation recovers a failed dish history read without losing focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?automation=dishes&automation_history_response=fail-once-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/dishes'));
+
+  const dish = page.locator(`[${AUTOMATION_ROW}="dish:dish-e2e-1"]`);
+  const details = dish.getByRole('button', { name: 'Details', exact: true });
+  await details.focus();
+  await page.keyboard.press('Enter');
+
+  const heading = page.getByRole('heading', { name: 'Morning digest', exact: true });
+  const error = page.locator(
+    `[${AUTOMATION_DISH_HISTORY_ERROR}="dish-e2e-1"]`,
+  );
+  await expect(error).toHaveAttribute('role', 'alert');
+  await expect(error).toContainText('Dish history is temporarily unavailable.');
+  await expect(page.getByText('No runs recorded for this dish.')).toHaveCount(0);
+  await expect(heading).toBeFocused();
+
+  const retry = page.locator(
+    `[${AUTOMATION_DISH_HISTORY_RETRY}="dish-e2e-1"]`,
+  );
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('dishes.history'),
+  );
+  await retry.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await retry.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('dishes.history')),
+  ).toBe(before + 1);
+
+  await expect(error).toHaveCount(0);
+  await expect(page.locator(
+    `[${AUTOMATION_DISH_HISTORY}="dish-e2e-1"]`,
+  )).toContainText('succeeded');
+  await expect(heading).toBeFocused();
+});
+
+test('Automation keeps focus on its recipe filter after keyboard selection', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?automation=rules`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/schedules'));
+  await expect(page.getByRole('button', { name: 'Details', exact: true })).toBeVisible();
+
+  const picker = page.getByRole('combobox', {
+    name: 'Filter automation by recipe',
+  });
+  await picker.focus();
+  await expect(page.getByRole('option', { name: 'daily-brief', exact: true })).toBeVisible();
+  await page.keyboard.press('ArrowDown');
+  const composingEnter = await picker.evaluate((input) => {
+    const event = new KeyboardEvent('keydown', {
+      key: 'Enter',
+      code: 'Enter',
+      isComposing: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    const dispatched = input.dispatchEvent(event);
+    return { dispatched, defaultPrevented: event.defaultPrevented };
+  });
+  expect(composingEnter).toEqual({
+    dispatched: true,
+    defaultPrevented: false,
+  });
+  await expect(picker).toHaveValue('');
+  await expect(page.getByRole('option', { name: 'daily-brief', exact: true }))
+    .toBeVisible();
+  await page.keyboard.press('Enter');
+
+  await expect(picker).toHaveValue('daily-brief');
+  await expect(picker).toBeFocused();
+
+  await page.keyboard.press('Tab');
+  const clear = page.getByRole('button', { name: 'Clear selection' });
+  await expect(clear).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(picker).toHaveValue('');
+  await expect(picker).toBeFocused();
+});
+
+test('Automation preserves a recipe query and caret through live refresh', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?automation=rules`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/schedules'));
+  await expect(page.getByRole('button', { name: 'Details', exact: true })).toBeVisible();
+
+  const picker = page.getByRole('combobox', {
+    name: 'Filter automation by recipe',
+  });
+  await picker.fill('daily');
+  await picker.evaluate((input) => {
+    (input as HTMLInputElement).setSelectionRange(2, 2);
+  });
+  const listCalls = await page.evaluate(
+    () => window.__app.rpcCallCount('schedules.list'),
+  );
+  await page.evaluate(() => {
+    window.__app.fireMessage({
+      type: 'server_event',
+      event: { kind: 'automation_rule_changed', cursor: 51 },
+    });
+  });
+  await page.waitForFunction(
+    (before) => window.__app.rpcCallCount('schedules.list') > before,
+    listCalls,
+  );
+
+  await expect(picker).toHaveValue('daily');
+  await expect(picker).toBeFocused();
+  expect(await picker.evaluate((input) =>
+    (input as HTMLInputElement).selectionStart)).toBe(2);
+});
+
+test('Automation moves focus into and back from its Add picker', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#automation/schedules'));
+
+  const add = page.getByRole('button', { name: 'Add schedule' });
+  await expect(add).toBeVisible();
+  await add.focus();
+  await page.keyboard.press('Enter');
+
+  const picker = page.getByRole('combobox', {
+    name: 'Choose a recipe to automate',
+  });
+  await expect(picker).toBeVisible();
+  await expect(picker).toHaveAttribute('aria-expanded', 'true');
+  await expect(picker).toBeFocused();
+
+  await page.keyboard.press('Shift+Tab');
+  await expect(add).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  await expect(picker).toHaveCount(0);
+  await expect(add).toBeFocused();
+});
+
+test('Automation Add inventory retry stays explicit, single-flight, and focus-owned', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?automation=rules`
+    + '&automation_recipe_list_response=fail-once-slow-retry'
+    + '#automation/schedules',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.waitForFunction(
+    () => window.__app.rpcCallCount('recipe.list') >= 2,
+  );
+
+  const add = page.getByRole('button', { name: 'Add schedule' });
+  await add.focus();
+  await page.keyboard.press('Enter');
+
+  const failure = page.locator(`[${AUTOMATION_ADD_ERROR}="schedules"]`);
+  await expect(failure).toHaveAttribute('role', 'alert');
+  await expect(failure).toContainText(
+    'Installed recipes are temporarily unavailable.',
+  );
+  await expect(page.getByText('No installed recipes match.')).toHaveCount(0);
+  await expect(page.getByRole('combobox', {
+    name: 'Choose a recipe to automate',
+  })).toHaveCount(0);
+
+  const callsBeforeRetry = await page.evaluate(
+    () => window.__app.rpcCallCount('recipe.list'),
+  );
+  const retry = page.locator(`[${AUTOMATION_ADD_RETRY}="schedules"]`);
+  await retry.focus();
+  await page.keyboard.press('Enter');
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).toBeFocused();
+  await retry.dispatchEvent('click');
+  await retry.dispatchEvent('click');
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('recipe.list'),
+  )).toBe(callsBeforeRetry + 1);
+
+  const picker = page.getByRole('combobox', {
+    name: 'Choose a recipe to automate',
+  });
+  await expect(picker).toBeVisible();
+  await expect(picker).toBeFocused();
+  await expect(failure).toHaveCount(0);
+});
+
+test('Automation returns schedule-modal focus to its Add trigger', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?automation=rules`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/schedules'));
+
+  const add = page.getByRole('button', { name: 'Add schedule' });
+  await add.click();
+  const picker = page.getByRole('combobox', {
+    name: 'Choose a recipe to automate',
+  });
+  await picker.fill('Watch pipeline');
+  await page.getByRole('option', { name: /Watch pipeline/ }).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await expect(dialog.getByRole('tab', { name: 'Schedule' }))
+    .toHaveAttribute('aria-selected', 'true');
+  const close = dialog.getByRole('button', { name: 'Close', exact: true });
+  await close.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(dialog).toHaveCount(0);
+  await expect(add).toBeVisible();
+  await expect(add).toBeFocused();
+});
+
+test('Automation keeps its create modal owned until the command settles', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?automation=rules`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/triggers'));
+
+  const routeAdd = page.getByRole('button', { name: 'Add trigger' });
+  await routeAdd.click();
+  const picker = page.getByRole('combobox', {
+    name: 'Choose a recipe to automate',
+  });
+  await picker.fill('Watch pipeline');
+  await page.getByRole('option', { name: /Watch pipeline/ }).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await dialog.locator('[data-recued-run-modal-pattern]').fill('data.mail.**');
+  const add = dialog.getByRole('button', { name: 'Add trigger' });
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+  });
+  await add.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(add).toHaveAttribute('aria-disabled', 'true');
+  await page.evaluate(() => window.__app.setHash('#data'));
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'An automation action is still in progress. Leave Automation anyway?',
+  );
+  await expect(page).toHaveURL(/#automation\/triggers$/);
+  await expect(dialog).toBeVisible();
+  await expect(add).toBeFocused();
+  await expect(add).toHaveAttribute('aria-busy', 'true');
+  await expect(add).toBeFocused();
+  const close = dialog.getByRole('button', { name: 'Close', exact: true });
+  await expect(close).toHaveAttribute('aria-disabled', 'true');
+  await expect(close).not.toHaveAttribute('disabled');
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeVisible();
+  await close.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect(dialog).toBeVisible();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('triggers.create')),
+  ).toBe(1);
+
+  await expect(dialog.locator('.run-modal-rule-row')).toHaveCount(1);
+  await expect(close).not.toHaveAttribute('aria-disabled');
+  await close.focus();
+  await page.keyboard.press('Enter');
+  await expect(dialog).toHaveCount(0);
+  await expect(routeAdd).toBeFocused();
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Automation restores the exact schedule toggle after mutation re-list', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?automation=rules&automation_schedule_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/schedules'));
+
+  const pause = page.locator(
+    '[data-recued-automation-action="toggle:schedule:off"]'
+    + '[data-rule-id="schedule-e2e-1"]',
+  );
+  await expect(pause).toBeVisible();
+  await pause.focus();
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('schedules.update'),
+  );
+  await page.keyboard.press('Enter');
+
+  await expect(pause).toHaveText('Pausing…');
+  await expect(pause).toHaveAttribute('aria-disabled', 'true');
+  await expect(pause).toHaveAttribute('aria-busy', 'true');
+  await expect(pause).not.toHaveAttribute('disabled');
+  await expect(pause).toBeFocused();
+  await pause.dispatchEvent('click');
+  await pause.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('schedules.update')),
+  ).toBe(before + 1);
+
+  const resume = page.getByRole('button', { name: 'Resume', exact: true });
+  await expect(resume).toBeVisible();
+  await expect(resume).toBeFocused();
+  await expect(page.locator('[data-recued-automation-state]')).toHaveText('Paused');
+
+  await page.keyboard.press('Enter');
+  await expect(pause).toBeVisible();
+  await expect(pause).toBeFocused();
+  await expect(page.locator('[data-recued-automation-state]')).toHaveText('On');
+});
+
+test('Automation restores failed schedule mutation focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?automation=rules&automation_schedule_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/schedules'));
+
+  const pause = page.locator(
+    '[data-recued-automation-action="toggle:schedule:off"]'
+    + '[data-rule-id="schedule-e2e-1"]',
+  );
+  await pause.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(pause).toHaveText('Pausing…');
+  await expect(pause).toBeFocused();
+  await expect(page.getByRole('alert')).toHaveText(
+    'Schedule update unavailable.',
+  );
+  await expect(pause).toHaveText('Pause');
+  await expect(pause).toBeFocused();
+  await expect(page.locator('[data-recued-automation-state]')).toHaveText('On');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('schedules.update')),
+  ).toBe(1);
+});
+
+test('Automation keeps manual watch runs owned through reconciliation', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?automation=rules&automation_watch_response=slow`
+    + '&automation_watch_relist_response=slow',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/triggers'));
+
+  const row = page.locator(
+    `[${AUTOMATION_ROW}="watch:hubspot/deal/main-crm"]`,
+  );
+  const runNow = page.locator(
+    '[data-recued-automation-action="run:watch"]'
+    + '[data-rule-id="hubspot/deal/main-crm"]',
+  );
+  const schedulesTab = page.locator(
+    '[data-recued-automation-subnav="schedules"]',
+  );
+  const statusFilter = page.locator(`[${AUTOMATION_STATUS_FILTER}]`);
+
+  await expect(row).toContainText('last poll never');
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+  });
+  await runNow.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(runNow).toHaveText('Running…');
+  await expect(runNow).toHaveAttribute('aria-disabled', 'true');
+  await expect(runNow).toHaveAttribute('aria-busy', 'true');
+  await expect(runNow).not.toHaveAttribute('disabled');
+  await expect(runNow).toBeFocused();
+  await expect(schedulesTab).toHaveAttribute('aria-disabled', 'true');
+  await expect(statusFilter.locator('..')).toHaveAttribute('inert', '');
+
+  // These internal controls bypass the shell's route-switch guard. Even a
+  // synthetic activation must leave the pending action visible and focused.
+  await schedulesTab.dispatchEvent('click');
+  await expect(page).toHaveURL(/#automation\/triggers$/);
+  await expect(runNow).toBeFocused();
+  await page.evaluate(() => window.__app.setHash('#data'));
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'An automation action is still in progress. Leave Automation anyway?',
+  );
+  await expect(page).toHaveURL(/#automation\/triggers$/);
+  await expect(runNow).toBeFocused();
+  await runNow.dispatchEvent('click');
+  await runNow.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('watch.run_now')),
+  ).toBe(1);
+
+  // The RPC has landed, but the authoritative watch re-list is deliberately
+  // still pending. Progress ownership must span that reconciliation gap.
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('watch.list')),
+  ).toBeGreaterThan(1);
+  await expect(runNow).toHaveText('Running…');
+  await expect(runNow).toBeFocused();
+
+  await expect(runNow).toHaveText('Run now');
+  await expect(runNow).not.toHaveAttribute('aria-busy');
+  await expect(runNow).toBeFocused();
+  await expect(row).not.toContainText('last poll never');
+  await expect(schedulesTab).not.toHaveAttribute('aria-disabled');
+  await expect(statusFilter.locator('..')).not.toHaveAttribute('inert');
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+
+  await schedulesTab.click();
+  await expect(page).toHaveURL(/#automation\/schedules$/);
+});
+
+test('Automation restores failed manual watch runs for retry', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?automation=rules&automation_watch_response=fail-once-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/triggers'));
+
+  const runNow = page.locator(
+    '[data-recued-automation-action="run:watch"]'
+    + '[data-rule-id="hubspot/deal/main-crm"]',
+  );
+  const schedulesTab = page.locator(
+    '[data-recued-automation-subnav="schedules"]',
+  );
+  await runNow.focus();
+  await page.keyboard.press('Enter');
+  await expect(runNow).toHaveText('Running…');
+
+  await schedulesTab.dispatchEvent('click');
+  await expect(page).toHaveURL(/#automation\/triggers$/);
+  await expect(runNow).toBeFocused();
+  await expect(page.getByRole('alert')).toHaveText('Watch run unavailable.');
+  await expect(runNow).toHaveText('Run now');
+  await expect(runNow).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(runNow).toHaveText('Running…');
+  await expect(runNow).toHaveText('Run now');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(runNow).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('watch.run_now')),
+  ).toBe(2);
+});
+
+test('Automation focuses schedule details and restores the exact row', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?automation=rules`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/schedules'));
+
+  const details = page.getByRole('button', { name: 'Details', exact: true });
+  await expect(details).toBeVisible();
+  await details.focus();
+  await page.keyboard.press('Enter');
+
+  const heading = page.getByRole('heading', { name: 'daily-brief', exact: true });
+  await expect(heading).toBeVisible();
+  await expect(heading).toBeFocused();
+  await expect(page).toHaveURL(/#automation\/schedules\/schedule-e2e-1$/);
+
+  const deletesBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('schedules.delete'),
+  );
+  const remove = page.getByRole('button', { name: 'Remove', exact: true });
+  await remove.focus();
+  await page.keyboard.press('Enter');
+  const confirm = page.locator(
+    '[data-recued-automation-action="delete-confirm:schedule"]',
+  );
+  await expect(confirm).toHaveText('Confirm remove');
+  await expect(confirm).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('schedules.delete')),
+  ).toBe(deletesBefore);
+  const cancel = page.getByRole('button', { name: 'Cancel', exact: true });
+  await cancel.focus();
+  await page.keyboard.press('Enter');
+  await expect(remove).toBeFocused();
+
+  const back = page.getByRole('button', { name: 'Back to Schedules' });
+  await back.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(details).toBeVisible();
+  await expect(details).toBeFocused();
+  await expect(page).toHaveURL(/#automation\/schedules$/);
+});
+
+test('Automation advances focus after removing a schedule', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?automation=delete&automation_schedule_delete_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/schedules'));
+
+  const removed = page.locator(
+    `[${AUTOMATION_ROW}="schedule:schedule-e2e-1"]`,
+  );
+  const successor = page.locator(
+    `[${AUTOMATION_ROW}="schedule:schedule-e2e-2"]`,
+  );
+  await expect(removed).toBeVisible();
+  const remove = removed.getByRole('button', { name: 'Remove', exact: true });
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('schedules.delete'),
+  );
+  await remove.focus();
+  await page.keyboard.press('Enter');
+
+  const confirm = removed.locator(
+    '[data-recued-automation-action="delete-confirm:schedule"]',
+  );
+  await expect(confirm).toHaveText('Confirm remove');
+  await expect(confirm).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('schedules.delete')),
+  ).toBe(before);
+  const cancel = removed.getByRole('button', { name: 'Cancel', exact: true });
+  await cancel.focus();
+  await page.keyboard.press('Enter');
+  await expect(remove).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('schedules.delete')),
+  ).toBe(before);
+
+  await page.keyboard.press('Enter');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(confirm).toHaveText('Removing…');
+  await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+  await expect(confirm).toHaveAttribute('aria-busy', 'true');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
+  await confirm.dispatchEvent('click');
+  await confirm.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('schedules.delete')),
+  ).toBe(before + 1);
+
+  await expect(removed).toHaveCount(0);
+  await expect(successor).toBeVisible();
+  await expect(
+    successor.getByRole('button', { name: 'Details', exact: true }),
+  ).toBeFocused();
+});
+
+test('Automation keeps failed schedule removal confirmed and focused', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?automation=delete&automation_schedule_delete_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/schedules'));
+
+  const removed = page.locator(
+    `[${AUTOMATION_ROW}="schedule:schedule-e2e-1"]`,
+  );
+  const remove = removed.getByRole('button', { name: 'Remove', exact: true });
+  await remove.focus();
+  await page.keyboard.press('Enter');
+  const confirm = removed.locator(
+    '[data-recued-automation-action="delete-confirm:schedule"]',
+  );
+  await expect(confirm).toHaveText('Confirm remove');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  await expect(confirm).toHaveText('Removing…');
+  await expect(confirm).toBeFocused();
+  await expect(page.getByRole('alert')).toHaveText(
+    'Schedule removal unavailable.',
+  );
+  await expect(confirm).toHaveText('Confirm remove');
+  await expect(confirm).toBeFocused();
+  await expect(removed).toBeVisible();
+  const cancel = removed.getByRole('button', { name: 'Cancel', exact: true });
+  await cancel.focus();
+  await page.keyboard.press('Enter');
+  await expect(remove).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('schedules.delete')),
+  ).toBe(1);
+});
+
+test('Packs keeps the Installed only source toggle keyboard-owned', async ({ page }) => {
+  await page.route('https://recued.com/catalog/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/catalog/versions')) {
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ versions: { 'installed-mail': 1 } }),
+      });
+      return;
+    }
+    if (url.pathname.endsWith('/catalog/search')) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          rows: [
+            {
+              slug: 'installed-mail',
+              publisher_id: 'recued-core',
+              name: 'Installed Mail',
+              description: 'An installed mail workflow pack.',
+              version: 1,
+              pack_kind: 'capability',
+              service_kind: 'workflow',
+              tags: ['mail'],
+              download_count: 12,
+              item_count: 1,
+              recipe_refs: [],
+              created_at: '2026-01-01T00:00:00.000Z',
+            },
+            {
+              slug: 'available-crm',
+              publisher_id: 'acme',
+              name: 'Available CRM',
+              description: 'A marketplace CRM pack.',
+              version: 2,
+              pack_kind: 'capability',
+              service_kind: 'entity_platform',
+              tags: ['crm'],
+              download_count: 8,
+              item_count: 2,
+              recipe_refs: [],
+              created_at: '2026-02-01T00:00:00.000Z',
+            },
+          ],
+          total: 2,
+          totalPages: 1,
+          page: 1,
+          facets: {},
+        }),
+      });
+      return;
+    }
+    await route.abort();
+  });
+  await page.goto(`${HARNESS_URL}?packs=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#packs'));
+
+  const toggle = page.locator(`[${PACKS_INSTALLED_ONLY}]`);
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  const restingStyle = await toggle.evaluate((button) => {
+    const style = getComputedStyle(button);
+    return {
+      height: button.getBoundingClientRect().height,
+      radius: Number.parseFloat(style.borderRadius),
+      cursor: style.cursor,
+    };
+  });
+  expect(restingStyle.height).toBeGreaterThanOrEqual(35.5);
+  expect(restingStyle.radius).toBeGreaterThanOrEqual(17);
+  expect(restingStyle.cursor).toBe('pointer');
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  await expect(toggle).toHaveAttribute('aria-disabled', 'true');
+  await expect(toggle).toHaveAttribute('aria-busy', 'true');
+  await expect(toggle).toBeFocused();
+  await expect(toggle).toHaveCSS('cursor', 'progress');
+  await expect(page.getByText('Installed Mail', { exact: true })).toBeVisible();
+  await expect(toggle).not.toHaveAttribute('aria-disabled');
+  await expect(toggle).not.toHaveAttribute('aria-busy');
+  await expect(toggle).toBeFocused();
+
+  await toggle.click();
+  await expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  await expect(toggle).toHaveAttribute('aria-disabled', 'true');
+  await expect(toggle).toBeFocused();
+  await expect(page.getByText('Available CRM', { exact: true })).toBeVisible();
+  await expect(toggle).not.toHaveAttribute('aria-disabled');
+  await expect(toggle).toBeFocused();
+});
+
+test('Packs keeps a failed detail Retry focused and single-flight', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&packs_response=detail-fail-once-slow-retry#packs/installed-mail`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const retry = page.locator('[data-recued-packs-retry]');
+  await expect(retry).toBeVisible();
+  await retry.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await retry.dispatchEvent('click');
+  await retry.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('packs.list')),
+  ).toBe(3);
+
+  const back = page.locator('[data-recued-packs-detail-back]');
+  await expect(back).toBeVisible();
+  await expect(back).toBeFocused();
+  await expect(retry).toHaveCount(0);
+});
+
+test('Packs recovers its Use roster without retrying or losing focus on its own', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&packs_recipe_response=fail-once-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#packs/installed-mail'));
+
+  const status = page.locator('[data-recued-packs-detail-recipes-status]');
+  await expect(status).toHaveText('Loading what this pack can do…');
+
+  const error = page.locator('[data-recued-packs-detail-recipes-error]');
+  await expect(error).toHaveText(
+    'Could not load what this pack can do. Pack actions are temporarily unavailable.',
+  );
+  await expect(status).toHaveCount(0);
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('recipe.list')),
+  ).toBe(1);
+  // The old failure finalizer repainted and immediately started recipe.list
+  // again. Give it enough time to prove the error is stable and user-owned.
+  await page.waitForTimeout(400);
+  expect(await page.evaluate(() => window.__app.rpcCallCount('recipe.list'))).toBe(1);
+
+  const retry = page.locator('[data-recued-packs-detail-recipes-retry]');
+  await retry.focus();
+  await page.keyboard.press('Enter');
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await retry.dispatchEvent('click');
+  await retry.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('recipe.list')),
+  ).toBe(2);
+
+  const use = page.locator(
+    '[data-recued-packs-detail-tab-group="primary"][data-recued-packs-detail-tab="use"]',
+  );
+  await expect(use).toBeVisible();
+  await expect(use).toBeFocused();
+  await expect(retry).toHaveCount(0);
+  await expect(error).toHaveCount(0);
+  await expect(
+    page.locator('[data-recued-packs-detail-tab-panel="use"]'),
+  ).toBeVisible();
+});
+
+test('Pack Use keeps editable result Save focused through its repaint', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&recipe_result=editable-grid`
+    + '&recipe_execute_delay_ms=2500#packs/installed-mail',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const app = page.locator('[data-recued-pack-app="installed-mail"]');
+  const amount = app.locator(
+    '[data-recued-recipes-result-grid-cell="0:amount"]',
+  );
+  const status = app.locator('.recipes-result-grid-status');
+  const save = app.locator(
+    '[data-recued-recipes-action="result-grid-submit"]',
+  );
+  await expect(amount).toBeVisible();
+  await amount.fill('125.00');
+  await expect(status).toHaveText('1 row · Unsaved changes');
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    document.querySelector<HTMLElement>('[data-recued-packs-detail-back]')?.click();
+  });
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'This pack result has unsaved table changes. Leave this pack anyway?',
+  );
+  await expect(page).toHaveURL(/#packs\/installed-mail$/);
+  await expect(amount).toHaveValue('125.00');
+  await expect(amount).toBeFocused();
+
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'This pack result has unsaved table changes. Leave Packs anyway?',
+  );
+  await expect(page).toHaveURL(/#packs\/installed-mail$/);
+  await expect(amount).toHaveValue('125.00');
+  await expect(amount).toBeFocused();
+
+  const executeCallsBeforeSave = await page.evaluate(
+    () => window.__app.rpcCallCount('execute'),
+  );
+  await save.focus();
+  await page.keyboard.press('Enter');
+  await expect(status).toHaveText('1 row · Saving changes…');
+  await expect(save).toHaveText('Saving…');
+  await expect(save).toHaveAttribute('aria-disabled', 'true');
+  await expect(save).toHaveAttribute('aria-busy', 'true');
+  await expect(save).not.toHaveAttribute('disabled');
+  await expect(save).toBeFocused();
+  await save.evaluate((button) => {
+    (button as HTMLButtonElement).click();
+    (button as HTMLButtonElement).click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('execute')),
+  ).toBe(executeCallsBeforeSave + 1);
+
+  await expect(status).toHaveText('1 row · No changes yet');
+  await expect(amount).toHaveValue('125.00');
+  await expect(save).toBeDisabled();
+  await expect(save).not.toHaveAttribute('disabled');
+  await expect(save).toHaveAttribute('tabindex', '-1');
+  await expect(save).not.toHaveAttribute('aria-busy');
+  await expect(save).toBeFocused();
+
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(app).toHaveCount(0);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '2');
+});
+
+test('Pack Use keeps result paging owned across its repaint', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&recipe_result=paged-filter`
+    + '&recipe_execute_delay_ms=2000#packs/installed-mail',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const app = page.locator('[data-recued-pack-app="installed-mail"]');
+  const next = app.locator(
+    '[data-recued-recipes-result-filter-page="next"]',
+  );
+  const refresh = app.locator('[data-recued-pack-app-refresh]');
+  await expect(next).toBeVisible();
+  await expect(refresh).toBeVisible();
+  const executeCallsBeforePage = await page.evaluate(
+    () => window.__app.rpcCallCount('execute'),
+  );
+  await next.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(next).toHaveText('Loading next page…');
+  await expect(next).toHaveAttribute('aria-disabled', 'true');
+  await expect(next).toHaveAttribute('aria-busy', 'true');
+  await expect(next).not.toHaveAttribute('disabled');
+  await expect(next).toBeFocused();
+  await expect(refresh).toBeDisabled();
+  await next.evaluate((button) => {
+    (button as HTMLButtonElement).click();
+    (button as HTMLButtonElement).click();
+  });
+  await refresh.dispatchEvent('click');
+  await refresh.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('execute')),
+  ).toBe(executeCallsBeforePage + 1);
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    document.querySelector<HTMLElement>('[data-recued-packs-detail-back]')?.click();
+  });
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A pack action is still in progress. Leave this pack anyway?',
+  );
+  await expect(page).toHaveURL(/#packs\/installed-mail$/);
+  await expect(next).toBeFocused();
+
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A pack action is still in progress. Leave Packs anyway?',
+  );
+  await expect(page).toHaveURL(/#packs\/installed-mail$/);
+  await expect(next).toBeFocused();
+
+  await expect(app.getByText('page-two-row', { exact: true })).toBeVisible();
+  const previous = app.locator(
+    '[data-recued-recipes-result-filter-page="previous"]',
+  );
+  await expect(previous).toBeFocused();
+  await expect(refresh).toBeEnabled();
+
+  const executeCallsBeforeRefresh = await page.evaluate(
+    () => window.__app.rpcCallCount('execute'),
+  );
+  await refresh.focus();
+  await page.keyboard.press('Enter');
+  await expect(refresh).toHaveText('Refreshing…');
+  await expect(refresh).toHaveAttribute('aria-disabled', 'true');
+  await expect(refresh).toHaveAttribute('aria-busy', 'true');
+  await expect(refresh).not.toHaveAttribute('disabled');
+  await expect(refresh).toBeFocused();
+  await refresh.dispatchEvent('click');
+  await refresh.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('execute')),
+  ).toBe(executeCallsBeforeRefresh + 1);
+  await expect(app.getByText('page-one-row', { exact: true })).toBeVisible();
+  await expect(refresh).toHaveText('Refresh');
+  await expect(refresh).not.toHaveAttribute('aria-disabled');
+  await expect(refresh).not.toHaveAttribute('aria-busy');
+  await expect(refresh).toBeFocused();
+
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(app).toHaveCount(0);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '2');
+});
+
+test('Packs hands a failed post-uninstall relist to Retry', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&packs_response=uninstall-relist-fail-once#packs/installed-mail`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const remove = page.locator(
+    '[data-recued-packs-row-delete="installed-mail"]',
+  );
+  await expect(remove).toBeVisible();
+  await remove.focus();
+  await page.keyboard.press('Enter');
+
+  const confirm = page.locator(
+    '[data-recued-packs-row-delete-confirm="installed-mail"]',
+  );
+  await expect(confirm).toHaveText('Confirm delete');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(confirm).toHaveText('Deleting…');
+  await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+  await expect(confirm).toHaveAttribute('aria-busy', 'true');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
+
+  const retry = page.locator('[data-recued-packs-retry]');
+  await expect(retry).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveText(
+    'Pack inventory is temporarily unavailable after uninstall.',
+  );
+  await expect(retry).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('packs.uninstall')),
+  ).toBe(1);
+
+  await page.keyboard.press('Enter');
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toBeFocused();
+  await expect(
+    page.locator('[data-recued-packs-row-install="installed-mail"]'),
+  ).toBeVisible();
+  await expect(retry).toHaveCount(0);
+  await expect(
+    page.locator('[data-recued-packs-detail-back]'),
+  ).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('packs.list')),
+  ).toBe(4);
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('recipe.list')),
+  ).toBe(2);
+  await expect(
+    page.locator('[data-recued-packs-detail-tab="use"]'),
+  ).toHaveCount(0);
+});
+
+test('Recipes hands focus into detail and back to the exact card', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  const card = page.locator('[data-recued-recipes-card]').first();
+  await expect(card).toBeVisible();
+  const recipeId = await card.getAttribute('data-recued-recipes-card');
+  expect(recipeId).not.toBeNull();
+
+  await card.focus();
+  await page.keyboard.press('Enter');
+  const detail = page.locator(`[data-recued-recipes-detail="${recipeId}"]`);
+  await expect(detail).toBeVisible();
+  const detailHeading = detail.getByRole('heading', { level: 1 });
+  await expect(detailHeading).toBeFocused();
+
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'recipe_runnability_changed',
+      recipes: [],
+      cursor: 61,
+    },
+  }));
+  await expect(detailHeading).toBeFocused();
+
+  const back = detail.locator('[data-recued-recipes-back]');
+  await back.focus();
+  await page.keyboard.press('Enter');
+  await expect(detail).toHaveCount(0);
+  await expect(card).toBeFocused();
+
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'recipe_runnability_changed',
+      recipes: [],
+      cursor: 62,
+    },
+  }));
+  await expect(card).toBeFocused();
+});
+
+test('Recipes preserves direct default Run focus through execution', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&recipe_default_run=1`
+    + '&recipe_execute_delay_ms=2500',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  await page.locator('[data-recued-recipes-card]').first().click();
+  const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
+  await expect(detail).toBeVisible();
+
+  const defaultRun = detail.locator('[data-recued-recipes-action="run-defaults"]');
+  const executeCallsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('execute'),
+  );
+  await defaultRun.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(defaultRun).toHaveText('Running…');
+  await expect(defaultRun).toHaveAttribute('aria-disabled', 'true');
+  await expect(defaultRun).toHaveAttribute('aria-busy', 'true');
+  await expect(defaultRun).not.toHaveAttribute('disabled');
+  await expect(defaultRun).toBeFocused();
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'recipe_runnability_changed',
+      recipes: [],
+      cursor: 66,
+    },
+  }));
+  await expect(defaultRun).toHaveText('Running…');
+  await expect(defaultRun).toBeFocused();
+  await defaultRun.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('execute')),
+  ).toBe(executeCallsBefore + 1);
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    document.querySelector<HTMLElement>('[data-recued-recipes-back]')?.click();
+  });
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A recipe action is still in progress. Leave this recipe anyway?',
+  );
+  await expect(detail).toBeVisible();
+  await expect(defaultRun).toBeFocused();
+
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A recipe action is still in progress. Leave Recipes anyway?',
+  );
+  await expect(page).toHaveURL(/#recipes\/autorun-live-1$/);
+  await expect(detail).toBeVisible();
+  await expect(defaultRun).toBeFocused();
+
+  await expect(detail.getByRole('status')).toContainText('Run completed');
+  await expect(defaultRun).toHaveText('Run');
+  await expect(defaultRun).not.toHaveAttribute('aria-disabled');
+  await expect(defaultRun).not.toHaveAttribute('aria-busy');
+  await expect(defaultRun).toBeFocused();
+
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(detail).toHaveCount(0);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '2');
+});
+
+test('Recipes protects editable result work through its save', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&recipe_result=editable-grid`
+    + '&recipe_execute_delay_ms=2500',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').click();
+  const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
+  await detail.locator('[data-recued-recipes-action="open-run"]')
+    .filter({ hasText: /^Run$/ })
+    .click();
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await dialog.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(detail.locator('[data-recued-recipes-result-panel]'))
+    .toContainText('Save what arrived');
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+
+  const amount = detail.locator(
+    '[data-recued-recipes-result-grid-cell="0:amount"]',
+  );
+  const status = detail.locator('.recipes-result-grid-status');
+  const save = detail.locator(
+    '[data-recued-recipes-action="result-grid-submit"]',
+  );
+  await amount.fill('800.00');
+  await expect(status).toHaveText('1 row · Unsaved changes');
+  await expect(save).toBeEnabled();
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    document.querySelector<HTMLElement>('[data-recued-recipes-back]')?.click();
+  });
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'This recipe result has unsaved table changes. Leave this recipe anyway?',
+  );
+  await expect(detail).toBeVisible();
+  await expect(amount).toHaveValue('800.00');
+
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'This recipe result has unsaved table changes. Leave Recipes anyway?',
+  );
+  await expect(page).toHaveURL(/#recipes\/autorun-live-1$/);
+  await expect(amount).toHaveValue('800.00');
+
+  const executeCallsBeforeSave = await page.evaluate(
+    () => window.__app.rpcCallCount('execute'),
+  );
+  await save.click();
+  await expect(status).toHaveText('1 row · Saving changes…');
+  await expect(save).toHaveText('Saving…');
+  await expect(save).toHaveAttribute('aria-disabled', 'true');
+  await expect(save).toHaveAttribute('aria-busy', 'true');
+  await expect(save).not.toHaveAttribute('disabled');
+  await expect(save).toBeFocused();
+  await save.evaluate((button) => {
+    (button as HTMLButtonElement).click();
+    (button as HTMLButtonElement).click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('execute')),
+  ).toBe(executeCallsBeforeSave + 1);
+
+  await page.evaluate(() => {
+    document.querySelector<HTMLElement>('[data-recued-recipes-back]')?.click();
+  });
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A recipe action is still in progress. Leave this recipe anyway?',
+  );
+  await expect(detail).toBeVisible();
+
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A recipe action is still in progress. Leave Recipes anyway?',
+  );
+  await expect(page).toHaveURL(/#recipes\/autorun-live-1$/);
+  await expect(detail).toBeVisible();
+
+  await expect(status).toHaveText('1 row · No changes yet');
+  await expect(amount).toHaveValue('800.00');
+  await expect(save).toBeDisabled();
+  await expect(save).not.toHaveAttribute('disabled');
+  await expect(save).toHaveAttribute('tabindex', '-1');
+  await expect(save).not.toHaveAttribute('aria-busy');
+  await expect(save).toBeFocused();
+
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(detail).toHaveCount(0);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '4');
+});
+
+test('Recipes owns result search and paging through every repaint', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&recipe_result=paged-filter`
+    + '&recipe_execute_delay_ms=2000',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').click();
+  const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
+  await detail.locator('[data-recued-recipes-action="open-run"]')
+    .filter({ hasText: /^Run$/ })
+    .click();
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await dialog.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(detail.getByText('page-one-row', { exact: true })).toBeVisible();
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+
+  const status = detail.locator(
+    '[data-recued-recipes-result-filter] [data-var-key="status"]',
+  );
+  const search = detail.locator(
+    '[data-recued-recipes-action="result-filter-search"]',
+  );
+  await status.fill('closed');
+  await search.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(search).toHaveText('Running…');
+  await expect(search).toHaveAttribute('aria-disabled', 'true');
+  await expect(search).toHaveAttribute('aria-busy', 'true');
+  await expect(search).not.toHaveAttribute('disabled');
+  await expect(search).toBeFocused();
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    document.querySelector<HTMLElement>('[data-recued-recipes-back]')?.click();
+  });
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A recipe action is still in progress. Leave this recipe anyway?',
+  );
+  await expect(search).toBeFocused();
+
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A recipe action is still in progress. Leave Recipes anyway?',
+  );
+  await expect(page).toHaveURL(/#recipes\/autorun-live-1$/);
+  await expect(search).toBeFocused();
+
+  await expect(search).toHaveText('Search jobs');
+  await expect(search).not.toHaveAttribute('aria-disabled');
+  await expect(search).not.toHaveAttribute('aria-busy');
+  await expect(search).toBeFocused();
+
+  const next = detail.locator(
+    '[data-recued-recipes-result-filter-page="next"]',
+  );
+  await next.focus();
+  await page.keyboard.press('Enter');
+  await expect(next).toHaveText('Loading next page…');
+  await expect(next).toHaveAttribute('aria-disabled', 'true');
+  await expect(next).toHaveAttribute('aria-busy', 'true');
+  await expect(next).not.toHaveAttribute('disabled');
+  await expect(next).toBeFocused();
+
+  await expect(detail.getByText('page-two-row', { exact: true })).toBeVisible();
+  const previous = detail.locator(
+    '[data-recued-recipes-result-filter-page="previous"]',
+  );
+  await expect(previous).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(previous).toHaveText('Loading previous page…');
+  await expect(previous).toHaveAttribute('aria-disabled', 'true');
+  await expect(previous).toHaveAttribute('aria-busy', 'true');
+  await expect(previous).not.toHaveAttribute('disabled');
+  await expect(previous).toBeFocused();
+
+  await expect(detail.getByText('page-one-row', { exact: true })).toBeVisible();
+  await expect(next).toBeFocused();
+
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(detail).toHaveCount(0);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '2');
+});
+
+test('the shared Run modal preserves focus across execution repaints', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  const opener = page.locator('[data-recued-recipes-run-button]').first();
+  await opener.click();
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await expect(dialog).toBeFocused();
+
+  await dialog.getByRole('button', { name: 'Run', exact: true }).click();
+  const running = dialog.getByRole('button', { name: 'Running...' });
+  await expect(running).toHaveAttribute('aria-disabled', 'true');
+  await expect(running).toBeFocused();
+
+  await expect(dialog.locator('[data-recued-run-modal-result]'))
+    .toContainText('Run completed');
+  const runAgain = dialog.getByRole('button', { name: 'Run', exact: true });
+  await expect(runAgain).toBeFocused();
+
+  await runAgain.click();
+  await expect(dialog.locator('[data-recued-run-modal-result]')).toHaveCount(0);
+  const close = dialog.getByRole('button', { name: 'Close', exact: true });
+  await close.focus();
+  await expect(dialog.locator('[data-recued-run-modal-result]'))
+    .toContainText('Run completed');
+  await expect(close).toBeFocused();
+
+  await runAgain.click();
+  await expect(dialog.locator('[data-recued-run-modal-result]')).toHaveCount(0);
+  const config = dialog.locator('[data-recued-run-modal-config]');
+  await config.fill('{"next":true}');
+  await config.evaluate((field) => {
+    (field as HTMLTextAreaElement).setSelectionRange(2, 2);
+  });
+  await expect(dialog.locator('[data-recued-run-modal-result]'))
+    .toContainText('Run completed');
+  await expect(config).toHaveValue('{"next":true}');
+  await expect(config).toBeFocused();
+  expect(await config.evaluate((field) =>
+    (field as HTMLTextAreaElement).selectionStart)).toBe(2);
+
+  await close.focus();
+  await page.keyboard.press('Enter');
+  await expect(dialog).toHaveCount(0);
+  await expect(opener).toBeFocused();
+});
+
+test('the shared Run modal retains execution ownership across route leave', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  await page.locator('[data-recued-recipes-run-button]').first().click();
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await dialog.getByRole('button', { name: 'Run', exact: true }).click();
+  const running = dialog.getByRole('button', { name: 'Running...' });
+  await expect(running).toHaveAttribute('aria-disabled', 'true');
+  await expect(running).toBeFocused();
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    window.__app.setHash('#data');
+  });
+
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A recipe action is still in progress. Leave Recipes anyway?',
+  );
+  await expect(page).toHaveURL(/#recipes$/);
+  await expect(dialog).toBeVisible();
+  await expect(dialog.locator('[data-recued-run-modal-result]'))
+    .toContainText('Run completed');
+
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(dialog).toHaveCount(0);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Recipes restores the replaced detail Run opener after execution', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  await page.locator('[data-recued-recipes-card]').first().click();
+  const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
+  const opener = detail.locator('[data-recued-recipes-action="open-run"]')
+    .filter({ hasText: /^Run$/ });
+  await opener.focus();
+  await page.keyboard.press('Enter');
+
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await expect(dialog).toBeFocused();
+  await dialog.getByRole('button', { name: 'Run', exact: true }).click();
+  await expect(dialog.locator('[data-recued-run-modal-result]'))
+    .toContainText('Run completed');
+  const close = dialog.getByRole('button', { name: 'Close', exact: true });
+  await close.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(dialog).toHaveCount(0);
+  await expect(opener).toBeFocused();
+});
+
+test('Recipes keeps Config owned while loading its editor', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&recipe_default_run=1&recipe_config_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  await page.locator('[data-recued-recipes-card]').first().click();
+  const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
+  const config = detail.locator(
+    '[data-recued-recipes-action="open-recipe-config"][data-recipe-id="autorun-live-1"]',
+  );
+  await expect(config).toHaveText('Config');
+  const readsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('recipe_config.get'),
+  );
+  await config.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(config).toHaveText('Loading config…');
+  await expect(config).toHaveAttribute('aria-disabled', 'true');
+  await expect(config).toHaveAttribute('aria-busy', 'true');
+  await expect(config).not.toHaveAttribute('disabled');
+  await expect(config).toBeFocused();
+  await config.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('recipe_config.get')),
+  ).toBe(readsBefore + 1);
+
+  const editor = page.getByRole('dialog', { name: 'Edit config' });
+  await expect(editor).toBeFocused();
+  await editor.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(editor).toHaveCount(0);
+  await expect(config).toHaveText('Config');
+  await expect(config).toBeFocused();
+});
+
+test('Recipes returns a failed Config read to its action with a retryable error', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&recipe_default_run=1&recipe_config_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  await page.locator('[data-recued-recipes-card]').first().click();
+  const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
+  const config = detail.locator(
+    '[data-recued-recipes-action="open-recipe-config"][data-recipe-id="autorun-live-1"]',
+  );
+  await config.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(config).toHaveText('Loading config…');
+  await expect(config).toHaveAttribute('aria-disabled', 'true');
+  await expect(config).toHaveAttribute('aria-busy', 'true');
+  await expect(config).toBeFocused();
+
+  await expect(detail.getByRole('alert')).toHaveText(
+    "Couldn't load config: Recipe config is temporarily unavailable. Try Config again.",
+  );
+  await expect(config).toHaveText('Config');
+  await expect(config).not.toHaveAttribute('aria-disabled');
+  await expect(config).not.toHaveAttribute('aria-busy');
+  await expect(config).toBeFocused();
+});
+
+test('Recipes keeps Config save owned through failure and retry', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&recipe_default_run=1`
+    + '&recipe_config_set_response=fail-once-slow-retry'
+    + '&recipe_config_set_delay_ms=2500',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  await page.locator('[data-recued-recipes-card]').first().click();
+  const detail = page.locator('[data-recued-recipes-detail="autorun-live-1"]');
+  const config = detail.locator(
+    '[data-recued-recipes-action="open-recipe-config"]'
+    + '[data-recipe-id="autorun-live-1"]',
+  );
+  await config.click();
+
+  const editor = page.getByRole('dialog', { name: 'Edit config' });
+  const limit = editor.locator('[data-var-key="limit"]');
+  await limit.fill('40');
+  const save = editor.locator(
+    '[data-recued-config-editor-action="confirm"]',
+  );
+  const close = editor.getByRole('button', { name: 'Close', exact: true });
+  const callsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('recipe_config.set'),
+  );
+  await save.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(save).toHaveText('Saving…');
+  await expect(save).toHaveAttribute('aria-disabled', 'true');
+  await expect(save).toHaveAttribute('aria-busy', 'true');
+  await expect(save).not.toHaveAttribute('disabled');
+  await expect(save).toBeFocused();
+  await expect(limit).toBeDisabled();
+  await expect(close).toHaveAttribute('aria-disabled', 'true');
+  await expect(close).not.toHaveAttribute('disabled');
+  await page.keyboard.press('Escape');
+  await expect(editor).toBeVisible();
+  await save.evaluate((button) => {
+    (button as HTMLButtonElement).click();
+    (button as HTMLButtonElement).click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('recipe_config.set')),
+  ).toBe(callsBefore + 1);
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    window.__app.setHash('#data');
+  });
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A recipe action is still in progress. Leave Recipes anyway?',
+  );
+  await expect(page).toHaveURL(/#recipes\/autorun-live-1$/);
+  await expect(editor).toBeVisible();
+  await expect(save).toBeFocused();
+
+  await expect(editor.getByRole('alert')).toHaveText(
+    "Couldn't save config. Your edits are still here. Try again.",
+  );
+  await expect(limit).toHaveValue('40');
+  await expect(limit).toBeEnabled();
+  await expect(save).toHaveText('Save');
+  await expect(save).not.toHaveAttribute('aria-disabled');
+  await expect(save).not.toHaveAttribute('aria-busy');
+  await expect(save).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(save).toHaveText('Saving…');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('recipe_config.set')),
+  ).toBe(callsBefore + 2);
+  await expect(editor).toHaveCount(0);
+  await expect(config).toBeFocused();
+
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Recipes preserves related auto-run action ownership', async ({ page }) => {
+  await page.route('https://recued.com/catalog/**', async (route) => {
+    await route.fulfill({ json: [] });
+  });
+  await page.goto(
+    `${HARNESS_URL}?recipes=related-autorun&auto_run_update_delay_ms=2500`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').click();
+  const row = page.locator('[data-recued-recipes-related-row="close-action"]');
+  const pause = row.locator(
+    '[data-recued-recipes-action="toggle-auto-run:off"]',
+  );
+  const callsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('auto_run.update'),
+  );
+  await pause.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(pause).toHaveText('Pausing auto-run…');
+  await expect(pause).toHaveAttribute('aria-disabled', 'true');
+  await expect(pause).toHaveAttribute('aria-busy', 'true');
+  await expect(pause).not.toHaveAttribute('disabled');
+  await expect(pause).toBeFocused();
+  await pause.evaluate((button) => {
+    (button as HTMLElement).click();
+    (button as HTMLElement).click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('auto_run.update')),
+  ).toBe(callsBefore + 1);
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    document.querySelector<HTMLElement>('[data-recued-recipes-back]')?.click();
+  });
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A recipe action is still in progress. Leave this recipe anyway?',
+  );
+  await expect(row).toBeVisible();
+  await expect(pause).toBeFocused();
+
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A recipe action is still in progress. Leave Recipes anyway?',
+  );
+  await expect(page).toHaveURL(/#recipes\/autorun-live-1$/);
+  await expect(row).toBeVisible();
+  await expect(pause).toBeFocused();
+
+  const resume = row.locator(
+    '[data-recued-recipes-action="toggle-auto-run:on"]',
+  );
+  await expect(resume).toHaveText('Resume auto-run');
+  await expect(resume).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(resume).toHaveText('Resuming auto-run…');
+  const logs = row.locator('[data-recued-recipes-runs-link]');
+  await logs.focus();
+  await expect(row.locator(
+    '[data-recued-recipes-action="toggle-auto-run:off"]',
+  )).toHaveText('Pause auto-run');
+  await expect(logs).toBeFocused();
+
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(row).toHaveCount(0);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '2');
+});
+
+test('Recipes keeps workflow-pack recovery focused and single-flight', async ({ page }) => {
+  let membershipCalls = 0;
+  let releaseMembership!: () => void;
+  const membershipReleased = new Promise<void>((resolve) => {
+    releaseMembership = resolve;
+  });
+  await page.route('https://recued.com/**', async (route) => {
+    const pathname = new URL(route.request().url()).pathname;
+    if (pathname === '/catalog/recipes.json') {
+      await route.fulfill({
+        json: ['autorun-live-1', 'close-action'].map((recipe_id) => ({
+          recipe_id,
+          publisher_id: 'recued-core',
+          name: recipe_id === 'autorun-live-1' ? 'Watch pipeline' : 'Close action',
+          description: '',
+          type: 'recipe',
+          version: 1,
+          platforms: [],
+          tags: [],
+          download_count: 0,
+          rating_avg: 0,
+          rating_count: 0,
+          created_at: '',
+          depends_on: [],
+          recipe_bundle: 'recued-core/pipeline-response',
+        })),
+      });
+      return;
+    }
+    if (pathname === '/catalog/packs.json') {
+      await route.fulfill({
+        json: [{
+          slug: 'pipeline-response',
+          publisher_id: 'recued-core',
+          name: 'Pipeline Response',
+          description: '',
+          version: 1,
+          pack_kind: 'app_pack',
+          tags: [],
+          download_count: 0,
+          item_count: 2,
+          recipe_refs: [],
+          created_at: '',
+        }],
+      });
+      return;
+    }
+    if (pathname === '/packs/pipeline-response.json') {
+      membershipCalls += 1;
+      if (membershipCalls === 1) {
+        await route.fulfill({ status: 503, json: { error: 'temporarily unavailable' } });
+        return;
+      }
+      await membershipReleased;
+      await route.fulfill({
+        json: {
+          slug: 'pipeline-response',
+          publisher: 'recued-core',
+          recipes: [
+            { slug: 'autorun-live-1', version: 1 },
+            { slug: 'close-action', version: 1 },
+          ],
+        },
+      });
+      return;
+    }
+    await route.fulfill({ json: [] });
+  });
+
+  await page.goto(`${HARNESS_URL}?recipes=related-autorun`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await page.locator('[data-recued-recipes-card="autorun-live-1"]').click();
+
+  const status = page.locator(
+    '[data-recued-recipes-bundle-status="pipeline-response"]',
+  );
+  await expect(status).toHaveAttribute('role', 'alert');
+  await expect(status).toContainText(
+    'Couldn’t verify this recipe’s workflow pack contents.',
+  );
+  const retry = page.locator(
+    '[data-recued-recipes-bundle-retry="pipeline-response"]',
+  );
+  await expect(retry).toHaveText('Retry workflow pack');
+  await retry.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await retry.dispatchEvent('click');
+  await retry.dispatchEvent('click');
+  await expect.poll(() => membershipCalls).toBe(2);
+
+  releaseMembership();
+  const workflowPack = page.locator(
+    '[data-recued-recipes-bundle-pack="pipeline-response"]',
+  );
+  await expect(workflowPack).toHaveText('View workflow pack');
+  await expect(status).toHaveCount(0);
+  await expect(workflowPack).toBeFocused();
+  expect(membershipCalls).toBe(2);
+});
+
+test('the shared Run modal tabs form one arrow-key keyboard stop', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await page.locator('[data-recued-recipes-run-button]').first().click();
+
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  const tabs = dialog.getByRole('tab');
+  const run = tabs.getByText('Run', { exact: true });
+  const schedule = tabs.getByText('Schedule', { exact: true });
+  await expect(run).toHaveAttribute('aria-selected', 'true');
+  await expect(run).toHaveAttribute('tabindex', '0');
+  await expect(schedule).toHaveAttribute('tabindex', '-1');
+  expect(await tabs.evaluateAll((nodes) => nodes.filter(
+    (node) => node.getAttribute('tabindex') === '0',
+  ).length)).toBe(1);
+
+  await run.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(schedule).toHaveAttribute('aria-selected', 'true');
+  await expect(schedule).toBeFocused();
+  const panel = dialog.getByRole('tabpanel');
+  await expect(panel).toHaveAttribute('aria-labelledby', await schedule.getAttribute('id') ?? '');
+
+  await page.keyboard.press('Home');
+  await expect(run).toHaveAttribute('aria-selected', 'true');
+  await expect(run).toBeFocused();
+});
+
+test('the shared Run modal preserves Repeat focus while cadence controls swap', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await page.locator('[data-recued-recipes-run-button]').first().click();
+
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await dialog.getByRole('tab', { name: 'Schedule' }).click();
+  const repeat = dialog.getByRole('checkbox', { name: 'Repeat' });
+  await expect(repeat).toBeChecked();
+
+  await repeat.focus();
+  await page.keyboard.press('Space');
+  await expect(repeat).not.toBeChecked();
+  await expect(dialog.getByRole('textbox', { name: 'Run once at' })).toBeVisible();
+  await expect(repeat).toBeFocused();
+
+  await page.keyboard.press('Space');
+  await expect(repeat).toBeChecked();
+  await expect(dialog.locator('[data-recued-run-modal-preset]')).toBeVisible();
+  await expect(repeat).toBeFocused();
+});
+
+test('the shared Run modal preserves Schedule once validation focus', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await page.locator('[data-recued-recipes-run-button]').first().click();
+
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await dialog.getByRole('tab', { name: 'Schedule' }).click();
+  await dialog.getByRole('checkbox', { name: 'Repeat' }).uncheck();
+  const scheduleOnce = dialog.getByRole('button', { name: 'Schedule once' });
+  await scheduleOnce.click();
+
+  await expect(dialog.getByRole('alert'))
+    .toContainText('Pick a date and time to run once.');
+  await expect(scheduleOnce).toBeFocused();
+
+  const runAt = dialog.getByRole('textbox', { name: 'Run once at' });
+  await runAt.fill('2030-01-02T09:30');
+  await expect(dialog.getByRole('alert')).toHaveCount(0);
+  await expect(runAt).toBeFocused();
+});
+
+test('the shared Run modal keeps Add schedule focused while creating', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await page.locator('[data-recued-recipes-run-button]').first().click();
+
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await dialog.getByRole('tab', { name: 'Schedule' }).click();
+  const add = dialog.getByRole('button', { name: 'Add schedule' });
+  await add.click();
+
+  await expect(add).toHaveAttribute('aria-disabled', 'true');
+  await expect(add).toHaveAttribute('aria-busy', 'true');
+  await expect(add).toBeFocused();
+
+  await expect(dialog.locator('.run-modal-rule-row')).toHaveCount(1);
+  await expect(add).not.toHaveAttribute('aria-disabled', 'true');
+  await expect(add).not.toHaveAttribute('aria-busy', 'true');
+  await expect(add).toBeFocused();
+});
+
+test('the shared Run modal preserves schedule row action ownership', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await page.locator('[data-recued-recipes-run-button]').first().click();
+
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await dialog.getByRole('tab', { name: 'Schedule' }).click();
+  const add = dialog.getByRole('button', { name: 'Add schedule' });
+  await add.click();
+  await expect(dialog.locator('.run-modal-rule-row')).toHaveCount(1);
+
+  const pause = dialog.getByRole('button', { name: 'Pause', exact: true });
+  await pause.click();
+  await expect(pause).toHaveAttribute('aria-disabled', 'true');
+  await expect(pause).toHaveAttribute('aria-busy', 'true');
+  await expect(pause).toBeFocused();
+
+  const resume = dialog.getByRole('button', { name: 'Resume', exact: true });
+  await expect(resume).toBeFocused();
+  await resume.click();
+  await expect(pause).toBeFocused();
+
+  const remove = dialog.getByRole('button', { name: 'Remove', exact: true });
+  await remove.click();
+  await expect(remove).toHaveAttribute('aria-disabled', 'true');
+  await expect(remove).toBeFocused();
+  await expect(dialog.locator('.run-modal-rule-row')).toHaveCount(0);
+  await expect(add).toBeFocused();
+});
+
+test('the shared Run modal preserves trigger action ownership', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?automation=rules`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/triggers'));
+  await page.getByRole('button', { name: 'Add trigger' }).click();
+  const picker = page.getByRole('combobox', {
+    name: 'Choose a recipe to automate',
+  });
+  await picker.fill('Watch pipeline');
+  await page.getByRole('option', { name: /Watch pipeline/ }).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await expect(dialog.getByRole('tab', { name: 'Trigger' }))
+    .toHaveAttribute('aria-selected', 'true');
+  const pattern = dialog.locator('[data-recued-run-modal-pattern]');
+  const add = dialog.getByRole('button', { name: 'Add trigger' });
+  await expect(add).toBeDisabled();
+  await pattern.fill('data.mail.**');
+  await expect(add).toBeEnabled();
+  await add.click();
+
+  await expect(add).toHaveAttribute('aria-disabled', 'true');
+  await expect(add).toHaveAttribute('aria-busy', 'true');
+  await expect(add).toBeFocused();
+
+  const row = dialog.locator('.run-modal-rule-row');
+  await expect(row).toHaveCount(1);
+  await expect(add).not.toHaveAttribute('aria-disabled');
+  await expect(add).not.toHaveAttribute('aria-busy');
+  await expect(add).toBeFocused();
+
+  const pause = row.getByRole('button', { name: 'Pause' });
+  await pause.click();
+  await expect(pause).toHaveAttribute('aria-disabled', 'true');
+  await expect(pause).toHaveAttribute('aria-busy', 'true');
+  await expect(pause).toBeFocused();
+
+  const resume = row.getByRole('button', { name: 'Resume' });
+  await expect(resume).toBeFocused();
+  await resume.click();
+  await expect(resume).toHaveAttribute('aria-disabled', 'true');
+  await expect(resume).toHaveAttribute('aria-busy', 'true');
+  await expect(resume).toBeFocused();
+  await expect(row.getByRole('button', { name: 'Pause' })).toBeFocused();
+
+  const remove = row.getByRole('button', { name: 'Remove' });
+  await remove.click();
+  await expect(remove).toHaveAttribute('aria-disabled', 'true');
+  await expect(remove).toHaveAttribute('aria-busy', 'true');
+  await expect(remove).toBeFocused();
+  await expect(row).toHaveCount(0);
+  await expect(add).toBeFocused();
+});
+
+test('the shared Run modal returns nested trigger config focus', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?automation=rules`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#automation/triggers'));
+  await page.getByRole('button', { name: 'Add trigger' }).click();
+  const picker = page.getByRole('combobox', {
+    name: 'Choose a recipe to automate',
+  });
+  await picker.fill('Watch pipeline');
+  await page.getByRole('option', { name: /Watch pipeline/ }).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await dialog.locator('[data-recued-run-modal-pattern]').fill('data.mail.**');
+  await dialog.getByRole('button', { name: 'Add trigger' }).click();
+  const row = dialog.locator('.run-modal-rule-row');
+  await expect(row).toHaveCount(1);
+  const config = row.getByRole('button', { name: 'Config' });
+
+  await config.click();
+  const editor = page.getByRole('dialog', { name: 'Edit config' });
+  await expect(editor).toBeFocused();
+  await editor.getByRole('button', { name: 'Close' }).click();
+  await expect(editor).toHaveCount(0);
+  await expect(config).toBeFocused();
+
+  await config.click();
+  await editor.getByRole('textbox', { name: 'Topic' }).fill('Incidents');
+  await editor.getByRole('button', { name: 'Save' }).click();
+  await expect(editor).toHaveCount(0);
+  await expect(config).toHaveAttribute('aria-disabled', 'true');
+  await expect(config).toHaveAttribute('aria-busy', 'true');
+  await expect(config).toBeFocused();
+  await expect(config).not.toHaveAttribute('aria-disabled');
+  await expect(config).not.toHaveAttribute('aria-busy');
+  await expect(config).toBeFocused();
+
+  await config.click();
+  await expect(editor.getByRole('textbox', { name: 'Topic' }))
+    .toHaveValue('Incidents');
+  await editor.getByRole('button', { name: 'Close' }).click();
+  await expect(config).toBeFocused();
+});
+
+test('Recipes preserves installed search focus through a live repaint', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  const search = page.getByRole('searchbox', {
+    name: 'Search installed recipes',
+  });
+  await search.fill('pipeline');
+  await expect(search).toHaveValue('pipeline');
+  await search.evaluate((input) => {
+    (input as HTMLInputElement).setSelectionRange(2, 2);
+  });
+
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'recipe_runnability_changed',
+      recipes: [],
+      cursor: 63,
+    },
+  }));
+
+  await expect(search).toHaveValue('pipeline');
+  await expect(search).toBeFocused();
+  expect(await search.evaluate((input) =>
+    (input as HTMLInputElement).selectionStart)).toBe(2);
+});
+
+test('Recipes preserves an installed filter chip through repaints', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  const chip = page.getByRole('group', { name: 'Filter by type' })
+    .getByRole('button', { name: 'Manual', exact: true });
+  await chip.focus();
+  await page.keyboard.press('Enter');
+  await expect(chip).toHaveAttribute('aria-pressed', 'true');
+  await expect(chip).toBeFocused();
+
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'recipe_runnability_changed',
+      recipes: [],
+      cursor: 64,
+    },
+  }));
+  await expect(chip).toBeFocused();
+});
+
+test('Recipes keeps paging controls reachable across page repaints', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  const pager = page.getByRole('navigation', {
+    name: 'Installed recipes pages',
+  });
+  const next = pager.getByRole('button', { name: 'Next', exact: false });
+  const previous = pager.getByRole('button', { name: 'Previous', exact: false });
+  await expect(pager).toContainText('Page 1 of 3');
+
+  await next.focus();
+  await page.keyboard.press('Enter');
+  await expect(pager).toContainText('Page 2 of 3');
+  await expect(next).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(pager).toContainText('Page 3 of 3');
+  await expect(previous).toBeFocused();
+
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'recipe_runnability_changed',
+      recipes: [],
+      cursor: 65,
+    },
+  }));
+  await expect(previous).toBeFocused();
+});
+
+test('Recipes preserves Refresh focus through its RPC lifecycle', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?recipes=installed`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  const refresh = page.getByRole('button', { name: 'Refresh', exact: true });
+  const calls = await page.evaluate(
+    () => window.__app.rpcCallCount('recipe.list'),
+  );
+  await refresh.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(
+    (before) => window.__app.rpcCallCount('recipe.list') > before,
+    calls,
+  );
+  await expect(refresh).toBeFocused();
+});
+
+test('Recipes Discover keeps focus on a facet chip through query repaints', async ({ page }) => {
+  await page.route('https://recued.com/catalog/search?**', async (route) => {
+    const url = new URL(route.request().url());
+    const gmailOnly = url.searchParams.get('f.platform') === 'gmail';
+    const recipes = [
+      {
+        recipe_id: 'mail-digest',
+        publisher_id: 'recued-core',
+        name: 'Mail digest',
+        description: 'Summarize unread mail.',
+        version: 1,
+        platforms: ['gmail'],
+        tags: ['mail'],
+        depends_on: [],
+      },
+      {
+        recipe_id: 'sales-review',
+        publisher_id: 'recued-core',
+        name: 'Sales review',
+        description: 'Review new sales records.',
+        version: 1,
+        platforms: ['hubspot'],
+        tags: ['sales'],
+        depends_on: [],
+      },
+    ];
+    const rows = gmailOnly ? recipes.slice(0, 1) : recipes;
+    await route.fulfill({
+      json: {
+        rows,
+        total: rows.length,
+        totalPages: 1,
+        page: 1,
+        facets: {
+          platform: [
+            { value: 'gmail', count: 1 },
+            { value: 'hubspot', count: 1 },
+          ],
+          tag: [
+            { value: 'mail', count: 1 },
+            { value: 'sales', count: 1 },
+          ],
+        },
+      },
+    });
+  });
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await page.locator('[data-recued-discovery-tab="discover"]').click();
+
+  const gmail = page.locator('[data-facet="platform"][data-value="gmail"]');
+  await expect(gmail).toBeVisible();
+  await gmail.focus();
+  await expect(gmail).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  await expect(gmail).toHaveAttribute('aria-pressed', 'true');
+  await expect(gmail).toBeFocused();
+  await expect(page.locator('[data-recued-discover-card]')).toHaveCount(1);
+});
+
+test('Recipes Discover keeps dependency install ownership through a slow failure', async ({ page }) => {
+  await page.route('https://recued.com/catalog/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/catalog/versions')) {
+      await route.fulfill({ json: { versions: {} } });
+      return;
+    }
+    if (url.pathname.endsWith('/catalog/search')) {
+      await route.fulfill({
+        json: {
+          rows: [{
+            recipe_id: 'mail-digest',
+            publisher_id: 'recued-core',
+            name: 'Mail digest',
+            description: 'Summarize unread mail.',
+            version: 1,
+            platforms: ['gmail'],
+            tags: ['mail'],
+            depends_on: ['recued-core.missing-mail'],
+          }],
+          total: 1,
+          totalPages: 1,
+          page: 1,
+          facets: {},
+        },
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 503,
+      json: { error: 'Marketplace catalogue unavailable.' },
+    });
+  });
+  await page.goto(
+    `${HARNESS_URL}?recipes=installed&recipe_install_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await page.locator('[data-recued-discovery-tab="discover"]').click();
+
+  const action = page.locator(
+    '[data-recued-discover-action][data-id="mail-digest"]',
+  );
+  await action.focus();
+  await page.keyboard.press('Enter');
+
+  const dialog = page.getByRole('dialog', { name: 'Install Mail digest' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toHaveAttribute('aria-modal', 'true');
+  await expect(dialog).toBeFocused();
+
+  const install = dialog.locator('[data-recued-recipe-dialog-install]');
+  await install.focus();
+  await page.keyboard.press('Enter');
+  await expect(install).toHaveText('Installing…');
+  await expect(install).toHaveAttribute('aria-disabled', 'true');
+  await expect(install).toHaveAttribute('aria-busy', 'true');
+  await expect(install).not.toHaveAttribute('disabled');
+  await expect(install).toBeFocused();
+
+  await install.dispatchEvent('click');
+  await install.dispatchEvent('click');
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('recipe.installBySlug'),
+  )).toBe(1);
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeVisible();
+  await expect(install).toBeFocused();
+
+  await expect(dialog.getByRole('alert'))
+    .toHaveText('Recipe install unavailable.');
+  await expect(install).toHaveText('Install recipe');
+  await expect(install).not.toHaveAttribute('aria-disabled');
+  await expect(install).not.toHaveAttribute('aria-busy');
+  await expect(install).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(action).toBeFocused();
+});
+
+test('Recipes Discover keeps marketplace recovery focused and single-flight', async ({ page }) => {
+  let searchCalls = 0;
+  await page.route('https://recued.com/catalog/**', async (route) => {
+    const url = new URL(route.request().url());
+    if (url.pathname.endsWith('/catalog/versions')) {
+      await route.fulfill({ json: { versions: {} } });
+      return;
+    }
+    if (url.pathname.endsWith('/catalog/search')) {
+      searchCalls += 1;
+      if (searchCalls === 1) {
+        await route.fulfill({
+          status: 503,
+          json: { error: 'Marketplace unavailable.' },
+        });
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 750));
+      await route.fulfill({
+        json: {
+          rows: [{
+            recipe_id: 'mail-digest',
+            publisher_id: 'recued-core',
+            name: 'Mail digest',
+            description: 'Summarize unread mail.',
+            version: 1,
+            platforms: ['gmail'],
+            tags: ['mail'],
+            depends_on: [],
+          }],
+          total: 1,
+          totalPages: 1,
+          page: 1,
+          facets: {},
+        },
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 503,
+      json: { error: 'Marketplace catalogue unavailable.' },
+    });
+  });
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+  await page.locator('[data-recued-discovery-tab="discover"]').click();
+
+  const status = page.locator('[data-recued-discover-status]');
+  await expect(status).toHaveAttribute('role', 'alert');
+  const retry = page.locator('[data-recued-discover-retry]');
+  await expect(retry).toHaveText('Retry');
+  await retry.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await retry.dispatchEvent('click');
+  await retry.dispatchEvent('click');
+  await expect.poll(() => searchCalls).toBe(2);
+
+  const card = page.locator(
+    '[data-recued-discover-card][data-id="mail-digest"]',
+  );
+  await expect(card).toBeVisible();
+  await expect(card.locator('[data-recued-discover-action]')).toBeFocused();
+  await expect(retry).toHaveCount(0);
+});
+
+test('Recipes discovery tabs form one arrow-key keyboard stop', async ({ page }) => {
+  await page.route('https://recued.com/catalog/search?**', async (route) => {
+    await route.fulfill({
+      json: {
+        rows: [],
+        total: 0,
+        totalPages: 1,
+        page: 1,
+        facets: {},
+      },
+    });
+  });
+  await page.evaluate(() => window.__app.setHash('#recipes'));
+
+  const installed = page.locator('[data-recued-discovery-tab="installed"]');
+  const discover = page.locator('[data-recued-discovery-tab="discover"]');
+  await expect(installed).toHaveAttribute('tabindex', '0');
+  await expect(discover).toHaveAttribute('tabindex', '-1');
+  await installed.focus();
+  await page.keyboard.press('ArrowRight');
+
+  await expect(discover).toHaveAttribute('aria-selected', 'true');
+  await expect(discover).toHaveAttribute('tabindex', '0');
+  await expect(discover).toBeFocused();
+  await page.keyboard.press('ArrowLeft');
+  await expect(installed).toHaveAttribute('aria-selected', 'true');
+  await expect(installed).toHaveAttribute('tabindex', '0');
+  await expect(installed).toBeFocused();
+});
+
+test('Logs moves focus into an opened run detail and preserves it through a feed repaint', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?journey=verification`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#logs'));
+
+  const openRun = page.getByRole('button', { name: 'Open run detail' });
+  await expect(openRun).toBeVisible();
+  await openRun.focus();
+  await page.keyboard.press('Enter');
+
+  const heading = page.locator(`[${LOGS_DETAIL_HEADING}="run-verify"]`);
+  await expect(page).toHaveURL(/#logs\/run-verify$/);
+  await expect(heading).toHaveText('calendar/schedule-review');
+  await expect(heading).toHaveAttribute('tabindex', '-1');
+  await expect(heading).toBeFocused();
+
+  const listCalls = await page.evaluate(
+    () => window.__app.rpcCallCount('execution.list'),
+  );
+  await page.evaluate(() => {
+    window.__app.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'session_lifecycle',
+        session_id: 'session-verification',
+        state: 'closed',
+        prev_state: 'active',
+        cursor: 20,
+      },
+    });
+  });
+  await page.waitForFunction(
+    (previous) => window.__app.rpcCallCount('execution.list') > previous,
+    listCalls,
+  );
+  await expect(heading).toBeFocused();
+});
+
+test('Logs renders bare History after opening an in-page run detail', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?journey=verification`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#logs'));
+
+  const openRun = page.getByRole('button', { name: 'Open run detail' });
+  await openRun.click();
+  const heading = page.locator(`[${LOGS_DETAIL_HEADING}="run-verify"]`);
+  await expect(heading).toHaveText('calendar/schedule-review');
+  await expect(page).toHaveURL(/#logs\/run-verify$/);
+
+  // The detail was selected with replaceState. A later navigation to the hash
+  // shown before that write must render the unselected History view.
+  await page.evaluate(() => window.__app.setHash('#logs'));
+  await expect(page).toHaveURL(/#logs$/);
+  await expect(heading).toHaveCount(0);
+  await expect(openRun).toBeVisible();
+});
+
+test('Logs keeps failed run-detail recovery keyboard-owned and single-flight', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?journey=verification&logs_detail_response=fail-once-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#logs'));
+
+  const opener = page.locator(
+    `[${LOGS_ROW}="run-verify"] [${LOGS_ACTION}="open-detail"]`,
+  );
+  await opener.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(opener).toHaveAttribute('aria-disabled', 'true');
+  await expect(opener).toHaveAttribute('aria-busy', 'true');
+  await expect(opener).not.toHaveAttribute('disabled');
+  await expect(opener).toBeFocused();
+  await opener.dispatchEvent('click');
+  await opener.dispatchEvent('click');
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('execution.get'),
+  )).toBe(1);
+
+  await expect(page.getByRole('alert')).toHaveText('Run detail unavailable.');
+  const retry = page.locator(`[${LOGS_ACTION}="retry-detail"]`);
+  await expect(retry).toHaveText('Retry');
+  await expect(retry).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await retry.dispatchEvent('click');
+  await retry.dispatchEvent('click');
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('execution.get'),
+  )).toBe(2);
+
+  const heading = page.locator(`[${LOGS_DETAIL_HEADING}="run-verify"]`);
+  await expect(heading).toHaveText('calendar/schedule-review');
+  await expect(heading).toBeFocused();
+  await expect(retry).toHaveCount(0);
+});
+
+test('Logs preserves Apply focus through a filtered feed repaint', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?journey=verification&logs_feed_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#logs'));
+
+  const status = page.locator('[data-recued-logs-filter="status"]');
+  await expect(status).toBeVisible();
+  await status.selectOption('in_doubt');
+
+  const apply = page.locator(`[${LOGS_ACTION}="apply-filters"]`);
+  const listCalls = await page.evaluate(
+    () => window.__app.rpcCallCount('execution.list'),
+  );
+  await apply.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(apply).toHaveText('Applying…');
+  await expect(apply).toHaveAttribute('aria-disabled', 'true');
+  await expect(apply).toHaveAttribute('aria-busy', 'true');
+  await expect(apply).not.toHaveAttribute('disabled');
+  await expect(apply).toBeFocused();
+  await apply.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('execution.list')),
+  ).toBe(listCalls + 1);
+
+  await expect(apply).toHaveText('Apply');
+  await expect(apply).not.toHaveAttribute('aria-disabled');
+  await expect(apply).not.toHaveAttribute('aria-busy');
+  await expect(status).toHaveValue('in_doubt');
+  await expect(apply).toBeFocused();
+});
+
+test('Logs preserves filter focus and caret through feed repaints', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?journey=verification`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#logs'));
+
+  const refreshFeed = async (cursor: number): Promise<void> => {
+    const before = await page.evaluate(
+      () => window.__app.rpcCallCount('execution.list'),
+    );
+    await page.evaluate((nextCursor) => {
+      window.__app.fireMessage({
+        type: 'server_event',
+        event: {
+          kind: 'session_lifecycle',
+          session_id: 'session-verification',
+          state: 'closed',
+          prev_state: 'active',
+          cursor: nextCursor,
+        },
+      });
+    }, cursor);
+    await page.waitForFunction(
+      (previous) => window.__app.rpcCallCount('execution.list') > previous,
+      before,
+    );
+  };
+
+  const status = page.locator('[data-recued-logs-filter="status"]');
+  await status.focus();
+  await status.selectOption('in_doubt');
+  await expect(status).toBeFocused();
+  await refreshFeed(41);
+  await expect(status).toHaveValue('in_doubt');
+  await expect(status).toBeFocused();
+
+  const picker = page.getByRole('combobox', { name: 'Filter by recipe' });
+  await picker.fill('calendar');
+  await picker.evaluate((input) => {
+    (input as HTMLInputElement).setSelectionRange(3, 3);
+  });
+  await refreshFeed(42);
+  await expect(picker).toHaveValue('calendar');
+  await expect(picker).toBeFocused();
+  expect(await picker.evaluate((input) =>
+    (input as HTMLInputElement).selectionStart)).toBe(3);
+});
+
+test('Logs guards pagination and focuses the first appended run', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?journey=verification&logs=paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#logs'));
+
+  const loadMore = page.locator(`[${LOGS_LOAD_MORE}]`);
+  await expect(loadMore).toBeVisible();
+  await loadMore.focus();
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('execution.list'),
+  );
+  await page.evaluate((attr) => {
+    document.querySelector<HTMLElement>(`[${attr}]`)?.click();
+    document.querySelector<HTMLElement>(`[${attr}]`)?.click();
+  }, LOGS_LOAD_MORE);
+
+  const appended = page.locator(`[${LOGS_ROW}="run-verify-older"]`);
+  await expect(appended).toBeVisible();
+  await expect(loadMore).toHaveCount(0);
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('execution.list'),
+    ),
+  ).toBe(before + 1);
+  await expect(
+    appended.getByRole('button', { name: 'Open run detail' }),
+  ).toBeFocused();
+});
+
+test('Logs keeps a kill action focused until its run retires', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?live=running&logs_control_response=slow`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#logs/active'));
+
+  const firstRow = page.locator(
+    `[${LOGS_ACTIVE_ROW}="run-live-control-1"]`,
+  );
+  const firstKill = firstRow.locator(`[${LOGS_ACTION}="kill-run"]`);
+  const nextKill = page.locator(
+    `[${LOGS_ACTIVE_ROW}="run-live-control-2"] `
+    + `[${LOGS_ACTION}="kill-run"]`,
+  );
+  await expect(firstKill).toBeVisible();
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+  });
+  await firstKill.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(firstKill).toHaveText('Killing…');
+  await page.evaluate(() => window.__app.setHash('#data'));
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A run action is still in progress. Leave Logs anyway?',
+  );
+  await expect(page).toHaveURL(/#logs\/active$/);
+  await expect(firstKill).toBeFocused();
+  await expect(firstKill).not.toHaveAttribute('disabled');
+  await expect(firstKill).toHaveAttribute('aria-disabled', 'true');
+  await expect(firstKill).toHaveAttribute('aria-busy', 'true');
+  await firstKill.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('execution.kill'),
+  )).toBe(1);
+
+  await expect(firstRow).toHaveCount(0);
+  await expect(nextKill).toBeFocused();
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Logs keeps an acknowledged kill retired when active reconciliation fails', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?live=running&logs_control_followup_response=fail`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#logs/active'));
+
+  const firstRow = page.locator(
+    `[${LOGS_ACTIVE_ROW}="run-live-control-1"]`,
+  );
+  const firstKill = firstRow.locator(`[${LOGS_ACTION}="kill-run"]`);
+  const nextKill = page.locator(
+    `[${LOGS_ACTIVE_ROW}="run-live-control-2"] `
+    + `[${LOGS_ACTION}="kill-run"]`,
+  );
+  const activeReadsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('execution.active'),
+  );
+  await firstKill.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(firstRow).toHaveCount(0);
+  await expect(nextKill).toBeFocused();
+  await expect(page.locator(`[${LOGS_ERROR}]`)).toContainText(
+    'Active runs could not be refreshed.',
+  );
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('execution.active')),
+  ).toBe(activeReadsBefore + 1);
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('execution.kill')),
+  ).toBe(1);
+});
+
+test('Logs keeps a pass revocation focused until its row retires', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?live=running&logs_passes=active`
+    + '&logs_control_response=slow',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#logs/active'));
+
+  const firstRow = page.locator(
+    `[${LOGS_PASS_ROW}="pass-live-control-1"]`,
+  );
+  const firstRevoke = firstRow.locator(`[${LOGS_ACTION}="revoke-grant"]`);
+  const nextRevoke = page.locator(
+    `[${LOGS_PASS_ROW}="pass-live-control-2"] `
+    + `[${LOGS_ACTION}="revoke-grant"]`,
+  );
+  await expect(firstRevoke).toBeVisible();
+  await firstRevoke.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(firstRevoke).toHaveText('Revoking…');
+  await expect(firstRevoke).toBeFocused();
+  await expect(firstRevoke).not.toHaveAttribute('disabled');
+  await expect(firstRevoke).toHaveAttribute('aria-disabled', 'true');
+  await expect(firstRevoke).toHaveAttribute('aria-busy', 'true');
+  await firstRevoke.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount(
+      'collection.contract.session_grant.revoke',
+    ),
+  )).toBe(1);
+
+  await expect(firstRow).toHaveCount(0);
+  await expect(nextRevoke).toBeFocused();
+});
+
+test('Logs keeps manual refreshes focused, visible, and single-flight', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?live=running&logs_passes=active`
+    + '&logs_refresh_response=slow',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#logs/active'));
+  await expect(page.locator(
+    `[${LOGS_ACTIVE_ROW}="run-live-control-1"]`,
+  )).toBeVisible();
+  await expect(page.locator(
+    `[${LOGS_PASS_ROW}="pass-live-control-1"]`,
+  )).toBeVisible();
+
+  const activeRefresh = page.locator(`[${LOGS_ACTION}="refresh-active"]`);
+  const activeBefore = await page.evaluate(() =>
+    window.__app.rpcCallCount('execution.active'));
+  await activeRefresh.focus();
+  await page.keyboard.press('Enter');
+  await expect(activeRefresh).toHaveText('Refreshing…');
+  await expect(activeRefresh).toHaveAttribute('aria-disabled', 'true');
+  await expect(activeRefresh).toHaveAttribute('aria-busy', 'true');
+  await expect(activeRefresh).not.toHaveAttribute('disabled');
+  await expect(activeRefresh).toBeFocused();
+  await activeRefresh.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('execution.active'))).toBe(activeBefore + 1);
+  await expect(activeRefresh).toHaveText('Refresh');
+  await expect(activeRefresh).toBeFocused();
+
+  const passesRefresh = page.locator(`[${LOGS_ACTION}="refresh-passes"]`);
+  const passesBefore = await page.evaluate(() =>
+    window.__app.rpcCallCount('collection.contract.session_grant.list'));
+  await passesRefresh.focus();
+  await page.keyboard.press('Enter');
+  await expect(passesRefresh).toHaveText('Refreshing…');
+  await expect(passesRefresh).toHaveAttribute('aria-disabled', 'true');
+  await expect(passesRefresh).toHaveAttribute('aria-busy', 'true');
+  await expect(passesRefresh).not.toHaveAttribute('disabled');
+  await expect(passesRefresh).toBeFocused();
+  await passesRefresh.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount(
+      'collection.contract.session_grant.list',
+    ))).toBe(passesBefore + 1);
+  await expect(passesRefresh).toHaveText('Refresh');
+  await expect(passesRefresh).toBeFocused();
+});
+
+test('Approvals focuses an exact decision card and preserves it through a queue repaint', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?attention=pending`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(
+    () => window.__app.setHash('#approvals/approval-attention-1'),
+  );
+
+  const card = page.locator(
+    '[data-recued-approvals-focus="approval-attention-1"]',
+  );
+  await expect(card).toBeVisible();
+  await expect(card).toHaveAttribute('data-focused', 'true');
+  await expect(card).toHaveAttribute('tabindex', '-1');
+  await expect(card).toBeFocused();
+
+  const listCalls = await page.evaluate(
+    () => window.__app.rpcCallCount('approval.list'),
+  );
+  await page.evaluate(() => {
+    window.__app.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'approval',
+        subkind: 'pending',
+        id: 'approval-attention-1',
+        cursor: 20,
+      },
+    });
+  });
+  await page.waitForFunction(
+    (previous) => window.__app.rpcCallCount('approval.list') > previous,
+    listCalls,
+  );
+  await expect(card).toBeFocused();
+});
+
+test('Approvals keeps queue Refresh focused and single-flight', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?attention=pending&approval_queue_response=fail-once-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#approvals'));
+
+  const error = page.locator('[data-recued-approvals-error="error"]');
+  await expect(error).toHaveAttribute('role', 'alert');
+  await expect(error).toContainText('Approval queue is temporarily unavailable.');
+  const refresh = page.locator(`[${APPROVALS_REFRESH}]`);
+  await expect(refresh).toHaveText('Refresh');
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('approval.list'),
+  );
+  await refresh.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(refresh).toHaveText('Refreshing…');
+  await expect(refresh).toHaveAttribute('aria-disabled', 'true');
+  await expect(refresh).toHaveAttribute('aria-busy', 'true');
+  await expect(refresh).not.toHaveAttribute('disabled');
+  await expect(refresh).toBeFocused();
+  await refresh.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('approval.list')),
+  ).toBe(before + 1);
+
+  await expect(error).toHaveCount(0);
+  await expect(refresh).toHaveText('Refresh');
+  await expect(refresh).not.toHaveAttribute('aria-disabled');
+  await expect(refresh).not.toHaveAttribute('aria-busy');
+  await expect(refresh).toBeFocused();
+});
+
+test('Approvals moves focus to the next card after resolving a gate', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?attention=pending`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#approvals'));
+
+  const gate = page.locator(
+    '[data-recued-approvals-focus="approval-attention-1"]',
+  );
+  const ask = page.locator(
+    '[data-recued-approvals-focus="ask-attention-1"]',
+  );
+  await expect(gate).toBeVisible();
+  const approve = gate.getByRole('button', { name: 'Approve', exact: true });
+  await approve.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(gate).toHaveCount(0);
+  await expect(ask).toBeVisible();
+  await expect(ask).toHaveAttribute('tabindex', '-1');
+  await expect(ask).toBeFocused();
+});
+
+test('Approvals keeps a slow gate decision focus-owned and attached', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?attention=pending&attention_action_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#approvals'));
+
+  const gate = page.locator(
+    '[data-recued-approvals-focus="approval-attention-1"]',
+  );
+  const ask = page.locator(
+    '[data-recued-approvals-focus="ask-attention-1"]',
+  );
+  const approve = gate.getByRole('button', { name: 'Approve', exact: true });
+  await approve.focus();
+  await page.keyboard.press('Enter');
+
+  const approving = gate.getByRole('button', { name: 'Approving…', exact: true });
+  const reject = gate.getByRole('button', { name: 'Reject', exact: true });
+  await expect(approving).toHaveAttribute('aria-disabled', 'true');
+  await expect(approving).toHaveAttribute('aria-busy', 'true');
+  await expect(approving).not.toHaveAttribute('disabled');
+  await expect(approving).toBeFocused();
+  await expect(reject).toHaveAttribute('aria-disabled', 'true');
+  await expect(reject).not.toHaveAttribute('aria-busy');
+  await approving.dispatchEvent('click');
+  await approving.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('approval.resolve')),
+  ).toBe(1);
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    window.__app.setHash('#chat');
+  });
+
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'An approval action is still in progress. Leave Approvals anyway?',
+  );
+  await expect(page).toHaveURL(/#approvals$/);
+  await expect(approving).toBeFocused();
+
+  await expect(gate).toHaveCount(0);
+  await expect(ask).toBeFocused();
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  await expect(page).toHaveURL(/#chat$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Approvals keeps a slow ask answer focus-owned and attached', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?attention=pending&attention_action_response=slow`
+    + '&attention_action_delay_ms=2500',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#approvals'));
+
+  const ask = page.locator(
+    '[data-recued-approvals-focus="ask-attention-1"]',
+  );
+  const gate = page.locator(
+    '[data-recued-approvals-focus="approval-attention-1"]',
+  );
+  const pendingReads = await page.evaluate(
+    () => window.__app.rpcCallCount('notification.pending_asks'),
+  );
+  await ask.getByRole('button', { name: 'Approve', exact: true }).focus();
+  await page.keyboard.press('Enter');
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('notification.submitAnswer'),
+    ),
+  ).toBe(1);
+
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'notification.ask',
+      ask_id: 'ask-attention-live-repaint',
+      title: 'Another pending decision',
+      text: 'Keep the current answer attached while the queue refreshes.',
+      options: [{ id: 'ok', label: 'OK' }],
+      cursor: 74,
+    },
+  }));
+  await page.waitForFunction(
+    (previous) =>
+      window.__app.rpcCallCount('notification.pending_asks') > previous,
+    pendingReads,
+  );
+  const approving = ask.getByRole('button', {
+    name: 'Approving…',
+    exact: true,
+  });
+  const reject = ask.getByRole('button', { name: 'Reject', exact: true });
+  await expect(approving).toHaveAttribute('aria-disabled', 'true');
+  await expect(approving).toHaveAttribute('aria-busy', 'true');
+  await expect(approving).not.toHaveAttribute('disabled');
+  await expect(approving).toBeFocused();
+  await expect(reject).toHaveAttribute('aria-disabled', 'true');
+  await expect(reject).not.toHaveAttribute('aria-busy');
+  await approving.dispatchEvent('click');
+  await reject.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('notification.submitAnswer'),
+    ),
+  ).toBe(1);
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    window.__app.setHash('#chat');
+  });
+
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'An approval action is still in progress. Leave Approvals anyway?',
+  );
+  await expect(page).toHaveURL(/#approvals$/);
+  await expect(approving).toBeFocused();
+
+  await expect(ask).toHaveCount(0);
+  await expect(gate).toBeFocused();
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  await expect(page).toHaveURL(/#chat$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Approvals keeps a slow Chat plan decision focus-owned and attached', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?attention=plan&attention_action_response=slow`
+    + '&attention_action_delay_ms=2500',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#approvals'));
+
+  const plan = page.locator(
+    '[data-recued-approvals-focus="plan-attention-1"]',
+  );
+  await plan.getByRole('button', { name: 'Approve', exact: true }).focus();
+  await page.keyboard.press('Enter');
+
+  const approving = plan.getByRole('button', {
+    name: 'Approving…',
+    exact: true,
+  });
+  const reject = plan.getByRole('button', { name: 'Reject', exact: true });
+  await expect(approving).toHaveAttribute('aria-disabled', 'true');
+  await expect(approving).toHaveAttribute('aria-busy', 'true');
+  await expect(approving).not.toHaveAttribute('disabled');
+  await expect(approving).toBeFocused();
+  await expect(reject).toHaveAttribute('aria-disabled', 'true');
+  await expect(reject).not.toHaveAttribute('aria-busy');
+  await approving.dispatchEvent('click');
+  await reject.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('chat.plan.approve')),
+  ).toBe(1);
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    window.__app.setHash('#chat');
+  });
+
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'An approval action is still in progress. Leave Approvals anyway?',
+  );
+  await expect(page).toHaveURL(/#approvals$/);
+  await expect(approving).toBeFocused();
+
+  await expect(plan).toHaveCount(0);
+  const continuation = page.getByRole('link', {
+    name: 'Continue in Chat',
+    exact: true,
+  });
+  await expect(continuation).toBeVisible();
+  await expect(continuation).toBeFocused();
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  await expect(page).toHaveURL(/#chat$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Approvals returns a rejected decision to its exact retry action', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?attention=pending&approval_resolve_response=fail`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#approvals'));
+
+  const gate = page.locator(
+    '[data-recued-approvals-focus="approval-attention-1"]',
+  );
+  const reject = gate.getByRole('button', { name: 'Reject', exact: true });
+  await reject.focus();
+  await page.keyboard.press('Enter');
+
+  const error = gate.getByRole('alert');
+  await expect(error).toHaveText('The approval decision could not be saved.');
+  await expect(reject).toBeEnabled();
+  await expect(reject).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('approval.resolve'),
+    ),
+  ).toBe(2);
+});
+
+test('Approvals moves focus to the next card after answering an ask', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?attention=pending`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#approvals'));
+
+  const ask = page.locator(
+    '[data-recued-approvals-focus="ask-attention-1"]',
+  );
+  const gate = page.locator(
+    '[data-recued-approvals-focus="approval-attention-1"]',
+  );
+  await expect(ask).toBeVisible();
+  const approve = ask.getByRole('button', { name: 'Approve', exact: true });
+  await approve.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(ask).toHaveCount(0);
+  await expect(gate).toBeVisible();
+  await expect(gate).toHaveAttribute('tabindex', '-1');
+  await expect(gate).toBeFocused();
+});
+
+test('Approvals keeps an acknowledged ask retired when reconciliation fails', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?attention=pending&ask_answer_response=followup-list-fail`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#approvals'));
+
+  const ask = page.locator(
+    '[data-recued-approvals-focus="ask-attention-1"]',
+  );
+  const gate = page.locator(
+    '[data-recued-approvals-focus="approval-attention-1"]',
+  );
+  const pendingReadsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('notification.pending_asks'),
+  );
+  const approve = ask.getByRole('button', { name: 'Approve', exact: true });
+  await approve.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(ask).toHaveCount(0);
+  await expect(gate).toHaveAttribute('tabindex', '-1');
+  await expect(gate).toBeFocused();
+  const error = page.locator('[data-recued-approvals-error="error"]')
+    .filter({ hasText: 'answered ask queue' });
+  await expect(error).toHaveAttribute('role', 'alert');
+  await expect(error).toContainText(
+    'The answered ask queue could not be refreshed.',
+  );
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('notification.pending_asks'),
+    ),
+  ).toBe(pendingReadsBefore + 1);
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('notification.submitAnswer'),
+    ),
+  ).toBe(1);
+});
+
+test('Approvals returns a rejected ask answer to its exact retry option', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?attention=pending&ask_answer_response=fail`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#approvals'));
+
+  const ask = page.locator(
+    '[data-recued-approvals-focus="ask-attention-1"]',
+  );
+  const reject = ask.getByRole('button', { name: 'Reject', exact: true });
+  await reject.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(ask.getByRole('alert')).toHaveText(
+    'Could not submit — try again.',
+  );
+  await expect(reject).toBeEnabled();
+  await expect(reject).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('notification.submitAnswer'),
+    ),
+  ).toBe(2);
+});
+
+test('Approvals returns a rejected Chat plan to its exact retry action', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?attention=plan&plan_resolve_response=fail`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#approvals'));
+
+  const plan = page.locator(
+    '[data-recued-approvals-focus="plan-attention-1"]',
+  );
+  const approve = plan.getByRole('button', { name: 'Approve', exact: true });
+  await approve.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(plan.getByRole('alert')).toHaveText(
+    'The Chat plan decision could not be saved.',
+  );
+  await expect(approve).toBeEnabled();
+  await expect(approve).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('chat.plan.approve'),
+    ),
+  ).toBe(2);
+});
+
+test('Approvals keeps focus on destructive confirmation controls', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?attention=destructive`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#approvals'));
+
+  const gate = page.locator(
+    '[data-recued-approvals-focus="approval-attention-1"]',
+  );
+  const approve = gate.getByRole('button', { name: 'Approve', exact: true });
+  await approve.focus();
+  await page.keyboard.press('Enter');
+
+  const confirm = gate.getByRole('button', { name: 'Confirm', exact: true });
+  await expect(confirm).toBeVisible();
+  await expect(confirm).toBeFocused();
+
+  const listCalls = await page.evaluate(
+    () => window.__app.rpcCallCount('approval.list'),
+  );
+  await page.evaluate(() => {
+    window.__app.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'approval',
+        subkind: 'pending',
+        id: 'approval-attention-1',
+        cursor: 21,
+      },
+    });
+  });
+  await page.waitForFunction(
+    (previous) => window.__app.rpcCallCount('approval.list') > previous,
+    listCalls,
+  );
+  await expect(confirm).toBeFocused();
+
+  const cancel = gate.getByRole('button', { name: 'Cancel', exact: true });
+  await cancel.focus();
+  await page.keyboard.press('Enter');
+  await expect(approve).toBeVisible();
+  await expect(approve).toBeFocused();
+});
+
+test('Reception recovers destination inventory without losing query ownership', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?reception=pending`
+    + '&reception_destination_response=fail-once-slow-retry'
+    + '#reception',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const picker = page.getByRole('combobox', { name: 'Destination' });
+  await expect(picker).toBeVisible();
+  await picker.fill('Tas');
+  await picker.evaluate((input) => {
+    (input as HTMLInputElement).setSelectionRange(2, 2);
+  });
+  await expect(page.getByText('No destinations match.')).toHaveCount(0);
+
+  const failure = page.locator(
+    `[${RECEPTION_INBOX_DESTINATION_ERROR}="source_id"]`,
+  );
+  await expect(failure).toHaveAttribute('role', 'alert');
+  await expect(failure).toContainText('Could not load destinations:');
+  await expect(picker).toHaveCount(0);
+  const retry = page.locator(
+    `[${RECEPTION_INBOX_DESTINATION_RETRY}="source_id"]`,
+  );
+  await expect(retry).toBeFocused();
+
+  const callsBeforeRetry = await page.evaluate(
+    () => window.__app.rpcCallCount('work_entity.source.list'),
+  );
+  await page.keyboard.press('Enter');
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).toBeFocused();
+  await retry.dispatchEvent('click');
+  await retry.dispatchEvent('click');
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('work_entity.source.list'),
+  )).toBe(callsBeforeRetry + 1);
+
+  await expect(picker).toBeVisible();
+  await expect(picker).toHaveValue('Tas');
+  await expect(picker).toBeFocused();
+  expect(await picker.evaluate((input) =>
+    (input as HTMLInputElement).selectionStart)).toBe(2);
+  await expect(failure).toHaveCount(0);
+});
+
+test('Reception moves focus into a selected inbox detail and preserves it through refresh', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?reception=pending`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception'));
+
+  const row = page.locator(
+    `[${RECEPTION_INBOX_ROW}="hold-reception-2"]`,
+  );
+  await expect(row).toBeVisible();
+  await row.focus();
+  await page.keyboard.press('Enter');
+
+  const heading = page.locator(
+    `[${RECEPTION_INBOX_DETAIL_HEADING}="hold-reception-2"]`,
+  );
+  await expect(row).toHaveAttribute('aria-selected', 'true');
+  await expect(heading).toHaveText('Prepare the launch brief');
+  await expect(heading).toHaveAttribute('tabindex', '-1');
+  await expect(heading).toBeFocused();
+
+  const listCalls = await page.evaluate(
+    () => window.__app.rpcCallCount('reception.inbox.list'),
+  );
+  await page.evaluate(() => {
+    window.__app.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'reception_inbox',
+        op: 'approved',
+        hold_id: 'hold-reception-external',
+        cursor: 20,
+      },
+    });
+  });
+  await page.waitForFunction(
+    (previous) => window.__app.rpcCallCount('reception.inbox.list') > previous,
+    listCalls,
+  );
+  await expect(heading).toBeFocused();
+});
+
+test('Reception preserves an unsaved decision draft through refresh', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?reception=pending`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception'));
+
+  const title = page.getByLabel('Title', { exact: true });
+  const reason = page.getByLabel('Reject reason', { exact: true });
+  await expect(title).toBeVisible();
+  await expect(reason).toBeVisible();
+  await title.fill('Follow up with Morgan after review');
+  await reason.fill('Need the owner to confirm the account.');
+  await title.focus();
+  await title.evaluate((field: HTMLInputElement) => {
+    field.setSelectionRange(14, 14);
+  });
+
+  const listCalls = await page.evaluate(
+    () => window.__app.rpcCallCount('reception.inbox.list'),
+  );
+  await page.evaluate(() => {
+    window.__app.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'reception_inbox',
+        op: 'held',
+        hold_id: 'hold-reception-external',
+        cursor: 21,
+      },
+    });
+  });
+  await page.waitForFunction(
+    (previous) => window.__app.rpcCallCount('reception.inbox.list') > previous,
+    listCalls,
+  );
+
+  await expect(title).toHaveValue('Follow up with Morgan after review');
+  await expect(reason).toHaveValue('Need the owner to confirm the account.');
+  await expect(title).toBeFocused();
+  await expect.poll(() => title.evaluate((field: HTMLInputElement) => ({
+    start: field.selectionStart,
+    end: field.selectionEnd,
+  }))).toEqual({ start: 14, end: 14 });
+});
+
+test('Reception advances focus after approving a selected inbox item', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?reception=pending&reception_decision_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception'));
+
+  const firstRow = page.locator(
+    `[${RECEPTION_INBOX_ROW}="hold-reception-1"]`,
+  );
+  await expect(firstRow).toBeVisible();
+  await firstRow.focus();
+  await page.keyboard.press('Enter');
+
+  const firstHeading = page.locator(
+    `[${RECEPTION_INBOX_DETAIL_HEADING}="hold-reception-1"]`,
+  );
+  await expect(firstHeading).toBeFocused();
+  const approve = page.getByRole('button', { name: 'Approve', exact: true });
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+  });
+  await approve.focus();
+  await page.keyboard.press('Enter');
+
+  const approving = page.getByRole('button', {
+    name: 'Approving…',
+    exact: true,
+  });
+  await expect(approving).toBeFocused();
+  await expect(approving).not.toHaveAttribute('disabled');
+  await expect(approving).toHaveAttribute('aria-disabled', 'true');
+  await expect(approving).toHaveAttribute('aria-busy', 'true');
+  await page.evaluate(() => window.__app.setHash('#data'));
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A Reception action is still in progress. Leave Reception anyway?',
+  );
+  await expect(page).toHaveURL(/#reception$/);
+  await expect(firstRow).toHaveCount(0);
+  const nextRow = page.locator(
+    `[${RECEPTION_INBOX_ROW}="hold-reception-2"]`,
+  );
+  const nextHeading = page.locator(
+    `[${RECEPTION_INBOX_DETAIL_HEADING}="hold-reception-2"]`,
+  );
+  await expect(nextRow).toHaveAttribute('aria-selected', 'true');
+  await expect(nextHeading).toHaveText('Prepare the launch brief');
+  await expect(nextHeading).toBeFocused();
+  await expect(approving).toHaveCount(0);
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Reception keeps an acknowledged decision settled when refresh fails', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?reception=pending&reception_refresh_after_decision=fail`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception'));
+
+  const firstRow = page.locator(
+    `[${RECEPTION_INBOX_ROW}="hold-reception-1"]`,
+  );
+  await firstRow.focus();
+  await page.keyboard.press('Enter');
+  const approve = page.getByRole('button', { name: 'Approve', exact: true });
+  await approve.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(firstRow).toHaveCount(0);
+  await expect(page.getByRole('alert')).toHaveText(
+    "Decision saved, but the inbox couldn't refresh: Reception refresh unavailable.",
+  );
+  const nextRow = page.locator(
+    `[${RECEPTION_INBOX_ROW}="hold-reception-2"]`,
+  );
+  const nextHeading = page.locator(
+    `[${RECEPTION_INBOX_DETAIL_HEADING}="hold-reception-2"]`,
+  );
+  await expect(nextRow).toHaveAttribute('aria-selected', 'true');
+  await expect(nextHeading).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('reception.inbox.approve'),
+    ),
+  ).toBe(1);
+});
+
+test('Reception keeps manual Refresh focused and single-flight', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?reception=pending&reception_refresh_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception'));
+
+  const refresh = page.locator(`[${RECEPTION_INBOX_REFRESH}]`);
+  await expect(refresh).toHaveText('Refresh');
+  await expect(refresh).toBeEnabled();
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('reception.inbox.list'),
+  );
+  await refresh.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(refresh).toHaveText('Refreshing…');
+  await expect(refresh).toBeFocused();
+  await expect(refresh).not.toHaveAttribute('disabled');
+  await expect(refresh).toHaveAttribute('aria-disabled', 'true');
+  await expect(refresh).toHaveAttribute('aria-busy', 'true');
+  await refresh.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('reception.inbox.list'),
+    ),
+  ).toBe(before + 1);
+  await expect(refresh).toHaveText('Refresh');
+  await expect(refresh).toBeFocused();
+});
+
+test('Reception keeps inbox view switches focused, selected, and single-flight', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?reception=pending&reception_refresh_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception'));
+
+  const open = page.getByRole('button', { name: 'Open', exact: true });
+  const dismissed = page.getByRole('button', {
+    name: 'Dismissed / expired',
+    exact: true,
+  });
+  await expect(dismissed).toBeEnabled();
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('reception.inbox.list'),
+  );
+  await dismissed.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(dismissed).toHaveAttribute('aria-disabled', 'true');
+  await expect(dismissed).toHaveAttribute('aria-busy', 'true');
+  await expect(dismissed).not.toHaveAttribute('disabled');
+  await expect(dismissed).toBeFocused();
+  await dismissed.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('reception.inbox.list'),
+    ),
+  ).toBe(before + 1);
+
+  await expect(dismissed).toBeFocused();
+  await expect(dismissed).toHaveAttribute('aria-pressed', 'true');
+  await expect(open).toHaveAttribute('aria-pressed', 'false');
+});
+
+test('Reception Records lenses form one arrow-key keyboard stop', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception/records'));
+
+  const lenses = page.locator('[data-recued-reception-records-lens]');
+  const requests = page.locator(
+    '[data-recued-reception-records-lens="requests"]',
+  );
+  const responses = page.locator(
+    '[data-recued-reception-records-lens="responses"]',
+  );
+  await expect(requests).toHaveAttribute('role', 'tab');
+  await expect(requests).toHaveAttribute('aria-selected', 'true');
+  await expect(requests).toHaveAttribute('tabindex', '0');
+  expect(await lenses.evaluateAll((nodes) => nodes.filter(
+    (node) => node.getAttribute('tabindex') === '0',
+  ).length)).toBe(1);
+
+  await requests.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(responses).toHaveAttribute('aria-selected', 'true');
+  await expect(responses).toHaveAttribute('tabindex', '0');
+  await expect(responses).toBeFocused();
+  await expect(page.locator(
+    '[data-recued-reception-response-row="submission-0"]',
+  )).toBeVisible();
+
+  await page.keyboard.press('Home');
+  await expect(requests).toHaveAttribute('aria-selected', 'true');
+  await expect(requests).toBeFocused();
+});
+
+test('Reception Records filters retain focus and expose their selection', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(HARNESS_URL);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception/records'));
+
+  const allKinds = page.locator(
+    '[data-recued-reception-records-kind="all"]',
+  );
+  const bookings = page.locator(
+    '[data-recued-reception-records-kind="scheduling_link"]',
+  );
+  await expect(allKinds).toHaveAttribute('aria-pressed', 'true');
+  await expect(bookings).toHaveAttribute('aria-pressed', 'false');
+
+  await bookings.click();
+  await expect(bookings).toHaveAttribute('aria-pressed', 'true');
+  await expect(allKinds).toHaveAttribute('aria-pressed', 'false');
+  await expect(bookings).toBeFocused();
+});
+
+test('Reception Records keeps Retry focused and single-flight', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?reception_records_response=fail-once-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception/records'));
+
+  const error = page.locator(`[${RECEPTION_RECORDS_ERROR}]`);
+  await expect(error).toHaveAttribute('role', 'alert');
+  const retry = page.locator(`[${RECEPTION_RECORDS_RETRY}]`);
+  await expect(retry).toHaveText('Retry');
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('reception.record.list'),
+  );
+  await retry.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toBeFocused();
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await retry.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('reception.record.list'),
+    ),
+  ).toBe(before + 1);
+  await expect(error).toHaveCount(0);
+  await expect(page.locator(
+    `[${RECEPTION_RECORDS_KIND}="all"]`,
+  )).toBeFocused();
+});
+
+test('Reception Records returns a failed Retry to its alert action', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?reception_records_response=fail-twice-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception/records'));
+
+  const retry = page.locator(`[${RECEPTION_RECORDS_RETRY}]`);
+  await expect(retry).toHaveText('Retry');
+  await retry.focus();
+  await page.keyboard.press('Enter');
+  await expect(retry).toHaveText('Retrying…');
+
+  await expect(retry).toHaveText('Retry');
+  await expect(retry).toBeFocused();
+  await expect(page.locator(
+    `[${RECEPTION_RECORDS_ERROR}]`,
+  )).toHaveAttribute('role', 'alert');
+});
+
+test('Reception Responses moves focus into detail and back to its row', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception/records'));
+  await page.locator(
+    '[data-recued-reception-records-lens="responses"]',
+  ).click();
+
+  const row = page.locator(
+    '[data-recued-reception-response-row="submission-0"] button',
+  );
+  await row.click();
+
+  const detail = page.locator(
+    '[data-recued-reception-response-detail="submission-0"]',
+  );
+  const heading = detail.getByRole('heading', { level: 2 });
+  await expect(heading).toHaveText('visitor-0@example.test');
+  await expect(heading).toBeFocused();
+
+  await detail.getByRole('button', { name: 'Back to form responses' }).click();
+  await expect(row).toBeFocused();
+});
+
+test('Reception Responses pagination keeps a useful focus owner', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception/records'));
+  await page.locator(
+    '[data-recued-reception-records-lens="responses"]',
+  ).click();
+
+  const loadMore = page.getByRole('button', { name: 'Load more' });
+  await loadMore.click();
+  await expect(page.locator(
+    '[data-recued-reception-response-row="submission-1"]',
+  )).toBeVisible();
+  await expect(loadMore).toBeFocused();
+
+  await loadMore.click();
+  const finalRow = page.locator(
+    '[data-recued-reception-response-row="submission-2"] button',
+  );
+  await expect(finalRow).toBeVisible();
+  await expect(loadMore).toHaveCount(0);
+  await expect(finalRow).toBeFocused();
+});
+
+test('Reception Responses advances focus into the automation picker', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?data=form-responses-paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception/records'));
+  await page.locator(
+    '[data-recued-reception-records-lens="responses"]',
+  ).click();
+  await page.locator(
+    '[data-recued-reception-response-row="submission-0"] button',
+  ).click();
+
+  const discover = page.locator(
+    '.reception-responses-automation-actions '
+      + '[data-recued-reception-response-action="discover"]',
+  );
+  await expect(discover).toHaveAccessibleName('Run this response');
+  await discover.focus();
+  const readsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('recipe.list'),
+  );
+  await page.evaluate((actionAttr) => {
+    const selector = `.reception-responses-automation-actions [${actionAttr}="discover"]`;
+    document.querySelector<HTMLElement>(selector)?.click();
+    document.querySelector<HTMLElement>(selector)?.click();
+  }, 'data-recued-reception-response-action');
+
+  await expect(discover).toHaveText('Finding automations…');
+  await expect(discover).toHaveAttribute('aria-disabled', 'true');
+  await expect(discover).toHaveAttribute('aria-busy', 'true');
+  await expect(discover).not.toHaveAttribute('disabled');
+  await expect(discover).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('recipe.list')),
+  ).toBe(readsBefore + 1);
+
+  const pickerHeading = page.locator(
+    '[data-recued-reception-response-picker="ready"]',
+  ).getByRole('heading', { level: 3 });
+  await expect(pickerHeading).toHaveText('Run this response now');
+  await expect(pickerHeading).toBeFocused();
+});
+
+test('Reception Responses keeps list Retry focused and single-flight', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=form-responses-paged&reception_responses_response=fail-once-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception/records'));
+  await page.locator(
+    '[data-recued-reception-records-lens="responses"]',
+  ).click();
+
+  const error = page.locator(`[${RECEPTION_RESPONSES_ERROR}]`);
+  const retry = page.locator(`[${RECEPTION_RESPONSES_RETRY}]`);
+  await expect(error).toHaveAttribute('role', 'alert');
+  await expect(retry).toHaveText('Retry');
+  await retry.focus();
+  const readsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('form_response.list'),
+  );
+  await page.evaluate((retryAttr) => {
+    document.querySelector<HTMLElement>(`[${retryAttr}]`)?.click();
+    document.querySelector<HTMLElement>(`[${retryAttr}]`)?.click();
+  }, RECEPTION_RESPONSES_RETRY);
+
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('form_response.list')),
+  ).toBe(readsBefore + 1);
+
+  await expect(error).toHaveCount(0);
+  await expect(page.getByRole('heading', {
+    name: /Form responses/,
+    level: 2,
+  })).toBeFocused();
+  await expect(page.locator(
+    '[data-recued-reception-response-row="submission-0"]',
+  )).toBeVisible();
+});
+
+test('Reception Responses returns a failed list Retry to its alert action', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=form-responses-paged&reception_responses_response=fail-twice-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception/records'));
+  await page.locator(
+    '[data-recued-reception-records-lens="responses"]',
+  ).click();
+
+  const retry = page.locator(`[${RECEPTION_RESPONSES_RETRY}]`);
+  await expect(retry).toHaveText('Retry');
+  await retry.focus();
+  await page.keyboard.press('Enter');
+  await expect(retry).toHaveText('Retrying…');
+
+  await expect(retry).toHaveText('Retry');
+  await expect(retry).toBeFocused();
+  await expect(page.locator(
+    `[${RECEPTION_RESPONSES_ERROR}]`,
+  )).toHaveAttribute('role', 'alert');
+});
+
+test('Reception Responses keeps detail Retry focused and single-flight', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=form-responses-paged&reception_response_detail=fail-once-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception/records'));
+  await page.locator(
+    '[data-recued-reception-records-lens="responses"]',
+  ).click();
+  await page.locator(
+    '[data-recued-reception-response-row="submission-0"] button',
+  ).click();
+
+  const error = page.locator(`[${RECEPTION_RESPONSES_ERROR}]`);
+  const retry = page.locator(`[${RECEPTION_RESPONSE_DETAIL_RETRY}]`);
+  await expect(error).toHaveAttribute('role', 'alert');
+  await expect(retry).toHaveText('Retry');
+  await retry.focus();
+  const readsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('form_response.get'),
+  );
+  await page.evaluate((retryAttr) => {
+    document.querySelector<HTMLElement>(`[${retryAttr}]`)?.click();
+    document.querySelector<HTMLElement>(`[${retryAttr}]`)?.click();
+  }, RECEPTION_RESPONSE_DETAIL_RETRY);
+
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('form_response.get')),
+  ).toBe(readsBefore + 1);
+
+  const heading = page.locator(
+    '[data-recued-reception-response-detail="submission-0"]',
+  ).getByRole('heading', { level: 2 });
+  await expect(heading).toHaveText('visitor-0@example.test');
+  await expect(heading).toBeFocused();
+  await expect(error).toHaveCount(0);
+});
+
+test('Reception Responses returns a failed detail Retry to its alert action', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?data=form-responses-paged&reception_response_detail=fail-twice-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#reception/records'));
+  await page.locator(
+    '[data-recued-reception-records-lens="responses"]',
+  ).click();
+  await page.locator(
+    '[data-recued-reception-response-row="submission-0"] button',
+  ).click();
+
+  const retry = page.locator(`[${RECEPTION_RESPONSE_DETAIL_RETRY}]`);
+  await expect(retry).toHaveText('Retry');
+  await retry.focus();
+  await page.keyboard.press('Enter');
+  await expect(retry).toHaveText('Retrying…');
+
+  await expect(retry).toHaveText('Retry');
+  await expect(retry).toBeFocused();
+  await expect(page.locator(
+    `[${RECEPTION_RESPONSES_ERROR}]`,
+  )).toHaveAttribute('role', 'alert');
+
+  await page.getByRole('button', {
+    name: 'Back to form responses',
+  }).click();
+  await expect(page.locator(
+    `[${RECEPTION_RESPONSES_ERROR}]`,
+  )).toHaveCount(0);
+  await expect(page.locator(
+    '[data-recued-reception-response-row="submission-0"] button',
+  )).toBeFocused();
+});
+
+test('Settings Backup & Recovery hands focus into and back from each entry flow', async ({ page }) => {
+  await page.evaluate(() => window.__app.setHash('#settings/backup'));
+
+  const backup = page.locator(`[${ARCHIVE_BACKUP_START}]`);
+  await backup.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator(`[${ARCHIVE_BACKUP_MNEMONIC}]`)).toBeFocused();
+
+  let cancel = page.locator(`[${ARCHIVE_BACKUP_CANCEL}]`);
+  await cancel.focus();
+  await page.keyboard.press('Enter');
+  await expect(backup).toBeFocused();
+
+  const restore = page.locator(`[${ARCHIVE_RESTORE_START}]`);
+  await restore.focus();
+  await page.keyboard.press('Enter');
+  const restoreEntry = page.locator(
+    `[${ARCHIVE_RESTORE_UPLOAD_INPUT}], [${ARCHIVE_RESTORE_PATH}]`,
+  ).first();
+  await expect(restoreEntry).toBeFocused();
+
+  cancel = page.locator(`[${ARCHIVE_BACKUP_CANCEL}]`);
+  await cancel.focus();
+  await page.keyboard.press('Enter');
+  await expect(restore).toBeFocused();
+});
+
+test('Settings Backup keeps a keyboard-owned export on its live progress', async ({ page }) => {
+  await page.evaluate(() => window.__app.setHash('#settings/backup'));
+  await page.locator(`[${ARCHIVE_BACKUP_START}]`).click();
+  await page.locator(`[${ARCHIVE_BACKUP_MNEMONIC}]`).fill(
+    `${'abandon '.repeat(23)}art`,
+  );
+
+  const run = page.locator(`[${ARCHIVE_BACKUP_RUN}]`);
+  await run.focus();
+  await page.keyboard.press('Enter');
+
+  const progress = page.locator(`[${ARCHIVE_BACKUP_PROGRESS}]`);
+  await expect(progress).toHaveAttribute('role', 'progressbar');
+  await expect(progress).toHaveAttribute('tabindex', '-1');
+  await expect(progress).toBeFocused();
+});
+
+test('Settings Restore keeps a keyboard-owned preview on its busy status', async ({ page }) => {
+  await page.evaluate(() => window.__app.setHash('#settings/backup'));
+  await page.locator(`[${ARCHIVE_RESTORE_START}]`).click();
+  await page.locator(`[${ARCHIVE_RESTORE_PATH}]`).fill(
+    'exports/recued-2026-06-25.recued.archive',
+  );
+  await page.locator(`[${ARCHIVE_RESTORE_MNEMONIC}]`).fill(
+    `${'abandon '.repeat(23)}art`,
+  );
+
+  const preview = page.locator(`[${ARCHIVE_RESTORE_PREVIEW}]`);
+  await preview.focus();
+  await page.keyboard.press('Enter');
+
+  const busy = page.locator(`[${ARCHIVE_BACKUP_BUSY}]`);
+  await expect(busy).toHaveText('Reading the backup…');
+  await expect(busy).toHaveAttribute('tabindex', '-1');
+  await expect(busy).toBeFocused();
+});
+
+test('Settings Restore keeps its destructive arm focused through confirmation', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?archive=restore-preview`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/backup'));
+  await page.locator(`[${ARCHIVE_RESTORE_START}]`).click();
+  await page.locator(`[${ARCHIVE_RESTORE_PATH}]`).fill(
+    'exports/recued-2026-06-25.recued.archive',
+  );
+  await page.locator(`[${ARCHIVE_RESTORE_MNEMONIC}]`).fill(
+    `${'abandon '.repeat(23)}art`,
+  );
+  await page.locator(`[${ARCHIVE_RESTORE_PREVIEW}]`).click();
+
+  const arm = page.locator(`[${ARCHIVE_RESTORE_ARM}]`);
+  await expect(arm).toBeVisible();
+  await arm.focus();
+  await page.keyboard.press('Space');
+
+  await expect(arm).toBeChecked();
+  await expect(arm).toBeFocused();
+});
+
+test('Settings Restore keeps a keyboard-owned commit on truthful live status', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?archive=restore-preview`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/backup'));
+  await page.locator(`[${ARCHIVE_RESTORE_START}]`).click();
+  await page.locator(`[${ARCHIVE_RESTORE_PATH}]`).fill(
+    'exports/recued-2026-06-25.recued.archive',
+  );
+  await page.locator(`[${ARCHIVE_RESTORE_MNEMONIC}]`).fill(
+    `${'abandon '.repeat(23)}art`,
+  );
+  await page.locator(`[${ARCHIVE_RESTORE_PREVIEW}]`).click();
+  await page.locator(`[${ARCHIVE_RESTORE_ARM}]`).check();
+
+  const commit = page.locator(`[${ARCHIVE_RESTORE_COMMIT}]`);
+  await commit.focus();
+  await page.keyboard.press('Enter');
+
+  const busy = page.locator(`[${ARCHIVE_BACKUP_BUSY}]`);
+  await expect(busy).toHaveText('Restoring the backup…');
+  await expect(busy).toHaveAttribute('tabindex', '-1');
+  await expect(busy).toBeFocused();
+});
+
+test('Settings Passport keeps its keyboard-owned export on live status', async ({ page }) => {
+  await page.evaluate(() => window.__app.setHash('#settings/backup'));
+
+  const start = page.locator(`[${ARCHIVE_PASSPORT_START}]`);
+  await start.focus();
+  await page.keyboard.press('Enter');
+
+  const busy = page.locator(`[${ARCHIVE_BACKUP_BUSY}]`);
+  await expect(busy).toHaveText('Signing your identity passport…');
+  await expect(busy).toHaveAttribute('tabindex', '-1');
+  await expect(busy).toBeFocused();
+});
+
+test('Settings Transparency retains its pending preference on route leave', async ({ page }) => {
+  await page.evaluate(() => window.__app.setHash('#settings/privacy'));
+
+  const toggle = page.locator(
+    `[${TRANSPARENCY_TOGGLE}="ui.transparency.class.orchestration"]`,
+  );
+  await expect(toggle).not.toBeChecked();
+  const writesBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('prefs.set'),
+  );
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+  });
+
+  await toggle.focus();
+  await page.keyboard.press('Space');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('prefs.set')),
+  ).toBe(writesBefore + 1);
+  await page.evaluate(() => window.__app.setHash('#chat'));
+
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A transparency setting is still updating. Leave Settings anyway?',
+  );
+  await expect(page).toHaveURL(/#settings\/privacy$/);
+  await expect(toggle).toBeChecked();
+  await expect(toggle).toHaveAttribute('aria-disabled', 'true');
+  await expect(toggle).toHaveAttribute('aria-busy', 'true');
+  await expect(toggle).not.toHaveAttribute('disabled');
+  await expect(toggle).toBeFocused();
+  await toggle.evaluate((checkbox) => {
+    checkbox.click();
+    checkbox.click();
+  });
+  await expect(toggle).toBeChecked();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('prefs.set')),
+  ).toBe(writesBefore + 1);
+});
+
+test('Settings Learning keeps its pending preference truthful, focused, and single-flight', async ({ page }) => {
+  await page.evaluate(() => window.__app.setHash('#settings/privacy'));
+
+  const toggle = page.locator(`[${LEARNING_TOGGLE}]`);
+  const initiallyChecked = await toggle.isChecked();
+  const writesBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('prefs.set'),
+  );
+
+  await toggle.focus();
+  await page.keyboard.press('Space');
+  await expect(toggle).toBeChecked({ checked: !initiallyChecked });
+  await expect(toggle).toHaveAttribute('aria-disabled', 'true');
+  await expect(toggle).toHaveAttribute('aria-busy', 'true');
+  await expect(toggle).not.toHaveAttribute('disabled');
+  await expect(toggle).toBeFocused();
+
+  await toggle.evaluate((checkbox) => {
+    checkbox.click();
+    checkbox.click();
+  });
+  await expect(toggle).toBeChecked({ checked: !initiallyChecked });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('prefs.set')),
+  ).toBe(writesBefore + 1);
+});
+
+test('Settings Learning owns a keyboard Forget through confirmation and removal', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?privacy=learning-cases&learning_forget_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/privacy'));
+
+  const forget = page.locator(`[${LEARNING_FORGET}="learning-case-1"]`);
+  await expect(forget).toHaveText('Forget');
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+  });
+  await forget.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(forget).toHaveText('Tap again to forget');
+  await expect(forget).toBeFocused();
+  await page.keyboard.press('Enter');
+
+  await expect(forget).toHaveText('Forgetting...');
+  await expect(forget).toHaveAttribute('aria-disabled', 'true');
+  await expect(forget).toHaveAttribute('aria-busy', 'true');
+  await expect(forget).not.toHaveAttribute('disabled');
+  await expect(forget).toBeFocused();
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A learning change is still updating. Leave Settings anyway?',
+  );
+  await expect(page).toHaveURL(/#settings\/privacy$/);
+  const competingDraft = page.locator(
+    `[${LEARNING_DRAFT}="learning-case-1"]`,
+  );
+  await expect(competingDraft).toHaveAttribute('aria-disabled', 'true');
+  await expect(competingDraft).not.toHaveAttribute('disabled');
+  await competingDraft.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('chat.execution.draft_recipe'),
+    ),
+  ).toBe(0);
+  await forget.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('chat.execution.forget'),
+    ),
+  ).toBe(1);
+
+  const empty = page.locator(`[${LEARNING_CASES_EMPTY}]`);
+  await expect(empty).toBeVisible();
+  await expect(empty).toHaveAttribute('tabindex', '-1');
+  await expect(empty).toBeFocused();
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  await expect(page).toHaveURL(/#chat$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Settings Learning keeps a failed Forget beside its focused case', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?privacy=learning-cases&learning_forget_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/privacy'));
+
+  const forget = page.locator(`[${LEARNING_FORGET}="learning-case-1"]`);
+  await forget.focus();
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Enter');
+  await expect(forget).toHaveText('Forgetting...');
+
+  await expect(page.locator(`[${LEARNING_FORGET_ERROR}]`)).toContainText(
+    'Learning history is temporarily unavailable.',
+  );
+  await expect(page.locator(`[${LEARNING_CASE}="learning-case-1"]`))
+    .toBeVisible();
+  await expect(page.locator(`[${LEARNING_CASES_ERROR}]`)).toHaveCount(0);
+  await expect(forget).toHaveText('Tap again to forget');
+  await expect(forget).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('chat.execution.forget'),
+    ),
+  ).toBe(1);
+});
+
+test('Settings Learning retains a keyboard-owned recipe draft through failure', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?privacy=learning-cases&learning_draft_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/privacy'));
+
+  const draft = page.locator(`[${LEARNING_DRAFT}="learning-case-1"]`);
+  await draft.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator(`[${LEARNING_DRAFT_CONFIRM}]`)).toBeVisible();
+  await expect(draft).toHaveText('Yes, write the draft');
+  await expect(draft).toBeFocused();
+
+  const prompt = page.locator(`[${LEARNING_DRAFT_PROMPT}]`);
+  await prompt.fill('Run it every Monday');
+  await draft.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(draft).toHaveText('Asking your AI...');
+  await expect(draft).toHaveAttribute('aria-disabled', 'true');
+  await expect(draft).toHaveAttribute('aria-busy', 'true');
+  await expect(draft).not.toHaveAttribute('disabled');
+  await expect(draft).toBeFocused();
+  await expect(prompt).toHaveValue('Run it every Monday');
+  const competingForget = page.locator(
+    `[${LEARNING_FORGET}="learning-case-1"]`,
+  );
+  await expect(competingForget).toHaveAttribute('aria-disabled', 'true');
+  await expect(competingForget).not.toHaveAttribute('disabled');
+  await competingForget.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('chat.execution.forget'),
+    ),
+  ).toBe(0);
+  await draft.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('chat.execution.draft_recipe'),
+    ),
+  ).toBe(1);
+
+  await expect(page.locator(`[${LEARNING_DRAFT_ERROR}]`)).toContainText(
+    'Recipe drafting is temporarily unavailable.',
+  );
+  await expect(draft).toHaveText('Yes, write the draft');
+  await expect(draft).toBeFocused();
+  await expect(prompt).toHaveValue('Run it every Monday');
+});
+
+test('Settings Learning retries a finished draft handoff without asking AI again', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?privacy=learning-cases&learning_draft_handoff=fail-once`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/privacy'));
+
+  const draft = page.locator(`[${LEARNING_DRAFT}="learning-case-1"]`);
+  await draft.focus();
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Enter');
+
+  await expect(page.locator(`[${LEARNING_DRAFT_ERROR}]`)).toContainText(
+    'finished draft',
+  );
+  await expect(draft).toHaveText('Open finished draft');
+  await expect(draft).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('chat.execution.draft_recipe'),
+    ),
+  ).toBe(1);
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    window.__app.setHash('#chat');
+  });
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'Discard the finished recipe draft?',
+  );
+  await expect(page).toHaveURL(/#settings\/privacy$/);
+
+  await page.keyboard.press('Enter');
+  await expect(page.locator(`[${LEARNING_DRAFT_ROUTE}]`)).toBeVisible();
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('chat.execution.draft_recipe'),
+    ),
+  ).toBe(1);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Settings Privacy owns the Clear-this-browser safety confirmation', async ({ page }) => {
+  await page.evaluate(() => window.__app.setHash('#settings/privacy'));
+
+  const clear = page.locator(`[${CLEAR_THIS_BROWSER_CLEAR}]`);
+  await clear.focus();
+  await page.keyboard.press('Enter');
+
+  const cancel = page.locator(`[${CLEAR_THIS_BROWSER_CANCEL}]`);
+  await expect(page.locator(`[${CLEAR_THIS_BROWSER_CONFIRM}]`)).toBeVisible();
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(clear).toBeVisible();
+  await expect(clear).toBeFocused();
+});
+
+test('Settings Privacy owns browser clearing through live completion', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?browser_clear=slow`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/privacy'));
+
+  await page.locator(`[${CLEAR_THIS_BROWSER_CLEAR}]`).click();
+  const confirm = page.locator(`[${CLEAR_THIS_BROWSER_CONFIRM}]`);
+  await confirm.focus();
+  await page.keyboard.press('Enter');
+
+  const status = page.locator(`[${CLEAR_THIS_BROWSER_STATUS}]`);
+  await expect(status).toHaveText('Clearing…');
+  await expect(status).toHaveAttribute('role', 'status');
+  await expect(status).toHaveAttribute('tabindex', '-1');
+  await expect(status).toBeFocused();
+
+  await expect(status).toContainText('Reload to re-pair');
+  await expect(status).toHaveAttribute('role', 'status');
+  await expect(status).toBeFocused();
+  await expect(page.locator(`[${CLEAR_THIS_BROWSER_RELOAD}]`)).toBeVisible();
+});
+
+test('Settings Privacy retains keyboard ownership through browser-clear recovery', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?browser_clear=fail-slow`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/privacy'));
+
+  const clear = page.locator(`[${CLEAR_THIS_BROWSER_CLEAR}]`);
+  await clear.focus();
+  await page.keyboard.press('Enter');
+  const confirm = page.locator(`[${CLEAR_THIS_BROWSER_CONFIRM}]`);
+  await confirm.focus();
+  await page.keyboard.press('Enter');
+
+  const status = page.locator(`[${CLEAR_THIS_BROWSER_STATUS}]`);
+  await expect(status).toHaveText('Clearing…');
+  await expect(status).toBeFocused();
+  await expect(status).toContainText(
+    'Browser key storage is temporarily unavailable.',
+  );
+  await expect(status).toHaveAttribute('role', 'alert');
+  await expect(status).toHaveAttribute('tabindex', '-1');
+  await expect(status).toBeFocused();
+
+  const retry = page.locator(`[${CLEAR_THIS_BROWSER_RETRY}]`);
+  await retry.focus();
+  await page.keyboard.press('Enter');
+  const cancel = page.locator(`[${CLEAR_THIS_BROWSER_CANCEL}]`);
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(clear).toBeFocused();
+});
+
+test('Settings reveals the active section in its mobile overflow rail', async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 800 });
+  await page.evaluate(() => window.__app.setHash('#settings/server'));
+
+  const nav = page.locator(`[${SETTINGS_NAV}]`);
+  const server = page.locator(`[${SETTINGS_NAV_ITEM}="server"]`);
+  await expect(server).toHaveAttribute('aria-current', 'page');
+  await expect.poll(async () => server.evaluate((item, navAttr) => {
+    const rail = item.closest(`[${navAttr}]`);
+    if (rail === null) return false;
+    const railRect = rail.getBoundingClientRect();
+    const itemRect = item.getBoundingClientRect();
+    // Scroll alignment can finish on a fractional CSS pixel at the strip edge.
+    return itemRect.left >= railRect.left - 1
+      && itemRect.right <= railRect.right + 1;
+  }, SETTINGS_NAV)).toBe(true);
+  expect(await nav.evaluate((rail) => rail.scrollLeft)).toBeGreaterThan(0);
+});
+
+test('Settings Updates Check stays owned through failure and retry', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?updates=fail-once-slow-retry`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/updates'));
+
+  const check = page.locator(`[${UPDATES_CHECK}]`);
+  const status = page.locator(`[${UPDATES_STATUS}]`);
+  const error = page.locator(`[${UPDATES_ERROR}]`);
+  await expect(check).toHaveText('Check for updates');
+  await expect(status).toContainText('latest version');
+  const checksBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('update.check'),
+  );
+
+  await check.focus();
+  await page.keyboard.press('Enter');
+  await expect(check).toHaveText('Checking…');
+  await expect(check).toHaveAttribute('aria-disabled', 'true');
+  await expect(check).toHaveAttribute('aria-busy', 'true');
+  await expect(check).not.toHaveAttribute('disabled');
+  await expect(check).toBeFocused();
+  await check.dispatchEvent('click');
+  await check.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('update.check')),
+  ).toBe(checksBefore + 1);
+
+  await expect(error).toContainText('update check could not be completed');
+  await expect(check).toHaveText('Check for updates');
+  await expect(check).not.toHaveAttribute('aria-disabled');
+  await expect(check).not.toHaveAttribute('aria-busy');
+  await expect(check).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(status).toContainText('latest version');
+  await expect(error).toBeHidden();
+  await expect(check).toBeFocused();
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('update.check')),
+  ).toBe(checksBefore + 2);
+});
+
+test('Settings Updates retains a pending rollback when navigation is declined', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?updates=ready`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/updates'));
+
+  const rollback = page.locator(`[${UPDATES_ROLLBACK}]`);
+  const html = page.locator('html');
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+  });
+
+  await rollback.focus();
+  await page.keyboard.press('Enter');
+  await expect(rollback).toHaveText('Rolling back…');
+  await expect(rollback).not.toHaveAttribute('disabled');
+  await expect(rollback).toHaveAttribute('aria-disabled', 'true');
+  await expect(rollback).toHaveAttribute('aria-busy', 'true');
+  await expect(rollback).toBeFocused();
+  await rollback.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('update.rollback')),
+  ).toBe(1);
+  await page.evaluate(() => window.__app.setHash('#chat'));
+
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A server update change is still in progress. Leave Settings anyway?',
+  );
+  await expect(page).toHaveURL(/#settings\/updates$/);
+  await expect(rollback).toHaveText('Rolling back…');
+});
+
+test('Settings Updates retains focus and ownership through a deferred apply', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?updates=available-slow-apply`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/updates'));
+
+  const apply = page.locator(`[${UPDATES_APPLY}]`);
+  const html = page.locator('html');
+  await expect(apply).toHaveText('Update now');
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+  });
+
+  await apply.focus();
+  await page.keyboard.press('Enter');
+  await expect(apply).toHaveText('Updating…');
+  await expect(apply).not.toHaveAttribute('disabled');
+  await expect(apply).toHaveAttribute('aria-disabled', 'true');
+  await expect(apply).toHaveAttribute('aria-busy', 'true');
+  await expect(apply).toBeFocused();
+  await apply.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('update.apply')),
+  ).toBe(1);
+
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A server update change is still in progress. Leave Settings anyway?',
+  );
+  await expect(page).toHaveURL(/#settings\/updates$/);
+
+  await expect(apply).toHaveText('Update now');
+  await expect(apply).not.toHaveAttribute('aria-disabled');
+  await expect(apply).not.toHaveAttribute('aria-busy');
+  await expect(apply).toBeFocused();
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  await expect(page).toHaveURL(/#chat$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Settings Account Connect owns its pending command and refreshed binding', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?account=unbound&account_bind_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/account'));
+
+  const connect = page.locator('[data-recued-account-binding-connect]');
+  await expect(connect).toHaveText('Connect your recued.com account');
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+  });
+  await connect.focus();
+  await page.keyboard.press('Enter');
+  await expect(connect).toHaveText('Connecting…');
+  await expect(connect).toHaveAttribute('aria-disabled', 'true');
+  await expect(connect).toHaveAttribute('aria-busy', 'true');
+  await expect(connect).not.toHaveAttribute('disabled');
+  await expect(connect).toBeFocused();
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'An account setting is still updating. Leave Settings anyway?',
+  );
+  await expect(page).toHaveURL(/#settings\/account$/);
+  await connect.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('account.bind')),
+  ).toBe(1);
+
+  await expect(connect).toHaveText('Refresh binding');
+  await expect(connect).not.toHaveAttribute('aria-disabled');
+  await expect(connect).not.toHaveAttribute('aria-busy');
+  await expect(connect).toBeFocused();
+  await expect(page.locator('[data-recued-account-binding-action-message]'))
+    .toHaveText('Server bound to this recued.com account.');
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  await expect(page).toHaveURL(/#chat$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Settings Account Connect failures return to the exact command', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?account=unbound&account_bind_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/account'));
+
+  const connect = page.locator('[data-recued-account-binding-connect]');
+  await connect.focus();
+  await page.keyboard.press('Enter');
+  await expect(connect).toHaveText('Connecting…');
+
+  await expect(page.locator('[data-recued-account-binding-error="action"]'))
+    .toHaveText('Account binding unavailable.');
+  await expect(connect).toHaveText('Connect your recued.com account');
+  await expect(connect).not.toHaveAttribute('aria-disabled');
+  await expect(connect).not.toHaveAttribute('aria-busy');
+  await expect(connect).not.toHaveAttribute('disabled');
+  await expect(connect).toBeFocused();
+});
+
+test('Settings Account conflicts start safely and Cancel returns to Refresh binding', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?account=conflict`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/account'));
+
+  const connect = page.locator('[data-recued-account-binding-connect]');
+  await expect(connect).toHaveText('Refresh binding');
+  await connect.focus();
+  await page.keyboard.press('Enter');
+
+  const dialog = page.getByRole('alertdialog', { name: 'Binding conflict' });
+  const cancel = dialog.getByRole('button', { name: 'Cancel' });
+  await expect(dialog).toBeVisible();
+  await expect(cancel).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(dialog).toHaveCount(0);
+  await expect(connect).toBeFocused();
+  await expect(page.locator('[data-recued-account-binding-action-message]'))
+    .toHaveText('Rebind cancelled.');
+});
+
+test('Settings Account Confirm rebind owns its pending command and refreshed binding', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?account=conflict&account_rebind_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/account'));
+
+  const connect = page.locator('[data-recued-account-binding-connect]');
+  await connect.focus();
+  await page.keyboard.press('Enter');
+
+  const dialog = page.getByRole('alertdialog', { name: 'Binding conflict' });
+  const confirm = dialog.locator(
+    '[data-recued-account-binding-confirm-rebind]',
+  );
+  const cancel = dialog.locator(
+    '[data-recued-account-binding-cancel-rebind]',
+  );
+  await confirm.focus();
+  await page.keyboard.press('Enter');
+  await expect(confirm).toHaveText('Rebinding…');
+  await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+  await expect(confirm).toHaveAttribute('aria-busy', 'true');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
+  await expect(cancel).toHaveAttribute('aria-disabled', 'true');
+  await expect(cancel).not.toHaveAttribute('disabled');
+  await confirm.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('account.bind')),
+  ).toBe(2);
+
+  await expect(dialog).toHaveCount(0);
+  await expect(connect).toHaveText('Refresh binding');
+  await expect(connect).toBeFocused();
+  await expect(page.locator('[data-recued-account-binding-action-message]'))
+    .toHaveText('Server rebound to this recued.com account.');
+});
+
+test('Settings Account Confirm rebind failures return to the exact command', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?account=conflict&account_rebind_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/account'));
+
+  const connect = page.locator('[data-recued-account-binding-connect]');
+  await connect.focus();
+  await page.keyboard.press('Enter');
+
+  const dialog = page.getByRole('alertdialog', { name: 'Binding conflict' });
+  const confirm = dialog.locator(
+    '[data-recued-account-binding-confirm-rebind]',
+  );
+  await confirm.focus();
+  await page.keyboard.press('Enter');
+  await expect(confirm).toHaveText('Rebinding…');
+  await expect(confirm).toBeFocused();
+
+  await expect(page.locator('[data-recued-account-binding-error="action"]'))
+    .toHaveText('Account rebind unavailable.');
+  await expect(dialog).toBeVisible();
+  await expect(confirm).toHaveText('Confirm rebind');
+  await expect(confirm).not.toHaveAttribute('aria-disabled');
+  await expect(confirm).not.toHaveAttribute('aria-busy');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
+});
+
+test('Settings Account Disconnect starts safely and Cancel returns to its command', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?account=conflict`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/account'));
+
+  const disconnect = page.locator('[data-recued-account-binding-unbind]');
+  await disconnect.focus();
+  await page.keyboard.press('Enter');
+
+  const dialog = page.getByRole('alertdialog', {
+    name: 'Disconnect this server?',
+  });
+  const cancel = dialog.locator(
+    '[data-recued-account-binding-cancel-unbind]',
+  );
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText(
+    'Your browser stays signed in, and you can reconnect the server later.',
+  );
+  await expect(cancel).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('account.unbind'),
+  )).toBe(0);
+
+  await page.keyboard.press('Enter');
+  await expect(dialog).toHaveCount(0);
+  await expect(disconnect).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('account.unbind'),
+  )).toBe(0);
+});
+
+test('Settings Account Confirm Disconnect owns its pending command and next action', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?account=conflict&account_unbind_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/account'));
+
+  await page.locator('[data-recued-account-binding-unbind]').click();
+  const dialog = page.getByRole('alertdialog', {
+    name: 'Disconnect this server?',
+  });
+  const confirm = dialog.locator(
+    '[data-recued-account-binding-confirm-unbind]',
+  );
+  const cancel = dialog.locator(
+    '[data-recued-account-binding-cancel-unbind]',
+  );
+  await confirm.focus();
+  await page.keyboard.press('Enter');
+  await expect(confirm).toHaveText('Disconnecting…');
+  await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+  await expect(confirm).toHaveAttribute('aria-busy', 'true');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
+  await expect(cancel).toHaveAttribute('aria-disabled', 'true');
+  await expect(cancel).not.toHaveAttribute('disabled');
+  await confirm.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('account.unbind')),
+  ).toBe(1);
+
+  await expect(dialog).toHaveCount(0);
+  const connect = page.locator('[data-recued-account-binding-connect]');
+  await expect(connect).toHaveText('Connect your recued.com account');
+  await expect(connect).toBeFocused();
+  await expect(page.locator('[data-recued-account-binding-action-message]'))
+    .toHaveText('Server disconnected from recued.com.');
+  await expect(page.locator('[data-recued-account-binding-session]'))
+    .toHaveText('Signed in as morgan@example.test');
+});
+
+test('Settings Account Confirm Disconnect failures return to the exact command', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?account=conflict&account_unbind_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/account'));
+
+  await page.locator('[data-recued-account-binding-unbind]').click();
+  const dialog = page.getByRole('alertdialog', {
+    name: 'Disconnect this server?',
+  });
+  const confirm = dialog.locator(
+    '[data-recued-account-binding-confirm-unbind]',
+  );
+  await confirm.focus();
+  await page.keyboard.press('Enter');
+  await expect(confirm).toHaveText('Disconnecting…');
+  await expect(confirm).toBeFocused();
+
+  await expect(page.locator('[data-recued-account-binding-error="action"]'))
+    .toHaveText('Account disconnect unavailable.');
+  await expect(dialog).toBeVisible();
+  await expect(confirm).toHaveText('Disconnect server');
+  await expect(confirm).not.toHaveAttribute('aria-disabled');
+  await expect(confirm).not.toHaveAttribute('aria-busy');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('account.unbind'),
+  )).toBe(1);
+});
+
+test('Settings Account Sign out owns its pending command and next action', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?account=bound&account_signout_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/account'));
+
+  const signOut = page.locator('[data-recued-account-binding-signout]');
+  await signOut.focus();
+  await page.keyboard.press('Enter');
+  await expect(signOut).toHaveText('Signing out…');
+  await expect(signOut).toHaveAttribute('aria-disabled', 'true');
+  await expect(signOut).toHaveAttribute('aria-busy', 'true');
+  await expect(signOut).not.toHaveAttribute('disabled');
+  await expect(signOut).toBeFocused();
+  await signOut.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.accountSignOutCount?.()),
+  ).toBe(1);
+
+  await expect(signOut).toHaveCount(0);
+  const connect = page.locator('[data-recued-account-binding-connect]');
+  await expect(connect).toBeFocused();
+  await expect(page.locator('[data-recued-account-binding-session]'))
+    .toHaveCount(0);
+  await expect(page.locator('[data-recued-account-binding-action-message]'))
+    .toHaveText(
+      'Signed out of recued.com on this browser. Your server pairing is unchanged.',
+    );
+});
+
+test('Settings Account Sign out failures return to the exact command', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?account=bound&account_signout_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/account'));
+
+  const signOut = page.locator('[data-recued-account-binding-signout]');
+  await signOut.focus();
+  await page.keyboard.press('Enter');
+  await expect(signOut).toHaveText('Signing out…');
+  await expect(signOut).toBeFocused();
+
+  await expect(page.locator('[data-recued-account-binding-error="action"]'))
+    .toHaveText('Account sign out unavailable.');
+  await expect(signOut).toHaveText('Sign out');
+  await expect(signOut).not.toHaveAttribute('aria-disabled');
+  await expect(signOut).not.toHaveAttribute('aria-busy');
+  await expect(signOut).not.toHaveAttribute('disabled');
+  await expect(signOut).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.accountSignOutCount?.(),
+  )).toBe(1);
+});
+
+test('Settings Account read failures gate mutations and recover in place', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?account=read-fail-once-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/account'));
+
+  const errors = page.locator('[data-recued-account-binding-error]');
+  await expect(errors).toHaveCount(2);
+  await expect(errors).toContainText([
+    'Account binding status unavailable.',
+    'Account plan status unavailable.',
+  ]);
+  expect(await page.evaluate(
+    () => window.__app.accountSessionReadCount?.(),
+  )).toBe(0);
+  const connect = page.locator('[data-recued-account-binding-connect]');
+  await expect(connect).toHaveCount(0);
+
+  const retry = page.locator('[data-recued-account-binding-retry]');
+  await retry.focus();
+  await page.keyboard.press('Enter');
+  await expect(retry).toHaveText('Retrying account status…');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await retry.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('account.bindingStatus')),
+  ).toBe(2);
+  await expect(connect).toHaveCount(0);
+
+  await expect(errors).toHaveCount(0);
+  await expect(retry).toHaveCount(0);
+  await expect(connect).toHaveText('Connect your recued.com account');
+  await expect(connect).toBeFocused();
+  await expect(page.locator('[data-recued-account-binding-session]'))
+    .toHaveCount(0);
+  expect(await page.evaluate(
+    () => window.__app.accountSessionReadCount?.(),
+  )).toBe(0);
+});
+
+test('Settings Account retry failures return to the exact recovery command', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?account=read-fail-twice-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/account'));
+
+  const errors = page.locator('[data-recued-account-binding-error]');
+  await expect(errors).toHaveCount(2);
+  await expect(errors).toContainText([
+    'Account binding status unavailable.',
+    'Account plan status unavailable.',
+  ]);
+  expect(await page.evaluate(
+    () => window.__app.accountSessionReadCount?.(),
+  )).toBe(0);
+  const retry = page.locator('[data-recued-account-binding-retry]');
+  await retry.focus();
+  await page.keyboard.press('Enter');
+  await expect(retry).toHaveText('Retrying account status…');
+  await expect(retry).toBeFocused();
+
+  await expect(errors).toHaveCount(1);
+  await expect(errors.filter({
+    hasText: 'Account binding status unavailable.',
+  })).toHaveCount(1);
+  await expect(retry).toHaveText('Retry account status');
+  await expect(retry).not.toHaveAttribute('aria-disabled');
+  await expect(retry).not.toHaveAttribute('aria-busy');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await expect(page.locator('[data-recued-account-binding-connect]'))
+    .toHaveCount(0);
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('account.bindingStatus'),
+  )).toBe(2);
+  expect(await page.evaluate(
+    () => window.__app.accountSessionReadCount?.(),
+  )).toBe(0);
+});
+
+test('Settings device revoke confirmation starts safely and returns to its row', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?devices=ready`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/devices'));
+
+  const currentRow = page.locator(
+    '.account-devices-row[data-instance-id="device-current"]',
+  );
+  await expect(currentRow).toContainText('This device');
+  await expect(currentRow.locator('[data-action="revoke-device"]')).toHaveCount(0);
+
+  const revoke = page.locator(
+    '[data-action="revoke-device"][data-instance-id="device-laptop"]',
+  );
+  await revoke.focus();
+  await page.keyboard.press('Enter');
+
+  const dialog = page.getByRole('alertdialog', {
+    name: 'Confirm revoke Travel laptop',
+  });
+  const cancel = dialog.getByRole('button', { name: 'Cancel' });
+  await expect(dialog).toBeVisible();
+  await expect(cancel).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(dialog).toHaveCount(0);
+  await expect(revoke).toBeFocused();
+});
+
+test('Settings device revoke owns its pending command and success receipt', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?devices=ready&device_revoke_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/devices'));
+
+  const revoke = page.locator(
+    '[data-action="revoke-device"][data-instance-id="device-laptop"]',
+  );
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+  });
+  await revoke.click();
+  const confirm = page.locator(
+    '[data-action="confirm-revoke"][data-instance-id="device-laptop"]',
+  );
+  await confirm.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(confirm).toHaveText('Revoking…');
+  await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+  await expect(confirm).toHaveAttribute('aria-busy', 'true');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A device revoke is still updating. Leave Settings anyway?',
+  );
+  await expect(page).toHaveURL(/#settings\/devices$/);
+  await confirm.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('pair.revoke')),
+  ).toBe(1);
+
+  await expect(revoke).toHaveCount(0);
+  const receipt = page.locator('[data-device-revoke-success]');
+  await expect(receipt).toContainText('Device revoked.');
+  await expect(receipt).toBeFocused();
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  await expect(page).toHaveURL(/#chat$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Settings failed device revokes return to the exact retry action', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?devices=ready&device_revoke_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/devices'));
+
+  await page.locator(
+    '[data-action="revoke-device"][data-instance-id="device-laptop"]',
+  ).click();
+  const confirm = page.locator(
+    '[data-action="confirm-revoke"][data-instance-id="device-laptop"]',
+  );
+  await confirm.focus();
+  await page.keyboard.press('Enter');
+  await expect(confirm).toHaveText('Revoking…');
+
+  await expect(page.locator('.account-devices-confirm-error'))
+    .toHaveText(
+      'Could not revoke this device: Device revoke unavailable. '
+        + 'Try again, or revoke from a different paired device.',
+    );
+  await expect(confirm).toContainText('Yes, revoke');
+  await expect(confirm).not.toHaveAttribute('aria-disabled');
+  await expect(confirm).not.toHaveAttribute('aria-busy');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
+});
+
+test('Settings Devices Retry owns recovery and advances into the roster', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?devices=fail-once-slow-retry`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/devices'));
+
+  const retry = page.locator('[data-action="retry-list"]');
+  await retry.focus();
+  await page.keyboard.press('Enter');
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await retry.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('pair.list')),
+  ).toBe(2);
+
+  await expect(retry).toHaveCount(0);
+  await expect(page.locator(
+    '[data-action="revoke-device"][data-instance-id="device-laptop"]',
+  )).toBeFocused();
+});
+
+test('Settings Devices returns a failed roster Retry to its alert action', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?devices=fail-twice-slow-retry`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/devices'));
+
+  const retry = page.locator('[data-action="retry-list"]');
+  await retry.focus();
+  await page.keyboard.press('Enter');
+  await expect(retry).toHaveText('Retrying…');
+
+  await expect(retry).toHaveText('Retry');
+  await expect(retry).not.toHaveAttribute('aria-disabled');
+  await expect(retry).not.toHaveAttribute('aria-busy');
+  await expect(retry).toBeFocused();
+  await expect(page.locator('[data-error="list"]')).toHaveAttribute(
+    'role',
+    'alert',
+  );
+});
+
+test('Settings notification switches retain exact mutation ownership', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?notifications=ready&notifications_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/notifications'));
+
+  const toggle = page.locator(
+    '[data-recued-notifications-row-toggle="bridge"]'
+      + '[data-recued-notifications-axis="notification"]',
+  );
+  await expect(toggle).toHaveText('Off');
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(toggle).toHaveText('Updating…');
+  await expect(toggle).toHaveAttribute('aria-disabled', 'true');
+  await expect(toggle).toHaveAttribute('aria-busy', 'true');
+  await expect(toggle).not.toHaveAttribute('disabled');
+  await expect(toggle).toBeFocused();
+  await toggle.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('notifications.set_channel')),
+  ).toBe(1);
+
+  await expect(toggle).toHaveText('On');
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  await expect(toggle).not.toHaveAttribute('aria-disabled');
+  await expect(toggle).not.toHaveAttribute('aria-busy');
+  await expect(toggle).toBeFocused();
+});
+
+test('Settings notification switch failures return to the exact control', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?notifications=ready&notifications_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/notifications'));
+
+  const toggle = page.locator(
+    '[data-recued-notifications-row-toggle="bridge"]'
+      + '[data-recued-notifications-axis="notification"]',
+  );
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(toggle).toHaveText('Updating…');
+  await expect(toggle).toBeFocused();
+
+  await expect(page.getByRole('alert'))
+    .toContainText('Notification setting unavailable.');
+  await expect(toggle).toHaveText('Off');
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  await expect(toggle).not.toHaveAttribute('aria-disabled');
+  await expect(toggle).not.toHaveAttribute('aria-busy');
+  await expect(toggle).toBeFocused();
+});
+
+test('Settings keeps a pending notification write attached on route leave', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?notifications=ready&notifications_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/notifications'));
+
+  const toggle = page.locator(
+    '[data-recued-notifications-row-toggle="bridge"]'
+      + '[data-recued-notifications-axis="notification"]',
+  );
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(toggle).toHaveText('Updating…');
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    window.__app.setHash('#chat');
+  });
+
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A notification setting is still updating. Leave Settings anyway?',
+  );
+  await expect(page).toHaveURL(/#settings\/notifications$/);
+  await expect(toggle).toBeVisible();
+  await expect(toggle).toBeFocused();
+  await expect(toggle).toHaveText('On');
+
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  await expect(page).toHaveURL(/#chat$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Settings per-browser notification switches retain mutation ownership', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?notifications=ready&notifications_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/notifications'));
+
+  const toggle = page.locator(
+    '[data-recued-notifications-bridge-mode-btn="bridge-main"]'
+      + '[data-recued-notifications-bridge-mode="notification"]',
+  );
+  await expect(toggle).toHaveText('Notifications Off');
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(toggle).toHaveText('Updating…');
+  await expect(toggle).toHaveAttribute('aria-disabled', 'true');
+  await expect(toggle).toHaveAttribute('aria-busy', 'true');
+  await expect(toggle).not.toHaveAttribute('disabled');
+  await expect(toggle).toBeFocused();
+  await toggle.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('notifications.set_bridge_mode')),
+  ).toBe(1);
+
+  await expect(toggle).toHaveText('Notifications On');
+  await expect(toggle).toHaveAttribute('aria-checked', 'true');
+  await expect(toggle).not.toHaveAttribute('aria-disabled');
+  await expect(toggle).not.toHaveAttribute('aria-busy');
+  await expect(toggle).toBeFocused();
+});
+
+test('Settings per-browser switch failures return to the exact control', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?notifications=ready&notifications_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/notifications'));
+
+  const toggle = page.locator(
+    '[data-recued-notifications-bridge-mode-btn="bridge-main"]'
+      + '[data-recued-notifications-bridge-mode="notification"]',
+  );
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(toggle).toHaveText('Updating…');
+  await expect(toggle).toBeFocused();
+
+  await expect(page.getByRole('alert'))
+    .toContainText('Browser notification setting unavailable.');
+  await expect(toggle).toHaveText('Notifications Off');
+  await expect(toggle).toHaveAttribute('aria-checked', 'false');
+  await expect(toggle).not.toHaveAttribute('aria-disabled');
+  await expect(toggle).not.toHaveAttribute('aria-busy');
+  await expect(toggle).toBeFocused();
+});
+
+test('Settings notification phrase Save retains mutation ownership', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?notifications=ready&notifications_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/notifications'));
+
+  const input = page.locator('[data-recued-notifications-phrase-input]');
+  const save = page.locator('[data-recued-notifications-phrase-save]');
+  await input.fill('green fox');
+  await save.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(input).toHaveValue('green fox');
+  await expect(input).toBeDisabled();
+  await expect(save).toHaveText('Saving…');
+  await expect(save).toHaveAttribute('aria-disabled', 'true');
+  await expect(save).toHaveAttribute('aria-busy', 'true');
+  await expect(save).not.toHaveAttribute('disabled');
+  await expect(save).toBeFocused();
+  await save.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => (
+      window.__app.rpcCallCount('notifications.set_verification_phrase')
+    )),
+  ).toBe(1);
+
+  await expect(input).toHaveValue('green fox');
+  await expect(input).not.toBeDisabled();
+  await expect(save).toHaveText('Save');
+  await expect(save).not.toHaveAttribute('aria-disabled');
+  await expect(save).not.toHaveAttribute('aria-busy');
+  await expect(save).toBeFocused();
+});
+
+test('Settings notification phrase failures retain the draft and Save', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?notifications=ready&notifications_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/notifications'));
+
+  const input = page.locator('[data-recued-notifications-phrase-input]');
+  const save = page.locator('[data-recued-notifications-phrase-save]');
+  await input.fill('green fox');
+  await save.focus();
+  await page.keyboard.press('Enter');
+  await expect(save).toHaveText('Saving…');
+  await expect(save).toBeFocused();
+
+  await expect(page.getByRole('alert').filter({
+    hasText: 'Verification phrase unavailable.',
+  })).toBeVisible();
+  await expect(input).toHaveValue('green fox');
+  await expect(input).not.toBeDisabled();
+  await expect(save).toHaveText('Save');
+  await expect(save).not.toHaveAttribute('aria-disabled');
+  await expect(save).not.toHaveAttribute('aria-busy');
+  await expect(save).toBeFocused();
+});
+
+test('Settings guards an unsaved notification phrase until it is reverted', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?notifications=ready`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/notifications'));
+
+  const input = page.locator('[data-recued-notifications-phrase-input]');
+  await expect(input).toHaveValue('blue lantern');
+  await input.fill('unsaved phrase');
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    window.__app.setHash('#chat');
+  });
+
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'Discard the unsaved notification verification phrase?',
+  );
+  await expect(page).toHaveURL(/#settings\/notifications$/);
+  await expect(input).toHaveValue('unsaved phrase');
+
+  // Returning exactly to the authoritative value is no longer dirty and
+  // should not force a needless confirmation.
+  await input.fill('blue lantern');
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  await expect(page).toHaveURL(/#chat$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Settings notification Retry owns loading and advances into recovered controls', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?notifications=fail-once-slow-retry`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/notifications'));
+
+  await expect(page.getByRole('alert'))
+    .toContainText('Notification channels unavailable.');
+  const retry = page.locator('[data-recued-notifications-retry]');
+  await retry.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(retry).toHaveText('Retrying…');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await retry.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('notifications.describe')),
+  ).toBe(2);
+
+  await expect(retry).toHaveCount(0);
+  const firstSwitch = page.locator(
+    '[data-recued-notifications-row-toggle="bridge"]'
+      + '[data-recued-notifications-axis="notification"]',
+  );
+  await expect(firstSwitch).toHaveText('Off');
+  await expect(firstSwitch).toBeFocused();
+});
+
+test('Settings Server tabs form one arrow-key keyboard stop', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#settings/server'));
+
+  const tabs = page.locator(`[${SETTINGS_SUBTAB}]`);
+  const exposure = page.locator(`[${SETTINGS_SUBTAB}="exposure"]`);
+  const reachability = page.locator(`[${SETTINGS_SUBTAB}="reachability"]`);
+  const maintenance = page.locator(`[${SETTINGS_SUBTAB}="maintenance"]`);
+  await expect(exposure).toHaveAttribute('tabindex', '0');
+  expect(await tabs.evaluateAll((nodes) => nodes.filter(
+    (node) => node.getAttribute('tabindex') === '0',
+  ).length)).toBe(1);
+
+  await exposure.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(reachability).toHaveAttribute('aria-selected', 'true');
+  await expect(reachability).toHaveAttribute('tabindex', '0');
+  await expect(reachability).toBeFocused();
+
+  await page.keyboard.press('End');
+  await expect(maintenance).toHaveAttribute('aria-selected', 'true');
+  await expect(maintenance).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(exposure).toHaveAttribute('aria-selected', 'true');
+  await expect(exposure).toBeFocused();
+});
+
+test('Settings AI Models tabs form one arrow-key keyboard stop', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+
+  const tabs = page.locator(`[${AI_MODELS_TAB}]`);
+  const preference = page.locator(`[${AI_MODELS_TAB}="preference"]`);
+  const providers = page.locator(`[${AI_MODELS_TAB}="providers"]`);
+  const usage = page.locator(`[${AI_MODELS_TAB}="usage"]`);
+  await expect(preference).toHaveAttribute('aria-selected', 'true');
+  await expect(preference).toHaveAttribute('tabindex', '0');
+  expect(await tabs.evaluateAll((nodes) => nodes.filter(
+    (node) => node.getAttribute('tabindex') === '0',
+  ).length)).toBe(1);
+
+  await preference.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(providers).toHaveAttribute('aria-selected', 'true');
+  await expect(providers).toHaveAttribute('tabindex', '0');
+  await expect(providers).toBeFocused();
+
+  const providerDraft = page.locator(
+    '[data-recued-ai-models-control="slot_2"]',
+  ).getByRole('textbox', { name: 'Model' });
+  await providerDraft.fill('draft-model-id');
+
+  await providers.focus();
+  await page.keyboard.press('End');
+  await expect(usage).toHaveAttribute('aria-selected', 'true');
+  await expect(usage).toBeFocused();
+  await page.keyboard.press('Home');
+  await expect(preference).toHaveAttribute('aria-selected', 'true');
+  await expect(preference).toBeFocused();
+  await page.keyboard.press('ArrowRight');
+  await expect(providers).toBeFocused();
+  await expect(providerDraft).toHaveValue('draft-model-id');
+});
+
+test('Settings AI Models preference keeps the selected source focused', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?ai=two&ai_default_model_pref_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+
+  const quality = page.locator(
+    '[data-recued-ai-models-model-pref="slot_2"]',
+  );
+  await expect(quality).toHaveAttribute('aria-pressed', 'false');
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+  });
+  await quality.focus();
+  await page.keyboard.press('Enter');
+  await expect(quality).toHaveText('Selecting Thinking · anthropic…');
+  await expect(quality).toHaveAttribute('aria-disabled', 'true');
+  await expect(quality).toHaveAttribute('aria-busy', 'true');
+  await expect(quality).not.toHaveAttribute('disabled');
+  await expect(quality).toBeFocused();
+  await page.evaluate(() => window.__app.setHash('#data'));
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'An AI model setting is still updating. Leave Settings anyway?',
+  );
+  await expect(page).toHaveURL(/#settings\/ai-models$/);
+  await quality.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('chat.default_model_pref.set'),
+    ),
+  ).toBe(1);
+
+  await expect(quality).toHaveAttribute('aria-pressed', 'true');
+  await expect(quality).toContainText('Selected:');
+  await expect(quality).not.toHaveAttribute('aria-disabled');
+  await expect(quality).not.toHaveAttribute('aria-busy');
+  await expect(quality).toBeFocused();
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Settings AI Models preference failures return to the exact source', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?ai=two&ai_default_model_pref_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+
+  const quality = page.locator(
+    '[data-recued-ai-models-model-pref="slot_2"]',
+  );
+  await quality.focus();
+  await page.keyboard.press('Enter');
+  await expect(quality).toHaveText('Selecting Thinking · anthropic…');
+  await expect(quality).toBeFocused();
+
+  await expect(page.locator('[data-recued-ai-models-action-error]'))
+    .toHaveText('Default model preference unavailable.');
+  await expect(quality).toHaveText('Thinking · anthropic');
+  await expect(quality).toHaveAttribute('aria-pressed', 'false');
+  await expect(quality).not.toHaveAttribute('aria-disabled');
+  await expect(quality).not.toHaveAttribute('aria-busy');
+  await expect(quality).not.toHaveAttribute('disabled');
+  await expect(quality).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('chat.default_model_pref.set'),
+  )).toBe(1);
+});
+
+test('Settings AI Models catalog modes serialize their shared map', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?ai=two&ai_pool=entry&ai_catalog_mode_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+
+  const slotOne = page.locator(
+    '[data-recued-ai-models-catalog-mode="slot_1"]',
+  );
+  const slotTwo = page.locator(
+    '[data-recued-ai-models-catalog-mode="slot_2"]',
+  );
+  await slotOne.focus();
+  await slotOne.selectOption('index');
+
+  expect(await page.evaluate(() => {
+    const one = document.querySelector<HTMLSelectElement>(
+      '[data-recued-ai-models-catalog-mode="slot_1"]',
+    )!;
+    const two = document.querySelector<HTMLSelectElement>(
+      '[data-recued-ai-models-catalog-mode="slot_2"]',
+    )!;
+    const pending = {
+      oneValue: one.value,
+      oneAriaDisabled: one.getAttribute('aria-disabled'),
+      oneAriaBusy: one.getAttribute('aria-busy'),
+      oneNativeDisabled: one.disabled,
+      oneFocused: document.activeElement === one,
+      twoAriaDisabled: two.getAttribute('aria-disabled'),
+    };
+    one.value = 'full';
+    one.dispatchEvent(new Event('change', { bubbles: true }));
+    two.value = 'lean-core';
+    two.dispatchEvent(new Event('change', { bubbles: true }));
+    return {
+      ...pending,
+      oneAfterCompetingChange: one.value,
+      twoAfterCompetingChange: two.value,
+    };
+  })).toEqual({
+    oneValue: 'index',
+    oneAriaDisabled: 'true',
+    oneAriaBusy: 'true',
+    oneNativeDisabled: false,
+    oneFocused: true,
+    twoAriaDisabled: 'true',
+    oneAfterCompetingChange: 'index',
+    twoAfterCompetingChange: '',
+  });
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('server.setChatCatalogMode'),
+    ),
+  ).toBe(1);
+
+  await expect(slotOne).toHaveValue('index');
+  await expect(slotOne).not.toHaveAttribute('aria-disabled');
+  await expect(slotOne).not.toHaveAttribute('aria-busy');
+  await expect(slotTwo).not.toHaveAttribute('aria-disabled');
+  await expect(slotOne).toBeFocused();
+});
+
+test('Settings AI Models catalog mode failures return to the exact select', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?ai=two&ai_catalog_mode_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+
+  const slotOne = page.locator(
+    '[data-recued-ai-models-catalog-mode="slot_1"]',
+  );
+  await slotOne.focus();
+  await slotOne.selectOption('full');
+  expect(await slotOne.evaluate((select) => ({
+    value: select.value,
+    ariaDisabled: select.getAttribute('aria-disabled'),
+    ariaBusy: select.getAttribute('aria-busy'),
+    focused: document.activeElement === select,
+  }))).toEqual({
+    value: 'full',
+    ariaDisabled: 'true',
+    ariaBusy: 'true',
+    focused: true,
+  });
+
+  await expect(page.locator('[data-recued-ai-models-action-error]'))
+    .toHaveText('Chat catalog mode update unavailable.');
+  await expect(slotOne).toHaveValue('');
+  await expect(slotOne).not.toHaveAttribute('aria-disabled');
+  await expect(slotOne).not.toHaveAttribute('aria-busy');
+  await expect(slotOne).not.toBeDisabled();
+  await expect(slotOne).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setChatCatalogMode'),
+  )).toBe(1);
+});
+
+test('Settings AI Models usage actions preserve the budget draft and focus', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?ai_usage=ready`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="usage"]`).click();
+
+  const budget = page.getByRole('spinbutton', { name: 'Daily tokens' });
+  await expect(budget).toHaveValue('5000');
+  await budget.fill('1234');
+
+  const policy = page.locator(
+    '[data-recued-ai-models-control="ai_policy"]',
+  );
+  const allow = policy.getByRole('button', { name: 'Allow background BYOK' });
+  await allow.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(
+    () => window.__app.rpcCallCount('housekeeping.config.write') === 1,
+  );
+  const disable = policy.getByRole('button', {
+    name: 'Disable background BYOK',
+  });
+  await expect(budget).toHaveValue('1234');
+  await expect(disable).toBeFocused();
+
+  const save = page.getByRole('button', { name: 'Save budget' });
+  await save.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(
+    () => window.__app.rpcCallCount('server.setConfigField') === 1,
+  );
+  await expect(budget).toHaveValue('1234');
+  await expect(save).toBeFocused();
+
+  const pause = policy.getByRole('button', { name: 'Pause 1h' });
+  await pause.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(
+    () => window.__app.rpcCallCount('housekeeping.config.write') === 2,
+  );
+  await expect(policy).toContainText('Pause-AI until');
+  await expect(pause).toBeFocused();
+
+  const resume = policy.getByRole('button', { name: 'Resume AI' });
+  await resume.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(
+    () => window.__app.rpcCallCount('housekeeping.config.write') === 3,
+  );
+  await expect(policy).toContainText('Pause-AI: not active.');
+  await expect(resume).toBeFocused();
+});
+
+test('Settings AI Models policy actions serialize their shared configuration', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?ai_usage=ready&ai_policy_response=slow`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="usage"]`).click();
+
+  const policy = page.locator(
+    '[data-recued-ai-models-control="ai_policy"]',
+  );
+  const allow = page.locator(
+    '[data-recued-ai-models-allow-byok-toggle="background"]',
+  );
+  const pause = page.locator('[data-recued-ai-models-pause="1h"]');
+  const resume = page.locator('[data-recued-ai-models-pause="resume"]');
+  await allow.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(allow).toHaveText('Updating background BYOK…');
+  await expect(allow).toHaveAttribute('aria-disabled', 'true');
+  await expect(allow).toHaveAttribute('aria-busy', 'true');
+  await expect(allow).not.toHaveAttribute('disabled');
+  await expect(allow).toBeFocused();
+  await expect(pause).toHaveAttribute('aria-disabled', 'true');
+  await expect(resume).toHaveAttribute('aria-disabled', 'true');
+  await pause.evaluate((button) => button.click());
+  await resume.evaluate((button) => button.click());
+  await allow.evaluate((button) => button.click());
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('housekeeping.config.write'),
+    ),
+  ).toBe(1);
+
+  await expect(allow).toHaveText('Disable background BYOK');
+  await expect(allow).not.toHaveAttribute('aria-disabled');
+  await expect(allow).not.toHaveAttribute('aria-busy');
+  await expect(pause).not.toHaveAttribute('aria-disabled');
+  await expect(resume).not.toHaveAttribute('aria-disabled');
+  await expect(allow).toBeFocused();
+
+  await pause.focus();
+  await page.keyboard.press('Enter');
+  await expect(pause).toHaveText('Pausing AI…');
+  await expect(pause).toHaveAttribute('aria-busy', 'true');
+  await expect(pause).toBeFocused();
+  await resume.evaluate((button) => button.click());
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('housekeeping.config.write'),
+    ),
+  ).toBe(2);
+  await expect(policy).toContainText('Pause-AI until');
+  await expect(pause).toHaveText('Pause 1h');
+  await expect(pause).not.toHaveAttribute('aria-busy');
+  await expect(pause).toBeFocused();
+
+  await resume.focus();
+  await page.keyboard.press('Enter');
+  await expect(resume).toHaveText('Resuming AI…');
+  await expect(resume).toHaveAttribute('aria-busy', 'true');
+  await expect(resume).toBeFocused();
+  await pause.evaluate((button) => button.click());
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('housekeeping.config.write'),
+    ),
+  ).toBe(3);
+  await expect(policy).toContainText('Pause-AI: not active.');
+  await expect(resume).toHaveText('Resume AI');
+  await expect(resume).not.toHaveAttribute('aria-busy');
+  await expect(resume).toBeFocused();
+});
+
+test('Settings AI Models policy failures return to the exact command', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?ai_usage=ready&ai_policy_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="usage"]`).click();
+
+  const policy = page.locator(
+    '[data-recued-ai-models-control="ai_policy"]',
+  );
+  const allow = page.locator(
+    '[data-recued-ai-models-allow-byok-toggle="background"]',
+  );
+  await allow.focus();
+  await page.keyboard.press('Enter');
+  await expect(allow).toHaveText('Updating background BYOK…');
+  await expect(allow).toBeFocused();
+
+  await expect(page.locator('[data-recued-ai-models-action-error]'))
+    .toHaveText('AI usage policy update unavailable.');
+  await expect(policy).toContainText('Background BYOK: free pool only.');
+  await expect(allow).toHaveText('Allow background BYOK');
+  await expect(allow).not.toHaveAttribute('aria-disabled');
+  await expect(allow).not.toHaveAttribute('aria-busy');
+  await expect(allow).not.toHaveAttribute('disabled');
+  await expect(allow).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('housekeeping.config.write'),
+  )).toBe(1);
+});
+
+test('Settings AI Models budget Save owns its pending mutation', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?ai_usage=ready&ai_budget_save_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="usage"]`).click();
+
+  const budget = page.locator(
+    '[data-recued-ai-models-budget-input="llm.budget"]',
+  );
+  const save = page.locator(
+    '[data-recued-ai-models-budget-save="llm.budget"]',
+  );
+  await budget.fill('1234');
+  await save.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(save).toHaveText('Saving budget…');
+  await expect(save).toHaveAttribute('aria-disabled', 'true');
+  await expect(save).toHaveAttribute('aria-busy', 'true');
+  await expect(save).not.toHaveAttribute('disabled');
+  await expect(save).toBeFocused();
+  await expect(budget).toHaveAttribute('readonly', '');
+  await save.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('server.setConfigField'),
+    ),
+  ).toBe(1);
+
+  await expect(save).toHaveText('Save budget');
+  await expect(save).not.toHaveAttribute('aria-disabled');
+  await expect(save).not.toHaveAttribute('aria-busy');
+  await expect(save).toBeFocused();
+  await expect(budget).not.toHaveAttribute('readonly');
+  await expect(budget).toHaveValue('1234');
+});
+
+test('Settings AI Models budget failures preserve the exact retry draft', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?ai_usage=ready&ai_budget_save_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="usage"]`).click();
+
+  const budget = page.locator(
+    '[data-recued-ai-models-budget-input="llm.budget"]',
+  );
+  const save = page.locator(
+    '[data-recued-ai-models-budget-save="llm.budget"]',
+  );
+  await budget.fill('4321');
+  await save.focus();
+  await page.keyboard.press('Enter');
+  await expect(save).toHaveText('Saving budget…');
+  await expect(save).toBeFocused();
+
+  await expect(page.locator('[data-recued-ai-models-action-error]'))
+    .toHaveText('AI budget save unavailable.');
+  await expect(budget).toHaveValue('4321');
+  await expect(budget).not.toHaveAttribute('readonly');
+  await expect(save).toHaveText('Save budget');
+  await expect(save).not.toHaveAttribute('aria-disabled');
+  await expect(save).not.toHaveAttribute('aria-busy');
+  await expect(save).not.toHaveAttribute('disabled');
+  await expect(save).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setConfigField'),
+  )).toBe(1);
+});
+
+test('Settings AI Models prompt editing preserves focus and caret', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+
+  await page.locator(`[${AI_MODELS_TAB}="prompts"]`).click();
+  const prompt = page.locator(`[${AI_MODELS_PROMPT_TEXT}="chat"]`);
+  await expect(prompt).toBeVisible();
+  const initial = await prompt.inputValue();
+  await prompt.focus();
+  await prompt.evaluate((element) => element.setSelectionRange(3, 3));
+  await page.keyboard.type('XY');
+  await expect(prompt).toHaveValue(`${initial.slice(0, 3)}XY${initial.slice(3)}`);
+  await expect(prompt).toBeFocused();
+  expect(await prompt.evaluate((element) => element.selectionStart)).toBe(5);
+
+  const role = page.locator(`[${AI_MODELS_PROMPT_ROLE}="chat"]`);
+  await role.focus();
+  await role.selectOption('user');
+  await expect(role).toBeFocused();
+  await expect(prompt).toHaveValue(`${initial.slice(0, 3)}XY${initial.slice(3)}`);
+
+  const save = page.locator(`[${AI_MODELS_PROMPT_SAVE}="chat"]`);
+  await save.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(
+    () => window.__app.rpcCallCount('server.setLlmPrompt') === 1,
+  );
+  await expect(page.locator(
+    `[${AI_MODELS_PROMPT_SECTION}="chat"] [${AI_MODELS_PROMPT_BADGE}="custom"]`,
+  )).toBeVisible();
+  await expect(save).toBeFocused();
+});
+
+test('Settings AI Models prompt Save owns its reload round trip', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?ai_prompt_save_response=slow`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="prompts"]`).click();
+
+  const prompt = page.locator(`[${AI_MODELS_PROMPT_TEXT}="chat"]`);
+  const role = page.locator(`[${AI_MODELS_PROMPT_ROLE}="chat"]`);
+  const save = page.locator(`[${AI_MODELS_PROMPT_SAVE}="chat"]`);
+  const reset = page.locator('[data-recued-ai-models-prompt-reset="chat"]');
+  await prompt.fill('A durable owner-authored prompt.');
+  await save.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(save).toHaveText('Saving…');
+  await expect(save).toHaveAttribute('aria-disabled', 'true');
+  await expect(save).toHaveAttribute('aria-busy', 'true');
+  await expect(save).not.toHaveAttribute('disabled');
+  await expect(save).toBeFocused();
+  await expect(prompt).toHaveAttribute('readonly', '');
+  await expect(role).toBeDisabled();
+  await expect(reset).toHaveAttribute('aria-disabled', 'true');
+  await expect(reset).not.toHaveAttribute('disabled');
+  await save.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await reset.evaluate((button) => button.click());
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('server.setLlmPrompt'),
+    ),
+  ).toBe(1);
+
+  await expect(page.locator(
+    `[${AI_MODELS_PROMPT_SECTION}="chat"] [${AI_MODELS_PROMPT_BADGE}="custom"]`,
+  )).toBeVisible();
+  await expect(prompt).toHaveValue('A durable owner-authored prompt.');
+  await expect(prompt).not.toHaveAttribute('readonly');
+  await expect(role).toBeEnabled();
+  await expect(save).toHaveText('Save');
+  await expect(save).not.toHaveAttribute('aria-disabled');
+  await expect(save).not.toHaveAttribute('aria-busy');
+  await expect(save).toBeFocused();
+
+  await reset.focus();
+  await page.keyboard.press('Enter');
+  await expect(reset).toHaveText('Resetting…');
+  await expect(reset).toHaveAttribute('aria-disabled', 'true');
+  await expect(reset).toHaveAttribute('aria-busy', 'true');
+  await expect(reset).not.toHaveAttribute('disabled');
+  await expect(reset).toBeFocused();
+  await expect(prompt).toHaveAttribute('readonly', '');
+  await expect(save).toHaveAttribute('aria-disabled', 'true');
+  await reset.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await save.evaluate((button) => button.click());
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('server.setLlmPrompt'),
+    ),
+  ).toBe(2);
+
+  await expect(page.locator(
+    `[${AI_MODELS_PROMPT_SECTION}="chat"] [${AI_MODELS_PROMPT_BADGE}="default"]`,
+  )).toBeVisible();
+  await expect(prompt).toHaveValue(
+    'You are Recued. You speak in plain, calm prose.',
+  );
+  await expect(prompt).not.toHaveAttribute('readonly');
+  await expect(reset).toHaveText('Reset to default');
+  await expect(reset).not.toHaveAttribute('aria-disabled');
+  await expect(reset).not.toHaveAttribute('aria-busy');
+  await expect(reset).toBeFocused();
+});
+
+test('Settings AI Models prompt failures preserve the exact retry draft', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?ai_prompt_save_response=fail-slow`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="prompts"]`).click();
+
+  const prompt = page.locator(`[${AI_MODELS_PROMPT_TEXT}="chat"]`);
+  const role = page.locator(`[${AI_MODELS_PROMPT_ROLE}="chat"]`);
+  const save = page.locator(`[${AI_MODELS_PROMPT_SAVE}="chat"]`);
+  await prompt.fill('Keep this exact failed-save draft.');
+  await role.selectOption('user');
+  await save.focus();
+  await page.keyboard.press('Enter');
+  await expect(save).toHaveText('Saving…');
+  await expect(save).toBeFocused();
+
+  await expect(page.locator('[data-recued-ai-models-action-error]'))
+    .toHaveText('System prompt save unavailable.');
+  await expect(prompt).toHaveValue('Keep this exact failed-save draft.');
+  await expect(prompt).not.toHaveAttribute('readonly');
+  await expect(role).toHaveValue('user');
+  await expect(role).toBeEnabled();
+  await expect(save).toHaveText('Save');
+  await expect(save).not.toHaveAttribute('aria-disabled');
+  await expect(save).not.toHaveAttribute('aria-busy');
+  await expect(save).not.toHaveAttribute('disabled');
+  await expect(save).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setLlmPrompt'),
+  )).toBe(1);
+});
+
+test('Settings AI Models slot actions preserve sibling drafts and action focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?ai_slot_save_response=slow&ai_slot_clear_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+  const slotOne = page.locator(
+    '[data-recued-ai-models-control="slot_1"]',
+  );
+  const slotTwo = page.locator(
+    '[data-recued-ai-models-control="slot_2"]',
+  );
+  const siblingDraft = slotTwo.getByRole('textbox', { name: 'Model' });
+  await siblingDraft.fill('draft-model-id');
+
+  const save = slotOne.locator(
+    '[data-recued-ai-models-slot-save="slot_1"]',
+  );
+  await save.focus();
+  await page.keyboard.press('Enter');
+  await expect(save).toHaveText('Saving slot…');
+  await expect(save).toHaveAttribute('aria-disabled', 'true');
+  await expect(save).toHaveAttribute('aria-busy', 'true');
+  await expect(save).not.toHaveAttribute('disabled');
+  await expect(save).toBeFocused();
+  await expect(slotOne.getByRole('textbox', { name: 'Model' }))
+    .toHaveAttribute('readonly', '');
+  await save.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('server.setLLMSlot')),
+  ).toBe(1);
+
+  await expect(siblingDraft).toHaveValue('draft-model-id');
+  await expect(save).toHaveText('Save slot');
+  await expect(save).not.toHaveAttribute('aria-disabled');
+  await expect(save).not.toHaveAttribute('aria-busy');
+  await expect(save).toBeFocused();
+
+  const clear = slotOne.getByRole('button', { name: 'Clear slot' });
+  await clear.focus();
+  await page.keyboard.press('Enter');
+  const clearDialog = page.locator(
+    `[${AI_MODELS_SLOT_CLEAR_DIALOG}="slot_1"]`,
+  );
+  await expect(clearDialog).toBeVisible();
+  await expect(clearDialog.getByRole('button', { name: 'Cancel' }))
+    .toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setLLMSlot'),
+  )).toBe(1);
+  const confirmClear = clearDialog.locator(
+    `[${AI_MODELS_SLOT_CLEAR_CONFIRM}="slot_1"]`,
+  );
+  const cancelClear = clearDialog.locator(
+    `[${AI_MODELS_SLOT_CLEAR_CANCEL}="slot_1"]`,
+  );
+  await confirmClear.click();
+  await page.waitForFunction(
+    () => window.__app.rpcCallCount('server.setLLMSlot') === 2,
+  );
+  await expect(clearDialog).toHaveAttribute('aria-busy', 'true');
+  await expect(confirmClear).toHaveText('Clearing slot…');
+  await expect(confirmClear).toHaveAttribute('aria-disabled', 'true');
+  await expect(confirmClear).toHaveAttribute('aria-busy', 'true');
+  await expect(confirmClear).not.toHaveAttribute('disabled');
+  await expect(confirmClear).toBeFocused();
+  await expect(cancelClear).toHaveAttribute('aria-disabled', 'true');
+  await expect(cancelClear).not.toHaveAttribute('disabled');
+  await confirmClear.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await cancelClear.evaluate((button) => button.click());
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setLLMSlot'),
+  )).toBe(2);
+  await expect(clearDialog).toBeVisible();
+  await expect(clearDialog).toHaveCount(0);
+  await expect(slotOne).toContainText('Not configured.');
+  await expect(siblingDraft).toHaveValue('draft-model-id');
+  await expect(clear).toBeFocused();
+});
+
+test('Settings AI Models Clear slot starts safely and Cancel returns to its command', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+
+  const slot = page.locator('[data-recued-ai-models-control="slot_1"]');
+  const clear = slot.getByRole('button', { name: 'Clear slot' });
+  await clear.focus();
+  await page.keyboard.press('Enter');
+
+  const dialog = page.locator(
+    `[${AI_MODELS_SLOT_CLEAR_DIALOG}="slot_1"]`,
+  );
+  await expect(dialog).toHaveRole('alertdialog');
+  await expect(dialog).toHaveAccessibleName('Clear Slot 1: fast?');
+  await expect(dialog).toContainText(
+    'This removes the saved provider settings and API key from this Recued server.',
+  );
+  const cancel = dialog.locator(
+    `[${AI_MODELS_SLOT_CLEAR_CANCEL}="slot_1"]`,
+  );
+  await expect(cancel).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setLLMSlot'),
+  )).toBe(0);
+
+  await page.keyboard.press('Enter');
+  await expect(dialog).toHaveCount(0);
+  await expect(clear).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setLLMSlot'),
+  )).toBe(0);
+});
+
+test('Settings AI Models failed Clear slot stays owned and retryable', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?ai_slot_clear_response=fail-slow`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+
+  const slot = page.locator('[data-recued-ai-models-control="slot_1"]');
+  const clear = slot.getByRole('button', { name: 'Clear slot' });
+  await clear.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.locator(
+    `[${AI_MODELS_SLOT_CLEAR_DIALOG}="slot_1"]`,
+  );
+  const confirm = dialog.locator(
+    `[${AI_MODELS_SLOT_CLEAR_CONFIRM}="slot_1"]`,
+  );
+  const cancel = dialog.locator(
+    `[${AI_MODELS_SLOT_CLEAR_CANCEL}="slot_1"]`,
+  );
+  await confirm.focus();
+  await page.keyboard.press('Enter');
+  await expect(confirm).toHaveText('Clearing slot…');
+  await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+  await expect(confirm).toBeFocused();
+  await confirm.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await cancel.evaluate((button) => button.click());
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setLLMSlot'),
+  )).toBe(1);
+  await expect(dialog).toBeVisible();
+
+  await expect(page.locator('[data-recued-ai-models-action-error]'))
+    .toHaveText('Model slot clear unavailable.');
+  await expect(dialog).toContainText('Model slot clear unavailable.');
+  await expect(confirm).toHaveText('Clear slot');
+  await expect(confirm).not.toHaveAttribute('aria-disabled');
+  await expect(confirm).not.toHaveAttribute('aria-busy');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
+  await expect(slot).not.toContainText('Not configured.');
+
+  await cancel.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(clear).toBeFocused();
+});
+
+test('Settings AI Models slot save failures return to the exact draft', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?ai_slot_save_response=fail-slow`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+
+  const slot = page.locator('[data-recued-ai-models-control="slot_1"]');
+  const model = slot.getByRole('textbox', { name: 'Model' });
+  await model.fill('retry-model-id');
+  const save = slot.locator(
+    '[data-recued-ai-models-slot-save="slot_1"]',
+  );
+  await save.focus();
+  await page.keyboard.press('Enter');
+  await expect(save).toHaveText('Saving slot…');
+  await expect(save).toBeFocused();
+
+  await expect(page.locator('[data-recued-ai-models-action-error]'))
+    .toHaveText('Model slot save unavailable.');
+  await expect(model).toHaveValue('retry-model-id');
+  await expect(model).not.toHaveAttribute('readonly');
+  await expect(save).toHaveText('Save slot');
+  await expect(save).not.toHaveAttribute('aria-disabled');
+  await expect(save).not.toHaveAttribute('aria-busy');
+  await expect(save).not.toHaveAttribute('disabled');
+  await expect(save).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setLLMSlot'),
+  )).toBe(1);
+});
+
+test('Settings AI Models pool actions preserve drafts and action focus', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?ai_pool=entry&ai_pool_toggle_response=slow&ai_pool_add_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+
+  const pool = page.locator(
+    '[data-recued-ai-models-control="free_pool"]',
+  );
+  const add = pool.locator('.ai-models-add-pool');
+  const draftId = add.getByRole('textbox', { name: 'ID', exact: true });
+  const draftModel = add.getByRole('textbox', { name: 'Model', exact: true });
+  const draftKey = add.getByLabel('API key', { exact: true });
+  await draftId.fill('draft-entry');
+  await draftModel.fill('draft-model');
+  await draftKey.fill('draft-secret');
+
+  const toggle = pool.locator(
+    '[data-recued-ai-models-pool-toggle="groq"]',
+  );
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(
+    () => window.__app.rpcCallCount('server.setFreePoolEntryEnabled') === 1,
+  );
+  const remove = pool.locator(
+    '[data-recued-ai-models-pool-remove="groq"]',
+  );
+  await expect(toggle).toHaveText('Disabling…');
+  await expect(toggle).toHaveAttribute('aria-disabled', 'true');
+  await expect(toggle).toHaveAttribute('aria-busy', 'true');
+  await expect(toggle).not.toHaveAttribute('disabled');
+  await expect(toggle).toBeFocused();
+  await expect(remove).toHaveAttribute('aria-disabled', 'true');
+  await expect(remove).not.toHaveAttribute('disabled');
+  await toggle.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await remove.evaluate((button) => button.click());
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setFreePoolEntryEnabled'),
+  )).toBe(1);
+  await expect(page.getByRole('alertdialog')).toHaveCount(0);
+
+  await expect(draftId).toHaveValue('draft-entry');
+  await expect(draftModel).toHaveValue('draft-model');
+  await expect(draftKey).toHaveValue('draft-secret');
+  await expect(toggle).toHaveText('Enable');
+  await expect(toggle).toBeFocused();
+
+  const addEntry = add.locator('[data-recued-ai-models-pool-add]');
+  await addEntry.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(
+    () => window.__app.rpcCallCount('server.upsertFreePoolEntry') === 1,
+  );
+  await expect(addEntry).toHaveText('Adding entry…');
+  await expect(addEntry).toHaveAttribute('aria-disabled', 'true');
+  await expect(addEntry).toHaveAttribute('aria-busy', 'true');
+  await expect(addEntry).not.toHaveAttribute('disabled');
+  await expect(addEntry).toBeFocused();
+  await expect(draftId).toHaveAttribute('readonly', '');
+  await expect(draftKey).toHaveAttribute('readonly', '');
+  await addEntry.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.upsertFreePoolEntry'),
+  )).toBe(1);
+  await expect(draftId).toHaveValue('draft-entry');
+  await expect(draftModel).toHaveValue('draft-model');
+  await expect(draftKey).toHaveValue('draft-secret');
+  await expect(pool.locator(
+    '[data-recued-ai-models-control="free_pool:draft-entry"]',
+  )).toContainText('draft-model');
+  await expect(draftId).toHaveValue('');
+  await expect(draftModel).toHaveValue('');
+  await expect(draftKey).toHaveValue('');
+  await expect(addEntry).toHaveText('Add API entry');
+  await expect(addEntry).not.toHaveAttribute('aria-disabled');
+  await expect(addEntry).not.toHaveAttribute('aria-busy');
+  await expect(addEntry).toBeFocused();
+});
+
+test('Settings AI Models pool removal keeps the destructive command owned', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?ai_pool=entry&ai_pool_remove_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+
+  const remove = page.locator(
+    '[data-recued-ai-models-pool-remove="groq"]',
+  );
+  await remove.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.locator(
+    '[data-recued-ai-models-pool-remove-dialog="groq"]',
+  );
+  const cancel = dialog.locator(
+    '[data-recued-ai-models-pool-remove-cancel="groq"]',
+  );
+  const confirm = dialog.locator(
+    '[data-recued-ai-models-pool-remove-confirm="groq"]',
+  );
+  await expect(dialog).toHaveRole('alertdialog');
+  await expect(cancel).toBeFocused();
+  await confirm.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(dialog).toHaveAttribute('aria-busy', 'true');
+  await expect(confirm).toHaveText('Removing…');
+  await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+  await expect(confirm).toHaveAttribute('aria-busy', 'true');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
+  await expect(cancel).toHaveAttribute('aria-disabled', 'true');
+  await expect(cancel).not.toHaveAttribute('disabled');
+  await confirm.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await cancel.evaluate((button) => button.click());
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('server.removeFreePoolEntry'),
+    ),
+  ).toBe(1);
+
+  await expect(dialog).toHaveCount(0);
+  await expect(remove).toHaveCount(0);
+  await expect(page.locator('[data-recued-ai-models-pool-add]'))
+    .toBeFocused();
+});
+
+test('Settings AI Models failed pool removal stays owned and retryable', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?ai_pool=entry&ai_pool_remove_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+
+  const remove = page.locator(
+    '[data-recued-ai-models-pool-remove="groq"]',
+  );
+  await remove.focus();
+  await page.keyboard.press('Enter');
+  const dialog = page.locator(
+    '[data-recued-ai-models-pool-remove-dialog="groq"]',
+  );
+  const confirm = dialog.locator(
+    '[data-recued-ai-models-pool-remove-confirm="groq"]',
+  );
+  const cancel = dialog.locator(
+    '[data-recued-ai-models-pool-remove-cancel="groq"]',
+  );
+  await confirm.focus();
+  await page.keyboard.press('Enter');
+  await expect(confirm).toHaveText('Removing…');
+  await expect(confirm).toBeFocused();
+
+  await expect(page.locator('[data-recued-ai-models-action-error]'))
+    .toHaveText('Free-pool entry removal unavailable.');
+  await expect(dialog).toContainText('Free-pool entry removal unavailable.');
+  await expect(confirm).toHaveText('Remove entry');
+  await expect(confirm).not.toHaveAttribute('aria-disabled');
+  await expect(confirm).not.toHaveAttribute('aria-busy');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
+  await expect(remove).toBeVisible();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.removeFreePoolEntry'),
+  )).toBe(1);
+
+  await cancel.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(remove).toBeFocused();
+});
+
+test('Settings AI Models pool toggle failures preserve its sibling draft', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?ai_pool=entry&ai_pool_toggle_response=fail-slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+
+  const pool = page.locator('[data-recued-ai-models-control="free_pool"]');
+  const draft = pool.locator(
+    '[data-recued-ai-models-pool-add-field="model"]',
+  );
+  await draft.fill('retry-pool-model');
+  const toggle = pool.locator(
+    '[data-recued-ai-models-pool-toggle="groq"]',
+  );
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+  await expect(toggle).toHaveText('Disabling…');
+  await expect(toggle).toBeFocused();
+
+  await expect(page.locator('[data-recued-ai-models-action-error]'))
+    .toHaveText('Free-pool entry update unavailable.');
+  await expect(draft).toHaveValue('retry-pool-model');
+  await expect(toggle).toHaveText('Disable');
+  await expect(toggle).not.toHaveAttribute('aria-disabled');
+  await expect(toggle).not.toHaveAttribute('aria-busy');
+  await expect(toggle).not.toHaveAttribute('disabled');
+  await expect(toggle).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setFreePoolEntryEnabled'),
+  )).toBe(1);
+});
+
+test('Settings AI Models pool Add failures preserve the exact secret draft', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?ai_pool_add_response=fail-slow`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+
+  const add = page.locator('.ai-models-add-pool');
+  const id = add.getByRole('textbox', { name: 'ID', exact: true });
+  const model = add.getByRole('textbox', { name: 'Model', exact: true });
+  const key = add.getByLabel('API key', { exact: true });
+  await id.fill('retry-entry');
+  await model.fill('retry-model');
+  await key.fill('retry-secret');
+  const submit = add.locator('[data-recued-ai-models-pool-add]');
+  await submit.focus();
+  await page.keyboard.press('Enter');
+  await expect(submit).toHaveText('Adding entry…');
+  await expect(submit).toBeFocused();
+
+  await expect(page.locator('[data-recued-ai-models-action-error]'))
+    .toHaveText('Free-pool entry save unavailable.');
+  await expect(id).toHaveValue('retry-entry');
+  await expect(model).toHaveValue('retry-model');
+  await expect(key).toHaveValue('retry-secret');
+  await expect(key).not.toHaveAttribute('readonly');
+  await expect(submit).toHaveText('Add API entry');
+  await expect(submit).not.toHaveAttribute('aria-disabled');
+  await expect(submit).not.toHaveAttribute('aria-busy');
+  await expect(submit).not.toHaveAttribute('disabled');
+  await expect(submit).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.upsertFreePoolEntry'),
+  )).toBe(1);
+});
+
+test('Settings AI Models embeddings draft survives sibling actions and saves', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?ai_pool=entry&ai_embeddings_save_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+
+  const embeddings = page.locator(
+    '[data-recued-ai-models-control="embeddings_slot"]',
+  );
+  const provider = embeddings.getByRole('textbox', { name: 'Provider' });
+  const model = embeddings.getByRole('textbox', { name: 'Model' });
+  const key = embeddings.getByLabel('API key', { exact: true });
+  const baseUrl = embeddings.getByRole('textbox', { name: 'Base URL' });
+  await provider.fill('openai-compatible');
+  await model.fill('text-embedding-demo');
+  await key.fill('embedding-secret');
+  await baseUrl.fill('https://embeddings.example.test/v1');
+
+  const poolToggle = page.locator(
+    '[data-recued-ai-models-pool-toggle="groq"]',
+  );
+  await poolToggle.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(
+    () => window.__app.rpcCallCount('server.setFreePoolEntryEnabled') === 1,
+  );
+  await expect(provider).toHaveValue('openai-compatible');
+  await expect(model).toHaveValue('text-embedding-demo');
+  await expect(key).toHaveValue('embedding-secret');
+  await expect(baseUrl).toHaveValue('https://embeddings.example.test/v1');
+
+  const save = embeddings.locator(
+    '[data-recued-ai-models-slot-save="embeddings_slot"]',
+  );
+  const clear = embeddings.locator(
+    '[data-recued-ai-models-slot-clear="embeddings_slot"]',
+  );
+  await save.focus();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(
+    () => window.__app.rpcCallCount('server.setEmbeddingsSlot') === 1,
+  );
+  await expect(save).toHaveText('Saving slot…');
+  await expect(save).toHaveAttribute('aria-disabled', 'true');
+  await expect(save).toHaveAttribute('aria-busy', 'true');
+  await expect(save).not.toHaveAttribute('disabled');
+  await expect(save).toBeFocused();
+  await expect(model).toHaveAttribute('readonly', '');
+  await expect(clear).toHaveAttribute('aria-disabled', 'true');
+  await expect(clear).not.toHaveAttribute('disabled');
+  await save.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await clear.evaluate((button) => button.click());
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setEmbeddingsSlot'),
+  )).toBe(1);
+  await expect(model).toHaveValue('text-embedding-demo');
+  await expect(key).toHaveValue('embedding-secret');
+  await expect(embeddings).toContainText(
+    'openai-compatible / text-embedding-demo',
+  );
+  await expect(key).toHaveValue('');
+  await expect(save).toHaveText('Save slot');
+  await expect(save).not.toHaveAttribute('aria-disabled');
+  await expect(save).not.toHaveAttribute('aria-busy');
+  await expect(save).toBeFocused();
+});
+
+test('Settings AI Models embeddings save failures preserve the exact retry draft', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?ai_embeddings_save_response=fail-slow`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+
+  const embeddings = page.locator(
+    '[data-recued-ai-models-control="embeddings_slot"]',
+  );
+  const model = embeddings.getByRole('textbox', { name: 'Model' });
+  const key = embeddings.getByLabel('API key', { exact: true });
+  await model.fill('retry-embedding-model');
+  await key.fill('retry-embedding-secret');
+  const save = embeddings.locator(
+    '[data-recued-ai-models-slot-save="embeddings_slot"]',
+  );
+  await save.focus();
+  await page.keyboard.press('Enter');
+  await expect(save).toHaveText('Saving slot…');
+  await expect(save).toBeFocused();
+
+  await expect(page.locator('[data-recued-ai-models-action-error]'))
+    .toHaveText('Embeddings slot save unavailable.');
+  await expect(model).toHaveValue('retry-embedding-model');
+  await expect(key).toHaveValue('retry-embedding-secret');
+  await expect(model).not.toHaveAttribute('readonly');
+  await expect(save).toHaveText('Save slot');
+  await expect(save).not.toHaveAttribute('aria-disabled');
+  await expect(save).not.toHaveAttribute('aria-busy');
+  await expect(save).not.toHaveAttribute('disabled');
+  await expect(save).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setEmbeddingsSlot'),
+  )).toBe(1);
+});
+
+test('Settings AI Models embeddings Clear is confirmed and mutation-owned', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?ai_embeddings_clear_response=slow`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+
+  const embeddings = page.locator(
+    '[data-recued-ai-models-control="embeddings_slot"]',
+  );
+  await embeddings.getByRole('textbox', { name: 'Provider' }).fill('openai');
+  await embeddings.getByRole('textbox', { name: 'Model' })
+    .fill('text-embedding-3-small');
+  await embeddings.getByLabel('API key', { exact: true }).fill('embedding-key');
+  await embeddings.locator(
+    '[data-recued-ai-models-slot-save="embeddings_slot"]',
+  ).click();
+  await page.waitForFunction(
+    () => window.__app.rpcCallCount('server.setEmbeddingsSlot') === 1,
+  );
+  await expect(embeddings).toContainText('openai / text-embedding-3-small');
+
+  const clear = embeddings.locator(
+    '[data-recued-ai-models-slot-clear="embeddings_slot"]',
+  );
+  await clear.focus();
+  await page.keyboard.press('Enter');
+  let dialog = page.locator(
+    `[${AI_MODELS_SLOT_CLEAR_DIALOG}="embeddings_slot"]`,
+  );
+  await expect(dialog).toHaveRole('alertdialog');
+  await expect(dialog).toHaveAccessibleName('Clear Embeddings slot?');
+  await expect(dialog).toContainText(
+    'This removes the saved provider settings and API key from this Recued server.',
+  );
+  const cancel = dialog.locator(
+    `[${AI_MODELS_SLOT_CLEAR_CANCEL}="embeddings_slot"]`,
+  );
+  await expect(cancel).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setEmbeddingsSlot'),
+  )).toBe(1);
+  await page.keyboard.press('Enter');
+  await expect(dialog).toHaveCount(0);
+  await expect(clear).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  dialog = page.locator(
+    `[${AI_MODELS_SLOT_CLEAR_DIALOG}="embeddings_slot"]`,
+  );
+  const confirm = dialog.locator(
+    `[${AI_MODELS_SLOT_CLEAR_CONFIRM}="embeddings_slot"]`,
+  );
+  const pendingCancel = dialog.locator(
+    `[${AI_MODELS_SLOT_CLEAR_CANCEL}="embeddings_slot"]`,
+  );
+  await confirm.click();
+  await page.waitForFunction(
+    () => window.__app.rpcCallCount('server.setEmbeddingsSlot') === 2,
+  );
+  await expect(dialog).toHaveAttribute('aria-busy', 'true');
+  await expect(confirm).toHaveText('Clearing slot…');
+  await expect(confirm).toHaveAttribute('aria-disabled', 'true');
+  await expect(confirm).toHaveAttribute('aria-busy', 'true');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
+  await expect(pendingCancel).toHaveAttribute('aria-disabled', 'true');
+  await expect(pendingCancel).not.toHaveAttribute('disabled');
+  await confirm.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await pendingCancel.evaluate((button) => button.click());
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setEmbeddingsSlot'),
+  )).toBe(2);
+  await expect(dialog).toHaveCount(0);
+  await expect(embeddings).toContainText('Not configured.');
+  await expect(clear).toBeFocused();
+});
+
+test('Settings AI Models failed embeddings Clear stays owned and retryable', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?ai_embeddings_clear_response=fail-slow`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+
+  const embeddings = page.locator(
+    '[data-recued-ai-models-control="embeddings_slot"]',
+  );
+  await embeddings.getByRole('textbox', { name: 'Provider' }).fill('openai');
+  await embeddings.getByRole('textbox', { name: 'Model' })
+    .fill('text-embedding-3-small');
+  await embeddings.getByLabel('API key', { exact: true }).fill('embedding-key');
+  await embeddings.locator(
+    '[data-recued-ai-models-slot-save="embeddings_slot"]',
+  ).click();
+  await page.waitForFunction(
+    () => window.__app.rpcCallCount('server.setEmbeddingsSlot') === 1,
+  );
+
+  const clear = embeddings.locator(
+    '[data-recued-ai-models-slot-clear="embeddings_slot"]',
+  );
+  await clear.click();
+  const dialog = page.locator(
+    `[${AI_MODELS_SLOT_CLEAR_DIALOG}="embeddings_slot"]`,
+  );
+  const confirm = dialog.locator(
+    `[${AI_MODELS_SLOT_CLEAR_CONFIRM}="embeddings_slot"]`,
+  );
+  const cancel = dialog.locator(
+    `[${AI_MODELS_SLOT_CLEAR_CANCEL}="embeddings_slot"]`,
+  );
+  await confirm.focus();
+  await page.keyboard.press('Enter');
+  await expect(confirm).toHaveText('Clearing slot…');
+  await expect(confirm).toBeFocused();
+
+  await expect(page.locator('[data-recued-ai-models-action-error]'))
+    .toHaveText('Embeddings slot clear unavailable.');
+  await expect(dialog).toContainText('Embeddings slot clear unavailable.');
+  await expect(confirm).toHaveText('Clear slot');
+  await expect(confirm).not.toHaveAttribute('aria-disabled');
+  await expect(confirm).not.toHaveAttribute('aria-busy');
+  await expect(confirm).not.toHaveAttribute('disabled');
+  await expect(confirm).toBeFocused();
+  await expect(embeddings).not.toContainText('Not configured.');
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.setEmbeddingsSlot'),
+  )).toBe(2);
+
+  await cancel.click();
+  await expect(dialog).toHaveCount(0);
+  await expect(clear).toBeFocused();
+});
+
+test('Settings AI Models pool removal is confirmed and keyboard-owned', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?ai_pool=entry`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#settings/ai-models'));
+  await page.locator(`[${AI_MODELS_TAB}="providers"]`).click();
+
+  const row = page.locator(
+    '[data-recued-ai-models-control="free_pool:groq"]',
+  );
+  const remove = row.getByRole('button', { name: 'Remove', exact: true });
+  await remove.focus();
+  await page.keyboard.press('Enter');
+
+  const dialog = page.getByRole('alertdialog', {
+    name: 'Remove groq from the free pool?',
+  });
+  const cancel = dialog.getByRole('button', { name: 'Cancel', exact: true });
+  const confirm = dialog.getByRole('button', {
+    name: 'Remove entry',
+    exact: true,
+  });
+  await expect(dialog).toBeVisible();
+  await expect(cancel).toBeFocused();
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('server.removeFreePoolEntry'),
+  )).toBe(0);
+
+  await page.keyboard.press('Shift+Tab');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(cancel).toBeFocused();
+
+  await page.keyboard.press('Escape');
+  await expect(dialog).toHaveCount(0);
+  await expect(remove).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(cancel).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(
+    () => window.__app.rpcCallCount('server.removeFreePoolEntry') === 1,
+  );
+
+  await expect(row).toHaveCount(0);
+  await expect(page.getByRole('button', {
+    name: 'Add API entry',
+  })).toBeFocused();
+});
+
+test('Contracts moves focus from an inventory row into its exact detail', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?journey=bounded-verification`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#contracts'));
+
+  const owner = page.locator(
+    '[data-recued-contracts-row][data-contract-id="user_self"]',
+  );
+  await expect(owner).toBeVisible();
+  await owner.focus();
+  await page.keyboard.press('Enter');
+
+  const heading = page.locator(
+    `[${CONTRACTS_DETAIL_HEADING}="user_self"]`,
+  );
+  await expect(page).toHaveURL(/#contracts\/user_self$/);
+  await expect(heading).toHaveText('Owner (you)');
+  await expect(heading).toHaveAttribute('tabindex', '-1');
+  await expect(heading).toBeFocused();
+});
+
+test('Contracts restores the exact inventory row after Back', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?journey=bounded-verification`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#contracts'));
+
+  const owner = page.locator(
+    '[data-recued-contracts-row][data-contract-id="user_self"]',
+  );
+  await expect(owner).toBeVisible();
+  await owner.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator(
+    `[${CONTRACTS_DETAIL_HEADING}="user_self"]`,
+  )).toBeFocused();
+
+  const back = page.locator('[data-recued-contracts-back]');
+  await back.focus();
+  await page.keyboard.press('Enter');
+  await expect(page.locator('[data-recued-contracts-list]')).toBeVisible();
+  await expect(owner).toBeFocused();
+});
+
+test('Contracts keeps paging controls reachable at a cursor boundary', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?contracts=paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#contracts/view/others'));
+
+  const status = page.locator('[data-recued-contracts-page-status]');
+  const next = page.locator('[data-recued-contracts-page-next]');
+  const previous = page.locator('[data-recued-contracts-page-previous]');
+  await expect(status).toHaveText('Showing 1–25 of 26');
+
+  await next.focus();
+  await page.keyboard.press('Enter');
+  await expect(status).toHaveText('Showing 26–26 of 26');
+  await expect(previous).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(status).toHaveText('Showing 1–25 of 26');
+  await expect(next).toBeFocused();
+});
+
+test('Contracts keeps slow paging focused, visible, and single-flight', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?contracts=paged&contracts_page_response=slow`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#contracts/view/others'));
+
+  const status = page.locator('[data-recued-contracts-page-status]');
+  const next = page.locator('[data-recued-contracts-page-next]');
+  const previous = page.locator('[data-recued-contracts-page-previous]');
+  await expect(status).toHaveText('Showing 1–25 of 26');
+  const readsBefore = await page.evaluate(
+    () => window.__app.rpcCallCount('collection.contract.listContracts.cursor'),
+  );
+
+  await next.focus();
+  await page.keyboard.press('Enter');
+  await expect(next).toHaveText('Loading…');
+  await expect(next).toHaveAttribute('aria-label', 'Loading next page');
+  await expect(next).toHaveAttribute('aria-disabled', 'true');
+  await expect(next).toHaveAttribute('aria-busy', 'true');
+  await expect(next).not.toHaveAttribute('disabled');
+  await expect(next).toBeFocused();
+  await next.dispatchEvent('click');
+  await next.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('collection.contract.listContracts.cursor'),
+    ),
+  ).toBe(readsBefore + 1);
+
+  await expect(status).toHaveText('Showing 26–26 of 26');
+  await expect(previous).toBeFocused();
+});
+
+test('Contracts keeps revoke confirmation keyboard-owned', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?contracts=paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash(
+    '#contracts/door_paged_01',
+  ));
+
+  const revoke = page.locator('[data-recued-contracts-revoke]');
+  await expect(revoke).toHaveText('Revoke');
+  await revoke.focus();
+  await page.keyboard.press('Enter');
+
+  const confirm = page.locator('[data-recued-contracts-revoke-confirm]');
+  await expect(confirm).toBeFocused();
+  const cancel = page.locator('[data-recued-contracts-revoke-cancel]');
+  await cancel.focus();
+  await page.keyboard.press('Enter');
+  await expect(revoke).toHaveText('Revoke');
+  await expect(revoke).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(page.locator(
+    `[${CONTRACTS_DETAIL_HEADING}="door_paged_01"]`,
+  )).toBeFocused();
+  await expect(revoke).toHaveCount(0);
+  await expect(page.locator('[data-recued-contracts-detail]')).toContainText(
+    'Revoked',
+  );
+  expect(await page.evaluate(() => window.__app.rpcCallCount(
+    'collection.contract.revokeContract',
+  ))).toBe(1);
+});
+
+test('Contracts preserves a door toggle through its write repaint', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?contracts=paged`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash(
+    '#contracts/door_paged_01',
+  ));
+
+  const toggle = page.getByRole('checkbox', { name: 'MCP tools' });
+  await expect(toggle).toBeChecked();
+  await toggle.focus();
+  await page.keyboard.press('Space');
+  await expect(toggle).not.toBeChecked();
+  await expect(toggle).toBeFocused();
+  expect(await page.evaluate(() => window.__app.rpcCallCount(
+    'collection.contract.setDoorTypes',
+  ))).toBe(1);
+});
+
+test('Contracts detail tabs form one arrow-key keyboard stop', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?journey=bounded-verification`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#contracts/user_self'));
+
+  const tabs = page.locator(`[${CONTRACTS_DETAIL_TAB}]`);
+  const ops = page.locator(`[${CONTRACTS_DETAIL_TAB}][data-tab="ops"]`);
+  const entities = page.locator(
+    `[${CONTRACTS_DETAIL_TAB}][data-tab="entities"]`,
+  );
+  const panel = page.locator(`[${CONTRACTS_DETAIL_TAB_BODY}]`);
+  await expect(ops).toHaveAttribute('tabindex', '0');
+  await expect(entities).toHaveAttribute('tabindex', '-1');
+  expect(await tabs.evaluateAll((nodes) => nodes.filter(
+    (node) => node.getAttribute('tabindex') === '0',
+  ).length)).toBe(1);
+
+  await ops.focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(entities).toHaveAttribute('aria-selected', 'true');
+  await expect(entities).toHaveAttribute('tabindex', '0');
+  await expect(entities).toBeFocused();
+  await expect(panel).toHaveAttribute('role', 'tabpanel');
+  await expect(panel).toHaveAttribute(
+    'aria-labelledby',
+    'recued-contracts-detail-tab-entities',
+  );
+
+  await page.keyboard.press('ArrowRight');
+  await expect(ops).toHaveAttribute('aria-selected', 'true');
+  await expect(ops).toBeFocused();
+});
+
+test('Contracts keeps an operation grant toggle focused and single-flight', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?contracts=paged#contracts/door_paged_01/ops`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const toggle = page.locator(
+    '[data-recued-contract-grants-cell-toggle]',
+  ).first();
+  await expect(toggle).toBeVisible();
+  const startedChecked = await toggle.isChecked();
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+  });
+  await toggle.focus();
+  await page.keyboard.press('Space');
+
+  await expect(toggle).toHaveAttribute('aria-disabled', 'true');
+  await expect(toggle).toHaveAttribute('aria-busy', 'true');
+  await page.evaluate(() => window.__app.setHash('#data'));
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A contract action is still in progress. Leave Contracts anyway?',
+  );
+  await expect(page).toHaveURL(/#contracts\/door_paged_01\/ops$/);
+  await expect(toggle).not.toHaveAttribute('disabled');
+  await expect(toggle).toBeFocused();
+  await toggle.dispatchEvent('change');
+  await toggle.dispatchEvent('change');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('contract.grant.write')),
+  ).toBe(1);
+
+  await expect(toggle).not.toHaveAttribute('aria-disabled');
+  await expect(toggle).not.toHaveAttribute('aria-busy');
+  await expect(toggle).toBeFocused();
+  expect(await toggle.isChecked()).toBe(!startedChecked);
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
 });
 
 test('an uncertain run lands on its exact record with readable dark-theme next steps', async ({ page }) => {
@@ -6613,6 +19098,199 @@ test('the first-run recipe handoff traps focus and recovers an empty inventory',
   await expect(automate).toBeFocused();
 });
 
+test('the Run palette keeps inventory recovery focused and single-flight', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?run_palette=inventory-retry`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${CHAT_ACTIVATION_ACTION}="automate"]`).click();
+
+  const dialog = page.getByRole('dialog', { name: 'Run a recipe' });
+  await expect(dialog.getByRole('alert')).toHaveText('Couldn’t load recipes.');
+  const retry = page.locator(`[${RUN_PALETTE_RETRY}]`);
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('recipe.list'),
+  );
+  await retry.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(retry).toHaveText('Trying again…');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await retry.evaluate((button: HTMLButtonElement) => {
+    button.click();
+    button.click();
+  });
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('recipe.list')),
+  ).toBe(before + 1);
+
+  const picker = dialog.getByRole('combobox', { name: 'Recipe' });
+  await expect(picker).toBeVisible();
+  await expect(picker).toBeFocused();
+  await expect(retry).toHaveCount(0);
+});
+
+test('the Run palette guards an in-flight auto-run toggle and route leave', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?run_palette=autorun`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${CHAT_ACTIVATION_ACTION}="automate"]`).click();
+
+  const recipe = page.getByRole('combobox', { name: 'Recipe' });
+  await expect(recipe).toBeVisible();
+  await recipe.fill('Watch pipeline');
+  await page.getByRole('option', { name: /Watch pipeline/ }).click();
+
+  const pause = page.locator(`[${RUN_PALETTE_ACTION}]`, {
+    hasText: 'Pause',
+  });
+  await expect(pause).toBeVisible();
+  const before = await page.evaluate(
+    () => window.__app.rpcCallCount('auto_run.update'),
+  );
+  await pause.focus();
+  await pause.evaluate((button) => {
+    (button as HTMLElement).click();
+    (button as HTMLElement).click();
+  });
+
+  const overlay = page.locator(`[${RUN_PALETTE}]`);
+  const close = page.locator(`[${RUN_PALETTE_CLOSE}]`);
+  await expect(close).toHaveAttribute('aria-disabled', 'true');
+  await expect(close).not.toHaveAttribute('disabled');
+  await page.keyboard.press('Escape');
+  await expect(overlay).toBeVisible();
+  await close.dispatchEvent('click');
+  await close.dispatchEvent('click');
+  await overlay.dispatchEvent('click');
+  await expect(overlay).toBeVisible();
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    window.__app.setHash('#data');
+  });
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A recipe action is still in progress. Leave Chat anyway?',
+  );
+  await expect.poll(
+    () => page.evaluate(() => window.location.hash),
+  ).toBe('');
+  await expect(overlay).toBeVisible();
+
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('auto_run.update'),
+    ),
+  ).toBe(before + 1);
+  await expect(page.locator(`[${RUN_PALETTE_ACTION}]`, { hasText: 'Arm' }))
+    .toBeFocused();
+  await expect(close).not.toHaveAttribute('aria-disabled');
+
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(overlay).toHaveCount(0);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('the Run palette retains a pending toggle through its Automation handoff', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?run_palette=autorun&auto_run_update_delay_ms=1500`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${CHAT_ACTIVATION_ACTION}="automate"]`).click();
+
+  const recipe = page.getByRole('combobox', { name: 'Recipe' });
+  await expect(recipe).toBeVisible();
+  await recipe.fill('Watch pipeline');
+  await page.getByRole('option', { name: /Watch pipeline/ }).click();
+  await page.locator(`[${RUN_PALETTE_ACTION}]`, { hasText: 'Pause' }).click();
+
+  await recipe.fill('Review failed runs');
+  await page.getByRole('option', { name: /Review failed runs/ }).click();
+  const manage = page.getByRole('link', { name: 'Manage in Automation →' });
+  const overlay = page.locator(`[${RUN_PALETTE}]`);
+  const html = page.locator('html');
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+  });
+
+  await manage.click();
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A recipe action is still in progress. Leave Chat anyway?',
+  );
+  await expect.poll(() => page.evaluate(() => window.location.hash)).toBe('');
+  await expect(overlay).toBeVisible();
+
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('auto_run.update')),
+  ).toBe(1);
+  await expect(page.locator(`[${RUN_PALETTE_CLOSE}]`))
+    .not.toHaveAttribute('aria-disabled');
+  await manage.click();
+  await expect(page).toHaveURL(/#automation\/managed-live-1$/);
+  await expect(overlay).toHaveCount(0);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('the Run palette restores auto-run action focus after its state changes', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?run_palette=autorun`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${CHAT_ACTIVATION_ACTION}="automate"]`).click();
+
+  const recipe = page.getByRole('combobox', { name: 'Recipe' });
+  await recipe.fill('Watch pipeline');
+  await page.getByRole('option', { name: /Watch pipeline/ }).click();
+
+  const pause = page.locator(`[${RUN_PALETTE_ACTION}]`, {
+    hasText: 'Pause',
+  });
+  await pause.focus();
+  await page.keyboard.press('Enter');
+
+  const arm = page.locator(`[${RUN_PALETTE_ACTION}]`, { hasText: 'Arm' });
+  await expect(arm).toBeVisible();
+  await expect(arm).toBeFocused();
+});
+
+test('the Run palette reports a failed auto-run update in place', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?run_palette=autorun-fail`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${CHAT_ACTIVATION_ACTION}="automate"]`).click();
+
+  const recipe = page.getByRole('combobox', { name: 'Recipe' });
+  await recipe.fill('Watch pipeline');
+  await page.getByRole('option', { name: /Watch pipeline/ }).click();
+
+  const pause = page.locator(`[${RUN_PALETTE_ACTION}]`, {
+    hasText: 'Pause',
+  });
+  await pause.focus();
+  await page.keyboard.press('Enter');
+
+  const result = page.locator(`[${RUN_PALETTE_RESULT}]`);
+  await expect(result).toHaveAttribute('role', 'status');
+  await expect(result).toContainText('Couldn’t update auto-run');
+  await expect(pause).toBeFocused();
+});
+
 test('the Connections landing explains the choices and starts with one clear action', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.evaluate(() => window.__app.setHash('#connections'));
@@ -6660,12 +19338,28 @@ test('the Connections landing explains the choices and starts with one clear act
   });
 
   await connect.click();
-  await expect(
-    page.getByRole('heading', { name: 'Choose a mail provider', level: 2 }),
-  ).toBeVisible();
-  await expect(page.getByRole('button', { name: /Gmail/ })).toBeVisible();
+  const providerHeading = page.getByRole('heading', {
+    name: 'Choose a mail provider',
+    level: 2,
+  });
+  await expect(providerHeading).toBeVisible();
+  await expect(providerHeading).toBeFocused();
+  const gmailProvider = route.locator(
+    '[data-action="accounts-pick-provider"][data-provider="gmail"]',
+  );
+  await expect(gmailProvider).toBeVisible();
   await expect(page.getByRole('button', { name: /Microsoft/ })).toBeVisible();
   await expect(page.getByRole('button', { name: /IMAP \/ SMTP/ })).toBeVisible();
+
+  await gmailProvider.click();
+  const gmailHeading = route.getByRole('heading', { name: 'Connect Gmail', level: 2 });
+  await expect(gmailHeading).toBeVisible();
+  await expect(gmailHeading).toBeFocused();
+
+  await route.getByRole('button', { name: 'Back' }).click();
+  await expect(gmailProvider).toBeFocused();
+  await route.getByRole('button', { name: 'Cancel' }).click();
+  await expect(connect).toBeFocused();
 
   await tabs.getByRole('link', { name: 'Calendar' }).click();
   await expect(page).toHaveURL(/#connections\/calendar$/);
@@ -6684,6 +19378,340 @@ test('the Connections landing explains the choices and starts with one clear act
   await expect(
     route.getByRole('button', { name: 'Add file source' }),
   ).toBeVisible();
+
+  // A direct mobile deep link to the trailing lane must reveal its active tab;
+  // the horizontal strip otherwise starts at Mail and clips Webhooks entirely.
+  await page.evaluate(() => window.__app.setHash('#connections/webhooks'));
+  await expect(page).toHaveURL(/#connections\/webhooks$/);
+  const webhooksTab = route.getByRole('link', { name: 'Webhooks' });
+  await expect(webhooksTab).toHaveAttribute('aria-current', 'page');
+  const tabVisibility = await tabs.evaluate((tabBar) => {
+    const active = tabBar.querySelector('[aria-current="page"]');
+    const barRect = tabBar.getBoundingClientRect();
+    const activeRect = active?.getBoundingClientRect();
+    return {
+      scrollLeft: tabBar.scrollLeft,
+      barLeft: barRect.left,
+      barRight: barRect.right,
+      activeLeft: activeRect?.left ?? Number.NEGATIVE_INFINITY,
+      activeRight: activeRect?.right ?? Number.POSITIVE_INFINITY,
+    };
+  });
+  expect(tabVisibility.scrollLeft).toBeGreaterThan(0);
+  expect(tabVisibility.activeLeft).toBeGreaterThanOrEqual(
+    tabVisibility.barLeft - 0.5,
+  );
+  expect(tabVisibility.activeRight).toBeLessThanOrEqual(
+    tabVisibility.barRight + 0.5,
+  );
+});
+
+test('a Connections account detail returns focus to its exact row', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?connection=source-ready`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#connections'));
+
+  const route = page.locator(`[${CONNECTIONS_ROUTE}]`);
+  const account = route.locator(
+    '[data-action="accounts-open-detail"][data-slug="work"]',
+  );
+  await expect(account).toBeVisible();
+  await account.focus();
+  await page.keyboard.press('Enter');
+
+  const heading = route.getByRole('heading', { name: 'work', level: 2 });
+  await expect(heading).toBeVisible();
+  await expect(heading).toBeFocused();
+
+  await route.getByRole('button', { name: 'Back' }).focus();
+  await page.keyboard.press('Enter');
+  await expect(account).toBeFocused();
+});
+
+test('Connections account lifecycle writes keep their exact action focused and single-flight', async ({ page }) => {
+  await page.goto(
+    `${HARNESS_URL}?connection=calendar-lifecycle#connections/calendar/work-calendar`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const route = page.locator(`[${CONNECTIONS_ROUTE}]`);
+  await expect(route.getByRole('heading', {
+    name: 'work-calendar',
+    level: 2,
+  })).toBeVisible();
+
+  const exercise = async (
+    readyName: 'Re-sync' | 'Re-authorize',
+    busyName: 'Re-syncing…' | 'Re-authorizing…',
+    method: 'collection.calendar.resync' | 'collection.calendar.reauth',
+  ): Promise<void> => {
+    const action = route.getByRole('button', { name: readyName, exact: true });
+    await action.focus();
+    await page.keyboard.press('Enter');
+
+    const busy = route.getByRole('button', { name: busyName, exact: true });
+    await expect(busy).toHaveAttribute('aria-disabled', 'true');
+    await expect(busy).toHaveAttribute('aria-busy', 'true');
+    await expect(busy).not.toHaveAttribute('disabled');
+    await expect(busy).toBeFocused();
+
+    await busy.evaluate((element) => {
+      element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+      element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    });
+    expect(await page.evaluate((rpcMethod) => (
+      window.__app.rpcCallCount(rpcMethod)
+    ), method)).toBe(1);
+
+    await expect(action).toBeFocused();
+    expect(await page.evaluate((rpcMethod) => (
+      window.__app.rpcCallCount(rpcMethod)
+    ), method)).toBe(1);
+  };
+
+  await exercise(
+    'Re-sync',
+    'Re-syncing…',
+    'collection.calendar.resync',
+  );
+  await exercise(
+    'Re-authorize',
+    'Re-authorizing…',
+    'collection.calendar.reauth',
+  );
+  await expect(route.getByRole('alert')).toContainText(
+    'Calendar sign-in is temporarily unavailable.',
+  );
+});
+
+test('Connections keeps operation grant ownership through writes', async ({ page }) => {
+  await page.goto(`${HARNESS_URL}?connection=grants`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#connections/others'));
+
+  const grants = page.locator(`[${CONNECTIONS_GRANTS}]`);
+  const deals = grants.locator(
+    `[${CONNECTIONS_GRANT_TOGGLE}][data-group-id="recued-core/hubspot.deals.write"]`,
+  );
+  const contacts = grants.locator(
+    `[${CONNECTIONS_GRANT_TOGGLE}][data-group-id="recued-core/hubspot.contacts.write"]`,
+  );
+  await expect(deals).toHaveText('Grant');
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+  });
+
+  await deals.focus();
+  await page.keyboard.press('Enter');
+  await expect(deals).toHaveText('Granting…');
+  await page.evaluate(() => window.__app.setHash('#data'));
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A connection action is still in progress. Leave Connections anyway?',
+  );
+  await expect(page).toHaveURL(/#connections\/others$/);
+  await expect(deals).toHaveAttribute('aria-disabled', 'true');
+  await expect(deals).toHaveAttribute('aria-busy', 'true');
+  await expect(deals).toBeFocused();
+  await expect(contacts).toHaveAttribute('aria-disabled', 'true');
+  await expect(contacts).not.toHaveAttribute('aria-busy');
+
+  await expect(deals).toHaveText('Revoke');
+  await expect(deals).toHaveAttribute('aria-pressed', 'true');
+  await expect(deals).toBeFocused();
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+
+  await page.keyboard.press('Enter');
+  await expect(deals).toHaveText('Revoking…');
+  await expect(deals).toHaveAttribute('aria-busy', 'true');
+  await expect(deals).toBeFocused();
+  await expect(deals).toHaveText('Grant');
+  await expect(deals).toHaveAttribute('aria-pressed', 'false');
+  await expect(deals).toBeFocused();
+
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('Connections recovers pack usage and setup context explicitly', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&recipes=installed&packs_response=detail-fail-once-slow-retry&connection=grants#recipes`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('packs.list'),
+  )).toBe(1);
+
+  await page.evaluate(() => window.__app.setHash('#connections/others'));
+  const route = page.locator(`[${CONNECTIONS_ROUTE}]`);
+  const recovery = route.locator(`[${CONNECTIONS_PACK_INVENTORY}]`);
+  await expect(recovery).toHaveAttribute(CONNECTIONS_PACK_INVENTORY, 'error');
+  await expect(recovery).toHaveAttribute('role', 'alert');
+  await expect(recovery).toContainText('Pack context unavailable');
+
+  const retry = recovery.locator(`[${CONNECTIONS_PACK_INVENTORY_RETRY}]`);
+  await retry.focus();
+  await page.keyboard.press('Enter');
+  await expect(recovery).toHaveAttribute(CONNECTIONS_PACK_INVENTORY, 'retrying');
+  await expect(retry).toHaveAttribute('aria-disabled', 'true');
+  await expect(retry).toHaveAttribute('aria-busy', 'true');
+  await expect(retry).not.toHaveAttribute('disabled');
+  await expect(retry).toBeFocused();
+  await retry.evaluate((element) => {
+    element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    element.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+  });
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('packs.list'),
+  )).toBe(3);
+
+  await expect(recovery).toBeHidden();
+  await expect(route.getByRole('button', { name: /Add Connection/ }))
+    .toBeFocused();
+});
+
+test('Connections serializes live pack-context refreshes without moving focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?packs=installed&connection=grants#connections/others`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('packs.list'),
+  )).toBe(1);
+
+  const route = page.locator(`[${CONNECTIONS_ROUTE}]`);
+  const add = route.getByRole('button', { name: /Add Connection/ });
+  await add.focus();
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'pack_uninstalled',
+      pack_slug: 'installed-mail',
+      pack_name: 'Installed Mail',
+      pack_version: 1,
+      removed_recipe_count: 1,
+      cursor: 71,
+    },
+  }));
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('packs.list'),
+  )).toBe(2);
+
+  await page.evaluate(() => window.__app.fireMessage({
+    type: 'server_event',
+    event: {
+      kind: 'pack_installed',
+      pack_slug: 'installed-mail',
+      pack_name: 'Installed Mail',
+      pack_version: 1,
+      installed_recipe_count: 1,
+      cursor: 72,
+    },
+  }));
+  expect(await page.evaluate(
+    () => window.__app.rpcCallCount('packs.list'),
+  )).toBe(2);
+  await expect.poll(() => page.evaluate(
+    () => window.__app.rpcCallCount('packs.list'),
+  )).toBe(3);
+  const beforeLatestPaint = await add.elementHandle();
+  expect(beforeLatestPaint).not.toBeNull();
+  await page.waitForFunction(
+    (element) => element?.isConnected === false,
+    beforeLatestPaint,
+  );
+  await expect(add).toBeFocused();
+});
+
+test('a Connections account removal dialog owns and restores focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?connection=source-ready&account_delete_delay_ms=2500`,
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#connections'));
+
+  const route = page.locator(`[${CONNECTIONS_ROUTE}]`);
+  await route.locator(
+    '[data-action="accounts-open-detail"][data-slug="work"]',
+  ).click();
+  const remove = route.getByRole('button', { name: 'Remove', exact: true });
+  await remove.focus();
+  await page.keyboard.press('Enter');
+
+  const dialog = route.getByRole('dialog', { name: 'Remove account work' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toBeFocused();
+  await page.keyboard.press('Tab');
+  await expect(dialog.getByRole('button', { name: 'Cancel' })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  await expect(remove).toBeFocused();
+
+  await remove.click();
+  await expect(dialog).toBeFocused();
+  await page.keyboard.press('Tab');
+  await page.keyboard.press('Tab');
+  const confirm = dialog.getByRole('button', { name: 'Remove', exact: true });
+  await expect(confirm).toBeFocused();
+  await page.keyboard.press('Enter');
+  const removing = dialog.getByRole('button', {
+    name: 'Removing…',
+    exact: true,
+  });
+  const cancel = dialog.getByRole('button', { name: 'Cancel', exact: true });
+  await expect(removing).toHaveAttribute('aria-disabled', 'true');
+  await expect(removing).toHaveAttribute('aria-busy', 'true');
+  await expect(removing).not.toHaveAttribute('disabled');
+  await expect(removing).toBeFocused();
+  await expect(cancel).toHaveAttribute('aria-disabled', 'true');
+  await expect(cancel).not.toHaveAttribute('aria-busy');
+  await expect(cancel).not.toHaveAttribute('disabled');
+  await removing.dispatchEvent('click');
+  await cancel.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(() => window.__app.rpcCallCount('collection.mail.delete')),
+  ).toBe(1);
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    window.__app.setHash('#chat');
+  });
+
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A connection action is still in progress. Leave Connections anyway?',
+  );
+  await expect(page).toHaveURL(/#connections$/);
+  await expect(removing).toBeFocused();
+
+  const connect = route.getByRole('button', { name: 'Connect mailbox' });
+  await expect(connect).toBeVisible();
+  await expect(connect).toBeFocused();
+  await page.evaluate(() => window.__app.setHash('#chat'));
+  await expect(page).toHaveURL(/#chat$/);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
 });
 
 test('configured Google and Microsoft sign-in stay out of the way of connecting', async ({ page }) => {
@@ -6735,6 +19763,85 @@ test('configured Google and Microsoft sign-in stay out of the way of connecting'
   await expect(connectMicrosoft).toBeDisabled();
   await route.getByRole('textbox', { name: 'Calendar name' }).fill('work');
   await expect(connectMicrosoft).toBeEnabled();
+});
+
+test('a rejected mailbox enrollment keeps the busy and retry actions focused', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?connection=imap-fail`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#connections'));
+
+  const route = page.locator(`[${CONNECTIONS_ROUTE}]`);
+  await route.getByRole('button', { name: 'Connect mailbox' }).click();
+  await route.getByRole('button', { name: /IMAP \/ SMTP/ }).click();
+  await route.getByRole('textbox', { name: 'Name', exact: true }).fill('fastmail');
+  await route.getByRole('textbox', { name: 'IMAP Host', exact: true })
+    .fill('imap.fastmail.com');
+  await route.getByRole('textbox', { name: 'Username', exact: true })
+    .fill('me@example.com');
+  const password = route.getByLabel('Password', { exact: true });
+  await password.fill('app-password');
+
+  const submit = route.getByRole('button', { name: 'Connect account' });
+  await submit.focus();
+  await page.keyboard.press('Enter');
+
+  const busy = route.getByRole('button', { name: 'Connecting…' });
+  await expect(busy).toHaveAttribute('aria-disabled', 'true');
+  await expect(busy).toHaveAttribute('aria-busy', 'true');
+  await expect(busy).toBeFocused();
+
+  await expect(route.getByRole('alert')).toContainText(
+    'The mailbox credentials were rejected.',
+  );
+  await expect(submit).toBeFocused();
+
+  // The first corrective input clears the stale alert by repainting the form.
+  // Keep both field ownership and the post-input caret across that repaint.
+  await password.focus();
+  await password.evaluate((element) => element.setSelectionRange(3, 3));
+  await page.keyboard.type('Z');
+  await expect(route.getByRole('alert')).toHaveCount(0);
+  await expect(password).toHaveValue('appZ-password');
+  await expect(password).toBeFocused();
+  expect(await password.evaluate((element) => element.selectionStart)).toBe(4);
+});
+
+test('a successful IMAP enrollment confirms the connected account in focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?connection=imap-success`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.evaluate(() => window.__app.setHash('#connections'));
+
+  const route = page.locator(`[${CONNECTIONS_ROUTE}]`);
+  await route.getByRole('button', { name: 'Connect mailbox' }).click();
+  await route.getByRole('button', { name: /IMAP \/ SMTP/ }).click();
+  await route.getByRole('textbox', { name: 'Name', exact: true }).fill('fastmail');
+  await route.getByRole('textbox', { name: 'IMAP Host', exact: true })
+    .fill('imap.fastmail.com');
+  await route.getByRole('textbox', { name: 'Username', exact: true })
+    .fill('me@example.com');
+  await route.getByLabel('Password', { exact: true }).fill('app-password');
+  await route.getByRole('button', { name: 'Connect account' }).click();
+
+  const success = route.locator(`[${ACCOUNT_CONNECTION_SUCCESS}]`);
+  await expect(success).toBeVisible();
+  await expect(success).toHaveAttribute('data-sync-state', 'ready');
+  await expect(success).toBeFocused();
+  await expect(success.getByRole('heading', {
+    name: 'IMAP / SMTP is ready',
+  })).toBeVisible();
+  await expect(success).toContainText('me@example.com');
+  await expect(success.getByRole('button', {
+    name: 'Ask about this account',
+  })).toBeVisible();
+
+  const dismiss = success.getByRole('button', { name: 'Dismiss' });
+  await dismiss.focus();
+  await page.keyboard.press('Enter');
+  await expect(route.locator(
+    '[data-action="accounts-open-detail"][data-slug="fastmail"]',
+  )).toBeFocused();
 });
 
 test('a connected mailbox hands its first useful question into Chat', async ({ page, context }) => {
@@ -7407,6 +20514,428 @@ test('the §D.L2 drawer opens via the ☰ toggle and a nav link drives the route
   await expect(page.locator('[data-recued-data-route]')).toBeVisible();
   expect(await page.evaluate(() => window.__app.activeRoute())).toBe('data');
   await expect(host).toBeVisible();
+});
+
+test('the navigation drawer opens on the current route', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page.locator('[data-recued-data-route]')).toBeVisible();
+
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+
+  const current = page.locator(`[${DRAWER_LINK}="data"]`);
+  await expect(current).toHaveAttribute('aria-current', 'page');
+  await expect(current).toBeFocused();
+});
+
+test('the navigation drawer Account seat opens Account settings directly', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+
+  await page.locator(`[${DRAWER_LINK}="account"]`).click();
+
+  await expect(page).toHaveURL(/#settings\/account$/);
+  const account = page.locator(`[${SETTINGS_NAV_ITEM}="account"]`);
+  await expect(account).toHaveAttribute('aria-current', 'page');
+  await expect(account).toHaveAttribute('data-active', 'true');
+  await expect(page.locator('[data-recued-account-binding-panel]')).toBeVisible();
+});
+
+test('live control moves focus into its panel and back to its trigger', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?live=running`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  const toggle = page.locator(`[${LIVE_CONTROL_TOGGLE}]`);
+  await expect(toggle).toBeVisible();
+  await toggle.focus();
+  await page.keyboard.press('Enter');
+
+  const panel = page.locator(`[${LIVE_CONTROL_PANEL}]`);
+  const close = page.locator(`[${LIVE_CONTROL_CLOSE}]`);
+  await expect(panel).toBeVisible();
+  await expect(close).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(panel).toHaveCount(0);
+  await expect(toggle).toBeFocused();
+});
+
+test('live control preserves exact action focus through a running refresh', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?live=running`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  await page.locator(`[${LIVE_CONTROL_TOGGLE}]`).click();
+  const kill = page.locator(
+    `[${LIVE_CONTROL_RUN_CONTROL}="kill"][data-id="run-live-control-1"]`,
+  );
+  await expect(kill).toBeVisible();
+  await kill.focus();
+  const activeCalls = await page.evaluate(
+    () => window.__app.rpcCallCount('execution.active'),
+  );
+
+  await page.evaluate(() => {
+    window.__app.fireMessage({
+      type: 'server_event',
+      event: {
+        kind: 'execution',
+        recipe_id: 'daily-brief',
+        run_id: 'run-live-control-1',
+        op: 'start',
+        cursor: 31,
+      },
+    });
+  });
+  await page.waitForFunction(
+    (before) => window.__app.rpcCallCount('execution.active') > before,
+    activeCalls,
+  );
+
+  await expect(kill).toBeFocused();
+});
+
+test('live control advances focus after a running action retires', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?live=running&logs_control_response=slow`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+
+  await page.locator(`[${LIVE_CONTROL_TOGGLE}]`).click();
+  const firstKill = page.locator(
+    `[${LIVE_CONTROL_RUN_CONTROL}="kill"][data-id="run-live-control-1"]`,
+  );
+  const nextKill = page.locator(
+    `[${LIVE_CONTROL_RUN_CONTROL}="kill"][data-id="run-live-control-2"]`,
+  );
+  await expect(firstKill).toBeVisible();
+  await expect(nextKill).toBeVisible();
+  await firstKill.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(firstKill).toHaveText('Killing…');
+  await expect(firstKill).toHaveAttribute('aria-disabled', 'true');
+  await expect(firstKill).toHaveAttribute('aria-busy', 'true');
+  await expect(firstKill).not.toHaveAttribute('disabled');
+  await expect(firstKill).toBeFocused();
+  await firstKill.dispatchEvent('click');
+  await firstKill.dispatchEvent('click');
+  await expect.poll(
+    () => page.evaluate(
+      () => window.__app.rpcCallCount('execution.kill'),
+    ),
+  ).toBe(1);
+  await expect(firstKill).toHaveCount(0);
+  await expect(nextKill).toBeFocused();
+});
+
+test('drawer Create returns focus to the stable navigation toggle', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const toggle = page.locator(`[${DRAWER_TOGGLE}]`);
+  await toggle.click();
+
+  const create = page.locator(`[${DRAWER_ACTION}="create"]`);
+  await create.focus();
+  await page.keyboard.press('Enter');
+
+  const overlay = page.locator(`[${CREATE_OVERLAY}]`);
+  await expect(overlay).toBeVisible();
+  await expect(overlay.getByRole('dialog', { name: 'Create' })).toBeFocused();
+  await expect(page.locator(`[${SHELL_HOST}][${DRAWER_OPEN}]`)).toHaveCount(0);
+
+  await page.keyboard.press('Escape');
+  await expect(overlay).toHaveCount(0);
+  await page.waitForTimeout(250);
+  await expect(toggle).toBeFocused();
+});
+
+test('Create fields preserve native keyboard and select focus', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+  await page.locator(`[${DRAWER_ACTION}="create"]`).click();
+
+  await page.locator('[data-recued-compose-target="task"]').click();
+  const title = page.locator('[data-recued-compose-field="title"]');
+  const body = page.locator('[data-recued-compose-field="body"]');
+  await title.fill('Draft launch');
+  await title.focus();
+  await page.keyboard.press('Tab');
+  await expect(body).toBeFocused();
+
+  const priority = page.locator('[data-recued-compose-field="priority"]');
+  await priority.focus();
+  await priority.selectOption('high');
+  await expect(priority).toHaveValue('high');
+  await expect(priority).toBeFocused();
+});
+
+test('Create preserves unfinished fields across target switches', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+  await page.locator(`[${DRAWER_ACTION}="create"]`).click();
+
+  const contact = page.locator('[data-recued-compose-target="contact"]');
+  const task = page.locator('[data-recued-compose-target="task"]');
+  const email = page.locator('[data-recued-compose-field="email"]');
+  const name = page.locator('[data-recued-compose-field="name"]');
+  await email.fill('lee@example.test');
+  await name.fill('Lee Morgan');
+
+  await contact.click();
+  await expect(email).toHaveValue('lee@example.test');
+  await expect(name).toHaveValue('Lee Morgan');
+
+  await task.click();
+  const title = page.locator('[data-recued-compose-field="title"]');
+  const body = page.locator('[data-recued-compose-field="body"]');
+  await title.fill('Prepare launch');
+  await body.fill('Review the final checklist.');
+
+  await contact.click();
+  await expect(email).toHaveValue('lee@example.test');
+  await expect(name).toHaveValue('Lee Morgan');
+
+  await task.click();
+  await expect(title).toHaveValue('Prepare launch');
+  await expect(body).toHaveValue('Review the final checklist.');
+});
+
+test('Create protects unfinished capture from dismissal', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+  await page.locator(`[${DRAWER_ACTION}="create"]`).click();
+
+  const overlay = page.locator(`[${CREATE_OVERLAY}]`);
+  const email = page.locator('[data-recued-compose-field="email"]');
+  const close = overlay.getByRole('button', { name: 'Close', exact: true });
+  await email.fill('unfinished@example.test');
+  await page.locator('[data-recued-compose-target="task"]').click();
+  await close.focus();
+  await page.keyboard.press('Enter');
+
+  const guard = page.locator(`[${CREATE_OVERLAY_DISCARD_GUARD}]`);
+  await expect(overlay).toBeVisible();
+  await expect(guard).toHaveAttribute('role', 'alertdialog');
+  await expect(guard).toBeFocused();
+  await expect(guard).toContainText('Discard this unfinished item?');
+
+  await page.keyboard.press('Escape');
+  await expect(guard).toHaveCount(0);
+  await expect(close).toBeFocused();
+  await page.locator('[data-recued-compose-target="contact"]').click();
+  await expect(email).toHaveValue('unfinished@example.test');
+
+  await close.focus();
+  await page.keyboard.press('Enter');
+  await expect(guard).toBeFocused();
+  await page.locator(`[${CREATE_OVERLAY_DISCARD_KEEP}]`).click();
+  await expect(guard).toHaveCount(0);
+  await expect(close).toBeFocused();
+
+  await page.keyboard.press('Enter');
+  await expect(guard).toBeFocused();
+  const discard = page.locator(`[${CREATE_OVERLAY_DISCARD_COMMIT}]`);
+  await expect(discard).toHaveText('Discard item');
+  await discard.click();
+  await expect(overlay).toHaveCount(0);
+});
+
+test('Create exposes its selected target as a named toggle group', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+  await page.locator(`[${DRAWER_ACTION}="create"]`).click();
+
+  const types = page.getByRole('group', { name: 'Create type' });
+  const contact = types.getByRole('button', { name: 'Contact' });
+  const task = types.getByRole('button', { name: 'Task' });
+  await expect(contact).toHaveAttribute('aria-pressed', 'true');
+  await expect(task).toHaveAttribute('aria-pressed', 'false');
+
+  await task.click();
+
+  await expect(contact).toHaveAttribute('aria-pressed', 'false');
+  await expect(task).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('Create Commit retains action focus through confirmation', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?compose_commit_response=slow`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+  await page.locator(`[${DRAWER_ACTION}="create"]`).click();
+
+  await page.locator('[data-recued-compose-field="email"]')
+    .fill('lee@example.test');
+  await page.locator('[data-recued-compose-field="name"]')
+    .fill('Lee Morgan');
+  const commit = page.locator('[data-recued-compose-commit]');
+  const initialCommit = await commit.elementHandle();
+  await commit.focus();
+  await page.keyboard.press('Enter');
+
+  await expect(commit).toHaveText('Committing…');
+  await expect(commit).toBeFocused();
+  await expect(commit).not.toHaveAttribute('disabled');
+  await expect(commit).toHaveAttribute('aria-disabled', 'true');
+  await expect(commit).toHaveAttribute('aria-busy', 'true');
+  const overlay = page.locator(`[${CREATE_OVERLAY}]`);
+  const close = overlay.getByRole('button', { name: 'Close', exact: true });
+  await expect(close).toHaveAttribute('aria-disabled', 'true');
+  await expect(close).not.toHaveAttribute('disabled');
+  await page.keyboard.press('Escape');
+  await expect(overlay).toBeVisible();
+  await close.dispatchEvent('click');
+  await close.dispatchEvent('click');
+  await expect(overlay).toBeVisible();
+  await overlay.dispatchEvent('click');
+  await expect(overlay).toBeVisible();
+  await initialCommit?.evaluate((button) => {
+    (button as HTMLButtonElement).click();
+    (button as HTMLButtonElement).click();
+  });
+  await expect.poll(async () => page.evaluate(() =>
+    window.__app.rpcCallCount('contact.upsert'))).toBe(1);
+  const confirmation = page.locator('[data-recued-compose-confirmation]');
+  await expect(confirmation).toContainText('Committed Contact');
+  await expect(confirmation).toContainText('Lee Morgan');
+  await expect(page.locator('[data-recued-compose-field="email"]')).toHaveValue('');
+  await expect(close).not.toHaveAttribute('aria-disabled');
+  await expect(commit).toBeFocused();
+  await close.click();
+  await expect(overlay).toHaveCount(0);
+});
+
+test('Chat Create retains an unfinished item across tab and route leave', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(`${HARNESS_URL}?chat=session#chat/session/chat_1`);
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${CHAT_COMPOSER_ACTION}="create"]`).click();
+
+  const overlay = page.locator(`[${CREATE_OVERLAY}]`);
+  const email = page.locator('[data-recued-compose-field="email"]');
+  await email.fill('unfinished@example.test');
+  expect(await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    return window.dispatchEvent(event);
+  })).toBe(false);
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    window.__app.setHash('#data');
+  });
+
+  const html = page.locator('html');
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'Discard this unfinished Create item?',
+  );
+  await expect.poll(() => page.evaluate(() => window.location.hash))
+    .toBe('#chat/session/chat_1');
+  await expect(overlay).toBeVisible();
+  await expect(email).toHaveValue('unfinished@example.test');
+
+  await page.evaluate(() => {
+    window.confirm = () => true;
+    window.__app.setHash('#data');
+  });
+  await expect(page).toHaveURL(/#data$/);
+  await expect(overlay).toHaveCount(0);
+});
+
+test('Chat Create retains an unresolved save across tab and route leave', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto(
+    `${HARNESS_URL}?chat=session&compose_commit_response=slow`
+    + '#chat/session/chat_1',
+  );
+  await page.waitForFunction(() => window.__app?.ready === true);
+  await page.locator(`[${CHAT_COMPOSER_ACTION}="create"]`).click();
+
+  await page.locator('[data-recued-compose-field="email"]')
+    .fill('lee@example.test');
+  await page.locator('[data-recued-compose-field="name"]')
+    .fill('Lee Morgan');
+  const commit = page.locator('[data-recued-compose-commit]');
+  await commit.click();
+  await expect(commit).toHaveText('Committing…');
+  expect(await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    return window.dispatchEvent(event);
+  })).toBe(false);
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = (message?: string): boolean => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      root.setAttribute('data-audit-confirm-message', message ?? '');
+      return false;
+    };
+    window.__app.setHash('#data');
+  });
+
+  const html = page.locator('html');
+  const overlay = page.locator(`[${CREATE_OVERLAY}]`);
+  await expect(html).toHaveAttribute(
+    'data-audit-confirm-message',
+    'A Create save is still in progress. Leave Chat anyway?',
+  );
+  await expect.poll(() => page.evaluate(() => window.location.hash))
+    .toBe('#chat/session/chat_1');
+  await expect(overlay).toBeVisible();
+  await expect.poll(() => page.evaluate(() =>
+    window.__app.rpcCallCount('contact.upsert'))).toBe(1);
+
+  await expect(page.locator('[data-recued-compose-confirmation]'))
+    .toContainText('Committed Contact');
+  await page.evaluate(() => window.__app.setHash('#data'));
+  await expect(page).toHaveURL(/#data$/);
+  await expect(overlay).toHaveCount(0);
+  await expect(html).toHaveAttribute('data-audit-confirm-count', '1');
+});
+
+test('drawer Create guards tab unload while staying open across routes', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator(`[${DRAWER_TOGGLE}]`).click();
+  await page.locator(`[${DRAWER_ACTION}="create"]`).click();
+
+  const overlay = page.locator(`[${CREATE_OVERLAY}]`);
+  const email = page.locator('[data-recued-compose-field="email"]');
+  await email.fill('drawer@example.test');
+  expect(await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    return window.dispatchEvent(event);
+  })).toBe(false);
+
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-audit-confirm-count', '0');
+    window.confirm = () => {
+      const root = document.documentElement;
+      const count = Number(root.getAttribute('data-audit-confirm-count') ?? '0');
+      root.setAttribute('data-audit-confirm-count', String(count + 1));
+      return false;
+    };
+    window.__app.setHash('#data');
+  });
+  await expect(page).toHaveURL(/#data$/);
+  await expect(overlay).toBeVisible();
+  await expect(email).toHaveValue('drawer@example.test');
+  await expect(page.locator('html')).toHaveAttribute(
+    'data-audit-confirm-count',
+    '0',
+  );
+  expect(await page.evaluate(() => {
+    const event = new Event('beforeunload', { cancelable: true });
+    return window.dispatchEvent(event);
+  })).toBe(false);
 });
 
 test('the mobile shell stays within the viewport after a live heartbeat', async ({ page }) => {

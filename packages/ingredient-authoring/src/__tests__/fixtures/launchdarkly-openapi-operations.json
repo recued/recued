@@ -5,37 +5,37 @@
     "source": {
       "kind": "openapi",
       "url": "https://app.launchdarkly.com/api/v2/openapi.json",
-      "sha256": "cd593369ed4a48d19bd1f16464ff4839df257e5ba3a0a882de8cfb3002f3e047",
-      "bytes": 2891484,
+      "sha256": "d4a513f2e1dffbcb00fb7dba222704267564e55d18145cd2e5dd3633fdbae581",
+      "bytes": 2927645,
       "openapi": "3.0.3",
       "info_version": "2.0"
     },
-    "official_operation_count": 390,
-    "admitted_operation_count": 388,
+    "official_operation_count": 394,
+    "admitted_operation_count": 392,
     "excluded_operation_count": 2,
-    "unique_admitted_method_path_count": 388,
+    "unique_admitted_method_path_count": 392,
     "method_counts": {
-      "GET": 188,
+      "GET": 191,
       "POST": 83,
       "PUT": 12,
-      "PATCH": 56,
+      "PATCH": 57,
       "DELETE": 51
     },
     "pack_operation_counts": {
       "launchdarkly": 11,
-      "launchdarkly-agent-control": 55,
+      "launchdarkly-agent-control": 60,
       "launchdarkly-flags-targeting": 62,
       "launchdarkly-release-experiment": 93,
-      "launchdarkly-insights-usage": 83,
+      "launchdarkly-insights-usage": 82,
       "launchdarkly-platform-admin": 84
     },
     "beta_operation_count": 135,
     "pagination_counts": {
-      "offset": 42,
+      "offset": 45,
       "next_path": 1,
       "query_token": 4,
       "query_token_link": 5,
-      "none": 336
+      "none": 337
     },
     "unpaged_collection_count": 51,
     "unpaged_collections": [
@@ -405,8 +405,8 @@
     "response_media": [
       "application/json"
     ],
-    "unsafe_integer_response_operation_count": 222,
-    "unsafe_integer_response_occurrence_count": 1048,
+    "unsafe_integer_response_operation_count": 223,
+    "unsafe_integer_response_occurrence_count": 1043,
     "unsafe_integer_request_operation_count": 18,
     "compatibility_operation_ids": [
       "project.search",
@@ -1072,8 +1072,7 @@
       "get": {}
     },
     "/api/v2/users/{projectKey}/{environmentKey}/{userKey}": {
-      "get": {},
-      "delete": {}
+      "get": {}
     },
     "/api/v2/users/{projectKey}/{environmentKey}/{userKey}/flags": {
       "get": {}
@@ -1141,6 +1140,10 @@
     },
     "/api/v2/projects/{projectKey}/ai-configs/model-configs/{modelConfigKey}": {
       "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/api/v2/projects/{projectKey}/ai-configs/model-configs/{modelConfigKey}/versions": {
       "get": {}
     },
     "/api/v2/projects/{projectKey}/ai-tools": {
@@ -1178,8 +1181,15 @@
       "post": {}
     },
     "/api/v2/projects/{projectKey}/ai-configs/skills/{skillKey}": {
+      "delete": {},
       "get": {},
       "patch": {}
+    },
+    "/api/v2/projects/{projectKey}/ai-configs/skills/{skillKey}/references": {
+      "get": {}
+    },
+    "/api/v2/projects/{projectKey}/ai-configs/skills/{skillKey}/versions": {
+      "get": {}
     },
     "/api/v2/projects/{projectKey}/agent-graphs": {
       "get": {},
@@ -2227,6 +2237,12 @@
             "item_type": null,
             "item_format": null
           },
+          "stale": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "environments": {
             "type": "object",
             "format": null,
@@ -2822,6 +2838,12 @@
             "item_type": null,
             "item_format": null
           },
+          "stale": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "environments": {
             "type": "object",
             "format": null,
@@ -3090,6 +3112,12 @@
             "item_format": null
           },
           "migrationSettings": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "stale": {
             "type": "object",
             "format": null,
             "item_type": null,
@@ -4260,6 +4288,12 @@
               "item_type": "string",
               "item_format": null
             },
+            "skills": {
+              "type": "array",
+              "format": null,
+              "item_type": "object",
+              "item_format": null
+            },
             "judgeConfiguration": {
               "type": "object",
               "format": null,
@@ -4390,6 +4424,12 @@
             "item_format": null
           },
           "tools": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
+          },
+          "skills": {
             "type": "array",
             "format": null,
             "item_type": "object",
@@ -4675,6 +4715,12 @@
               "item_type": "string",
               "item_format": null
             },
+            "skills": {
+              "type": "array",
+              "format": null,
+              "item_type": "object",
+              "item_format": null
+            },
             "judgeConfiguration": {
               "type": "object",
               "format": null,
@@ -4805,6 +4851,12 @@
             "item_format": null
           },
           "tools": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
+          },
+          "skills": {
             "type": "array",
             "format": null,
             "item_type": "object",
@@ -5441,6 +5493,18 @@
               "item_type": null,
               "item_format": null
             },
+            "maintainerId": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "maintainerTeamKey": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
             "icon": {
               "type": "string",
               "format": null,
@@ -5513,6 +5577,12 @@
         "properties": {
           "_access": {
             "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "_maintainer": {
+            "type": null,
             "format": null,
             "item_type": null,
             "item_format": null
@@ -5691,6 +5761,14 @@
           "format": null,
           "required": true,
           "exposed": true
+        },
+        {
+          "name": "version",
+          "in": "query",
+          "type": "number",
+          "format": null,
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -5712,6 +5790,12 @@
         "properties": {
           "_access": {
             "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "_maintainer": {
+            "type": null,
             "format": null,
             "item_type": null,
             "item_format": null
@@ -5806,6 +5890,343 @@
       "response_json": null,
       "result_path": null,
       "pagination": null,
+      "api_version": "20240415",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "launchdarkly-agent-control.patch_model_config": {
+      "pack": "launchdarkly-agent-control",
+      "op": "patch_model_config",
+      "operation_id": "patchModelConfig",
+      "method": "PATCH",
+      "path": "/api/v2/projects/{projectKey}/ai-configs/model-configs/{modelConfigKey}",
+      "tags": [
+        "AgentControl"
+      ],
+      "summary": "Update an AI model config",
+      "deprecated": false,
+      "beta": false,
+      "parameters": [
+        {
+          "name": "projectKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "modelConfigKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": {
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema": {
+          "type": "object",
+          "format": null,
+          "required": [],
+          "properties": {
+            "id": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "provider": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "name": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "costPerInputToken": {
+              "type": "number",
+              "format": "double",
+              "item_type": null,
+              "item_format": null
+            },
+            "costPerOutputToken": {
+              "type": "number",
+              "format": "double",
+              "item_type": null,
+              "item_format": null
+            },
+            "costPerCachedInputToken": {
+              "type": "number",
+              "format": "double",
+              "item_type": null,
+              "item_format": null
+            },
+            "params": {
+              "type": "object",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "customParams": {
+              "type": "object",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "tags": {
+              "type": "array",
+              "format": null,
+              "item_type": "string",
+              "item_format": null
+            },
+            "maintainerId": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "maintainerTeamKey": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            }
+          }
+        },
+        "raw_body": false,
+        "decimal_integer_fields": [],
+        "unsafe_integer_occurrences": 0
+      },
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "global",
+          "id",
+          "isRestricted",
+          "key",
+          "name",
+          "tags",
+          "version"
+        ],
+        "properties": {
+          "_access": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "_maintainer": {
+            "type": null,
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "name": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "key": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "id": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "icon": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "provider": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "global": {
+            "type": "boolean",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "params": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "customParams": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "tags": {
+            "type": "array",
+            "format": null,
+            "item_type": "string",
+            "item_format": null
+          },
+          "version": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "costPerInputToken": {
+            "type": "number",
+            "format": "double",
+            "item_type": null,
+            "item_format": null
+          },
+          "costPerOutputToken": {
+            "type": "number",
+            "format": "double",
+            "item_type": null,
+            "item_format": null
+          },
+          "costPerCachedInputToken": {
+            "type": "number",
+            "format": "double",
+            "item_type": null,
+            "item_format": null
+          },
+          "isRestricted": {
+            "type": "boolean",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          }
+        }
+      },
+      "unsafe_response_integer_occurrences": 0,
+      "response_json": null,
+      "result_path": null,
+      "pagination": null,
+      "api_version": "20240415",
+      "content_type": "application/json",
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
+    "launchdarkly-agent-control.list_model_config_versions": {
+      "pack": "launchdarkly-agent-control",
+      "op": "list_model_config_versions",
+      "operation_id": "listModelConfigVersions",
+      "method": "GET",
+      "path": "/api/v2/projects/{projectKey}/ai-configs/model-configs/{modelConfigKey}/versions",
+      "tags": [
+        "AgentControl"
+      ],
+      "summary": "List AI model config versions",
+      "deprecated": false,
+      "beta": false,
+      "parameters": [
+        {
+          "name": "projectKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "modelConfigKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "type": "number",
+          "format": null,
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "offset",
+          "in": "query",
+          "type": "number",
+          "format": null,
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "items",
+          "totalCount"
+        ],
+        "properties": {
+          "_links": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "items": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
+          },
+          "totalCount": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          }
+        }
+      },
+      "unsafe_response_integer_occurrences": 0,
+      "response_json": null,
+      "result_path": "items",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 20
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
       "api_version": "20240415",
       "content_type": null,
       "risk": "read",
@@ -7767,6 +8188,56 @@
       "approval": "always",
       "idempotency": "non_idempotent"
     },
+    "launchdarkly-agent-control.delete_agent_skill": {
+      "pack": "launchdarkly-agent-control",
+      "op": "delete_agent_skill",
+      "operation_id": "deleteAgentSkill",
+      "method": "DELETE",
+      "path": "/api/v2/projects/{projectKey}/ai-configs/skills/{skillKey}",
+      "tags": [
+        "AgentControl"
+      ],
+      "summary": "Delete an agent skill",
+      "deprecated": false,
+      "beta": false,
+      "parameters": [
+        {
+          "name": "projectKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "skillKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": null,
+        "format": null,
+        "required": [],
+        "properties": {}
+      },
+      "unsafe_response_integer_occurrences": 0,
+      "response_json": null,
+      "result_path": null,
+      "pagination": null,
+      "api_version": "20240415",
+      "content_type": null,
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
     "launchdarkly-agent-control.get_agent_skill": {
       "pack": "launchdarkly-agent-control",
       "op": "get_agent_skill",
@@ -8057,6 +8528,224 @@
       "risk": "write",
       "approval": "always",
       "idempotency": "non_idempotent"
+    },
+    "launchdarkly-agent-control.list_agent_skill_references": {
+      "pack": "launchdarkly-agent-control",
+      "op": "list_agent_skill_references",
+      "operation_id": "listAgentSkillReferences",
+      "method": "GET",
+      "path": "/api/v2/projects/{projectKey}/ai-configs/skills/{skillKey}/references",
+      "tags": [
+        "AgentControl"
+      ],
+      "summary": "List agent skill references",
+      "deprecated": false,
+      "beta": false,
+      "parameters": [
+        {
+          "name": "projectKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "skillKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "type": "number",
+          "format": null,
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "offset",
+          "in": "query",
+          "type": "number",
+          "format": null,
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "items",
+          "resourceKey",
+          "resourceType",
+          "totalCount"
+        ],
+        "properties": {
+          "_links": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "resourceKey": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "resourceType": {
+            "type": "string",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "items": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
+          },
+          "totalCount": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          }
+        }
+      },
+      "unsafe_response_integer_occurrences": 0,
+      "response_json": null,
+      "result_path": "items",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 20
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "api_version": "20240415",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "launchdarkly-agent-control.list_agent_skill_versions": {
+      "pack": "launchdarkly-agent-control",
+      "op": "list_agent_skill_versions",
+      "operation_id": "listAgentSkillVersions",
+      "method": "GET",
+      "path": "/api/v2/projects/{projectKey}/ai-configs/skills/{skillKey}/versions",
+      "tags": [
+        "AgentControl"
+      ],
+      "summary": "List agent skill versions",
+      "deprecated": false,
+      "beta": false,
+      "parameters": [
+        {
+          "name": "projectKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "skillKey",
+          "in": "path",
+          "type": "string",
+          "format": null,
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "type": "number",
+          "format": null,
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "offset",
+          "in": "query",
+          "type": "number",
+          "format": null,
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "response_media": [
+        "application/json"
+      ],
+      "response_schema": {
+        "type": "object",
+        "format": null,
+        "required": [
+          "items",
+          "totalCount"
+        ],
+        "properties": {
+          "_links": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "items": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
+          },
+          "totalCount": {
+            "type": "integer",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          }
+        }
+      },
+      "unsafe_response_integer_occurrences": 1,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "result_path": "items",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "limit",
+          "value": 20
+        },
+        "param": {
+          "placement": "query",
+          "param": "offset"
+        },
+        "start": 0,
+        "increment": "by_page_size"
+      },
+      "api_version": "20240415",
+      "content_type": null,
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
     },
     "launchdarkly-agent-control.list_agent_graphs": {
       "pack": "launchdarkly-agent-control",
@@ -11583,6 +12272,12 @@
             "item_type": null,
             "item_format": null
           },
+          "stale": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "environments": {
             "type": "object",
             "format": null,
@@ -13373,6 +14068,14 @@
           "format": "string",
           "required": true,
           "exposed": true
+        },
+        {
+          "name": "expand",
+          "in": "query",
+          "type": "string",
+          "format": "string",
+          "required": false,
+          "exposed": true
         }
       ],
       "request": null,
@@ -13401,7 +14104,7 @@
           }
         }
       },
-      "unsafe_response_integer_occurrences": 3,
+      "unsafe_response_integer_occurrences": 4,
       "response_json": {
         "unsafe_integers": "string"
       },
@@ -19233,12 +19936,6 @@
               "item_type": null,
               "item_format": null
             },
-            "winsorExcludeImputed": {
-              "type": "boolean",
-              "format": null,
-              "item_type": null,
-              "item_format": null
-            },
             "winsorIncludeImputed": {
               "type": "boolean",
               "format": null,
@@ -19258,6 +19955,12 @@
               "item_format": null
             },
             "unitAggregationField": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "valueColumn": {
               "type": "string",
               "format": null,
               "item_type": null,
@@ -19541,12 +20244,6 @@
           },
           "winsorUpperPercentile": {
             "type": "number",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
-          "winsorExcludeImputed": {
-            "type": "boolean",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -19942,12 +20639,6 @@
             "item_type": null,
             "item_format": null
           },
-          "winsorExcludeImputed": {
-            "type": "boolean",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
           "winsorIncludeImputed": {
             "type": "boolean",
             "format": null,
@@ -20333,12 +21024,6 @@
           },
           "winsorUpperPercentile": {
             "type": "number",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
-          "winsorExcludeImputed": {
-            "type": "boolean",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -29453,7 +30138,7 @@
           }
         }
       },
-      "unsafe_response_integer_occurrences": 15,
+      "unsafe_response_integer_occurrences": 14,
       "response_json": {
         "unsafe_integers": "string"
       },
@@ -29572,7 +30257,6 @@
         "required": [
           "_affectsSdkPayload",
           "accountId",
-          "archived",
           "createdAt",
           "deleted",
           "description",
@@ -29676,18 +30360,6 @@
             "item_type": null,
             "item_format": null
           },
-          "archived": {
-            "type": "boolean",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
-          "archivedAt": {
-            "type": "integer",
-            "format": "int64",
-            "item_type": null,
-            "item_format": null
-          },
           "deletedAt": {
             "type": "integer",
             "format": "int64",
@@ -29768,7 +30440,7 @@
           }
         }
       },
-      "unsafe_response_integer_occurrences": 15,
+      "unsafe_response_integer_occurrences": 14,
       "response_json": {
         "unsafe_integers": "string"
       },
@@ -29926,7 +30598,6 @@
         "required": [
           "_affectsSdkPayload",
           "accountId",
-          "archived",
           "createdAt",
           "deleted",
           "description",
@@ -30030,18 +30701,6 @@
             "item_type": null,
             "item_format": null
           },
-          "archived": {
-            "type": "boolean",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
-          "archivedAt": {
-            "type": "integer",
-            "format": "int64",
-            "item_type": null,
-            "item_format": null
-          },
           "deletedAt": {
             "type": "integer",
             "format": "int64",
@@ -30122,7 +30781,7 @@
           }
         }
       },
-      "unsafe_response_integer_occurrences": 15,
+      "unsafe_response_integer_occurrences": 14,
       "response_json": {
         "unsafe_integers": "string"
       },
@@ -30211,12 +30870,6 @@
               "format": null,
               "item_type": "string",
               "item_format": null
-            },
-            "archived": {
-              "type": "boolean",
-              "format": null,
-              "item_type": null,
-              "item_format": null
             }
           }
         },
@@ -30233,7 +30886,6 @@
         "required": [
           "_affectsSdkPayload",
           "accountId",
-          "archived",
           "createdAt",
           "deleted",
           "description",
@@ -30337,18 +30989,6 @@
             "item_type": null,
             "item_format": null
           },
-          "archived": {
-            "type": "boolean",
-            "format": null,
-            "item_type": null,
-            "item_format": null
-          },
-          "archivedAt": {
-            "type": "integer",
-            "format": "int64",
-            "item_type": null,
-            "item_format": null
-          },
           "deletedAt": {
             "type": "integer",
             "format": "int64",
@@ -30429,7 +31069,7 @@
           }
         }
       },
-      "unsafe_response_integer_occurrences": 15,
+      "unsafe_response_integer_occurrences": 14,
       "response_json": {
         "unsafe_integers": "string"
       },
@@ -30641,7 +31281,7 @@
           }
         }
       },
-      "unsafe_response_integer_occurrences": 24,
+      "unsafe_response_integer_occurrences": 23,
       "response_json": {
         "unsafe_integers": "string"
       },
@@ -30779,7 +31419,7 @@
           }
         }
       },
-      "unsafe_response_integer_occurrences": 24,
+      "unsafe_response_integer_occurrences": 23,
       "response_json": {
         "unsafe_integers": "string"
       },
@@ -30906,7 +31546,7 @@
           }
         }
       },
-      "unsafe_response_integer_occurrences": 15,
+      "unsafe_response_integer_occurrences": 14,
       "response_json": {
         "unsafe_integers": "string"
       },
@@ -36198,6 +36838,12 @@
             "format": null,
             "item_type": "object",
             "item_format": null
+          },
+          "projectedSeries": {
+            "type": "array",
+            "format": null,
+            "item_type": "object",
+            "item_format": null
           }
         }
       },
@@ -37281,64 +37927,6 @@
       "risk": "read",
       "approval": "never",
       "idempotency": "safe"
-    },
-    "launchdarkly-insights-usage.delete_user": {
-      "pack": "launchdarkly-insights-usage",
-      "op": "delete_user",
-      "operation_id": "deleteUser",
-      "method": "DELETE",
-      "path": "/api/v2/users/{projectKey}/{environmentKey}/{userKey}",
-      "tags": [
-        "Users"
-      ],
-      "summary": "Delete user",
-      "deprecated": true,
-      "beta": false,
-      "parameters": [
-        {
-          "name": "projectKey",
-          "in": "path",
-          "type": "string",
-          "format": "string",
-          "required": true,
-          "exposed": true
-        },
-        {
-          "name": "environmentKey",
-          "in": "path",
-          "type": "string",
-          "format": "string",
-          "required": true,
-          "exposed": true
-        },
-        {
-          "name": "userKey",
-          "in": "path",
-          "type": "string",
-          "format": "string",
-          "required": true,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "response_media": [
-        "application/json"
-      ],
-      "response_schema": {
-        "type": null,
-        "format": null,
-        "required": [],
-        "properties": {}
-      },
-      "unsafe_response_integer_occurrences": 0,
-      "response_json": null,
-      "result_path": null,
-      "pagination": null,
-      "api_version": "20240415",
-      "content_type": null,
-      "risk": "destructive",
-      "approval": "always",
-      "idempotency": "idempotent"
     },
     "launchdarkly-insights-usage.get_versions": {
       "pack": "launchdarkly-insights-usage",
@@ -41308,6 +41896,12 @@
               "item_format": null
             },
             "clickHousePassword": {
+              "type": "string",
+              "format": null,
+              "item_type": null,
+              "item_format": null
+            },
+            "s3BucketName": {
               "type": "string",
               "format": null,
               "item_type": null,
@@ -48482,7 +49076,32 @@
       "summary": "Get IP Allowlist",
       "deprecated": false,
       "beta": true,
-      "parameters": [],
+      "parameters": [
+        {
+          "name": "search",
+          "in": "query",
+          "type": "string",
+          "format": null,
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "limit",
+          "in": "query",
+          "type": "number",
+          "format": null,
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "offset",
+          "in": "query",
+          "type": "number",
+          "format": null,
+          "required": false,
+          "exposed": true
+        }
+      ],
       "request": null,
       "response_media": [
         "application/json"
@@ -48496,6 +49115,12 @@
           "sessionAllowlistEnabled"
         ],
         "properties": {
+          "_links": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "sessionAllowlistEnabled": {
             "type": "boolean",
             "format": null,
@@ -48504,6 +49129,12 @@
           },
           "apiTokenAllowlistEnabled": {
             "type": "boolean",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "totalCount": {
+            "type": "integer",
             "format": null,
             "item_type": null,
             "item_format": null
@@ -48581,6 +49212,12 @@
           "sessionAllowlistEnabled"
         ],
         "properties": {
+          "_links": {
+            "type": "object",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
           "sessionAllowlistEnabled": {
             "type": "boolean",
             "format": null,
@@ -48589,6 +49226,12 @@
           },
           "apiTokenAllowlistEnabled": {
             "type": "boolean",
+            "format": null,
+            "item_type": null,
+            "item_format": null
+          },
+          "totalCount": {
+            "type": "integer",
             "format": null,
             "item_type": null,
             "item_format": null

@@ -289,6 +289,19 @@ describe('run-modal render', () => {
     expect(html).toMatch(/data-active="true"[^>]*data-recued-run-modal-tab="run"/);
   });
 
+  it('renders one selected tab stop linked to the active panel', () => {
+    const html = renderRunModal(stateWith(), recipeEntry(), CAPS_FULL);
+    expect(html).toMatch(
+      /role="tab"[^>]*aria-selected="true"[^>]*tabindex="0"[^>]*data-recued-run-modal-tab="run"/,
+    );
+    expect(html).toMatch(
+      /role="tab"[^>]*aria-selected="false"[^>]*tabindex="-1"[^>]*data-recued-run-modal-tab="schedule"/,
+    );
+    expect(html).toContain(
+      'role="tabpanel"\n          aria-labelledby="recued-run-modal-run-tab"',
+    );
+  });
+
   it('upgrades file_ref variables to an owner-file picker only when wired', () => {
     const recipe = recipeEntry('paid-document', {
       variables: {
@@ -406,6 +419,31 @@ describe('run-modal render', () => {
     expect(html).toMatch(/confirm-run"\s+disabled/);
   });
 
+  it('keeps the in-flight Run control focusable but inert', () => {
+    const html = renderRunModal(
+      stateWith({ executing: true }),
+      recipeEntry(),
+      CAPS_FULL,
+    );
+    const button = html.match(/<button[^>]*confirm-run[^>]*>/)?.[0] ?? '';
+    expect(button).toContain('aria-disabled="true"');
+    expect(button).toContain('aria-busy="true"');
+    expect(button).not.toMatch(/\sdisabled(?:\s|>)/);
+  });
+
+  it('keeps Close focusable but inert while any command is pending', () => {
+    for (const pending of [
+      { executing: true },
+      { mutating: true },
+      { trigger_mutating: true },
+    ] satisfies Array<Partial<RunModalState>>) {
+      const html = renderRunModal(stateWith(pending), recipeEntry(), CAPS_FULL);
+      const button = html.match(/<button[^>]*run-modal-close[^>]*>/)?.[0] ?? '';
+      expect(button).toContain('aria-disabled="true"');
+      expect(button).not.toMatch(/\sdisabled(?:\s|>)/);
+    }
+  });
+
   it('Schedule tab: preset picker, rows, empty + not-available', () => {
     const recipe = recipeEntry();
     const withRows = renderRunModal(
@@ -414,6 +452,7 @@ describe('run-modal render', () => {
       CAPS_FULL,
     );
     expect(withRows).toContain(RUN_MODAL_PRESET_ATTR);
+    expect(withRows).toContain('id="run-modal-repeat"');
     expect(withRows).toContain('Add schedule');
     expect(withRows).toContain('toggle-schedule:off'); // an enabled row pauses
     expect(withRows).toContain('remove-schedule');
@@ -432,6 +471,68 @@ describe('run-modal render', () => {
       canTrigger: false,
     });
     expect(noCaller).toContain('Scheduling is not available');
+  });
+
+  it('keeps Add schedule focusable but inert during a mutation', () => {
+    const html = renderRunModal(
+      stateWith({ tab: 'schedule', schedules: [], mutating: true }),
+      recipeEntry(),
+      CAPS_FULL,
+    );
+    const button = html.match(/<button[^>]*add-schedule[^>]*>/)?.[0] ?? '';
+    expect(button).toContain('aria-disabled="true"');
+    expect(button).toContain('aria-busy="true"');
+    expect(button).not.toMatch(/\sdisabled(?:\s|>)/);
+  });
+
+  it('keeps schedule row actions focusable but inert during a mutation', () => {
+    const html = renderRunModal(
+      stateWith({
+        tab: 'schedule',
+        schedules: [scheduleRow('s1')],
+        mutating: true,
+      }),
+      recipeEntry('daily-brief', { variables: { topic: 'news' } }),
+      CAPS_FULL,
+    );
+    for (const action of [
+      'config-schedule',
+      'toggle-schedule:off',
+      'remove-schedule',
+    ]) {
+      const button = html.match(
+        new RegExp(`<button[^>]*${action}[^>]*>`),
+      )?.[0] ?? '';
+      expect(button).toContain('aria-disabled="true"');
+      expect(button).toContain('aria-busy="true"');
+      expect(button).not.toMatch(/\sdisabled(?:\s|>)/);
+    }
+  });
+
+  it('keeps trigger actions focusable but inert during a mutation', () => {
+    const html = renderRunModal(
+      stateWith({
+        tab: 'trigger',
+        triggers: [triggerRow('t1')],
+        trigger_mutating: true,
+        pattern_text: 'data.mail.**',
+      }),
+      recipeEntry('daily-brief', { variables: { topic: 'news' } }),
+      CAPS_FULL,
+    );
+    for (const action of [
+      'add-trigger',
+      'config-trigger',
+      'toggle-trigger:off',
+      'remove-trigger',
+    ]) {
+      const button = html.match(
+        new RegExp(`<button[^>]*${action}[^>]*>`),
+      )?.[0] ?? '';
+      expect(button).toContain('aria-disabled="true"');
+      expect(button).toContain('aria-busy="true"');
+      expect(button).not.toMatch(/\sdisabled(?:\s|>)/);
+    }
   });
 
   it('Schedule/Trigger tabs surface the recipe config fields (D-179)', () => {
@@ -755,6 +856,37 @@ describe('run-modal wire', () => {
     expect((handle.element as unknown as FakeEl).removed).toBe(true);
     handle.destroy(); // idempotent — no throw, no second onClose
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('holds Escape dismissal until an in-flight mutation settles', async () => {
+    const onClose = vi.fn();
+    const doc = makeDoc();
+    let finishCreate!: (value: { schedule: ServerSchedule }) => void;
+    const handle = wireRunModal({
+      document: doc as unknown as Document,
+      recipe: recipeEntry(),
+      schedulesList: vi.fn(async () => ({ schedules: [scheduleRow('s2')] })),
+      schedulesCreate: vi.fn(() =>
+        new Promise<{ schedule: ServerSchedule }>((resolve) => {
+          finishCreate = resolve;
+        })),
+      initialTab: 'schedule',
+      onClose,
+    });
+
+    const pending = handle.addSchedule();
+    expect(handle.getState().mutating).toBe(true);
+    expect(handle.hasInFlightWork()).toBe(true);
+    doc.fireKeydown('Escape');
+    expect(onClose).not.toHaveBeenCalled();
+    expect((handle.element as unknown as FakeEl).removed).toBe(false);
+
+    finishCreate({ schedule: scheduleRow('s2') });
+    await pending;
+    expect(handle.hasInFlightWork()).toBe(false);
+    doc.fireKeydown('Escape');
+    expect(onClose).toHaveBeenCalledTimes(1);
+    expect((handle.element as unknown as FakeEl).removed).toBe(true);
   });
 
   it('injects its stylesheet once per document', () => {

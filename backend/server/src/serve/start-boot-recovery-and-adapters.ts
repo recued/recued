@@ -9,7 +9,7 @@ import {
 import { createPassportAuditEmitter } from '../passport/index.js';
 import { commitRestoreProvenanceAtBoot } from '../archive/restore-provenance.js';
 import { replayKeyfileEventsIntoAudit } from '../keys/keyfile-event-replay.js';
-import { sweepBlobScratch } from '../archive/archive-scratch.js';
+import { sweepArchiveScratch } from '../archive/archive-scratch.js';
 import { sweepAtomicWriteTemps } from '../durable-fs.js';
 import { sweepSnapshotStaging } from '../open-database.js';
 import {
@@ -36,6 +36,10 @@ export interface StartBootRecoveryAndAdaptersOptions {
    *  and the blob scratch the boot sweep reclaims. Absent on a db-less harness
    *  ⇒ both hooks are skipped. */
   readonly dbPath?: string;
+  /** Canonical config file path, when one exists. Restore journal config stages
+   *  are written beside it, so hard-exit atomic-write temps in a separate
+   *  config directory need the same post-lock sweep as the data directory. */
+  readonly configPath?: string | null;
   /** Live signing-identity getter, read AFTER `bootSigningIdentity()` to
    *  record the restore's new publisher_id. Absent ⇒ the provenance hook is
    *  skipped. */
@@ -70,6 +74,7 @@ export const startBootRecoveryAndAdapters = async (
     fileStack,
     collection,
     dbPath,
+    configPath,
     getSigningIdentity,
     uploadSessions,
     warn = (message) => console.warn(message),
@@ -97,18 +102,23 @@ export const startBootRecoveryAndAdapters = async (
       if (inboundTotal > 0) {
         warn(`[inbound] reclaimed ${inboundTotal} stranded scratch file(s)`);
       }
-      // A kill between the keyfile/sidecar writer's temp and its rename
-      // strands a 0600 file holding the whole document — for the keyfile in
-      // its default mode that is the server vault key and both private
-      // identity keys, in the clear. One sweep covers both writers: they
-      // publish into this same directory.
-      sweepAtomicWriteTemps(dirname(dbPath));
+      // A kill between a shared atomic writer's temp and rename strands a 0600
+      // file holding the whole document — keyfiles, bundle/journal state,
+      // provenance, or staged config. Sweep the data directory and a distinct
+      // config directory only after the lifecycle lock proves no writer in this
+      // process is active.
+      for (const dir of new Set([
+        dirname(dbPath),
+        ...(configPath ? [dirname(configPath)] : []),
+      ])) {
+        sweepAtomicWriteTemps(dir);
+      }
       // `VACUUM INTO` staging left by a kill mid-snapshot — a full copy of the
       // realm each, and nothing else looks for them.
       sweepSnapshotStaging(dirname(dbPath));
-      const swept = sweepBlobScratch(dirname(dbPath));
+      const swept = sweepArchiveScratch(dirname(dbPath));
       if (swept > 0) {
-        warn(`[archive] reclaimed ${swept} stranded blob scratch file(s)`);
+        warn(`[archive] reclaimed ${swept} stranded plaintext scratch file(s)`);
       }
     }
 

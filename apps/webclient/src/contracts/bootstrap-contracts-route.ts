@@ -115,6 +115,9 @@ export const CONTRACTS_ROUTE_LIST_PANEL_ATTR = 'data-recued-contracts-list-panel
 export const CONTRACTS_ROUTE_PILL_ATTR = 'data-recued-contracts-pill';
 /** The DETAIL view container; carries `data-contract-id`. */
 export const CONTRACTS_ROUTE_DETAIL_ATTR = 'data-recued-contracts-detail';
+/** The focus landing for an exact contract detail. Carries the contract id. */
+export const CONTRACTS_ROUTE_DETAIL_HEADING_ATTR =
+  'data-recued-contracts-detail-heading';
 /** The "← Back to contracts" link in DETAIL. */
 export const CONTRACTS_ROUTE_BACK_ATTR = 'data-recued-contracts-back';
 /** One tab button in the DETAIL tab strip; carries `data-tab`. */
@@ -176,6 +179,11 @@ export const CONTRACTS_ROUTE_REVOKE_CONFIRM_ATTR = 'data-recued-contracts-revoke
 export const CONTRACTS_ROUTE_REVOKE_CANCEL_ATTR = 'data-recued-contracts-revoke-cancel';
 /** A header control error chip (door-toggle / revoke failure). */
 export const CONTRACTS_ROUTE_HEAD_ERROR_ATTR = 'data-recued-contracts-head-error';
+
+// Same-surface hash navigation remounts this route. Carry only the exact Back
+// target across that short boundary, scoped to the owning document and consumed
+// by the first list paint so it cannot leak into later Contracts visits.
+const pendingListFocusByDocument = new WeakMap<Document, string>();
 
 // ════════════════════════════════════════════════════════════════
 // MCP client snippets (pure helpers — consumed by the delta-2 Connect tab)
@@ -514,7 +522,8 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
   gap: 4px;
   cursor: pointer;
 }
-[${CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR}] input[disabled] {
+[${CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR}] input[disabled],
+[${CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR}] input[aria-disabled="true"] {
   opacity: 0.6;
   cursor: default;
 }
@@ -545,7 +554,8 @@ const CONTRACTS_ROUTE_CHROME_STYLES = `
   color: var(--danger, #b3261e);
   border-color: var(--danger, #b3261e);
 }
-[${CONTRACTS_ROUTE_REVOKE_ATTR}][disabled] {
+[${CONTRACTS_ROUTE_REVOKE_ATTR}][disabled],
+[${CONTRACTS_ROUTE_REVOKE_ATTR}][aria-disabled="true"] {
   opacity: 0.6;
   cursor: default;
 }
@@ -834,6 +844,10 @@ export interface ContractsRoute {
   scopedGrantPanel(): ScopedGrantPanelMount | null;
   /** Resolves after the initial contract load + first render. */
   whenLoaded(): Promise<void>;
+  /** True while any route-local or child-panel contract write is unresolved. */
+  hasInFlightWork(): boolean;
+  /** Contextual shell guard for contract writes that cannot be recalled. */
+  inFlightWorkPrompt(): string | null;
   getRecoveryContextFreshness(): 'current' | 'unavailable';
   /** Re-read the privacy-safe inventory landing without reconstructing a
    * contract detail that was deliberately withheld during recovery. */
@@ -1155,10 +1169,22 @@ export const bootstrapContractsRoute = (
   let nextListCursor: string | null = null;
   let totalContractsOnTab = 0;
   let listPageBusy = false;
+  let pendingPageFocus: 'previous' | 'next' | null = null;
   let suggestedRulesPanel: SuggestedRulesPanelMount | null = null;
   let scopedGrantPanel: ScopedGrantPanelMount | null = null;
   let connectPanel: PermissionsPanelMount | null = null;
   let detailGrantPanel: ContractGrantsPanelMount | null = null;
+  let routeOwnedMutationCount = 0;
+
+  const beginRouteOwnedMutation = (): (() => void) => {
+    routeOwnedMutationCount += 1;
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      routeOwnedMutationCount = Math.max(0, routeOwnedMutationCount - 1);
+    };
+  };
 
   const clearBody = (): void => {
     if (suggestedRulesPanel !== null) {
@@ -1361,6 +1387,7 @@ export const bootstrapContractsRoute = (
       submitting = true;
       submit.disabled = true;
       submit.textContent = 'Creating…';
+      const releaseOwnership = beginRouteOwnedMutation();
       try {
         const request: MintContractRequest = {
           display_name: name,
@@ -1370,6 +1397,9 @@ export const bootstrapContractsRoute = (
           ...(expiry !== undefined ? { expiry_at: expiry } : {}),
         };
         const view = await mintCaller(request);
+        // The mint is durable before its intentional detail handoff. Release
+        // the leave guard so that handoff does not confirm against itself.
+        releaseOwnership();
         if (disposed) return;
         navigate(serializeShellRoute('contracts', view.contract_id, 'connect'));
       } catch (err) {
@@ -1378,6 +1408,8 @@ export const bootstrapContractsRoute = (
         submit.disabled = false;
         submit.textContent = 'Create contract';
         setError(errMessage(err));
+      } finally {
+        releaseOwnership();
       }
     };
     submit.addEventListener('click', () => {
@@ -1483,26 +1515,50 @@ export const bootstrapContractsRoute = (
         : `Showing ${pageStart + 1}–${pageStart + rows.length} of ${totalContractsOnTab}${itemSuffix}`;
       pager.appendChild(status);
 
-      const previous = makeEl(doc, 'button', undefined, 'Previous');
+      const previousOwnsLoad = listPageBusy && pendingPageFocus === 'previous';
+      const previous = makeEl(
+        doc,
+        'button',
+        undefined,
+        previousOwnsLoad ? 'Loading…' : 'Previous',
+      );
       previous.setAttribute('type', 'button');
       previous.setAttribute(CONTRACTS_ROUTE_PAGE_PREVIOUS_ATTR, '');
-      if (listPageBusy || previousListCursors.length === 0) {
+      if (previousOwnsLoad) {
+        previous.setAttribute('aria-label', 'Loading previous page');
+        previous.setAttribute('aria-disabled', 'true');
+        previous.setAttribute('aria-busy', 'true');
+      } else if (listPageBusy || previousListCursors.length === 0) {
         previous.setAttribute('disabled', '');
       } else {
         previous.addEventListener('click', () => {
+          if (listPageBusy) return;
+          pendingPageFocus = 'previous';
           const prior = previousListCursors[previousListCursors.length - 1];
           void loadListPage(prior, 'previous');
         });
       }
       pager.appendChild(previous);
 
-      const next = makeEl(doc, 'button', undefined, 'Next');
+      const nextOwnsLoad = listPageBusy && pendingPageFocus === 'next';
+      const next = makeEl(
+        doc,
+        'button',
+        undefined,
+        nextOwnsLoad ? 'Loading…' : 'Next',
+      );
       next.setAttribute('type', 'button');
       next.setAttribute(CONTRACTS_ROUTE_PAGE_NEXT_ATTR, '');
-      if (listPageBusy || nextListCursor === null) {
+      if (nextOwnsLoad) {
+        next.setAttribute('aria-label', 'Loading next page');
+        next.setAttribute('aria-disabled', 'true');
+        next.setAttribute('aria-busy', 'true');
+      } else if (listPageBusy || nextListCursor === null) {
         next.setAttribute('disabled', '');
       } else {
         next.addEventListener('click', () => {
+          if (listPageBusy) return;
+          pendingPageFocus = 'next';
           void loadListPage(nextListCursor ?? undefined, 'next');
         });
       }
@@ -1592,6 +1648,75 @@ export const bootstrapContractsRoute = (
     // Staged-trust proposals are user decisions, not contract inventory. Keep
     // their existing dormant-when-empty behavior after the active inventory.
     mountProposals();
+
+    const returnFocusId = pendingListFocusByDocument.get(doc);
+    if (returnFocusId !== undefined) {
+      pendingListFocusByDocument.delete(doc);
+      const returnRow = Array.from(body.querySelectorAll(
+        `[${CONTRACTS_ROUTE_ROW_ATTR}]`,
+      )).find((candidate) =>
+        candidate.getAttribute(CONTRACTS_ROUTE_ROW_ID_ATTR) === returnFocusId,
+      ) as HTMLElement | undefined;
+      if (returnRow !== undefined) {
+        returnRow.focus({ preventScroll: true });
+      } else {
+        heading.setAttribute('tabindex', '-1');
+        heading.focus({ preventScroll: true });
+      }
+    } else if (pendingPageFocus !== null && listPageBusy) {
+      const attr = pendingPageFocus === 'previous'
+        ? CONTRACTS_ROUTE_PAGE_PREVIOUS_ATTR
+        : CONTRACTS_ROUTE_PAGE_NEXT_ATTR;
+      const owner = body.querySelector(`[${attr}]`) as HTMLElement | null;
+      owner?.focus({ preventScroll: true });
+    } else if (pendingPageFocus !== null) {
+      const requestedDirection = pendingPageFocus;
+      pendingPageFocus = null;
+      const findEnabledPageControl = (
+        direction: 'previous' | 'next',
+      ): HTMLElement | null => {
+        const attr = direction === 'previous'
+          ? CONTRACTS_ROUTE_PAGE_PREVIOUS_ATTR
+          : CONTRACTS_ROUTE_PAGE_NEXT_ATTR;
+        const control = body.querySelector(`[${attr}]`) as HTMLElement | null;
+        return control?.getAttribute('disabled') === null ? control : null;
+      };
+      const oppositeDirection = requestedDirection === 'previous'
+        ? 'next'
+        : 'previous';
+      const control = findEnabledPageControl(requestedDirection)
+        ?? findEnabledPageControl(oppositeDirection);
+      const firstRow = body.querySelector(
+        `[${CONTRACTS_ROUTE_ROW_ATTR}]`,
+      ) as HTMLElement | null;
+      const target = control ?? firstRow ?? heading;
+      if (target === heading) heading.setAttribute('tabindex', '-1');
+      target.focus({ preventScroll: true });
+    }
+  };
+
+  const markPageRequestBusy = (
+    direction: 'next' | 'previous',
+  ): void => {
+    const ownerAttr = direction === 'previous'
+      ? CONTRACTS_ROUTE_PAGE_PREVIOUS_ATTR
+      : CONTRACTS_ROUTE_PAGE_NEXT_ATTR;
+    const siblingAttr = direction === 'previous'
+      ? CONTRACTS_ROUTE_PAGE_NEXT_ATTR
+      : CONTRACTS_ROUTE_PAGE_PREVIOUS_ATTR;
+    const owner = body.querySelector(`[${ownerAttr}]`) as HTMLElement | null;
+    const sibling = body.querySelector(`[${siblingAttr}]`) as HTMLElement | null;
+    if (owner !== null) {
+      owner.textContent = 'Loading…';
+      owner.setAttribute(
+        'aria-label',
+        direction === 'previous' ? 'Loading previous page' : 'Loading next page',
+      );
+      owner.setAttribute('aria-disabled', 'true');
+      owner.setAttribute('aria-busy', 'true');
+      owner.focus({ preventScroll: true });
+    }
+    sibling?.setAttribute('disabled', '');
   };
 
   // The contract-credential (mcp-door) panel lives in the Connect tab. Only
@@ -1666,6 +1791,22 @@ export const bootstrapContractsRoute = (
           ? 'Customer contracts'
           : 'Other contracts'
     }`;
+    back.addEventListener('click', (event) => {
+      const click = event as MouseEvent | undefined;
+      if (
+        click !== undefined
+        && (
+          click.button !== 0
+          || click.metaKey
+          || click.ctrlKey
+          || click.altKey
+          || click.shiftKey
+        )
+      ) {
+        return;
+      }
+      pendingListFocusByDocument.set(doc, row.contract_id);
+    });
     detail.appendChild(back);
 
     // A degraded load still opens a targeted contract's DETAIL (self is always
@@ -1690,9 +1831,11 @@ export const bootstrapContractsRoute = (
     // place to reflect a door/revoke edit until a Back-link remount reloads.
     let currentRow = row;
     let doorBusy = false;
+    let doorBusyType: DoorType | null = null;
     let revokeBusy = false;
     let revokeArmed = false;
     let headError: string | null = null;
+    let pendingHeadFocusAttr: string | null = null;
 
     // Only ordinary contracts expose generic door and revoke controls.
     // Seller templates use this detail strictly for grant authoring; Seller
@@ -1712,6 +1855,7 @@ export const bootstrapContractsRoute = (
       && opts.contractsRevokeCaller !== undefined;
 
     const head = makeEl(doc, 'div', 'contracts-detail-head');
+    let detailHeading: HTMLElement | null = null;
 
     /** Toggle one L1 door type via `setDoorTypes`, then reconcile `currentRow`
      *  from the authoritative response. Refuses to empty the backed set (a door
@@ -1722,7 +1866,9 @@ export const bootstrapContractsRoute = (
       const next = nextDoorTypes(currentRow.door_types, doorType);
       if (next === null) return; // would back nothing — a door must back ≥1 type.
       doorBusy = true;
+      doorBusyType = doorType;
       headError = null;
+      const releaseOwnership = beginRouteOwnedMutation();
       paintHead();
       try {
         const updated = await setter({
@@ -1740,6 +1886,8 @@ export const bootstrapContractsRoute = (
         headError = `Could not update the door: ${errMessage(err)}`;
       } finally {
         doorBusy = false;
+        doorBusyType = null;
+        releaseOwnership();
         if (!disposed) paintHead();
       }
     };
@@ -1753,6 +1901,7 @@ export const bootstrapContractsRoute = (
       revokeBusy = true;
       revokeArmed = false;
       headError = null;
+      const releaseOwnership = beginRouteOwnedMutation();
       paintHead();
       try {
         const revoked = await revoke({ contract_id: currentRow.contract_id });
@@ -1763,6 +1912,7 @@ export const bootstrapContractsRoute = (
         headError = `Could not revoke: ${errMessage(err)}`;
       } finally {
         revokeBusy = false;
+        releaseOwnership();
         if (!disposed) paintHead();
       }
     };
@@ -1789,11 +1939,20 @@ export const bootstrapContractsRoute = (
         // Lock the only-backed type (un-backing it would empty the set; `[]`
         // means wildcard, not "backs nothing"). Disabled while a write runs.
         const lockLast = backed && backedCount === 1;
-        if (doorBusy || lockLast) input.setAttribute('disabled', '');
-        else
+        if (doorBusy) {
+          if (doorBusyType === dt) {
+            input.setAttribute('aria-disabled', 'true');
+            input.setAttribute('aria-busy', 'true');
+          } else {
+            input.setAttribute('disabled', '');
+          }
+        } else if (lockLast) {
+          input.setAttribute('disabled', '');
+        } else {
           input.addEventListener('change', () => {
             void runSetDoor(dt);
           });
+        }
         label.appendChild(input);
         label.appendChild(
           makeEl(doc, 'span', 'contracts-door-name', DOOR_TYPE_LABELS[dt]),
@@ -1809,7 +1968,8 @@ export const bootstrapContractsRoute = (
         const btn = makeEl(doc, 'button', undefined, 'Revoking…');
         btn.setAttribute('type', 'button');
         btn.setAttribute(CONTRACTS_ROUTE_REVOKE_ATTR, '');
-        btn.setAttribute('disabled', '');
+        btn.setAttribute('aria-disabled', 'true');
+        btn.setAttribute('aria-busy', 'true');
         wrap.appendChild(btn);
       } else if (revokeArmed) {
         wrap.appendChild(
@@ -1819,6 +1979,7 @@ export const bootstrapContractsRoute = (
         confirm.setAttribute('type', 'button');
         confirm.setAttribute(CONTRACTS_ROUTE_REVOKE_CONFIRM_ATTR, '');
         confirm.addEventListener('click', () => {
+          pendingHeadFocusAttr = CONTRACTS_ROUTE_REVOKE_ATTR;
           void runRevoke();
         });
         wrap.appendChild(confirm);
@@ -1826,6 +1987,7 @@ export const bootstrapContractsRoute = (
         cancel.setAttribute('type', 'button');
         cancel.setAttribute(CONTRACTS_ROUTE_REVOKE_CANCEL_ATTR, '');
         cancel.addEventListener('click', () => {
+          pendingHeadFocusAttr = CONTRACTS_ROUTE_REVOKE_ATTR;
           revokeArmed = false;
           paintHead();
         });
@@ -1835,6 +1997,7 @@ export const bootstrapContractsRoute = (
         btn.setAttribute('type', 'button');
         btn.setAttribute(CONTRACTS_ROUTE_REVOKE_ATTR, '');
         btn.addEventListener('click', () => {
+          pendingHeadFocusAttr = CONTRACTS_ROUTE_REVOKE_CONFIRM_ATTR;
           revokeArmed = true;
           paintHead();
         });
@@ -1846,11 +2009,41 @@ export const bootstrapContractsRoute = (
     // A `const` arrow (not a hoisted `function`) so the outer `doc` narrowing
     // carries in; the helpers above reference it only in deferred callbacks (the
     // grant-matrix `renderCell` → `runToggleEntry` forward-ref precedent).
-    const paintHead = (): void => {
+    const paintHead = (): HTMLElement => {
+      const headingOwnedFocus = doc.activeElement === detailHeading;
+      const activeHeadElement = doc.activeElement as HTMLElement | null;
+      const focusedDoorTypeRaw = activeHeadElement?.tagName === 'INPUT'
+        ? activeHeadElement.getAttribute('data-door')
+        : null;
+      const focusedDoorType = focusedDoorTypeRaw !== null
+        && AUTHORABLE_DOOR_TYPES.some((doorType) =>
+          doorType === focusedDoorTypeRaw)
+        ? focusedDoorTypeRaw
+        : null;
+      const focusedHeadAttr = [
+        CONTRACTS_ROUTE_REVOKE_ATTR,
+        CONTRACTS_ROUTE_REVOKE_CONFIRM_ATTR,
+        CONTRACTS_ROUTE_REVOKE_CANCEL_ATTR,
+      ].find((attr) =>
+        activeHeadElement !== null
+        && activeHeadElement.getAttribute(attr) !== null,
+      ) ?? null;
+      const requestedHeadFocusAttr = pendingHeadFocusAttr ?? focusedHeadAttr;
+      pendingHeadFocusAttr = null;
       clearChildren(head);
-      head.appendChild(
-        makeEl(doc, 'h2', 'contracts-detail-name', currentRow.display_name),
+      const nextDetailHeading = makeEl(
+        doc,
+        'h2',
+        'contracts-detail-name',
+        currentRow.display_name,
       );
+      nextDetailHeading.setAttribute(
+        CONTRACTS_ROUTE_DETAIL_HEADING_ATTR,
+        currentRow.contract_id,
+      );
+      nextDetailHeading.setAttribute('tabindex', '-1');
+      detailHeading = nextDetailHeading;
+      head.appendChild(nextDetailHeading);
       appendBadgeAndPill(doc, head, currentRow);
       // L1 door open/close — editable only for an ACTIVE ordinary contract (a non-active
       // door can't dispatch, so its door types are moot).
@@ -1879,10 +2072,24 @@ export const bootstrapContractsRoute = (
         chip.setAttribute(CONTRACTS_ROUTE_HEAD_ERROR_ATTR, '');
         head.appendChild(chip);
       }
+      if (requestedHeadFocusAttr !== null) {
+        const nextControl = head.querySelector(
+          `[${requestedHeadFocusAttr}]`,
+        ) as HTMLElement | null;
+        (nextControl ?? nextDetailHeading).focus({ preventScroll: true });
+      } else if (focusedDoorType !== null) {
+        const nextDoorInput = Array.from(head.querySelectorAll('input')).find(
+          (input) => input.getAttribute('data-door') === focusedDoorType,
+        ) as HTMLElement | undefined;
+        (nextDoorInput ?? nextDetailHeading).focus({ preventScroll: true });
+      } else if (headingOwnedFocus) {
+        nextDetailHeading.focus({ preventScroll: true });
+      }
+      return nextDetailHeading;
     };
 
     detail.appendChild(head);
-    paintHead();
+    const initialDetailHeading = paintHead();
 
     // ── tab strip ──
     const tabs = tabsFor(row);
@@ -1895,8 +2102,13 @@ export const bootstrapContractsRoute = (
         ? wantedTab
         : (tabs[0]?.id ?? null);
     const tabStrip = makeEl(doc, 'nav', 'contracts-tabs');
+    tabStrip.setAttribute('role', 'tablist');
+    tabStrip.setAttribute('aria-orientation', 'horizontal');
+    tabStrip.setAttribute('aria-label', `${row.display_name} sections`);
     const tabBody = doc.createElement('div');
     tabBody.setAttribute(CONTRACTS_ROUTE_TAB_BODY_ATTR, '');
+    tabBody.setAttribute('id', 'recued-contracts-detail-tabpanel');
+    tabBody.setAttribute('role', 'tabpanel');
 
     // The Connect tab's content (snippets + the contract-credential panel) is built
     // ONCE and kept alive across tab switches — selectTab re-attaches it rather
@@ -1982,10 +2194,18 @@ export const bootstrapContractsRoute = (
     const selectTab = (id: string): void => {
       activeTab = id;
       for (const entry of tabButtons) {
+        const selected = entry.id === id;
         entry.btn.setAttribute(
           'aria-selected',
-          entry.id === id ? 'true' : 'false',
+          selected ? 'true' : 'false',
         );
+        entry.btn.setAttribute('tabindex', selected ? '0' : '-1');
+        if (selected) {
+          tabBody.setAttribute(
+            'aria-labelledby',
+            entry.btn.getAttribute('id') ?? '',
+          );
+        }
       }
       clearChildren(tabBody);
       if (id === 'connect') {
@@ -2008,8 +2228,30 @@ export const bootstrapContractsRoute = (
       btn.setAttribute(CONTRACTS_ROUTE_TAB_ATTR, '');
       btn.setAttribute('data-tab', tab.id);
       btn.setAttribute('role', 'tab');
+      btn.setAttribute('id', `recued-contracts-detail-tab-${tab.id}`);
+      btn.setAttribute('aria-controls', 'recued-contracts-detail-tabpanel');
       btn.textContent = tab.label;
       btn.addEventListener('click', () => selectTab(tab.id));
+      btn.addEventListener('keydown', (event) => {
+        const currentIndex = tabButtons.findIndex((entry) => entry.id === tab.id);
+        if (currentIndex < 0) return;
+        let nextIndex: number | null = null;
+        if (event.key === 'ArrowRight') {
+          nextIndex = (currentIndex + 1) % tabButtons.length;
+        } else if (event.key === 'ArrowLeft') {
+          nextIndex = (currentIndex - 1 + tabButtons.length)
+            % tabButtons.length;
+        } else if (event.key === 'Home') {
+          nextIndex = 0;
+        } else if (event.key === 'End') {
+          nextIndex = tabButtons.length - 1;
+        }
+        if (nextIndex === null) return;
+        event.preventDefault();
+        const next = tabButtons[nextIndex]!;
+        selectTab(next.id);
+        next.btn.focus();
+      });
       tabButtons.push({ id: tab.id, btn });
       tabStrip.appendChild(btn);
     }
@@ -2018,6 +2260,10 @@ export const bootstrapContractsRoute = (
     if (activeTab !== null) selectTab(activeTab);
 
     body.appendChild(detail);
+    // Exact contract navigation is asynchronous: the activating list row is
+    // gone by the time the detail resolves. Move focus to the new page-level
+    // subject so keyboard and screen-reader users do not fall back to <body>.
+    initialDetailHeading.focus();
   };
 
   // ── initial loading placeholder ──
@@ -2074,7 +2320,10 @@ export const bootstrapContractsRoute = (
   ): Promise<void> => {
     if (listPageBusy) return;
     listPageBusy = true;
-    renderList();
+    // Keep the current inventory and its ambient proposal panels mounted while
+    // the next page is in flight. Replacing the whole list here detached the
+    // focused pager and restarted supporting reads before the page even settled.
+    markPageRequestBusy(direction);
     try {
       await requestListPage(cursor);
       if (disposed) return;
@@ -2164,6 +2413,13 @@ export const bootstrapContractsRoute = (
     }
   };
 
+  const hasContractsInFlightWork = (): boolean =>
+    routeOwnedMutationCount > 0
+    || suggestedRulesPanel?.hasInFlightWork() === true
+    || scopedGrantPanel?.hasInFlightWork() === true
+    || connectPanel?.hasInFlightWork() === true
+    || detailGrantPanel?.hasInFlightWork() === true;
+
   return {
     getContracts: () =>
       activeListTab === 'built-in' ? [SELF_ROW, ...rows] : rows,
@@ -2176,6 +2432,11 @@ export const bootstrapContractsRoute = (
     suggestedRulesPanel: () => suggestedRulesPanel,
     scopedGrantPanel: () => scopedGrantPanel,
     whenLoaded: () => initialLoad,
+    hasInFlightWork: hasContractsInFlightWork,
+    inFlightWorkPrompt: () =>
+      hasContractsInFlightWork()
+        ? 'A contract action is still in progress. Leave Contracts anyway?'
+        : null,
     getRecoveryContextFreshness: () =>
       opts.contractsListCaller !== undefined && loadErrorMessage === null
         ? 'current'

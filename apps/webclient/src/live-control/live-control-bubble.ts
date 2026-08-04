@@ -71,6 +71,16 @@ export const LIVE_CONTROL_BUBBLE_NOTICE_ATTR =
 const LIVE_CONTROL_BUBBLE_STYLES_MARKER =
   'data-recued-live-control-bubble-styles';
 
+type LiveControlRunAction = 'kill' | 'promote' | 'cancel';
+type LiveControlAction = LiveControlRunAction | 'revoke';
+
+const BUSY_CONTROL_LABELS: Readonly<Record<LiveControlAction, string>> = {
+  kill: 'Killing…',
+  promote: 'Promoting…',
+  cancel: 'Cancelling…',
+  revoke: 'Revoking…',
+};
+
 // ════════════════════════════════════════════════════════════════
 // Caller seams — typed over the @recued/contracts shapes (same callers
 // the Runs route uses, structurally identical). Each section is gated on
@@ -382,8 +392,8 @@ const LIVE_CONTROL_BUBBLE_STYLES = `
   border-color: var(--fail);
   color: var(--fail);
 }
-[${LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR}][disabled],
-[${LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR}][disabled] {
+[${LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR}][aria-disabled="true"],
+[${LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR}][aria-disabled="true"] {
   opacity: 0.55;
   cursor: default;
 }
@@ -429,7 +439,7 @@ export const mountLiveControlBubble = (
   let activeEntries: ReadonlyArray<ActiveExecutionEntry> = [];
   let activeNotice: string | null = null;
   let activeSeq = 0;
-  const busyControlIds = new Set<string>();
+  const busyControlActions = new Map<string, LiveControlRunAction>();
   let activeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingActiveLoad: Promise<void> = Promise.resolve();
   // grants
@@ -440,6 +450,12 @@ export const mountLiveControlBubble = (
   let grantsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
   let pendingGrantsLoad: Promise<void> = Promise.resolve();
   const unsubscribers: Array<() => void> = [];
+  const closeFocusKey = 'close';
+  const toggleFocusKey = 'toggle';
+  let requestedFocusKey: string | null = null;
+  const renderedFocusTargets = new Map<string, HTMLElement>();
+  const renderedRunFocusKeys: string[] = [];
+  const renderedGrantFocusKeys: string[] = [];
 
   const totalCount = (): number => activeEntries.length + sessionGrants.length;
 
@@ -447,14 +463,45 @@ export const mountLiveControlBubble = (
     while (node.firstChild) node.removeChild(node.firstChild);
   };
 
+  const controlFocusKey = (
+    attr: string,
+    action: string,
+    id: string,
+  ): string => JSON.stringify([attr, action, id]);
+
+  const focusKeyForElement = (
+    element: Element | null | undefined,
+  ): string | null => {
+    if (element === null || element === undefined) return null;
+    if (!bubbleRoot.contains(element)) return null;
+    if (element.hasAttribute(LIVE_CONTROL_BUBBLE_CLOSE_ATTR)) {
+      return closeFocusKey;
+    }
+    if (element.hasAttribute(LIVE_CONTROL_BUBBLE_TOGGLE_ATTR)) {
+      return toggleFocusKey;
+    }
+    for (const attr of [
+      LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR,
+      LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR,
+    ]) {
+      const action = element.getAttribute(attr);
+      const id = element.getAttribute('data-id');
+      if (action !== null && id !== null) {
+        return controlFocusKey(attr, action, id);
+      }
+    }
+    return null;
+  };
+
   // ── Render ─────────────────────────────────────────────────────────
   const appendControl = (
     controls: HTMLElement,
     rowAttr: string,
-    action: string,
+    action: LiveControlAction,
     id: string,
     label: string,
     danger: boolean,
+    guarded: boolean,
     busy: boolean,
     onClick: () => void,
   ): void => {
@@ -463,10 +510,18 @@ export const mountLiveControlBubble = (
     button.setAttribute(rowAttr, action);
     button.setAttribute('data-id', id);
     button.setAttribute('data-danger', danger ? 'true' : 'false');
-    button.textContent = label;
-    button.disabled = busy;
+    button.textContent = busy ? BUSY_CONTROL_LABELS[action] : label;
+    if (guarded) button.setAttribute('aria-disabled', 'true');
+    if (busy) button.setAttribute('aria-busy', 'true');
+    const focusKey = controlFocusKey(rowAttr, action, id);
+    renderedFocusTargets.set(focusKey, button);
+    if (rowAttr === LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR) {
+      renderedRunFocusKeys.push(focusKey);
+    } else if (rowAttr === LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR) {
+      renderedGrantFocusKeys.push(focusKey);
+    }
     button.addEventListener('click', () => {
-      if (!button.disabled) onClick();
+      if (!guarded) onClick();
     });
     controls.appendChild(button);
   };
@@ -534,7 +589,8 @@ export const mountLiveControlBubble = (
       row.appendChild(meta);
 
       if (id !== '') {
-        const busy = busyControlIds.has(id);
+        const busyAction = busyControlActions.get(id);
+        const guarded = busyAction !== undefined;
         const controls = doc.createElement('span');
         controls.className = 'lc-row-controls';
         if (
@@ -548,7 +604,8 @@ export const mountLiveControlBubble = (
             id,
             'Promote',
             false,
-            busy,
+            guarded,
+            busyAction === 'promote',
             () => void promoteCall(id),
           );
           appendControl(
@@ -558,7 +615,8 @@ export const mountLiveControlBubble = (
             id,
             'Cancel',
             true,
-            busy,
+            guarded,
+            busyAction === 'cancel',
             () => void cancelCall(id),
           );
         } else if (entry.run_id !== undefined && entry.run_id.length > 0) {
@@ -569,7 +627,8 @@ export const mountLiveControlBubble = (
             id,
             'Kill',
             true,
-            busy,
+            guarded,
+            busyAction === 'kill',
             () => void killRun(id),
           );
         }
@@ -617,6 +676,7 @@ export const mountLiveControlBubble = (
         'Revoke',
         true,
         busyGrantIds.has(grant.contract_id),
+        busyGrantIds.has(grant.contract_id),
         () => void revokeGrant(grant.contract_id),
       );
       row.appendChild(controls);
@@ -642,7 +702,8 @@ export const mountLiveControlBubble = (
     close.setAttribute(LIVE_CONTROL_BUBBLE_CLOSE_ATTR, '');
     close.setAttribute('aria-label', 'Close live control');
     close.textContent = '✕'; // ✕
-    close.addEventListener('click', () => setExpanded(false));
+    close.addEventListener('click', () => setExpanded(false, toggleFocusKey));
+    renderedFocusTargets.set(closeFocusKey, close);
     head.appendChild(close);
     panel.appendChild(head);
 
@@ -654,6 +715,18 @@ export const mountLiveControlBubble = (
 
   const render = (): void => {
     if (disposed) return;
+    const preservedFocusKey =
+      requestedFocusKey ?? focusKeyForElement(doc.activeElement);
+    const previousRunIndex = preservedFocusKey === null
+      ? -1
+      : renderedRunFocusKeys.indexOf(preservedFocusKey);
+    const previousGrantIndex = preservedFocusKey === null
+      ? -1
+      : renderedGrantFocusKeys.indexOf(preservedFocusKey);
+    requestedFocusKey = null;
+    renderedFocusTargets.clear();
+    renderedRunFocusKeys.length = 0;
+    renderedGrantFocusKeys.length = 0;
     clearChildren(bubbleRoot);
     const total = totalCount();
     if (total === 0) return; // ambient: nothing in flight → no bubble
@@ -670,13 +743,44 @@ export const mountLiveControlBubble = (
     // Built via join so no `${a} ${b}` template-literal interpolation sits at a
     // space boundary (a known Write/Edit NUL-corruption site).
     toggle.textContent = ['◉', String(total)].join(' ');
-    toggle.addEventListener('click', () => setExpanded(!expanded));
+    toggle.addEventListener('click', () => {
+      const next = !expanded;
+      setExpanded(next, next ? closeFocusKey : toggleFocusKey);
+    });
+    renderedFocusTargets.set(toggleFocusKey, toggle);
     bubbleRoot.appendChild(toggle);
+    let resolvedFocusKey = preservedFocusKey;
+    if (
+      resolvedFocusKey !== null
+      && !renderedFocusTargets.has(resolvedFocusKey)
+    ) {
+      const survivingKeys = previousRunIndex >= 0
+        ? renderedRunFocusKeys
+        : previousGrantIndex >= 0
+          ? renderedGrantFocusKeys
+          : [];
+      const previousIndex = previousRunIndex >= 0
+        ? previousRunIndex
+        : previousGrantIndex;
+      resolvedFocusKey = survivingKeys.length > 0
+        ? survivingKeys[Math.min(previousIndex, survivingKeys.length - 1)]!
+        : expanded
+          ? closeFocusKey
+          : toggleFocusKey;
+    }
+    const focusTarget = resolvedFocusKey === null
+      ? null
+      : renderedFocusTargets.get(resolvedFocusKey) ?? null;
+    focusTarget?.focus({ preventScroll: true });
   };
 
   // ── Open / close ───────────────────────────────────────────────────
-  const setExpanded = (next: boolean): void => {
+  const setExpanded = (
+    next: boolean,
+    focusKey: string,
+  ): void => {
     expanded = next;
+    requestedFocusKey = focusKey;
     if (!next) {
       activeNotice = null;
       grantsNotice = null;
@@ -730,15 +834,17 @@ export const mountLiveControlBubble = (
     }, debounceMs);
   };
 
-  // Run one live-control mutation, then re-list. `busyId` disables the entry's
-  // buttons while in flight; `noticed` surfaces the server's non-terminal
-  // verdict so a no-op click is legible rather than silent.
+  // Run one live-control mutation, then re-list. The pending action remains
+  // focusable while every control for its entry is guarded; `noticed` surfaces
+  // the server's non-terminal verdict so a no-op click is legible rather than
+  // silent.
   const runControl = async (
+    action: LiveControlRunAction,
     busyId: string,
     op: () => Promise<{ noticed?: string } | void>,
   ): Promise<void> => {
-    if (busyId.length === 0 || busyControlIds.has(busyId)) return;
-    busyControlIds.add(busyId);
+    if (busyId.length === 0 || busyControlActions.has(busyId)) return;
+    busyControlActions.set(busyId, action);
     activeNotice = null;
     render();
     try {
@@ -755,15 +861,15 @@ export const mountLiveControlBubble = (
       // Hold the busy flag THROUGH the re-list (no flash-of-enabled), then
       // clear + force a render — `loadActive` soft-fails without rendering, so
       // an unconditional render here is what re-enables the button on that path
-      // (mirrors `revokeGrant`). Matches the row staying disabled until settled.
+      // (mirrors `revokeGrant`). Matches the row staying guarded until settled.
       if (!disposed) await loadActive();
-      busyControlIds.delete(busyId);
+      busyControlActions.delete(busyId);
       if (!disposed) render();
     }
   };
 
   const killRun = (run_id: string): Promise<void> =>
-    runControl(run_id, async () => {
+    runControl('kill', run_id, async () => {
       if (opts.killCaller === undefined) {
         return { noticed: 'Kill is not available in this view.' };
       }
@@ -778,7 +884,7 @@ export const mountLiveControlBubble = (
     });
 
   const cancelCall = (queued_call_id: string): Promise<void> =>
-    runControl(queued_call_id, async () => {
+    runControl('cancel', queued_call_id, async () => {
       if (opts.cancelCaller === undefined) {
         return { noticed: 'Cancel is not available in this view.' };
       }
@@ -793,7 +899,7 @@ export const mountLiveControlBubble = (
     });
 
   const promoteCall = (queued_call_id: string): Promise<void> =>
-    runControl(queued_call_id, async () => {
+    runControl('promote', queued_call_id, async () => {
       if (opts.promoteCaller === undefined) {
         return { noticed: 'Promote is not available in this view.' };
       }

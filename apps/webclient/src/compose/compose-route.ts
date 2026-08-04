@@ -89,10 +89,16 @@ export interface BootstrapComposeRouteOptions {
   readonly initialCaptureText?: string;
   readonly contactUpsertCaller?: ComposeContactUpsertCaller;
   readonly workEntityUpsertCaller?: ComposeWorkEntityUpsertCaller;
+  /** Host chrome can mirror the authoritative commit boundary without
+   *  observing or parsing the route's DOM. */
+  readonly onStateChange?: (state: ComposeRouteState) => void;
 }
 
 export interface ComposeRoute {
   readonly getState: () => ComposeRouteState;
+  /** True when any target still owns user-entered values, including drafts
+   *  parked behind a different target chip. */
+  readonly hasUnsavedChanges: () => boolean;
   readonly selectTarget: (target: ComposeLocalTargetKind) => void;
   readonly setCaptureText: (text: string) => void;
   readonly setFieldValues: (values: Readonly<Record<string, string>>) => void;
@@ -360,7 +366,7 @@ const COMPOSE_ROUTE_CHROME_STYLES = `
   font-weight: 650;
   cursor: pointer;
 }
-[${COMPOSE_ROUTE_COMMIT_ATTR}]:disabled {
+[${COMPOSE_ROUTE_COMMIT_ATTR}][aria-disabled="true"] {
   cursor: not-allowed;
   opacity: 0.55;
 }
@@ -652,6 +658,8 @@ export const bootstrapComposeRoute = (
 
   const targetGroup = doc.createElement('div');
   targetGroup.className = 'compose-targets';
+  targetGroup.setAttribute('role', 'group');
+  targetGroup.setAttribute('aria-label', 'Create type');
   const targetButtons = new Map<ComposeLocalTargetKind, HTMLButtonElement>();
   for (const target of COMPOSE_LOCAL_TARGETS) {
     const button = doc.createElement('button') as HTMLButtonElement;
@@ -683,6 +691,13 @@ export const bootstrapComposeRoute = (
 
   let disposed = false;
   let state = initialState(opts.initialCaptureText);
+  const targetDrafts = new Map<
+    ComposeLocalTargetKind,
+    Record<string, string>
+  >([[state.target, { ...state.values }]]);
+  let renderedConfirmation: HTMLElement | null = null;
+  let renderedCommit: HTMLButtonElement | null = null;
+  let pendingCommitFocus = false;
 
   const emit = (next: ComposeRouteState): void => {
     state = next;
@@ -692,17 +707,28 @@ export const bootstrapComposeRoute = (
   const setFieldValue = (
     key: string,
     value: string,
-    renderAfterUpdate: boolean,
   ): void => {
-    const next: ComposeRouteState = {
+    state = {
       ...state,
       stage: 'drafting',
       values: { ...state.values, [key]: value },
       confirmation: null,
       error: null,
     };
-    if (renderAfterUpdate) emit(next);
-    else state = next;
+    targetDrafts.set(state.target, { ...state.values });
+    // Field edits do not change the form's shape. Reset feedback in place so
+    // native Tab/select focus is never destroyed by rebuilding every control.
+    status.textContent = statusText(state);
+    error.textContent = '';
+    error.setAttribute('data-active', 'false');
+    if (renderedConfirmation !== null) {
+      try {
+        draftHost.removeChild(renderedConfirmation);
+      } catch {
+        /* a concurrent full render already detached it */
+      }
+      renderedConfirmation = null;
+    }
   };
 
   const syncValuesFromDom = (): Record<string, string> => {
@@ -716,6 +742,33 @@ export const bootstrapComposeRoute = (
     return values;
   };
 
+  const hasUnsavedChanges = (): boolean => {
+    const captureText = disposed ? state.capture_text : capture.value;
+    if (captureText.trim().length > 0) return true;
+
+    // Target switches deliberately retain each target's draft. Overlay chrome
+    // must therefore inspect the whole draft map, not only the currently
+    // rendered fields, before allowing a user dismissal to destroy the route.
+    const drafts = new Map(targetDrafts);
+    drafts.set(
+      state.target,
+      disposed ? { ...state.values } : syncValuesFromDom(),
+    );
+    for (const [target, values] of drafts) {
+      const baseline = seededValues(target, '');
+      const keys = new Set([
+        ...Object.keys(baseline),
+        ...Object.keys(values),
+      ]);
+      for (const key of keys) {
+        if ((values[key] ?? '').trim() !== (baseline[key] ?? '').trim()) {
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
   const setCaptureText = (text: string): void => {
     emit({
       ...state,
@@ -727,11 +780,20 @@ export const bootstrapComposeRoute = (
   };
 
   const selectTarget = (target: ComposeLocalTargetKind): void => {
+    if (state.stage === 'committing') return;
+    const currentValues = syncValuesFromDom();
+    targetDrafts.set(state.target, { ...currentValues });
+    if (target === state.target) return;
+    const nextValues = {
+      ...(targetDrafts.get(target)
+        ?? seededValues(target, state.capture_text)),
+    };
+    targetDrafts.set(target, { ...nextValues });
     emit({
       stage: 'drafting',
       target,
       capture_text: state.capture_text,
-      values: seededValues(target, state.capture_text),
+      values: nextValues,
       confirmation: null,
       error: null,
     });
@@ -740,19 +802,23 @@ export const bootstrapComposeRoute = (
   const setFieldValues = (
     values: Readonly<Record<string, string>>,
   ): void => {
-    emit({
+    const next = {
       ...state,
       stage: 'drafting',
       values: { ...state.values, ...values },
       confirmation: null,
       error: null,
-    });
+    } satisfies ComposeRouteState;
+    targetDrafts.set(next.target, { ...next.values });
+    emit(next);
   };
 
   const commitDraft = async (): Promise<void> => {
+    if (state.stage === 'committing') return;
     const values = syncValuesFromDom();
     const captureText = capture.value;
     const target = state.target;
+    targetDrafts.set(target, { ...values });
     try {
       if (target === 'contact') {
         if (opts.contactUpsertCaller === undefined) {
@@ -769,11 +835,13 @@ export const bootstrapComposeRoute = (
         });
         const result = await opts.contactUpsertCaller(args);
         if (disposed) return;
+        const resetValues = seededValues(target, '');
+        targetDrafts.set(target, { ...resetValues });
         emit({
           stage: 'committed',
           target,
           capture_text: '',
-          values: seededValues(target, ''),
+          values: resetValues,
           confirmation: {
             target,
             rpc: 'contact.upsert',
@@ -798,11 +866,13 @@ export const bootstrapComposeRoute = (
       });
       const result = await opts.workEntityUpsertCaller(args);
       if (disposed) return;
+      const resetValues = seededValues(target, '');
+      targetDrafts.set(target, { ...resetValues });
       emit({
         stage: 'committed',
         target,
         capture_text: '',
-        values: seededValues(target, ''),
+        values: resetValues,
         confirmation: {
           target,
           rpc: 'work_entity.upsert',
@@ -857,27 +927,47 @@ export const bootstrapComposeRoute = (
     control.value = values[field.key] ?? '';
     control.disabled = disabled;
     control.addEventListener('input', () => {
-      setFieldValue(field.key, control.value, false);
+      setFieldValue(field.key, control.value);
     });
     control.addEventListener('change', () => {
-      setFieldValue(field.key, control.value, true);
+      setFieldValue(field.key, control.value);
     });
     label.appendChild(control);
     return label;
   };
 
   const render = (): void => {
+    const activeBeforeRender = doc.activeElement as
+      | HTMLElement
+      | null
+      | undefined;
+    if (activeBeforeRender === renderedCommit) {
+      pendingCommitFocus = true;
+    } else if (
+      activeBeforeRender !== null
+      && activeBeforeRender !== undefined
+      && activeBeforeRender !== doc.body
+      && activeBeforeRender.isConnected
+    ) {
+      pendingCommitFocus = false;
+    }
     const busy = state.stage === 'committing';
     capture.value = state.capture_text;
     capture.disabled = busy;
     for (const [kind, button] of targetButtons) {
       button.disabled = busy;
       button.setAttribute('data-active', kind === state.target ? 'true' : 'false');
+      button.setAttribute(
+        'aria-pressed',
+        kind === state.target ? 'true' : 'false',
+      );
     }
     status.textContent = statusText(state);
     error.textContent = state.error ?? '';
     error.setAttribute('data-active', state.error ? 'true' : 'false');
 
+    renderedConfirmation = null;
+    renderedCommit = null;
     removeChildren(draftHost);
     const target = targetFor(state.target);
     const fields = doc.createElement('div');
@@ -890,11 +980,15 @@ export const bootstrapComposeRoute = (
     const commit = doc.createElement('button') as HTMLButtonElement;
     commit.setAttribute('type', 'button');
     commit.setAttribute(COMPOSE_ROUTE_COMMIT_ATTR, '');
-    commit.textContent = `Commit ${target.label}`;
-    commit.disabled = busy;
+    commit.textContent = busy ? 'Committing…' : `Commit ${target.label}`;
+    if (busy) {
+      commit.setAttribute('aria-disabled', 'true');
+      commit.setAttribute('aria-busy', 'true');
+    }
     commit.addEventListener('click', () => {
       void commitDraft();
     });
+    renderedCommit = commit;
     draftHost.appendChild(commit);
 
     if (state.confirmation !== null) {
@@ -912,7 +1006,13 @@ export const bootstrapComposeRoute = (
         confirmation.appendChild(id);
       }
       draftHost.appendChild(confirmation);
+      renderedConfirmation = confirmation;
     }
+    if (pendingCommitFocus && !commit.disabled) {
+      pendingCommitFocus = false;
+      commit.focus({ preventScroll: true });
+    }
+    opts.onStateChange?.(state);
   };
 
   capture.addEventListener('input', () => {
@@ -928,6 +1028,7 @@ export const bootstrapComposeRoute = (
 
   return {
     getState: () => state,
+    hasUnsavedChanges,
     selectTarget,
     setCaptureText,
     setFieldValues,

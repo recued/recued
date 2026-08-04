@@ -20,10 +20,11 @@
  *  rebuilds the panel's inner DOM; no diffing.
  *
  *  DD#3 — Saves are serialized + authoritative. One control change →
- *  one `prefs.set` with a single-key patch; every control disables
- *  while the save is in flight; the response's merged `prefs` replaces
- *  local state (the server is the source of truth — a concurrent write
- *  from another surface lands here on the next response).
+ *  one `prefs.set` with a single-key patch; every control ARIA-locks
+ *  while the save is in flight without dropping keyboard focus; the
+ *  response's merged `prefs` replaces local state (the server is the source
+ *  of truth — a concurrent write from another surface lands here on the next
+ *  response).
  *
  *  DD#4 — The `failure` class renders as a fixed, disabled, checked
  *  row. § B.8.2's user-must-see invariant makes truthful failure
@@ -98,6 +99,9 @@ export interface TransparencyPanelState {
 
 export interface TransparencyPanelMount {
   getState(): TransparencyPanelState;
+  /** A user-started preference write whose authoritative response has not
+   *  settled. Initial preference loading is deliberately excluded. */
+  hasInFlightWork(): boolean;
   /** Initial-load promise — resolves after the first `runPrefsGet`
    *  settles (either phase). */
   whenLoaded(): Promise<void>;
@@ -169,12 +173,37 @@ export const mountTransparencyPanel = (
   };
   let pendingLoad: Promise<void> = Promise.resolve();
   let pendingSave: Promise<void> | null = null;
+  let pendingValue: boolean | string | null = null;
 
   opts.host.setAttribute(TRANSPARENCY_PANEL_HOST_ATTR, '');
 
   const clearChildren = (node: HTMLElement): void => {
     while (node.firstChild) node.removeChild(node.firstChild);
   };
+
+  const controlHasFocus = (key: InstancePrefKey): boolean => {
+    const active = (doc as Document & { activeElement?: Element | null })
+      .activeElement;
+    return key === 'ui.transparency.max_redaction_tier'
+      ? active?.hasAttribute?.(TRANSPARENCY_PANEL_TIER_ATTR) === true
+      : active?.getAttribute?.(TRANSPARENCY_PANEL_TOGGLE_ATTR) === key;
+  };
+
+  const focusControl = (key: InstancePrefKey): void => {
+    const selector = key === 'ui.transparency.max_redaction_tier'
+      ? `[${TRANSPARENCY_PANEL_TIER_ATTR}]`
+      : `[${TRANSPARENCY_PANEL_TOGGLE_ATTR}="${key}"]`;
+    const control = opts.host.querySelector?.(selector) as
+      | HTMLElement
+      | null
+      | undefined;
+    control?.focus?.();
+  };
+
+  const renderedValue = (key: InstancePrefKey): boolean | string =>
+    state.saving === key && pendingValue !== null
+      ? pendingValue
+      : getPref(state.prefs ?? undefined, key);
 
   const setState = (patch: Partial<TransparencyPanelState>): void => {
     if (disposed) return;
@@ -194,22 +223,39 @@ export const mountTransparencyPanel = (
     }
   };
 
-  const doSave = async (patch: Partial<InstancePrefs>, key: InstancePrefKey): Promise<void> => {
+  const doSave = async (
+    patch: Partial<InstancePrefs>,
+    key: InstancePrefKey,
+    value: boolean | string,
+  ): Promise<void> => {
+    const returnToControl = controlHasFocus(key);
+    pendingValue = value;
     setState({ saving: key, error: null });
+    if (returnToControl) focusControl(key);
     try {
       const { prefs } = await opts.runPrefsSet({ patch });
       if (disposed) return;
+      const retainFocus = controlHasFocus(key);
+      pendingValue = null;
       // Authoritative merged set replaces local state (DD#3).
       setState({ saving: null, prefs, error: null });
+      if (retainFocus) focusControl(key);
     } catch (err) {
       if (disposed) return;
+      const retainFocus = controlHasFocus(key);
+      pendingValue = null;
       setState({ saving: null, error: errMessage(err) });
+      if (retainFocus) focusControl(key);
     }
   };
 
   const saveOne = (key: InstancePrefKey, value: boolean | string): void => {
     if (state.saving !== null) return;
-    pendingSave = doSave({ [key]: value } as Partial<InstancePrefs>, key);
+    pendingSave = doSave(
+      { [key]: value } as Partial<InstancePrefs>,
+      key,
+      value,
+    );
   };
 
   const renderToggleRow = (
@@ -221,12 +267,17 @@ export const mountTransparencyPanel = (
     const checkbox = doc.createElement('input');
     checkbox.setAttribute('type', 'checkbox');
     checkbox.setAttribute(TRANSPARENCY_PANEL_TOGGLE_ATTR, spec.key);
-    (checkbox as HTMLInputElement).checked =
-      getPref(state.prefs ?? undefined, spec.key) === true;
+    const displayedChecked = renderedValue(spec.key) === true;
+    (checkbox as HTMLInputElement).checked = displayedChecked;
     if (state.saving !== null) {
-      (checkbox as HTMLInputElement).disabled = true;
+      checkbox.setAttribute('aria-disabled', 'true');
+      if (state.saving === spec.key) checkbox.setAttribute('aria-busy', 'true');
     }
     checkbox.addEventListener('change', () => {
+      if (state.saving !== null) {
+        (checkbox as HTMLInputElement).checked = displayedChecked;
+        return;
+      }
       saveOne(spec.key, (checkbox as HTMLInputElement).checked);
     });
     row.appendChild(checkbox);
@@ -311,10 +362,9 @@ export const mountTransparencyPanel = (
     tierRow.appendChild(tierLabel);
     const tierSelect = doc.createElement('select');
     tierSelect.setAttribute(TRANSPARENCY_PANEL_TIER_ATTR, '');
-    const currentTier = getPref(
-      state.prefs ?? undefined,
+    const currentTier = renderedValue(
       'ui.transparency.max_redaction_tier',
-    );
+    ) as string;
     for (const option of TIER_OPTIONS) {
       const el = doc.createElement('option');
       el.setAttribute('value', option.value);
@@ -324,9 +374,16 @@ export const mountTransparencyPanel = (
     }
     (tierSelect as HTMLSelectElement).value = currentTier;
     if (state.saving !== null) {
-      (tierSelect as HTMLSelectElement).disabled = true;
+      tierSelect.setAttribute('aria-disabled', 'true');
+      if (state.saving === 'ui.transparency.max_redaction_tier') {
+        tierSelect.setAttribute('aria-busy', 'true');
+      }
     }
     tierSelect.addEventListener('change', () => {
+      if (state.saving !== null) {
+        (tierSelect as HTMLSelectElement).value = currentTier;
+        return;
+      }
       saveOne(
         'ui.transparency.max_redaction_tier',
         (tierSelect as HTMLSelectElement).value,
@@ -348,6 +405,7 @@ export const mountTransparencyPanel = (
 
   return {
     getState: () => state,
+    hasInFlightWork: () => !disposed && state.saving !== null,
     whenLoaded: () => pendingLoad,
     whenSaveSettled: () => pendingSave ?? Promise.resolve(),
     dispose: () => {

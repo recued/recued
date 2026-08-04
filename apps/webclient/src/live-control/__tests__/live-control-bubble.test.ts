@@ -22,6 +22,7 @@ import {
   LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR,
   LIVE_CONTROL_BUBBLE_GRANT_ROW_ATTR,
   LIVE_CONTROL_BUBBLE_HOST_ATTR,
+  LIVE_CONTROL_BUBBLE_CLOSE_ATTR,
   LIVE_CONTROL_BUBBLE_NOTICE_ATTR,
   LIVE_CONTROL_BUBBLE_PANEL_ATTR,
   LIVE_CONTROL_BUBBLE_RUNNING_ROW_ATTR,
@@ -51,20 +52,24 @@ interface FakeEl {
   readonly firstChild: FakeEl | null;
   setAttribute(k: string, v: string): void;
   getAttribute(k: string): string | null;
+  hasAttribute(k: string): boolean;
   appendChild(c: FakeEl): FakeEl;
   removeChild(c: FakeEl): FakeEl;
   remove(): void;
+  contains(c: FakeEl | null): boolean;
+  focus(): void;
   addEventListener(type: string, fn: () => void): void;
   click(): void;
 }
 
 interface FakeDoc {
   styleElements: FakeEl[];
+  readonly activeElement: FakeEl | null;
   head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl };
   createElement(tag: string): FakeEl;
 }
 
-const makeFakeEl = (tag: string): FakeEl => {
+const makeFakeEl = (tag: string, onFocus: (el: FakeEl) => void): FakeEl => {
   const el: FakeEl = {
     tagName: tag.toUpperCase(),
     className: '',
@@ -84,6 +89,9 @@ const makeFakeEl = (tag: string): FakeEl => {
     getAttribute(k) {
       return el.attrs.get(k) ?? null;
     },
+    hasAttribute(k) {
+      return el.attrs.has(k);
+    },
     appendChild(c) {
       c.parent = el;
       el.children.push(c);
@@ -102,6 +110,17 @@ const makeFakeEl = (tag: string): FakeEl => {
       if (idx >= 0) el.parent.children.splice(idx, 1);
       el.parent = null;
     },
+    contains(c) {
+      let candidate = c;
+      while (candidate !== null) {
+        if (candidate === el) return true;
+        candidate = candidate.parent;
+      }
+      return false;
+    },
+    focus() {
+      if (!el.disabled) onFocus(el);
+    },
     addEventListener(type, fn) {
       const list = el.listeners.get(type) ?? [];
       list.push(fn);
@@ -117,12 +136,16 @@ const makeFakeEl = (tag: string): FakeEl => {
 
 const makeFakeDocument = (): FakeDoc => {
   const styleElements: FakeEl[] = [];
+  let activeElement: FakeEl | null = null;
   const matchSelector = (sel: string): { tag: string; attr: string } | null => {
     const m = sel.match(/^([\w-]+)\[([\w-]+)\]$/);
     return m === null ? null : { tag: m[1]!.toUpperCase(), attr: m[2]! };
   };
   return {
     styleElements,
+    get activeElement() {
+      return activeElement;
+    },
     head: {
       querySelector(sel) {
         const parsed = matchSelector(sel);
@@ -138,7 +161,9 @@ const makeFakeDocument = (): FakeDoc => {
         return el;
       },
     },
-    createElement: (tag) => makeFakeEl(tag),
+    createElement: (tag) => makeFakeEl(tag, (el) => {
+      activeElement = el;
+    }),
   };
 };
 
@@ -286,6 +311,7 @@ const mountBubble = (init: MountInit = {}) => {
   });
 
   return {
+    doc,
     host,
     mount,
     callers: { activeCaller, grantsListCaller, killCaller, cancelCaller, promoteCaller, revokeCaller },
@@ -309,6 +335,23 @@ afterEach(() => {
 });
 
 describe('live-control bubble — ambient visibility + count', () => {
+  it('treats a reduced document without activeElement as unfocused', () => {
+    const doc = makeFakeDocument();
+    const host = doc.createElement('div');
+    const reducedDocument = {
+      head: doc.head,
+      createElement: doc.createElement,
+    } as unknown as Document;
+
+    const mount = mountLiveControlBubble({
+      host: host as unknown as HTMLElement,
+      document: reducedDocument,
+    });
+
+    expect(collectByAttr(host, LIVE_CONTROL_BUBBLE_HOST_ATTR)).toHaveLength(1);
+    mount.dispose();
+  });
+
   it('renders nothing while idle (no running, no grants)', async () => {
     const h = mountBubble();
     await tick();
@@ -343,6 +386,25 @@ describe('live-control bubble — ambient visibility + count', () => {
 });
 
 describe('live-control bubble — RUNNING section', () => {
+  it('moves focus into the panel on open and back to the trigger on close', async () => {
+    const h = mountBubble({ active: activeSnapshot([runEntry()]) });
+    await tick();
+    const toggle = h.toggle()!;
+    toggle.focus();
+    toggle.click();
+    await tick();
+
+    const close = collectByAttr(
+      h.host,
+      LIVE_CONTROL_BUBBLE_CLOSE_ATTR,
+    )[0]!;
+    expect(h.doc.activeElement).toBe(close);
+
+    close.click();
+    expect(h.doc.activeElement).toBe(h.toggle());
+    h.mount.dispose();
+  });
+
   it('expands to per-entry rows with the right controls and routes Kill', async () => {
     const h = mountBubble({ active: activeSnapshot([runEntry(), queuedEntry()]) });
     await tick();
@@ -374,6 +436,60 @@ describe('live-control bubble — RUNNING section', () => {
     controls.find((c) => c.getAttribute(LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR) === 'cancel')!.click();
     await tick();
     expect(h.callers.cancelCaller).toHaveBeenCalledWith({ queued_call_id: 'qc_1' });
+  });
+
+  it('moves focus to the next run control after the focused action retires', async () => {
+    let entries = [
+      runEntry({ run_id: 'run_1' }),
+      runEntry({ run_id: 'run_2' }),
+    ];
+    let resolveKill!: () => void;
+    const killPending = new Promise<void>((resolve) => {
+      resolveKill = resolve;
+    });
+    const killCaller = vi.fn(async ({ run_id }: { run_id: string }) => {
+      await killPending;
+      entries = entries.filter((entry) => entry.run_id !== run_id);
+      return { status: 'killed' as const };
+    });
+    const h = mountBubble({
+      activeCaller: vi.fn(async () => activeSnapshot(entries)),
+      killCaller,
+    });
+    await tick();
+    h.toggle()!.click();
+    await tick();
+    const first = collectByAttr(
+      h.host,
+      LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR,
+    ).find((control) => control.getAttribute('data-id') === 'run_1')!;
+    first.focus();
+    first.click();
+    await tick();
+
+    const busy = collectByAttr(
+      h.host,
+      LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR,
+    ).find((control) => control.getAttribute('data-id') === 'run_1')!;
+    expect(busy).not.toBe(first);
+    expect(busy.textContent).toBe('Killing…');
+    expect(busy.getAttribute('aria-disabled')).toBe('true');
+    expect(busy.getAttribute('aria-busy')).toBe('true');
+    expect(busy.disabled).toBe(false);
+    expect(h.doc.activeElement).toBe(busy);
+    busy.click();
+    busy.click();
+    expect(killCaller).toHaveBeenCalledTimes(1);
+
+    resolveKill();
+    await tick(16);
+
+    const next = collectByAttr(
+      h.host,
+      LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR,
+    ).find((control) => control.getAttribute('data-id') === 'run_2')!;
+    expect(h.doc.activeElement).toBe(next);
+    h.mount.dispose();
   });
 
   it('surfaces a non-terminal verdict as a notice', async () => {
@@ -474,6 +590,60 @@ describe('live-control bubble — GRANTS section', () => {
     expect(h.callers.revokeCaller).toHaveBeenCalledWith({ contract_id: 'sg_1' });
   });
 
+  it('keeps a pending revoke focused and guarded until its row retires', async () => {
+    let resolveRevoke!: () => void;
+    const revokePending = new Promise<void>((resolve) => {
+      resolveRevoke = resolve;
+    });
+    let h!: ReturnType<typeof mountBubble>;
+    const revokeCaller = vi.fn(async ({ contract_id }: { contract_id: string }) => {
+      await revokePending;
+      h.setGrants([grantView({ contract_id: 'sg_2' })]);
+      return grantView({ contract_id });
+    });
+    h = mountBubble({
+      grants: grantsSnapshot([
+        grantView({ contract_id: 'sg_1' }),
+        grantView({ contract_id: 'sg_2' }),
+      ]),
+      revokeCaller,
+    });
+    await tick();
+    h.toggle()!.click();
+    await tick();
+
+    const first = collectByAttr(
+      h.host,
+      LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR,
+    )[0]!;
+    first.focus();
+    first.click();
+    await tick();
+
+    const busy = collectByAttr(
+      h.host,
+      LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR,
+    )[0]!;
+    expect(busy.textContent).toBe('Revoking…');
+    expect(busy.getAttribute('aria-disabled')).toBe('true');
+    expect(busy.getAttribute('aria-busy')).toBe('true');
+    expect(busy.disabled).toBe(false);
+    expect(h.doc.activeElement).toBe(busy);
+    busy.click();
+    busy.click();
+    expect(revokeCaller).toHaveBeenCalledTimes(1);
+
+    resolveRevoke();
+    await tick(16);
+    const successor = collectByAttr(
+      h.host,
+      LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR,
+    )[0]!;
+    expect(successor.getAttribute('data-id')).toBe('sg_2');
+    expect(h.doc.activeElement).toBe(successor);
+    h.mount.dispose();
+  });
+
   it('surfaces a revoke failure as a grants notice', async () => {
     const h = mountBubble({
       grants: grantsSnapshot([grantView()]),
@@ -492,6 +662,81 @@ describe('live-control bubble — GRANTS section', () => {
 });
 
 describe('live-control bubble — bus liveness', () => {
+  it('preserves exact run-control focus through a live re-list', async () => {
+    const h = mountBubble({ active: activeSnapshot([runEntry()]) });
+    await tick();
+    h.toggle()!.click();
+    await tick();
+    const before = collectByAttr(
+      h.host,
+      LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR,
+    )[0]!;
+    before.focus();
+
+    h.fire('execution', { op: 'start' });
+    await tick();
+
+    const after = collectByAttr(
+      h.host,
+      LIVE_CONTROL_BUBBLE_RUN_CONTROL_ATTR,
+    )[0]!;
+    expect(after).not.toBe(before);
+    expect(h.doc.activeElement).toBe(after);
+    h.mount.dispose();
+  });
+
+  it('preserves exact grant-control focus through a live re-list', async () => {
+    const h = mountBubble({ grants: grantsSnapshot([grantView()]) });
+    await tick();
+    h.toggle()!.click();
+    await tick();
+    const before = collectByAttr(
+      h.host,
+      LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR,
+    )[0]!;
+    before.focus();
+
+    h.fire('contract.contract_definition_changed', {});
+    await tick();
+
+    const after = collectByAttr(
+      h.host,
+      LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR,
+    )[0]!;
+    expect(after).not.toBe(before);
+    expect(h.doc.activeElement).toBe(after);
+    h.mount.dispose();
+  });
+
+  it('moves focus to the next grant control after the focused pass retires', async () => {
+    const h = mountBubble({
+      grants: grantsSnapshot([
+        grantView({ contract_id: 'sg_1' }),
+        grantView({ contract_id: 'sg_2' }),
+      ]),
+    });
+    await tick();
+    h.toggle()!.click();
+    await tick();
+    const first = collectByAttr(
+      h.host,
+      LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR,
+    )[0]!;
+    first.focus();
+
+    h.setGrants([grantView({ contract_id: 'sg_2' })]);
+    h.fire('contract.contract_definition_changed', {});
+    await tick();
+
+    const next = collectByAttr(
+      h.host,
+      LIVE_CONTROL_BUBBLE_GRANT_CONTROL_ATTR,
+    )[0]!;
+    expect(next.getAttribute('data-id')).toBe('sg_2');
+    expect(h.doc.activeElement).toBe(next);
+    h.mount.dispose();
+  });
+
   it('re-lists running off a non-progress execution delta; ignores progress', async () => {
     const h = mountBubble({ active: activeSnapshot([]) });
     await tick();

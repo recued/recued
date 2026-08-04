@@ -7,7 +7,8 @@
  *  that `work_entity.source.list` is loaded lazily + once, that a load failure
  *  degrades gracefully, and — the seam no model test can reach — that a picked
  *  destination flows through `pickerValues` → `collectEdits` into the approve
- *  dispatch, and does NOT leak across a hold change.
+ *  dispatch, that a failed registry read has an owned Retry, and that a picked
+ *  destination does NOT leak across a hold change.
  *
  *  Like the ref-picker's own wire tests, this runs against a compact fake DOM
  *  (attribute-selector `querySelector` + bubbling dispatch). The one extension:
@@ -28,6 +29,13 @@ import {
   RECEPTION_INBOX_ALLOW_BUTTON_ATTR,
   RECEPTION_INBOX_ALLOW_WITH_EDITS_COPY,
   RECEPTION_INBOX_BROADCAST_KINDS,
+  RECEPTION_INBOX_DETAIL_HEADING_ATTR,
+  RECEPTION_INBOX_DESTINATION_ERROR_ATTR,
+  RECEPTION_INBOX_DESTINATION_RETRY_ATTR,
+  RECEPTION_INBOX_HEADING_ATTR,
+  RECEPTION_INBOX_REFRESH_ATTR,
+  RECEPTION_INBOX_ROW_ATTR,
+  RECEPTION_INBOX_VIEW_ATTR,
   mountReceptionInboxPanel,
   type ReceptionInboxConn,
 } from './inbox-panel.js';
@@ -100,16 +108,20 @@ const querySelector = (root: FakeEl, selector: string): FakeEl | null => {
 /** Hand-build the resting shell subtree `wireRefPicker` queries — shell →
  *  field → [input, clear] + results — so the live picker mounts even though
  *  the fake DOM does not parse the `innerHTML` string into nodes. */
-const synthesizeRefPickerShell = (container: FakeEl, pickerId: string): void => {
-  const shell = makeEl('div');
+const synthesizeRefPickerShell = (
+  container: FakeEl,
+  pickerId: string,
+  onFocus?: (el: FakeEl) => void,
+): void => {
+  const shell = makeEl('div', onFocus);
   shell.setAttribute('data-ref-picker', pickerId);
-  const field = makeEl('div');
-  const input = makeEl('input');
+  const field = makeEl('div', onFocus);
+  const input = makeEl('input', onFocus);
   input.setAttribute(RefPicker.REF_PICKER_INPUT_ATTR, '');
-  const clear = makeEl('button');
+  const clear = makeEl('button', onFocus);
   clear.setAttribute(RefPicker.REF_PICKER_CLEAR_ATTR, '');
   clear.setAttribute('hidden', '');
-  const results = makeEl('ul');
+  const results = makeEl('ul', onFocus);
   results.setAttribute(RefPicker.REF_PICKER_RESULTS_ATTR, '');
   results.setAttribute('hidden', '');
   field.appendChild(input);
@@ -119,7 +131,7 @@ const synthesizeRefPickerShell = (container: FakeEl, pickerId: string): void => 
   container.appendChild(shell);
 };
 
-const makeEl = (tag: string): FakeEl => {
+const makeEl = (tag: string, onFocus?: (el: FakeEl) => void): FakeEl => {
   let rawInnerHTML = '';
   const el = {
     tagName: tag.toUpperCase(),
@@ -146,7 +158,7 @@ const makeEl = (tag: string): FakeEl => {
       rawInnerHTML = html;
       el.children = [];
       const m = /data-ref-picker="([^"]+)"/.exec(html);
-      if (m !== null) synthesizeRefPickerShell(el, m[1]!);
+      if (m !== null) synthesizeRefPickerShell(el, m[1]!, onFocus);
     },
     setAttribute(k: string, v: string) {
       el.attrs.set(k, v);
@@ -188,20 +200,29 @@ const makeEl = (tag: string): FakeEl => {
     querySelector(sel: string) {
       return querySelector(el, sel);
     },
-    focus() {},
+    focus() {
+      onFocus?.(el);
+    },
   } as unknown as FakeEl;
   return el;
 };
 
-const makeDoc = (): Document =>
-  ({
-    createElement: (tag: string) => makeEl(tag),
+const makeDoc = (): Document => {
+  let activeElement: FakeEl | null = null;
+  return ({
+    get activeElement() {
+      return activeElement;
+    },
+    createElement: (tag: string) => makeEl(tag, (el) => {
+      activeElement = el;
+    }),
     createTextNode: (text: string) => {
       const n = makeEl('#text');
       n.textContent = text;
       return n;
     },
   }) as unknown as Document;
+};
 
 /** Dispatch `type` at `target` and bubble up the parent chain. */
 const dispatch = (target: FakeEl, type: string, key?: string): void => {
@@ -296,6 +317,7 @@ interface ConnCall {
 interface Harness {
   mount: ReturnType<typeof mountReceptionInboxPanel>;
   root: FakeEl;
+  document: Document;
   calls: ConnCall[];
   approveCalls: () => Array<{ hold_id: string; edits: Record<string, unknown> }>;
   sourceListCount: () => number;
@@ -304,28 +326,72 @@ interface Harness {
 const setup = (opts: {
   items: InboxItem[];
   sources?: SourceRegistration[];
-  failSourceList?: boolean;
+  sourceListFailures?: number;
+  sourceListGateAfterFirst?: Promise<void>;
+  removeResolved?: boolean;
+  decisionGate?: Promise<void>;
+  failListAfterDecision?: boolean;
+  listGateAfterFirst?: Promise<void>;
 }): Harness => {
   const calls: ConnCall[] = [];
+  let items = [...opts.items];
+  let decisionAcknowledged = false;
+  let listCalls = 0;
+  let sourceListCalls = 0;
+  let sourceListFailuresRemaining = opts.sourceListFailures ?? 0;
   const conn = ((op: string, payload?: unknown): Promise<unknown> => {
     calls.push({ op, payload });
     switch (op) {
       case 'reception.inbox.list':
-        return Promise.resolve({ items: opts.items });
+        listCalls += 1;
+        if (opts.failListAfterDecision === true && decisionAcknowledged) {
+          return Promise.reject(new Error('refresh unavailable'));
+        }
+        return (
+          listCalls > 1
+            ? opts.listGateAfterFirst ?? Promise.resolve()
+            : Promise.resolve()
+        ).then(() => ({ items }));
       case 'work_entity.source.list':
-        return opts.failSourceList === true
-          ? Promise.reject(new Error('source list unavailable'))
-          : Promise.resolve({ sources: opts.sources ?? SOURCES, defaults_by_kind: {} });
+        sourceListCalls += 1;
+        if (sourceListFailuresRemaining > 0) {
+          sourceListFailuresRemaining -= 1;
+          return Promise.reject(new Error('source list unavailable'));
+        }
+        return (
+          sourceListCalls > 1
+            ? opts.sourceListGateAfterFirst ?? Promise.resolve()
+            : Promise.resolve()
+        ).then(() => ({
+          sources: opts.sources ?? SOURCES,
+          defaults_by_kind: {},
+        }));
       case 'reception.inbox.approve':
-        return Promise.resolve({
-          hold_id: (payload as { hold_id: string }).hold_id,
-          released: true,
-          edited_keys: Object.keys((payload as { edits?: Record<string, unknown> }).edits ?? {}),
+        return (opts.decisionGate ?? Promise.resolve()).then(() => {
+          decisionAcknowledged = true;
+          if (opts.removeResolved === true) {
+            const holdId = (payload as { hold_id: string }).hold_id;
+            items = items.filter((item) => item.hold_id !== holdId);
+          }
+          return {
+            hold_id: (payload as { hold_id: string }).hold_id,
+            released: true,
+            edited_keys: Object.keys(
+              (payload as { edits?: Record<string, unknown> }).edits ?? {},
+            ),
+          };
         });
       case 'reception.inbox.reject':
-        return Promise.resolve({
-          hold_id: (payload as { hold_id: string }).hold_id,
-          status: 'dismissed',
+        return (opts.decisionGate ?? Promise.resolve()).then(() => {
+          decisionAcknowledged = true;
+          if (opts.removeResolved === true) {
+            const holdId = (payload as { hold_id: string }).hold_id;
+            items = items.filter((item) => item.hold_id !== holdId);
+          }
+          return {
+            hold_id: (payload as { hold_id: string }).hold_id,
+            status: 'dismissed',
+          };
         });
       default:
         return Promise.reject(new Error(`unexpected op ${op}`));
@@ -333,16 +399,18 @@ const setup = (opts: {
   }) as unknown as ReceptionInboxConn;
 
   const host = makeEl('div');
+  const document = makeDoc();
   const mount = mountReceptionInboxPanel({
     host: host as unknown as HTMLElement,
     conn,
-    document: makeDoc(),
+    document,
     now: () => NOW,
   });
   const root = host.children[0]!;
   return {
     mount,
     root,
+    document,
     calls,
     approveCalls: () =>
       calls
@@ -380,6 +448,457 @@ beforeAll(() => {
 // ════════════════════════════════════════════════════════════════════
 
 describe('reception inbox panel — destination ref-picker', () => {
+  it('moves focus into a selected detail and preserves it through refresh', async () => {
+    const h = setup({
+      items: [
+        item({ hold_id: 'hold-1', preview: { title: 'First request' } }),
+        item({ hold_id: 'hold-2', preview: { title: 'Second request' } }),
+      ],
+    });
+    await flush();
+
+    const row = h.root.querySelector(
+      `[${RECEPTION_INBOX_ROW_ATTR}="hold-2"]`,
+    );
+    if (row === null) throw new Error('second inbox row not mounted');
+    dispatch(row, 'click');
+
+    const heading = h.root.querySelector(
+      `[${RECEPTION_INBOX_DETAIL_HEADING_ATTR}="hold-2"]`,
+    );
+    expect(heading).not.toBeNull();
+    expect(heading!.tagName).toBe('H4');
+    expect(heading!.getAttribute('tabindex')).toBe('-1');
+    expect(h.document.activeElement).toBe(heading);
+
+    await h.mount.refresh();
+    const refreshedHeading = h.root.querySelector(
+      `[${RECEPTION_INBOX_DETAIL_HEADING_ATTR}="hold-2"]`,
+    );
+    expect(refreshedHeading).not.toBe(heading);
+    expect(h.document.activeElement).toBe(refreshedHeading);
+  });
+
+  it('preserves dirty fields, reject reason, and exact focus through refresh', async () => {
+    const h = setup({
+      items: [item({
+        hold_id: 'hold-draft',
+        args: { title: 'Server title' },
+        arg_schema: {
+          fields: [{
+            key: 'title',
+            type: 'string',
+            label: 'Title',
+            required: true,
+          }],
+        },
+      })],
+    });
+    await flush();
+
+    const title = h.root.querySelector(
+      '[data-recued-reception-inbox-field="title"]',
+    );
+    const reason = h.root.querySelector(
+      '[data-recued-reception-inbox-reason]',
+    );
+    if (title === null || reason === null) {
+      throw new Error('decision draft controls not mounted');
+    }
+    const titleLabel = allNodes(h.root).find(
+      (node) => node.tagName === 'LABEL' && node.textContent === 'Title *',
+    );
+    expect(title.getAttribute('aria-label')).toBe('Title');
+    expect(title.getAttribute('id')).not.toBeNull();
+    expect(titleLabel?.getAttribute('for')).toBe(title.getAttribute('id'));
+    expect(reason.getAttribute('aria-label')).toBe('Reject reason');
+    title.value = 'Owner draft';
+    reason.value = 'Need the account owner to confirm.';
+    title.focus();
+
+    await h.mount.refresh();
+
+    const refreshedTitle = h.root.querySelector(
+      '[data-recued-reception-inbox-field="title"]',
+    );
+    const refreshedReason = h.root.querySelector(
+      '[data-recued-reception-inbox-reason]',
+    );
+    expect(refreshedTitle?.value).toBe('Owner draft');
+    expect(refreshedReason?.value).toBe('Need the account owner to confirm.');
+    expect(h.document.activeElement).toBe(refreshedTitle);
+
+    dispatch(findButton(h.root, 'Approve'), 'click');
+    await flush();
+    expect(h.approveCalls()).toHaveLength(1);
+    expect(h.approveCalls()[0]!.edits).toEqual({ title: 'Owner draft' });
+  });
+
+  it('keeps manual Refresh focused and single-flight through its repaint', async () => {
+    let releaseRefresh: () => void = () => {};
+    const listGateAfterFirst = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const h = setup({
+      items: [item({ arg_schema: { fields: [] } })],
+      listGateAfterFirst,
+    });
+    await flush();
+
+    const refresh = h.root.querySelector(
+      `[${RECEPTION_INBOX_REFRESH_ATTR}]`,
+    )!;
+    refresh.focus();
+    dispatch(refresh, 'click');
+    await flush();
+
+    const refreshing = h.root.querySelector(
+      `[${RECEPTION_INBOX_REFRESH_ATTR}]`,
+    )!;
+    expect(refreshing.textContent).toBe('Refreshing…');
+    expect(refreshing.getAttribute('aria-disabled')).toBe('true');
+    expect(refreshing.getAttribute('aria-busy')).toBe('true');
+    expect(refreshing.disabled).not.toBe(true);
+    expect(h.document.activeElement).toBe(refreshing);
+    dispatch(refreshing, 'click');
+    dispatch(refreshing, 'click');
+    expect(
+      h.calls.filter((call) => call.op === 'reception.inbox.list'),
+    ).toHaveLength(2);
+
+    releaseRefresh();
+    await flush();
+    const settled = h.root.querySelector(
+      `[${RECEPTION_INBOX_REFRESH_ATTR}]`,
+    )!;
+    expect(settled.textContent).toBe('Refresh');
+    expect(h.document.activeElement).toBe(settled);
+  });
+
+  it('preserves an already-focused Refresh through a background refresh', async () => {
+    let releaseRefresh: () => void = () => {};
+    const listGateAfterFirst = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const h = setup({
+      items: [item({ arg_schema: { fields: [] } })],
+      listGateAfterFirst,
+    });
+    await flush();
+
+    h.root.querySelector(`[${RECEPTION_INBOX_REFRESH_ATTR}]`)!.focus();
+    const pendingRefresh = h.mount.refresh();
+    await flush();
+    const refreshing = h.root.querySelector(
+      `[${RECEPTION_INBOX_REFRESH_ATTR}]`,
+    )!;
+    expect(refreshing.textContent).toBe('Refreshing…');
+    expect(h.document.activeElement).toBe(refreshing);
+
+    releaseRefresh();
+    await pendingRefresh;
+    await flush();
+    expect(h.document.activeElement).toBe(h.root.querySelector(
+      `[${RECEPTION_INBOX_REFRESH_ATTR}]`,
+    ));
+  });
+
+  it('keeps an inbox view switch focused, selected, and single-flight', async () => {
+    let releaseRefresh: () => void = () => {};
+    const listGateAfterFirst = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const h = setup({
+      items: [item({ arg_schema: { fields: [] } })],
+      listGateAfterFirst,
+    });
+    await flush();
+
+    const open = h.root.querySelector(
+      `[${RECEPTION_INBOX_VIEW_ATTR}="open"]`,
+    )!;
+    const dismissed = h.root.querySelector(
+      `[${RECEPTION_INBOX_VIEW_ATTR}="subview"]`,
+    )!;
+    expect(open.getAttribute('aria-pressed')).toBe('true');
+    expect(dismissed.getAttribute('aria-pressed')).toBe('false');
+    dismissed.focus();
+    dispatch(dismissed, 'click');
+    await flush();
+
+    const switching = h.root.querySelector(
+      `[${RECEPTION_INBOX_VIEW_ATTR}="subview"]`,
+    )!;
+    expect(switching.getAttribute('aria-disabled')).toBe('true');
+    expect(switching.getAttribute('aria-busy')).toBe('true');
+    expect(switching.disabled).not.toBe(true);
+    expect(h.document.activeElement).toBe(switching);
+    dispatch(switching, 'click');
+    dispatch(switching, 'click');
+    expect(
+      h.calls.filter((call) => call.op === 'reception.inbox.list'),
+    ).toHaveLength(2);
+
+    releaseRefresh();
+    await flush();
+    const settled = h.root.querySelector(
+      `[${RECEPTION_INBOX_VIEW_ATTR}="subview"]`,
+    )!;
+    expect(settled.getAttribute('aria-pressed')).toBe('true');
+    expect(h.root.querySelector(
+      `[${RECEPTION_INBOX_VIEW_ATTR}="open"]`,
+    )?.getAttribute('aria-pressed')).toBe('false');
+    expect(h.document.activeElement).toBe(settled);
+
+    dispatch(settled, 'click');
+    await flush();
+    expect(
+      h.calls.filter((call) => call.op === 'reception.inbox.list'),
+    ).toHaveLength(2);
+  });
+
+  it('does not reclaim view-switch focus after the owner moves into detail', async () => {
+    let releaseRefresh: () => void = () => {};
+    const listGateAfterFirst = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const h = setup({
+      items: [item({ arg_schema: { fields: [] } })],
+      listGateAfterFirst,
+    });
+    await flush();
+
+    const dismissed = h.root.querySelector(
+      `[${RECEPTION_INBOX_VIEW_ATTR}="subview"]`,
+    )!;
+    dismissed.focus();
+    dispatch(dismissed, 'click');
+    await flush();
+    h.root.querySelector(
+      `[${RECEPTION_INBOX_DETAIL_HEADING_ATTR}="hold-1"]`,
+    )!.focus();
+
+    releaseRefresh();
+    await flush();
+    expect(h.document.activeElement).toBe(h.root.querySelector(
+      `[${RECEPTION_INBOX_DETAIL_HEADING_ATTR}="hold-1"]`,
+    ));
+  });
+
+  it('does not reclaim Refresh focus after the owner moves into the detail', async () => {
+    let releaseRefresh: () => void = () => {};
+    const listGateAfterFirst = new Promise<void>((resolve) => {
+      releaseRefresh = resolve;
+    });
+    const h = setup({
+      items: [item({ arg_schema: { fields: [] } })],
+      listGateAfterFirst,
+    });
+    await flush();
+
+    const refresh = h.root.querySelector(
+      `[${RECEPTION_INBOX_REFRESH_ATTR}]`,
+    )!;
+    refresh.focus();
+    dispatch(refresh, 'click');
+    await flush();
+    const heading = h.root.querySelector(
+      `[${RECEPTION_INBOX_DETAIL_HEADING_ATTR}="hold-1"]`,
+    )!;
+    heading.focus();
+
+    releaseRefresh();
+    await flush();
+    expect(h.document.activeElement).toBe(h.root.querySelector(
+      `[${RECEPTION_INBOX_DETAIL_HEADING_ATTR}="hold-1"]`,
+    ));
+  });
+
+  it('selects and focuses the next visible item after approving the middle row', async () => {
+    let releaseDecision!: () => void;
+    const decisionGate = new Promise<void>((resolve) => {
+      releaseDecision = resolve;
+    });
+    const h = setup({
+      items: [
+        item({
+          hold_id: 'hold-1',
+          preview: { title: 'First request' },
+          arg_schema: { fields: [] },
+        }),
+        item({
+          hold_id: 'hold-2',
+          preview: { title: 'Second request' },
+          arg_schema: { fields: [] },
+        }),
+        item({
+          hold_id: 'hold-3',
+          preview: { title: 'Third request' },
+          arg_schema: { fields: [] },
+        }),
+      ],
+      removeResolved: true,
+      decisionGate,
+    });
+    await flush();
+
+    dispatch(h.root.querySelector(
+      `[${RECEPTION_INBOX_ROW_ATTR}="hold-2"]`,
+    )!, 'click');
+    const approve = findButton(h.root, 'Approve');
+    approve.focus();
+    dispatch(approve, 'click');
+
+    const approving = findButton(h.root, 'Approving…');
+    expect(h.document.activeElement).toBe(approving);
+    expect(approving.disabled).not.toBe(true);
+    expect(approving.getAttribute('aria-disabled')).toBe('true');
+    expect(approving.getAttribute('aria-busy')).toBe('true');
+    expect(h.mount.hasInFlightWork()).toBe(true);
+    dispatch(approving, 'click');
+    dispatch(approving, 'click');
+    expect(h.approveCalls()).toHaveLength(1);
+
+    releaseDecision();
+    await flush();
+
+    expect(h.mount.hasInFlightWork()).toBe(false);
+    expect(h.mount.getState().selected_hold_id).toBe('hold-3');
+    expect(h.root.querySelector(
+      `[${RECEPTION_INBOX_ROW_ATTR}="hold-2"]`,
+    )).toBeNull();
+    const nextHeading = h.root.querySelector(
+      `[${RECEPTION_INBOX_DETAIL_HEADING_ATTR}="hold-3"]`,
+    );
+    expect(h.document.activeElement).toBe(nextHeading);
+  });
+
+  it('does not resurrect an acknowledged decision from a stale refresh', async () => {
+    const h = setup({
+      items: [
+        item({ hold_id: 'hold-1', arg_schema: { fields: [] } }),
+        item({ hold_id: 'hold-2', arg_schema: { fields: [] } }),
+      ],
+    });
+    await flush();
+
+    const approve = findButton(h.root, 'Approve');
+    approve.focus();
+    dispatch(approve, 'click');
+    await flush();
+
+    expect(h.approveCalls()).toHaveLength(1);
+    expect(h.root.querySelector(
+      `[${RECEPTION_INBOX_ROW_ATTR}="hold-1"]`,
+    )).toBeNull();
+    expect(h.mount.getState().selected_hold_id).toBe('hold-2');
+    expect(h.document.activeElement).toBe(h.root.querySelector(
+      `[${RECEPTION_INBOX_DETAIL_HEADING_ATTR}="hold-2"]`,
+    ));
+  });
+
+  it('keeps an acknowledged decision settled when its refresh fails', async () => {
+    const h = setup({
+      items: [
+        item({ hold_id: 'hold-1', arg_schema: { fields: [] } }),
+        item({ hold_id: 'hold-2', arg_schema: { fields: [] } }),
+      ],
+      failListAfterDecision: true,
+    });
+    await flush();
+
+    const approve = findButton(h.root, 'Approve');
+    approve.focus();
+    dispatch(approve, 'click');
+    await flush();
+
+    expect(h.approveCalls()).toHaveLength(1);
+    expect(h.mount.getState().in_flight).toBe(false);
+    expect(h.mount.getState().error).toBe(
+      "Decision saved, but the inbox couldn't refresh: refresh unavailable",
+    );
+    expect(h.root.querySelector(
+      `[${RECEPTION_INBOX_ROW_ATTR}="hold-1"]`,
+    )).toBeNull();
+    expect(h.root.querySelector('[role="alert"]')?.textContent).toBe(
+      "Decision saved, but the inbox couldn't refresh: refresh unavailable",
+    );
+    expect(h.mount.getState().selected_hold_id).toBe('hold-2');
+    expect(h.document.activeElement).toBe(h.root.querySelector(
+      `[${RECEPTION_INBOX_DETAIL_HEADING_ATTR}="hold-2"]`,
+    ));
+  });
+
+  it('settles a decision after the owner reviews a different row in flight', async () => {
+    let releaseDecision!: () => void;
+    const decisionGate = new Promise<void>((resolve) => {
+      releaseDecision = resolve;
+    });
+    const h = setup({
+      items: [
+        item({ hold_id: 'hold-1', arg_schema: { fields: [] } }),
+        item({ hold_id: 'hold-2', arg_schema: { fields: [] } }),
+      ],
+      removeResolved: true,
+      decisionGate,
+    });
+    await flush();
+
+    dispatch(h.root.querySelector(
+      `[${RECEPTION_INBOX_ROW_ATTR}="hold-2"]`,
+    )!, 'click');
+    dispatch(findButton(h.root, 'Approve'), 'click');
+    dispatch(h.root.querySelector(
+      `[${RECEPTION_INBOX_ROW_ATTR}="hold-1"]`,
+    )!, 'click');
+
+    releaseDecision();
+    await flush();
+
+    expect(h.mount.getState().in_flight).toBe(false);
+    expect(h.mount.getState().selected_hold_id).toBe('hold-1');
+    expect(h.root.querySelector(
+      `[${RECEPTION_INBOX_ROW_ATTR}="hold-2"]`,
+    )).toBeNull();
+    expect(h.document.activeElement).toBe(h.root.querySelector(
+      `[${RECEPTION_INBOX_DETAIL_HEADING_ATTR}="hold-1"]`,
+    ));
+  });
+
+  it('focuses the inbox heading after rejecting the final item', async () => {
+    let releaseDecision!: () => void;
+    const decisionGate = new Promise<void>((resolve) => {
+      releaseDecision = resolve;
+    });
+    const h = setup({
+      items: [item({ hold_id: 'hold-1', arg_schema: { fields: [] } })],
+      removeResolved: true,
+      decisionGate,
+    });
+    await flush();
+
+    dispatch(h.root.querySelector(
+      `[${RECEPTION_INBOX_ROW_ATTR}="hold-1"]`,
+    )!, 'click');
+    const reject = findButton(h.root, 'Reject');
+    reject.focus();
+    dispatch(reject, 'click');
+
+    const rejecting = findButton(h.root, 'Rejecting…');
+    expect(h.document.activeElement).toBe(rejecting);
+    expect(rejecting.disabled).not.toBe(true);
+    expect(rejecting.getAttribute('aria-disabled')).toBe('true');
+    expect(rejecting.getAttribute('aria-busy')).toBe('true');
+
+    releaseDecision();
+    await flush();
+
+    expect(h.mount.getState().selected_hold_id).toBeNull();
+    const heading = h.root.querySelector(`[${RECEPTION_INBOX_HEADING_ATTR}]`);
+    expect(heading?.getAttribute('tabindex')).toBe('-1');
+    expect(h.document.activeElement).toBe(heading);
+  });
+
   it('renders owner-only prior booking history in the review detail', async () => {
     const { root } = setup({
       items: [item({
@@ -477,15 +996,55 @@ describe('reception inbox panel — destination ref-picker', () => {
     expect(root.querySelector('[data-recued-reception-inbox-picker="widget"]')).toBeNull();
   });
 
-  it('degrades gracefully when work_entity.source.list fails', async () => {
-    const h = setup({ items: [item()], failSourceList: true });
+  it('keeps a failed destination inventory explicit, single-flight, and recoverable', async () => {
+    let releaseRetry!: () => void;
+    const retryGate = new Promise<void>((resolve) => {
+      releaseRetry = resolve;
+    });
+    const h = setup({
+      items: [item()],
+      sourceListFailures: 1,
+      sourceListGateAfterFirst: retryGate,
+    });
     await flush();
 
-    // The load failure is swallowed (it is not a panel-level error) and the
-    // picker shell still renders.
+    // The enhancement stays scoped to its field, but a failed registry read
+    // no longer strands the owner in a terminal empty picker.
     expect(h.mount.getState().error).toBeNull();
-    expect(h.root.querySelector('[data-recued-reception-inbox-picker="source_id"]')).not.toBeNull();
+    const failure = h.root.querySelector(
+      `[${RECEPTION_INBOX_DESTINATION_ERROR_ATTR}="source_id"]`,
+    );
+    expect(failure).not.toBeNull();
+    expect(failure?.getAttribute('role')).toBe('alert');
+    expect(allNodes(failure!).map((node) => node.textContent).join(' '))
+      .toContain('source list unavailable');
+    expect(h.root.querySelector(
+      '[data-ref-picker="reception-inbox-dest-source_id"]',
+    )).toBeNull();
     expect(h.sourceListCount()).toBe(1);
+
+    const retry = h.root.querySelector(
+      `[${RECEPTION_INBOX_DESTINATION_RETRY_ATTR}="source_id"]`,
+    )!;
+    retry.focus();
+    dispatch(retry, 'click');
+    expect(h.sourceListCount()).toBe(2);
+    const retrying = findButton(h.root, 'Retrying…');
+    expect(h.document.activeElement).toBe(retrying);
+    expect(retrying.getAttribute('aria-disabled')).toBe('true');
+    expect(retrying.getAttribute('aria-busy')).toBe('true');
+    dispatch(retrying, 'click');
+    dispatch(retrying, 'click');
+    expect(h.sourceListCount()).toBe(2);
+
+    releaseRetry();
+    await flush();
+    expect(h.root.querySelector(
+      `[${RECEPTION_INBOX_DESTINATION_ERROR_ATTR}="source_id"]`,
+    )).toBeNull();
+    const picker = h.root.querySelector(`[${RefPicker.REF_PICKER_INPUT_ATTR}]`);
+    expect(picker).not.toBeNull();
+    expect(h.document.activeElement).toBe(picker);
   });
 
   it('sends a NEVER-PREFILLED datetime as epoch ms, not the raw string', async () => {
@@ -637,8 +1196,13 @@ describe('reception inbox panel — D-177 N.14 allow-for-this-form', () => {
   const OFFER = { ttl_ms: 86_400_000, max_uses: 20 };
 
   it('renders the allow button off the server-projected offer and flows allow into the dispatch', async () => {
+    let releaseDecision!: () => void;
+    const decisionGate = new Promise<void>((resolve) => {
+      releaseDecision = resolve;
+    });
     const h = setup({
       items: [item({ hold_id: 'hold-1', arg_schema: { fields: [] }, allow_offer: OFFER })],
+      decisionGate,
     });
     await flush();
 
@@ -647,6 +1211,14 @@ describe('reception inbox panel — D-177 N.14 allow-for-this-form', () => {
     expect(btn!.textContent).toContain('24 h / 20 uses');
 
     dispatch(btn!, 'click');
+
+    const allowing = findButton(h.root, 'Approving & allowing…');
+    expect(h.document.activeElement).toBe(allowing);
+    expect(allowing.disabled).not.toBe(true);
+    expect(allowing.getAttribute('aria-disabled')).toBe('true');
+    expect(allowing.getAttribute('aria-busy')).toBe('true');
+
+    releaseDecision();
     await flush();
 
     const approve = h.calls.find((c) => c.op === 'reception.inbox.approve');

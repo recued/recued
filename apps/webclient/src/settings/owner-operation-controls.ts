@@ -26,6 +26,9 @@ export const OWNER_OPERATION_ROW_ATTR = 'data-recued-owner-operation-row';
 export const OWNER_OPERATION_RISK_ATTR = 'data-recued-owner-operation-risk';
 export const OWNER_OPERATION_APPROVAL_ATTR = 'data-recued-owner-operation-approval';
 export const OWNER_OPERATION_ERROR_ATTR = 'data-recued-owner-operation-error';
+/** The pack declares ingredients but none are in the server's operation
+ *  inventory — distinct from a pack that genuinely declares no operations. */
+export const OWNER_OPERATION_UNMATCHED_ATTR = 'data-recued-owner-operation-unmatched';
 export const OWNER_OPERATION_STALE_ATTR = 'data-recued-owner-operation-stale';
 export const OWNER_OPERATION_CONFIRM_ATTR = 'data-recued-owner-operation-confirm';
 export const OWNER_OPERATION_CONFIRM_CANCEL_ATTR =
@@ -92,6 +95,24 @@ export const packOperationIngredientSlugs = (
     if (content.type === 'composition') {
       const slug = content.composition.slug.trim();
       if (slug !== '') slugs.add(slug);
+      for (const ingredient of content.composition.ingredients ?? []) {
+        const nested = typeof ingredient?.slug === 'string' ? ingredient.slug.trim() : '';
+        if (nested !== '') slugs.add(nested);
+      }
+      // ⛔ A composition's own slug is NOT necessarily the id of the ingredient
+      // it installs. It declares its ingredients explicitly, each with its own
+      // slug, and THOSE are what land in the executor registry that
+      // `collection.operation.listOperations` enumerates.
+      //
+      // 798 of the corpus's 825 composition packs happen to name the ingredient
+      // after the composition, so the join worked and the feature looked fine.
+      // The other 27 — `rental-book` (composition `rental-book`, ingredient
+      // `rental-book-records`), every other `*-records` pack, `clamav-pack`
+      // (`clamav` → `clamdscan`), `csvkit` (`csvkit` → `csvclean`) — matched
+      // nothing and silently lost their whole Permissions tab.
+      //
+      // The composition slug is KEPT, not replaced: those 798 depend on it, and
+      // a composition may register under either name.
       continue;
     }
     if (content.type === 'ingredient') {
@@ -233,9 +254,30 @@ export const createOwnerOperationController = (
 
   const renderForPack = (pack: PackListEntry): HTMLElement | null => {
     if (!enabled) return null;
+    // Owner-operation overrides only exist for an INSTALLED pack's operations,
+    // and `manifest` is present exactly then.
+    if (pack.manifest === undefined) return null;
     const membership = new Set(packOperationIngredientSlugs(pack.manifest));
-    const scoped = ingredients.filter((ingredient) => membership.has(ingredient.ingredient_id));
-    if (!loading && error === null && scoped.every((ingredient) => ingredient.operations.length === 0)) {
+    // ⛔ Prefer the server's OWNERSHIP fact over the slug guess. `pack_slug` comes
+    // off `installed_pack.ingredient_ids`, so it is right even when the installed
+    // ingredient carries a name no author wrote — which is every Records pack,
+    // whose catalog registers as `records-<hash>`. The slug set stays as the
+    // fallback for an ingredient with no inventory row (a bundled manifest no
+    // pack installed) and for a server too old to send the field.
+    const scoped = ingredients.filter((ingredient) => (
+      ingredient.pack_slug !== undefined
+        ? ingredient.pack_slug === pack.slug
+        : membership.has(ingredient.ingredient_id)
+    ));
+    // ⚠ `[].every(…)` is TRUE, so an empty `scoped` used to read as "this pack's
+    // ingredients declare no operations" — the same answer as a pack that really
+    // has none. That vacuous truth is what let the slug-join bug above hide: a
+    // pack whose ingredients matched NOTHING reported "nothing to customize" and
+    // looked deliberate. Keep the two apart, so the next join that breaks says so
+    // instead of quietly removing a whole tab.
+    const matchedNothing = membership.size > 0 && scoped.length === 0;
+    if (!loading && error === null && !matchedNothing
+      && scoped.every((ingredient) => ingredient.operations.length === 0)) {
       return null;
     }
 
@@ -259,6 +301,21 @@ export const createOwnerOperationController = (
       line.setAttribute(OWNER_OPERATION_ERROR_ATTR, '');
       line.className = 'owner-operation-error';
       line.textContent = error;
+      root.appendChild(line);
+      return root;
+    }
+
+    if (matchedNothing) {
+      // The pack declares ingredients, but none of them are in the server's
+      // operation inventory. For an uninstalled pack that is simply the truth;
+      // for an installed one it is a real fault worth seeing rather than an
+      // empty tab that reads as "this pack asks for nothing".
+      const line = opts.document.createElement('p');
+      line.setAttribute(OWNER_OPERATION_UNMATCHED_ATTR, '');
+      line.className = 'owner-operation-note';
+      line.textContent = pack.installed
+        ? 'This pack’s operations are not in the server’s inventory yet. Reinstall the pack, or restart the server, to load them.'
+        : 'Install this pack to set owner defaults for its operations.';
       root.appendChild(line);
       return root;
     }

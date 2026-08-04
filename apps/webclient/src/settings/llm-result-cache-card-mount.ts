@@ -169,6 +169,8 @@ export interface LlmResultCacheCardMount {
    *  an immediately-resolved promise when no clear has been fired.
    *  Tests + hosts use this to await the clear flow without polling. */
   whenClearSettled(): Promise<void>;
+  /** True while the destructive cache clear has no terminal result. */
+  hasInFlightWork(): boolean;
   /** Tear down the card DOM + remove event listeners. Idempotent. */
   dispose(): void;
 }
@@ -343,6 +345,7 @@ export const mountLlmResultCacheCard = (
     },
     whenLoaded: () => pendingLoad,
     whenClearSettled: () => pendingClear ?? Promise.resolve(),
+    hasInFlightWork: () => !disposed && state.clearing,
     dispose: () => {
       if (disposed) return;
       disposed = true;

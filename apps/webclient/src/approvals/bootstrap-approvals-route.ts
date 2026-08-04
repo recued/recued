@@ -13,7 +13,10 @@
  */
 
 import {
+  APPROVAL_CARD_ACTION_ATTR,
   APPROVAL_CARD_STYLES,
+  ASK_CARD_OPTION_ATTR,
+  CHAT_PLAN_CARD_ACTION_ATTR,
   renderApprovalCard,
   renderAskCard,
   renderChatPlanCard,
@@ -81,6 +84,7 @@ export const APPROVALS_ROUTE_FOCUS_ATTR = 'data-recued-approvals-focus';
 export const APPROVALS_ROUTE_EMPTY_ATTR = 'data-recued-approvals-empty';
 export const APPROVALS_ROUTE_LOADING_ATTR = 'data-recued-approvals-loading';
 export const APPROVALS_ROUTE_ERROR_ATTR = 'data-recued-approvals-error';
+export const APPROVALS_ROUTE_REFRESH_ATTR = 'data-recued-approvals-refresh';
 /** Ephemeral post-decision handoff; resolved history still belongs to Chat/Runs. */
 export const APPROVALS_ROUTE_PLAN_RESOLUTION_ATTR =
   'data-recued-approvals-plan-resolution';
@@ -111,6 +115,22 @@ const APPROVALS_ROUTE_CHROME_STYLES = `
   margin: 0;
   font-size: 20px;
   font-weight: 650;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-refresh {
+  margin-left: auto;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--fg);
+  min-height: 34px;
+  padding: 0 11px;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+[${APPROVALS_ROUTE_HOST_ATTR}] .approvals-refresh[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: .65;
 }
 [${APPROVALS_ROUTE_HOST_ATTR}] .approvals-summary {
   margin: 0 0 14px;
@@ -316,9 +336,9 @@ export interface BootstrapApprovalsRouteOptions {
   pairListCaller?: ApprovalsPairListCaller;
   /** R17 — the run-scoped focus deep link. When the route is mounted at
    *  `#approvals/<id>` (e.g. from a Runs detail "Approval" link), the card whose
-   *  id matches is scrolled into view (once) and highlighted while it is on
+   *  id matches is scrolled into view, focused, and highlighted while it is on
    *  screen. A non-matching / already-resolved id degrades silently to the
-   *  whole queue with no highlight. */
+   *  whole queue with no highlight or focus change. */
   initialFocusId?: string;
   /** Bootstrap-scoped durable Chat approval inbox. It owns all-session
    * recovery plus live-event reconciliation across reconnects. */
@@ -361,6 +381,8 @@ export interface ApprovalsRoute {
   /** Re-read every queue and re-arm the live approval snapshot. */
   retryRecoveryContext(): Promise<void>;
   hasInFlightWork(): boolean;
+  /** Contextual opt-in for the shell's route-leave guard. */
+  inFlightWorkPrompt(): string | null;
   dispose(): void;
 }
 
@@ -427,8 +449,15 @@ export const bootstrapApprovalsRoute = (
   let approvalLoadGeneration = 0;
   let pendingApprovalLoad: Promise<void> = Promise.resolve();
   let pendingApprovalSubscribe: Promise<void> = Promise.resolve();
+  let refreshingQueue = false;
+  let pendingQueueRefresh: Promise<void> = Promise.resolve();
   const resolving = new Set<string>();
   const resolveErrors = new Map<string, string>();
+  // Ask answers use host-owned progress/error state too. The shared card has
+  // an immediate local guard, while these maps keep the exact option owned if
+  // a live queue event rebuilds the unified list before the RPC settles.
+  const resolvingAsks = new Map<string, string>();
+  const askResolveErrors = new Map<string, string>();
   // R20 — host-owned armed flag for a destructive gate's confirm step. Lives
   // here (not in the card closure) so a confirm-in-progress survives the route's
   // benign re-renders (a background bus event shouldn't yank it away). Safety is
@@ -470,6 +499,13 @@ export const bootstrapApprovalsRoute = (
   heading.setAttribute(APPROVALS_ROUTE_HEADING_ATTR, '');
   heading.textContent = 'Approvals';
   header.appendChild(heading);
+
+  const refreshButton = doc.createElement('button');
+  refreshButton.type = 'button';
+  refreshButton.className = 'approvals-refresh';
+  refreshButton.setAttribute(APPROVALS_ROUTE_REFRESH_ATTR, '');
+  refreshButton.textContent = 'Refresh';
+  header.appendChild(refreshButton);
   routeRoot.appendChild(header);
 
   const summary = doc.createElement('p');
@@ -623,6 +659,33 @@ export const bootstrapApprovalsRoute = (
     );
   };
 
+  // Card renderers disable the pressed button before invoking their async
+  // callback. Browsers then move focus off that button, so retain its row and
+  // exact gate/plan action until settlement. A busy repaint may be unable to
+  // focus the disabled replacement; the final failure repaint can.
+  type DecisionActionTarget = { attr: string; value: string };
+  let actionFocusOwner: {
+    rowId: string;
+    action: DecisionActionTarget | null;
+  } | null = null;
+  let requestedApprovalActionFocus: {
+    rowId: string;
+    action: string;
+  } | null = null;
+  const runDecisionAction = async (
+    id: string,
+    decisionAction: DecisionActionTarget | null,
+    action: () => Promise<void>,
+  ): Promise<void> => {
+    const owner = { rowId: id, action: decisionAction };
+    actionFocusOwner = owner;
+    try {
+      await action();
+    } finally {
+      if (actionFocusOwner === owner) actionFocusOwner = null;
+    }
+  };
+
   const renderGateCard = (approval: ServerPendingApproval): HTMLElement => {
     const stale = now() >= approval.timeout_at;
     // D-174 #4 — fold resolved display names onto the model (ids stay
@@ -639,15 +702,35 @@ export const bootstrapApprovalsRoute = (
       cardModel,
       {
         onResolve: (decision) =>
-          resolveApprovalFromCard(approval.approval_id, decision),
+          runDecisionAction(
+            approval.approval_id,
+            {
+              attr: APPROVAL_CARD_ACTION_ATTR,
+              value:
+                approval.risk_tier === 'destructive'
+                  && armedDestructive.has(approval.approval_id)
+                  && decision === 'approve'
+                  ? 'confirm'
+                  : decision,
+            },
+            () => resolveApprovalFromCard(approval.approval_id, decision),
+          ),
         // R20 — destructive gates arm a confirm step instead of resolving on
         // the first Approve click. Arm/disarm flip the host-owned flag + re-
         // render so the danger Confirm appears / disappears.
         onArm: () => {
+          requestedApprovalActionFocus = {
+            rowId: approval.approval_id,
+            action: 'confirm',
+          };
           armedDestructive.add(approval.approval_id);
           renderDecisions();
         },
         onDisarm: () => {
+          requestedApprovalActionFocus = {
+            rowId: approval.approval_id,
+            action: 'arm',
+          };
           armedDestructive.delete(approval.approval_id);
           renderDecisions();
         },
@@ -659,7 +742,12 @@ export const bootstrapApprovalsRoute = (
           runHref: runHref(),
         },
         armed: armedDestructive.has(approval.approval_id),
-        disabled: stale || resolving.has(approval.approval_id),
+        disabled: stale,
+        busy: resolving.has(approval.approval_id),
+        busyAction:
+          actionFocusOwner?.rowId === approval.approval_id
+            ? actionFocusOwner.action?.value
+            : undefined,
         disabledReason: stale
           ? 'Timed out - refresh queue.'
           : resolving.has(approval.approval_id)
@@ -670,13 +758,49 @@ export const bootstrapApprovalsRoute = (
     );
   };
 
-  const renderAskRow = (ask: ServerPendingAsk): HTMLElement =>
-    renderAskCard(doc, ask, {
-      onAnswer: (optionId) => panel.submitAnswer(ask.ask_id, optionId),
-    });
+  const submitAskFromCard = async (
+    askId: string,
+    optionId: string,
+  ): Promise<void> => {
+    if (resolvingAsks.has(askId)) return;
+    resolvingAsks.set(askId, optionId);
+    askResolveErrors.delete(askId);
+    renderDecisions();
+    try {
+      await panel.submitAnswer(askId, optionId);
+    } catch (err) {
+      askResolveErrors.set(askId, 'Could not submit — try again.');
+      throw err;
+    } finally {
+      resolvingAsks.delete(askId);
+      renderDecisions();
+    }
+  };
 
-  const renderPlanCard = (plan: PendingChatPlan): HTMLElement =>
-    renderChatPlanCard(
+  const renderAskRow = (ask: ServerPendingAsk): HTMLElement =>
+    renderAskCard(
+      doc,
+      ask,
+      {
+        onAnswer: (optionId) =>
+          runDecisionAction(
+            ask.ask_id,
+            { attr: ASK_CARD_OPTION_ATTR, value: optionId },
+            () => submitAskFromCard(ask.ask_id, optionId),
+          ),
+      },
+      {
+        busy: resolvingAsks.has(ask.ask_id),
+        busyOptionId: resolvingAsks.get(ask.ask_id),
+        errorMessage: askResolveErrors.get(ask.ask_id) ?? null,
+      },
+    );
+
+  const renderPlanCard = (plan: PendingChatPlan): HTMLElement => {
+    const ownedAction = actionFocusOwner?.rowId === plan.plan_id
+      ? actionFocusOwner.action?.value
+      : undefined;
+    return renderChatPlanCard(
       doc,
       {
         plan_id: plan.plan_id,
@@ -688,38 +812,200 @@ export const bootstrapApprovalsRoute = (
         args: plan.args,
         payload_available: plan.payload_available,
       },
-      { onResolve: (decision) => resolvePlanFromCard(plan.plan_id, decision) },
+      {
+        onResolve: (decision) =>
+          runDecisionAction(
+            plan.plan_id,
+            { attr: CHAT_PLAN_CARD_ACTION_ATTR, value: decision },
+            () => resolvePlanFromCard(plan.plan_id, decision),
+          ),
+      },
       {
         chatHref: pendingChatPlanHref(plan),
-        disabled: resolvingPlans.has(plan.plan_id),
+        busy: resolvingPlans.has(plan.plan_id),
+        busyAction:
+          ownedAction === 'approve' || ownedAction === 'reject'
+            ? ownedAction
+            : undefined,
         errorMessage: planResolveErrors.get(plan.plan_id) ?? null,
       },
     );
+  };
 
   // R17 — run-scoped focus deep link (`#approvals/<id>`) state.
   const focusId = opts.initialFocusId;
-  let focusScrolled = false;
+  let focusApplied = false;
 
-  /** Scroll the focus-target card into view ONCE. It can be absent on the first
-   *  (loading) render, so this no-ops until the card appears; the highlight
-   *  itself is re-applied per render in the row loop, so it survives re-paints
-   *  until the card is resolved off the list. */
+  /** Move to the focus-target card ONCE. It can be absent on the first loading
+   *  render, so this no-ops until the card appears. Later benign repaints
+   *  preserve that card owner in `renderDecisions`. */
   const applyFocus = (): void => {
-    if (focusId === undefined || focusScrolled) return;
+    if (focusId === undefined || focusApplied) return;
     const target = (Array.from(list.children) as HTMLElement[]).find(
       (el) => el.getAttribute?.(APPROVALS_ROUTE_FOCUS_ATTR) === focusId,
     );
     if (target === undefined) return;
-    focusScrolled = true;
+    focusApplied = true;
     if (typeof target.scrollIntoView === 'function') {
       target.scrollIntoView({ block: 'center' });
     }
+    target.focus?.({ preventScroll: true });
+  };
+
+  const focusDecisionSuccessor = (id: string | null): void => {
+    const target = id === null
+      ? undefined
+      : (Array.from(list.children) as HTMLElement[]).find(
+          (el) => el.getAttribute?.(APPROVALS_ROUTE_FOCUS_ATTR) === id,
+        );
+    if (target !== undefined) {
+      target.setAttribute('tabindex', '-1');
+      target.focus?.({ preventScroll: true });
+      return;
+    }
+    heading.setAttribute('tabindex', '-1');
+    heading.focus?.({ preventScroll: true });
+  };
+
+  let renderedDecisionIds: string[] = [];
+
+  const containsElement = (
+    root: HTMLElement,
+    target: HTMLElement,
+  ): boolean => {
+    if (root === target) return true;
+    return (Array.from(root.children) as HTMLElement[]).some(
+      (child) => containsElement(child, target),
+    );
+  };
+
+  const decisionCardIdContaining = (target: HTMLElement): string | null => {
+    const card = (Array.from(list.children) as HTMLElement[]).find(
+      (candidate) =>
+        candidate.getAttribute?.(APPROVALS_ROUTE_FOCUS_ATTR) !== null
+        && containsElement(candidate, target),
+    );
+    return card?.getAttribute?.(APPROVALS_ROUTE_FOCUS_ATTR) ?? null;
+  };
+
+  const findDescendantByAttr = (
+    root: HTMLElement,
+    attr: string,
+    value: string,
+  ): HTMLElement | undefined => {
+    if (root.getAttribute?.(attr) === value) return root;
+    for (const child of Array.from(root.children) as HTMLElement[]) {
+      const match = findDescendantByAttr(child, attr, value);
+      if (match !== undefined) return match;
+    }
+    return undefined;
+  };
+
+  const restoreDecisionActionFocus = (
+    target: ({ rowId: string } & DecisionActionTarget) | null,
+  ): void => {
+    if (target === null) return;
+    const card = (Array.from(list.children) as HTMLElement[]).find(
+      (candidate) =>
+        candidate.getAttribute?.(APPROVALS_ROUTE_FOCUS_ATTR) === target.rowId,
+    );
+    if (card === undefined) return;
+    findDescendantByAttr(
+      card,
+      target.attr,
+      target.value,
+    )?.focus?.({ preventScroll: true });
+  };
+
+  /** Preserve the focused card across a benign repaint. When its decision was
+   *  completed locally or on another device, hand focus to the next surviving
+   *  card in the prior queue order, then the previous one, then the heading.
+   *  Keeping this at the unified renderer covers gates, asks, and Chat plans. */
+  const reconcileDecisionFocus = (
+    focusedCardId: string | null,
+    decisionRows: ReadonlyArray<DecisionRow>,
+  ): void => {
+    const currentIds = decisionRows.map((row) => row.id);
+    if (focusedCardId !== null) {
+      const replacement = (Array.from(list.children) as HTMLElement[]).find(
+        (el) => el.getAttribute?.(APPROVALS_ROUTE_FOCUS_ATTR) === focusedCardId,
+      );
+      if (replacement !== undefined) {
+        replacement.focus?.({ preventScroll: true });
+      } else {
+        const priorIndex = renderedDecisionIds.indexOf(focusedCardId);
+        if (priorIndex >= 0) {
+          const currentIdSet = new Set(currentIds);
+          const successorId = renderedDecisionIds
+            .slice(priorIndex + 1)
+            .find((id) => currentIdSet.has(id))
+            ?? renderedDecisionIds
+              .slice(0, priorIndex)
+              .reverse()
+              .find((id) => currentIdSet.has(id))
+            ?? null;
+          focusDecisionSuccessor(successorId);
+        }
+      }
+    }
+    renderedDecisionIds = currentIds;
   };
 
   /** Re-paint the whole unified list + the summary / empty chrome. Called on
    *  every gate OR ask state transition — both kinds live in one list. */
   const renderDecisions = (): void => {
     if (disposed) return;
+    const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    const focusedCard = activeElement?.closest?.(
+      `[${APPROVALS_ROUTE_FOCUS_ATTR}]`,
+    );
+    const focusedCardId = activeElement?.getAttribute?.(
+      APPROVALS_ROUTE_FOCUS_ATTR,
+    ) ?? focusedCard?.getAttribute?.(APPROVALS_ROUTE_FOCUS_ATTR)
+      ?? (activeElement === null || activeElement === undefined
+        ? null
+        : decisionCardIdContaining(activeElement))
+      ?? actionFocusOwner?.rowId
+      ?? null;
+    const focusedApprovalAction = activeElement?.closest?.(
+      `[${APPROVAL_CARD_ACTION_ATTR}]`,
+    );
+    const focusedApprovalActionId = activeElement?.getAttribute?.(
+      APPROVAL_CARD_ACTION_ATTR,
+    ) ?? focusedApprovalAction?.getAttribute?.(APPROVAL_CARD_ACTION_ATTR)
+      ?? null;
+    const focusedPlanAction = activeElement?.closest?.(
+      `[${CHAT_PLAN_CARD_ACTION_ATTR}]`,
+    );
+    const focusedPlanActionId = activeElement?.getAttribute?.(
+      CHAT_PLAN_CARD_ACTION_ATTR,
+    ) ?? focusedPlanAction?.getAttribute?.(CHAT_PLAN_CARD_ACTION_ATTR)
+      ?? null;
+    const decisionActionFocus = requestedApprovalActionFocus !== null
+      ? {
+          rowId: requestedApprovalActionFocus.rowId,
+          attr: APPROVAL_CARD_ACTION_ATTR,
+          value: requestedApprovalActionFocus.action,
+        }
+      : focusedCardId !== null && focusedApprovalActionId !== null
+        ? {
+            rowId: focusedCardId,
+            attr: APPROVAL_CARD_ACTION_ATTR,
+            value: focusedApprovalActionId,
+          }
+        : focusedCardId !== null && focusedPlanActionId !== null
+          ? {
+              rowId: focusedCardId,
+              attr: CHAT_PLAN_CARD_ACTION_ATTR,
+              value: focusedPlanActionId,
+            }
+          : actionFocusOwner !== null
+              && focusedCardId === actionFocusOwner.rowId
+              && actionFocusOwner.action !== null
+            ? { rowId: actionFocusOwner.rowId, ...actionFocusOwner.action }
+            : null;
+    requestedApprovalActionFocus = null;
+    const decisionRows = mergedRows();
     clearChildren(list);
     renderPlanResolution();
 
@@ -754,6 +1040,10 @@ export const bootstrapApprovalsRoute = (
         APPROVALS_ROUTE_ERROR_ATTR,
         errorDisplay.connectionCaused ? 'connection' : 'error',
       );
+      err.setAttribute(
+        'role',
+        errorDisplay.connectionCaused ? 'status' : 'alert',
+      );
       err.textContent = errorDisplay.text;
       list.appendChild(err);
     }
@@ -776,6 +1066,10 @@ export const bootstrapApprovalsRoute = (
         APPROVALS_ROUTE_ERROR_ATTR,
         chatPlanErrorDisplay.connectionCaused ? 'connection' : 'error',
       );
+      planErr.setAttribute(
+        'role',
+        chatPlanErrorDisplay.connectionCaused ? 'status' : 'alert',
+      );
       planErr.textContent = chatPlanErrorDisplay.text;
       list.appendChild(planErr);
     }
@@ -783,6 +1077,7 @@ export const bootstrapApprovalsRoute = (
       const askErr = doc.createElement('div');
       askErr.className = 'approvals-error';
       askErr.setAttribute(APPROVALS_ROUTE_ERROR_ATTR, 'error');
+      askErr.setAttribute('role', 'alert');
       askErr.textContent = `Couldn't load asks: ${askSnapshot.listError}`;
       list.appendChild(askErr);
     }
@@ -800,11 +1095,12 @@ export const bootstrapApprovalsRoute = (
       loading.setAttribute(APPROVALS_ROUTE_LOADING_ATTR, '');
       loading.textContent = 'Loading pending decisions...';
       list.appendChild(loading);
+      reconcileDecisionFocus(focusedCardId, decisionRows);
       renderChrome();
       return;
     }
 
-    for (const row of mergedRows()) {
+    for (const row of decisionRows) {
       const card =
         row.kind === 'gate'
           ? renderGateCard(row.approval)
@@ -817,10 +1113,15 @@ export const bootstrapApprovalsRoute = (
       card.setAttribute(APPROVALS_ROUTE_FOCUS_ATTR, row.id);
       if (focusId !== undefined && row.id === focusId) {
         card.setAttribute('data-focused', 'true');
+        card.setAttribute('tabindex', '-1');
+      } else if (focusedCardId === row.id) {
+        card.setAttribute('tabindex', '-1');
       }
       list.appendChild(card);
     }
+    reconcileDecisionFocus(focusedCardId, decisionRows);
     applyFocus();
+    restoreDecisionActionFocus(decisionActionFocus);
     renderChrome();
   };
 
@@ -845,6 +1146,20 @@ export const bootstrapApprovalsRoute = (
       && approvalState.liveError === null
       && askSnapshot.listError === null
       && (chatPlanState?.error ?? null) === null;
+
+    const refreshBusy = refreshingQueue || loading;
+    refreshButton.textContent = refreshingQueue
+      ? 'Refreshing…'
+      : loading
+        ? 'Checking…'
+        : 'Refresh';
+    if (refreshBusy) {
+      refreshButton.setAttribute('aria-disabled', 'true');
+      refreshButton.setAttribute('aria-busy', 'true');
+    } else {
+      refreshButton.removeAttribute('aria-disabled');
+      refreshButton.removeAttribute('aria-busy');
+    }
 
     summary.textContent =
       total === 0
@@ -1024,6 +1339,10 @@ export const bootstrapApprovalsRoute = (
     emptyCopy: null,
     onChange: (next) => {
       askSnapshot = next;
+      const liveAskIds = new Set(next.asks.map((ask) => ask.ask_id));
+      for (const id of [...askResolveErrors.keys()]) {
+        if (!liveAskIds.has(id)) askResolveErrors.delete(id);
+      }
       renderDecisions();
     },
   });
@@ -1120,6 +1439,32 @@ export const bootstrapApprovalsRoute = (
     );
   }
 
+  const refreshQueue = (): Promise<void> => {
+    if (refreshingQueue || disposed) return pendingQueueRefresh;
+    refreshingQueue = true;
+    renderChrome();
+    pendingQueueRefresh = (async () => {
+      try {
+        startApprovalSubscription({ resetSeqBaseline: true });
+        await Promise.all([
+          doRefreshApprovals(),
+          pendingApprovalSubscribe,
+          panel.refresh(),
+          opts.chatPlans?.refresh?.() ?? Promise.resolve(),
+        ]);
+      } finally {
+        refreshingQueue = false;
+        if (!disposed) renderChrome();
+      }
+    })();
+    return pendingQueueRefresh;
+  };
+  const onRefreshClick = (): void => {
+    if (refreshButton.getAttribute('aria-disabled') === 'true') return;
+    void refreshQueue();
+  };
+  refreshButton.addEventListener('click', onRefreshClick);
+
   return {
     asksPanel: () => panel,
     getApprovals: () => approvalState.approvals,
@@ -1144,21 +1489,24 @@ export const bootstrapApprovalsRoute = (
       && (opts.chatPlans?.state?.().error ?? null) === null
         ? 'current'
         : 'unavailable',
-    retryRecoveryContext: async () => {
-      startApprovalSubscription({ resetSeqBaseline: true });
-      await Promise.all([
-        doRefreshApprovals(),
-        pendingApprovalSubscribe,
-        panel.refresh(),
-        opts.chatPlans?.refresh?.() ?? Promise.resolve(),
-      ]);
-    },
-    hasInFlightWork: () => resolving.size > 0
+    retryRecoveryContext: () => refreshQueue(),
+    hasInFlightWork: () => refreshingQueue
+      || resolving.size > 0
+      || resolvingAsks.size > 0
       || resolvingPlans.size > 0
       || panel.hasInFlightWork(),
+    inFlightWorkPrompt: () =>
+      refreshingQueue
+      || resolving.size > 0
+      || resolvingAsks.size > 0
+      || resolvingPlans.size > 0
+      || panel.hasInFlightWork()
+        ? 'An approval action is still in progress. Leave Approvals anyway?'
+        : null,
     dispose: () => {
       if (disposed) return;
       disposed = true;
+      refreshButton.removeEventListener('click', onRefreshClick);
       for (const unsub of unsubscribers) {
         try {
           unsub();

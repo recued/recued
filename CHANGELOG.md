@@ -7,6 +7,53 @@ checkpoint was cut. One entry per published export; the machine-readable
 provenance for each — source commit, tree, payload digest, and what was omitted
 — lives in `.recued-public-export.json`.
 
+## 26.8.4 — 2026-08-04
+
+Almost all of this release is one thing: work you have started stays yours. The
+webclient used to lose in-progress edits, keyboard position, and pending actions
+whenever a route repainted, a background read landed, or the page reloaded. That
+is now held across every surface.
+
+### Fixed
+
+- **Unsaved work survives navigation, reload, and background repaints.** Drafts,
+  filters, selections, pagers, and in-flight actions are retained per surface
+  rather than discarded when something else finishes loading. This covers Chat,
+  Data, Records, Recipes, Kitchen, Contracts, Connections, Packs, Approvals,
+  Reception, Automation, Logs, and Settings.
+- **Keyboard focus is owned rather than lost.** After an action completes, focus
+  advances to whatever now matters instead of falling back to the page. Where an
+  action is refused, focus returns to the control that asked for it, so a
+  keyboard user is not left without a position.
+- **A leave with unsaved work is confirmed, not silently discarded** — including
+  on reload and on switching servers.
+- A revoked device now leaves the roster. The revoke was recorded and the refresh
+  that should have followed was aborted by an unhandled error, so the device kept
+  appearing as active.
+- Connections: the Authorize button no longer fails silently, the readiness
+  checklist lists only what the owner must actually enter, and the callback URL
+  shown is the one this client uses.
+- Packs: "Installed only" now filters, and Install is no longer inert on an
+  uninstalled pack.
+
+### Added
+
+- **Keyless open-data packs — nothing to sign up for.** Weather Desk (current
+  conditions, a seven-day and an hour-by-hour outlook, a schedulable morning
+  brief, and a here-without-naming-a-place lookup), air quality with pollen, IP
+  geolocation, public flight positions, and case-law retrieval. These need no API
+  key and no account.
+- 36 further vendor packs and 28 recipes.
+- Every recipe now declares the packs it calls, so an install knows what it
+  depends on rather than discovering it at run time.
+
+### Changed
+
+- Recipe ids end with the platform they bind to (`check-weather-open-meteo`
+  rather than `check-weather`), matching the rest of the corpus. This affects the
+  ten open-data recipes added since the last release; nothing previously
+  published was renamed.
+
 ## 26.8.2 — 2026-08-02
 
 The bulk of this release is a hardening pass over every surface that accepts

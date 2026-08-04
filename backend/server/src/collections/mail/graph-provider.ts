@@ -64,6 +64,7 @@ import {
   type CanonicalMessage,
   type InitialScanOptions,
   type InboundMailAttachmentPart,
+  type MailMessageDirection,
   type MailProvider,
   type MailSyncFailureKind,
   type MailSyncOutcomeListener,
@@ -74,7 +75,6 @@ import {
   type OutgoingMessage,
   type ProviderHealth,
   type ProviderSyncCallback,
-  type ProviderSyncEventKind,
   type SentMessageMeta,
 } from './provider.js';
 import {
@@ -215,9 +215,23 @@ const extractBodyText = (body: GraphMessagePayload['body']): { text: string; htm
   return { text: body.content };
 };
 
+/** Microsoft Graph returns an opaque `parentFolderId` on messages, but the
+ * collection loop still knows the well-known folder selector it queried. Keep
+ * that transport evidence separate from localized display names. */
+export const graphMessageDirectionForFolder = (folder: string): MailMessageDirection => {
+  switch (folder.trim().toLowerCase()) {
+    case 'inbox': return 'inbound';
+    case 'sentitems':
+    case 'outbox': return 'outbound';
+    case 'drafts': return 'draft';
+    default: return 'unknown';
+  }
+};
+
 export const canonicalizeGraph = (
   msg: GraphMessagePayload,
   attachments: InboundMailAttachmentPart[] = [],
+  direction: MailMessageDirection = graphMessageDirectionForFolder(msg.parentFolderId ?? ''),
 ): CanonicalMessage => {
   const from = msg.from?.emailAddress?.address ?? '';
   const to = addressList(msg.toRecipients);
@@ -243,6 +257,7 @@ export const canonicalizeGraph = (
     subject: msg.subject ?? '',
     thread_id: msg.conversationId ?? '',
     folder_or_label: msg.parentFolderId ?? '',
+    direction,
     is_read: msg.isRead ?? false,
     has_attachments: (msg.hasAttachments ?? false) || attachments.length > 0,
     received_at: Number.isFinite(received) ? received : Date.now(),
@@ -437,7 +452,16 @@ export const createGraphProvider = (
     return accessToken;
   };
 
-  const getWithRetry = async <T>(url: string): Promise<T | null> => {
+  const getWithRetry = async <T>(
+    url: string,
+    {
+      treat404AsAbsent = true,
+      onFailureStatus,
+    }: {
+      treat404AsAbsent?: boolean;
+      onFailureStatus?: (status: number) => void;
+    } = {},
+  ): Promise<T | null> => {
     const first = await graphGet<T>(url, { accessToken: await ensureToken(false), fetcher });
     if (first.ok) return first.data;
     if (first.status === 401) {
@@ -446,10 +470,13 @@ export const createGraphProvider = (
         fetcher,
       });
       if (second.ok) return second.data;
+      if (second.status === 404 && treat404AsAbsent) return null;
+      onFailureStatus?.(second.status);
       noteReadFailure(second.status, `graph ${url} → ${second.status}`, second.text);
       return null;
     }
-    if (first.status === 404) return null;
+    if (first.status === 404 && treat404AsAbsent) return null;
+    onFailureStatus?.(first.status);
     noteReadFailure(first.status, `graph ${url} → ${first.status}`, first.text);
     return null;
   };
@@ -555,30 +582,39 @@ export const createGraphProvider = (
 
   // ── initial scan ────────────────────────────────────────────
   const runInitialScan = async (scanOpts: InitialScanOptions): Promise<void> => {
-    const since = new Date(Date.now() - scanOpts.backfill_days * 86400_000).toISOString();
+    const since = new Date(nowOf() - scanOpts.backfill_days * 86400_000).toISOString();
+    const failures: unknown[] = [];
+    let aborted = false;
     for (const folder of folders()) {
+      if (aborted) break;
       let url: string | undefined =
         `${GRAPH_API_BASE}/me/mailFolders/${folder}/messages`
         + `?$filter=${encodeURIComponent(`receivedDateTime ge ${since}`)}`
         + '&$top=50'
         + `&$select=${encodeURIComponent(GRAPH_MESSAGE_SELECT)}`;
-      let aborted = false;
       const pagination = new ProviderPaginationGuard('graph mail initial scan', {
         trustedBaseUrl: GRAPH_API_BASE,
       });
       while (url && !aborted) {
         const page: GraphListResponse<GraphMessagePayload> | null =
           await getWithRetry(pagination.claim(url));
-        if (!page) break;
+        if (!page) {
+          throw new Error(`graph initial scan could not fetch folder '${folder}'`);
+        }
         for (const msg of page.value ?? []) {
           if (msg['@removed']) continue;
           try {
-            const canonical = canonicalizeGraph(msg, await fetchGraphAttachmentParts(msg));
+            const canonical = canonicalizeGraph(
+              msg,
+              await fetchGraphAttachmentParts(msg),
+              graphMessageDirectionForFolder(folder),
+            );
             const cont = await scanOpts.onMessage(canonical);
             lastSuccessfulSyncAt = nowOf();
             if (!cont) { aborted = true; break; }
           } catch (err) {
             markError(`graph canonicalize failed id=${msg.id}`, err);
+            failures.push(err);
           }
         }
         url = readProviderStringContinuation(
@@ -587,23 +623,74 @@ export const createGraphProvider = (
         );
       }
     }
+    if (!aborted && failures.length > 0) {
+      throw new AggregateError(failures, 'graph initial scan was incomplete');
+    }
   };
 
   // ── delta sync ──────────────────────────────────────────────
-  const seedDeltaLink = async (folder: string): Promise<string | null> => {
+  const emitDeltaMessage = async (
+    folder: string,
+    msg: GraphMessagePayload,
+    cb: ProviderSyncCallback,
+  ): Promise<boolean> => {
+    pendingQueueSize++;
+    try {
+      if (msg['@removed']) {
+        await cb({ kind: 'deleted', source_id: msg.id });
+      } else {
+        const canonical = canonicalizeGraph(
+          msg,
+          await fetchGraphAttachmentParts(msg),
+          graphMessageDirectionForFolder(folder),
+        );
+        await cb({
+          kind: 'updated',
+          source_id: canonical.source_id,
+          message: canonical,
+        });
+      }
+      lastSuccessfulSyncAt = nowOf();
+      return true;
+    } catch (err) {
+      outcomes.noteFailure('transient');
+      markError(`graph delta apply failed id=${msg.id}`, err);
+      return false;
+    } finally {
+      pendingQueueSize = Math.max(0, pendingQueueSize - 1);
+    }
+  };
+
+  const seedDeltaLink = async (
+    folder: string,
+    recoveryCallback?: ProviderSyncCallback,
+  ): Promise<string> => {
     // Graph returns a deltaLink even for an empty delta. Seeding is a
-    // single GET with no filters; the first non-empty tick picks up
-    // changes after the seed.
+    // full current-state walk with no filters. The initial-scan path may
+    // discard these values because its list walk follows immediately. Cursor
+    // expiry passes a callback so the replacement baseline is replayed before
+    // it is committed instead of silently skipping the gap.
     let url: string | undefined =
       `${GRAPH_API_BASE}/me/mailFolders/${folder}/messages/delta`
       + `?$select=${encodeURIComponent(GRAPH_MESSAGE_SELECT)}`;
+    let terminalDeltaLink: string | undefined;
+    let deliveryFailed = false;
     const pagination = new ProviderPaginationGuard('graph mail delta seed', {
       trustedBaseUrl: GRAPH_API_BASE,
     });
     while (url) {
       const page: GraphListResponse<GraphMessagePayload> | null =
         await getWithRetry(pagination.claim(url));
-      if (!page) return null;
+      if (!page) {
+        throw new Error(`graph delta seed could not fetch folder '${folder}'`);
+      }
+      if (recoveryCallback) {
+        for (const msg of page.value ?? []) {
+          if (!(await emitDeltaMessage(folder, msg, recoveryCallback))) {
+            deliveryFailed = true;
+          }
+        }
+      }
       const rawDeltaLink = readProviderStringContinuation(
         page['@odata.deltaLink'],
         'graph mail delta watermark',
@@ -614,15 +701,21 @@ export const createGraphProvider = (
           GRAPH_API_BASE,
           'graph mail delta watermark',
         );
-        await opts.accountStore.set(deltaLinkKey(folder), deltaLink);
-        return deltaLink;
+        terminalDeltaLink = deltaLink;
       }
       url = readProviderStringContinuation(
         page['@odata.nextLink'],
         'graph mail delta seed',
       );
     }
-    return null;
+    if (deliveryFailed) {
+      throw new Error(`graph delta recovery was not acknowledged for folder '${folder}'`);
+    }
+    if (terminalDeltaLink === undefined) {
+      throw new Error(`graph delta seed for folder '${folder}' returned no watermark`);
+    }
+    await opts.accountStore.set(deltaLinkKey(folder), terminalDeltaLink);
+    return terminalDeltaLink;
   };
 
   const runDeltaTick = async (
@@ -632,36 +725,45 @@ export const createGraphProvider = (
     let link = await opts.accountStore.get(deltaLinkKey(folder));
     if (!link) {
       link = await seedDeltaLink(folder);
-      if (!link) return;
       return; // First seed — no changes to emit yet.
     }
     let url: string | undefined = link;
+    let cursorInvalid = false;
+    let deliveryFailed = false;
+    let terminalDeltaLink: string | undefined;
     const pagination = new ProviderPaginationGuard('graph mail delta', {
       trustedBaseUrl: GRAPH_API_BASE,
     });
     while (url) {
       const page: GraphListResponse<GraphMessagePayload> | null =
-        await getWithRetry(pagination.claim(url));
-      if (!page) return;
-      for (const msg of page.value ?? []) {
-        pendingQueueSize++;
-        try {
-          if (msg['@removed']) {
-            await cb({ kind: 'deleted', source_id: msg.id });
-            continue;
+        await getWithRetry(pagination.claim(url), {
+          // A not-found here is not an absent message: it is the stored delta
+          // state URL being rejected. Keep it observable and recoverable.
+          treat404AsAbsent: false,
+          onFailureStatus: (status) => {
+            if (status === 404 || status === 410) cursorInvalid = true;
+          },
+        });
+      if (!page) {
+        if (cursorInvalid) {
+          // Keep the rejected cursor until the replacement full-state walk has
+          // been acknowledged. If recovery fails, the next scheduled tick hits
+          // this path again instead of mistaking an absent cursor for a clean
+          // first-run seed and discarding every returned value.
+          markError(`graph delta cursor expired folder=${folder} — running recovery sync`, {
+            status: 'invalid_delta_state',
+          });
+          try {
+            await seedDeltaLink(folder, cb);
+          } catch (err) {
+            outcomes.noteFailure('transient');
+            markError(`graph delta recovery failed folder=${folder}`, err);
           }
-          // Graph delta returns the current state — we use `updated`
-          // as a generic "see this message" event. Mail-collection
-          // handles new-vs-existing internally.
-          const kind: ProviderSyncEventKind = 'updated';
-          const canonical = canonicalizeGraph(msg, await fetchGraphAttachmentParts(msg));
-          await cb({ kind, source_id: canonical.source_id, message: canonical });
-          lastSuccessfulSyncAt = nowOf();
-        } catch (err) {
-          markError(`graph delta apply failed id=${msg.id}`, err);
-        } finally {
-          pendingQueueSize = Math.max(0, pendingQueueSize - 1);
         }
+        return;
+      }
+      for (const msg of page.value ?? []) {
+        if (!(await emitDeltaMessage(folder, msg, cb))) deliveryFailed = true;
       }
       const rawDeltaLink = readProviderStringContinuation(
         page['@odata.deltaLink'],
@@ -673,12 +775,18 @@ export const createGraphProvider = (
           GRAPH_API_BASE,
           'graph mail delta watermark',
         );
-        await opts.accountStore.set(deltaLinkKey(folder), deltaLink);
+        terminalDeltaLink = deltaLink;
       }
       url = readProviderStringContinuation(
         page['@odata.nextLink'],
         'graph mail delta',
       );
+    }
+    // Persist only after the whole drained range has been acknowledged. Holding
+    // the prior deltaLink causes Graph to replay successful idempotent events
+    // alongside the failed one on the next scheduled tick.
+    if (!deliveryFailed && terminalDeltaLink !== undefined) {
+      await opts.accountStore.set(deltaLinkKey(folder), terminalDeltaLink);
     }
   };
 
@@ -1032,13 +1140,19 @@ export const createGraphProvider = (
 
     async initialScan(scanOpts) {
       await outcomes.run('initial_scan', async () => {
-        await runInitialScan(scanOpts);
-        // Seed delta links for each folder AFTER the initial scan so
-        // later poll ticks catch messages arriving during the scan
-        // window too.
+        // Establish every folder's watermark BEFORE the list walk. Messages
+        // arriving during a long backfill are then replayed by the first delta
+        // tick. Seeding afterwards makes those arrivals part of the new baseline
+        // and loses them permanently.
         for (const folder of folders()) {
-          await seedDeltaLink(folder);
+          // Preserve the original pre-scan boundary across a failed backfill
+          // retry. Re-seeding at "now" would discard changes that happened
+          // after the first attempt began.
+          if ((await opts.accountStore.get(deltaLinkKey(folder))) === null) {
+            await seedDeltaLink(folder);
+          }
         }
+        await runInitialScan(scanOpts);
       });
     },
 

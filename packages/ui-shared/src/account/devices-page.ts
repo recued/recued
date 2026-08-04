@@ -33,8 +33,9 @@
  *      confirm state — caller collapses the previous row on a second
  *      Revoke click (mirrors the TLS renew + Clear-this-browser panels
  *      from D-148 slices 110/111).
- *    • `revokingInstanceId` is a slice the renderer reads to disable
- *      the confirm button + render a "Revoking…" status. On rpc
+ *    • `revokingInstanceId` is a slice the renderer reads to mark both
+ *      actions inert while keeping them focusable, expose the initiating
+ *      confirm button as busy, + render a "Revoking…" status. On rpc
  *      failure the host writes `revokeError` and keeps
  *      `confirmingInstanceId` set; the renderer surfaces the error
  *      inline. On rpc success the host clears both slices + refreshes
@@ -78,9 +79,10 @@ export interface DevicesPageState {
    *  this slice on Revoke / Cancel clicks. Only one row at a time. */
   confirmingInstanceId?: string;
   /** When set (always implies `confirmingInstanceId` matches), the
-   *  row's confirm panel renders with the "Yes, revoke" button
-   *  disabled + a "Revoking…" status. The host sets this on rpc
-   *  dispatch + clears it on response. */
+   *  row's confirm panel renders both actions aria-disabled while the
+   *  initiating button stays focusable + aria-busy with a "Revoking…"
+   *  label/status. The host sets this on rpc dispatch + clears it on
+   *  response. */
   revokingInstanceId?: string;
   /** Inline error to render under the confirm panel on rpc failure.
    *  The host writes this when `pair.revoke` rejects + keeps
@@ -146,7 +148,13 @@ const renderConfirmPanel = (
     state.revokeError && !revoking
       ? `<p class="account-devices-confirm-error" role="alert">${e(state.revokeError)}</p>`
       : '';
-  const disabledAttr = revoking ? ' disabled' : '';
+  const inertAttr = revoking ? ' aria-disabled="true"' : '';
+  const confirmBusyAttr = revoking
+    ? `${inertAttr} aria-busy="true"`
+    : '';
+  const confirmLabel = revoking
+    ? 'Revoking…'
+    : `Yes, revoke &ldquo;${e(row.display_name)}&rdquo;`;
   return `
     <tr class="account-devices-confirm-row" data-instance-id="${e(row.instance_id)}">
       <td colspan="${COLUMN_COUNT}" class="account-devices-confirm-cell">
@@ -165,14 +173,14 @@ const renderConfirmPanel = (
             <button type="button"
               class="account-devices-action account-devices-action--cancel"
               data-action="cancel-revoke"
-              data-instance-id="${e(row.instance_id)}"${disabledAttr}>
+              data-instance-id="${e(row.instance_id)}"${inertAttr}>
               Cancel
             </button>
             <button type="button"
               class="account-devices-action account-devices-action--confirm-revoke"
               data-action="confirm-revoke"
-              data-instance-id="${e(row.instance_id)}"${disabledAttr}>
-              Yes, revoke &ldquo;${e(row.display_name)}&rdquo;
+              data-instance-id="${e(row.instance_id)}"${confirmBusyAttr}>
+              ${confirmLabel}
             </button>
           </div>
         </div>

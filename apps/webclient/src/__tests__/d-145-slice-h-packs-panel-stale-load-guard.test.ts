@@ -173,6 +173,10 @@ const baseEntry = (overrides: Partial<PackListEntry> = {}): PackListEntry => {
     installed: false,
     requires: [...manifest.requires],
     recipe_count: manifest.recipes.length,
+    recipe_refs: manifest.recipes.map((r) => ({ slug: r.slug, version: r.version })),
+    body_visibility_grant_keys: [...(manifest.mcp_body_visibility_grants ?? [])],
+    ...(typeof manifest.service_kind === 'string' ? { service_kind: manifest.service_kind } : {}),
+    ...(typeof manifest.repo === 'string' ? { repo: manifest.repo } : {}),
     body_visibility_grant_count:
       manifest.mcp_body_visibility_grants?.length ?? 0,
     manifest,

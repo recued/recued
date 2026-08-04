@@ -49,16 +49,34 @@ export const MEMORY_LENS_VALUE_ATTR = 'data-memory-lens';
  *  `*_FIELD_ATTR` tags the compose-form inputs the route syncs on `input`. */
 export const MEMORY_ADD_ACTION = 'memory-add';
 export const MEMORY_OPEN_ACTION = 'memory-open';
+export const MEMORY_OPEN_RUN_ACTION = 'memory-open-run';
 export const MEMORY_EDIT_ACTION = 'memory-edit';
 export const MEMORY_DELETE_ACTION = 'memory-delete';
 export const MEMORY_DELETE_CONFIRM_ACTION = 'memory-delete-confirm';
 export const MEMORY_DELETE_CANCEL_ACTION = 'memory-delete-cancel';
 export const MEMORY_COMPOSE_SUBMIT_ACTION = 'memory-compose-submit';
 export const MEMORY_COMPOSE_CANCEL_ACTION = 'memory-compose-cancel';
+export const MEMORY_COMPOSE_DISCARD_KEEP_ACTION = 'memory-compose-discard-keep';
+export const MEMORY_COMPOSE_DISCARD_COMMIT_ACTION = 'memory-compose-discard-commit';
+export const MEMORY_COMPOSE_DISCARD_GUARD_ATTR =
+  'data-recued-memory-compose-discard-guard';
+export const MEMORY_COMPOSE_DISCARD_KEEP_ATTR =
+  'data-recued-memory-compose-discard-keep';
+export const MEMORY_COMPOSE_DISCARD_COMMIT_ATTR =
+  'data-recued-memory-compose-discard-commit';
 export const MEMORY_DETAIL_CLOSE_ACTION = 'memory-detail-close';
+export const MEMORY_DETAIL_HEADING_ATTR = 'data-recued-memory-detail-heading';
 export const MEMORY_IMPORT_ACTION = 'memory-import';
 export const MEMORY_IMPORT_SUBMIT_ACTION = 'memory-import-submit';
 export const MEMORY_IMPORT_CANCEL_ACTION = 'memory-import-cancel';
+export const MEMORY_IMPORT_DISCARD_KEEP_ACTION = 'memory-import-discard-keep';
+export const MEMORY_IMPORT_DISCARD_COMMIT_ACTION = 'memory-import-discard-commit';
+export const MEMORY_IMPORT_DISCARD_GUARD_ATTR =
+  'data-recued-memory-import-discard-guard';
+export const MEMORY_IMPORT_DISCARD_KEEP_ATTR =
+  'data-recued-memory-import-discard-keep';
+export const MEMORY_IMPORT_DISCARD_COMMIT_ATTR =
+  'data-recued-memory-import-discard-commit';
 export const MEMORY_EXPORT_ACTION = 'memory-export';
 export const MEMORY_ROW_ID_ATTR = 'data-memory-id';
 export const MEMORY_FIELD_ATTR = 'data-memory-field';
@@ -94,12 +112,18 @@ export interface MemoryImportState {
   result?: MemoryImportResult;
 }
 
-export const renderLensSwitcher = (lens: 'data' | 'memory', actionAttr: string): string => {
+export const renderLensSwitcher = (
+  lens: 'data' | 'memory',
+  actionAttr: string,
+  disabled = false,
+): string => {
   const btn = (value: 'data' | 'memory', label: string): string => {
     const active = lens === value;
     return `<button type="button" class="data-lens-btn${active ? ' is-active' : ''}"
       ${actionAttr}="${MEMORY_LENS_SELECT_ACTION}" ${MEMORY_LENS_VALUE_ATTR}="${value}"
-      aria-pressed="${active ? 'true' : 'false'}">${label}</button>`;
+      aria-pressed="${active ? 'true' : 'false'}"${disabled
+        ? ' aria-disabled="true"'
+        : ''}>${label}</button>`;
   };
   return `<div class="data-lens-switch" role="tablist" aria-label="Data or Memory">${btn('data', 'Data')}${btn('memory', 'Memory')}</div>`;
 };
@@ -131,14 +155,28 @@ export interface MemoryLensProps {
   runHref: (run_id: string) => string;
   /** Slice 2 — the compose form state (absent/closed = the feed list). */
   compose?: MemoryComposeState;
+  /** Local review shown before a populated compose draft is discarded. */
+  composeDiscardGuard?: boolean;
   /** Slice 2 — the open detail view (absent = the feed list). */
   detail?: MemoryDetailState | null;
   /** Slice 3 — the open import panel (absent/closed = the feed list). */
   importPanel?: MemoryImportState;
-  /** Slice 3 — an export walk is in flight (disables the Export button). */
+  /** Local review shown before populated import JSON is discarded. */
+  importDiscardGuard?: boolean;
+  /** The origin chip whose replacement feed is loading. */
+  filteringOrigin?: MemoryOriginFilter;
+  /** Slice 3 — an export walk is in flight. */
   exporting?: boolean;
   /** Slice 2 — the row awaiting a delete confirm (inline two-step). */
   pendingDeleteId?: string;
+  /** The confirmed Delete/Forget write currently owned by one row. */
+  deletingId?: string;
+  /** Row-local Delete/Forget failure; keeps the confirmation retryable. */
+  deleteError?: string;
+  /** The owner row whose full body is loading into the Edit compose form. */
+  openingEditId?: string;
+  /** Row-local Edit prefill failure; keeps Edit visible and retryable. */
+  editError?: { memoryId: string; message: string };
   /** Slice 2 — whether the owner CRUD callers are wired; gates the write
    *  affordances (Add / Edit / Delete). Absent = read-only (no affordances). */
   canWrite?: boolean;
@@ -178,11 +216,17 @@ const renderFilterChip = (
   filter: MemoryOriginFilter,
   active: MemoryOriginFilter,
   actionAttr: string,
+  disabled: boolean,
+  busy: boolean,
 ): string => {
   const isActive = filter === active;
   return `<button type="button" class="memory-filter-chip${isActive ? ' is-active' : ''}"
     ${actionAttr}="${MEMORY_FILTER_ACTION}" ${MEMORY_FILTER_VALUE_ATTR}="${e(filter)}"
-    aria-pressed="${isActive ? 'true' : 'false'}">${e(FILTER_LABEL[filter])}</button>`;
+    aria-pressed="${isActive ? 'true' : 'false'}"${disabled
+      ? ' aria-disabled="true"'
+      : ''}${busy ? ' aria-busy="true"' : ''}>${e(FILTER_LABEL[filter])}${busy
+        ? '…'
+        : ''}</button>`;
 };
 
 /** The per-row action foot: the audit run link, a "View" affordance for rows
@@ -195,35 +239,71 @@ const renderRowFoot = (
   actionAttr: string,
   runHref: (id: string) => string,
   pendingDeleteId: string | undefined,
+  deletingId: string | undefined,
+  deleteError: string | undefined,
+  openingEditId: string | undefined,
+  editError: { memoryId: string; message: string } | undefined,
   canWrite: boolean,
+  locked: boolean,
 ): string => {
   const isOwn = entry.origin_actor === 'user_self';
   const isRedacted = entry.redacted === true;
   const idAttr = `${MEMORY_ROW_ID_ATTR}="${e(entry.memory_id)}"`;
   const runLink =
     entry.run_id !== undefined && entry.run_id.length > 0
-      ? `<a class="memory-row-run-link" href="${e(runHref(entry.run_id))}">Open run</a>`
+      ? `<a class="memory-row-run-link" href="${e(runHref(entry.run_id))}"
+          ${actionAttr}="${MEMORY_OPEN_RUN_ACTION}"${locked
+            ? ' aria-disabled="true"'
+            : ''}>Open run</a>`
       : '';
   if (isRedacted) {
     return runLink.length > 0 ? `<div class="memory-row-foot">${runLink}</div>` : '';
   }
   const openBtn =
     entry.has_body === true
-      ? `<button type="button" class="memory-row-btn" ${actionAttr}="${MEMORY_OPEN_ACTION}" ${idAttr}>View</button>`
+      ? `<button type="button" class="memory-row-btn" ${actionAttr}="${MEMORY_OPEN_ACTION}" ${idAttr}${locked
+        ? ' aria-disabled="true"'
+        : ''}>View</button>`
       : '';
   let controls = '';
   if (canWrite) {
     if (pendingDeleteId === entry.memory_id) {
       const prompt = isOwn ? 'Delete this memory?' : 'Forget this memory?';
+      const deleting = deletingId === entry.memory_id;
       controls = `<span class="memory-row-confirm">${prompt}
-        <button type="button" class="memory-row-btn memory-row-btn--danger" ${actionAttr}="${MEMORY_DELETE_CONFIRM_ACTION}" ${idAttr}>Confirm</button>
-        <button type="button" class="memory-row-btn" ${actionAttr}="${MEMORY_DELETE_CANCEL_ACTION}" ${idAttr}>Cancel</button></span>`;
+        <button type="button" class="memory-row-btn memory-row-btn--danger"
+          ${actionAttr}="${MEMORY_DELETE_CONFIRM_ACTION}" ${idAttr}${deleting
+            ? ' aria-disabled="true" aria-busy="true"'
+            : locked
+              ? ' aria-disabled="true"'
+            : ''}>${deleting ? (isOwn ? 'Deleting…' : 'Forgetting…') : 'Confirm'}</button>
+        <button type="button" class="memory-row-btn"
+          ${actionAttr}="${MEMORY_DELETE_CANCEL_ACTION}" ${idAttr}${deleting || locked
+            ? ' aria-disabled="true"'
+            : ''}>Cancel</button>
+        ${deleteError !== undefined
+          ? `<span class="memory-row-delete-error" role="alert">${e(deleteError)}</span>`
+          : ''}</span>`;
     } else if (isOwn) {
-      controls = `<button type="button" class="memory-row-btn" ${actionAttr}="${MEMORY_EDIT_ACTION}" ${idAttr}>Edit</button>
-        <button type="button" class="memory-row-btn memory-row-btn--danger" ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}>Delete</button>`;
+      const openingEdit = openingEditId === entry.memory_id;
+      controls = `<button type="button" class="memory-row-btn"
+          ${actionAttr}="${MEMORY_EDIT_ACTION}" ${idAttr}${openingEdit
+            ? ' aria-disabled="true" aria-busy="true"'
+            : locked
+              ? ' aria-disabled="true"'
+            : ''}>${openingEdit ? 'Opening…' : 'Edit'}</button>
+        <button type="button" class="memory-row-btn memory-row-btn--danger"
+          ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}${openingEdit || locked
+            ? ' aria-disabled="true"'
+            : ''}>Delete</button>
+        ${editError?.memoryId === entry.memory_id
+          ? `<span class="memory-row-edit-error" role="alert">${e(editError.message)}</span>`
+          : ''}`;
     } else {
       // Others' rows are view + redact only (§3) — no edit.
-      controls = `<button type="button" class="memory-row-btn memory-row-btn--danger" ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}>Forget</button>`;
+      controls = `<button type="button" class="memory-row-btn memory-row-btn--danger" ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}${locked
+        ? ' aria-disabled="true"'
+        : ''}>Forget</button>`;
     }
   }
   const inner = `${runLink}${openBtn}${controls}`;
@@ -236,7 +316,12 @@ const renderRow = (
   actionAttr: string,
   runHref: (id: string) => string,
   pendingDeleteId: string | undefined,
+  deletingId: string | undefined,
+  deleteError: string | undefined,
+  openingEditId: string | undefined,
+  editError: { memoryId: string; message: string } | undefined,
   canWrite: boolean,
+  locked: boolean,
 ): string => {
   const origin = ORIGIN_LABEL[entry.origin_actor] ?? String(entry.origin_actor);
   const summary = entry.summary ?? '';
@@ -263,63 +348,142 @@ const renderRow = (
       <span class="memory-row-time">${e(when)}</span>
     </div>
     ${bodyLines}
-    ${renderRowFoot(entry, actionAttr, runHref, pendingDeleteId, canWrite)}
+    ${renderRowFoot(
+      entry,
+      actionAttr,
+      runHref,
+      pendingDeleteId,
+      deletingId,
+      deleteError,
+      openingEditId,
+      editError,
+      canWrite,
+      locked,
+    )}
   </li>`;
 };
 
 /** The create/edit compose form (an inline panel replacing the feed). */
-const renderComposeForm = (compose: MemoryComposeState, actionAttr: string): string => {
+const renderComposeForm = (
+  compose: MemoryComposeState,
+  actionAttr: string,
+  discardGuardOpen: boolean,
+): string => {
   const title = compose.mode === 'edit' ? 'Edit memory' : 'New memory';
   const err = compose.error !== undefined
     ? `<p class="memory-compose-error" role="alert">${e(compose.error)}</p>`
     : '';
+  const editorStateAttr = discardGuardOpen
+    ? ' inert aria-hidden="true"'
+    : '';
+  const readonlyAttr = compose.submitting ? ' readonly' : '';
+  const discardGuard = discardGuardOpen
+    ? `<section ${MEMORY_COMPOSE_DISCARD_GUARD_ATTR}
+        role="alertdialog" aria-modal="true"
+        aria-labelledby="memory-compose-discard-title"
+        aria-describedby="memory-compose-discard-description"
+        tabindex="-1">
+        <h3 id="memory-compose-discard-title">Discard your memory changes?</h3>
+        <p id="memory-compose-discard-description">Your unfinished changes will be lost.</p>
+        <div class="memory-compose-discard-actions">
+          <button type="button" class="memory-btn"
+            ${actionAttr}="${MEMORY_COMPOSE_DISCARD_KEEP_ACTION}"
+            ${MEMORY_COMPOSE_DISCARD_KEEP_ATTR}>Keep editing</button>
+          <button type="button" class="memory-btn memory-btn--danger"
+            ${actionAttr}="${MEMORY_COMPOSE_DISCARD_COMMIT_ACTION}"
+            ${MEMORY_COMPOSE_DISCARD_COMMIT_ATTR}>Discard changes</button>
+        </div>
+      </section>`
+    : '';
   return `<section class="memory-compose" role="form" aria-label="${e(title)}">
-    <header class="memory-compose-head"><h3 class="memory-compose-title">${e(title)}</h3></header>
-    <label class="memory-field">
-      <span class="memory-field-label">Kind</span>
-      <input class="memory-input" type="text" placeholder="e.g. note, preference, fact"
-        value="${e(compose.kind)}" ${MEMORY_FIELD_ATTR}="kind" />
-    </label>
-    <label class="memory-field">
-      <span class="memory-field-label">Summary <span class="memory-field-hint">(optional)</span></span>
-      <input class="memory-input" type="text" value="${e(compose.summary)}" ${MEMORY_FIELD_ATTR}="summary" />
-    </label>
-    <label class="memory-field">
-      <span class="memory-field-label">Body</span>
-      <textarea class="memory-textarea" rows="6" ${MEMORY_FIELD_ATTR}="body">${e(compose.body)}</textarea>
-    </label>
-    ${err}
-    <footer class="memory-compose-actions">
-      <button type="button" class="memory-btn" ${actionAttr}="${MEMORY_COMPOSE_CANCEL_ACTION}">Cancel</button>
-      <button type="button" class="memory-btn memory-btn--primary" ${actionAttr}="${MEMORY_COMPOSE_SUBMIT_ACTION}"
-        ${compose.submitting ? 'disabled' : ''}>${compose.submitting ? 'Saving…' : 'Save'}</button>
-    </footer>
+    ${discardGuard}
+    <div class="memory-compose-editor"${editorStateAttr}>
+      <header class="memory-compose-head"><h3 class="memory-compose-title">${e(title)}</h3></header>
+      <label class="memory-field">
+        <span class="memory-field-label">Kind</span>
+        <input class="memory-input" type="text" placeholder="e.g. note, preference, fact"
+          value="${e(compose.kind)}" ${MEMORY_FIELD_ATTR}="kind"${readonlyAttr} />
+      </label>
+      <label class="memory-field">
+        <span class="memory-field-label">Summary <span class="memory-field-hint">(optional)</span></span>
+        <input class="memory-input" type="text" value="${e(compose.summary)}" ${MEMORY_FIELD_ATTR}="summary"${readonlyAttr} />
+      </label>
+      <label class="memory-field">
+        <span class="memory-field-label">Body</span>
+        <textarea class="memory-textarea" rows="6" ${MEMORY_FIELD_ATTR}="body"${readonlyAttr}>${e(compose.body)}</textarea>
+      </label>
+      ${err}
+      <footer class="memory-compose-actions">
+        <button type="button" class="memory-btn memory-compose-cancel"
+          ${actionAttr}="${MEMORY_COMPOSE_CANCEL_ACTION}"${compose.submitting
+            ? ' aria-disabled="true"'
+            : ''}>Cancel</button>
+        <button type="button" class="memory-btn memory-btn--primary"
+          ${actionAttr}="${MEMORY_COMPOSE_SUBMIT_ACTION}"${compose.submitting
+            ? ' aria-disabled="true" aria-busy="true"'
+            : ''}>${compose.submitting ? 'Saving…' : 'Save'}</button>
+      </footer>
+    </div>
   </section>`;
 };
 
 /** The import panel — paste an exported `{ entries: [...] }` (or bare array)
  *  JSON body; on success shows the merged/inserted/deduped/skipped tally. */
-const renderImportPanel = (state: MemoryImportState, actionAttr: string): string => {
+const renderImportPanel = (
+  state: MemoryImportState,
+  actionAttr: string,
+  discardGuardOpen: boolean,
+): string => {
   const err = state.error !== undefined
     ? `<p class="memory-compose-error" role="alert">${e(state.error)}</p>`
     : '';
   const tally = state.result !== undefined
     ? `<p class="memory-import-result" role="status">Imported — merged ${state.result.merged}, inserted ${state.result.inserted}, deduped ${state.result.deduped}, skipped ${state.result.skipped}.</p>`
     : '';
+  const editorStateAttr = discardGuardOpen
+    ? ' inert aria-hidden="true"'
+    : '';
+  const readonlyAttr = state.submitting ? ' readonly' : '';
+  const discardGuard = discardGuardOpen
+    ? `<section ${MEMORY_IMPORT_DISCARD_GUARD_ATTR}
+        role="alertdialog" aria-modal="true"
+        aria-labelledby="memory-import-discard-title"
+        aria-describedby="memory-import-discard-description"
+        tabindex="-1">
+        <h3 id="memory-import-discard-title">Discard this import draft?</h3>
+        <p id="memory-import-discard-description">Your pasted JSON will be lost.</p>
+        <div class="memory-import-discard-actions">
+          <button type="button" class="memory-btn"
+            ${actionAttr}="${MEMORY_IMPORT_DISCARD_KEEP_ACTION}"
+            ${MEMORY_IMPORT_DISCARD_KEEP_ATTR}>Keep editing</button>
+          <button type="button" class="memory-btn memory-btn--danger"
+            ${actionAttr}="${MEMORY_IMPORT_DISCARD_COMMIT_ACTION}"
+            ${MEMORY_IMPORT_DISCARD_COMMIT_ATTR}>Discard draft</button>
+        </div>
+      </section>`
+    : '';
   return `<section class="memory-compose" role="form" aria-label="Import memory">
-    <header class="memory-compose-head"><h3 class="memory-compose-title">Import memory</h3></header>
-    <p class="memory-field-hint">Paste exported memory JSON — a <code>{ "entries": [ … ] }</code> object or a bare array. Your own entries merge by id; shared entries dedupe by content.</p>
-    <label class="memory-field">
-      <span class="memory-field-label">JSON</span>
-      <textarea class="memory-textarea" rows="8" ${MEMORY_FIELD_ATTR}="import" placeholder='{ "entries": [ … ] }'>${e(state.text)}</textarea>
-    </label>
-    ${err}
-    ${tally}
-    <footer class="memory-compose-actions">
-      <button type="button" class="memory-btn" ${actionAttr}="${MEMORY_IMPORT_CANCEL_ACTION}">Close</button>
-      <button type="button" class="memory-btn memory-btn--primary" ${actionAttr}="${MEMORY_IMPORT_SUBMIT_ACTION}"
-        ${state.submitting ? 'disabled' : ''}>${state.submitting ? 'Importing…' : 'Import'}</button>
-    </footer>
+    ${discardGuard}
+    <div class="memory-import-editor"${editorStateAttr}>
+      <header class="memory-compose-head"><h3 class="memory-compose-title">Import memory</h3></header>
+      <p class="memory-field-hint">Paste exported memory JSON — a <code>{ "entries": [ … ] }</code> object or a bare array. Your own entries merge by id; shared entries dedupe by content.</p>
+      <label class="memory-field">
+        <span class="memory-field-label">JSON</span>
+        <textarea class="memory-textarea" rows="8" ${MEMORY_FIELD_ATTR}="import" placeholder='{ "entries": [ … ] }'${readonlyAttr}>${e(state.text)}</textarea>
+      </label>
+      ${err}
+      ${tally}
+      <footer class="memory-compose-actions">
+        <button type="button" class="memory-btn memory-import-cancel"
+          ${actionAttr}="${MEMORY_IMPORT_CANCEL_ACTION}"${state.submitting
+            ? ' aria-disabled="true"'
+            : ''}>Close</button>
+        <button type="button" class="memory-btn memory-btn--primary"
+          ${actionAttr}="${MEMORY_IMPORT_SUBMIT_ACTION}"${state.submitting
+            ? ' aria-disabled="true" aria-busy="true"'
+            : ''}>${state.submitting ? 'Importing…' : 'Import'}</button>
+      </footer>
+    </div>
   </section>`;
 };
 
@@ -329,6 +493,10 @@ const renderDetail = (
   now: number,
   actionAttr: string,
   pendingDeleteId: string | undefined,
+  deletingId: string | undefined,
+  deleteError: string | undefined,
+  openingEditId: string | undefined,
+  editError: { memoryId: string; message: string } | undefined,
   canWrite: boolean,
 ): string => {
   const back = `<button type="button" class="memory-btn" ${actionAttr}="${MEMORY_DETAIL_CLOSE_ACTION}">← Back</button>`;
@@ -348,12 +516,32 @@ const renderDetail = (
     if (canWrite && !isRedacted) {
       if (pendingDeleteId === entry.memory_id) {
         const prompt = isOwn ? 'Delete this memory?' : 'Forget this memory?';
+        const deleting = deletingId === entry.memory_id;
         controls = `<span class="memory-row-confirm">${prompt}
-            <button type="button" class="memory-btn memory-btn--danger" ${actionAttr}="${MEMORY_DELETE_CONFIRM_ACTION}" ${idAttr}>Confirm</button>
-            <button type="button" class="memory-btn" ${actionAttr}="${MEMORY_DELETE_CANCEL_ACTION}" ${idAttr}>Cancel</button></span>`;
+            <button type="button" class="memory-btn memory-btn--danger"
+              ${actionAttr}="${MEMORY_DELETE_CONFIRM_ACTION}" ${idAttr}${deleting
+                ? ' aria-disabled="true" aria-busy="true"'
+                : ''}>${deleting ? (isOwn ? 'Deleting…' : 'Forgetting…') : 'Confirm'}</button>
+            <button type="button" class="memory-btn"
+              ${actionAttr}="${MEMORY_DELETE_CANCEL_ACTION}" ${idAttr}${deleting
+                ? ' aria-disabled="true"'
+                : ''}>Cancel</button>
+            ${deleteError !== undefined
+              ? `<span class="memory-row-delete-error" role="alert">${e(deleteError)}</span>`
+              : ''}</span>`;
       } else if (isOwn) {
-        controls = `<button type="button" class="memory-btn" ${actionAttr}="${MEMORY_EDIT_ACTION}" ${idAttr}>Edit</button>
-           <button type="button" class="memory-btn memory-btn--danger" ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}>Delete</button>`;
+        const openingEdit = openingEditId === entry.memory_id;
+        controls = `<button type="button" class="memory-btn"
+             ${actionAttr}="${MEMORY_EDIT_ACTION}" ${idAttr}${openingEdit
+               ? ' aria-disabled="true" aria-busy="true"'
+               : ''}>${openingEdit ? 'Opening…' : 'Edit'}</button>
+           <button type="button" class="memory-btn memory-btn--danger"
+             ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}${openingEdit
+               ? ' aria-disabled="true"'
+               : ''}>Delete</button>
+           ${editError?.memoryId === entry.memory_id
+             ? `<span class="memory-row-edit-error" role="alert">${e(editError.message)}</span>`
+             : ''}`;
       } else {
         // Others' rows are view + redact only (§3).
         controls = `<button type="button" class="memory-btn memory-btn--danger" ${actionAttr}="${MEMORY_DELETE_ACTION}" ${idAttr}>Forget</button>`;
@@ -375,6 +563,7 @@ const renderDetail = (
   }
   return `<section class="memory-detail" aria-label="Memory detail">
     <div class="memory-detail-bar">${back}</div>
+    <h2 class="memory-detail-title" ${MEMORY_DETAIL_HEADING_ATTR} tabindex="-1">Memory detail</h2>
     ${body}
   </section>`;
 };
@@ -391,6 +580,10 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
       props.now,
       props.actionAttr,
       props.pendingDeleteId,
+      props.deletingId,
+      props.deleteError,
+      props.openingEditId,
+      props.editError,
       canWrite,
     )}</section>`;
   }
@@ -398,34 +591,51 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
     return `<section class="memory-lens" data-recued-memory-lens>${renderComposeForm(
       compose,
       props.actionAttr,
+      props.composeDiscardGuard === true,
     )}</section>`;
   }
   if (props.importPanel !== undefined && props.importPanel.open) {
     return `<section class="memory-lens" data-recued-memory-lens>${renderImportPanel(
       props.importPanel,
       props.actionAttr,
+      props.importDiscardGuard === true,
     )}</section>`;
   }
 
-  const chips = MEMORY_ORIGIN_FILTERS.map((f) =>
-    renderFilterChip(f, props.originFilter, props.actionAttr),
-  ).join('');
-
   const exporting = props.exporting === true;
+  const filteringOrigin = props.filteringOrigin ?? null;
+  const listLocked = exporting || filteringOrigin !== null;
+  const chips = MEMORY_ORIGIN_FILTERS.map((f) =>
+    renderFilterChip(
+      f,
+      props.originFilter,
+      props.actionAttr,
+      listLocked,
+      filteringOrigin === f,
+    ),
+  ).join('');
   const addBtn = canWrite
     ? `<div class="memory-lens-actions">
         <button type="button" class="memory-btn"
-          ${props.actionAttr}="${MEMORY_EXPORT_ACTION}"${exporting ? ' disabled' : ''}>${exporting ? 'Exporting…' : 'Export'}</button>
+          ${props.actionAttr}="${MEMORY_EXPORT_ACTION}"${exporting
+            ? ' aria-disabled="true" aria-busy="true"'
+            : listLocked
+              ? ' aria-disabled="true"'
+            : ''}>${exporting ? 'Exporting…' : 'Export'}</button>
         <button type="button" class="memory-btn"
-          ${props.actionAttr}="${MEMORY_IMPORT_ACTION}">Import</button>
+          ${props.actionAttr}="${MEMORY_IMPORT_ACTION}"${listLocked
+            ? ' aria-disabled="true"'
+            : ''}>Import</button>
         <button type="button" class="memory-btn memory-btn--primary"
-          ${props.actionAttr}="${MEMORY_ADD_ACTION}">Add memory</button>
+          ${props.actionAttr}="${MEMORY_ADD_ACTION}"${listLocked
+            ? ' aria-disabled="true"'
+            : ''}>Add memory</button>
       </div>`
     : '';
 
   let body: string;
   if (props.error !== undefined) {
-    body = `<p class="memory-lens-error">${e(props.error)}</p>`;
+    body = `<p class="memory-lens-error" role="alert">${e(props.error)}</p>`;
   } else if (props.loading && props.entries.length === 0) {
     body = `<p class="memory-lens-loading">Loading memory…</p>`;
   } else if (props.entries.length === 0) {
@@ -435,7 +645,19 @@ export const renderMemoryLens = (props: MemoryLensProps): string => {
   } else {
     body = `<ul class="memory-list" role="list">${props.entries
       .map((entry) =>
-        renderRow(entry, props.now, props.actionAttr, props.runHref, props.pendingDeleteId, canWrite),
+        renderRow(
+          entry,
+          props.now,
+          props.actionAttr,
+          props.runHref,
+          props.pendingDeleteId,
+          props.deletingId,
+          props.deleteError,
+          props.openingEditId,
+          props.editError,
+          canWrite,
+          listLocked,
+        ),
       )
       .join('')}</ul>`;
   }
@@ -499,9 +721,12 @@ export const MEMORY_LENS_STYLES = `
 .memory-btn--primary:hover { filter: brightness(0.95); background: var(--accent); }
 .memory-row-btn--danger, .memory-btn--danger { color: var(--danger); border-color: var(--danger); }
 .memory-row-confirm { font-size: 0.8125rem; color: var(--fg-muted); display: inline-flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; }
+.memory-row-delete-error { flex-basis: 100%; color: var(--danger); }
+.memory-row-edit-error { flex-basis: 100%; color: var(--danger); }
 .memory-row.is-redacted { opacity: 0.7; }
 .memory-row-redacted { margin: 0.375rem 0 0; font-size: 0.8125rem; font-style: italic; color: var(--fg-muted); }
 .memory-compose, .memory-detail { display: flex; flex-direction: column; gap: 0.625rem; }
+.memory-compose-editor, .memory-import-editor { display: flex; flex-direction: column; gap: 0.625rem; }
 .memory-compose-title { margin: 0; font-size: 1rem; }
 .memory-field { display: flex; flex-direction: column; gap: 0.25rem; }
 .memory-field-label { font-size: 0.8125rem; font-weight: 600; color: var(--fg-muted); }
@@ -513,7 +738,22 @@ export const MEMORY_LENS_STYLES = `
 .memory-textarea { resize: vertical; min-height: 5rem; }
 .memory-compose-actions, .memory-detail-actions { display: flex; gap: 0.5rem; justify-content: flex-end; }
 .memory-compose-error { color: var(--danger); font-size: 0.8125rem; margin: 0; }
+[${MEMORY_COMPOSE_DISCARD_GUARD_ATTR}] {
+  display: grid; gap: 0.625rem; padding: 0.875rem;
+  border: 1px solid var(--danger); border-radius: 0.5rem; background: var(--danger-weak);
+}
+[${MEMORY_COMPOSE_DISCARD_GUARD_ATTR}] h3,
+[${MEMORY_COMPOSE_DISCARD_GUARD_ATTR}] p { margin: 0; }
+.memory-compose-discard-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+[${MEMORY_IMPORT_DISCARD_GUARD_ATTR}] {
+  display: grid; gap: 0.625rem; padding: 0.875rem;
+  border: 1px solid var(--danger); border-radius: 0.5rem; background: var(--danger-weak);
+}
+[${MEMORY_IMPORT_DISCARD_GUARD_ATTR}] h3,
+[${MEMORY_IMPORT_DISCARD_GUARD_ATTR}] p { margin: 0; }
+.memory-import-discard-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .memory-detail-bar { margin-bottom: 0.25rem; }
+.memory-detail-title { margin: 0; font-size: 1rem; color: var(--fg-strong); }
 .memory-detail-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .memory-detail-summary { margin: 0; font-size: 0.9375rem; font-weight: 600; color: var(--fg-strong); }
 .memory-detail-body {

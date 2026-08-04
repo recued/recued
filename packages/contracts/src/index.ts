@@ -875,6 +875,10 @@ export type {
   WebhookExecutionBinding, QueueSubscriptionBinding, PushChannelBinding,
   ConnectorRuntimeSpec, ConnectorLifecycleSpec, ConnectorExecutionBinding,
   ConnectorMethodBinding, CliArgvTemplateEntry, CliInvocationCwdSpec, CliMethodBinding, CliInputMaterializeSpec, CliProgressSpec, CliOutputCaptureSpec, CliDetachedMarkerCompletion,
+  // In-place capture — the two `CliOutputCaptureSpec` arms. `dir_arg` is the
+  // historical engine-owned output dir; `from_input_arg` captures the file the
+  // tool edited in place at its materialized input path.
+  CliOutputDirCaptureSpec, CliOutputInPlaceCaptureSpec,
   CliDetachedCancelSpec, CliDetachedJobSpec, ConnectorEventSpec,
   ApiTransport, McpPackReviewRow, AuthKind, OAuth2Flow, CallbackUrlStrategy, OAuthScopeSeparator,
   RestMethod, GraphQLOperationType, QueueKind, ApiExecutionBindingKind,
@@ -901,6 +905,9 @@ export type {
 } from './ingredient-catalog.js';
 export {
   isCatalogForm, resolveCatalogOperationPolicy, resolveCliReachabilityPolicy, isRiskTierAtMost,
+  // In-place capture — narrows a `CliOutputCaptureSpec` to its `from_input_arg`
+  // arm. Both validators and the executor discriminate through this one helper.
+  isInPlaceCapture,
   // D-209 §1.3 — the op-risk APPROVAL FLOOR (the single source the runtime clamp +
   // the composition/manifest authoring validators derive from). D-211 §2 adds
   // `clampToFloor` — the owner-override clamp (write-gate + fail-closed resolve) —
@@ -2084,6 +2091,21 @@ export {
   // D-138 P3
   CONTACT_MERGE_CANDIDATE_SCAN_TASK_ID,
 } from './contact.js';
+
+// Metadata-only, zero-AI relationship projection used by deterministic recipes.
+export {
+  CONTACT_BUSINESS_CONTEXT_COVERAGE,
+  CONTACT_BUSINESS_CONTEXT_LEVELS,
+  CONTACT_BUSINESS_RELATIONSHIP_FAMILIES,
+} from './contact-business-context.js';
+export type {
+  ContactBusinessContextCoverage,
+  ContactBusinessContextLevel,
+  ContactBusinessRelationshipSummary,
+  ContactBusinessRelationshipFamily,
+  ContactBusinessIdentitySummary,
+  ContactBusinessContextResult,
+} from './contact-business-context.js';
 
 // D-192 C-2 (Stance 2) — the contact contribution-projection substrate: the
 // C-2a source-priority ladder + the projection resolver + the
@@ -4518,6 +4540,8 @@ export {
   OAUTH_CLOUD_CALLBACK_ORIGIN,
   WEBCLIENT_OAUTH_CALLBACK_PATH,
   isLoopbackOrigin,
+  alternateOAuthCallbackUrl,
+  oauthCallbackUrlForPwa,
   pickOAuthCallbackHost,
   isOpenerRelayCallback,
   readOpenerRelayTarget,

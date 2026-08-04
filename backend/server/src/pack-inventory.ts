@@ -151,6 +151,13 @@ export interface RecordPackInventoryInput {
    *  fixture / non-pack inventory write need not — a row written without it has no
    *  resolvable `pack_ref`, so `buildPackOpResolution` skips it fail-closed. */
   publisher?: string;
+  /** The slug the pack's AUTHOR gave it, when `pack_slug` above is NOT that.
+   *  Only the Records coordinator passes it: a Records pack's row is keyed by
+   *  its generated content-addressed catalog id (`records-<hash>`), so without
+   *  this the authored name is absent from the row entirely and no dependent
+   *  pack's Tier-P op can resolve against it. Every other caller's `pack_slug`
+   *  already IS the authored slug, so they omit it. */
+  authored_pack_slug?: string;
   /** Monotonic pack-manifest version (`manifest.version`). Stored as a
    *  string per the `installed_pack_info.version` value_shape. */
   pack_version: number;
@@ -262,6 +269,14 @@ export const recordPackInventory = (
       version: String(input.pack_version),
       installed_at: input.installed_at,
       ingredient_ids: ingredientIds,
+      // Written only when it actually differs — a non-Records pack would just
+      // duplicate `pack_slug`, and a redundant field invites a reader to pick
+      // the wrong one of two identical values.
+      ...(input.authored_pack_slug !== undefined
+        && input.authored_pack_slug.length > 0
+        && input.authored_pack_slug !== input.pack_slug
+        ? { authored_pack_slug: input.authored_pack_slug }
+        : {}),
     });
 
     // GC ingredients this pack previously listed but the new manifest dropped —
@@ -676,6 +691,21 @@ export const buildPackOpResolution = (
     // lowering fails closed). Exactly one → the pack's Tier-P binding.
     if (catalogs.length !== 1) continue;
     map.set(packRef, catalogs[0]);
+    // A Records pack's row is KEYED by its generated catalog id, so `packRef`
+    // above is `<publisher>.records-<hash>` — a name no author writes and no
+    // recipe can reference. Also bind the AUTHORED ref when the row carries one,
+    // which is the pack_ref a dependent's Tier-P op actually names
+    // (`recued-core.billable-hours.entry.get`). ADDITIVE: the keyed ref stays in
+    // the map, so nothing that resolved before resolves differently now.
+    const authored = typeof value.authored_pack_slug === 'string'
+      ? value.authored_pack_slug.trim()
+      : '';
+    if (authored.length > 0 && authored !== packSlug) {
+      const authoredRef = `${publisher}.${authored}`;
+      if (excludePackRef === undefined || authoredRef !== excludePackRef) {
+        map.set(authoredRef, catalogs[0]);
+      }
+    }
   }
   return map;
 };

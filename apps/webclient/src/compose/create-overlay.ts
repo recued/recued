@@ -21,6 +21,7 @@ import { wireFocusTrap, type FocusTrapHandle } from '@recued/ui-shared';
 import {
   bootstrapComposeRoute,
   type ComposeContactUpsertCaller,
+  type ComposeRouteState,
   type ComposeWorkEntityUpsertCaller,
 } from './compose-route.js';
 
@@ -28,8 +29,18 @@ import {
 export const CREATE_OVERLAY_ATTR = 'data-recued-create-overlay';
 /** The overlay's Close button. */
 export const CREATE_OVERLAY_CLOSE_ATTR = 'data-recued-create-overlay-close';
+/** Local confirmation shown before user dismissal destroys an unfinished item. */
+export const CREATE_OVERLAY_DISCARD_GUARD_ATTR =
+  'data-recued-create-overlay-discard-guard';
+/** Return from the discard guard to the exact dismissal owner. */
+export const CREATE_OVERLAY_DISCARD_KEEP_ATTR =
+  'data-recued-create-overlay-discard-keep';
+/** Confirm that every unfinished Create target may be discarded. */
+export const CREATE_OVERLAY_DISCARD_COMMIT_ATTR =
+  'data-recued-create-overlay-discard-commit';
 
 const CREATE_OVERLAY_STYLES_MARKER = 'data-recued-create-overlay-styles';
+let nextCreateOverlayA11yId = 0;
 
 const CREATE_OVERLAY_STYLES = `
 [${CREATE_OVERLAY_ATTR}] {
@@ -75,6 +86,39 @@ const CREATE_OVERLAY_STYLES = `
   font-weight: 600;
   cursor: pointer;
 }
+[${CREATE_OVERLAY_CLOSE_ATTR}][aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: .65;
+}
+[${CREATE_OVERLAY_DISCARD_GUARD_ATTR}] {
+  display: grid;
+  gap: 10px;
+  margin: 14px;
+  padding: 14px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: var(--danger-weak);
+}
+[${CREATE_OVERLAY_DISCARD_GUARD_ATTR}] h3,
+[${CREATE_OVERLAY_DISCARD_GUARD_ATTR}] p {
+  margin: 0;
+}
+[${CREATE_OVERLAY_DISCARD_GUARD_ATTR}] .recued-create-discard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+[${CREATE_OVERLAY_DISCARD_GUARD_ATTR}] button {
+  min-height: 34px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--fg);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+}
 /* The compose route brings its own "Compose" header — hide it; the overlay
    supplies the "Create" title (the §D.L1 Compose→Create rename). */
 [${CREATE_OVERLAY_ATTR}] .compose-header {
@@ -96,6 +140,10 @@ export interface OpenCreateOverlayOptions {
 
 export interface CreateOverlayHandle {
   readonly element: HTMLElement;
+  /** True while any Create target holds fields that teardown would discard. */
+  hasUnsavedChanges(): boolean;
+  /** True from Commit dispatch until its server outcome is reconciled. */
+  hasInFlightWork(): boolean;
   /** Idempotent teardown — disposes the compose route, detaches the overlay,
    *  removes the keydown listener, restores focus, and fires `onClose` once. */
   close(): void;
@@ -116,6 +164,7 @@ export const openCreateOverlay = (
     return null;
   }
   const doc = opts.document;
+  const overlayA11yId = ++nextCreateOverlayA11yId;
 
   if (
     doc.head.querySelector(`style[${CREATE_OVERLAY_STYLES_MARKER}]`) === null
@@ -155,6 +204,16 @@ export const openCreateOverlay = (
   panel.appendChild(composeHost);
   overlay.appendChild(panel);
 
+  let composeCommitting = false;
+  const mirrorComposeState = (state: ComposeRouteState): void => {
+    composeCommitting = state.stage === 'committing';
+    if (composeCommitting) {
+      closeBtn.setAttribute('aria-disabled', 'true');
+    } else {
+      closeBtn.removeAttribute('aria-disabled');
+    }
+  };
+
   const compose = bootstrapComposeRoute({
     root: composeHost,
     document: doc,
@@ -164,15 +223,18 @@ export const openCreateOverlay = (
     ...(opts.workEntityUpsertCaller !== undefined
       ? { workEntityUpsertCaller: opts.workEntityUpsertCaller }
       : {}),
+    onStateChange: mirrorComposeState,
   });
 
-  // `keyHandler` / `trap` are declared before `close` (which tears them down)
-  // and assigned after (the handler calls `close`); both references are
-  // runtime-only, so neither hits a temporal-dead-zone.
+  // `keyHandler` / `trap` are declared before teardown (which releases them)
+  // and assigned afterward; both references are runtime-only, so neither hits
+  // a temporal-dead-zone.
   let closed = false;
   let keyHandler: ((ev: KeyboardEvent) => void) | null = null;
   let trap: FocusTrapHandle | null = null;
-  const close = (): void => {
+  let discardGuard: HTMLElement | null = null;
+  let discardFocusOwner: HTMLElement | null = null;
+  const teardown = (): void => {
     if (closed) return;
     closed = true;
     if (keyHandler !== null) doc.removeEventListener('keydown', keyHandler);
@@ -188,16 +250,100 @@ export const openCreateOverlay = (
     opts.onClose?.();
   };
 
+  const closeDiscardGuard = (): void => {
+    if (discardGuard === null) return;
+    try {
+      panel.removeChild(discardGuard);
+    } catch {
+      /* host teardown already detached the guard */
+    }
+    discardGuard = null;
+    header.removeAttribute('inert');
+    header.removeAttribute('aria-hidden');
+    composeHost.removeAttribute('inert');
+    composeHost.removeAttribute('aria-hidden');
+    const owner = discardFocusOwner ?? closeBtn;
+    discardFocusOwner = null;
+    owner.focus?.({ preventScroll: true });
+  };
+
+  const showDiscardGuard = (): void => {
+    if (discardGuard !== null) {
+      discardGuard.focus?.({ preventScroll: true });
+      return;
+    }
+    discardFocusOwner = (doc.activeElement as HTMLElement | null) ?? closeBtn;
+    header.setAttribute('inert', '');
+    header.setAttribute('aria-hidden', 'true');
+    composeHost.setAttribute('inert', '');
+    composeHost.setAttribute('aria-hidden', 'true');
+
+    const guard = doc.createElement('section');
+    guard.setAttribute(CREATE_OVERLAY_DISCARD_GUARD_ATTR, '');
+    guard.setAttribute('role', 'alertdialog');
+    guard.setAttribute('aria-modal', 'true');
+    guard.setAttribute('tabindex', '-1');
+    const guardTitle = doc.createElement('h3');
+    guardTitle.id = `recued-create-discard-title-${overlayA11yId}`;
+    guardTitle.textContent = 'Discard this unfinished item?';
+    guard.setAttribute('aria-labelledby', guardTitle.id);
+    guard.appendChild(guardTitle);
+    const guardCopy = doc.createElement('p');
+    guardCopy.id = `recued-create-discard-description-${overlayA11yId}`;
+    guardCopy.textContent =
+      'Your unfinished fields across Create types will be lost.';
+    guard.setAttribute('aria-describedby', guardCopy.id);
+    guard.appendChild(guardCopy);
+    const actions = doc.createElement('div');
+    actions.className = 'recued-create-discard-actions';
+    const keep = doc.createElement('button');
+    keep.type = 'button';
+    keep.setAttribute(CREATE_OVERLAY_DISCARD_KEEP_ATTR, '');
+    keep.textContent = 'Keep editing';
+    keep.addEventListener('click', closeDiscardGuard);
+    actions.appendChild(keep);
+    const discard = doc.createElement('button');
+    discard.type = 'button';
+    discard.setAttribute(CREATE_OVERLAY_DISCARD_COMMIT_ATTR, '');
+    discard.textContent = 'Discard item';
+    discard.addEventListener('click', teardown);
+    actions.appendChild(discard);
+    guard.appendChild(actions);
+    panel.appendChild(guard);
+    discardGuard = guard;
+    guard.focus?.({ preventScroll: true });
+  };
+
+  const requestClose = (): void => {
+    if (composeCommitting) return;
+    if (compose.hasUnsavedChanges()) {
+      showDiscardGuard();
+      return;
+    }
+    teardown();
+  };
+
   keyHandler = (ev: KeyboardEvent): void => {
-    if (ev.key === 'Escape') close();
+    if (ev.key !== 'Escape') return;
+    if (discardGuard !== null) {
+      ev.preventDefault?.();
+      ev.stopPropagation?.();
+      closeDiscardGuard();
+      return;
+    }
+    if (composeCommitting) {
+      ev.preventDefault?.();
+      return;
+    }
+    requestClose();
   };
   doc.addEventListener('keydown', keyHandler);
   // Backdrop click closes; clicks inside the panel don't reach the overlay as
   // the event target.
   overlay.addEventListener('click', (ev) => {
-    if (ev.target === overlay) close();
+    if (ev.target === overlay) requestClose();
   });
-  closeBtn.addEventListener('click', () => close());
+  closeBtn.addEventListener('click', () => requestClose());
 
   const portal = opts.portal ?? (doc as { body?: HTMLElement }).body ?? overlay;
   portal.appendChild(overlay);
@@ -205,5 +351,12 @@ export const openCreateOverlay = (
   // Focus-in (the dialog panel) + Tab focus-trap + focus-restore-on-release.
   trap = wireFocusTrap({ document: doc, getContainer: () => panel });
 
-  return { element: overlay, close };
+  // `close()` is the host/dispose escape hatch and remains unconditional.
+  // Only user dismissal is held while the write's outcome is unresolved.
+  return {
+    element: overlay,
+    hasUnsavedChanges: () => !closed && compose.hasUnsavedChanges(),
+    hasInFlightWork: () => !closed && composeCommitting,
+    close: teardown,
+  };
 };

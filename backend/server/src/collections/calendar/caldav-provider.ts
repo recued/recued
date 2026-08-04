@@ -1106,7 +1106,10 @@ export const createCalDavProvider = (
     const parsed = parseVEvent(icsBody);
     if (!parsed) {
       markError(`caldav unparseable VEVENT href=${eventHref}`, null);
-      return;
+      // Do not stamp this ETag or let an initial scan certify completion. The
+      // provider resource is still present but has not been durably represented
+      // in the collection; retaining the old/no ETag makes it retryable.
+      throw new Error(`caldav event '${eventHref}' could not be parsed`);
     }
     const window: RRuleExpansionWindow = {
       windowStart:
@@ -1232,10 +1235,12 @@ export const createCalDavProvider = (
             kind: 'deleted',
             source_id: `${cal.id}:${k.slice(etagPrefix(cal.id).length)}`,
           });
+          // The ETag row is the only durable evidence that this href used to
+          // exist. Remove it only after the collection acknowledges the delete;
+          // otherwise the next REPORT has no way to replay the tombstone.
+          await opts.etagStore.delete(k);
         } catch (err) {
           markError(`caldav delete-notify failed key=${k}`, err);
-        } finally {
-          await opts.etagStore.delete(k);
         }
       }
     }

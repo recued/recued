@@ -83,6 +83,8 @@ export interface ScopedGrantPanelMount {
   getListError(): string | null;
   refresh(): Promise<void>;
   whenLoaded(): Promise<void>;
+  /** True while an accept or dismiss decision has no terminal result. */
+  hasInFlightWork(): boolean;
   /** Test seam — accept with explicit args (connection/ttl/uses). */
   acceptSuggestion(
     keyHash: string,
@@ -523,6 +525,7 @@ export const mountScopedGrantPanel = (
     getListError: () => state.listError,
     refresh: () => doRefresh(),
     whenLoaded: () => pendingLoad,
+    hasInFlightWork: () => pendingByKey.size > 0,
     acceptSuggestion: async (keyHash, args) => {
       const row = state.suggestions.find((s) => s.key_hash === keyHash);
       if (row === undefined) return;

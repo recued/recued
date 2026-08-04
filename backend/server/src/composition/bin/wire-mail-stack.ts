@@ -148,6 +148,7 @@ export const composeMailBoot = (
               get: (k) => accountStore.get(k),
               set: (k, v) => accountStore.set(k, v),
               delete: (k) => accountStore.delete(k),
+              getAll: () => accountStore.getAll(),
             },
           }
         : {}),

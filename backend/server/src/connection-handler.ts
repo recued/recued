@@ -3854,8 +3854,47 @@ export const handleConnectionCompleteVendorOAuth = async (
     );
   }
 
-  const provider = getVendorProvider(a.vendor);
-  if (!provider) {
+  // R26.2-for-vendors — provider source, mirroring `startVendorOAuth` exactly.
+  //
+  // A REGISTERED vendor ALWAYS uses its registry config and any form-supplied
+  // endpoints here are IGNORED, so they can never bypass its PKCE / secret gate
+  // / sandbox split. The form-supplied path is reserved for NON-registry
+  // vendors, which is the only way a loopback self-serve flow can finish: the
+  // owner's server has no public HTTPS URL, so `startVendorOAuth` (which
+  // requires one for its signed state + cloud forward) is unreachable, and this
+  // pure-exchange rpc is what the browser can call instead once the same-origin
+  // callback hands it the code.
+  //
+  // ⚠ Same trust boundary as `startVendorOAuth`, not a new one: the server
+  // POSTs the code + client_secret to this endpoint, so it gets the identical
+  // complete-HTTPS/no-userinfo/no-fragment contract, enforced server-side.
+  const registered = getVendorProvider(a.vendor);
+  const formAuthorizeUrl =
+    typeof a.authorize_url === 'string' ? a.authorize_url.trim() : '';
+  const formTokenEndpoint =
+    typeof a.token_endpoint === 'string' ? a.token_endpoint.trim() : '';
+  let provider;
+  if (registered) {
+    provider = registered;
+  } else if (formAuthorizeUrl.length > 0 && formTokenEndpoint.length > 0) {
+    for (const [label, raw] of [
+      ['authorize_url', formAuthorizeUrl],
+      ['token_endpoint', formTokenEndpoint],
+    ] as const) {
+      if (!isValidOAuthEndpointUrl(raw)) {
+        throw new RpcError(
+          'bad_request',
+          `collection.connection.completeVendorOAuth: ${label} must be a complete HTTPS URL with no embedded username or password and no URL fragment`,
+        );
+      }
+    }
+    provider = buildGenericVendorProvider({
+      authorize_url: formAuthorizeUrl,
+      token_endpoint: formTokenEndpoint,
+      scopes: [],
+      vendor: a.vendor,
+    });
+  } else {
     throw new RpcError(
       'bad_request',
       `collection.connection.completeVendorOAuth: unknown vendor '${a.vendor}'`,

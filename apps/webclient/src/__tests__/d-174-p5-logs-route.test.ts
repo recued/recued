@@ -22,6 +22,7 @@ import {
   LOGS_ROUTE_AFFECTED_ITEMS_ATTR,
   LOGS_ROUTE_CHAT_RETURN_ATTR,
   LOGS_ROUTE_DEGRADED_ATTR,
+  LOGS_ROUTE_DETAIL_HEADING_ATTR,
   LOGS_ROUTE_CLI_FAILURE_ATTR,
   LOGS_ROUTE_ERROR_CATEGORY_ATTR,
   LOGS_ROUTE_GATEWAY_TRACE_ATTR,
@@ -161,14 +162,17 @@ const makeFakeDocument = (): FakeDoc => {
 interface Deferred<T> {
   readonly promise: Promise<T>;
   readonly resolve: (value: T) => void;
+  readonly reject: (reason?: unknown) => void;
 }
 
 const deferred = <T>(): Deferred<T> => {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((done) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((done, fail) => {
     resolve = done;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 };
 
 const NOW = 1_750_000_000_000;
@@ -288,6 +292,7 @@ const mountRoute = (overrides: {
     unused: string,
     url?: string | URL | null,
   ) => void;
+  onHashSync?: Parameters<typeof bootstrapLogsRoute>[0]['onHashSync'];
   subscribe?: LogsRouteSubscribe;
 } = {}) => {
   const doc = makeFakeDocument();
@@ -322,6 +327,9 @@ const mountRoute = (overrides: {
       : {}),
     ...(overrides.chatReturn !== undefined
       ? { chatReturn: overrides.chatReturn }
+      : {}),
+    ...(overrides.onHashSync !== undefined
+      ? { onHashSync: overrides.onHashSync }
       : {}),
     ...(overrides.subscribe !== undefined ? { subscribe: overrides.subscribe } : {}),
   });
@@ -397,6 +405,9 @@ describe('D-174 P5 - Runs route', () => {
     // Opening a run surfaces those links in the detail pane.
     await rig.route.openRun('run-1');
     const detailHtml = rig.root.children[0]?.innerHTML ?? '';
+    expect(detailHtml).toContain(
+      `${LOGS_ROUTE_DETAIL_HEADING_ATTR}="run-1" tabindex="-1"`,
+    );
     expect(detailHtml).toContain('Audit detail');
     expect(detailHtml).toContain('href="#recipes/mail%2Fsend-digest"');
     // R17 — the Approval link is run-SCOPED to the pending ask (fixture
@@ -430,6 +441,128 @@ describe('D-174 P5 - Runs route', () => {
       since: NOW - 24 * 60 * 60 * 1000,
     });
     expect(rig.root.children[0]?.innerHTML).toContain('data-risk="blocked"');
+
+    rig.route.dispose();
+  });
+
+  it('keeps a failed run-detail retry visible and single-flight', async () => {
+    const retry = deferred<Awaited<ReturnType<RunsGetCaller>>>();
+    const getCaller = vi.fn<RunsGetCaller>()
+      .mockRejectedValueOnce(new Error('Run detail unavailable.'))
+      .mockImplementationOnce(() => retry.promise);
+    const rig = mountRoute({ getCaller });
+    await rig.route.whenLoaded();
+
+    await rig.route.openRun('run-1');
+    const shell = rig.root.children[0]!;
+    expect(shell.innerHTML).toContain('role="alert"');
+    expect(shell.innerHTML).toContain('Run detail unavailable.');
+    expect(shell.innerHTML).toContain(
+      'data-recued-logs-action="retry-detail" data-run-id="run-1"',
+    );
+
+    const target = {
+      closest: (selector: string) =>
+        selector.includes('data-recued-logs-action')
+          ? {
+              getAttribute: (name: string) =>
+                name === 'data-recued-logs-action'
+                  ? 'retry-detail'
+                  : name === 'data-run-id'
+                    ? 'run-1'
+                    : null,
+            }
+          : null,
+    };
+    const clickRetry = (): void => {
+      for (const listener of shell.listeners.get('click') ?? []) {
+        listener({ target } as unknown as Event);
+      }
+    };
+
+    clickRetry();
+    clickRetry();
+    expect(getCaller).toHaveBeenCalledTimes(2);
+    expect(shell.innerHTML).toContain(
+      'data-recued-logs-action="retry-detail" data-run-id="run-1" '
+      + 'aria-disabled="true" aria-busy="true">Retrying…',
+    );
+
+    retry.resolve({ run: runDetail() });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(rig.route.getSelectedRun()?.audit.run_id).toBe('run-1');
+    expect(shell.innerHTML).not.toContain('retry-detail');
+
+    rig.route.dispose();
+  });
+
+  it('guards a cursor page while Load more is already in flight', async () => {
+    const nextCursor = {
+      last_started_at: NOW - 1_000,
+      last_run_id: 'run-1',
+    };
+    const append = deferred<{ runs: RunFeedRow[] }>();
+    const listCaller = vi.fn<RunsListCaller>(async (query) => {
+      if (query.cursor !== undefined) return append.promise;
+      return { runs: [runRow()], next_cursor: nextCursor };
+    });
+    const rig = mountRoute({ listCaller });
+    await rig.route.whenLoaded();
+
+    const first = rig.route.loadMore();
+    const duplicate = rig.route.loadMore();
+    expect(listCaller).toHaveBeenCalledTimes(2);
+    expect(rig.root.children[0]?.innerHTML).toContain(
+      'aria-disabled="true">Loading...',
+    );
+
+    append.resolve({
+      runs: [runRow({ run_id: 'run-2', started_at: NOW - 2_000 })],
+    });
+    await Promise.all([first, duplicate]);
+    expect(rig.route.getRuns().map((row) => row.run_id)).toEqual([
+      'run-1',
+      'run-2',
+    ]);
+
+    rig.route.dispose();
+  });
+
+  it('keeps an explicit filter Apply focusable and single-flight', async () => {
+    const filtered = deferred<{ runs: RunFeedRow[] }>();
+    const listCaller = vi.fn<RunsListCaller>()
+      .mockResolvedValueOnce({ runs: [runRow()] })
+      .mockImplementationOnce(() => filtered.promise);
+    const rig = mountRoute({ listCaller });
+    await rig.route.whenLoaded();
+    const shell = rig.root.children[0]!;
+    const target = {
+      closest: (selector: string) =>
+        selector.includes('data-recued-logs-action')
+          ? {
+              getAttribute: (name: string) =>
+                name === 'data-recued-logs-action' ? 'apply-filters' : null,
+            }
+          : null,
+    };
+    const clickApply = (): void => {
+      for (const listener of shell.listeners.get('click') ?? []) {
+        listener({ target } as unknown as Event);
+      }
+    };
+
+    clickApply();
+    clickApply();
+    expect(listCaller).toHaveBeenCalledTimes(2);
+    expect(shell.innerHTML).toContain('aria-disabled="true" aria-busy="true"');
+    expect(shell.innerHTML).toContain('Applying…');
+
+    filtered.resolve({ runs: [runRow({ run_id: 'run-filtered' })] });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(shell.innerHTML).toContain('>Apply</button>');
+    expect(shell.innerHTML).not.toContain('Applying…');
 
     rig.route.dispose();
   });
@@ -1064,15 +1197,29 @@ describe('D-174 P5 - Runs route', () => {
 
   it('syncs the URL to #logs/<run_id> via replaceState when a run opens (addressable, no remount)', async () => {
     const replaceState = vi.fn();
-    const rig = mountRoute();
-    // Attach a fake window/history to the route's document.
-    (rig.doc as unknown as { defaultView: unknown }).defaultView = {
-      history: { replaceState },
-    };
+    const onHashSync = vi.fn();
+    const rig = mountRoute({ replaceState, onHashSync });
     await rig.route.whenLoaded();
 
     await rig.route.openRun('run-1');
     expect(replaceState).toHaveBeenCalledWith(null, '', '#logs/run-1');
+    expect(onHashSync).toHaveBeenCalledWith('#logs/run-1');
+
+    rig.route.dispose();
+  });
+
+  it('does not desync the shell cache when replaceState rejects the run URL', async () => {
+    const onHashSync = vi.fn();
+    const rig = mountRoute({
+      replaceState: vi.fn(() => {
+        throw new Error('history unavailable');
+      }),
+      onHashSync,
+    });
+    await rig.route.whenLoaded();
+
+    await rig.route.openRun('run-1');
+    expect(onHashSync).not.toHaveBeenCalled();
 
     rig.route.dispose();
   });
@@ -1172,6 +1319,11 @@ const queuedEntry = (
   ...overrides,
 });
 
+const activeEntryIdForTest = (entry: ActiveExecutionEntry): string =>
+  entry.entry_kind === 'queued-call'
+    ? entry.queued_call_id ?? entry.run_id ?? ''
+    : entry.run_id ?? '';
+
 const lane = (overrides: Partial<LaneStatus> = {}): LaneStatus => ({
   lane: 'local-heavy',
   capacity: 2,
@@ -1256,6 +1408,39 @@ describe('D-181 slice 5b — Runs Active section', () => {
     rig.route.dispose();
   });
 
+  it('renders manual Active refresh as a focusable busy action', async () => {
+    const refresh = deferred<Awaited<ReturnType<RunsActiveCaller>>>();
+    let calls = 0;
+    const activeCaller = vi.fn<RunsActiveCaller>(() => {
+      calls += 1;
+      if (calls === 1) {
+        return Promise.resolve({
+          entries: [runEntry(), queuedEntry()],
+          lanes: [lane()],
+        });
+      }
+      return refresh.promise;
+    });
+    const rig = mountActive({ activeCaller });
+    await rig.route.whenLoaded();
+
+    const pending = rig.route.refreshActive();
+    expect(rig.html()).toContain(
+      'data-recued-logs-action="refresh-active" aria-disabled="true" '
+      + 'aria-busy="true">Refreshing…',
+    );
+    expect(rig.html()).not.toContain(
+      'data-recued-logs-action="refresh-active" disabled',
+    );
+
+    refresh.resolve({ entries: [runEntry()], lanes: [lane()] });
+    await pending;
+    expect(rig.html()).toContain(
+      'data-recued-logs-action="refresh-active">Refresh',
+    );
+    rig.route.dispose();
+  });
+
   it('Active section is absent when no activeCaller is wired', async () => {
     const rig = mountRoute();
     await rig.route.whenLoaded();
@@ -1274,13 +1459,92 @@ describe('D-181 slice 5b — Runs Active section', () => {
 
     const pending = rig.route.killRun('run-active-1');
     expect(rig.route.hasInFlightWork()).toBe(true);
+    expect(rig.route.inFlightWorkPrompt()).toBe(
+      'A run action is still in progress. Leave Logs anyway?',
+    );
+    expect(rig.html()).toContain('Killing…');
+    expect(rig.html()).toContain(
+      'data-run-id="run-active-1" aria-disabled="true" aria-busy="true"',
+    );
+    expect(rig.html()).not.toContain(
+      'data-run-id="run-active-1" disabled',
+    );
+    await rig.route.killRun('run-active-1');
+    expect(killCaller).toHaveBeenCalledTimes(1);
     kill.resolve({ status: 'killed' });
     await pending;
 
     expect(killCaller).toHaveBeenCalledWith({ run_id: 'run-active-1' });
     expect(rig.route.hasInFlightWork()).toBe(false);
+    expect(rig.route.inFlightWorkPrompt()).toBeNull();
     // Re-listed after the mutation.
     expect(rig.activeCaller).toHaveBeenCalledTimes(2);
+    rig.route.dispose();
+  });
+
+  it('keeps an acknowledged kill retired when the follow-up active read fails', async () => {
+    const followup = deferred<Awaited<ReturnType<RunsActiveCaller>>>();
+    let activeCalls = 0;
+    const activeCaller = vi.fn<RunsActiveCaller>(() => {
+      activeCalls += 1;
+      return activeCalls === 1
+        ? Promise.resolve({ entries: [runEntry(), queuedEntry()], lanes: [lane()] })
+        : followup.promise;
+    });
+    const kill = deferred<{ status: 'killed' }>();
+    const rig = mountActive({
+      activeCaller,
+      killCaller: vi.fn(() => kill.promise),
+    });
+    await rig.route.whenLoaded();
+
+    const pending = rig.route.killRun('run-active-1');
+    kill.resolve({ status: 'killed' });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(rig.route.hasInFlightWork()).toBe(true);
+    expect(rig.route.getActiveEntries().map((entry) => entry.run_id))
+      .not.toContain('run-active-1');
+    expect(rig.html()).not.toContain(
+      `${LOGS_ROUTE_ACTIVE_ROW_ATTR}="run-active-1"`,
+    );
+
+    followup.reject(new Error('active reconciliation unavailable'));
+    await pending;
+    expect(rig.route.hasInFlightWork()).toBe(false);
+    expect(rig.route.getActiveEntries().map((entry) => entry.run_id))
+      .not.toContain('run-active-1');
+    expect(rig.html()).toContain('active reconciliation unavailable');
+    expect(rig.html()).toContain(`${LOGS_ROUTE_ACTIVE_ROW_ATTR}="call-7"`);
+
+    rig.route.dispose();
+  });
+
+  it('filters a stale post-kill snapshot until absence releases the run id', async () => {
+    const snapshots = [
+      { entries: [runEntry(), queuedEntry()], lanes: [lane()] },
+      { entries: [runEntry(), queuedEntry()], lanes: [lane()] }, // stale
+      { entries: [queuedEntry()], lanes: [lane()] }, // clears tombstone
+      { entries: [runEntry(), queuedEntry()], lanes: [lane()] }, // reused id
+    ];
+    const activeCaller = vi.fn<RunsActiveCaller>(async () => snapshots.shift()!);
+    const rig = mountActive({
+      activeCaller,
+      killCaller: vi.fn(async () => ({ status: 'killed' as const })),
+    });
+    await rig.route.whenLoaded();
+
+    await rig.route.killRun('run-active-1');
+    expect(rig.route.getActiveEntries().map(activeEntryIdForTest))
+      .toEqual(['call-7']);
+    await rig.route.refreshActive();
+    expect(rig.route.getActiveEntries().map(activeEntryIdForTest))
+      .toEqual(['call-7']);
+    await rig.route.refreshActive();
+    expect(rig.route.getActiveEntries().map(activeEntryIdForTest))
+      .toEqual(['run-active-1', 'call-7']);
+
     rig.route.dispose();
   });
 
@@ -1298,22 +1562,52 @@ describe('D-181 slice 5b — Runs Active section', () => {
   });
 
   it('cancelCall / promoteCall drive their rpc + re-list; already_dispatched surfaces a notice', async () => {
-    const cancelCaller = vi.fn<RunsCancelCaller>(async () => ({
-      status: 'already_dispatched' as const,
-    }));
-    const promoteCaller = vi.fn<RunsPromoteCaller>(async () => ({
-      status: 'promoted' as const,
-    }));
+    const cancel = deferred<{ status: 'already_dispatched' }>();
+    const promote = deferred<{ status: 'promoted' }>();
+    const cancelCaller = vi.fn<RunsCancelCaller>(() => cancel.promise);
+    const promoteCaller = vi.fn<RunsPromoteCaller>(() => promote.promise);
     const rig = mountActive({ cancelCaller, promoteCaller });
     await rig.route.whenLoaded();
 
-    await rig.route.promoteCall('call-7');
-    expect(promoteCaller).toHaveBeenCalledWith({ queued_call_id: 'call-7' });
-
+    const pendingPromote = rig.route.promoteCall('call-7');
+    expect(rig.html()).toContain('Promoting…');
+    expect(rig.html()).toContain(
+      'data-recued-logs-action="promote-call" '
+      + 'data-queued-call-id="call-7" aria-disabled="true" '
+      + 'aria-busy="true"',
+    );
+    expect(rig.html()).toContain(
+      'data-recued-logs-action="cancel-call" '
+      + 'data-queued-call-id="call-7" aria-disabled="true">Cancel',
+    );
+    expect(rig.html()).not.toContain('data-queued-call-id="call-7" disabled');
     await rig.route.cancelCall('call-7');
-    expect(cancelCaller).toHaveBeenCalledWith({ queued_call_id: 'call-7' });
-    expect(rig.html()).toContain('That call already started');
+    expect(cancelCaller).not.toHaveBeenCalled();
+    promote.resolve({ status: 'promoted' });
+    await pendingPromote;
+    expect(promoteCaller).toHaveBeenCalledWith({ queued_call_id: 'call-7' });
     rig.route.dispose();
+
+    // A promoted call is authoritatively retired, so exercise the independent
+    // non-terminal Cancel verdict on a fresh active snapshot.
+    const cancelRig = mountActive({ cancelCaller });
+    await cancelRig.route.whenLoaded();
+    const pendingCancel = cancelRig.route.cancelCall('call-7');
+    expect(cancelRig.html()).toContain('Cancelling…');
+    expect(cancelRig.html()).toContain(
+      'data-recued-logs-action="cancel-call" '
+      + 'data-queued-call-id="call-7" aria-disabled="true" '
+      + 'aria-busy="true"',
+    );
+    expect(cancelRig.html()).toContain(
+      'data-recued-logs-action="promote-call" '
+      + 'data-queued-call-id="call-7" aria-disabled="true">Promote',
+    );
+    cancel.resolve({ status: 'already_dispatched' });
+    await pendingCancel;
+    expect(cancelCaller).toHaveBeenCalledWith({ queued_call_id: 'call-7' });
+    expect(cancelRig.html()).toContain('That call already started');
+    cancelRig.route.dispose();
   });
 
   it('subscribes to execution deltas; re-lists on a control op but ignores progress ticks', async () => {
@@ -1834,6 +2128,38 @@ describe('D-186 slice C — Runs Active passes section', () => {
     rig.route.dispose();
   });
 
+  it('renders manual pass refresh as a focusable busy action', async () => {
+    const refresh = deferred<
+      Awaited<ReturnType<RunsSessionGrantListCaller>>
+    >();
+    let calls = 0;
+    const grantsListCaller = vi.fn<RunsSessionGrantListCaller>(() => {
+      calls += 1;
+      if (calls === 1) {
+        return Promise.resolve({ grants: [sessionGrantView()] });
+      }
+      return refresh.promise;
+    });
+    const rig = mountPasses({ grantsListCaller });
+    await rig.route.whenLoaded();
+
+    const pending = rig.route.refreshGrants();
+    expect(rig.html()).toContain(
+      'data-recued-logs-action="refresh-passes" aria-disabled="true" '
+      + 'aria-busy="true">Refreshing…',
+    );
+    expect(rig.html()).not.toContain(
+      'data-recued-logs-action="refresh-passes" disabled',
+    );
+
+    refresh.resolve({ grants: [sessionGrantView()] });
+    await pending;
+    expect(rig.html()).toContain(
+      'data-recued-logs-action="refresh-passes">Refresh',
+    );
+    rig.route.dispose();
+  });
+
   it('Active passes section is absent when no grantsListCaller is wired', async () => {
     const rig = mountActive(); // wires activeCaller, NOT grantsListCaller
     await rig.route.whenLoaded();
@@ -1843,17 +2169,112 @@ describe('D-186 slice C — Runs Active passes section', () => {
   });
 
   it('revokeGrant drives session_grant.revoke and re-lists', async () => {
-    const grantsRevokeCaller = vi.fn<RunsSessionGrantRevokeCaller>(async () =>
-      sessionGrantView({ lifecycle_state: 'revoked' }));
-    const rig = mountPasses({ grantsRevokeCaller });
+    const revoke = deferred<SessionGrantView>();
+    let firstActive = true;
+    const first = sessionGrantView();
+    const second = sessionGrantView({ contract_id: 'ct_pass_2' });
+    const grantsListCaller = vi.fn<RunsSessionGrantListCaller>(async () => ({
+      grants: firstActive ? [first, second] : [second],
+    }));
+    const grantsRevokeCaller = vi.fn<RunsSessionGrantRevokeCaller>(
+      () => revoke.promise,
+    );
+    const rig = mountPasses({ grantsListCaller, grantsRevokeCaller });
     await rig.route.whenLoaded();
     expect(rig.grantsListCaller).toHaveBeenCalledTimes(1);
 
+    const pending = rig.route.revokeGrant('ct_pass_1');
+    expect(rig.route.hasInFlightWork()).toBe(true);
+    expect(rig.route.inFlightWorkPrompt()).toBe(
+      'A run action is still in progress. Leave Logs anyway?',
+    );
+    expect(rig.html()).toContain('Revoking…');
+    expect(rig.html()).toContain(
+      'data-grant-id="ct_pass_1" aria-disabled="true" aria-busy="true"',
+    );
+    expect(rig.html()).not.toContain('data-grant-id="ct_pass_1" disabled');
     await rig.route.revokeGrant('ct_pass_1');
+    expect(grantsRevokeCaller).toHaveBeenCalledTimes(1);
+    firstActive = false;
+    revoke.resolve(sessionGrantView({ lifecycle_state: 'revoked' }));
+    await pending;
 
     expect(grantsRevokeCaller).toHaveBeenCalledWith({ contract_id: 'ct_pass_1' });
+    expect(rig.route.hasInFlightWork()).toBe(false);
+    expect(rig.route.inFlightWorkPrompt()).toBeNull();
     // Re-listed after the revoke.
     expect(rig.grantsListCaller).toHaveBeenCalledTimes(2);
+    rig.route.dispose();
+  });
+
+  it('keeps an acknowledged pass revoke retired when its follow-up read fails', async () => {
+    const followup = deferred<Awaited<ReturnType<RunsSessionGrantListCaller>>>();
+    let listCalls = 0;
+    const first = sessionGrantView();
+    const second = sessionGrantView({ contract_id: 'ct_pass_2' });
+    const grantsListCaller = vi.fn<RunsSessionGrantListCaller>(() => {
+      listCalls += 1;
+      return listCalls === 1
+        ? Promise.resolve({ grants: [first, second] })
+        : followup.promise;
+    });
+    const revoke = deferred<SessionGrantView>();
+    const rig = mountPasses({
+      grantsListCaller,
+      grantsRevokeCaller: vi.fn(() => revoke.promise),
+    });
+    await rig.route.whenLoaded();
+
+    const pending = rig.route.revokeGrant('ct_pass_1');
+    revoke.resolve(sessionGrantView({ lifecycle_state: 'revoked' }));
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(rig.route.hasInFlightWork()).toBe(true);
+    expect(rig.route.getSessionGrants().map((grant) => grant.contract_id))
+      .toEqual(['ct_pass_2']);
+    expect(rig.html()).not.toContain(`${LOGS_ROUTE_PASS_ROW_ATTR}="ct_pass_1"`);
+
+    followup.reject(new Error('pass reconciliation unavailable'));
+    await pending;
+    expect(rig.route.hasInFlightWork()).toBe(false);
+    expect(rig.route.getSessionGrants().map((grant) => grant.contract_id))
+      .toEqual(['ct_pass_2']);
+    expect(rig.html()).toContain('pass reconciliation unavailable');
+    expect(rig.html()).toContain(`${LOGS_ROUTE_PASS_ROW_ATTR}="ct_pass_2"`);
+
+    rig.route.dispose();
+  });
+
+  it('filters a stale post-revoke pass snapshot until absence releases its id', async () => {
+    const first = sessionGrantView();
+    const second = sessionGrantView({ contract_id: 'ct_pass_2' });
+    const snapshots = [
+      { grants: [first, second] },
+      { grants: [first, second] }, // stale
+      { grants: [second] }, // clears tombstone
+      { grants: [first, second] }, // reused id
+    ];
+    const grantsListCaller = vi.fn<RunsSessionGrantListCaller>(
+      async () => snapshots.shift()!,
+    );
+    const rig = mountPasses({
+      grantsListCaller,
+      grantsRevokeCaller: vi.fn(async () =>
+        sessionGrantView({ lifecycle_state: 'revoked' })),
+    });
+    await rig.route.whenLoaded();
+
+    await rig.route.revokeGrant('ct_pass_1');
+    expect(rig.route.getSessionGrants().map((grant) => grant.contract_id))
+      .toEqual(['ct_pass_2']);
+    await rig.route.refreshGrants();
+    expect(rig.route.getSessionGrants().map((grant) => grant.contract_id))
+      .toEqual(['ct_pass_2']);
+    await rig.route.refreshGrants();
+    expect(rig.route.getSessionGrants().map((grant) => grant.contract_id))
+      .toEqual(['ct_pass_1', 'ct_pass_2']);
+
     rig.route.dispose();
   });
 

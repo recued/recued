@@ -253,6 +253,8 @@ export const buildCalendarAuthorizeUrl = (
 
 /** Query-param the foundational redirect_uri carries to select opener-relay
  *  mode on the callback page. */
+import { OAUTH_CLOUD_CALLBACK_URL } from './cloud-api.js';
+
 export const OAUTH_OPENER_RELAY_PARAM = 'recued_relay';
 /** The only accepted value for `OAUTH_OPENER_RELAY_PARAM`. */
 export const OAUTH_OPENER_RELAY_VALUE = 'opener';
@@ -327,6 +329,42 @@ export const isLoopbackOrigin = (origin: string): boolean => {
  *  resulting redirect host so it always matches the page that posts the code. */
 export const pickOAuthCallbackHost = (pwaOrigin: string): string =>
   isLoopbackOrigin(pwaOrigin) ? pwaOrigin : OAUTH_CLOUD_CALLBACK_ORIGIN;
+
+/** The EXACT callback URL a user must register in their provider app, for a PWA
+ *  served from `pwaOrigin`.
+ *
+ *  ⛔ Exists because the connections form USED TO PRINT `OAUTH_CLOUD_CALLBACK_URL`
+ *  unconditionally, under the words "Register this unchanged in the provider
+ *  app." On a loopback PWA that instruction was WRONG: `pickOAuthCallbackHost`
+ *  sends the flow to the PWA's own origin (R26.2 Option B), so the registered
+ *  URI and the one actually used disagreed — surfacing as the provider's
+ *  `redirect_uri_mismatch`, the least self-explanatory error in OAuth.
+ *
+ *  🔑 It derives from `pickOAuthCallbackHost`, the SAME function the popup
+ *  driver uses, so the printed value cannot drift from the value sent. A second
+ *  hand-rolled copy of this rule is exactly how the two disagreed in the first
+ *  place. */
+/** The callback URL a DIFFERENT usable origin would need, or `null` when there
+ *  is no second one to name.
+ *
+ *  ⛔ Exists because the two are NOT guessable from each other. The cloud PWA
+ *  serves the callback top-level at `/oauth-callback`; a loopback PWA serves it
+ *  from the webclient bundle at `/webclient/oauth-callback.html` — different
+ *  path AND different extension (verified against a live server: the two
+ *  "obvious" guesses, `/oauth-callback` and `/webclient/oauth-callback`, both
+ *  404). So an owner who registers one and later opens Recued from the other
+ *  address gets `redirect_uri_mismatch` with nothing on screen explaining it.
+ *
+ *  Provider apps accept multiple redirect URIs, so the honest advice is
+ *  "register both if you use both" — which the form can only give if it knows
+ *  the other one. */
+export const alternateOAuthCallbackUrl = (pwaOrigin: string): string | null =>
+  isLoopbackOrigin(pwaOrigin) ? OAUTH_CLOUD_CALLBACK_URL : null;
+
+export const oauthCallbackUrlForPwa = (pwaOrigin: string): string =>
+  isLoopbackOrigin(pwaOrigin)
+    ? `${pickOAuthCallbackHost(pwaOrigin)}${WEBCLIENT_OAUTH_CALLBACK_PATH}`
+    : OAUTH_CLOUD_CALLBACK_URL;
 
 /** True when a parsed callback query selects opener-relay mode. */
 export const isOpenerRelayCallback = (search: URLSearchParams): boolean =>

@@ -612,6 +612,10 @@ export const validateWorkEntitySources = (m: Record<string, unknown>, add: AddFn
       add('error', 'WORK_ENTITY_SOURCES_OP_INVALID', `${p}.ops`,
         'read_write Source declares no write op — declare create/update/delete/complete or use read_only');
     }
+    // NB: a read_through CREATE needs `ops.read` — there is no sync cycle to
+    // fill the new record in later, so a create response that is not a full
+    // record is projected by reading it back. No gate is added for it: `read`
+    // is already required of EVERY Source above, so the rule would never fire.
     // D-192 CORE #8c (codex adversarial fold) — a version-kind 'none'
     // Source admits NO targeted writes (update/delete/complete): with
     // no version signal there is no token for the preflight-to-write

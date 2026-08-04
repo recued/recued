@@ -2473,6 +2473,38 @@ const validateConnectorSurface = (
               `cli_invocation binding for '${opKey}' declares input_materialize and so must not use a value shape (the materialized bytes could echo via stdout)`);
           }
         }
+        // IN-PLACE capture — installed-catalog mirror of the authoring
+        // `validateCliOutputCapture` `from_input_arg` arm. The runtime's posture
+        // for an in-place editor rests entirely on the captured path being
+        // ENGINE-chosen, which holds only when the SAME arg is materialized from
+        // a `data.file` ref. A hand-crafted pack that declares `from_input_arg`
+        // without a matching scalar `input_materialize` would have the tool write
+        // to, and this op ingest from, a location the recipe named — so refuse it
+        // at install just as the authoring gate refuses it at publish.
+        const rawCapture = rawBinding.output_capture;
+        if (isObjectRecord(rawCapture) && rawCapture.from_input_arg !== undefined) {
+          const fromInputArg = rawCapture.from_input_arg;
+          if (rawCapture.dir_arg !== undefined) {
+            add('error', 'CATALOG_BINDING_INVALID', `${bPath}.output_capture`,
+              `cli_invocation binding for '${opKey}' output_capture declares both from_input_arg and dir_arg — declare exactly one`);
+          } else if (typeof fromInputArg !== 'string' || fromInputArg.length === 0) {
+            add('error', 'CATALOG_BINDING_INVALID', `${bPath}.output_capture.from_input_arg`,
+              `cli_invocation binding for '${opKey}' output_capture.from_input_arg must be a non-empty string`);
+          } else if (!isObjectRecord(rawBinding.input_materialize)) {
+            add('error', 'CATALOG_BINDING_INVALID', `${bPath}.output_capture.from_input_arg`,
+              `cli_invocation binding for '${opKey}' output_capture.from_input_arg requires an input_materialize on the same op — the captured path must be engine-chosen`);
+          } else {
+            const m = rawBinding.input_materialize;
+            if (m.kind !== 'file_ref') {
+              add('error', 'CATALOG_BINDING_INVALID', `${bPath}.output_capture.from_input_arg`,
+                `cli_invocation binding for '${opKey}' output_capture.from_input_arg requires input_materialize.kind 'file_ref' — an array materialize has no single file to capture`);
+            }
+            if (m.arg !== fromInputArg) {
+              add('error', 'CATALOG_BINDING_INVALID', `${bPath}.output_capture.from_input_arg`,
+                `cli_invocation binding for '${opKey}' output_capture.from_input_arg '${fromInputArg}' must equal input_materialize.arg '${String(m.arg)}'`);
+            }
+          }
+        }
         // D-172 I-4 — input_materialize is foreground-only: a detached job redirects
         // stdout+stderr to a log file, re-opening the content-echo channel the
         // runtime stderr-suppression closes for materialize ops. Mirrors the
@@ -3994,6 +4026,62 @@ const wireIsInteriorExpansionOf = (
   return true;
 };
 
+/** D-192 documentary proof — the wire path INSTANTIATES the documented one.
+ *
+ *  A vendor may document ONE templated route that its callers reach by
+ *  substituting a constant. Zoho CRM documents `/{module}`,
+ *  `/{module}/{recordID}`, `/{module}/upsert`; a pack that reads deals binds the
+ *  literal `/Deals`, `/Deals/{deal_id}`, `/Deals/upsert`. Those ARE the
+ *  documented operations — `Deals` is a value of `module`, not a different path
+ *  — but no other relation here sees it: `normalizePathTemplate` collapses only
+ *  BRACED segments, so a literal never meets a parameter, and
+ *  {@link wireIsInteriorExpansionOf} requires the doc to be LONGER (an interior
+ *  insertion) with matching ends. 98 shipped operations across two Zoho packs sat
+ *  unprovable on exactly this.
+ *
+ *  The relation: same segment count, and at each index either the segments agree
+ *  (brace style unified, so `{id}` == `{{id}}`) or the DOC segment is a parameter
+ *  — which any non-empty wire segment may instantiate.
+ *
+ *  ⛔ OPT-IN, and that is the whole safety argument. It is reachable only through
+ *  a per-op `openapi_path`, so an author must NAME the documented route they mean
+ *  (`openapi_path: '/{module}'` against a wire `/Deals` is a true statement, and a
+ *  reviewable one). Nothing changes for an op that declares no override: a bare
+ *  literal path still has to appear in the document verbatim.
+ *
+ *  ⚠ It does NOT check that the substituted value is a REAL module. It cannot —
+ *  the prover establishes `(method, path)` and nothing about values or fields
+ *  (`api-pack-authoring-guide.md` §6), and a gate that looked like it verified
+ *  more than it does would be worse than none. `/{module}` genuinely admits any
+ *  segment; so does this.
+ *
+ *  ⚠ Direction matters: a doc PARAMETER admits a wire literal, never the reverse.
+ *  A wire `/{module}` against a documented `/Deals` would be the pack claiming a
+ *  breadth the document does not grant, and is refused. Pure. */
+const wireInstantiatesDocParams = (wireRaw: string, docRaw: string): boolean => {
+  const w = wireRaw.split('/');
+  const d = docRaw.split('/');
+  if (w.length !== d.length || w.length < 2) return false;
+  const isParam = (seg: string): boolean => /^\{\{?.+\}?\}$/u.test(seg);
+  let substituted = 0;
+  for (let i = 0; i < w.length; i += 1) {
+    if (unifyBraceStyle(w[i]!) === unifyBraceStyle(d[i]!)) continue;
+    // Two params with DIFFERENT names are positionally equivalent — exactly what
+    // `normalizePathTemplate` already grants every non-override op, so refusing
+    // it here would make the override stricter than the default it relaxes
+    // (`/Deals/{{deal_id}}` against `/{module}/{recordID}` is the real case).
+    if (isParam(w[i]!) && isParam(d[i]!)) continue;
+    // Otherwise only a doc PARAMETER may absorb a differing wire segment, and
+    // only a non-empty one (an empty segment is a malformed path, not a value).
+    if (!isParam(d[i]!) || w[i]!.length === 0) return false;
+    substituted += 1;
+  }
+  // At least one substitution, else this adds nothing the equality path above
+  // does not already cover — and an all-equal pair should never have reached a
+  // relaxation in the first place.
+  return substituted > 0;
+};
+
 /** D-192 documentary proof — verify an EXPLICIT composite-parameter expansion.
  *  This is deliberately stricter than a subsequence check: after replacing each
  *  named OpenAPI parameter with its declared ordered wire arguments, every path
@@ -4264,12 +4352,18 @@ export const crossCheckCatalogOpenApi = (
             b.openapiPath,
             b.openapiPathParamExpansions,
           )
-        : wireIsInteriorExpansionOf(normWire, docRel, b.pathTemplate, b.openapiPath);
+        // Two admissible relations, tried in order. The wire may OMIT documented
+        // interior segments, or it may INSTANTIATE documented parameters with
+        // constants (Zoho's `/{module}` reached as `/Deals`). Both are the same
+        // operation described at different levels of abstraction; neither lets an
+        // op re-point at an unrelated path.
+        : wireIsInteriorExpansionOf(normWire, docRel, b.pathTemplate, b.openapiPath)
+          || wireInstantiatesDocParams(b.pathTemplate, b.openapiPath);
       if (!preservesWire) {
         add('error', 'CATALOG_OPENAPI_MISMATCH', bPath,
           b.openapiPathParamExpansions !== undefined
             ? `operation '${b.opKey}' openapi_path '${b.openapiPath}' and openapi_path_param_expansions do not expand exactly to the wire path '${b.pathTemplate}'`
-            : `operation '${b.opKey}' openapi_path '${b.openapiPath}' does not preserve the wire path '${b.pathTemplate}' — a per-op override may only INSERT documented INTERIOR segments the wire omits (its first and last segments must match; a differing prefix belongs in the surface doc_base alias), not re-point at an unrelated path`);
+            : `operation '${b.opKey}' openapi_path '${b.openapiPath}' does not preserve the wire path '${b.pathTemplate}' — a per-op override may INSERT documented INTERIOR segments the wire omits (ends anchored), or INSTANTIATE a documented parameter with a wire literal at the same segment index, but may not re-point at an unrelated path (a differing prefix belongs in the surface doc_base alias)`);
         continue;
       }
     } else {

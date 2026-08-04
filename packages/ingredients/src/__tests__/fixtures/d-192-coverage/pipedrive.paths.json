@@ -1,19 +1,342 @@
 {
   "_extract": {
-    "note": "paths-only extract of the pinned official document (crossCheckCatalogOpenApi reads only `paths`); OpenAPI 3.0.1 YAML, v2 server base path (/api/v2) applied to path keys; URL is unversioned (drift risk - re-pin at publish)",
+    "note": "paths-only extract of the pinned official document, VERBATIM. crossCheckCatalogOpenApi reads only `paths` and each path-item's method keys, so this proves exactly what the publish op-prover proves. ⛔ Path keys are the document's OWN keys — do NOT rewrite them to match a pack's wire paths (an earlier revision of this file applied the server base path to the keys, which made this test pass while the REAL pin still failed at publish; the pack now declares a path_alias instead).",
     "url": "https://developers.pipedrive.com/docs/api/v1/openapi-v2.yaml",
     "sha256": "e8e7a1aee8395545de80ecf8a2518a948ad7bef51a9014fe2412db9fd1836a12",
-    "fetched_at": "2026-07-15"
+    "bytes": 1005935,
+    "openapi": "3.0.1",
+    "path_count": 85,
+    "retrieved": "2026-08-03"
   },
+  "openapi": "3.0.1",
   "paths": {
-    "/api/v2/activities": {
+    "/activities": {
       "get": {},
       "post": {}
     },
-    "/api/v2/activities/{id}": {
+    "/activities/{id}": {
       "delete": {},
       "get": {},
       "patch": {}
+    },
+    "/activityFields": {
+      "get": {}
+    },
+    "/activityFields/{field_code}": {
+      "get": {}
+    },
+    "/deals": {
+      "get": {},
+      "post": {}
+    },
+    "/deals/archived": {
+      "get": {}
+    },
+    "/deals/{id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/deals/{id}/followers": {
+      "get": {},
+      "post": {}
+    },
+    "/deals/{id}/followers/changelog": {
+      "get": {}
+    },
+    "/deals/{id}/followers/{follower_id}": {
+      "delete": {}
+    },
+    "/deals/products": {
+      "get": {}
+    },
+    "/deals/search": {
+      "get": {}
+    },
+    "/deals/{id}/products": {
+      "get": {},
+      "post": {},
+      "delete": {}
+    },
+    "/deals/{id}/products/{product_attachment_id}": {
+      "patch": {},
+      "delete": {}
+    },
+    "/deals/{id}/products/bulk": {
+      "post": {}
+    },
+    "/deals/{id}/discounts": {
+      "get": {},
+      "post": {}
+    },
+    "/deals/{id}/discounts/{discount_id}": {
+      "patch": {},
+      "delete": {}
+    },
+    "/deals/installments": {
+      "get": {}
+    },
+    "/deals/{id}/installments": {
+      "post": {}
+    },
+    "/deals/{id}/installments/{installment_id}": {
+      "patch": {},
+      "delete": {}
+    },
+    "/deals/{id}/convert/lead": {
+      "post": {}
+    },
+    "/dealFields": {
+      "get": {},
+      "post": {}
+    },
+    "/dealFields/{field_code}": {
+      "get": {},
+      "patch": {},
+      "delete": {}
+    },
+    "/dealFields/{field_code}/options": {
+      "post": {},
+      "delete": {},
+      "patch": {}
+    },
+    "/deals/{id}/convert/status/{conversion_id}": {
+      "get": {}
+    },
+    "/persons": {
+      "get": {},
+      "post": {}
+    },
+    "/persons/{id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/persons/{id}/followers": {
+      "get": {},
+      "post": {}
+    },
+    "/persons/{id}/followers/changelog": {
+      "get": {}
+    },
+    "/persons/{id}/followers/{follower_id}": {
+      "delete": {}
+    },
+    "/persons/{id}/picture": {
+      "get": {}
+    },
+    "/personFields": {
+      "get": {},
+      "post": {}
+    },
+    "/personFields/{field_code}": {
+      "get": {},
+      "patch": {},
+      "delete": {}
+    },
+    "/personFields/{field_code}/options": {
+      "post": {},
+      "delete": {},
+      "patch": {}
+    },
+    "/organizations": {
+      "get": {},
+      "post": {}
+    },
+    "/organizations/{id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/organizations/{id}/followers": {
+      "get": {},
+      "post": {}
+    },
+    "/organizations/{id}/followers/changelog": {
+      "get": {}
+    },
+    "/organizations/{id}/followers/{follower_id}": {
+      "delete": {}
+    },
+    "/organizationFields": {
+      "get": {},
+      "post": {}
+    },
+    "/organizationFields/{field_code}": {
+      "get": {},
+      "patch": {},
+      "delete": {}
+    },
+    "/organizationFields/{field_code}/options": {
+      "post": {},
+      "delete": {},
+      "patch": {}
+    },
+    "/products": {
+      "get": {},
+      "post": {}
+    },
+    "/products/{id}/followers": {
+      "get": {},
+      "post": {}
+    },
+    "/products/{id}/followers/changelog": {
+      "get": {}
+    },
+    "/products/{id}/followers/{follower_id}": {
+      "delete": {}
+    },
+    "/products/search": {
+      "get": {}
+    },
+    "/products/{id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/products/{id}/duplicate": {
+      "post": {}
+    },
+    "/products/{id}/variations": {
+      "get": {},
+      "post": {}
+    },
+    "/products/{id}/variations/{product_variation_id}": {
+      "patch": {},
+      "delete": {}
+    },
+    "/products/{id}/images": {
+      "get": {},
+      "post": {},
+      "put": {},
+      "delete": {}
+    },
+    "/productFields": {
+      "get": {},
+      "post": {}
+    },
+    "/productFields/{field_code}": {
+      "get": {},
+      "patch": {},
+      "delete": {}
+    },
+    "/productFields/{field_code}/options": {
+      "post": {},
+      "delete": {},
+      "patch": {}
+    },
+    "/leads/search": {
+      "get": {}
+    },
+    "/leads/{id}/convert/deal": {
+      "post": {}
+    },
+    "/leads/{id}/convert/status/{conversion_id}": {
+      "get": {}
+    },
+    "/organizations/search": {
+      "get": {}
+    },
+    "/persons/search": {
+      "get": {}
+    },
+    "/itemSearch": {
+      "get": {}
+    },
+    "/itemSearch/field": {
+      "get": {}
+    },
+    "/stages": {
+      "get": {},
+      "post": {}
+    },
+    "/stages/{id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/pipelines": {
+      "get": {},
+      "post": {}
+    },
+    "/pipelines/{id}": {
+      "delete": {},
+      "get": {},
+      "patch": {}
+    },
+    "/projectFields": {
+      "get": {},
+      "post": {}
+    },
+    "/projectFields/{field_code}": {
+      "get": {},
+      "patch": {},
+      "delete": {}
+    },
+    "/projectFields/{field_code}/options": {
+      "post": {},
+      "delete": {},
+      "patch": {}
+    },
+    "/projects": {
+      "get": {},
+      "post": {}
+    },
+    "/projects/archived": {
+      "get": {}
+    },
+    "/projects/{id}": {
+      "get": {},
+      "patch": {},
+      "delete": {}
+    },
+    "/projectTemplates": {
+      "get": {}
+    },
+    "/projectTemplates/{id}": {
+      "get": {}
+    },
+    "/projects/search": {
+      "get": {}
+    },
+    "/projects/{id}/archive": {
+      "post": {}
+    },
+    "/projects/{id}/permittedUsers": {
+      "get": {}
+    },
+    "/projects/{id}/changelog": {
+      "get": {}
+    },
+    "/tasks": {
+      "get": {},
+      "post": {}
+    },
+    "/tasks/{id}": {
+      "get": {},
+      "patch": {},
+      "delete": {}
+    },
+    "/boards": {
+      "get": {},
+      "post": {}
+    },
+    "/boards/{id}": {
+      "get": {},
+      "patch": {},
+      "delete": {}
+    },
+    "/phases": {
+      "get": {},
+      "post": {}
+    },
+    "/phases/{id}": {
+      "get": {},
+      "patch": {},
+      "delete": {}
+    },
+    "/users/{id}/followers": {
+      "get": {}
     }
   }
 }

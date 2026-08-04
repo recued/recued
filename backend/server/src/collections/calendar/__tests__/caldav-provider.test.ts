@@ -902,6 +902,60 @@ describe('CalDavProvider — startSync (ETag diff)', () => {
     expect(second).toHaveLength(0);
     await stop();
   });
+
+  it('retains a missing href ETag until the delete is acknowledged', async () => {
+    const etagStore = makeEtagStore();
+    let includeEvent = true;
+    const fetcher: HttpFetcher = async (_url, init) => {
+      if (init?.method === 'PROPFIND') return mkText(207, homeXml);
+      if (init?.method === 'REPORT') {
+        return mkText(
+          207,
+          makeReport(includeEvent
+            ? [{
+                href: '/calendars/alice/work/a.ics',
+                etag: '"a-v1"',
+                ics: eventIcs('a', 'A'),
+              }]
+            : []),
+        );
+      }
+      return mkText(404, '');
+    };
+    const makeProvider = () => createCalDavProvider({
+      slug: 'personal',
+      config: mkConfig(),
+      fetcher,
+      etagStore,
+      scheduler: () => () => undefined,
+      now: () => Date.UTC(2026, 3, 20),
+    });
+
+    const seeded = makeProvider();
+    cleanup.push(() => seeded.close());
+    await seeded.startSync(async () => {});
+    await seeded.close();
+    expect(etagStore.data.size).toBe(1);
+
+    includeEvent = false;
+    const rejected = makeProvider();
+    cleanup.push(() => rejected.close());
+    await rejected.startSync(async (event) => {
+      if (event.kind === 'deleted') throw new Error('collection unavailable');
+    });
+    await rejected.close();
+    expect(etagStore.data.size).toBe(1);
+
+    const replayed: CalendarSyncEvent[] = [];
+    const recovered = makeProvider();
+    cleanup.push(() => recovered.close());
+    await recovered.startSync(async (event) => { replayed.push(event); });
+
+    expect(replayed).toEqual([
+      expect.objectContaining({ kind: 'deleted' }),
+    ]);
+    expect(etagStore.data.size).toBe(0);
+  });
 });
 
 // ────────────────────────────────────────────────────────────────

@@ -58,7 +58,7 @@ export interface MailWatcherArgs {
 }
 
 /** Narrow item shape returned to the downstream recipe. `hot_fields`
- *  carries mail's `{from, subject, thread_id, folder, is_read,
+ *  carries mail's `{from, subject, thread_id, folder, direction, is_read,
  *  labels?}` per the adapter contract. */
 export interface MailWatcherItem {
   record_id: string;

@@ -306,13 +306,26 @@ const VALUE_SHAPES: Readonly<Record<string, ValueShape>> = {
    *  non-empty string per `parseBulkPackManifest`), so every production row carries
    *  it and the resolution builder skips a publisher-less row fail-closed. */
   installed_pack_info: {
-    fields: ['pack_slug', 'publisher', 'version', 'installed_at', 'ingredient_ids'],
+    fields: [
+      'pack_slug', 'publisher', 'version', 'installed_at', 'ingredient_ids',
+      'authored_pack_slug',
+    ],
     types: {
       pack_slug: 'string',
       publisher: 'string?',
       version: 'string',
       installed_at: 'datetime',
       ingredient_ids: 'string[]',
+      /** The slug the pack's AUTHOR gave it, when the row is keyed by something
+       *  else. A Records pack's inventory row is keyed by its generated
+       *  content-addressed catalog id (`records-<hash>`), so `pack_slug` holds
+       *  that id and the authored name (`billable-hours`) appeared nowhere on the
+       *  row — leaving `buildPackOpResolution` unable to mint the
+       *  `<publisher>.<authored-slug>` pack_ref any DEPENDENT pack's Tier-P ops
+       *  name. Optional and additive: absent on a row written before this field,
+       *  and absent on every non-Records pack, whose `pack_slug` already IS the
+       *  authored slug. */
+      authored_pack_slug: 'string?',
     },
     required: ['pack_slug', 'version', 'installed_at'],
   },

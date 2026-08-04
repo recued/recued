@@ -232,7 +232,16 @@ export const mountExecutionCaseDraftRoute = (
       button.textContent = busy
         ? 'Asking your AI...'
         : armed ? 'Yes, revise it' : 'Ask AI to revise this';
-      (button as HTMLButtonElement).disabled = busy;
+      // This is the keyboard owner's exact control through the slow, paid
+      // request. Native `disabled` blurs it to <body> in Chromium; keep it in
+      // the tab order and let the busy guard above enforce single-flight.
+      if (busy) {
+        button.setAttribute('aria-disabled', 'true');
+        button.setAttribute('aria-busy', 'true');
+      } else {
+        button.removeAttribute('aria-disabled');
+        button.removeAttribute('aria-busy');
+      }
       // ⚠ The instruction is REQUIRED to arm: "revise it" with nothing said is a
       // second call that spends the owner's quota to produce the same thing.
       note.textContent = armed && instruction.value.trim().length === 0

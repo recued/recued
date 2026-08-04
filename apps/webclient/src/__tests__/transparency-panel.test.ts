@@ -225,6 +225,73 @@ describe('mountTransparencyPanel', () => {
       .toBe(true);
   });
 
+  it('keeps a pending toggle truthful, focusable, and single-flight', async () => {
+    const doc = makeFakeDocument();
+    const host = doc.createElement('div');
+    let settle!: (value: { prefs: InstancePrefs }) => void;
+    const runPrefsSet = vi.fn(
+      () => new Promise<{ prefs: InstancePrefs }>((resolve) => {
+        settle = resolve;
+      }),
+    );
+    const panel = mountTransparencyPanel({
+      host: host as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      runPrefsGet: vi.fn(async () => ({ prefs: mergePrefs() })),
+      runPrefsSet,
+    });
+    await panel.whenLoaded();
+    expect(panel.hasInFlightWork()).toBe(false);
+
+    let orchestration = findByAttrValue(
+      host,
+      TRANSPARENCY_PANEL_TOGGLE_ATTR,
+      'ui.transparency.class.orchestration',
+    );
+    orchestration.checked = true;
+    orchestration.dispatchChange();
+
+    orchestration = findByAttrValue(
+      host,
+      TRANSPARENCY_PANEL_TOGGLE_ATTR,
+      'ui.transparency.class.orchestration',
+    );
+    expect(panel.hasInFlightWork()).toBe(true);
+    expect(orchestration.checked).toBe(true);
+    expect(orchestration.disabled).toBe(false);
+    expect(orchestration.getAttribute('aria-disabled')).toBe('true');
+    expect(orchestration.getAttribute('aria-busy')).toBe('true');
+
+    const tier = collectByAttr(host, TRANSPARENCY_PANEL_TIER_ATTR)[0]!;
+    expect(tier.disabled).toBe(false);
+    expect(tier.getAttribute('aria-disabled')).toBe('true');
+    expect(tier.getAttribute('aria-busy')).toBeNull();
+    tier.value = 'none';
+    tier.dispatchChange();
+    expect(tier.value).toBe('summary_only');
+
+    orchestration.checked = false;
+    orchestration.dispatchChange();
+    expect(orchestration.checked).toBe(true);
+    expect(runPrefsSet).toHaveBeenCalledTimes(1);
+
+    settle({
+      prefs: mergePrefs({
+        'ui.transparency.class.orchestration': true,
+      }),
+    });
+    await panel.whenSaveSettled();
+    expect(panel.hasInFlightWork()).toBe(false);
+    orchestration = findByAttrValue(
+      host,
+      TRANSPARENCY_PANEL_TOGGLE_ATTR,
+      'ui.transparency.class.orchestration',
+    );
+    expect(orchestration.checked).toBe(true);
+    expect(orchestration.getAttribute('aria-disabled')).toBeNull();
+    expect(orchestration.getAttribute('aria-busy')).toBeNull();
+  });
+
   it('saves max redaction tier changes', async () => {
     const doc = makeFakeDocument();
     const host = doc.createElement('div');

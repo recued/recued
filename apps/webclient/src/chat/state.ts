@@ -34,6 +34,7 @@ import {
   classForTransparencyEventKind,
   isChatDataDiagnosisResolutionStatus,
   isChatModelHint,
+  isChatModelSourceId,
   isTransparencyEventKind,
   renderTransparencyTemplate,
   type ChatMessage,
@@ -859,6 +860,9 @@ const applyDefaultModelPrefChanged = (
         ...(isChatModelHint(event.model_hint)
           ? { model_hint: event.model_hint }
           : {}),
+        ...(isChatModelSourceId(event.source_id)
+          ? { source_id: event.source_id }
+          : {}),
         overridden: false,
       },
     },
@@ -884,6 +888,7 @@ const patchSessionField = (
         const patch = value as {
           current: ChatModelRoutingLayer;
           model_hint?: unknown;
+          source_id?: unknown;
           overridden?: boolean;
         };
         // D-167 + § A.14 — REPLACE model_routing wholesale (do not spread the
@@ -897,6 +902,9 @@ const patchSessionField = (
             current: patch.current,
             ...(isChatModelHint(patch.model_hint)
               ? { model_hint: patch.model_hint }
+              : {}),
+            ...(isChatModelSourceId(patch.source_id)
+              ? { source_id: patch.source_id }
               : {}),
             ...(typeof patch.overridden === 'boolean'
               ? { overridden: patch.overridden }

@@ -94,7 +94,11 @@ import {
   createConnectionStore,
   type ConnectionStoreSqlite,
 } from '../storage/connection-store.js';
-import { createContractGrantStore, type ContractGrantStore } from '../storage/contract-grant-store.js';
+import {
+  createContractGrantStore,
+  wireConnectionGrantCleanup,
+  type ContractGrantStore,
+} from '../storage/contract-grant-store.js';
 import {
   createConnectionCatalogBindingStore,
   type ConnectionCatalogBindingStore,
@@ -223,8 +227,7 @@ import type { ServerExecutorConfig } from '../server-executor.js';
 import type { SourceMirrorFetchDeps } from '../source-mirror/fetch.js';
 import { purgeSourceData } from '../source-mirror/purge.js';
 import {
-  desiredWorkEntitySourcesFor,
-  sourceIdConnectionName,
+  resolveWorkEntitySourceBinding,
   wireWorkEntitySourceBoot,
 } from '../work-entity-source-boot.js';
 import {
@@ -836,6 +839,7 @@ export const composeAppContext = (
       emptyTabProbe,
       pairedInstances,
       annotationDeps,
+      sharedStore: sharedStoreRef,
       getContactStore: () => contactStoreRef,
       getCollectionRegistry: () => chatLateBound.getCollectionRegistry(),
       getEnrichmentStore: () => enrichmentStoreRef,
@@ -1010,12 +1014,7 @@ export const composeAppContext = (
     // re-enroll can't silently revive a pack's access to a different account
     // (deny-until-granted holds; re-consent required, exactly like reinstall).
     contractGrantStoreRef = createContractGrantStore(contractStoreRef);
-    connectionStoreRef.addOnDelete((kind, name) => {
-      if (kind === 'api') {
-        contractGrantStoreRef!.deleteAllUserGroupsForConnection(name);
-        contractGrantStoreRef!.deleteAllPackGroupsForConnection(name);
-      }
-    });
+    wireConnectionGrantCleanup(connectionStoreRef, contractGrantStoreRef);
     // D-170 gap #2 — the connection→local-catalog binding store (stateless wrapper
     // over the same contract store). The binding SURVIVES a connection delete (it is
     // install-state, written by the install planner from the composition's
@@ -1156,13 +1155,15 @@ export const composeAppContext = (
         const resolveDeclaration: WorkEntityTargetedReadDeps['resolveDeclaration'] = (
           source_id,
         ) => {
-          const name = sourceIdConnectionName(source_id);
-          if (name === null) return null;
-          const row = connections.get('api', name);
-          if (row === null) return null;
-          const hit = desiredWorkEntitySourcesFor(row, resolveWorkEntityCatalogManifest)
-            .find((d) => d.id === source_id);
-          if (hit === undefined) return null;
+          const binding = resolveWorkEntitySourceBinding(
+            connections,
+            source_id,
+            resolveWorkEntityCatalogManifest,
+          );
+          if (binding === null) return null;
+          const name = binding.row.name;
+          const row = binding.row;
+          const hit = binding.desired;
           // The connection's non-secret config — the source for the declaration's
           // `create_arg_bindings` (a per-connection STATIC create arg). The entity
           // case (Linear `team`, Asana `workspace`) moved to `source_dependencies`

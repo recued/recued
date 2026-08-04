@@ -226,6 +226,10 @@ const packEntry = (slug: string): PackListEntry => {
     installed: true,
     requires: [...manifest.requires],
     recipe_count: 0,
+    recipe_refs: manifest.recipes.map((r) => ({ slug: r.slug, version: r.version })),
+    body_visibility_grant_keys: [...(manifest.mcp_body_visibility_grants ?? [])],
+    ...(typeof manifest.service_kind === 'string' ? { service_kind: manifest.service_kind } : {}),
+    ...(typeof manifest.repo === 'string' ? { repo: manifest.repo } : {}),
     body_visibility_grant_count: 0,
     manifest,
   } as PackListEntry;

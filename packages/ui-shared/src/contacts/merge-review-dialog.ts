@@ -148,6 +148,10 @@ export interface MergeReviewDialogState {
   /** True while `contact.merge.{confirm, reject}` rpc is in-flight.
    *  Disables every action button so the user can't double-fire. */
   saving: boolean;
+  /** Host-supplied identity of the action that owns `saving`. That one button
+   *  remains focusable with aria-disabled/aria-busy while every sibling uses
+   *  native disabled. Omitted hosts retain the original all-native lock. */
+  saving_action?: 'confirm' | 'reject';
   /** Inline error from the most recent submit (rpc rejection text).
    *  Cleared on successful action / next-prev navigation. */
   error: string | null;
@@ -471,29 +475,36 @@ const renderActionBar = (
   cursor: number,
   total: number,
   saving: boolean,
+  savingAction: MergeReviewDialogState['saving_action'],
   vendorMergeable: boolean,
   allowDefer: boolean,
 ): string => {
   const candidateIdsAttr = e(item.candidates.map((c) => c.id).join(','));
+  const rejectOwnsSave = saving && savingAction === 'reject';
+  const confirmOwnsSave = saving && savingAction === 'confirm';
   const buttons: string[] = [];
   buttons.push(
     button({
-      label: 'Mark as different',
+      label: rejectOwnsSave ? 'Marking as different…' : 'Mark as different',
       variant: 'danger-text',
       size: 'sm',
       action: 'contact-merge-reject',
       data: { 'candidate-ids': item.candidates.map((c) => c.id).join(',') },
-      disabled: saving,
+      disabled: saving && !rejectOwnsSave,
+      ariaDisabled: rejectOwnsSave,
+      ariaBusy: rejectOwnsSave,
     }),
   );
   buttons.push(
     button({
-      label: 'Merge',
+      label: confirmOwnsSave ? 'Merging…' : 'Merge',
       variant: 'primary',
       size: 'sm',
       action: 'contact-merge-confirm',
       data: { 'candidate-ids': item.candidates.map((c) => c.id).join(',') },
-      disabled: saving,
+      disabled: saving && !confirmOwnsSave,
+      ariaDisabled: confirmOwnsSave,
+      ariaBusy: confirmOwnsSave,
     }),
   );
   if (vendorMergeable) {
@@ -566,6 +577,7 @@ const renderItem = (
   total: number,
   survivor: string,
   saving: boolean,
+  savingAction: MergeReviewDialogState['saving_action'],
   allowDefer: boolean,
   allowUpstreamMerge: boolean,
 ): string => {
@@ -590,7 +602,15 @@ const renderItem = (
       data-card-count="${item.cards.length}">
       ${renderItemHeader(cursor, total, layout, item.cards.length)}
       ${cardsContainer}
-      ${renderActionBar(item, cursor, total, saving, vendorMergeable, allowDefer)}
+      ${renderActionBar(
+        item,
+        cursor,
+        total,
+        saving,
+        savingAction,
+        vendorMergeable,
+        allowDefer,
+      )}
     </article>
   `;
 };
@@ -645,6 +665,7 @@ export const renderMergeReviewDialog = (props: MergeReviewDialogProps): string =
         total,
         props.survivor_overrides[cursor] ?? item.default_survivor,
         props.saving,
+        props.saving_action,
         allowDefer,
         // Fail closed: a host that has not declared it can perform the
         // destructive vendor merge is not offered the button.

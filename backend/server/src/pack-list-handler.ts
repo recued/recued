@@ -236,7 +236,12 @@ const projectManifest = (
       requires: [...manifest.requires],
       recipe_count: manifest.recipes.length,
       body_visibility_grant_count: manifest.mcp_body_visibility_grants?.length ?? 0,
-      manifest,
+      recipe_refs: manifest.recipes.map((r) => ({ slug: r.slug, version: r.version })),
+      body_visibility_grant_keys: [...(manifest.mcp_body_visibility_grants ?? [])],
+      ...(typeof manifest.service_kind === 'string' ? { service_kind: manifest.service_kind } : {}),
+      ...(typeof manifest.repo === 'string' ? { repo: manifest.repo } : {}),
+      // Installed only — see the twin below and `PackListEntry.manifest`.
+      ...(installed || ownsRetainedNamespace ? { manifest } : {}),
     };
   }
   const installedPack = contractStore === undefined
@@ -306,7 +311,24 @@ const projectManifest = (
     recipe_count: manifest.recipes.length,
     body_visibility_grant_count:
       manifest.mcp_body_visibility_grants?.length ?? 0,
-    manifest,
+    // The slim stand-ins for the manifest the collision + overlap projections
+    // used to read off it. See `PackListEntry.recipe_slugs`.
+    recipe_refs: manifest.recipes.map((r) => ({ slug: r.slug, version: r.version })),
+    body_visibility_grant_keys: [...(manifest.mcp_body_visibility_grants ?? [])],
+      ...(typeof manifest.service_kind === 'string' ? { service_kind: manifest.service_kind } : {}),
+      ...(typeof manifest.repo === 'string' ? { repo: manifest.repo } : {}),
+    // ⛔ INSTALLED ONLY. Forwarding every manifest made this response 44.6 MB
+    // across 954 bundled packs, for a list whose own fields total ~1 MB — the
+    // Packs route's minutes-long load. The installed-pack management surfaces
+    // still get the manifest they read; a Discover row renders from the
+    // projected fields, and the install dialog resolves the one manifest it
+    // needs through `packs.resolveBySlug` (bundled-first, added with this
+    // change). See `PackListEntry.manifest`.
+    //
+    // ⚠ `installedAnyVersion` is included deliberately: an ORPHANED records
+    // pack is not `installed`, but the management surfaces still act on it, so
+    // withholding its manifest would break them rather than slim them.
+    ...(installed || installedAnyVersion ? { manifest } : {}),
   };
 };
 

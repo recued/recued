@@ -19,6 +19,7 @@ import {
   FORM_RESPONSE_WORKFLOW_TEMPLATE_USE_ATTR,
   MOUNT_RECIPE_EDITOR_BACK_ATTR,
   MOUNT_RECIPE_EDITOR_HOST_ATTR,
+  MOUNT_RECIPE_EDITOR_RETRY_ATTR,
   MOUNT_RECIPE_EDITOR_STATUS_ATTR,
   mountFormResponseRecipeSeedRoute,
   mountRecipeEditorRoute,
@@ -436,9 +437,43 @@ describe('mountRecipeEditorRoute — Edit→Kitchen loader', () => {
     const status = findByAttr(root, MOUNT_RECIPE_EDITOR_STATUS_ATTR);
     expect(status).toBeDefined();
     expect(status!.getAttribute(MOUNT_RECIPE_EDITOR_STATUS_ATTR)).toBe('error');
+    expect(status!.getAttribute('role')).toBe('alert');
     expect(status!.textContent.length).toBeGreaterThan(0);
+    expect(findByAttr(root, MOUNT_RECIPE_EDITOR_RETRY_ATTR)).toBeDefined();
     expect(findByAttr(root, MOUNT_RECIPE_EDITOR_BACK_ATTR)).toBeDefined();
     expect(findByAttr(root, RECIPE_EDITOR_ROUTE_ATTR)).toBeUndefined();
+  });
+
+  it('keeps a failed-load Retry single-flight and mounts the recovered recipe', async () => {
+    let calls = 0;
+    let resolveRetry!: (value: { recipes: ServerRecipeListEntry[] }) => void;
+    const retryResult = new Promise<{ recipes: ServerRecipeListEntry[] }>((resolve) => {
+      resolveRetry = resolve;
+    });
+    const listCaller = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error('network down');
+      return retryResult;
+    });
+    const { root } = mount({ listCaller });
+    await tick();
+
+    const retry = findByAttr(root, MOUNT_RECIPE_EDITOR_RETRY_ATTR);
+    expect(retry).toBeDefined();
+    retry!.click();
+    const busyRetry = findByAttr(root, MOUNT_RECIPE_EDITOR_RETRY_ATTR);
+    expect(busyRetry?.textContent).toBe('Retrying…');
+    expect(busyRetry?.getAttribute('aria-disabled')).toBe('true');
+    expect(busyRetry?.getAttribute('aria-busy')).toBe('true');
+    retry!.click();
+    busyRetry!.click();
+    expect(listCaller).toHaveBeenCalledTimes(2);
+
+    resolveRetry({ recipes: [entryFor(sampleRecipe('daily-brief'))] });
+    await tick(16);
+    expect(findByAttr(root, RECIPE_EDITOR_ROUTE_ATTR)).toBeDefined();
+    expect(findByAttr(root, MOUNT_RECIPE_EDITOR_STATUS_ATTR)).toBeUndefined();
+    expect(findByAttr(root, MOUNT_RECIPE_EDITOR_RETRY_ATTR)).toBeUndefined();
   });
 
   it('dispose removes the host + the mounted editor', async () => {

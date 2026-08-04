@@ -770,8 +770,16 @@ export const handleMailDelete = async (
   // Also wipe credentials so a future enroll under the same slug
   // doesn't inherit stale secrets.
   if (existing.adapter_type === 'imap') {
-    await deps.accountStore.delete(imapPasswordKey(slug));
-    await deps.accountStore.delete(imapSmtpPasswordKey(slug));
+    const prefix = `imap.${slug}.`;
+    if (deps.accountStore.getAll) {
+      const all = await deps.accountStore.getAll();
+      for (const key of Object.keys(all)) {
+        if (key.startsWith(prefix)) await deps.accountStore.delete(key);
+      }
+    } else {
+      await deps.accountStore.delete(imapPasswordKey(slug));
+      await deps.accountStore.delete(imapSmtpPasswordKey(slug));
+    }
   } else if (existing.adapter_type === 'gmail' || existing.adapter_type === 'graph') {
     // ⚠ A `graph` grant is SHARED with the calendar lane at the same slug —
     // Microsoft's mail and calendar adapters are both named `graph`, so both

@@ -1,0 +1,87 @@
+{
+  "_extract": {
+    "note": "paths-only extract of the pinned Zoho Desk Ticket contract. crossCheckCatalogOpenApi reads ONLY `paths` + each path-item's method keys, so this proves exactly what the publish op-prover proves, without a 165 KB body or a network fetch in the suite.",
+    "url": "https://raw.githubusercontent.com/zoho/zohodesk-oas/83b5c18947ef54052eb83d221ff54c2ee5a65e52/v1.0/Ticket.json",
+    "sha256": "5c3aa609ece5374bbc5385499d83af94c2f64228052eb82dcd01493e34b4b5e2",
+    "bytes": 165156,
+    "openapi": "3.1.0",
+    "path_count": 23,
+    "retrieved": "2026-08-03"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v1/tickets/{ticketId}/resolution": {
+      "get": {},
+      "delete": {},
+      "patch": {}
+    },
+    "/api/v1/agentsTicketsCount": {
+      "get": {}
+    },
+    "/api/v1/tickets/moveToTrash": {
+      "post": {}
+    },
+    "/api/v1/associatedTickets": {
+      "get": {}
+    },
+    "/api/v1/tickets/updateMany": {
+      "post": {}
+    },
+    "/api/v1/tickets/deleteSpam": {
+      "post": {}
+    },
+    "/api/v1/tickets/archivedTickets": {
+      "get": {}
+    },
+    "/api/v1/tickets/{ticketId}/move": {
+      "post": {}
+    },
+    "/api/v1/tickets/{ticketId}/metrics": {
+      "get": {}
+    },
+    "/api/v1/tickets/{ticketId}/merge": {
+      "post": {}
+    },
+    "/api/v1/tickets/emptySpam": {
+      "post": {}
+    },
+    "/api/v1/tickets/{ticketId}/notifyArticleUsage": {
+      "post": {}
+    },
+    "/api/v1/tickets/{ticketId}/resolutionHistory": {
+      "get": {}
+    },
+    "/api/v1/tickets/markSpam": {
+      "post": {}
+    },
+    "/api/v1/contacts/{contactId}/tickets": {
+      "get": {}
+    },
+    "/api/v1/tickets/{ticketId}/markAsRead": {
+      "post": {}
+    },
+    "/api/v1/tickets": {
+      "get": {},
+      "post": {}
+    },
+    "/api/v1/closeTickets": {
+      "post": {}
+    },
+    "/api/v1/ticketQueueView/count": {
+      "get": {}
+    },
+    "/api/v1/tickets/{ticketId}": {
+      "get": {},
+      "patch": {}
+    },
+    "/api/v1/tickets/{ticketId}/markAsUnRead": {
+      "post": {}
+    },
+    "/api/v1/tickets/{ticketId}/threads/{threadId}/split": {
+      "post": {}
+    },
+    "/api/v1/products/{productId}/tickets": {
+      "get": {}
+    }
+  }
+}

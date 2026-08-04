@@ -169,6 +169,9 @@ export interface MountConnectionIndicatorOptions {
    *  action button never renders, because a button that does nothing is worse
    *  than no button. */
   onRecoveryAction?: () => void;
+  /** Stable shell control to receive focus when a status transition retires a
+   * focused banner action. Explicit actions and pagehide own their own handoff. */
+  focusAfterActionRetires?: () => HTMLElement | null;
   /** Restoration receipt lifetime. Defaults to five seconds. */
   restoredReceiptMs?: number;
   /** Reconciled attention receipt lifetime. Defaults to ten seconds so its
@@ -272,7 +275,9 @@ export const mountConnectionIndicator = (
   const renderBanner = (
     state: 'ok' | 'offline' | 'restored' | 'attention',
     action?: MountConnectionIndicatorOptions['firstConnectedReceiptAction'],
+    behavior?: { preserveActionFocus?: boolean },
   ): void => {
+    const actionHadFocus = doc.activeElement === bannerAction;
     receiptAction = state === 'restored' || state === 'attention'
       ? action
       : undefined;
@@ -304,6 +309,24 @@ export const mountConnectionIndicator = (
     bannerText.textContent = state === 'restored' || state === 'attention'
       ? restoredReceiptCopy
       : '';
+    if (
+      actionHadFocus
+      && bannerAction.hasAttribute('hidden')
+      && behavior?.preserveActionFocus !== false
+    ) {
+      const fallback = opts.focusAfterActionRetires?.() ?? null;
+      if (
+        fallback !== null
+        && fallback.isConnected !== false
+        && !fallback.hasAttribute('hidden')
+      ) {
+        try {
+          fallback.focus({ preventScroll: true });
+        } catch {
+          // A concurrently detached shell is already yielding focus ownership.
+        }
+      }
+    }
   };
 
   const showRestoredReceipt = (
@@ -370,7 +393,7 @@ export const mountConnectionIndicator = (
     ) {
       const action = receiptAction;
       cancelReceipt();
-      renderBanner('ok');
+      renderBanner('ok', undefined, { preserveActionFocus: false });
       action.onSelect();
       return;
     }
@@ -411,7 +434,7 @@ export const mountConnectionIndicator = (
       && banner.getAttribute('data-state') !== 'attention'
     ) return;
     cancelReceipt();
-    renderBanner('ok');
+    renderBanner('ok', undefined, { preserveActionFocus: false });
   };
   pageEvents?.addEventListener?.('pagehide', onPageHide);
   let sustainedInterruptionSeen =

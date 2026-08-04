@@ -45,10 +45,14 @@ interface FakeElement {
   getAttribute(k: string): string | null;
   hasAttribute(k: string): boolean;
   appendChild(el: FakeElement): FakeElement;
+  insertBefore(el: FakeElement, reference: FakeElement | null): FakeElement;
   removeChild(el: FakeElement): FakeElement;
   readonly firstChild: FakeElement | null;
   remove(): void;
   addEventListener(name: string, fn: (ev: unknown) => void): void;
+  closest(selector: string): FakeElement | null;
+  contains(candidate: FakeElement): boolean;
+  focus?: () => void;
   click(): void;
 }
 
@@ -77,6 +81,15 @@ const makeFakeElement = (tagName: string): FakeElement => {
       child.parent = el;
       return child;
     },
+    insertBefore(child, reference) {
+      if (child.parent !== null) child.parent.removeChild(child);
+      if (reference === null) return el.appendChild(child);
+      const idx = el.children.indexOf(reference);
+      if (idx < 0) throw new Error('insertBefore: reference is not a child');
+      el.children.splice(idx, 0, child);
+      child.parent = el;
+      return child;
+    },
     removeChild(child) {
       const idx = el.children.indexOf(child);
       if (idx < 0) throw new Error('removeChild: not a child');
@@ -95,6 +108,20 @@ const makeFakeElement = (tagName: string): FakeElement => {
       arr.push(fn);
       el.listeners.set(name, arr);
     },
+    closest(selector) {
+      const attr = selector.match(/^\[([^\]]+)\]$/)?.[1];
+      if (attr === undefined) return null;
+      let candidate: FakeElement | null = el;
+      while (candidate !== null) {
+        if (candidate.hasAttribute(attr)) return candidate;
+        candidate = candidate.parent;
+      }
+      return null;
+    },
+    contains(candidate) {
+      if (candidate === el) return true;
+      return el.children.some((child) => child.contains(candidate));
+    },
     click() {
       for (const fn of el.listeners.get('click') ?? []) fn({ target: el });
     },
@@ -102,9 +129,22 @@ const makeFakeElement = (tagName: string): FakeElement => {
   return el;
 };
 
-const makeFakeDocument = () => ({
-  createElement: makeFakeElement,
-});
+interface FakeDocument {
+  activeElement: FakeElement | null;
+  createElement(tagName: string): FakeElement;
+}
+
+const makeFakeDocument = (): FakeDocument => {
+  const document: FakeDocument = {
+    activeElement: null,
+    createElement(tagName) {
+      const element = makeFakeElement(tagName);
+      element.focus = () => { document.activeElement = element; };
+      return element;
+    },
+  };
+  return document;
+};
 
 const textOf = (el: FakeElement): string =>
   `${el.textContent}${el.children.map(textOf).join('')}`;
@@ -286,6 +326,16 @@ describe('D-169 P2 Slice 5 notify toasts', () => {
     ]);
   });
 
+  it('retains an existing toast node when a newer notification arrives', () => {
+    const { host, fake } = mount();
+    notifyListener(fake)(notifyEvent('first'));
+    const first = findAllByAttr(host, NOTIFY_TOAST_ATTR, 'toast-1')[0]!;
+
+    notifyListener(fake)(notifyEvent('second'));
+
+    expect(findAllByAttr(host, NOTIFY_TOAST_ATTR, 'toast-1')[0]).toBe(first);
+  });
+
   it('auto-dismisses when the timer fires', () => {
     const { fake, timers, toasts } = mount();
     notifyListener(fake)(notifyEvent('disappearing'));
@@ -294,6 +344,27 @@ describe('D-169 P2 Slice 5 notify toasts', () => {
 
     timers.fire(timers.pending()[0]!);
 
+    expect(toasts.getToasts()).toHaveLength(0);
+  });
+
+  it('defers auto-dismiss while its action owns focus, then expires normally', () => {
+    const document = makeFakeDocument();
+    const { host, fake, timers, toasts } = mount({
+      document: document as unknown as Document,
+    });
+    notifyListener(fake)(notifyEvent('read this'));
+    document.activeElement = findAllByAttr(
+      host,
+      NOTIFY_TOAST_DISMISS_ATTR,
+      'toast-1',
+    )[0]!;
+
+    timers.fire(timers.pending()[0]!);
+
+    expect(toasts.getToasts()).toHaveLength(1);
+    expect(timers.scheduledCount()).toBe(1);
+    document.activeElement = null;
+    timers.fire(timers.pending()[0]!);
     expect(toasts.getToasts()).toHaveLength(0);
   });
 
@@ -311,6 +382,31 @@ describe('D-169 P2 Slice 5 notify toasts', () => {
     expect(timers.clearedCount()).toBe(1);
   });
 
+  it('manual dismiss advances focused ownership to the next visible toast', () => {
+    const document = makeFakeDocument();
+    const { host, fake, toasts } = mount({
+      document: document as unknown as Document,
+      durationMs: 0,
+    });
+    notifyListener(fake)(notifyEvent('older'));
+    notifyListener(fake)(notifyEvent('newer'));
+    const newerDismiss = findAllByAttr(
+      host,
+      NOTIFY_TOAST_DISMISS_ATTR,
+      'toast-2',
+    )[0]!;
+    // `focus` is optional on FakeElement but the fake document wires it on every
+    // element it creates. Asserted rather than `?.()`-ed: this test is ABOUT
+    // focus ownership, so a silently skipped call would leave it passing while
+    // measuring nothing.
+    newerDismiss.focus!();
+    newerDismiss.click();
+
+    expect(toasts.getToasts().map((toast) => toast.id)).toEqual(['toast-1']);
+    expect(document.activeElement?.getAttribute(NOTIFY_TOAST_DISMISS_ATTR))
+      .toBe('toast-1');
+  });
+
   it('evicts the oldest toast (and clears its timer) beyond maxVisible', () => {
     const { fake, timers, toasts } = mount({ maxVisible: 2 });
     notifyListener(fake)(notifyEvent('one'));
@@ -323,6 +419,54 @@ describe('D-169 P2 Slice 5 notify toasts', () => {
     // The evicted toast's timer was cleared so it can't fire later.
     expect(timers.clearedCount()).toBe(1);
     expect(timers.scheduledCount()).toBe(2);
+  });
+
+  it('evicts the oldest non-focused toast when a burst reaches the cap', () => {
+    const document = makeFakeDocument();
+    const { host, fake, toasts } = mount({
+      document: document as unknown as Document,
+      durationMs: 0,
+      maxVisible: 2,
+    });
+    notifyListener(fake)(notifyEvent('one'));
+    notifyListener(fake)(notifyEvent('two'));
+    const firstCard = findAllByAttr(host, NOTIFY_TOAST_ATTR, 'toast-1')[0]!;
+    document.activeElement = findAllByAttr(
+      host,
+      NOTIFY_TOAST_DISMISS_ATTR,
+      'toast-1',
+    )[0]!;
+
+    notifyListener(fake)(notifyEvent('three'));
+
+    expect(toasts.getToasts().map((toast) => toast.id)).toEqual([
+      'toast-1',
+      'toast-3',
+    ]);
+    expect(findAllByAttr(host, NOTIFY_TOAST_ATTR).map((card) =>
+      card.getAttribute(NOTIFY_TOAST_ATTR))).toEqual(['toast-3', 'toast-1']);
+    expect(findAllByAttr(host, NOTIFY_TOAST_ATTR, 'toast-1')[0]).toBe(firstCard);
+  });
+
+  it('hands focus to the replacement when a one-toast cap must evict it', () => {
+    const document = makeFakeDocument();
+    const { host, fake, toasts } = mount({
+      document: document as unknown as Document,
+      durationMs: 0,
+      maxVisible: 1,
+    });
+    notifyListener(fake)(notifyEvent('one'));
+    document.activeElement = findAllByAttr(
+      host,
+      NOTIFY_TOAST_DISMISS_ATTR,
+      'toast-1',
+    )[0]!;
+
+    notifyListener(fake)(notifyEvent('two'));
+
+    expect(toasts.getToasts().map((toast) => toast.id)).toEqual(['toast-2']);
+    expect(document.activeElement?.getAttribute(NOTIFY_TOAST_DISMISS_ATTR))
+      .toBe('toast-2');
   });
 
   it('does not schedule an auto-dismiss timer when durationMs <= 0', () => {

@@ -475,6 +475,12 @@ export const mountRecipeDiscovery = (
         void refreshInstalled();
         void refreshRoster();
       },
+      // The browse panel repaints its busy action once the handoff returns, so
+      // the DOM node the focus trap originally saw is detached before this
+      // dialog closes. Resolve the current action/card receipt by recipe id.
+      returnFocus: (recipeId) => {
+        panel.focusAction(recipeId);
+      },
       serviceKindLabel: (k) => SERVICE_KIND_LABEL[k] ?? k,
     });
   }

@@ -104,6 +104,56 @@ const readThroughTodoistCatalog = (): IngredientManifest => ({
   work_entity_sources: [READ_THROUGH_TODOIST_SOURCE],
 });
 
+const MCP_PROJECT_SOURCE: WorkEntitySourceDeclaration = {
+  kind: 'project',
+  source_id_template: 'recued-peer.${connection_id}.project',
+  source_label_template: 'Federated peer (${connection_name})',
+  source_kind: 'connection',
+  remote: {
+    entity: 'project',
+    id: 'id',
+    version: { kind: 'updated_at', field: 'updated_at' },
+    hash_fields: ['title', 'state', 'updated_at'],
+  },
+  ops: { list: 'project.list', read: 'project.read' },
+  op_bindings: { read: { id_arg: 'id' } },
+  sync: { posture: 'read_through', mode: 'read_only', depth: 'meta' },
+  read_resolution: {
+    default: 'source',
+    wild_query: {
+      remote_fanout: 'bounded_targeted',
+      max_sources: 1,
+      max_remote_records: 10,
+      on_exceeds_cap: 'ask_to_narrow',
+    },
+  },
+  projection: { canonical: { title: 'title', state: 'state' } },
+};
+
+const mcpProjectCatalog = (): IngredientManifest => ({
+  slug: 'federated-peer-source-boot-test',
+  name: 'Federated peer Source boot test',
+  description: 'Minimal MCP catalog fixture for Source reconciliation.',
+  author: 'recued-core',
+  kind: 'connection',
+  version: 1,
+  category: 'data',
+  risk_tier: 'read',
+  tags: ['test'],
+  input: {},
+  output: {},
+  operations: {},
+  surfaces: {
+    api: {
+      transport: 'mcp',
+      default_base_url: '',
+      auth: { kind: 'none' },
+      executes: {},
+    },
+  },
+  work_entity_sources: [MCP_PROJECT_SOURCE],
+});
+
 const upsertHubSpotConnection = (
   cs: ReturnType<typeof createConnectionStore>,
   name: string,
@@ -209,6 +259,32 @@ describe('autoRegisterRecuedBuiltinSources', () => {
 // ────────────────────────────────────────────────────────────────
 
 describe('wireWorkEntitySourceBoot — boot scan', () => {
+  it('registers a pack-declared read-through Source for an existing MCP connection', () => {
+    const cs = createConnectionStore(db);
+    cs.upsert({
+      kind: 'mcp',
+      name: 'peer-west',
+      display_name: 'Peer west',
+      config_json: JSON.stringify({ project_ref: 'project-west' }),
+      auth_ciphertext: 'CIPHER',
+      enrolled_at: NOW,
+      updated_at: NOW,
+    });
+    wireWorkEntitySourceBoot({
+      connectionStore: cs,
+      store,
+      resolveCatalogManifest: () => mcpProjectCatalog(),
+      now: () => NOW,
+    });
+
+    expect(store.getSource('recued-peer.peer-west.project')).toMatchObject({
+      top_tier_kind: 'project',
+      source_kind: 'connection',
+      sync_posture: 'read_through',
+      write_capable: false,
+    });
+  });
+
   it('registers a task Source for every existing HubSpot connection', () => {
     const cs = createConnectionStore(db);
     upsertHubSpotConnection(cs, 'acme');
@@ -325,7 +401,7 @@ describe('wireWorkEntitySourceBoot — upsert observer', () => {
     ).toHaveLength(0);
   });
 
-  it('non-api kind upsert is a no-op', () => {
+  it('an unbound MCP upsert is a no-op', () => {
     const cs = createConnectionStore(db);
     wireWorkEntitySourceBoot({ connectionStore: cs, store });
     cs.upsert({
@@ -363,6 +439,34 @@ describe('wireWorkEntitySourceBoot — upsert observer', () => {
     expect(
       store.getSource(CONNECTION_SOURCE_ID('hubspot', 'acme', 'task')),
     ).not.toBeNull();
+  });
+
+  it('same-name API and MCP rows retain their independently-owned Sources', () => {
+    const cs = createConnectionStore(db);
+    const catalog = mcpProjectCatalog();
+    wireWorkEntitySourceBoot({
+      connectionStore: cs,
+      store,
+      resolveCatalogManifest: () => catalog,
+      now: () => NOW,
+    });
+    upsertHubSpotConnection(cs, 'shared');
+    cs.upsert({
+      kind: 'mcp',
+      name: 'shared',
+      display_name: 'Peer shared',
+      config_json: JSON.stringify({ project_ref: 'project-shared' }),
+      auth_ciphertext: 'CIPHER',
+      enrolled_at: NOW,
+      updated_at: NOW,
+    });
+
+    expect(store.getSource('hubspot.shared.task')).not.toBeNull();
+    expect(store.getSource('recued-peer.shared.project')).not.toBeNull();
+
+    cs.delete('mcp', 'shared');
+    expect(store.getSource('recued-peer.shared.project')).toBeNull();
+    expect(store.getSource('hubspot.shared.task')).not.toBeNull();
   });
 });
 

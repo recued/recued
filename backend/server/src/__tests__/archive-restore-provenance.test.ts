@@ -5,7 +5,7 @@
  *     restore's passport, OR drops a prior restore's stale marker when this
  *     archive carries no (parseable) passport (Codex S1 HIGH), and degrades a
  *     write FAILURE to no-marker rather than stale-marker (Codex S1 MEDIUM,
- *     pinned with an injected `writeFileSync` failure).
+ *     pinned with an injected writer failure).
  *   - `commitRestoreProvenanceAtBoot` — records the old→new lineage from a
  *     real signed passport, no-ops on a same-identity (same-realm) restore,
  *     and is fail-open: it CLEARS the marker in every outcome (recorded /
@@ -16,21 +16,6 @@
  *  marker JSON round-trip is proven to preserve a verifiable passport. */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-
-// Wrap `writeFileSync` so one test can deterministically simulate a marker
-// write failure (ENOSPC / EACCES) while every other fs op passes through.
-let failWrites = false;
-vi.mock('node:fs', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('node:fs')>();
-  return {
-    ...actual,
-    default: actual,
-    writeFileSync: (...args: Parameters<typeof actual.writeFileSync>) => {
-      if (failWrites) throw new Error('ENOSPC: simulated marker write failure');
-      return actual.writeFileSync(...args);
-    },
-  };
-});
 
 import {
   existsSync,
@@ -182,7 +167,6 @@ const collectingAudit = (): { audit: PassportAuditEmitter; rows: ActivityEntry[]
 
 let dir: string;
 beforeEach(() => {
-  failWrites = false;
   dir = mkdtempSync(join(tmpdir(), 'recued-restore-prov-'));
 });
 afterEach(() => {
@@ -245,11 +229,15 @@ describe('stageRestoreProvenanceMarker', () => {
     // A's marker BEFORE the failing write, so the outcome is NO provenance
     // rather than A's stale passport committed against B's db.
     const warn = vi.fn();
-    failWrites = true;
     expect(() =>
-      stageRestoreProvenanceMarker(dir, fakePassportBytes('B'), { now: () => 2, warn }),
+      stageRestoreProvenanceMarker(dir, fakePassportBytes('B'), {
+        now: () => 2,
+        warn,
+        writeMarker: () => {
+          throw new Error('ENOSPC: simulated marker write failure');
+        },
+      }),
     ).not.toThrow();
-    failWrites = false;
     expect(existsSync(restoreProvenanceMarkerPath(dir))).toBe(false);
     expect(warn).toHaveBeenCalled();
   });

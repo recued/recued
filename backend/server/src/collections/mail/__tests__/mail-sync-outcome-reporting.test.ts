@@ -15,7 +15,7 @@ import type { CollectionAuthState, FileCollectionCaps } from '@recued/contracts'
 import { createStorageGate } from '@recued/storage-gate';
 import { createWarehouseEventBus } from '@recued/warehouse-events';
 
-import { createBlobStore } from '../../../storage/blob-store.js';
+import { createBlobStore, type BlobStore } from '../../../storage/blob-store.js';
 import {
   createInstanceStore,
   type CollectionInstanceStore,
@@ -128,6 +128,8 @@ interface HarnessOptions {
   provider?: FakeProviderOptions;
   initialAuthState?: CollectionAuthState;
   withInstances?: boolean;
+  failBlobPut?: boolean;
+  blobPutGate?: { started(): void; wait: Promise<void> };
 }
 
 interface Harness {
@@ -156,9 +158,21 @@ const newHarness = (opts: HarnessOptions = {}): Harness => {
   });
 
   const provider = makeFakeProvider(opts.provider);
+  const baseBlobs = createBlobStore(join(dir, 'blobs'));
+  const blobs: BlobStore = opts.failBlobPut || opts.blobPutGate
+    ? {
+        ...baseBlobs,
+        async put(bytes) {
+          if (opts.failBlobPut) throw new Error('blob store unavailable');
+          opts.blobPutGate?.started();
+          await opts.blobPutGate?.wait;
+          return baseBlobs.put(bytes);
+        },
+      }
+    : baseBlobs;
   const collection = createMailCollection({
     db,
-    blobs: createBlobStore(join(dir, 'blobs')),
+    blobs,
     gate: createStorageGate({
       quota: BIG_QUOTA,
       reservePct: 10,
@@ -206,6 +220,41 @@ afterEach(async () => {
 });
 
 describe('MailCollection sync-outcome reporting', () => {
+  it('rejects a live delivery when durable body storage fails', async () => {
+    const h = withHarness({ failBlobPut: true });
+    await h.collection.sync.start();
+
+    await expect(h.provider.deliver({
+      ...message('blob-failure'),
+      body_text: 'x'.repeat(70 * 1024),
+    })).rejects.toThrow('blob store unavailable');
+
+    expect(h.collection.list({ platform: 'mail', slug: SLUG })).toEqual([]);
+    expect(h.collection.health().error_count_24h).toBeGreaterThan(0);
+  });
+
+  it('does not acknowledge a body write that outlives its sync generation', async () => {
+    let release!: () => void;
+    let markStarted!: () => void;
+    const wait = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { markStarted = resolve; });
+    const h = withHarness({
+      blobPutGate: { started: markStarted, wait },
+    });
+    await h.collection.sync.start();
+    const delivering = h.provider.deliver({
+      ...message('stale-generation'),
+      body_text: 'x'.repeat(70 * 1024),
+    });
+    await started;
+
+    await h.collection.sync.stop();
+    release();
+
+    await expect(delivering).rejects.toThrow('generation is no longer active');
+    expect(h.collection.list({ platform: 'mail', slug: SLUG })).toEqual([]);
+  });
+
   describe('connect failure classification', () => {
     it.each([
       {

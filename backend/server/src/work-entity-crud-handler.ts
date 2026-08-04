@@ -53,6 +53,7 @@ import {
   type WorkEntityStore,
 } from './storage/work-entity-store.js';
 import type { WorkEntityEdgeStore } from './storage/work-entity-edge-store.js';
+import { readThroughSourceIds } from './work-entity-read-resolution.js';
 import {
   WorkEntityResolverError,
   type WorkEntityResolver,
@@ -274,8 +275,25 @@ export const handleWorkEntityList = async (
     const listQuery: WorkEntityListQuery = { ...filters };
     if (args.limit !== undefined) listQuery.limit = args.limit;
     if (args.offset !== undefined) listQuery.offset = args.offset;
-    const entities = deps.resolver.listByKind(kind, listQuery);
-    const total = deps.store.countByKind(kind, filters);
+    // A read_through Source materializes no canonical rows. Scoping the list
+    // to one cannot be answered here, and an empty list would read as "no
+    // records" — the freshness block below still reports the Source as
+    // present, so the two halves would contradict each other.
+    const readThrough = readThroughSourceIds(deps.store.listSources());
+    if (args.source_id !== undefined && readThrough.has(args.source_id)) {
+      throw new RpcError(
+        'bad_request',
+        `work_entity.list: source '${args.source_id}' is read_through and keeps no local rows — `
+          + 'it is read on demand through its provider operations, not the canonical tables',
+      );
+    }
+    // Defensive residue filter, matching `work.search` and the recipe-callable
+    // list: an interrupted posture migration must never serve rows the
+    // declaration says do not exist. `total` stays on the same basis.
+    const rows = deps.resolver.listByKind(kind, listQuery);
+    const entities = rows.filter((entity) => !readThrough.has(entity.source_id));
+    const total = deps.store.countByKind(kind, filters)
+      - (rows.length - entities.length);
     // D-192 read resolution — per-Source freshness for the query's
     // scope (same filter composition as the rows), so the client
     // renders staleness honestly (a poll mirror may trail the vendor).

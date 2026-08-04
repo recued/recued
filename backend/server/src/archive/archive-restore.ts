@@ -34,13 +34,14 @@
  *    2. Write blobs FIRST — content-addressed + additive, so the db only
  *       references bytes that already exist on disk. The db streams to a
  *       SIDE path (temp / staging), never to `dbPath`, during this phase.
- *    3. Write config atomically, backing up the old one first.
+ *    3. Stage config beside its live path; keep the old config readable until
+ *       the database commit point decides which version wins.
  *    4. Stage the archive's D-212 bundle sidecar + a same-dir swap marker,
  *       then move the existing db, WAL/SHM, and bundle to backup paths.
  *    5. Rename the verified temp/staging db onto `dbPath` — the commit point —
- *       then publish its matching bundle and clear the marker. If the process
- *       dies in that two-file window, the next boot deterministically rolls
- *       back while the staged db remains or completes forward once it does not.
+ *       then publish its matching config + bundle and clear the marker. If the
+ *       process dies in that multi-file window, the next boot deterministically
+ *       rolls back while the staged db remains or completes forward once it does not.
  *       A wrong key / tamper aborts before this swap, leaving at most harmless
  *       content-addressed CAS orphans the sweep reaps.
  *
@@ -58,10 +59,9 @@ import {
   readdirSync,
   renameSync,
   unlinkSync,
-  writeFileSync,
 } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { basename, dirname, join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { finished } from 'node:stream/promises';
 import type Database from 'better-sqlite3';
 import {
@@ -267,28 +267,6 @@ const makeFileSink = (destPath: string, opts: { durable?: boolean } = {}): FileS
     },
     destroy: () => { ws.destroy(); },
   };
-};
-
-/** Write `data` to `destPath` via a same-dir temp file + atomic rename,
- *  mirroring `blob-store`'s publish discipline: a crash / ENOSPC mid-write
- *  strands at most a `.tmp-restore-*` file, never a torn config. Used for
- *  the small config record; the db streams via `makeFileSink`. */
-const atomicWriteFile = (destPath: string, data: Buffer): void => {
-  const dir = dirname(destPath);
-  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
-  const tmpPath = join(
-    dir,
-    `.tmp-restore-${basename(destPath)}-${randomBytes(8).toString('hex')}`,
-  );
-  try {
-    writeFileSync(tmpPath, data);
-    fsyncFile(tmpPath);
-    renameSync(tmpPath, destPath);
-    fsyncDir(dir);
-  } catch (err) {
-    try { unlinkSync(tmpPath); } catch { /* never landed — best effort */ }
-    throw err;
-  }
 };
 
 /** Overlay ONE blob into the CAS via a target store, content-addressed +
@@ -992,46 +970,6 @@ export const previewToTempDb = async (
 const ourSwapLeftAMarker = (dbPath: string, markerBefore: boolean): boolean =>
   existsSync(resolveServerBundleSwapMarkerPath(dbPath)) && !markerBefore;
 
-/** Put `config.toml` back after a failed swap.
- *
- *  Config is written BEFORE the journaled pair swap (it is independent of it),
- *  so a swap that then fails leaves the archive's config live over a database
- *  that was never replaced — a mismatch the operator never asked for and gets
- *  no report of. Restore is meant to be all-or-nothing at the point it can
- *  still be: if there was a prior config we copy the backup back, and if there
- *  was none we remove the file the restore introduced.
- *
- *  Best-effort by construction — this runs on an error path, and failing here
- *  would replace the caller's real error with a worse one. The backup keeps its
- *  `.bak-<stamp>` name either way, so nothing is unrecoverable. */
-const rollBackConfigRecord = (
-  configPath: string | null,
-  cfg: { written: boolean; backup: string | null },
-): void => {
-  if (!cfg.written || !configPath) return;
-  try {
-    if (cfg.backup) copyFileSync(cfg.backup, configPath);
-    else if (existsSync(configPath)) unlinkSync(configPath);
-  } catch { /* the .bak- copy survives under its own name */ }
-};
-
-/** Write the archive's config (atomic), backing up the old one first.
- *  Returns whether config was written + the config-backup path (or null). */
-const writeConfigRecord = (
-  configPath: string | null,
-  config: Buffer | undefined,
-  stamp: string,
-): { written: boolean; backup: string | null } => {
-  if (!config || !configPath) return { written: false, backup: null };
-  let backup: string | null = null;
-  if (existsSync(configPath)) {
-    backup = `${configPath}.bak-${stamp}`;
-    copyFileSync(configPath, backup); // copy: no window with config absent
-  }
-  atomicWriteFile(configPath, config);
-  return { written: true, backup };
-};
-
 /** Restore an archive into a STOPPED server's `data_path` (the offline
  *  `archive` CLI path). Streams the archive — see the module header for the
  *  step-by-step safety contract. Throws `ARCHIVE_RESTORE_SERVER_LIVE`
@@ -1075,12 +1013,16 @@ export const applyRestore = async (
   // It has to be HERE, ahead of the stream: reconciling any later means our own
   // overlay has already parked blobs in the same CAS, and an older
   // transaction's rollback cannot then be told apart from ours.
-  const settled = reconcileServerBundleSwap(dbPath, (committed) => {
-    // A FOREIGN transaction's parks — ours do not exist yet, which is exactly
-    // why this runs before the stream. The CAS walk is the only way to reach
-    // them: an interrupted restore left no in-process list behind.
-    return reclaimDisplacedBlobs(dataPath, committed).complete;
-  });
+  const settled = reconcileServerBundleSwap(
+    dbPath,
+    (committed) => {
+      // A FOREIGN transaction's parks — ours do not exist yet, which is exactly
+      // why this runs before the stream. The CAS walk is the only way to reach
+      // them: an interrupted restore left no in-process list behind.
+      return reclaimDisplacedBlobs(dataPath, committed).complete;
+    },
+    { configPath },
+  );
   // ⛔ A verdict is not a clean slate. `retired: false` means the pair WAS
   // repaired but a park could not be resolved, so the marker was deliberately
   // kept for the next boot to finish. Starting a restore on top of that streams
@@ -1128,11 +1070,9 @@ export const applyRestore = async (
   // Snapshot BEFORE the swap so the catch can tell our own failed recovery from
   // a foreign journal — see `ourSwapLeftAMarker`.
   const markerBefore = existsSync(resolveServerBundleSwapMarkerPath(dbPath));
-  let cfg: { written: boolean; backup: string | null } = { written: false, backup: null };
   let swap: ReturnType<typeof commitPreparedServerBundleSwap>;
   try {
-    // ── 4. Config is independent; db + bundle form one journaled pair ──
-    cfg = writeConfigRecord(configPath, streamed.config, stamp);
+    // ── 4. Config + db + bundle share one durable commit verdict ──
     const prepared = prepareServerBundleSwap({
       dbPath,
       stagingDbPath: restoreTmp,
@@ -1140,6 +1080,8 @@ export const applyRestore = async (
       ...(streamed.serverVaultBundle !== undefined
         ? { nextBundle: streamed.serverVaultBundle }
         : {}),
+      configPath,
+      ...(streamed.config !== undefined ? { nextConfig: streamed.config } : {}),
     });
     // ── 5. Journaled commit: old pair aside, db commit point, new bundle ──
     // The parks ride the journal: their fate is this swap's verdict, and the
@@ -1162,14 +1104,9 @@ export const applyRestore = async (
     if (!ourSwapLeftAMarker(dbPath, markerBefore)) {
       discardStagedRestore(restoreTmp, streamed.displacedBlobs);
     }
-    // The db was NOT replaced, so the archive's config must not stay live over
-    // it. Independent of the staging decision above: that one is about evidence
-    // boot needs, this one is about not leaving a mismatched pair behind.
-    rollBackConfigRecord(configPath, cfg);
     throw err;
   }
   const backups = [...swap.backups];
-  if (cfg.backup) backups.push(cfg.backup);
 
   // Commit landed — stage the embedded passport (if any) so the next server
   // boot records the migration provenance (M5 S1). Offline restore is the
@@ -1184,7 +1121,7 @@ export const applyRestore = async (
     restored_at: startedAt,
     db_bytes: streamed.db_bytes,
     blob_count: streamed.blob_count,
-    config_written: cfg.written,
+    config_written: swap.configWritten,
     db_backup_path: swap.dbBackupPath,
     backups,
   };
@@ -1298,7 +1235,6 @@ export const commitStagedRestore = async (
 
   const stamp = makeBackupStamp(startedAt);
   const markerBefore = existsSync(resolveServerBundleSwapMarkerPath(dbPath));
-  let cfg: { written: boolean; backup: string | null } = { written: false, backup: null };
   let swap: ReturnType<typeof commitPreparedServerBundleSwap>;
   try {
     // `commitStagedRestore` is exported, so retain the sidecar shape gate even
@@ -1306,7 +1242,6 @@ export const commitStagedRestore = async (
     if (staged.serverVaultBundle !== undefined) {
       serverBundleFromJSON(staged.serverVaultBundle.toString('utf8'));
     }
-    cfg = writeConfigRecord(configPath, staged.config, stamp);
     const prepared = prepareServerBundleSwap({
       dbPath,
       stagingDbPath: stagingPath,
@@ -1314,6 +1249,8 @@ export const commitStagedRestore = async (
       ...(staged.serverVaultBundle !== undefined
         ? { nextBundle: staged.serverVaultBundle }
         : {}),
+      configPath,
+      ...(staged.config !== undefined ? { nextConfig: staged.config } : {}),
     });
     // As offline: the parks belong to the journal, because only the marker
     // records the verdict they are waiting on.
@@ -1332,12 +1269,10 @@ export const commitStagedRestore = async (
     if (!ourSwapLeftAMarker(dbPath, markerBefore)) {
       discardStagedRestore(stagingPath, staged.displacedBlobs);
     }
-    rollBackConfigRecord(configPath, cfg);
     throw err;
   }
   // Parks: reaped inside the commit, under the marker — see the offline path.
   const backups = [...swap.backups];
-  if (cfg.backup) backups.push(cfg.backup);
 
   // Clean up any staging sidecars a read-only count handle may have left.
   for (const suffix of WAL_SIDECAR_SUFFIXES) {
@@ -1355,7 +1290,7 @@ export const commitStagedRestore = async (
     restored_at: startedAt,
     db_bytes: staged.db_bytes,
     blob_count: staged.blob_count,
-    config_written: cfg.written,
+    config_written: swap.configWritten,
     db_backup_path: swap.dbBackupPath,
     backups,
   };

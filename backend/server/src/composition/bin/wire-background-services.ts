@@ -15,11 +15,9 @@
  *                      with an async `stop` closure that reads its underlying `let xHandle`
  *                      binding at call time so maintenance enter → exit re-creates pick up
  *                      cleanly.
- *    - `'emitter'`   — fire-and-forget emitters. Slot is preserved for future
- *                      emitter-shaped services; no live entries today (the cloud Go
- *                      heartbeat relay retired in D-148 P10 and the server-side emitter
- *                      retired alongside it — `last_seen_at` folds into the DDNS update
- *                      side-effect per § A.14).
+ *    - `'emitter'`   — tracked asynchronous side effects whose admission lives
+ *                      outside an interval, including update-boot reconciliation
+ *                      and inbound-token callback-retirement drains.
  *
  *  Three stop pathways consume the registry:
  *

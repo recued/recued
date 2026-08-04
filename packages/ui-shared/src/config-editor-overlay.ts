@@ -81,6 +81,12 @@ const CONFIG_EDITOR_STYLES = `
 }
 .config-editor-title { margin: 0; font-size: 15px; font-weight: 600; }
 .config-editor-copy { margin: 0; font-size: 12px; color: var(--muted); }
+.config-editor-error {
+  margin: 0;
+  font-size: 12px;
+  color: var(--danger, #b42318);
+}
+.config-editor-error[hidden] { display: none; }
 .config-editor-fields { display: grid; gap: 12px; }
 .config-editor-actions { display: flex; justify-content: flex-end; }
 .config-editor-button {
@@ -96,6 +102,10 @@ const CONFIG_EDITOR_STYLES = `
   background: var(--accent);
   color: var(--on-accent, #fff);
   border-color: var(--accent);
+}
+.config-editor-button[aria-disabled="true"] {
+  cursor: wait;
+  opacity: 0.72;
 }
 .config-editor-panel .var-row { display: grid; gap: 4px; }
 .config-editor-panel .var-row-inline { display: block; }
@@ -149,6 +159,10 @@ export interface ConfigEditorOverlayOptions {
   copy?: string;
   /** Confirm-button label ("Save" / "Resume" / …). */
   confirmLabel: string;
+  /** Busy label while an async confirmation is settling. */
+  confirmingLabel?: string;
+  /** Safe inline copy when an async confirmation rejects. */
+  confirmFailureCopy?: string;
   /** The recipe's variable DEFINITIONS (drives the widgets). */
   variables: Record<string, VariableDefault>;
   /** Current overlay to pre-fill from + the base the edits accumulate onto. */
@@ -164,14 +178,17 @@ export interface ConfigEditorOverlayOptions {
    *  tenancy names a customer AND a unit), so a single caller would have to
    *  guess which inventory the box means. */
   recordRefSearch?: RecordRefVariableSearch;
-  /** Fired on confirm with the collected config. The host persists it. */
-  onConfirm: (config: Record<string, unknown>) => void;
+  /** Fired on confirm with a snapshot of the collected config. A returned
+   * promise keeps the editor open, locked, and focus-owned until it settles. */
+  onConfirm: (config: Record<string, unknown>) => void | Promise<void>;
   /** Fired after the overlay detaches (any path) — host cleanup. */
   onClose?: () => void;
 }
 
 export interface ConfigEditorOverlayHandle {
   element: HTMLElement;
+  /** True while an async confirmation has no terminal result yet. */
+  hasInFlightWork(): boolean;
   /** Detach the overlay + release its trap. Idempotent. Fires `onClose`. */
   destroy: () => void;
 }
@@ -204,7 +221,7 @@ export const wireConfigEditorOverlay = (
   const overlay = doc.createElement('div');
   overlay.className = 'config-editor-overlay';
   overlay.innerHTML = `
-    <section class="config-editor-panel" role="dialog" aria-modal="true"
+    <section class="config-editor-panel" role="dialog" aria-modal="true" tabindex="-1"
       aria-label="Edit config">
       <header class="config-editor-header">
         <h2 class="config-editor-title">${e(opts.title)}</h2>
@@ -212,6 +229,7 @@ export const wireConfigEditorOverlay = (
       </header>
       ${opts.copy !== undefined ? `<p class="config-editor-copy">${e(opts.copy)}</p>` : ''}
       <div class="config-editor-fields">${widgetRows}</div>
+      <p class="config-editor-error" role="alert" hidden></p>
       <div class="config-editor-actions">
         <button type="button" class="config-editor-button config-editor-button--primary"
           ${ACTION_ATTR}="confirm">${e(opts.confirmLabel)}</button>
@@ -222,6 +240,7 @@ export const wireConfigEditorOverlay = (
   const refPickers: RefPickerHandle[] = [];
   const fileRefArrays: FileRefArrayHandle[] = [];
   let destroyed = false;
+  let confirming = false;
 
   const destroy = (): void => {
     if (destroyed) return;
@@ -237,6 +256,7 @@ export const wireConfigEditorOverlay = (
   };
 
   const onInput = (ev: Event): void => {
+    if (confirming) return;
     const t = ev.target as HTMLElement | null;
     const key = t?.dataset.varKey;
     if (t !== null && key !== undefined && key.length > 0) {
@@ -245,18 +265,117 @@ export const wireConfigEditorOverlay = (
   };
   overlay.addEventListener('input', onInput);
   overlay.addEventListener('change', onInput);
+
+  // Some route unit rigs deliberately provide a minimal DOM without selector
+  // APIs. Synchronous confirms still work there; ownership controls activate
+  // in real DOM hosts where the rendered elements can be addressed.
+  const queryOverlay = <T extends Element>(selector: string): T | null =>
+    typeof overlay.querySelector === 'function'
+      ? overlay.querySelector<T>(selector)
+      : null;
+  const panel = queryOverlay<HTMLElement>('.config-editor-panel');
+  const fields = queryOverlay<HTMLElement>('.config-editor-fields');
+  const confirmButton = queryOverlay<HTMLButtonElement>(
+    `[${ACTION_ATTR}="confirm"]`,
+  );
+  const closeButton = queryOverlay<HTMLButtonElement>(
+    `[${ACTION_ATTR}="cancel"]`,
+  );
+  const error = queryOverlay<HTMLElement>('.config-editor-error');
+  type LockableControl =
+    | HTMLButtonElement
+    | HTMLInputElement
+    | HTMLSelectElement
+    | HTMLTextAreaElement;
+  const priorDisabled = new Map<LockableControl, boolean>();
+
+  const setConfirming = (next: boolean): void => {
+    confirming = next;
+    if (next) {
+      panel?.setAttribute('aria-busy', 'true');
+      for (const control of Array.from(
+        fields?.querySelectorAll<LockableControl>(
+          'button, input, select, textarea',
+        ) ?? [],
+      )) {
+        priorDisabled.set(control, control.disabled);
+        control.disabled = true;
+      }
+      confirmButton?.setAttribute('aria-disabled', 'true');
+      confirmButton?.setAttribute('aria-busy', 'true');
+      closeButton?.setAttribute('aria-disabled', 'true');
+      if (confirmButton !== null) {
+        confirmButton.textContent =
+          opts.confirmingLabel ?? `${opts.confirmLabel}…`;
+      }
+      return;
+    }
+    panel?.removeAttribute('aria-busy');
+    for (const [control, disabled] of priorDisabled) {
+      control.disabled = disabled;
+    }
+    priorDisabled.clear();
+    confirmButton?.removeAttribute('aria-disabled');
+    confirmButton?.removeAttribute('aria-busy');
+    closeButton?.removeAttribute('aria-disabled');
+    if (confirmButton !== null) confirmButton.textContent = opts.confirmLabel;
+  };
+
+  const showConfirmFailure = (): void => {
+    if (destroyed) return;
+    const active = doc.activeElement;
+    setConfirming(false);
+    if (error !== null) {
+      error.hidden = false;
+      error.textContent = opts.confirmFailureCopy
+        ?? "Couldn't save changes. Your edits are still here. Try again.";
+    }
+    if (active === confirmButton) {
+      confirmButton?.focus({ preventScroll: true });
+    }
+  };
+
+  const confirm = async (): Promise<void> => {
+    if (confirming) return;
+    if (error !== null) {
+      error.hidden = true;
+      error.textContent = '';
+    }
+    let outcome: void | Promise<void>;
+    try {
+      outcome = opts.onConfirm({ ...config });
+    } catch {
+      showConfirmFailure();
+      return;
+    }
+    if (
+      outcome === undefined
+      || typeof (outcome as PromiseLike<void>).then !== 'function'
+    ) {
+      destroy();
+      return;
+    }
+    setConfirming(true);
+    try {
+      await outcome;
+      destroy();
+    } catch {
+      showConfirmFailure();
+    }
+  };
+
   overlay.addEventListener('click', (ev) => {
     const actor = (ev.target as (Element & {
       closest?: (s: string) => Element | null;
     }) | null)?.closest?.(`[${ACTION_ATTR}]`);
     const action = actor?.getAttribute(ACTION_ATTR);
     if (action === 'cancel') {
+      if (confirming) return;
       destroy();
       return;
     }
     if (action === 'confirm') {
-      opts.onConfirm(config);
-      destroy();
+      void confirm();
     }
   });
   // Escape closes only this overlay — stop it before it reaches a parent
@@ -264,7 +383,7 @@ export const wireConfigEditorOverlay = (
   overlay.addEventListener('keydown', (ev) => {
     if ((ev as KeyboardEvent).key === 'Escape') {
       ev.stopPropagation();
-      destroy();
+      if (!confirming) destroy();
     }
   });
 
@@ -382,5 +501,9 @@ export const wireConfigEditorOverlay = (
   });
   trap.focusInitial();
 
-  return { element: overlay, destroy };
+  return {
+    element: overlay,
+    hasInFlightWork: () => !destroyed && confirming,
+    destroy,
+  };
 };

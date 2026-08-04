@@ -372,12 +372,23 @@ export const wireCatalogOperationProfiles = (
     }
   });
 
-  // 3. Deletions — revoke the grant. We no longer have the row, so the
-  //    vendor filter is implicit: a profile only ever exists under a
-  //    catalog-backed connection, and deleting an absent one is a no-op.
-  input.connectionStore.addOnDelete((kind, name) => {
-    if (kind !== 'api') return;
-    input.profileStore.delete(name);
+  // 3. Deletions — profiles are keyed by connection NAME while the durable
+  //    store is keyed by (kind, name). Revoke after the last same-name row is
+  //    gone; if another kind remains, re-derive it with registered-api
+  //    precedence. This covers local catalogs bound to MCP connections without
+  //    breaking the supported same-name API+MCP coexistence case.
+  input.connectionStore.addOnDelete((_kind, name) => {
+    const apiRow = input.connectionStore.get('api', name);
+    const hasRemainingConnection = apiRow !== null
+      || input.connectionStore.list().some((row) => row.name === name);
+    if (!hasRemainingConnection) {
+      input.profileStore.delete(name);
+      return;
+    }
+    const slug = apiRow
+      ? catalogForConnection(apiRow)
+      : input.connectionCatalogBindingStore?.resolveCatalogSlug(name);
+    seedProfileFor(name, slug);
   });
 
   return { reconcileConnectionProfile };

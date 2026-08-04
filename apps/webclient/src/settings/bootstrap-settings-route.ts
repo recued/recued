@@ -810,6 +810,14 @@ export interface SettingsRoute {
   /** User-started Settings work whose outcome is not known yet. This includes
    * multi-step local cleanup and server jobs that outlive their initial RPC. */
   hasInFlightWork(): boolean;
+  /** Unsaved child-panel drafts or unsettled Settings writes that should be
+   * acknowledged before the shell tears this route down. */
+  hasUnsavedChanges(): boolean;
+  /** Contextual copy for the shell's shared leave guard. */
+  unsavedChangesPrompt(): string | null;
+  /** Opts user-started Settings writes into the shell's in-flight leave
+   * guard without misclassifying them as unsaved drafts. */
+  inFlightWorkPrompt(): string | null;
   /** Expose the "This browser" clear-local-data panel mount for host /
    *  test introspection (DD#4). The Privacy section is a directory now;
    *  this is the one disposable local panel it hosts. */
@@ -1325,30 +1333,60 @@ export const bootstrapSettingsRoute = (
     const strip = doc.createElement('nav');
     strip.className = 'settings-subtabs';
     strip.setAttribute('role', 'tablist');
+    strip.setAttribute('aria-orientation', 'horizontal');
     const items: Array<{ id: string; btn: HTMLElement; panel: HTMLElement }> = [];
     const activate = (id: string): void => {
       for (const it of items) {
         const active = it.id === id;
         it.btn.setAttribute(SETTINGS_ROUTE_ACTIVE_ATTR, active ? 'true' : 'false');
         it.btn.setAttribute('aria-selected', active ? 'true' : 'false');
+        it.btn.setAttribute('tabindex', active ? '0' : '-1');
         it.panel.setAttribute(
           SETTINGS_ROUTE_ACTIVE_ATTR,
           active ? 'true' : 'false',
         );
       }
     };
+    const sectionId = section.getAttribute(SETTINGS_ROUTE_SECTION_ATTR)
+      ?? 'section';
     for (const tab of tabs) {
       const btn = doc.createElement('button');
       btn.setAttribute('type', 'button');
       btn.setAttribute('role', 'tab');
       btn.setAttribute(SETTINGS_ROUTE_SUBTAB_ATTR, tab.id);
+      const tabDomId = `recued-settings-${sectionId}-${tab.id}-tab`;
+      const panelDomId = `recued-settings-${sectionId}-${tab.id}-panel`;
+      btn.setAttribute('id', tabDomId);
+      btn.setAttribute('aria-controls', panelDomId);
       btn.className = 'settings-subtab';
       btn.textContent = tab.label;
       btn.addEventListener('click', () => activate(tab.id));
+      btn.addEventListener('keydown', (event) => {
+        const currentIndex = items.findIndex((item) => item.id === tab.id);
+        if (currentIndex < 0) return;
+        let nextIndex: number | null = null;
+        if (event.key === 'ArrowRight') {
+          nextIndex = (currentIndex + 1) % items.length;
+        } else if (event.key === 'ArrowLeft') {
+          nextIndex = (currentIndex - 1 + items.length) % items.length;
+        } else if (event.key === 'Home') {
+          nextIndex = 0;
+        } else if (event.key === 'End') {
+          nextIndex = items.length - 1;
+        }
+        if (nextIndex === null) return;
+        event.preventDefault();
+        const next = items[nextIndex]!;
+        activate(next.id);
+        next.btn.focus();
+      });
       strip.appendChild(btn);
       const panel = doc.createElement('div');
       panel.className = 'settings-subtabpanel';
       panel.setAttribute(SETTINGS_ROUTE_SUBTAB_PANEL_ATTR, tab.id);
+      panel.setAttribute('id', panelDomId);
+      panel.setAttribute('role', 'tabpanel');
+      panel.setAttribute('aria-labelledby', tabDomId);
       items.push({ id: tab.id, btn, panel });
       hosts[tab.id] = panel;
     }
@@ -2406,6 +2444,13 @@ export const bootstrapSettingsRoute = (
       if (active) el.setAttribute('aria-current', 'page');
       else el.removeAttribute('aria-current');
     }
+    // On narrow screens the rail is a horizontal overflow strip. A deep link
+    // to a later section (notably Server) otherwise activates content whose
+    // only location cue remains far outside the visible strip. Keep the active
+    // item in view for both deep links and in-page switches; `nearest` is a
+    // no-op when it is already visible and avoids disturbing page position.
+    const activeNavItem = navItems.find((item) => item.id === id)?.el;
+    activeNavItem?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
     if (behaviour.scroll) {
       const target = subviews.find((sv) => sv.id === id)?.section;
       if (target !== undefined) {
@@ -2457,6 +2502,13 @@ export const bootstrapSettingsRoute = (
     hasInFlightWork: () => {
       if (disposed) return false;
       if (panel.getState() === 'busy') return true;
+      if (notifications?.hasInFlightWork() === true) return true;
+      if (aiModels?.hasInFlightWork() === true) return true;
+      if (accountBinding?.hasInFlightWork() === true) return true;
+      if (devicesPage?.hasInFlightWork() === true) return true;
+      if (updatesPage?.hasInFlightWork() === true) return true;
+      if (learningPanel?.hasInFlightWork() === true) return true;
+      if (transparencyPanel?.hasInFlightWork() === true) return true;
       if (archiveBackup === null) return false;
       const archiveView = archiveBackup.getView();
       return archiveView === 'export-running'
@@ -2464,6 +2516,44 @@ export const bootstrapSettingsRoute = (
         || archiveView === 'restore-busy'
         || archiveView === 'passport-exporting'
         || archiveBackup.isDownloading();
+    },
+    hasUnsavedChanges: () => {
+      if (disposed) return false;
+      return notifications?.hasUnsavedChanges() === true
+        || learningPanel?.hasUnsavedChanges() === true;
+    },
+    unsavedChangesPrompt: () => {
+      if (disposed) return null;
+      if (notifications?.hasUnsavedChanges() === true) {
+        return 'Discard the unsaved notification verification phrase?';
+      }
+      return learningPanel?.hasUnsavedChanges() === true
+        ? 'Discard the finished recipe draft?'
+        : null;
+    },
+    inFlightWorkPrompt: () => {
+      if (disposed) return null;
+      if (notifications?.hasInFlightWork() === true) {
+        return 'A notification setting is still updating. Leave Settings anyway?';
+      }
+      if (aiModels?.hasInFlightWork() === true) {
+        return 'An AI model setting is still updating. Leave Settings anyway?';
+      }
+      if (accountBinding?.hasInFlightWork() === true) {
+        return 'An account setting is still updating. Leave Settings anyway?';
+      }
+      if (devicesPage?.hasInFlightWork() === true) {
+        return 'A device revoke is still updating. Leave Settings anyway?';
+      }
+      if (updatesPage?.hasInFlightWork() === true) {
+        return 'A server update change is still in progress. Leave Settings anyway?';
+      }
+      if (transparencyPanel?.hasInFlightWork() === true) {
+        return 'A transparency setting is still updating. Leave Settings anyway?';
+      }
+      return learningPanel?.hasInFlightWork() === true
+        ? 'A learning change is still updating. Leave Settings anyway?'
+        : null;
     },
     dispose: () => {
       if (disposed) return;

@@ -23,6 +23,7 @@
 
 import type {
   BulkPackInstallResultLike,
+  BulkPackManifest,
   ConnectionRequirement,
   EndpointCandidate,
   InstallAccessTier,
@@ -163,10 +164,20 @@ const INSTALL_FAILURE_COPY: Record<
  *  edges (Codex MINOR 4 fold): an unknown code (server/webclient version
  *  skew) surfaces the raw code in a generic message instead of rendering
  *  `undefined`; a missing code surfaces the generic unknown-failure line. */
-export const installFailureCopy = (code: string | undefined): string => {
-  if (code === undefined) return 'Install rejected: unknown failure.';
-  const known = INSTALL_FAILURE_COPY[code as keyof typeof INSTALL_FAILURE_COPY];
-  return known !== undefined ? known : `Install rejected: ${code}.`;
+export const installFailureCopy = (code: string | undefined, detail?: string): string => {
+  const head = code === undefined
+    ? 'Install rejected: unknown failure.'
+    : INSTALL_FAILURE_COPY[code as keyof typeof INSTALL_FAILURE_COPY]
+      ?? `Install rejected: ${code}.`;
+  // ⛔ The engine ships a SPECIFIC reason next to the code and this dropped it.
+  // "the manifest failed substrate validation" is unactionable; the message
+  // behind it was `recipe 'delete-billable-item': Tier-P op
+  // 'recued-core.billable-hours.entry.get' … has no resolved catalog binding`,
+  // which names the pack, the recipe, the step and the op. Recovering that took
+  // a server-side probe — a self-hoster has no such option, and the code alone
+  // told them nothing at all.
+  const extra = (detail ?? '').trim().replace(/^packs\.install:\s*/, '');
+  return extra === '' ? head : `${head} ${extra}`;
 };
 
 /** D-182 §7.1 (inc 5b.2) — the Access tier the install rpc will send for a
@@ -202,7 +213,13 @@ export const resolveInstallDialogAudience = (
 export interface PacksInstallDialogProps {
   /** DOM document seam (mirrors the panel's). */
   document: Document;
-  pack: PackListEntry;
+  /** ⛔ Must carry a `manifest`. The consent surface renders the pack's recipes,
+   *  grant model and body grants — none of which exist without one, and
+   *  `packs.list` now forwards it for INSTALLED packs only. The panel resolves an
+   *  uninstalled pack through `ensureDetailResolved` (→ `packs.resolveBySlug`,
+   *  bundled-first) before opening, so the requirement is stated here rather than
+   *  re-checked at three render sites. */
+  pack: PackListEntry & { manifest: BulkPackManifest };
   /** Slice C — this pack's recipe collisions (undefined / empty ⇒ no
    *  callout, no per-recipe markers). */
   collision: PackRecipeCollision | undefined;
@@ -328,6 +345,7 @@ export const renderPacksInstallDialog = (
   // impossible because the DD#2 single-row invariant means only one
   // dialog renders at a time.
   container.setAttribute('role', 'region');
+  container.tabIndex = -1;
   const headingId = `packs-dialog-heading-${pack.slug}`;
   container.setAttribute('aria-labelledby', headingId);
 
@@ -798,7 +816,15 @@ export const renderPacksInstallDialog = (
   // another row. Single-rpc-at-a-time per DD#10; without this gate
   // a user could submit a parallel install while a delete is
   // committing.
-  if (installing || props.deleting) installBtn.disabled = true;
+  if (installing) {
+    // The panel restores this semantic action after every repaint. Keep it
+    // focusable while the guarded submit is in flight so keyboard ownership
+    // does not fall back to the document body.
+    installBtn.setAttribute('aria-disabled', 'true');
+    installBtn.setAttribute('aria-busy', 'true');
+  } else if (props.deleting) {
+    installBtn.disabled = true;
+  }
   installBtn.addEventListener('click', () => {
     props.onSubmit();
   });
@@ -809,7 +835,7 @@ export const renderPacksInstallDialog = (
   cancelBtn.setAttribute(PACKS_DIALOG_CANCEL_BTN_ATTR, '');
   cancelBtn.className = 'rx-btn rx-btn-secondary rx-btn-sm packs-dialog-cancel';
   cancelBtn.textContent = DIALOG_COPY.cancel_label;
-  if (installing) cancelBtn.disabled = true;
+  if (installing) cancelBtn.setAttribute('aria-disabled', 'true');
   cancelBtn.addEventListener('click', () => {
     props.onCancel();
   });

@@ -294,6 +294,10 @@ export interface PacksRoute {
   packsPanel(): PacksPanelMount | null;
   cliGrantDialog(): CliGrantDialogMount | null;
   whenLoaded(): Promise<void>;
+  hasInFlightWork(): boolean;
+  inFlightWorkPrompt(): string | null;
+  hasUnsavedChanges(): boolean;
+  unsavedChangesPrompt(): string | null;
   getRecoveryContextFreshness(): 'current' | 'unavailable';
   /** Re-read the roster while preserving only the broad Packs landing. */
   retryRecoveryContext?(): Promise<void>;
@@ -481,6 +485,9 @@ export const bootstrapPacksRoute = (
     packsSurface = mountPacksSurface({
       root: packsHost,
       document: doc,
+      // The shell main owns route scrolling; list/detail are nested below it.
+      // Name it explicitly so a deep browse position can survive the detail.
+      scrollRoot: opts.root,
       mountList: (host, onSelect) =>
         mountPackDiscovery({
           host,
@@ -616,6 +623,14 @@ export const bootstrapPacksRoute = (
     packsPanel: () => packs,
     cliGrantDialog: () => cliGrantDialog,
     whenLoaded: () => packs?.whenLoaded() ?? Promise.resolve(),
+    hasInFlightWork: () => packs?.hasInFlightWork() === true,
+    inFlightWorkPrompt: () => packs?.hasInFlightWork() === true
+      ? 'A pack action is still in progress. Leave Packs anyway?'
+      : null,
+    hasUnsavedChanges: () => packs?.hasUnsavedChanges() === true,
+    unsavedChangesPrompt: () => packs?.hasUnsavedChanges() === true
+      ? 'This pack result has unsaved table changes. Leave Packs anyway?'
+      : null,
     getRecoveryContextFreshness: () =>
       packs !== null && packs.getListError() === null
         ? 'current'

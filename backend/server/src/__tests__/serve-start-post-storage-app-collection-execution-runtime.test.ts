@@ -268,6 +268,7 @@ describe('startPostBaseStorageVaultRuntime', () => {
       order.push('storage');
       expect(actualOptions).toEqual({
         dbPath: options.base.dbPath,
+        restoreJournalReconciled: true,
         bootTrace: options.base.bootTrace,
         runtimeConfig: options.base.runtimeConfig,
         vaultQuotas: options.base.vaultQuotas,
@@ -589,7 +590,9 @@ describe('start-post-storage-app-collection-execution-runtime source boundary', 
     expect(helperSource).toMatch(/options\.backgroundServices \?\? defaultBackgroundServices/);
     expect(helperSource).toMatch(/options\.schedulerRegistry \?\? defaultSchedulerRegistry/);
     expect(helperSource).toMatch(/startPostBaseStorageVaultRuntime/);
-    expect(helperSource).toMatch(/reconcileServerBundleSwap\(base\.dbPath, /);
+    expect(helperSource).toMatch(/reconcileServerBundleSwap\(\s*base\.dbPath,/);
+    expect(helperSource).toMatch(/sweepOrphanedRestoreStaging\(\s*base\.dbPath,/);
+    expect(helperSource).toMatch(/restoreJournalReconciled: true/);
     expect(helperSource).toMatch(/createServerBundleStore\(base\.dbPath\)/);
     expect(helperSource).toMatch(/serverBundleStore\.load\(\)/);
     expect(helperSource).toMatch(/await composeStorageContext\(\{/);
@@ -610,8 +613,9 @@ describe('start-post-storage-app-collection-execution-runtime source boundary', 
 
     const storageIndex = helperSource.indexOf('await composeStorageContext({');
     const bundleRecoveryIndex = helperSource.indexOf(
-      'reconcileServerBundleSwap(base.dbPath,',
+      'const bundleSwapRecovery = reconcileServerBundleSwap(',
     );
+    const stagingSweepIndex = helperSource.indexOf('sweepOrphanedRestoreStaging(');
     const bundleSidecarIndex = helperSource.indexOf(
       'createServerBundleStore(base.dbPath)',
     );
@@ -634,6 +638,8 @@ describe('start-post-storage-app-collection-execution-runtime source boundary', 
     expect(bundleRecoveryIndex).toBeGreaterThanOrEqual(0);
     expect(bundleSidecarIndex).toBeGreaterThan(bundleRecoveryIndex);
     expect(bundleLoadIndex).toBeGreaterThan(bundleSidecarIndex);
+    expect(stagingSweepIndex).toBeGreaterThan(bundleRecoveryIndex);
+    expect(storageIndex).toBeGreaterThan(stagingSweepIndex);
     expect(storageIndex).toBeGreaterThan(bundleLoadIndex);
     expect(bundleSidecarIndex).toBeGreaterThanOrEqual(0);
     expect(storageIndex).toBeGreaterThan(bundleSidecarIndex);

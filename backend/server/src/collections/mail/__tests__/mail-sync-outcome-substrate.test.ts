@@ -363,7 +363,7 @@ const newGmailHarness = (opts: {
 };
 
 describe('GmailProvider sync outcomes and stale history recovery', () => {
-  it('reports a stale history cursor as failed, clears it, then re-seeds next tick', async () => {
+  it('reports a stale history cursor as failed and replaces it only after a recovery scan', async () => {
     let historyCalls = 0;
     let profileCalls = 0;
     const h = newGmailHarness({
@@ -371,11 +371,17 @@ describe('GmailProvider sync outcomes and stale history recovery', () => {
       fetcher: async (url) => {
         if (url.includes('/history?')) {
           historyCalls++;
+          if (url.includes('startHistoryId=fresh-900')) {
+            return httpResponse(200, { history: [], historyId: 'fresh-900' });
+          }
           return httpResponse(404, { error: { message: 'Requested entity was not found.' } });
         }
         if (url.endsWith('/profile')) {
           profileCalls++;
           return httpResponse(200, { historyId: 'fresh-900', emailAddress: 'me@example.com' });
+        }
+        if (url.includes('/messages?')) {
+          return httpResponse(200, { messages: [] });
         }
         return httpResponse(500, { error: 'unexpected request', url });
       },
@@ -390,13 +396,14 @@ describe('GmailProvider sync outcomes and stale history recovery', () => {
       failure: 'transient',
       at: NOW,
     }]);
-    expect(h.store.data.has(GMAIL_HISTORY_KEY)).toBe(false);
+    expect(h.store.data.get(GMAIL_HISTORY_KEY)).toBe('fresh-900');
     expect(historyCalls).toBe(1);
+    expect(profileCalls).toBe(1);
 
     await h.tick();
 
     expect(profileCalls).toBe(1);
-    expect(historyCalls).toBe(1);
+    expect(historyCalls).toBe(2);
     expect(h.store.data.get(GMAIL_HISTORY_KEY)).toBe('fresh-900');
     expect(h.outcomes).toEqual([
       { phase: 'poll', ok: false, failure: 'transient', at: NOW },
@@ -519,14 +526,19 @@ class FakeImapClient extends EventEmitter implements ImapClient {
     _opts?: { uid?: boolean },
   ): AsyncIterable<FetchMessageObject> {
     if (this.state.fetchError !== undefined) throw this.state.fetchError;
-    const uids = Array.isArray(range) ? range : [];
     const messages = this.state.folders.get(this.path)?.messages ?? [];
-    for (const uid of uids) {
-      const message = messages.find((candidate) => candidate.uid === uid);
+    const selected = Array.isArray(range)
+      ? range.map((uid) => messages.find((candidate) => candidate.uid === uid))
+      : range.split(',').map((part) => {
+          const seq = Number.parseInt(part, 10);
+          return messages[seq - 1];
+        });
+    for (const message of selected) {
       if (!message) continue;
+      const seq = messages.indexOf(message) + 1;
       yield {
-        seq: uid,
-        uid,
+        seq,
+        uid: message.uid,
         source: message.source,
         flags: message.flags,
         internalDate: message.internalDate,
@@ -691,10 +703,10 @@ describe('ImapProvider per-attempt sync outcomes', () => {
     });
     await h.provider.connect();
 
-    await h.provider.initialScan({
+    await expect(h.provider.initialScan({
       backfill_days: 30,
       onMessage: async () => true,
-    });
+    })).rejects.toThrow('imap initial scan was incomplete');
 
     expect(h.outcomes).toEqual([{
       phase: 'initial_scan',

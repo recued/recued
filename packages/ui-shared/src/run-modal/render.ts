@@ -23,7 +23,7 @@ import {
 } from '../variable-widgets.js';
 
 import { parseRunConfig, plural, recipeDisplayName, runTargetGate } from './model.js';
-import type { RunModalState } from './types.js';
+import type { RunModalState, RunModalTab } from './types.js';
 
 // ── Attribute namespace (own, NOT the recipes-route `RECIPES_ROUTE_*`) ──
 export const RUN_MODAL_OVERLAY_ATTR = 'data-recued-run-modal';
@@ -244,7 +244,8 @@ const renderRunTab = (
       <div class="run-modal-actions">
         <button type="button" class="run-modal-button run-modal-button--primary"
           ${RUN_MODAL_ACTION_ATTR}="confirm-run"
-          ${state.executing || !caps.canExecute || !gate.assessment.ok ? 'disabled' : ''}>
+          ${!caps.canExecute || !gate.assessment.ok ? 'disabled' : ''}
+          ${state.executing ? 'aria-disabled="true" aria-busy="true"' : ''}>
           ${state.executing ? 'Running...' : 'Run'}
         </button>
       </div>
@@ -278,6 +279,9 @@ const renderScheduleRow = (
   showConfig: boolean,
 ): string => {
   const scheduleId = schedule.schedule_id;
+  const busyAttrs = mutating
+    ? ' aria-disabled="true" aria-busy="true"'
+    : '';
   return `
   <li class="run-modal-rule-row">
     <div>
@@ -289,15 +293,15 @@ const renderScheduleRow = (
     <div class="run-modal-actions">
       ${showConfig ? `<button type="button" class="run-modal-button"
         ${RUN_MODAL_ACTION_ATTR}="config-schedule"
-        ${RUN_MODAL_RULE_ID_ATTR}="${e(scheduleId)}"${mutating ? ' disabled' : ''}>Config</button>` : ''}
+        ${RUN_MODAL_RULE_ID_ATTR}="${e(scheduleId)}"${busyAttrs}>Config</button>` : ''}
       <button type="button" class="run-modal-button"
         ${RUN_MODAL_ACTION_ATTR}="toggle-schedule:${enabled ? 'off' : 'on'}"
-        ${RUN_MODAL_RULE_ID_ATTR}="${e(scheduleId)}"${mutating ? ' disabled' : ''}>${
+        ${RUN_MODAL_RULE_ID_ATTR}="${e(scheduleId)}"${busyAttrs}>${
           enabled ? 'Pause' : 'Resume'
         }</button>
       <button type="button" class="run-modal-button"
         ${RUN_MODAL_ACTION_ATTR}="remove-schedule"
-        ${RUN_MODAL_RULE_ID_ATTR}="${e(scheduleId)}"${mutating ? ' disabled' : ''}>Remove</button>
+        ${RUN_MODAL_RULE_ID_ATTR}="${e(scheduleId)}"${busyAttrs}>Remove</button>
     </div>
   </li>`;
 };
@@ -347,7 +351,7 @@ const renderScheduleTab = (
       <label class="run-modal-copy" for="run-modal-preset">Run on a schedule</label>
       <div class="run-modal-actions">
         <label class="run-modal-copy">
-          <input type="checkbox" ${RUN_MODAL_REPEAT_ATTR}
+          <input type="checkbox" id="run-modal-repeat" ${RUN_MODAL_REPEAT_ATTR}
             ${state.repeat ? 'checked' : ''} />
           Repeat
         </label>
@@ -359,7 +363,7 @@ const renderScheduleTab = (
              ${RUN_MODAL_RUN_AT_ATTR} value="${e(state.run_at_local)}"
              aria-label="Run once at" />`}
         <button type="button" class="run-modal-button run-modal-button--primary"
-          ${RUN_MODAL_ACTION_ATTR}="add-schedule"${state.mutating ? ' disabled' : ''}>
+          ${RUN_MODAL_ACTION_ATTR}="add-schedule"${state.mutating ? ' aria-disabled="true" aria-busy="true"' : ''}>
           ${state.repeat ? 'Add schedule' : 'Schedule once'}
         </button>
       </div>`;
@@ -390,6 +394,9 @@ const renderTriggerTab = (
     caps,
   );
   const hasVars = Object.keys(recipe.recipe.variables ?? {}).length > 0;
+  const busyAttrs = state.trigger_mutating
+    ? ' aria-disabled="true" aria-busy="true"'
+    : '';
   const rows = state.triggers
     .map((t) => `
   <li class="run-modal-rule-row">
@@ -402,17 +409,17 @@ const renderTriggerTab = (
     <div class="run-modal-actions">
       ${hasVars ? `<button type="button" class="run-modal-button"
         ${RUN_MODAL_ACTION_ATTR}="config-trigger"
-        ${RUN_MODAL_RULE_ID_ATTR}="${e(t.trigger_id)}"${state.trigger_mutating ? ' disabled' : ''}>Config</button>` : ''}
+        ${RUN_MODAL_RULE_ID_ATTR}="${e(t.trigger_id)}"${busyAttrs}>Config</button>` : ''}
       <button type="button" class="run-modal-button"
         ${RUN_MODAL_ACTION_ATTR}="toggle-trigger:${t.enabled ? 'off' : 'on'}"
-        ${RUN_MODAL_RULE_ID_ATTR}="${e(t.trigger_id)}"${state.trigger_mutating ? ' disabled' : ''}>${
+        ${RUN_MODAL_RULE_ID_ATTR}="${e(t.trigger_id)}"${busyAttrs}>${
           t.enabled ? 'Pause' : 'Resume'
         }</button>
       ${t.origin === 'recipe'
         ? ''
         : `<button type="button" class="run-modal-button"
         ${RUN_MODAL_ACTION_ATTR}="remove-trigger"
-        ${RUN_MODAL_RULE_ID_ATTR}="${e(t.trigger_id)}"${state.trigger_mutating ? ' disabled' : ''}>Remove</button>`}
+        ${RUN_MODAL_RULE_ID_ATTR}="${e(t.trigger_id)}"${busyAttrs}>Remove</button>`}
     </div>
   </li>`)
     .join('');
@@ -432,7 +439,9 @@ const renderTriggerTab = (
           ${RUN_MODAL_PATTERN_ATTR} value="${e(state.pattern_text)}"
           placeholder="e.g. data.mail.*" />
         <button type="button" class="run-modal-button run-modal-button--primary"
-          ${RUN_MODAL_ACTION_ATTR}="add-trigger"${state.trigger_mutating || state.pattern_text.trim().length === 0 ? ' disabled' : ''}>
+          ${RUN_MODAL_ACTION_ATTR}="add-trigger"${state.pattern_text.trim().length === 0
+            ? ' disabled'
+            : busyAttrs}>
           Add trigger
         </button>
       </div>`;
@@ -445,9 +454,15 @@ export const renderRunModal = (
   caps: RunModalCaps,
 ): string => {
   const title = recipeDisplayName(recipe);
+  const commandPending =
+    state.executing || state.mutating || state.trigger_mutating;
+  const tabId = (tab: RunModalTab): string => `recued-run-modal-${tab}-tab`;
+  const tabPanelId = 'recued-run-modal-tabpanel';
   const tabButton = (tab: 'run' | 'schedule' | 'trigger', label: string): string =>
     `<button type="button" class="run-modal-tab" role="tab"
+        id="${tabId(tab)}" aria-controls="${tabPanelId}"
         aria-selected="${state.tab === tab ? 'true' : 'false'}"
+        tabindex="${state.tab === tab ? '0' : '-1'}"
         data-active="${state.tab === tab ? 'true' : 'false'}"
         ${RUN_MODAL_TAB_ATTR}="${tab}"
         ${RUN_MODAL_ACTION_ATTR}="tab:${tab}">${e(label)}</button>`;
@@ -464,7 +479,9 @@ export const renderRunModal = (
           <div class="run-modal-recipe-id" ${RUN_MODAL_IDENTITY_ATTR}
             title="Recipe that will run">Target recipe: <code>${e(recipe.recipe_id)}</code> · Publisher: <code>${e(recipe.publisher_id)}</code></div>
           <button type="button" class="run-modal-button run-modal-close"
-            ${RUN_MODAL_ACTION_ATTR}="close">Close</button>
+            ${RUN_MODAL_ACTION_ATTR}="close"${commandPending
+              ? ' aria-disabled="true"'
+              : ''}>Close</button>
         </header>
         <div class="run-modal-tabs" role="tablist">
           ${tabButton('run', 'Run')}
@@ -484,7 +501,8 @@ export const renderRunModal = (
               : ''
           }
         </div>
-        <div class="run-modal-body">${body}</div>
+        <div class="run-modal-body" id="${tabPanelId}" role="tabpanel"
+          aria-labelledby="${tabId(state.tab)}">${body}</div>
       </section>
     </div>`;
 };

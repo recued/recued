@@ -14,6 +14,11 @@ export {
 } from './list-view.js';
 export {
   renderWorkEntityDialog,
+  WORK_ENTITY_DIALOG_DISCARD_GUARD_ATTR,
+  WORK_ENTITY_DIALOG_DISCARD_KEEP_ATTR,
+  WORK_ENTITY_DIALOG_DISCARD_COMMIT_ATTR,
+  WORK_ENTITY_DIALOG_DISCARD_KEEP_ACTION,
+  WORK_ENTITY_DIALOG_DISCARD_COMMIT_ACTION,
   type WorkEntityDialogProps,
 } from './dialog.js';
 export {

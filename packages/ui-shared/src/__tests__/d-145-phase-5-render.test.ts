@@ -254,6 +254,32 @@ describe('D-145 PA5 — typed-input renderers', () => {
     ).not.toContain('data-ref-picker');
   });
 
+  it('puts a ref-picker error on its visible combobox, not the hidden id mirror', () => {
+    const html = renderField(
+      baseField({
+        type: 'ref',
+        name: 'assigned_contact',
+        ref_target: 'data.contact',
+        required: false,
+      }),
+      {
+        refPicker: true,
+        errors: { assigned_contact: 'Choose a contact' },
+      },
+    );
+    const mirror = html.match(
+      /<input type="hidden" data-form-field="assigned_contact"[^>]*>/,
+    )?.[0] ?? '';
+    const combobox = html.match(
+      /<input class="ref-picker-input"[^>]*>/,
+    )?.[0] ?? '';
+    expect(mirror).not.toContain('aria-invalid');
+    expect(combobox).toContain('aria-invalid="true"');
+    expect(combobox).toContain(
+      'aria-describedby="form-renderer-assigned_contact-error"',
+    );
+  });
+
   it('array<ref> + refPicker → per-item picker shells with array-addressed mirrors', () => {
     const html = renderField(
       baseField({
@@ -348,6 +374,13 @@ describe('D-145 PA5 — error / required / origin chrome', () => {
     );
     expect(html).toContain('form-renderer-error');
     expect(html).toContain('Required');
+    expect(html).toContain('aria-invalid="true"');
+    expect(html).toContain(
+      'aria-describedby="form-renderer-title-error"',
+    );
+    expect(html).toContain(
+      'id="form-renderer-title-error" role="alert"',
+    );
   });
 
   it('description → rendered as help text', () => {

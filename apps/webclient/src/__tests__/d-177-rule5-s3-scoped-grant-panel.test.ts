@@ -115,6 +115,14 @@ const collectByAttr = (root: FakeEl, attr: string, out: FakeEl[] = []): FakeEl[]
   return out;
 };
 
+const deferred = <T>() => {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res;
+  });
+  return { promise, resolve };
+};
+
 // ── Fixtures ─────────────────────────────────────────────────────
 
 const snapshot = (
@@ -200,6 +208,29 @@ describe('scoped-grant panel', () => {
       ttl_ms: 30 * 60_000,
       max_uses: 3,
     });
+  });
+
+  it('owns an unresolved scoped decision until the RPC settles', async () => {
+    const { mount, runAcceptSuggestion } = mountWith([row()]);
+    const accepting = deferred<Awaited<ReturnType<ScopedSuggestionsAcceptCaller>>>();
+    vi.mocked(runAcceptSuggestion).mockReturnValueOnce(accepting.promise);
+    await mount.whenLoaded();
+
+    const pending = mount.acceptSuggestion('key-1', {
+      connection_name: 'mailbox-1',
+      ttl_ms: 30 * 60_000,
+      max_uses: 3,
+    });
+    expect(mount.hasInFlightWork()).toBe(true);
+
+    accepting.resolve({
+      grant: { contract_id: 'ct_pending' } as unknown as ContractDefinitionView,
+      suggestion: { ...row(), state: 'accepted' },
+      sentence: 'ok?',
+    });
+    await pending;
+
+    expect(mount.hasInFlightWork()).toBe(false);
   });
 
   it('renders the unmintable state with zero candidates (dismiss only)', async () => {

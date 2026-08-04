@@ -22,10 +22,10 @@ export interface MountDiscoverySurfaceOptions {
   root: HTMLElement;
   document?: Document;
   /** Mount the Installed tab (the existing route) into the given host. */
-  mountInstalled: (host: HTMLElement) => { dispose: () => void };
+  mountInstalled: (host: HTMLElement) => DiscoverySurfaceChildMount;
   /** Mount the Discover tab (the browse panel) into the given host. Called at
    *  most once, on first Discover activation. */
-  mountDiscover: (host: HTMLElement) => { dispose: () => void };
+  mountDiscover: (host: HTMLElement) => DiscoverySurfaceChildMount;
   initialTab?: DiscoveryTab;
   installedLabel?: string;
   discoverLabel?: string;
@@ -38,9 +38,22 @@ export interface MountDiscoverySurfaceOptions {
   onReactivate?: (tab: DiscoveryTab) => void;
 }
 
+export interface DiscoverySurfaceChildMount {
+  dispose(): void;
+  /** Optional ownership seams forwarded through this composition shell. */
+  hasInFlightWork?: () => boolean;
+  inFlightWorkPrompt?: () => string | null;
+  hasUnsavedChanges?: () => boolean;
+  unsavedChangesPrompt?: () => string | null;
+}
+
 export interface DiscoverySurfaceMount {
   activeTab(): DiscoveryTab;
   showTab(tab: DiscoveryTab): void;
+  hasInFlightWork(): boolean;
+  inFlightWorkPrompt(): string | null;
+  hasUnsavedChanges(): boolean;
+  unsavedChangesPrompt(): string | null;
   dispose(): void;
 }
 
@@ -69,6 +82,7 @@ export const mountDiscoverySurface = (
     btn.setAttribute('role', 'tab');
     btn.textContent = label;
     btn.addEventListener('click', () => showTab(tab));
+    btn.addEventListener('keydown', (ev) => onTabKeydown(ev, tab));
     return btn;
   };
   const installedTab = makeTab('installed', opts.installedLabel ?? 'Installed');
@@ -90,9 +104,29 @@ export const mountDiscoverySurface = (
   // Installed mounts immediately (it's the default surface); Discover mounts
   // lazily on first activation.
   const installedMount = opts.mountInstalled(installedHost);
-  let discoverMount: { dispose: () => void } | null = null;
+  let discoverMount: DiscoverySurfaceChildMount | null = null;
 
   let active: DiscoveryTab = opts.initialTab ?? 'installed';
+
+  /** Tabs are one composite keyboard stop. Arrow keys both move and activate
+   *  because each pane paints synchronously (Discover may then show its loading
+   *  state); Home / End make the two ends explicit and the arrows wrap. */
+  function onTabKeydown(ev: KeyboardEvent, current: DiscoveryTab): void {
+    let next: DiscoveryTab;
+    if (ev.key === 'Home') next = 'installed';
+    else if (ev.key === 'End') next = 'discover';
+    else if (ev.key === 'ArrowRight') {
+      next = current === 'installed' ? 'discover' : 'installed';
+    } else if (ev.key === 'ArrowLeft') {
+      next = current === 'discover' ? 'installed' : 'discover';
+    } else {
+      return;
+    }
+    ev.preventDefault();
+    showTab(next);
+    const nextButton = next === 'installed' ? installedTab : discoverTab;
+    nextButton.focus({ preventScroll: true });
+  }
 
   const paint = (): void => {
     const onInstalled = active === 'installed';
@@ -102,6 +136,8 @@ export const mountDiscoverySurface = (
     discoverTab.className = onInstalled ? 'discovery-tab' : 'discovery-tab discovery-tab--active';
     installedTab.setAttribute('aria-selected', onInstalled ? 'true' : 'false');
     discoverTab.setAttribute('aria-selected', onInstalled ? 'false' : 'true');
+    installedTab.tabIndex = onInstalled ? 0 : -1;
+    discoverTab.tabIndex = onInstalled ? -1 : 0;
   };
 
   const showTab = (tab: DiscoveryTab): void => {
@@ -128,6 +164,20 @@ export const mountDiscoverySurface = (
   return {
     activeTab: () => active,
     showTab,
+    hasInFlightWork: () =>
+      installedMount.hasInFlightWork?.() === true
+      || discoverMount?.hasInFlightWork?.() === true,
+    inFlightWorkPrompt: () =>
+      installedMount.inFlightWorkPrompt?.()
+      ?? discoverMount?.inFlightWorkPrompt?.()
+      ?? null,
+    hasUnsavedChanges: () =>
+      installedMount.hasUnsavedChanges?.() === true
+      || discoverMount?.hasUnsavedChanges?.() === true,
+    unsavedChangesPrompt: () =>
+      installedMount.unsavedChangesPrompt?.()
+      ?? discoverMount?.unsavedChangesPrompt?.()
+      ?? null,
     dispose: () => {
       if (disposed) return;
       disposed = true;

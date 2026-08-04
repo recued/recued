@@ -372,7 +372,7 @@ const setupDeleteConfirm = (
           ...base,
           file: {
             list: list as unknown as FileLaneCallers['list'],
-            enroll: vi.fn(async () => ({})),
+            enroll: vi.fn(async () => { throw new Error('unused'); }),
             delete: deleteCaller,
           },
         });
@@ -1467,6 +1467,10 @@ describe('Calendar lane (mountAccountsLanePanel)', () => {
       calendar_home_url: 'https://caldav.fastmail.com/dav/calendars/me/',
     });
     expect(mount.getState().stage).toBe('list');
+    expect(mount.getState().connectionSuccess).toEqual({
+      slug: 'fastmail',
+      providerId: 'caldav',
+    });
   });
 
   it('CalDAV: omits the optional scheduling outbox when blank', async () => {
@@ -1533,7 +1537,7 @@ for (const laneCase of DELETE_LANES) {
     // removing that early-return leaves this test green (verified by mutation).
     // Named for the OUTCOME it actually pins so nobody reads it as coverage of
     // the prompt-level guard; `dc.deleting` is defence-in-depth plus the source
-    // of the disabled/"Removing…" button state, which the assertion below pins.
+    // of the guarded/"Removing…" button state, which the assertion below pins.
     it('fires exactly one delete rpc for a double confirm (rowBusy dedupe)', async () => {
       const pending = deferred<{ ok: true }>();
       const setupResult = setupDeleteConfirm(laneCase, () => pending.promise);
@@ -1547,6 +1551,16 @@ for (const laneCase of DELETE_LANES) {
         slug: laneCase.slug,
         deleting: true,
       });
+      const busyDialog = setupResult.host.innerHTML;
+      expect(busyDialog).toMatch(
+        /data-action="accounts-delete-confirm"[^>]*aria-disabled="true"[^>]*aria-busy="true"/,
+      );
+      expect(busyDialog).toMatch(
+        /data-action="accounts-delete-cancel"[^>]*aria-disabled="true"/,
+      );
+      expect(busyDialog).not.toMatch(
+        /data-action="accounts-delete-(?:confirm|cancel)"[^>]*\sdisabled(?:\s|>)/,
+      );
 
       pending.resolve({ ok: true });
       await tick();
@@ -1601,6 +1615,9 @@ for (const laneCase of DELETE_LANES) {
       setupResult.clickAction({ action: 'accounts-delete', slug: laneCase.slug });
 
       expect(setupResult.host.innerHTML).toContain('data-accounts-delete-backdrop');
+      expect(setupResult.host.innerHTML).toContain(
+        'data-accounts-delete-dialog tabindex="-1"',
+      );
       expect(setupResult.host.innerHTML).toContain('role="dialog"');
       expect(setupResult.host.innerHTML).toContain('data-action="accounts-delete-confirm"');
       expect(setupResult.host.innerHTML).toContain('data-action="accounts-delete-cancel"');

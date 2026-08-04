@@ -156,8 +156,11 @@ export interface AccountConnectionDiagnosis {
   readonly profileId: string;
   readonly profileLabel: string;
   readonly areaLabel: string;
-  /** Required for the bounded-verification landing. An unresolved-receipt
-   * re-review uses its receipt as the orientation instead. */
+  /** An expired broad-area check uses the same exact active-server landing,
+   * but has no saved intent or verification outcome to report afterward. */
+  readonly kind?: 'expired_area_review';
+  /** Required for the bounded-verification landing. An expired-area review
+   * uses `kind`; an unresolved-receipt re-review uses its receipt instead. */
   readonly interruptionReason?: AccountConnectionDiagnosisInterruption;
 }
 
@@ -1341,6 +1344,7 @@ export const mountAccountMenu = (
 
   let open = false;
   let disposed = false;
+  let focusLeaveTimer: ReturnType<typeof globalThis.setTimeout> | null = null;
   let activeConnectionDiagnosis: AccountConnectionDiagnosis | null = null;
   let connectionDiagnosisControlsAvailable = false;
   let connectionDiagnosisControlsProfileId: string | null = null;
@@ -1352,6 +1356,7 @@ export const mountAccountMenu = (
   } | null = null;
   let connectionDiagnosisReviewMode:
     | 'bounded_verification'
+    | 'expired_area_review'
     | 'unresolved_receipt' = 'bounded_verification';
   let connectionDiagnosisAutoOpenControlsId: string | null = null;
   let connectionDiagnosisControlReceipt: {
@@ -1449,6 +1454,8 @@ export const mountAccountMenu = (
       : diagnosis.profileLabel;
     const unresolvedReceiptReview =
       connectionDiagnosisReviewMode === 'unresolved_receipt';
+    const expiredAreaReview =
+      connectionDiagnosisReviewMode === 'expired_area_review';
     const latestInterruption = diagnosis.interruptionReason === 'connection'
       ? 'The latest check ended when the server connection changed.'
       : diagnosis.interruptionReason === 'navigation'
@@ -1511,33 +1518,50 @@ export const mountAccountMenu = (
               : 'Watch the live status here; server controls will become available after the server responds.';
     connectionDiagnosisTitle.textContent = unresolvedReceiptReview
       ? `Review ${profileLabel} again`
-      : `Check connection to ${profileLabel}`;
+      : expiredAreaReview
+        ? `Review ${profileLabel} for ${diagnosis.areaLabel}`
+        : `Check connection to ${profileLabel}`;
     connectionDiagnosisDetail.textContent = unresolvedReceiptReview
       ? `The last server-control receipt did not settle the result. ${reviewInstruction} Compare that receipt with the current live state, or deliberately choose a corrective action. When the state is stable, “Use current server state” closes only this receipt uncertainty; it does not claim the earlier request succeeded or verify ${diagnosis.areaLabel}. Nothing runs automatically.`
-      : `Verification stopped after two interruptions. ${latestInterruption} ${reviewInstruction} Opening Account does not retry verification or mark it resolved.`;
-    connectionDiagnosisStatus.textContent = controlReviewPhase === 'active'
-      ? unresolvedReceiptReview
-        ? currentStateReady
-          ? `${profileLabel} has a stable current state ready to reconcile with the last receipt. Use it below; no server action is required. ${diagnosis.areaLabel} still needs its own check.`
-          : `${profileLabel} controls are open. Compare the live state with the last receipt; no server action is required.`
-        : `${profileLabel} controls are open. Review the live state; no server action is required.`
+      : expiredAreaReview
+        ? `Recued stopped after two unsuccessful current ${diagnosis.areaLabel} checks. ${reviewInstruction} This review will not retry ${diagnosis.areaLabel}, restore the expired return, or replay an action. When you finish, choose one fresh current-area check or close the review.`
+        : `Verification stopped after two interruptions. ${latestInterruption} ${reviewInstruction} Opening Account does not retry verification or mark it resolved.`;
+    const expiredAreaReviewStatus = controlReviewPhase === 'active'
+      ? `${profileLabel} controls are open. Review the live state; no ${diagnosis.areaLabel} check or server action started.`
       : unreachable
-        ? `${profileLabel} is not reachable. Use the recovery steps below before reporting the outcome.`
+        ? `${profileLabel} is not reachable.`
         : !activeConnected
-          ? `${profileLabel} is reconnecting or still being checked. Keep this dialog open if you want to watch the status settle.`
+          ? `${profileLabel} is reconnecting or still being checked. Keep this dialog open to watch the live status; ${diagnosis.areaLabel} will not retry automatically.`
           : controlReviewPhase === 'returned'
-            ? unresolvedReceiptReview
-              ? currentStateReady
-                ? `${profileLabel} has a stable current state. Use it to reconcile the historical receipt, or return the receipt unchanged. ${diagnosis.areaLabel} still needs its own check.`
-                : `${profileLabel} is connected now. Back from its controls; the current state is still settling, so the receipt remains unresolved. Connection alone does not verify ${diagnosis.areaLabel}.`
-              : `${profileLabel} is connected now. Back from its controls; review any result, then report what happened. Connection alone does not verify ${diagnosis.areaLabel}.`
+            ? `${profileLabel} is connected now. Back from its controls; connection alone does not confirm ${diagnosis.areaLabel}.`
             : controlsReady
+              ? `${profileLabel} is connected now. Review its exact active-server controls if useful; connection alone does not confirm ${diagnosis.areaLabel}.`
+              : `${profileLabel} is connected now. Waiting for a fresh server status before its controls can open; connection alone does not confirm ${diagnosis.areaLabel}.`;
+    connectionDiagnosisStatus.textContent = expiredAreaReview
+      ? expiredAreaReviewStatus
+      : controlReviewPhase === 'active'
+        ? unresolvedReceiptReview
+          ? currentStateReady
+            ? `${profileLabel} has a stable current state ready to reconcile with the last receipt. Use it below; no server action is required. ${diagnosis.areaLabel} still needs its own check.`
+            : `${profileLabel} controls are open. Compare the live state with the last receipt; no server action is required.`
+          : `${profileLabel} controls are open. Review the live state; no server action is required.`
+        : unreachable
+          ? `${profileLabel} is not reachable. Use the recovery steps below before reporting the outcome.`
+          : !activeConnected
+            ? `${profileLabel} is reconnecting or still being checked. Keep this dialog open if you want to watch the status settle.`
+            : controlReviewPhase === 'returned'
               ? unresolvedReceiptReview
                 ? currentStateReady
-                  ? `${profileLabel} has a stable current state ready to reconcile with the last receipt. This does not verify ${diagnosis.areaLabel}.`
-                  : `${profileLabel} is connected now. Review its exact active-server controls against the last receipt; wait for any server action and a fresh status to settle. Connection alone does not verify ${diagnosis.areaLabel}.`
-                : `${profileLabel} is connected now. Review its exact active-server controls, then report what happened. Connection alone does not verify ${diagnosis.areaLabel}.`
-              : `${profileLabel} is connected now. Waiting for a fresh server status before its controls can open. Connection alone does not verify ${diagnosis.areaLabel}.`;
+                  ? `${profileLabel} has a stable current state. Use it to reconcile the historical receipt, or return the receipt unchanged. ${diagnosis.areaLabel} still needs its own check.`
+                  : `${profileLabel} is connected now. Back from its controls; the current state is still settling, so the receipt remains unresolved. Connection alone does not verify ${diagnosis.areaLabel}.`
+                : `${profileLabel} is connected now. Back from its controls; review any result, then report what happened. Connection alone does not verify ${diagnosis.areaLabel}.`
+              : controlsReady
+                ? unresolvedReceiptReview
+                  ? currentStateReady
+                    ? `${profileLabel} has a stable current state ready to reconcile with the last receipt. This does not verify ${diagnosis.areaLabel}.`
+                    : `${profileLabel} is connected now. Review its exact active-server controls against the last receipt; wait for any server action and a fresh status to settle. Connection alone does not verify ${diagnosis.areaLabel}.`
+                  : `${profileLabel} is connected now. Review its exact active-server controls, then report what happened. Connection alone does not verify ${diagnosis.areaLabel}.`
+                : `${profileLabel} is connected now. Waiting for a fresh server status before its controls can open. Connection alone does not verify ${diagnosis.areaLabel}.`;
     connectionDiagnosisControls.textContent = controlReviewPhase === 'active'
       ? 'Viewing server controls'
       : controlReviewPhase === 'returned'
@@ -1581,11 +1605,15 @@ export const mountAccountMenu = (
       'aria-label',
       unresolvedReceiptReview
         ? `Keep the historical server receipt from ${profileLabel} unresolved in Attention for ${diagnosis.areaLabel}`
-        : `Return to Attention and report the connection review outcome for ${diagnosis.areaLabel}`,
+        : expiredAreaReview
+          ? `Finish reviewing ${profileLabel}, then choose one current ${diagnosis.areaLabel} check or close the review`
+          : `Return to Attention and report the connection review outcome for ${diagnosis.areaLabel}`,
     );
     connectionDiagnosisReturn.textContent = unresolvedReceiptReview
       ? 'Keep receipt unresolved'
-      : 'Report review outcome';
+      : expiredAreaReview
+        ? 'Choose check or close'
+        : 'Report review outcome';
     if (controlReceipt === null) {
       connectionDiagnosisReceipt.textContent = '';
       connectionDiagnosisReceipt.setAttribute('hidden', '');
@@ -2346,12 +2374,25 @@ export const mountAccountMenu = (
     ...(opts.onRemove !== undefined
       ? {
           onRemove: async (id: string, mode: ServerProfileRemovalMode) => {
+            const removedActiveProfile = id === activeId;
             await opts.onRemove?.(id, mode);
-            // A successful destructive action removes (or invalidates) the
-            // control that owned focus. Close back to the stable Account
-            // trigger; failures reject and deliberately keep the inline
-            // recovery choices open.
-            setOpen(false, { returnFocus: true });
+            if (removedActiveProfile) {
+              // The current-server path reloads onto the roster fallback. An
+              // injected reload seam may return, so close this now-invalid
+              // Account surface back to its stable trigger in that case.
+              setOpen(false, { returnFocus: true });
+              return;
+            }
+            // Forgetting another profile is only a local roster edit. Keep
+            // Account open and let the child advance focus from the removed
+            // confirmation to the surviving, labelled profile list.
+            profiles = profiles.filter((profile) => profile.id !== id);
+            profileList.refresh(
+              profiles,
+              activeId,
+              unreachable,
+              activeConnected,
+            );
           },
         }
       : {}),
@@ -2496,6 +2537,10 @@ export const mountAccountMenu = (
     if (disposed) return;
     const wasOpen = open;
     open = next;
+    if (!next && focusLeaveTimer !== null) {
+      globalThis.clearTimeout(focusLeaveTimer);
+      focusLeaveTimer = null;
+    }
     trigger.setAttribute('aria-expanded', next ? 'true' : 'false');
     if (next) {
       popover.removeAttribute('hidden');
@@ -2875,6 +2920,32 @@ export const mountAccountMenu = (
     if (nodeIsInside(root, event.target)) return;
     setOpen(false);
   };
+  const onDocumentFocusin = (event: FocusEvent): void => {
+    if (!open) return;
+    if (nodeIsInside(popover, event.target)) {
+      if (focusLeaveTimer !== null) {
+        globalThis.clearTimeout(focusLeaveTimer);
+        focusLeaveTimer = null;
+      }
+      return;
+    }
+    if (focusLeaveTimer !== null) globalThis.clearTimeout(focusLeaveTimer);
+    // A pointerdown can focus the Account trigger before its click toggles the
+    // menu. Wait until that gesture completes so it closes once; a keyboard
+    // Tab has no following click, so the new page control keeps ownership.
+    focusLeaveTimer = globalThis.setTimeout(() => {
+      focusLeaveTimer = null;
+      if (
+        !open
+        || nodeIsInside(
+          popover,
+          (doc as unknown as { activeElement?: EventTarget | null })
+            .activeElement ?? null,
+        )
+      ) return;
+      setOpen(false);
+    }, 0);
+  };
   const onKeydown = (event: KeyboardEvent): void => {
     if (!open) return;
     if (event.key !== 'Escape') return;
@@ -2898,6 +2969,7 @@ export const mountAccountMenu = (
     removeEventListener?: (t: string, l: unknown, c?: boolean) => void;
   };
   docEvents.addEventListener?.('click', onDocumentClick, true);
+  docEvents.addEventListener?.('focusin', onDocumentFocusin, true);
   docEvents.addEventListener?.('keydown', onKeydown, true);
 
   renderActiveWork();
@@ -2942,6 +3014,9 @@ export const mountAccountMenu = (
       const initialServerOutcome = options?.initialServerOutcome;
       const unresolvedReceiptReview = initialServerOutcome !== undefined
         && isUnresolvedServerControlActionOutcome(initialServerOutcome);
+      const expiredAreaReview = diagnosis.kind === 'expired_area_review';
+      const hasValidKind = diagnosis.kind === undefined
+        || expiredAreaReview;
       const hasValidInterruptionReason =
         diagnosis.interruptionReason === 'connection'
         || diagnosis.interruptionReason === 'navigation'
@@ -2956,7 +3031,14 @@ export const mountAccountMenu = (
         || profileLabel.length > 256
         || areaLabel.length === 0
         || areaLabel.length > 256
-        || (!unresolvedReceiptReview && !hasValidInterruptionReason)
+        || !hasValidKind
+        || (
+          !unresolvedReceiptReview
+          && !expiredAreaReview
+          && !hasValidInterruptionReason
+        )
+        || (unresolvedReceiptReview && expiredAreaReview)
+        || (expiredAreaReview && diagnosis.interruptionReason !== undefined)
         || (initialServerOutcome !== undefined && !unresolvedReceiptReview)
         || !canOpenConnectionDiagnosis(profileId)
       ) return 'unavailable';
@@ -2965,13 +3047,16 @@ export const mountAccountMenu = (
         profileId,
         profileLabel,
         areaLabel,
+        ...(expiredAreaReview ? { kind: 'expired_area_review' as const } : {}),
         ...(diagnosis.interruptionReason === undefined
           ? {}
           : { interruptionReason: diagnosis.interruptionReason }),
       };
       connectionDiagnosisReviewMode = unresolvedReceiptReview
         ? 'unresolved_receipt'
-        : 'bounded_verification';
+        : expiredAreaReview
+          ? 'expired_area_review'
+          : 'bounded_verification';
       connectionDiagnosisControlReview = null;
       connectionDiagnosisControlReceipt = initialServerOutcome === undefined
         ? null
@@ -3147,7 +3232,12 @@ export const mountAccountMenu = (
     dispose() {
       if (disposed) return;
       disposed = true;
+      if (focusLeaveTimer !== null) {
+        globalThis.clearTimeout(focusLeaveTimer);
+        focusLeaveTimer = null;
+      }
       docEvents.removeEventListener?.('click', onDocumentClick, true);
+      docEvents.removeEventListener?.('focusin', onDocumentFocusin, true);
       docEvents.removeEventListener?.('keydown', onKeydown, true);
       profileList.dispose();
       try {

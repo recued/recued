@@ -30,7 +30,7 @@
  *      error ── click Retry           ──▶ loading ── … ──▶ ready | error
  *
  *  Per-row:
- *      ready ── click Toggle ──▶ row toggling (button disabled, label "…")
+ *      ready ── click Toggle ──▶ row toggling (ARIA guarded, label "…")
  *      row toggling ── runSetChannel ok:true   ──▶ refresh (rows reload)
  *      row toggling ── runSetChannel ok:false  ──▶ row error chip surfaces
  *      row toggling ── runSetChannel threw     ──▶ row error chip surfaces
@@ -257,6 +257,13 @@ export interface NotificationsPanelMount {
   getRowError(channel: NotificationChannelName): string | undefined;
   /** Top-level list error message. Null when state != `error`. */
   getListError(): string | null;
+  /** User-started writes that have not settled yet. Initial/background reads
+   * are deliberately excluded so route navigation is guarded only by work the
+   * owner explicitly started. */
+  hasInFlightWork(): boolean;
+  /** Whether the verification phrase differs from the last authoritative
+   * value. Used by the Settings route's leave and beforeunload guards. */
+  hasUnsavedChanges(): boolean;
   /** Host-driven refresh — re-issues `runDescribe`. Use after a known
    *  notification-settings mutation happens elsewhere (e.g. a connection
    *  enrolment that flips a row's readiness). */
@@ -312,6 +319,7 @@ const COPY = {
   fixed_on_label: 'Always on',
   not_ready_label: 'Not set up',
   retry_label: 'Retry',
+  retrying_label: 'Retrying…',
   // CTA labels — Bridge ships with an external install URL; the
   // credential-backed remotes deep-link the top-level `#connections`
   // route (R13–R16 graduated it out of Settings). Email uses the
@@ -435,6 +443,9 @@ export const mountNotificationsPanel = (
   /** R31 — panel-level anti-phishing verification phrase. Seeded from
    *  `describe`, edited inline, persisted via `runSetVerificationPhrase`. */
   let verificationPhrase = '';
+  /** Last authoritative phrase observed from describe/save. Kept separate
+   * from the draft so typing back to the saved value clears dirty state. */
+  let persistedVerificationPhrase = '';
   /** True once the user edits the phrase input — suppresses re-seeding
    *  from a `describe` refresh so an unsaved edit isn't clobbered.
    *  Cleared on a successful save. */
@@ -442,8 +453,14 @@ export const mountNotificationsPanel = (
   let phraseError: string | undefined;
   let phraseSaving = false;
   let pendingPhrasePromise: Promise<void> | null = null;
+  let pendingPhraseSaveFocus = false;
+  let renderedPhraseSave: HTMLButtonElement | undefined;
+  let renderedPhraseInput: HTMLInputElement | undefined;
   /** Most-recent `runDescribe` promise, exposed via `whenLoaded()`. */
   let pendingDescribePromise: Promise<void> = Promise.resolve();
+  let retryTransition = false;
+  let pendingRetryFocus = false;
+  let renderedRetryButton: HTMLButtonElement | undefined;
   /** D-169 P2 Slice 4 follow-on — broadcast unsubscribe handles, dropped
    *  on dispose. Holds the `notification.bridge_mode_changed` listener
    *  when `subscribe` + `runDescribeBridges` are both wired. */
@@ -468,15 +485,40 @@ export const mountNotificationsPanel = (
     client_token_id: string,
     mode: BridgeModeName,
   ): string => `${client_token_id}::${mode}`;
+  let pendingBridgeFocus: string | null = null;
+  let renderedBridgeButtons = new Map<string, HTMLButtonElement>();
+  const focusedBridgeKey = (
+    element: Element | null | undefined,
+  ): string | null => {
+    const bridgeId = element?.getAttribute?.(NOTIFICATIONS_BRIDGE_MODE_BTN_ATTR);
+    const mode = element?.getAttribute?.(NOTIFICATIONS_BRIDGE_MODE_ATTR);
+    return bridgeId === null || bridgeId === undefined
+      || (mode !== 'notification' && mode !== 'approval')
+      ? null
+      : `${bridgeId}::${mode}`;
+  };
   /** R31 — per-axis in-flight `runSetChannel` promises, keyed on
    *  `${channel}::${axis}`. Re-entry through the click handler returns
    *  the existing in-flight promise rather than starting a duplicate
    *  toggle — same discipline as the per-bridge toggles. */
   const pendingTogglePromises = new Map<string, Promise<void>>();
+  /** Exact channel-axis control that initiated a mutation. The panel rebuilds
+   *  on every transition, so this identity—not the detached element—owns
+   *  focus until success/failure unless the owner deliberately moves away. */
+  let pendingAxisFocus: string | null = null;
+  let renderedAxisButtons = new Map<string, HTMLButtonElement>();
   const channelAxisKey = (
     channel: NotificationChannelName,
     axis: ChannelAxis,
   ): string => `${channel}::${axis}`;
+  const focusedAxisKey = (element: Element | null | undefined): string | null => {
+    const channel = element?.getAttribute?.(NOTIFICATIONS_ROW_TOGGLE_BTN_ATTR);
+    const axis = element?.getAttribute?.(NOTIFICATIONS_AXIS_ATTR);
+    return channel === null || channel === undefined
+      || (axis !== 'notification' && axis !== 'approval')
+      ? null
+      : `${channel}::${axis}`;
+  };
   /** R31 — the row's error to render: the first non-empty of its two
    *  axis-keyed errors (the row shows one chip, but each axis owns its
    *  own error so a success on one can't clear the other's failure). */
@@ -531,9 +573,14 @@ export const mountNotificationsPanel = (
         rows = [...result.rows];
         // R31 — seed the phrase input from the authoritative record, but
         // never over an unsaved user edit (a refresh mid-typing keeps the
-        // draft). A successful save clears `phraseDirty` so the next
-        // refresh re-syncs.
-        if (!phraseDirty) verificationPhrase = result.verification_phrase ?? '';
+        // draft). Always advance the comparison baseline: if an external
+        // write happens to match the local draft, it is no longer unsaved.
+        persistedVerificationPhrase = result.verification_phrase ?? '';
+        if (!phraseDirty) {
+          verificationPhrase = persistedVerificationPhrase;
+        } else {
+          phraseDirty = verificationPhrase !== persistedVerificationPhrase;
+        }
         if (bridgePromise) {
           const br = await bridgePromise;
           if (disposed) return;
@@ -784,6 +831,7 @@ export const mountNotificationsPanel = (
         if (result.ok === true) {
           phraseDirty = false;
           verificationPhrase = result.settings.verification_phrase ?? '';
+          persistedVerificationPhrase = verificationPhrase;
         } else {
           // `too_long` — surface inline; the input keeps the draft.
           phraseError = `Too long — keep it under ${result.max} characters.`;
@@ -812,6 +860,17 @@ export const mountNotificationsPanel = (
     status.setAttribute('role', 'status');
     status.textContent = COPY.loading;
     wrapper.appendChild(status);
+    if (retryTransition) {
+      const retry = doc.createElement('button');
+      retry.type = 'button';
+      retry.setAttribute(NOTIFICATIONS_RETRY_BTN_ATTR, '');
+      retry.setAttribute('aria-disabled', 'true');
+      retry.setAttribute('aria-busy', 'true');
+      retry.className = 'rx-btn rx-btn-secondary rx-btn-sm';
+      retry.textContent = COPY.retrying_label;
+      renderedRetryButton = retry;
+      wrapper.appendChild(retry);
+    }
   };
 
   const renderError = (): void => {
@@ -833,8 +892,13 @@ export const mountNotificationsPanel = (
     retry.className = 'rx-btn rx-btn-secondary rx-btn-sm';
     retry.textContent = COPY.retry_label;
     retry.addEventListener('click', () => {
+      if (retryTransition) return;
+      retryTransition = true;
+      pendingRetryFocus =
+        (doc as Document & { activeElement?: Element | null }).activeElement === retry;
       void refreshRows();
     });
+    renderedRetryButton = retry;
     actions.appendChild(retry);
 
     wrapper.appendChild(heading);
@@ -914,7 +978,8 @@ export const mountNotificationsPanel = (
       return cell;
     }
 
-    const toggling = togglingAxes.has(channelAxisKey(row.channel, axis));
+    const key = channelAxisKey(row.channel, axis);
+    const toggling = togglingAxes.has(key);
     const btn = doc.createElement('button');
     btn.type = 'button';
     btn.setAttribute(NOTIFICATIONS_ROW_TOGGLE_BTN_ATTR, row.channel);
@@ -924,15 +989,23 @@ export const mountNotificationsPanel = (
     btn.className = `rx-btn rx-btn-sm ${
       enabled ? 'rx-btn-primary' : 'rx-btn-secondary'
     } notif-axis-toggle`;
-    if (toggling) btn.disabled = true;
+    if (toggling) {
+      btn.setAttribute('aria-disabled', 'true');
+      btn.setAttribute('aria-busy', 'true');
+    }
     btn.textContent = toggling
       ? COPY.toggling_label
       : enabled
         ? COPY.enabled_label
         : COPY.disabled_label;
     btn.addEventListener('click', () => {
+      if (toggling) return;
+      if ((doc as Document & { activeElement?: Element | null }).activeElement === btn) {
+        pendingAxisFocus = key;
+      }
       void toggleAxis(row.channel, axis, !enabled);
     });
+    renderedAxisButtons.set(key, btn);
     cell.appendChild(btn);
     return cell;
   };
@@ -1129,9 +1202,8 @@ export const mountNotificationsPanel = (
     mode: BridgeModeName,
   ): HTMLElement => {
     const enabled = br.modes[mode];
-    const toggling = bridgeRowToggling.has(
-      bridgeToggleKey(br.client_token_id, mode),
-    );
+    const key = bridgeToggleKey(br.client_token_id, mode);
+    const toggling = bridgeRowToggling.has(key);
     const btn = doc.createElement('button');
     btn.type = 'button';
     btn.setAttribute(NOTIFICATIONS_BRIDGE_MODE_BTN_ATTR, br.client_token_id);
@@ -1141,7 +1213,10 @@ export const mountNotificationsPanel = (
     btn.className = `rx-btn rx-btn-sm ${
       enabled ? 'rx-btn-primary' : 'rx-btn-secondary'
     } notif-bridge-mode-btn`;
-    if (toggling) btn.disabled = true;
+    if (toggling) {
+      btn.setAttribute('aria-disabled', 'true');
+      btn.setAttribute('aria-busy', 'true');
+    }
     btn.textContent = toggling
       ? COPY.toggling_label
       : mode === 'notification'
@@ -1152,8 +1227,13 @@ export const mountNotificationsPanel = (
           ? 'Approvals On'
           : 'Approvals Off';
     btn.addEventListener('click', () => {
+      if (toggling) return;
+      if ((doc as Document & { activeElement?: Element | null }).activeElement === btn) {
+        pendingBridgeFocus = key;
+      }
       void toggleBridgeMode(br.client_token_id, mode, !enabled);
     });
+    renderedBridgeButtons.set(key, btn);
     return btn;
   };
 
@@ -1203,8 +1283,9 @@ export const mountNotificationsPanel = (
     input.addEventListener('input', (ev) => {
       const target = ev.target as unknown as { value?: string };
       verificationPhrase = target.value ?? '';
-      phraseDirty = true;
+      phraseDirty = verificationPhrase !== persistedVerificationPhrase;
     });
+    renderedPhraseInput = input;
     controls.appendChild(input);
 
     const save = doc.createElement('button');
@@ -1212,10 +1293,18 @@ export const mountNotificationsPanel = (
     save.setAttribute(NOTIFICATIONS_PHRASE_SAVE_ATTR, '');
     save.className = 'rx-btn rx-btn-sm rx-btn-secondary notif-phrase-save';
     save.textContent = phraseSaving ? COPY.phrase_saving : COPY.phrase_save;
-    if (phraseSaving) save.disabled = true;
+    if (phraseSaving) {
+      save.setAttribute('aria-disabled', 'true');
+      save.setAttribute('aria-busy', 'true');
+    }
     save.addEventListener('click', () => {
+      if (phraseSaving) return;
+      if ((doc as Document & { activeElement?: Element | null }).activeElement === save) {
+        pendingPhraseSaveFocus = true;
+      }
       void savePhrase(verificationPhrase);
     });
+    renderedPhraseSave = save;
     controls.appendChild(save);
     section.appendChild(controls);
 
@@ -1232,6 +1321,63 @@ export const mountNotificationsPanel = (
 
   const render = (): void => {
     if (disposed) return;
+    if (pendingAxisFocus !== null) {
+      const focusDoc = doc as Document & {
+        activeElement?: Element | null;
+        body?: HTMLElement;
+      };
+      const active = focusDoc.activeElement;
+      const liveOwnerMoved = active !== null
+        && active !== undefined
+        && active !== focusDoc.body
+        && (active as HTMLElement).isConnected !== false
+        && focusedAxisKey(active) !== pendingAxisFocus;
+      if (liveOwnerMoved) pendingAxisFocus = null;
+    }
+    if (pendingBridgeFocus !== null) {
+      const focusDoc = doc as Document & {
+        activeElement?: Element | null;
+        body?: HTMLElement;
+      };
+      const active = focusDoc.activeElement;
+      const liveOwnerMoved = active !== null
+        && active !== undefined
+        && active !== focusDoc.body
+        && (active as HTMLElement).isConnected !== false
+        && focusedBridgeKey(active) !== pendingBridgeFocus;
+      if (liveOwnerMoved) pendingBridgeFocus = null;
+    }
+    if (pendingPhraseSaveFocus) {
+      const focusDoc = doc as Document & {
+        activeElement?: Element | null;
+        body?: HTMLElement;
+      };
+      const active = focusDoc.activeElement;
+      const liveOwnerMoved = active !== null
+        && active !== undefined
+        && active !== focusDoc.body
+        && (active as HTMLElement).isConnected !== false
+        && active.hasAttribute?.(NOTIFICATIONS_PHRASE_SAVE_ATTR) !== true;
+      if (liveOwnerMoved) pendingPhraseSaveFocus = false;
+    }
+    if (pendingRetryFocus) {
+      const focusDoc = doc as Document & {
+        activeElement?: Element | null;
+        body?: HTMLElement;
+      };
+      const active = focusDoc.activeElement;
+      const liveOwnerMoved = active !== null
+        && active !== undefined
+        && active !== focusDoc.body
+        && (active as HTMLElement).isConnected !== false
+        && active.hasAttribute?.(NOTIFICATIONS_RETRY_BTN_ATTR) !== true;
+      if (liveOwnerMoved) pendingRetryFocus = false;
+    }
+    renderedAxisButtons = new Map<string, HTMLButtonElement>();
+    renderedBridgeButtons = new Map<string, HTMLButtonElement>();
+    renderedPhraseSave = undefined;
+    renderedPhraseInput = undefined;
+    renderedRetryButton = undefined;
     clearChildren();
     switch (state) {
       case 'loading':
@@ -1244,6 +1390,41 @@ export const mountNotificationsPanel = (
         renderError();
         break;
     }
+    if (pendingAxisFocus !== null) {
+      const key = pendingAxisFocus;
+      const replacement = renderedAxisButtons.get(key);
+      replacement?.focus?.({ preventScroll: true });
+      replacement?.scrollIntoView?.({ block: 'nearest' });
+      if (!togglingAxes.has(key)) pendingAxisFocus = null;
+    }
+    if (pendingBridgeFocus !== null) {
+      const key = pendingBridgeFocus;
+      const replacement = renderedBridgeButtons.get(key);
+      replacement?.focus?.({ preventScroll: true });
+      replacement?.scrollIntoView?.({ block: 'nearest' });
+      if (!bridgeRowToggling.has(key)) pendingBridgeFocus = null;
+    }
+    if (pendingPhraseSaveFocus) {
+      // `renderPhraseField()` mutates this closure-owned reference; TS does
+      // not follow that nested call through `renderReady()` above.
+      const replacement = renderedPhraseSave as HTMLButtonElement | undefined;
+      replacement?.focus?.({ preventScroll: true });
+      replacement?.scrollIntoView?.({ block: 'nearest' });
+      if (!phraseSaving) pendingPhraseSaveFocus = false;
+    }
+    if (pendingRetryFocus) {
+      const firstAxis = renderedAxisButtons.values().next().value as
+        | HTMLButtonElement
+        | undefined;
+      const replacement = state === 'ready'
+        ? firstAxis
+          ?? (renderedPhraseInput as HTMLInputElement | undefined)
+        : (renderedRetryButton as HTMLButtonElement | undefined);
+      replacement?.focus?.({ preventScroll: true });
+      replacement?.scrollIntoView?.({ block: 'nearest' });
+      if (state !== 'loading') pendingRetryFocus = false;
+    }
+    if (state !== 'loading') retryTransition = false;
   };
 
   // Initial paint + kick off the first fetch. `refreshRows` would
@@ -1323,6 +1504,11 @@ export const mountNotificationsPanel = (
     getTogglingAxes: () => togglingAxes,
     getRowError: (channel) => rowErrorFor(channel),
     getListError: () => listError,
+    hasInFlightWork: () =>
+      pendingTogglePromises.size > 0
+      || pendingBridgeTogglePromises.size > 0
+      || pendingPhrasePromise !== null,
+    hasUnsavedChanges: () => phraseDirty,
     getVerificationPhrase: () => verificationPhrase,
     getPhraseError: () => phraseError,
     savePhrase: (next) => savePhrase(next),

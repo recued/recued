@@ -3,23 +3,23 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://api.attio.com/openapi/api",
-      "bytes": 755531,
-      "sha256": "21ee487c2b27364bef910413564824441d72da030e6679f2edac47c7548ff120",
+      "bytes": 770609,
+      "sha256": "c9696abec45c3577a299d8e78ea29b650689f6b729f2b89d2c9e19e65ee91a0d",
       "openapi": "3.1.0",
       "api_version": "2.0.0",
-      "retrieved_on": "2026-07-15",
+      "retrieved_on": "2026-08-03",
       "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract."
     },
-    "official_operation_count": 75,
-    "official_unique_route_count": 75,
+    "official_operation_count": 77,
+    "official_unique_route_count": 77,
     "admitted_unique_route_count": 73,
     "declared_operation_count": 79,
-    "excluded_operation_count": 2,
+    "excluded_operation_count": 4,
     "official_method_counts": {
       "DELETE": 8,
-      "GET": 35,
+      "GET": 36,
       "PATCH": 9,
-      "POST": 19,
+      "POST": 20,
       "PUT": 4
     },
     "admitted_method_counts": {
@@ -90,7 +90,7 @@
       "add-record-note-attio": 2,
       "create-follow-up-task-attio": 2
     },
-    "composition_bytes": 103227,
+    "composition_bytes": 103402,
     "risk_counts": {
       "admin": 12,
       "destructive": 8,
@@ -124,6 +124,20 @@
       "structured_json": 13
     },
     "exclusions": [
+      {
+        "operation_id": "record.merge",
+        "method": "POST",
+        "path": "/v2/objects/{object}/records/merge",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the previous reviewed pin. Merging two records is irreversible and collapses identity across the CRM, so admitting it requires a deliberate risk-tier and approval review rather than inheriting the defaults this generator applies to write routes. Held out until that review happens."
+      },
+      {
+        "operation_id": "email.search",
+        "method": "GET",
+        "path": "/v2/emails",
+        "category": "unreviewed_new_route",
+        "reason": "Added by the vendor after the previous reviewed pin. It exposes a new message-content read surface whose response shape, pagination contract and scope requirements have not been reviewed against this pack, and a read of mail bodies deserves that review before it ships. Held out until then."
+      },
       {
         "operation_id": "file.upload",
         "method": "POST",
@@ -999,6 +1013,37 @@
       "operations": [
         "record.delete"
       ]
+    },
+    {
+      "method": "POST",
+      "path": "/v2/objects/{object}/records/merge",
+      "operation_id": "record.merge",
+      "tag": "Records",
+      "summary": "Merge two records",
+      "request_media": [
+        "application/json"
+      ],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "record_permission:read-write",
+        "object_configuration:read"
+      ],
+      "maturity": "BETA",
+      "hidden": true,
+      "parameters": [
+        {
+          "in": "path",
+          "name": "object",
+          "required": true,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
     },
     {
       "method": "GET",
@@ -2164,6 +2209,78 @@
     },
     {
       "method": "GET",
+      "path": "/v2/emails",
+      "operation_id": "email.search",
+      "tag": "Emails",
+      "summary": "List emails",
+      "request_media": [],
+      "response_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "required_scopes": [
+        "email:read",
+        "record_permission:read",
+        "object_configuration:read"
+      ],
+      "maturity": "ALPHA",
+      "hidden": true,
+      "parameters": [
+        {
+          "in": "query",
+          "name": "limit",
+          "required": false,
+          "type": "number"
+        },
+        {
+          "in": "query",
+          "name": "cursor",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "linked_object",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "linked_record_ids",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "participants",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "domain",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "sent_after",
+          "required": false,
+          "type": "string"
+        },
+        {
+          "in": "query",
+          "name": "sent_before",
+          "required": false,
+          "type": "string"
+        }
+      ],
+      "selected": false,
+      "operations": [],
+      "exclusion": "unreviewed_new_route"
+    },
+    {
+      "method": "GET",
       "path": "/v2/meetings",
       "operation_id": "meeting.search",
       "tag": "Meetings",
@@ -2245,7 +2362,7 @@
       "path": "/v2/meetings",
       "operation_id": "meeting.create_or_find",
       "tag": "Meetings",
-      "summary": "Find or create a meeting",
+      "summary": "Create a meeting",
       "request_media": [
         "application/json"
       ],
@@ -2257,8 +2374,8 @@
         "meeting:read-write",
         "record_permission:read"
       ],
-      "maturity": "ALPHA",
-      "hidden": true,
+      "maturity": "BETA",
+      "hidden": false,
       "parameters": [],
       "selected": true,
       "operations": [
@@ -2354,8 +2471,8 @@
         "meeting:read",
         "call_recording:read-write"
       ],
-      "maturity": "ALPHA",
-      "hidden": true,
+      "maturity": "BETA",
+      "hidden": false,
       "parameters": [
         {
           "in": "path",
@@ -2420,8 +2537,8 @@
         "meeting:read",
         "call_recording:read-write"
       ],
-      "maturity": "ALPHA",
-      "hidden": true,
+      "maturity": "BETA",
+      "hidden": false,
       "parameters": [
         {
           "in": "path",
@@ -2446,7 +2563,7 @@
       "path": "/v2/meetings/{meeting_id}/call_recordings/{call_recording_id}/transcript",
       "operation_id": "call_transcript.read",
       "tag": "Transcripts",
-      "summary": "Get call transcript",
+      "summary": "Deprecated: Get call transcript",
       "request_media": [],
       "response_status": "200",
       "response_media": [
@@ -2457,7 +2574,7 @@
         "call_recording:read"
       ],
       "maturity": "BETA",
-      "hidden": false,
+      "hidden": true,
       "parameters": [
         {
           "in": "path",

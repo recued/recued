@@ -21,6 +21,7 @@ import type {
 
 import {
   bootstrapChatRoute,
+  CHAT_ROUTE_INPUT_ATTR,
   CHAT_ROUTE_SEND_ATTR,
   CHAT_ROUTE_TURN_FAILURE_ATTR,
   type ChatRoute,
@@ -50,8 +51,11 @@ interface FakeEl {
 
 interface FakeDoc {
   styleElements: FakeEl[];
+  listeners: Map<string, Array<(event?: unknown) => void>>;
   head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl };
   createElement(tag: string): FakeEl;
+  addEventListener(type: string, fn: (event?: unknown) => void): void;
+  removeEventListener(type: string, fn: (event?: unknown) => void): void;
 }
 
 const makeFakeEl = (tag: string): FakeEl => {
@@ -108,12 +112,14 @@ const makeFakeEl = (tag: string): FakeEl => {
 
 const makeFakeDocument = (): FakeDoc => {
   const styleElements: FakeEl[] = [];
+  const listeners = new Map<string, Array<(event?: unknown) => void>>();
   const matchSelector = (sel: string): { tag: string; attr: string } | null => {
     const m = sel.match(/^([\w-]+)\[([\w-]+)\]$/);
     return m === null ? null : { tag: m[1]!.toUpperCase(), attr: m[2]! };
   };
   return {
     styleElements,
+    listeners,
     head: {
       querySelector(sel) {
         const parsed = matchSelector(sel);
@@ -130,6 +136,17 @@ const makeFakeDocument = (): FakeDoc => {
       },
     },
     createElement: (tag) => makeFakeEl(tag),
+    addEventListener(type, fn) {
+      const list = listeners.get(type) ?? [];
+      list.push(fn);
+      listeners.set(type, list);
+    },
+    removeEventListener(type, fn) {
+      const list = listeners.get(type);
+      if (list === undefined) return;
+      const index = list.indexOf(fn);
+      if (index >= 0) list.splice(index, 1);
+    },
   };
 };
 
@@ -289,6 +306,21 @@ const mountChatRoute = (
 const sendButton = (root: FakeEl): FakeEl =>
   collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]!;
 
+/** Put a real draft in the composer.
+ *
+ *  ⛔ REQUIRED BEFORE ASSERTING Send IS ENABLED. `0ff7af11e` made
+ *  `send.disabled` also depend on the draft being non-empty, and sending clears
+ *  the composer — so after a turn settles the button stays disabled for a reason
+ *  that has nothing to do with this file's subject. Typing first leaves the
+ *  SEND LOCK as the only thing that can still be holding it, which is what these
+ *  tests are actually about. That commit updated d-174-p2 the same way and
+ *  missed this file; nothing ran it, so it went unnoticed for two days. */
+const typeDraft = (root: FakeEl, text = 'another message'): void => {
+  const input = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+  input.value = text;
+  for (const listener of input.listeners.get('input') ?? []) listener();
+};
+
 describe('D-137 ack-before-run — route send lock', () => {
   it('keeps the composer locked after the early ack until message_complete settles it', async () => {
     const h = mountChatRoute(async () => ({ turn_id: 't1' }));
@@ -312,6 +344,7 @@ describe('D-137 ack-before-run — route send lock', () => {
     });
     await tick();
 
+    typeDraft(h.root);
     expect(sendButton(h.root).disabled).toBe(false);
     expect(sendButton(h.root).textContent).toBe('Send');
 
@@ -334,6 +367,7 @@ describe('D-137 ack-before-run — route send lock', () => {
     });
     await tick();
 
+    typeDraft(h.root);
     expect(sendButton(h.root).disabled).toBe(false);
     const notices = collectByAttr(h.root, CHAT_ROUTE_TURN_FAILURE_ATTR);
     expect(notices).toHaveLength(1);
@@ -365,13 +399,26 @@ describe('D-137 ack-before-run — route send lock', () => {
     await sending;
     await tick();
 
+    typeDraft(h.root);
     expect(sendButton(h.root).disabled).toBe(false);
     expect(sendButton(h.root).textContent).toBe('Send');
 
     h.route.dispose();
   });
 
-  it('clears the lock on a session switch mid-pending (the old turn can never settle here)', async () => {
+  /** ⛔ THIS ASSERTED THE OPPOSITE UNTIL `b2da7fa69`, AND THE CONTRACT INVERTED.
+   *
+   *  It used to require that switching sessions mid-pending CLEARED the lock, on
+   *  the reasoning that the old turn could never settle once you had navigated
+   *  away. `retainPendingSend` removed the premise instead: a pending turn now
+   *  keeps its thread, so the switch is refused and the turn CAN still settle —
+   *  "a pending turn stays owned by its current thread", per the source. The
+   *  composer stays editable so a rejected change returns to the textarea rather
+   *  than moving or disabling it.
+   *
+   *  Rewritten rather than deleted: the file's subject is what releases the send
+   *  lock, and "a navigation attempt does NOT release it" is now part of that. */
+  it('refuses a session switch mid-pending and keeps the turn attached, so it can still settle', async () => {
     const h = mountChatRoute(async () => ({ turn_id: 't1' }));
     await tick();
     await h.route.openSession('chat_1');
@@ -381,6 +428,24 @@ describe('D-137 ack-before-run — route send lock', () => {
     await h.route.openSession('chat_2');
     await tick();
 
+    // The switch was refused: the turn is still in flight and still locked, and
+    // a draft cannot unlock it — only the turn settling can.
+    expect(h.route.getThread().inflight?.turn_id).toBe('t1');
+    typeDraft(h.root);
+    expect(sendButton(h.root).disabled).toBe(true);
+    expect(sendButton(h.root).textContent).toBe('Sending...');
+
+    // …and because the thread was retained, the original turn still settles it.
+    h.publish({
+      kind: 'chat.message_complete',
+      session_id: 'chat_1',
+      turn_id: 't1',
+      final: assistantMessage('msg_1'),
+      cursor: 1,
+    });
+    await tick();
+
+    typeDraft(h.root);
     expect(sendButton(h.root).disabled).toBe(false);
     expect(sendButton(h.root).textContent).toBe('Send');
 

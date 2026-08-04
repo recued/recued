@@ -38,6 +38,10 @@ export interface GrantUniverseEntry {
    *  filter the universe to one pack's membership. Absent on kernel ops,
    *  collections, and topics. */
   ingredientId?: string;
+  /** The pack that installed this ingredient, as the SERVER reports it. A pack
+   *  surface filters on this rather than deriving membership from the manifest —
+   *  a Records pack's catalog id matches no name its author wrote. */
+  packSlug?: string;
   /** Ops only — the risk tier (drives the badge + "asks" mark). */
   risk_tier?: string;
   /** Topics only — the author description. */
@@ -106,6 +110,7 @@ export const catalogOpUniverseEntries = (
         label: op.operation_id,
         group: ing.name,
         ingredientId: ing.ingredient_id,
+        ...(ing.pack_slug !== undefined ? { packSlug: ing.pack_slug } : {}),
         risk_tier: op.risk_tier,
         authorDefault: op.risk_tier === 'read',
         ...(op.also_reads !== undefined && op.also_reads.length > 0

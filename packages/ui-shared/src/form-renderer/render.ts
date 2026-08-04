@@ -20,7 +20,10 @@ import {
 } from '@recued/contracts';
 import { e } from '../template.js';
 import { initialRefPickerState } from '../ref-picker/model.js';
-import { renderRefPicker } from '../ref-picker/render.js';
+import {
+  REF_PICKER_INPUT_ATTR,
+  renderRefPicker,
+} from '../ref-picker/render.js';
 
 export interface FormRenderOptions {
   /** Initial values keyed by field name. Missing keys fall back to
@@ -80,9 +83,19 @@ export const renderField = (
     && !evaluateShowIf(field.show_if, options.values ?? {});
   const hidden = (field.hidden && !showHidden) || showIfHidden;
   return wrapRow(field, hidden, error, () =>
-    renderInput(field, value, options),
+    renderInput(field, value, options, error),
   );
 };
+
+const errorId = (field: FormField): string =>
+  `form-renderer-${field.name}-error`;
+
+const invalidAttrs = (
+  field: FormField,
+  error: string | undefined,
+): string => error === undefined
+  ? ''
+  : ` aria-invalid="true" aria-describedby="${e(errorId(field))}"`;
 
 const wrapRow = (
   field: FormField,
@@ -95,8 +108,8 @@ const wrapRow = (
   const helpHtml = field.description
     ? `<p class="form-renderer-help">${e(field.description)}</p>`
     : '';
-  const errorHtml = error
-    ? `<p class="form-renderer-error" role="alert">${e(error)}</p>`
+  const errorHtml = error !== undefined
+    ? `<p class="form-renderer-error" id="${e(errorId(field))}" role="alert">${e(error)}</p>`
     : '';
   const inner = innerFn();
   const inlineAttr = inline ? ' data-form-row-inline="true"' : '';
@@ -142,36 +155,41 @@ const renderInput = (
   field: FormField,
   value: unknown,
   options: FormRenderOptions,
+  error: string | undefined,
 ): string => {
   switch (field.type) {
     case 'text':
-      return renderTextInput(field, value);
+      return renderTextInput(field, value, error);
     case 'textarea':
-      return renderTextarea(field, value);
+      return renderTextarea(field, value, error);
     case 'number':
-      return renderNumberInput(field, value);
+      return renderNumberInput(field, value, error);
     case 'boolean':
-      return renderCheckbox(field, value);
+      return renderCheckbox(field, value, error);
     case 'date':
-      return renderDateInput(field, value);
+      return renderDateInput(field, value, error);
     case 'timestamp':
-      return renderTimestampInput(field, value);
+      return renderTimestampInput(field, value, error);
     case 'enum':
-      return renderSelect(field, value);
+      return renderSelect(field, value, error);
     case 'ref':
-      return renderRefInput(field, value, options);
+      return renderRefInput(field, value, options, error);
     case 'uuid':
-      return renderUuidInput(field, value);
+      return renderUuidInput(field, value, error);
     case 'array':
-      return renderArray(field, value, options);
+      return renderArray(field, value, options, error);
     case 'object':
-      return renderObject(field, value, options);
+      return renderObject(field, value, options, error);
     case 'discriminated_union':
-      return renderDiscriminatedUnion(field, value, options);
+      return renderDiscriminatedUnion(field, value, options, error);
   }
 };
 
-const renderTextInput = (field: FormField, value: unknown): string => {
+const renderTextInput = (
+  field: FormField,
+  value: unknown,
+  error: string | undefined,
+): string => {
   const display = stringValue(value);
   const max = field.max_length !== undefined ? ` maxlength="${field.max_length}"` : '';
   const pattern = field.pattern !== undefined ? ` pattern="${e(field.pattern)}"` : '';
@@ -181,22 +199,30 @@ const renderTextInput = (field: FormField, value: unknown): string => {
     type="text"
     data-form-field="${e(field.name)}"
     data-form-type="text"
-    value="${e(display)}"${max}${pattern}
+    value="${e(display)}"${max}${pattern}${invalidAttrs(field, error)}
   />`;
 };
 
-const renderTextarea = (field: FormField, value: unknown): string => {
+const renderTextarea = (
+  field: FormField,
+  value: unknown,
+  error: string | undefined,
+): string => {
   const display = stringValue(value);
   const max = field.max_length !== undefined ? ` maxlength="${field.max_length}"` : '';
   return `<textarea
     id="form-renderer-${e(field.name)}"
     class="form-renderer-textarea"
     data-form-field="${e(field.name)}"
-    data-form-type="textarea"${max}
+    data-form-type="textarea"${max}${invalidAttrs(field, error)}
   >${e(display)}</textarea>`;
 };
 
-const renderNumberInput = (field: FormField, value: unknown): string => {
+const renderNumberInput = (
+  field: FormField,
+  value: unknown,
+  error: string | undefined,
+): string => {
   const display =
     value === undefined || value === null || value === ''
       ? ''
@@ -210,23 +236,31 @@ const renderNumberInput = (field: FormField, value: unknown): string => {
     type="number"
     data-form-field="${e(field.name)}"
     data-form-type="number"
-    value="${e(display)}"${min}${max}${step}
+    value="${e(display)}"${min}${max}${step}${invalidAttrs(field, error)}
   />`;
 };
 
-const renderCheckbox = (field: FormField, value: unknown): string => {
+const renderCheckbox = (
+  field: FormField,
+  value: unknown,
+  error: string | undefined,
+): string => {
   const checked = value === true;
   return `<input
     id="form-renderer-${e(field.name)}"
     class="form-renderer-input"
     type="checkbox"
     data-form-field="${e(field.name)}"
-    data-form-type="boolean"
+    data-form-type="boolean"${invalidAttrs(field, error)}
     ${checked ? 'checked' : ''}
   />`;
 };
 
-const renderDateInput = (field: FormField, value: unknown): string => {
+const renderDateInput = (
+  field: FormField,
+  value: unknown,
+  error: string | undefined,
+): string => {
   const display = stringValue(value);
   return `<input
     id="form-renderer-${e(field.name)}"
@@ -234,7 +268,7 @@ const renderDateInput = (field: FormField, value: unknown): string => {
     type="date"
     data-form-field="${e(field.name)}"
     data-form-type="date"
-    value="${e(display)}"
+    value="${e(display)}"${invalidAttrs(field, error)}
   />`;
 };
 
@@ -242,7 +276,11 @@ const renderDateInput = (field: FormField, value: unknown): string => {
  *  read path stamps the user's offset on retrieval (see `read.ts`).
  *  The pre-fill format is `YYYY-MM-DDTHH:MM` (sliced from a stored
  *  ISO string). The read path emits a TZ-explicit ISO string. */
-const renderTimestampInput = (field: FormField, value: unknown): string => {
+const renderTimestampInput = (
+  field: FormField,
+  value: unknown,
+  error: string | undefined,
+): string => {
   const display = formatTimestampForInput(value);
   return `<input
     id="form-renderer-${e(field.name)}"
@@ -250,11 +288,15 @@ const renderTimestampInput = (field: FormField, value: unknown): string => {
     type="datetime-local"
     data-form-field="${e(field.name)}"
     data-form-type="timestamp"
-    value="${e(display)}"
+    value="${e(display)}"${invalidAttrs(field, error)}
   />`;
 };
 
-const renderSelect = (field: FormField, value: unknown): string => {
+const renderSelect = (
+  field: FormField,
+  value: unknown,
+  error: string | undefined,
+): string => {
   const allowed = field.enum_values ?? [];
   const selected = stringValue(value);
   const placeholderOption = field.required
@@ -270,7 +312,7 @@ const renderSelect = (field: FormField, value: unknown): string => {
     id="form-renderer-${e(field.name)}"
     class="form-renderer-select"
     data-form-field="${e(field.name)}"
-    data-form-type="enum"
+    data-form-type="enum"${invalidAttrs(field, error)}
   >${placeholderOption}${options}</select>`;
 };
 
@@ -284,6 +326,7 @@ const renderRefInput = (
   field: FormField,
   value: unknown,
   options: FormRenderOptions,
+  error: string | undefined,
 ): string => {
   if (options.refPicker === true && field.ref_target === CONTACT_REF_TARGET) {
     return renderRefPicker(refPickerSeedState(value), {
@@ -291,7 +334,10 @@ const renderRefInput = (
       placeholder: 'Search contacts…',
       ariaLabel: field.label,
       formFieldName: field.name,
-    });
+    }).replace(
+      ` ${REF_PICKER_INPUT_ATTR}`,
+      ` ${REF_PICKER_INPUT_ATTR}${invalidAttrs(field, error)}`,
+    );
   }
   const display = stringValue(value);
   const target = field.ref_target ?? '';
@@ -304,7 +350,7 @@ const renderRefInput = (
     data-form-ref-target="${e(target)}"
     value="${e(display)}"
     autocomplete="off"
-    spellcheck="false"
+    spellcheck="false"${invalidAttrs(field, error)}
   />`;
 };
 
@@ -324,14 +370,18 @@ const refPickerSeedState = (value: unknown) => {
   return id === '' ? initialRefPickerState() : initialRefPickerState({ id, label: id });
 };
 
-const renderUuidInput = (field: FormField, value: unknown): string => {
+const renderUuidInput = (
+  field: FormField,
+  value: unknown,
+  error: string | undefined,
+): string => {
   const display = stringValue(value);
   return `<input
     id="form-renderer-${e(field.name)}"
     type="hidden"
     data-form-field="${e(field.name)}"
     data-form-type="uuid"
-    value="${e(display)}"
+    value="${e(display)}"${invalidAttrs(field, error)}
   />`;
 };
 
@@ -339,6 +389,7 @@ const renderArray = (
   field: FormField,
   value: unknown,
   options: FormRenderOptions,
+  error: string | undefined,
 ): string => {
   const items = Array.isArray(value) ? value : [];
   const itemType = field.item_type;
@@ -365,7 +416,7 @@ const renderArray = (
     class="form-renderer-array"
     data-form-field="${e(field.name)}"
     data-form-type="array"
-    data-form-item-type="${e(itemType ?? 'text')}"${refTarget ? ` data-form-ref-target="${e(refTarget)}"` : ''}
+    data-form-item-type="${e(itemType ?? 'text')}"${refTarget ? ` data-form-ref-target="${e(refTarget)}"` : ''}${invalidAttrs(field, error)}
   >
     ${itemRows}
     ${empty}
@@ -524,6 +575,7 @@ const renderObject = (
   field: FormField,
   value: unknown,
   options: FormRenderOptions,
+  error: string | undefined,
 ): string => {
   const subFields = field.object_fields ?? [];
   const subValues = isRecord(value) ? value : {};
@@ -531,7 +583,7 @@ const renderObject = (
   return `<div
     class="form-renderer-object"
     data-form-field="${e(field.name)}"
-    data-form-type="object"
+    data-form-type="object"${invalidAttrs(field, error)}
   >
     <div class="form-renderer-object-scope" data-form-object-scope="${e(field.name)}">${inner}</div>
   </div>`;
@@ -552,6 +604,7 @@ const renderDiscriminatedUnion = (
   field: FormField,
   value: unknown,
   options: FormRenderOptions,
+  error: string | undefined,
 ): string => {
   const variants = field.variants ?? [];
   const discriminantKey = field.discriminant_field ?? 'kind';
@@ -568,7 +621,7 @@ const renderDiscriminatedUnion = (
     class="form-renderer-union"
     data-form-field="${e(field.name)}"
     data-form-type="discriminated_union"
-    data-form-discriminant-field="${e(discriminantKey)}"${field.lazy_variants === true ? ' data-form-lazy-variants="true"' : ''}
+    data-form-discriminant-field="${e(discriminantKey)}"${field.lazy_variants === true ? ' data-form-lazy-variants="true"' : ''}${invalidAttrs(field, error)}
   >
     ${inner}
   </div>`;

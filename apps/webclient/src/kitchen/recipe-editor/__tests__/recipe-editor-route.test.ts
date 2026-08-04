@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { FORM_RESPONSE_ON_SHORTHAND, type RecipeDefinition } from '@recued/contracts';
+import {
+  FORM_RESPONSE_ON_SHORTHAND,
+  type LocalRecipeWebhookStatus,
+  type RecipeDefinition,
+} from '@recued/contracts';
 
 import {
   RECIPE_EDITOR_ADD_ATTR,
@@ -16,6 +20,7 @@ import {
   RECIPE_EDITOR_FIELD_ATTR,
   RECIPE_EDITOR_FORM_RESPONSE_READER_ACTION_ATTR,
   RECIPE_EDITOR_FORM_RESPONSE_READER_ATTR,
+  RECIPE_EDITOR_HEADING_ATTR,
   RECIPE_EDITOR_ISSUE_ATTR,
   RECIPE_EDITOR_MOVE_DOWN_ATTR,
   RECIPE_EDITOR_MOVE_UP_ATTR,
@@ -79,6 +84,7 @@ interface FakeElement {
   listeners: Map<string, Array<() => void>>;
   readonly firstChild: FakeElement | null;
   setAttribute(k: string, v: string): void;
+  removeAttribute(k: string): void;
   getAttribute(k: string): string | null;
   hasAttribute(k: string): boolean;
   appendChild(el: FakeElement): FakeElement;
@@ -87,10 +93,12 @@ interface FakeElement {
   addEventListener(name: string, fn: () => void): void;
   click(): void;
   dispatch(name: string): void;
+  focus(): void;
 }
 
 interface FakeDocument {
   styleElements: FakeElement[];
+  activeElement: FakeElement | null;
   head: {
     querySelector(sel: string): FakeElement | null;
     appendChild(el: FakeElement): FakeElement;
@@ -98,7 +106,10 @@ interface FakeDocument {
   createElement(tag: string): FakeElement;
 }
 
-const makeFakeElement = (tagName: string): FakeElement => {
+const makeFakeElement = (
+  tagName: string,
+  onFocus: (element: FakeElement) => void = () => {},
+): FakeElement => {
   const el: FakeElement = {
     tagName: tagName.toUpperCase(),
     textContent: '',
@@ -118,6 +129,9 @@ const makeFakeElement = (tagName: string): FakeElement => {
     setAttribute(k, v) {
       el.attrs.set(k, v);
       if (k === 'type') el.type = v;
+    },
+    removeAttribute(k) {
+      el.attrs.delete(k);
     },
     getAttribute(k) {
       return el.attrs.get(k) ?? null;
@@ -152,6 +166,9 @@ const makeFakeElement = (tagName: string): FakeElement => {
     dispatch(name) {
       for (const fn of el.listeners.get(name) ?? []) fn();
     },
+    focus() {
+      onFocus(el);
+    },
   };
   return el;
 };
@@ -162,8 +179,9 @@ const makeFakeDocument = (): FakeDocument => {
     const m = sel.match(/^style\[([\w-]+)\]$/);
     return m === null ? null : m[1]!;
   };
-  return {
+  const doc: FakeDocument = {
     styleElements,
+    activeElement: null,
     head: {
       querySelector(sel) {
         const attr = attrFromSelector(sel);
@@ -175,8 +193,11 @@ const makeFakeDocument = (): FakeDocument => {
         return el;
       },
     },
-    createElement: (tag) => makeFakeElement(tag),
+    createElement: (tag) => makeFakeElement(tag, (element) => {
+      doc.activeElement = element;
+    }),
   };
+  return doc;
 };
 
 const findAllByAttr = (
@@ -288,7 +309,7 @@ const connVar = (label: string, kind = 'api'): never =>
 
 describe('recipe-editor step inspector route', () => {
   it('mounts with a blank recipe and an empty Steps section', () => {
-    const { root, route } = mount();
+    const { doc, root, route } = mount();
 
     expect(findByAttr(root, RECIPE_EDITOR_ROUTE_ATTR)).toBeDefined();
     expect(findAllByAttr(root, RECIPE_EDITOR_ROW_ATTR)).toHaveLength(0);
@@ -296,6 +317,7 @@ describe('recipe-editor step inspector route', () => {
     expect(findByAttrValue(root, 'aria-label', 'Recipe editor controls')).toBeDefined();
     expect(textOf(root)).toContain('Recipe workspace Recipe editor');
     expect(textOf(root)).toContain('Build, validate, and save this automation.');
+    expect(doc.activeElement).toBe(findByAttr(root, RECIPE_EDITOR_HEADING_ATTR));
     expect(textOf(root)).toContain('Add a step Steps run in order, from top to bottom.');
     expect(textOf(root)).toContain('No steps yet');
     expect(findByAttr(root, RECIPE_EDITOR_RECIPE_ID_ATTR)?.getAttribute('aria-label'))
@@ -312,6 +334,23 @@ describe('recipe-editor step inspector route', () => {
 
     route.dispose();
     expect(findByAttr(root, RECIPE_EDITOR_ROUTE_ATTR)).toBeUndefined();
+  });
+
+  it('does not steal initial focus from a control outside the editor root', () => {
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const outside = doc.createElement('button');
+    outside.focus();
+
+    const route = bootstrapRecipeEditorRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      validateCaller: okValidate,
+      saveCaller: okSave,
+    });
+
+    expect(doc.activeElement).toBe(outside);
+    route.dispose();
   });
 
   it('Add step appends a transform step card', () => {
@@ -364,15 +403,22 @@ describe('recipe-editor step inspector route', () => {
       steps: [{ id: 'gate', guard: '{{step.x}}' } as never],
       output: { render: [] },
     };
-    const { root, route } = mount({ initialRecipe });
+    const { doc, root, route } = mount({ initialRecipe });
 
     // An unset condition renders no builder — only the reveal button.
     expect(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'skip_when')).toBeUndefined();
-    findByAttrValue(root, RECIPE_EDITOR_COND_ADD_ATTR, 'gate:skip_when')?.click();
+    const reveal = findByAttrValue(root, RECIPE_EDITOR_COND_ADD_ATTR, 'gate:skip_when')!;
+    reveal.focus();
+    reveal.click();
 
-    setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'skip_when'), '{{step.x}}');
+    const source = findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'skip_when')!;
+    expect(doc.activeElement).toBe(source);
+    setValue(source, '{{step.x}}');
+    expect(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'skip_when')).toBe(source);
     setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'skip_when_op'), 'equal');
-    setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'skip_when_value'), 'done');
+    const value = findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'skip_when_value')!;
+    setValue(value, 'done');
+    expect(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'skip_when_value')).toBe(value);
 
     expect((route.getRecipe().steps[0] as { skip_when?: string }).skip_when).toBe(
       '{{step.x}} equal done',
@@ -415,20 +461,25 @@ describe('recipe-editor step inspector route', () => {
       steps: [{ id: 'gate', guard: '{{step.x}}' } as never],
       output: { render: [] },
     };
-    const { root, route } = mount({ initialRecipe });
+    const { doc, root, route } = mount({ initialRecipe });
 
     findByAttrValue(root, RECIPE_EDITOR_COND_ADD_ATTR, 'gate:skip_when')?.click();
     setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'skip_when'), '{{step.x}}');
-    setValue(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'skip_when_op'), 'is_null');
+    const operator = findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'skip_when_op')!;
+    operator.focus();
+    setValue(operator, 'is_null');
 
     // The value input is hidden for a unary op.
     expect(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'skip_when_value')).toBeUndefined();
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'skip_when_op'),
+    );
     expect((route.getRecipe().steps[0] as { skip_when?: string }).skip_when).toBe(
       '{{step.x}} is_null',
     );
   });
 
-  it('Remove deletes a step', () => {
+  it('Remove deletes a step and focuses its next survivor', () => {
     const initialRecipe: RecipeDefinition = {
       recipe_id: 'r1',
       version: 1,
@@ -442,13 +493,38 @@ describe('recipe-editor step inspector route', () => {
       ],
       output: { render: [] },
     };
-    const { root, route } = mount({ initialRecipe });
+    const { doc, root, route } = mount({ initialRecipe });
 
     expect(findAllByAttr(root, RECIPE_EDITOR_ROW_ATTR)).toHaveLength(2);
-    findByAttrValue(root, RECIPE_EDITOR_REMOVE_ATTR, 'a')?.click();
+    const remove = findByAttrValue(root, RECIPE_EDITOR_REMOVE_ATTR, 'a')!;
+    remove.focus();
+    remove.click();
 
     expect(findAllByAttr(root, RECIPE_EDITOR_ROW_ATTR)).toHaveLength(1);
     expect(route.getRecipe().steps.map((s) => s.id)).toEqual(['b']);
+    expect(doc.activeElement?.className).toBe('recipe-editor-step-summary');
+    expect(doc.activeElement?.parent?.getAttribute(RECIPE_EDITOR_ROW_ATTR)).toBe('b');
+  });
+
+  it('Remove focuses Add step when the recipe becomes empty', () => {
+    const initialRecipe: RecipeDefinition = {
+      recipe_id: 'r1',
+      version: 1,
+      ttl: 300,
+      metadata: { name: 'R1', description: '', author: '', supported_platforms: [] },
+      variables: {},
+      prefetch_steps: [],
+      steps: [{ id: 'only', guard: '{{x}}' } as never],
+      output: { render: [] },
+    };
+    const { doc, root } = mount({ initialRecipe });
+
+    const remove = findByAttrValue(root, RECIPE_EDITOR_REMOVE_ATTR, 'only')!;
+    remove.focus();
+    remove.click();
+
+    expect(findAllByAttr(root, RECIPE_EDITOR_ROW_ATTR)).toHaveLength(0);
+    expect(doc.activeElement).toBe(findByAttr(root, RECIPE_EDITOR_ADD_ATTR));
   });
 
   it('renaming a step id rewrites references everywhere', () => {
@@ -465,14 +541,43 @@ describe('recipe-editor step inspector route', () => {
       ],
       output: { render: [] },
     };
-    const { root, route } = mount({ initialRecipe });
+    const { doc, root, route } = mount({ initialRecipe });
 
     const idInput = findAllByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'step_id')[0];
+    idInput?.focus();
     setValue(idInput, 'load');
 
     const recipe = route.getRecipe();
     expect(recipe.steps.map((s) => s.id)).toEqual(['load', 'use']);
     expect((recipe.steps[1] as { value?: string }).value).toBe('{{step.load}}');
+    expect(doc.activeElement).toBe(
+      findAllByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'step_id')[0],
+    );
+    expect(doc.activeElement?.value).toBe('load');
+  });
+
+  it('an invalid step rename reverts and keeps its field focused', () => {
+    const initialRecipe: RecipeDefinition = {
+      recipe_id: 'r1',
+      version: 1,
+      ttl: 300,
+      metadata: { name: 'R1', description: '', author: '', supported_platforms: [] },
+      variables: {},
+      prefetch_steps: [],
+      steps: [{ id: 'fetch', guard: '{{x}}' } as never],
+      output: { render: [] },
+    };
+    const { doc, root, route } = mount({ initialRecipe });
+
+    const idInput = findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'step_id')!;
+    idInput.focus();
+    setValue(idInput, 'not-valid');
+
+    expect(route.getRecipe().steps[0]?.id).toBe('fetch');
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'step_id'),
+    );
+    expect(doc.activeElement?.value).toBe('fetch');
   });
 
   it('Validate calls the stub and renders issues', async () => {
@@ -486,9 +591,11 @@ describe('recipe-editor step inspector route', () => {
         ],
       };
     };
-    const { root } = mount({ validateCaller });
+    const { doc, root } = mount({ validateCaller });
 
-    findByAttr(root, RECIPE_EDITOR_VALIDATE_ATTR)?.click();
+    const validate = findByAttr(root, RECIPE_EDITOR_VALIDATE_ATTR)!;
+    validate.focus();
+    validate.click();
     await tick();
 
     expect(validateCalls).toHaveLength(1);
@@ -498,22 +605,104 @@ describe('recipe-editor step inspector route', () => {
     expect(findByAttr(root, RECIPE_EDITOR_STATUS_ATTR)?.textContent).toContain(
       'Validation failed',
     );
+    expect(doc.activeElement).toBe(
+      findByAttr(root, RECIPE_EDITOR_VALIDATE_ATTR),
+    );
   });
 
-  it('Save calls the stub save caller', async () => {
-    const saveCalls: RecipeDefinition[] = [];
-    const saveCaller: BootstrapSave = async (args) => {
-      saveCalls.push(args.recipe);
-      return { saved: true, recipe_id: args.recipe.recipe_id, version: 3, name: 'R' };
-    };
-    const { root } = mount({ saveCaller });
+  it('does not apply a stale validation result after newer edits', async () => {
+    let finishValidate!: (result: RecipeValidateResult) => void;
+    const validateCaller: BootstrapValidate = () => new Promise((resolve) => {
+      finishValidate = resolve;
+    });
+    const { doc, root, route } = mount({ validateCaller });
 
-    findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
+    findByAttr(root, RECIPE_EDITOR_VALIDATE_ATTR)?.click();
+    const name = findByAttrValue(
+      root,
+      RECIPE_EDITOR_FIELD_ATTR,
+      'recipe_name',
+    )!;
+    name.focus();
+    setValue(name, 'Edited while validation was pending');
+
+    finishValidate({
+      ok: false,
+      issues: [{
+        path: 'metadata.name',
+        message: 'This belongs to the older snapshot',
+        severity: 'error',
+      }],
+    });
+    await tick();
+
+    expect(route.hasUnsavedChanges()).toBe(true);
+    expect(findByAttr(root, RECIPE_EDITOR_DIRTY_ATTR)?.textContent).toBe('Unsaved');
+    expect(findByAttr(root, RECIPE_EDITOR_STATUS_ATTR)?.textContent)
+      .toBe('Validation finished — newer edits pending');
+    expect(findByAttr(root, RECIPE_EDITOR_ISSUE_ATTR)).toBeUndefined();
+    expect(textOf(root)).not.toContain('This belongs to the older snapshot');
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'recipe_name'),
+    );
+  });
+
+  it('keeps Save focused and single-flight while the save caller is pending', async () => {
+    const saveCalls: RecipeDefinition[] = [];
+    const saveGate: {
+      finish?: (result: RecipeSaveResult) => void;
+    } = {};
+    const saveCaller: BootstrapSave = (args) => {
+      saveCalls.push(args.recipe);
+      return new Promise((resolve) => {
+        saveGate.finish = resolve;
+      });
+    };
+    const { doc, root } = mount({ saveCaller });
+
+    const save = findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)!;
+    save.focus();
+    save.click();
+    const busySave = findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)!;
+    expect(busySave.disabled).toBe(false);
+    expect(busySave.getAttribute('aria-disabled')).toBe('true');
+    expect(busySave.getAttribute('aria-busy')).toBe('true');
+    expect(doc.activeElement).toBe(busySave);
+    busySave.click();
+    expect(saveCalls).toHaveLength(1);
+    saveGate.finish?.({
+      saved: true,
+      recipe_id: 'new-recipe',
+      version: 3,
+      name: 'R',
+    });
     await tick();
 
     expect(saveCalls).toHaveLength(1);
     expect(findByAttr(root, RECIPE_EDITOR_STATUS_ATTR)?.textContent).toContain('Saved');
     expect(findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.textContent).toBe('Saved');
+    expect(findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.getAttribute('aria-disabled')).toBe('false');
+    expect(findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.getAttribute('aria-busy')).toBe('false');
+    expect(doc.activeElement).toBe(findByAttr(root, RECIPE_EDITOR_SAVE_ATTR));
+  });
+
+  it('preserves an active recipe field through save repaints', async () => {
+    const { doc, root } = mount();
+    const name = findByAttrValue(
+      root,
+      RECIPE_EDITOR_FIELD_ATTR,
+      'recipe_name',
+    )!;
+    name.focus();
+    setValue(name, 'Edited recipe');
+
+    findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
+    await tick();
+
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'recipe_name'),
+    );
+    expect(doc.activeElement?.value).toBe('Edited recipe');
   });
 
   it('saves owner-selected webhook bindings disarmed, then arms explicitly', async () => {
@@ -551,7 +740,7 @@ describe('recipe-editor step inspector route', () => {
         return { webhook: unarmed };
       },
     };
-    const { root } = mount({
+    const { doc, root } = mount({
       initialRecipe,
       webhookControl,
       saveCaller: async (args) => {
@@ -572,8 +761,23 @@ describe('recipe-editor step inspector route', () => {
       'whi_generic',
     );
     findByAttr(root, RECIPE_EDITOR_WEBHOOK_ADD_ATTR)?.click();
-    expect(findByAttrValue(root, RECIPE_EDITOR_WEBHOOK_SELECT_ATTR, 'webhook_delivery')?.value)
-      .toBe('whi_generic');
+    const selectedIngress = findByAttrValue(
+      root,
+      RECIPE_EDITOR_WEBHOOK_SELECT_ATTR,
+      'webhook_delivery',
+    )!;
+    expect(selectedIngress.value).toBe('whi_generic');
+    expect(doc.activeElement).toBe(selectedIngress);
+    selectedIngress.focus();
+    setValue(selectedIngress, 'whi_generic');
+    const repaintedIngress = findByAttrValue(
+      root,
+      RECIPE_EDITOR_WEBHOOK_SELECT_ATTR,
+      'webhook_delivery',
+    )!;
+    expect(repaintedIngress).not.toBe(selectedIngress);
+    expect(repaintedIngress.value).toBe('whi_generic');
+    expect(doc.activeElement).toBe(repaintedIngress);
     findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.click();
     await tick();
     expect(saved[0]?.webhook_bindings).toEqual([{
@@ -583,7 +787,9 @@ describe('recipe-editor step inspector route', () => {
     expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)?.disabled).toBe(false);
 
     findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)?.click();
-    expect(findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.disabled).toBe(true);
+    expect(findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.disabled).toBe(false);
+    expect(findByAttr(root, RECIPE_EDITOR_SAVE_ATTR)?.getAttribute('aria-disabled'))
+      .toBe('true');
     await tick();
     expect(armed).toBe(true);
     expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_DISARM_ATTR)).toBeDefined();
@@ -599,6 +805,99 @@ describe('recipe-editor step inspector route', () => {
     await tick();
     expect(armed).toBe(false);
     expect(findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)).toBeDefined();
+    const remove = findByAttr(root, RECIPE_EDITOR_WEBHOOK_REMOVE_ATTR)!;
+    remove.focus();
+    remove.click();
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, RECIPE_EDITOR_WEBHOOK_SELECT_ATTR, 'new'),
+    );
+  });
+
+  it('keeps webhook authority focused and single-flight across Arm and Disarm', async () => {
+    const initialRecipe = opRecipe({ id: 'noop', transform: 'compare', left: 'x' });
+    initialRecipe.webhook_requirements = [{
+      binding: 'webhook_delivery',
+      profile_ids: ['generic.static-header-token.v1'],
+      required_event_types: ['delivery'],
+      decoded_payload_access: 'metadata_only',
+      source_truth_policy: 'delivery_payload_allowed',
+    }];
+    initialRecipe.webhook_triggers = [{
+      binding: 'webhook_delivery',
+      event_types: ['delivery'],
+    }];
+    const status = (armed: boolean): LocalRecipeWebhookStatus => ({
+      declared: true,
+      configured: true,
+      armed,
+      bindings: [{ binding: 'webhook_delivery', ingress_id: 'whi_generic' }],
+      door: {
+        state: 'minted',
+        contract_id: 'contract_webhook_focus',
+        operation_ids: ['core.data.record.get'],
+      },
+    });
+    const calls: Array<'arm' | 'disarm'> = [];
+    // A holder rather than a `let`: the only assignment is inside the promise
+    // callback, so control-flow analysis narrows a bare local to `null` and then
+    // to `never` at the call, giving "this expression is not callable". The save
+    // gate above uses the same shape for the same reason.
+    const webhookGate: { finish?: () => void } = {};
+    const transition = (
+      action: 'arm' | 'disarm',
+    ): Promise<{ webhook: LocalRecipeWebhookStatus }> => {
+      calls.push(action);
+      return new Promise((resolve) => {
+        webhookGate.finish = () => resolve({ webhook: status(action === 'arm') });
+      });
+    };
+    const { doc, root } = mount({
+      initialRecipe,
+      webhookControl: {
+        ingresses: [],
+        initialStatus: status(false),
+        armCaller: async () => transition('arm'),
+        disarmCaller: async () => transition('disarm'),
+      },
+    });
+
+    const arm = findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)!;
+    arm.focus();
+    arm.click();
+    const busyArm = findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR)!;
+    expect(busyArm).not.toBe(arm);
+    expect(busyArm.textContent).toBe('Arming…');
+    expect(busyArm.disabled).toBe(false);
+    expect(busyArm.getAttribute('aria-disabled')).toBe('true');
+    expect(busyArm.getAttribute('aria-busy')).toBe('true');
+    expect(doc.activeElement).toBe(busyArm);
+    busyArm.click();
+    busyArm.click();
+    expect(calls).toEqual(['arm']);
+
+    webhookGate.finish?.();
+    await tick();
+    const disarm = findByAttr(root, RECIPE_EDITOR_WEBHOOK_DISARM_ATTR)!;
+    expect(disarm.textContent).toBe('Disarm webhook');
+    expect(doc.activeElement).toBe(disarm);
+
+    disarm.click();
+    const busyDisarm = findByAttr(root, RECIPE_EDITOR_WEBHOOK_DISARM_ATTR)!;
+    expect(busyDisarm).not.toBe(disarm);
+    expect(busyDisarm.textContent).toBe('Disarming…');
+    expect(busyDisarm.disabled).toBe(false);
+    expect(busyDisarm.getAttribute('aria-disabled')).toBe('true');
+    expect(busyDisarm.getAttribute('aria-busy')).toBe('true');
+    expect(doc.activeElement).toBe(busyDisarm);
+    busyDisarm.click();
+    busyDisarm.click();
+    expect(calls).toEqual(['arm', 'disarm']);
+
+    webhookGate.finish?.();
+    await tick();
+    expect(doc.activeElement).toBe(
+      findByAttr(root, RECIPE_EDITOR_WEBHOOK_ARM_ATTR),
+    );
   });
 
   it('discloses decoded-payload scope and keeps requirement-only bindings unarmable', () => {
@@ -842,12 +1141,14 @@ describe('recipe-editor step inspector route', () => {
   });
 
   it('Add step (op kind) appends an op-step with an empty args map', () => {
-    const { root, route } = mount();
+    const { doc, root, route } = mount();
 
     setValue(findByAttr(root, RECIPE_EDITOR_ADD_KIND_ATTR), 'op');
     // The name control rebuilds as a free-text op-id input.
     setValue(findByAttr(root, RECIPE_EDITOR_ADD_NAME_ATTR), 'core.crm.deal.search');
-    findByAttr(root, RECIPE_EDITOR_ADD_ATTR)?.click();
+    const add = findByAttr(root, RECIPE_EDITOR_ADD_ATTR)!;
+    add.focus();
+    add.click();
 
     const recipe = route.getRecipe();
     expect(recipe.steps).toHaveLength(1);
@@ -856,6 +1157,9 @@ describe('recipe-editor step inspector route', () => {
     expect(step.args).toEqual({});
     // The id is seeded from the op's last segment.
     expect(step.id).toBe('search');
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'step_id'),
+    );
   });
 
   it('editing an op arg value smart-parses JSON literals but keeps refs as strings', () => {
@@ -875,22 +1179,47 @@ describe('recipe-editor step inspector route', () => {
     expect(args.query).toBe('{{config.query}}');
   });
 
-  it('Add arg appends an arg row and Remove arg deletes it', () => {
-    const { root, route } = mount({
+  it('Add arg focuses its value and final Remove returns to the draft input', () => {
+    const { doc, root, route } = mount({
       initialRecipe: opRecipe({ id: 'q', op: 'deal.search', args: {} }),
     });
 
     setValue(findByAttr(root, RECIPE_EDITOR_OP_ARG_NAME_ATTR), 'limit');
-    findByAttr(root, RECIPE_EDITOR_OP_ARG_ADD_ATTR)?.click();
+    const add = findByAttr(root, RECIPE_EDITOR_OP_ARG_ADD_ATTR)!;
+    add.focus();
+    add.click();
 
-    expect(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'arg:limit')).toBeDefined();
+    const value = findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'arg:limit');
+    expect(value).toBeDefined();
+    expect(doc.activeElement).toBe(value);
     expect((route.getRecipe().steps[0] as { args: Record<string, unknown> }).args).toEqual({
       limit: '',
     });
 
-    findByAttrValue(root, RECIPE_EDITOR_OP_ARG_REMOVE_ATTR, 'limit')?.click();
+    const remove = findByAttrValue(root, RECIPE_EDITOR_OP_ARG_REMOVE_ATTR, 'limit')!;
+    remove.focus();
+    remove.click();
     expect((route.getRecipe().steps[0] as { args: Record<string, unknown> }).args).toEqual({});
     expect(findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'arg:limit')).toBeUndefined();
+    expect(doc.activeElement).toBe(findByAttr(root, RECIPE_EDITOR_OP_ARG_NAME_ATTR));
+  });
+
+  it('Remove arg focuses the next surviving value', () => {
+    const { doc, root } = mount({
+      initialRecipe: opRecipe({
+        id: 'q',
+        op: 'deal.search',
+        args: { query: '{{config.query}}', limit: 50 },
+      }),
+    });
+
+    const remove = findByAttrValue(root, RECIPE_EDITOR_OP_ARG_REMOVE_ATTR, 'query')!;
+    remove.focus();
+    remove.click();
+
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'arg:limit'),
+    );
   });
 
   it('editing the connection slot sets the step connection; empty deletes it', () => {
@@ -941,7 +1270,7 @@ describe('recipe-editor step inspector route', () => {
   });
 
   it('move down / move up reorder steps; ends are disabled', () => {
-    const { root, route } = mount({ initialRecipe: twoStepRecipe() });
+    const { doc, root, route } = mount({ initialRecipe: twoStepRecipe() });
 
     // Boundary buttons are disabled: first can't move up, last can't move down.
     expect(findByAttrValue(root, RECIPE_EDITOR_MOVE_UP_ATTR, 'a')?.disabled).toBe(true);
@@ -953,11 +1282,19 @@ describe('recipe-editor step inspector route', () => {
     expect(findByAttrValue(root, RECIPE_EDITOR_REMOVE_ATTR, 'a')?.parent?.className)
       .toBe('recipe-editor-step-actions');
 
-    findByAttrValue(root, RECIPE_EDITOR_MOVE_DOWN_ATTR, 'a')?.click();
+    const moveDown = findByAttrValue(root, RECIPE_EDITOR_MOVE_DOWN_ATTR, 'a')!;
+    moveDown.focus();
+    moveDown.click();
     expect(route.getRecipe().steps.map((s) => s.id)).toEqual(['b', 'a']);
+    expect(doc.activeElement?.className).toBe('recipe-editor-step-summary');
+    expect(doc.activeElement?.parent?.getAttribute(RECIPE_EDITOR_ROW_ATTR)).toBe('a');
 
-    findByAttrValue(root, RECIPE_EDITOR_MOVE_UP_ATTR, 'a')?.click();
+    const moveUp = findByAttrValue(root, RECIPE_EDITOR_MOVE_UP_ATTR, 'a')!;
+    moveUp.focus();
+    moveUp.click();
     expect(route.getRecipe().steps.map((s) => s.id)).toEqual(['a', 'b']);
+    expect(doc.activeElement?.className).toBe('recipe-editor-step-summary');
+    expect(doc.activeElement?.parent?.getAttribute(RECIPE_EDITOR_ROW_ATTR)).toBe('a');
   });
 
   it('reordering after a focused field edit keeps the edit (no stale-list revert)', () => {
@@ -968,18 +1305,24 @@ describe('recipe-editor step inspector route', () => {
     recipe.steps = [
       { id: 'a', guard: '{{x}}' } as never,
       { id: 'b', guard: '{{y}}' } as never,
+      { id: 'c', guard: '{{z}}' } as never,
     ];
-    const { root, route } = mount({ initialRecipe: recipe });
+    const { doc, root, route } = mount({ initialRecipe: recipe });
 
     const guardInputs = findAllByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'guard');
     setValue(guardInputs[0], '{{step.fresh}} is_not_empty');
 
-    findByAttrValue(root, RECIPE_EDITOR_MOVE_DOWN_ATTR, 'a')?.click();
+    const moveDown = findByAttrValue(root, RECIPE_EDITOR_MOVE_DOWN_ATTR, 'a')!;
+    moveDown.focus();
+    moveDown.click();
 
-    expect(route.getRecipe().steps.map((s) => s.id)).toEqual(['b', 'a']);
+    expect(route.getRecipe().steps.map((s) => s.id)).toEqual(['b', 'a', 'c']);
     expect(
       (route.getRecipe().steps[1] as { guard?: string }).guard,
     ).toBe('{{step.fresh}} is_not_empty');
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, RECIPE_EDITOR_MOVE_DOWN_ATTR, 'a'),
+    );
   });
 
   it('removing a step prunes its collapse state so a reused id opens fresh', () => {
@@ -1000,22 +1343,33 @@ describe('recipe-editor step inspector route', () => {
   });
 
   it('Collapse all closes every card, persists across rerenders, and flips to Expand all', () => {
-    const { root } = mount({ initialRecipe: twoStepRecipe() });
+    const { doc, root } = mount({ initialRecipe: twoStepRecipe() });
 
     const openCards = () =>
       findAllByAttr(root, RECIPE_EDITOR_ROW_ATTR).filter((el) => el.hasAttribute('open'));
     expect(openCards()).toHaveLength(2);
 
-    findByAttr(root, RECIPE_EDITOR_COLLAPSE_ALL_ATTR)?.click();
+    const collapse = findByAttr(root, RECIPE_EDITOR_COLLAPSE_ALL_ATTR)!;
+    collapse.focus();
+    collapse.click();
     expect(openCards()).toHaveLength(0);
-    expect(findByAttr(root, RECIPE_EDITOR_COLLAPSE_ALL_ATTR)?.textContent).toBe('Expand all');
+    const expand = findByAttr(root, RECIPE_EDITOR_COLLAPSE_ALL_ATTR)!;
+    expect(expand.textContent).toBe('Expand all');
+    expect(doc.activeElement).toBe(expand);
 
     // A structural rerender (remove a step) keeps the survivor collapsed.
-    findByAttrValue(root, RECIPE_EDITOR_REMOVE_ATTR, 'a')?.click();
+    const remove = findByAttrValue(root, RECIPE_EDITOR_REMOVE_ATTR, 'a')!;
+    remove.focus();
+    remove.click();
     expect(openCards()).toHaveLength(0);
 
-    findByAttr(root, RECIPE_EDITOR_COLLAPSE_ALL_ATTR)?.click();
+    const expandSurvivor = findByAttr(root, RECIPE_EDITOR_COLLAPSE_ALL_ATTR)!;
+    expandSurvivor.focus();
+    expandSurvivor.click();
     expect(openCards()).toHaveLength(1);
+    expect(doc.activeElement).toBe(
+      findByAttr(root, RECIPE_EDITOR_COLLAPSE_ALL_ATTR),
+    );
   });
 
   it('an object-valued op arg renders as a textarea and round-trips JSON', () => {
@@ -1094,11 +1448,13 @@ describe('recipe-editor step inspector route', () => {
   // ──────────────────────────────────────────────────────────────
 
   it("Add variable declares a type:'connection' recipe variable", () => {
-    const { root, route } = mount();
+    const { doc, root, route } = mount();
 
     setValue(findByAttr(root, RECIPE_EDITOR_CONN_VAR_NAME_ATTR), 'crm');
     setValue(findByAttr(root, RECIPE_EDITOR_CONN_VAR_KIND_ATTR), 'mcp');
-    findByAttr(root, RECIPE_EDITOR_CONN_VAR_ADD_ATTR)?.click();
+    const add = findByAttr(root, RECIPE_EDITOR_CONN_VAR_ADD_ATTR)!;
+    add.focus();
+    add.click();
 
     expect(route.getRecipe().variables.crm).toMatchObject({
       type: 'connection',
@@ -1106,6 +1462,9 @@ describe('recipe-editor step inspector route', () => {
       label: 'crm',
     });
     expect(findByAttrValue(root, RECIPE_EDITOR_CONN_VAR_ROW_ATTR, 'crm')).toBeDefined();
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'conn_var_label:crm'),
+    );
   });
 
   it('an op-step connection slot becomes a picker once a connection variable exists', () => {
@@ -1138,13 +1497,33 @@ describe('recipe-editor step inspector route', () => {
   it('Remove variable deletes the connection variable', () => {
     const recipe = opRecipe({ id: 'q', op: 'deal.search', args: {} });
     recipe.variables = { crm: connVar('CRM') };
-    const { root, route } = mount({ initialRecipe: recipe });
+    const { doc, root, route } = mount({ initialRecipe: recipe });
 
     expect(findByAttrValue(root, RECIPE_EDITOR_CONN_VAR_ROW_ATTR, 'crm')).toBeDefined();
-    findByAttrValue(root, RECIPE_EDITOR_CONN_VAR_REMOVE_ATTR, 'crm')?.click();
+    const remove = findByAttrValue(root, RECIPE_EDITOR_CONN_VAR_REMOVE_ATTR, 'crm')!;
+    remove.focus();
+    remove.click();
 
     expect('crm' in route.getRecipe().variables).toBe(false);
     expect(findByAttrValue(root, RECIPE_EDITOR_CONN_VAR_ROW_ATTR, 'crm')).toBeUndefined();
+    expect(doc.activeElement).toBe(findByAttr(root, RECIPE_EDITOR_CONN_VAR_NAME_ATTR));
+  });
+
+  it('Remove variable focuses the next surviving connection variable', () => {
+    const recipe = opRecipe({ id: 'q', op: 'deal.search', args: {} });
+    recipe.variables = {
+      crm: connVar('CRM'),
+      billing: connVar('Billing'),
+    };
+    const { doc, root } = mount({ initialRecipe: recipe });
+
+    const remove = findByAttrValue(root, RECIPE_EDITOR_CONN_VAR_REMOVE_ATTR, 'crm')!;
+    remove.focus();
+    remove.click();
+
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'conn_var_label:billing'),
+    );
   });
 
   it('editing depends_on sets the Tier-P pack list (CSV); empty clears it', () => {
@@ -1191,10 +1570,12 @@ describe('recipe-editor step inspector route', () => {
   // ──────────────────────────────────────────────────────────────
 
   it('adds an accepted-form-response trigger and narrows it by form definition', () => {
-    const { root, route } = mount();
+    const { doc, root, route } = mount();
 
     expect(findByAttr(root, RECIPE_EDITOR_TRIGGERS_ATTR)).toBeDefined();
-    findByAttr(root, RECIPE_EDITOR_TRIGGER_ADD_ATTR)?.click();
+    const add = findByAttr(root, RECIPE_EDITOR_TRIGGER_ADD_ATTR)!;
+    add.focus();
+    add.click();
 
     expect(route.getRecipe().event_triggers).toEqual([
       { on: FORM_RESPONSE_ON_SHORTHAND },
@@ -1202,6 +1583,7 @@ describe('recipe-editor step inspector route', () => {
     expect(findByAttrValue(root, RECIPE_EDITOR_TRIGGER_ROW_ATTR, '0')).toBeDefined();
 
     const formId = findByAttrValue(root, RECIPE_EDITOR_TRIGGER_FORM_ID_ATTR, '0');
+    expect(doc.activeElement).toBe(formId);
     setValue(formId, 'client-intake');
     expect(route.getRecipe().event_triggers).toEqual([{
       on: FORM_RESPONSE_ON_SHORTHAND,
@@ -1318,9 +1700,15 @@ describe('recipe-editor step inspector route', () => {
       op: 'core.data.form-response.get',
       args: { submission_id: 'fixed-submission', keep: 'value' },
     }];
-    const { root, route } = mount({ initialRecipe: recipe });
+    const { doc, root, route } = mount({ initialRecipe: recipe });
 
-    findByAttrValue(root, RECIPE_EDITOR_FORM_RESPONSE_READER_ACTION_ATTR, 'bind')?.click();
+    const bind = findByAttrValue(
+      root,
+      RECIPE_EDITOR_FORM_RESPONSE_READER_ACTION_ATTR,
+      'bind',
+    )!;
+    bind.focus();
+    bind.click();
 
     expect(route.getRecipe().prefetch_steps).toEqual([{
       id: 'response',
@@ -1331,6 +1719,9 @@ describe('recipe-editor step inspector route', () => {
       },
     }]);
     expect(findByAttr(root, RECIPE_EDITOR_FORM_RESPONSE_READER_ACTION_ATTR)).toBeUndefined();
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, RECIPE_EDITOR_FIELD_ATTR, 'step_id'),
+    );
   });
 
   it('recognizes an event-bound reader in sequential steps without adding another', () => {
@@ -1353,7 +1744,7 @@ describe('recipe-editor step inspector route', () => {
   });
 
   it('adds only valid custom warehouse event patterns', () => {
-    const { root, route } = mount();
+    const { doc, root, route } = mount();
 
     setValue(
       findByAttr(root, RECIPE_EDITOR_TRIGGER_ADD_KIND_ATTR),
@@ -1371,11 +1762,36 @@ describe('recipe-editor step inspector route', () => {
     expect(add?.disabled).toBe(false);
     setValue(pattern, 'data.mail.**.created');
     expect(add?.disabled).toBe(false);
+    add?.focus();
     add?.click();
 
     expect(route.getRecipe().event_triggers).toEqual([
       { event: 'data.mail.**.created' },
     ]);
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, RECIPE_EDITOR_TRIGGER_EVENT_ATTR, '0'),
+    );
+  });
+
+  it('Remove trigger focuses the next survivor, then the add type when empty', () => {
+    const recipe = opRecipe({ id: 'q', op: 'core.test.read', args: {} });
+    recipe.event_triggers = [
+      { on: FORM_RESPONSE_ON_SHORTHAND },
+      { event: 'data.mail.**.created' },
+    ];
+    const { doc, root } = mount({ initialRecipe: recipe });
+
+    const firstRemove = findByAttrValue(root, RECIPE_EDITOR_TRIGGER_REMOVE_ATTR, '0')!;
+    firstRemove.focus();
+    firstRemove.click();
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, RECIPE_EDITOR_TRIGGER_EVENT_ATTR, '0'),
+    );
+
+    const finalRemove = findByAttrValue(root, RECIPE_EDITOR_TRIGGER_REMOVE_ATTR, '0')!;
+    finalRemove.focus();
+    finalRemove.click();
+    expect(doc.activeElement).toBe(findByAttr(root, RECIPE_EDITOR_TRIGGER_ADD_KIND_ATTR));
   });
 
   it('edits a raw pattern without dropping its advanced dispatch filter', () => {
@@ -1480,6 +1896,7 @@ describe('execution-case draft route: iterative refinement', () => {
   const mountDraft = (over: {
     result?: Awaited<ReturnType<NonNullable<MountExecutionCaseDraftRouteOptions['runDraftRecipe']>>>;
     handed?: boolean;
+    gate?: Promise<void>;
   } = {}) => {
     const doc = makeFakeDocument();
     const root = makeFakeElement('main');
@@ -1496,6 +1913,7 @@ describe('execution-case draft route: iterative refinement', () => {
       saveCaller: okSave,
       runDraftRecipe: async (args) => {
         calls.push(args);
+        if (over.gate !== undefined) await over.gate;
         return over.result ?? {
           ok: true, recipe: { ...stashedRecipe, recipe_id: 'v2' }, issues: [],
         };
@@ -1503,7 +1921,7 @@ describe('execution-case draft route: iterative refinement', () => {
       onRefined: (d) => { refined.push(d); return over.handed ?? true; },
       refineConfirmation: 'This spends your model quota.',
     });
-    return { root, route, calls, refined };
+    return { doc, root, route, calls, refined };
   };
 
   const btn = (root: ReturnType<typeof makeFakeElement>) =>
@@ -1532,6 +1950,33 @@ describe('execution-case draft route: iterative refinement', () => {
     btn(h.root).click();
     await h.route.whenRefineSettled();
     expect(h.calls).toHaveLength(1);
+    h.route.dispose();
+  });
+
+  it('keeps the confirmed refinement focused, busy, and single-flight', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const h = mountDraft({ gate });
+    box(h.root).value = 'only my own meetings';
+    btn(h.root).focus();
+    btn(h.root).click();
+    btn(h.root).click();
+
+    expect(h.calls).toHaveLength(1);
+    expect(btn(h.root).disabled).toBe(false);
+    expect(btn(h.root).getAttribute('aria-disabled')).toBe('true');
+    expect(btn(h.root).getAttribute('aria-busy')).toBe('true');
+    expect(h.doc.activeElement).toBe(btn(h.root));
+    btn(h.root).click();
+    expect(h.calls).toHaveLength(1);
+
+    release();
+    await h.route.whenRefineSettled();
+    expect(btn(h.root).getAttribute('aria-disabled')).toBeNull();
+    expect(btn(h.root).getAttribute('aria-busy')).toBeNull();
+    expect(h.doc.activeElement).toBe(btn(h.root));
     h.route.dispose();
   });
 

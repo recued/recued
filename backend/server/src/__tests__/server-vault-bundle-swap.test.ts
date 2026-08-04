@@ -8,7 +8,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
+import { spawnSync } from 'node:child_process';
 
 import { resolveServerBundlePath } from '../server-bundle-store.js';
 import {
@@ -16,6 +17,7 @@ import {
   prepareServerBundleSwap,
   reconcileServerBundleSwap,
   resolveServerBundleSwapMarkerPath,
+  sweepOrphanedRestoreStaging,
 } from '../archive/server-bundle-swap.js';
 
 const STAMP = '2023-11-14T22-13-20-000Z-deadbeef';
@@ -43,6 +45,23 @@ const parkRecorder = (markerPath: string) => {
  *  caller that forgets to resolve its parks is the bug this signature exists to
  *  make unwritable. */
 const noParks = (): boolean => true;
+const CRASH_EXIT = 86;
+const swapModuleUrl = new URL('../archive/server-bundle-swap.ts', import.meta.url).href;
+
+const runFaultChild = (
+  body: string,
+  env: Record<string, string>,
+): ReturnType<typeof spawnSync> =>
+  spawnSync(
+    process.execPath,
+    ['--import', 'tsx', '--input-type=module', '--eval', body],
+    {
+      cwd: process.cwd(),
+      env: { ...process.env, ...env },
+      encoding: 'utf8',
+      timeout: 15_000,
+    },
+  );
 
 const setupPair = (): {
   dbPath: string;
@@ -341,3 +360,227 @@ describe('staging refuses to start on unsettled ground', () => {
   });
 });
 
+describe('config journal binding', () => {
+  it('never lets marker contents redirect recovery to a different config path', () => {
+    const { dbPath, stagingPath } = setupPair();
+    const configPath = join(dirname(dbPath), 'config.toml');
+    const otherConfigPath = join(dirname(dbPath), 'other.toml');
+    writeFileSync(configPath, 'old-config');
+    writeFileSync(otherConfigPath, 'other-config');
+    const prepared = prepareServerBundleSwap({
+      dbPath,
+      stagingDbPath: stagingPath,
+      stamp: STAMP,
+      nextBundle: Buffer.from('new-bundle'),
+      configPath,
+      nextConfig: Buffer.from('new-config'),
+    });
+
+    expect(() =>
+      reconcileServerBundleSwap(dbPath, noParks, { configPath: otherConfigPath }),
+    ).toThrow(/CONFIG_PATH_CHANGED/);
+    expect(readFileSync(configPath, 'utf8')).toBe('old-config');
+    expect(readFileSync(otherConfigPath, 'utf8')).toBe('other-config');
+    expect(existsSync(prepared.markerPath)).toBe(true);
+
+    expect(reconcileServerBundleSwap(dbPath, noParks, { configPath }).recovery)
+      .toBe('rolled_back');
+  });
+
+  it('still reconciles a version-1 marker written by the prior release', () => {
+    const { dbPath, stagingPath } = setupPair();
+    const prepared = prepareServerBundleSwap({
+      dbPath,
+      stagingDbPath: stagingPath,
+      stamp: STAMP,
+      nextBundle: Buffer.from('new-bundle'),
+    });
+    const marker = JSON.parse(readFileSync(prepared.markerPath, 'utf8'));
+    marker.v = 1;
+    writeFileSync(prepared.markerPath, JSON.stringify(marker));
+
+    expect(reconcileServerBundleSwap(dbPath, noParks).recovery).toBe('rolled_back');
+    expect(readFileSync(dbPath, 'utf8')).toBe('old-db');
+    expect(existsSync(prepared.markerPath)).toBe(false);
+  });
+});
+
+describe('boot reclaim of pre-journal restore staging', () => {
+  it('reclaims the real residue of a hard exit after bundle staging, before the marker', () => {
+    const { dbPath, stagingPath, bundlePath } = setupPair();
+    const child = runFaultChild(
+      `
+        const m = await import(${JSON.stringify(swapModuleUrl)});
+        m.prepareServerBundleSwap({
+          dbPath: process.env.RECUED_DB_PATH,
+          stagingDbPath: process.env.RECUED_STAGING_PATH,
+          stamp: process.env.RECUED_STAMP,
+          nextBundle: Buffer.from('new-bundle'),
+          observer: { onTransition(step) {
+            if (step === 'next_bundle_staged') process.exit(${CRASH_EXIT});
+          } },
+        });
+      `,
+      {
+        RECUED_DB_PATH: dbPath,
+        RECUED_STAGING_PATH: stagingPath,
+        RECUED_STAMP: STAMP,
+      },
+    );
+    expect(child.status, String(child.stderr)).toBe(CRASH_EXIT);
+    expect(existsSync(resolveServerBundleSwapMarkerPath(dbPath))).toBe(false);
+    expect(existsSync(resolveServerBundlePath(stagingPath))).toBe(true);
+
+    expect(sweepOrphanedRestoreStaging(dbPath)).toBe(2);
+    expect(existsSync(stagingPath)).toBe(false);
+    expect(existsSync(resolveServerBundlePath(stagingPath))).toBe(false);
+    expect(readFileSync(dbPath, 'utf8')).toBe('old-db');
+    expect(readFileSync(bundlePath, 'utf8')).toBe('old-bundle');
+  });
+
+  it('reclaims cross-directory config staging after a hard exit before the marker', () => {
+    const { dbPath, stagingPath } = setupPair();
+    const configDir = mkdtempSync(join(tmpdir(), 'server-config-swap-'));
+    dirs.push(configDir);
+    const configPath = join(configDir, 'config.toml');
+    const stagedConfigPath = `${configPath}.restore-${STAMP}.tmp`;
+    writeFileSync(configPath, 'old-config');
+    const child = runFaultChild(
+      `
+        const m = await import(${JSON.stringify(swapModuleUrl)});
+        m.prepareServerBundleSwap({
+          dbPath: process.env.RECUED_DB_PATH,
+          stagingDbPath: process.env.RECUED_STAGING_PATH,
+          stamp: process.env.RECUED_STAMP,
+          configPath: process.env.RECUED_CONFIG_PATH,
+          nextConfig: Buffer.from('new-config'),
+          nextBundle: Buffer.from('new-bundle'),
+          observer: { onTransition(step) {
+            if (step === 'next_config_staged') process.exit(${CRASH_EXIT});
+          } },
+        });
+      `,
+      {
+        RECUED_DB_PATH: dbPath,
+        RECUED_STAGING_PATH: stagingPath,
+        RECUED_STAMP: STAMP,
+        RECUED_CONFIG_PATH: configPath,
+      },
+    );
+    expect(child.status, String(child.stderr)).toBe(CRASH_EXIT);
+    expect(existsSync(resolveServerBundleSwapMarkerPath(dbPath))).toBe(false);
+    expect(readFileSync(stagedConfigPath, 'utf8')).toBe('new-config');
+
+    expect(sweepOrphanedRestoreStaging(dbPath, configPath)).toBe(2);
+    expect(existsSync(stagingPath)).toBe(false);
+    expect(existsSync(stagedConfigPath)).toBe(false);
+    expect(readFileSync(configPath, 'utf8')).toBe('old-config');
+  });
+
+  it('reclaims only exact orphan restore transaction shapes', () => {
+    const { dbPath, stagingPath, bundlePath } = setupPair();
+    const offline = `${dbPath}.restore-${'b'.repeat(16)}.tmp`;
+    const artifacts = [
+      stagingPath,
+      `${stagingPath}-wal`,
+      `${stagingPath}-shm`,
+      resolveServerBundlePath(stagingPath),
+      offline,
+      `${offline}-wal`,
+      resolveServerBundlePath(offline),
+    ];
+    for (const path of artifacts.slice(1)) writeFileSync(path, 'crash residue');
+    const unrelated = `${dbPath}.staging-not-a-transaction`;
+    writeFileSync(unrelated, 'operator file');
+
+    expect(sweepOrphanedRestoreStaging(dbPath)).toBe(artifacts.length);
+    for (const path of artifacts) expect(existsSync(path), path).toBe(false);
+    expect(readFileSync(dbPath, 'utf8')).toBe('old-db');
+    expect(readFileSync(bundlePath, 'utf8')).toBe('old-bundle');
+    expect(readFileSync(unrelated, 'utf8')).toBe('operator file');
+  });
+
+  it('preserves the marker-owned staging transaction while reaping neighbours', () => {
+    const { dbPath, stagingPath } = setupPair();
+    const prepared = prepareServerBundleSwap({
+      dbPath,
+      stagingDbPath: stagingPath,
+      stamp: STAMP,
+      nextBundle: Buffer.from('new-bundle'),
+    });
+    const orphan = `${dbPath}.staging-${'c'.repeat(16)}`;
+    writeFileSync(orphan, 'orphan');
+
+    expect(sweepOrphanedRestoreStaging(dbPath)).toBe(1);
+    expect(existsSync(orphan)).toBe(false);
+    expect(readFileSync(stagingPath, 'utf8')).toBe('new-db');
+    expect(readFileSync(prepared.stagedBundlePath, 'utf8')).toBe('new-bundle');
+    expect(existsSync(prepared.markerPath)).toBe(true);
+  });
+});
+
+describe('subprocess crash injection at every commit rename', () => {
+  const cases = [
+    ['old_config_backed_up', 'rolled_back'],
+    ['old_db_parked', 'rolled_back'],
+    ['old_wal_parked', 'rolled_back'],
+    ['old_shm_parked', 'rolled_back'],
+    ['old_bundle_parked', 'rolled_back'],
+    ['old_artifacts_fsynced', 'rolled_back'],
+    ['new_db_published', 'completed'],
+    ['new_db_fsynced', 'completed'],
+    ['new_config_published', 'completed'],
+    ['new_bundle_published', 'completed'],
+  ] as const;
+
+  it.each(cases)('recovers %s in the correct direction', (faultPoint, recovery) => {
+    const { dbPath, stagingPath, bundlePath } = setupPair();
+    const configPath = join(dirname(dbPath), 'config.toml');
+    writeFileSync(configPath, 'old-config');
+    writeFileSync(`${dbPath}-wal`, 'old-wal');
+    writeFileSync(`${dbPath}-shm`, 'old-shm');
+    const prepared = prepareServerBundleSwap({
+      dbPath,
+      stagingDbPath: stagingPath,
+      stamp: STAMP,
+      nextBundle: Buffer.from('new-bundle'),
+      configPath,
+      nextConfig: Buffer.from('new-config'),
+    });
+    const child = runFaultChild(
+      `
+        const m = await import(${JSON.stringify(swapModuleUrl)});
+        const prepared = JSON.parse(process.env.RECUED_PREPARED);
+        m.commitPreparedServerBundleSwap(prepared, () => true, {
+          onTransition(step) {
+            if (step === process.env.RECUED_FAULT_POINT) process.exit(${CRASH_EXIT});
+          },
+        });
+      `,
+      {
+        RECUED_PREPARED: JSON.stringify(prepared),
+        RECUED_FAULT_POINT: faultPoint,
+      },
+    );
+    expect(child.status, String(child.stderr)).toBe(CRASH_EXIT);
+
+    expect(reconcileServerBundleSwap(dbPath, noParks, { configPath }).recovery).toBe(recovery);
+    if (recovery === 'rolled_back') {
+      expect(readFileSync(dbPath, 'utf8')).toBe('old-db');
+      expect(readFileSync(`${dbPath}-wal`, 'utf8')).toBe('old-wal');
+      expect(readFileSync(`${dbPath}-shm`, 'utf8')).toBe('old-shm');
+      expect(readFileSync(bundlePath, 'utf8')).toBe('old-bundle');
+      expect(readFileSync(configPath, 'utf8')).toBe('old-config');
+    } else {
+      expect(readFileSync(dbPath, 'utf8')).toBe('new-db');
+      expect(readFileSync(bundlePath, 'utf8')).toBe('new-bundle');
+      expect(readFileSync(configPath, 'utf8')).toBe('new-config');
+      expect(readFileSync(prepared.dbBackupPath, 'utf8')).toBe('old-db');
+      expect(readFileSync(prepared.bundleBackupPath, 'utf8')).toBe('old-bundle');
+    }
+    expect(existsSync(stagingPath)).toBe(false);
+    expect(existsSync(prepared.stagedBundlePath)).toBe(false);
+    expect(existsSync(prepared.stagedConfigPath!)).toBe(false);
+    expect(existsSync(prepared.markerPath)).toBe(false);
+  });
+});

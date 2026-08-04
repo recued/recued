@@ -19,6 +19,7 @@ import {
   CONTRACTS_ROUTE_BADGE_ATTR,
   CONTRACTS_ROUTE_CONNECT_HOST_ATTR,
   CONTRACTS_ROUTE_DETAIL_ATTR,
+  CONTRACTS_ROUTE_DETAIL_HEADING_ATTR,
   CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR,
   CONTRACTS_ROUTE_ERROR_ATTR,
   CONTRACTS_ROUTE_HEADING_ATTR,
@@ -37,6 +38,9 @@ import {
   CONTRACTS_ROUTE_PAGE_PREVIOUS_ATTR,
   CONTRACTS_ROUTE_PAGE_STATUS_ATTR,
   CONTRACTS_ROUTE_PILL_ATTR,
+  CONTRACTS_ROUTE_REVOKE_ATTR,
+  CONTRACTS_ROUTE_REVOKE_CANCEL_ATTR,
+  CONTRACTS_ROUTE_REVOKE_CONFIRM_ATTR,
   CONTRACTS_ROUTE_ROW_ATTR,
   CONTRACTS_ROUTE_ROW_ID_ATTR,
   CONTRACTS_ROUTE_SNIPPET_ATTR,
@@ -58,6 +62,8 @@ import {
   CHAT_ROUTE_ANSWER_WAITING_ATTR,
   CHAT_ROUTE_AI_UNAVAILABLE_ATTR,
   CHAT_ROUTE_AI_UNAVAILABLE_ID,
+  CHAT_ROUTE_COMPOSER_ACTION_ATTR,
+  CHAT_ROUTE_COMPOSER_MORE_ATTR,
   CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR,
   CHAT_ROUTE_FOLLOWUP_CONTEXT_CLEAR_ATTR,
   CHAT_ROUTE_GREETING_ATTR,
@@ -86,6 +92,7 @@ import {
   CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_MESSAGE_ATTR,
   CHAT_ROUTE_DATA_VERIFICATION_DIAGNOSE_ATTR,
   CHAT_ROUTE_DATA_VERIFICATION_RETURN_ATTR,
+  CHAT_ROUTE_ERROR_ATTR,
   CHAT_ROUTE_PLAN_RETRY_ATTR,
   CHAT_ROUTE_PLAN_RUN_ATTR,
   CHAT_ROUTE_PLAN_TARGET_ATTR,
@@ -124,6 +131,7 @@ interface FakeEl {
   className: string;
   textContent: string;
   type: string;
+  open: boolean;
   disabled: boolean;
   checked: boolean;
   focused: boolean;
@@ -132,15 +140,20 @@ interface FakeEl {
   attrs: Map<string, string>;
   children: FakeEl[];
   parent: FakeEl | null;
-  listeners: Map<string, Array<() => void>>;
+  listeners: Map<string, Array<(event?: FakeDomEvent) => void>>;
   readonly firstChild: FakeEl | null;
   setAttribute(k: string, v: string): void;
+  removeAttribute(k: string): void;
   getAttribute(k: string): string | null;
   appendChild(c: FakeEl): FakeEl;
   removeChild(c: FakeEl): FakeEl;
   remove(): void;
-  addEventListener(type: string, fn: () => void): void;
+  addEventListener(
+    type: string,
+    fn: (event?: FakeDomEvent) => void,
+  ): void;
   click(): void;
+  keydown(key: string): void;
   focus(): void;
   scrollIntoView(): void;
   querySelector(selector: string): FakeEl | null;
@@ -148,11 +161,27 @@ interface FakeEl {
   contains(candidate: FakeEl): boolean;
 }
 
+interface FakeDomEvent {
+  readonly key?: string;
+  readonly target?: FakeEl | null;
+  preventDefault?(): void;
+  stopPropagation?(): void;
+}
+
 interface FakeDoc {
   styleElements: FakeEl[];
   activeElement: FakeEl | null;
+  listeners: Map<string, Array<(event?: FakeDomEvent) => void>>;
   head: { querySelector(sel: string): FakeEl | null; appendChild(el: FakeEl): FakeEl };
   createElement(tag: string): FakeEl;
+  addEventListener(
+    type: string,
+    fn: (event?: FakeDomEvent) => void,
+  ): void;
+  removeEventListener(
+    type: string,
+    fn: (event?: FakeDomEvent) => void,
+  ): void;
 }
 
 const makeFakeEl = (
@@ -164,6 +193,7 @@ const makeFakeEl = (
     className: '',
     textContent: '',
     type: '',
+    open: false,
     disabled: false,
     checked: false,
     focused: false,
@@ -178,6 +208,9 @@ const makeFakeEl = (
     },
     setAttribute(k, v) {
       el.attrs.set(k, v);
+    },
+    removeAttribute(k) {
+      el.attrs.delete(k);
     },
     getAttribute(k) {
       return el.attrs.get(k) ?? null;
@@ -208,6 +241,20 @@ const makeFakeEl = (
     click() {
       if (el.disabled) return;
       for (const fn of el.listeners.get('click') ?? []) fn();
+      if (el.tagName === 'SUMMARY' && el.parent?.tagName === 'DETAILS') {
+        el.parent.open = !el.parent.open;
+        for (const fn of el.parent.listeners.get('toggle') ?? []) {
+          fn({ target: el.parent });
+        }
+      }
+    },
+    keydown(key) {
+      const event: FakeDomEvent = {
+        key,
+        target: el,
+        preventDefault() {},
+      };
+      for (const fn of el.listeners.get('keydown') ?? []) fn(event);
     },
     focus() {
       el.focused = true;
@@ -221,12 +268,18 @@ const makeFakeEl = (
     },
     querySelectorAll(selector) {
       const match = selector.match(/^\[([\w-]+)\]$/);
-      if (match === null) return [];
-      const attr = match[1]!;
+      const tag = selector.match(/^[\w-]+$/)?.[0]?.toUpperCase() ?? null;
+      if (match === null && tag === null) return [];
+      const attr = match?.[1] ?? null;
       const found: FakeEl[] = [];
       const visit = (candidate: FakeEl): void => {
         for (const child of candidate.children) {
-          if (child.attrs.has(attr)) found.push(child);
+          if (
+            (attr !== null && child.attrs.has(attr))
+            || (tag !== null && child.tagName === tag)
+          ) {
+            found.push(child);
+          }
           visit(child);
         }
       };
@@ -243,12 +296,17 @@ const makeFakeEl = (
 
 const makeFakeDocument = (): FakeDoc => {
   const styleElements: FakeEl[] = [];
+  const listeners = new Map<
+    string,
+    Array<(event?: FakeDomEvent) => void>
+  >();
   const matchSelector = (sel: string): { tag: string; attr: string } | null => {
     const m = sel.match(/^([\w-]+)\[([\w-]+)\]$/);
     return m === null ? null : { tag: m[1]!.toUpperCase(), attr: m[2]! };
   };
   const doc: FakeDoc = {
     styleElements,
+    listeners,
     activeElement: null,
     head: {
       querySelector(sel) {
@@ -268,6 +326,15 @@ const makeFakeDocument = (): FakeDoc => {
     createElement: (tag) => makeFakeEl(tag, (element) => {
       doc.activeElement = element;
     }),
+    addEventListener(type, fn) {
+      const rows = listeners.get(type) ?? [];
+      rows.push(fn);
+      listeners.set(type, rows);
+    },
+    removeEventListener(type, fn) {
+      const rows = listeners.get(type) ?? [];
+      listeners.set(type, rows.filter((candidate) => candidate !== fn));
+    },
   };
   return doc;
 };
@@ -423,7 +490,10 @@ describe('D-174 contracts route — list → detail shell', () => {
             next_cursor: 'page-2',
             total: 26,
           });
-    const { root, route } = mount({ contractsListCaller, initialListTab: 'others' });
+    const { doc, root, route } = mount({
+      contractsListCaller,
+      initialListTab: 'others',
+    });
     await route.whenLoaded();
 
     expect(contractsListCaller).toHaveBeenCalledWith({
@@ -434,6 +504,7 @@ describe('D-174 contracts route — list → detail shell', () => {
     expect(collectByAttr(root, CONTRACTS_ROUTE_PAGE_STATUS_ATTR)[0]?.textContent)
       .toBe('Showing 1–25 of 26');
 
+    collectByAttr(root, CONTRACTS_ROUTE_PAGE_NEXT_ATTR)[0]!.focus();
     collectByAttr(root, CONTRACTS_ROUTE_PAGE_NEXT_ATTR)[0]!.click();
     await tick(10);
     expect(route.getContracts().map((row) => row.contract_id)).toEqual([
@@ -450,12 +521,76 @@ describe('D-174 contracts route — list → detail shell', () => {
     expect(
       collectByAttr(root, CONTRACTS_ROUTE_PAGE_NEXT_ATTR)[0]!.getAttribute('disabled'),
     ).toBe('');
+    expect(doc.activeElement).toBe(
+      collectByAttr(root, CONTRACTS_ROUTE_PAGE_PREVIOUS_ATTR)[0],
+    );
 
     collectByAttr(root, CONTRACTS_ROUTE_PAGE_PREVIOUS_ATTR)[0]!.click();
     await tick(10);
     expect(route.getContracts()).toHaveLength(25);
     expect(collectByAttr(root, CONTRACTS_ROUTE_PAGE_STATUS_ATTR)[0]?.textContent)
       .toBe('Showing 1–25 of 26');
+    expect(doc.activeElement).toBe(
+      collectByAttr(root, CONTRACTS_ROUTE_PAGE_NEXT_ATTR)[0],
+    );
+    route.dispose();
+  });
+
+  it('keeps the requested page action focused and single-flight while loading', async () => {
+    const firstPage = Array.from({ length: 25 }, (_, index) =>
+      agentContract({
+        contract_id: `door_${String(index + 1).padStart(2, '0')}`,
+        display_name: `Agent ${index + 1}`,
+      }));
+    let resolveNext!: (value: {
+      contracts: ReadonlyArray<ContractDefinitionView>;
+      next_cursor: null;
+      total: number;
+    }) => void;
+    const nextPage = new Promise<{
+      contracts: ReadonlyArray<ContractDefinitionView>;
+      next_cursor: null;
+      total: number;
+    }>((resolve) => {
+      resolveNext = resolve;
+    });
+    const contractsListCaller = vi.fn<ContractsListCaller>((args) =>
+      args?.cursor === 'page-2'
+        ? nextPage
+        : Promise.resolve({
+            contracts: firstPage,
+            next_cursor: 'page-2',
+            total: 26,
+          }));
+    const { doc, root, route } = mount({
+      contractsListCaller,
+      initialListTab: 'others',
+    });
+    await route.whenLoaded();
+
+    const initialNext = collectByAttr(root, CONTRACTS_ROUTE_PAGE_NEXT_ATTR)[0]!;
+    initialNext.focus();
+    initialNext.click();
+    await tick();
+
+    const pendingNext = collectByAttr(root, CONTRACTS_ROUTE_PAGE_NEXT_ATTR)[0]!;
+    expect(pendingNext.textContent).toBe('Loading…');
+    expect(pendingNext.getAttribute('aria-disabled')).toBe('true');
+    expect(pendingNext.getAttribute('aria-busy')).toBe('true');
+    expect(pendingNext.getAttribute('disabled')).toBeNull();
+    expect(doc.activeElement).toBe(pendingNext);
+    pendingNext.click();
+    expect(contractsListCaller).toHaveBeenCalledTimes(2);
+
+    resolveNext({
+      contracts: [agentContract({ contract_id: 'door_26' })],
+      next_cursor: null,
+      total: 26,
+    });
+    await tick(10);
+    expect(doc.activeElement).toBe(
+      collectByAttr(root, CONTRACTS_ROUTE_PAGE_PREVIOUS_ATTR)[0],
+    );
     route.dispose();
   });
 
@@ -645,6 +780,49 @@ describe('D-174 contracts route — list → detail shell', () => {
       expect(toggles).toEqual(['mcp', 'mcp_chat', 'llm_gateway']);
       route.dispose();
     });
+
+    it('preserves the changed door input through busy and settled paints', async () => {
+      let resolveDoorWrite!: (value: ContractDefinitionView) => void;
+      const doorWrite = new Promise<ContractDefinitionView>((resolve) => {
+        resolveDoorWrite = resolve;
+      });
+      const grantSetDoorTypesCaller = vi.fn(() => doorWrite);
+      const { doc, root, route } = mount({
+        contractsListCaller: vi.fn(async () => ({
+          contracts: [agentContract()],
+        })),
+        grantSetDoorTypesCaller,
+        initialContractId: 'door_alpha',
+      });
+      await route.whenLoaded();
+
+      const mcpLabel = collectByAttr(root, CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR)
+        .find((label) => label.getAttribute('data-door') === 'mcp')!;
+      const mcpInput = collectByTag(mcpLabel, 'input')[0]!;
+      mcpInput.focus();
+      for (const listener of mcpInput.listeners.get('change') ?? []) listener();
+
+      expect(grantSetDoorTypesCaller).toHaveBeenCalledTimes(1);
+      let replacement = collectByAttr(root, CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR)
+        .find((label) => label.getAttribute('data-door') === 'mcp')!;
+      let replacementInput = collectByTag(replacement, 'input')[0]!;
+      expect(replacementInput.getAttribute('aria-disabled')).toBe('true');
+      expect(replacementInput.getAttribute('aria-busy')).toBe('true');
+      expect(doc.activeElement).toBe(replacementInput);
+      expect(replacementInput.listeners.get('change') ?? []).toHaveLength(0);
+
+      resolveDoorWrite(agentContract({
+        door_types: ['mcp_chat', 'llm_gateway'],
+      }));
+      await tick(8);
+      replacement = collectByAttr(root, CONTRACTS_ROUTE_DOOR_TOGGLE_ATTR)
+        .find((label) => label.getAttribute('data-door') === 'mcp')!;
+      replacementInput = collectByTag(replacement, 'input')[0]!;
+      expect(replacementInput.checked).toBe(false);
+      expect(doc.activeElement).toBe(replacementInput);
+
+      route.dispose();
+    });
   });
 
   it('shows a non-blocking note when the Others inventory fails', async () => {
@@ -679,7 +857,7 @@ describe('D-174 contracts route — list → detail shell', () => {
     const contractsListCaller = vi.fn(async () => ({
       contracts: [agentContract({ contract_id: 'door_alpha' })],
     }));
-    const { root, route } = mount({
+    const { doc, root, route } = mount({
       contractsListCaller,
       initialContractId: 'door_alpha',
     });
@@ -692,6 +870,15 @@ describe('D-174 contracts route — list → detail shell', () => {
         CONTRACTS_ROUTE_ROW_ID_ATTR,
       ),
     ).toBe('door_alpha');
+    const detailHeading = collectByAttr(
+      root,
+      CONTRACTS_ROUTE_DETAIL_HEADING_ATTR,
+    )[0]!;
+    expect(detailHeading.tagName).toBe('H2');
+    expect(detailHeading.getAttribute(CONTRACTS_ROUTE_DETAIL_HEADING_ATTR))
+      .toBe('door_alpha');
+    expect(detailHeading.getAttribute('tabindex')).toBe('-1');
+    expect(doc.activeElement).toBe(detailHeading);
     expect(
       collectByAttr(root, CONTRACTS_ROUTE_BACK_ATTR)[0]!.getAttribute('href'),
     ).toBe('#contracts/view/others');
@@ -709,6 +896,97 @@ describe('D-174 contracts route — list → detail shell', () => {
     expect(tabs[0]!.getAttribute('aria-selected')).toBe('true');
   });
 
+  it('carries Back focus to the exact row across a same-document remount', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const detail = bootstrapContractsRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      serverUrl: 'wss://alice.example/ws',
+      initialContractId: 'user_self',
+    });
+    await detail.whenLoaded();
+
+    collectByAttr(root, CONTRACTS_ROUTE_BACK_ATTR)[0]!.click();
+    detail.dispose();
+
+    const list = bootstrapContractsRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      serverUrl: 'wss://alice.example/ws',
+      contractsListCaller: vi.fn(async () => ({
+        contracts: [],
+        total: 0,
+        next_cursor: null,
+      })),
+    });
+    await list.whenLoaded();
+
+    const owner = collectByAttr(root, CONTRACTS_ROUTE_ROW_ATTR).find((row) =>
+      row.getAttribute(CONTRACTS_ROUTE_ROW_ID_ATTR) === 'user_self',
+    );
+    expect(doc.activeElement).toBe(owner);
+
+    list.dispose();
+  });
+
+  it('keeps revoke confirmation and completion keyboard-owned', async () => {
+    let resolveRevoke!: (value: ContractDefinitionView) => void;
+    const revokeResult = new Promise<ContractDefinitionView>((resolve) => {
+      resolveRevoke = resolve;
+    });
+    const contractsRevokeCaller = vi.fn(() => revokeResult);
+    const { doc, root, route } = mount({
+      contractsListCaller: vi.fn(async () => ({
+        contracts: [agentContract()],
+      })),
+      contractsRevokeCaller,
+      initialContractId: 'door_alpha',
+    });
+    await route.whenLoaded();
+
+    let revoke = collectByAttr(root, CONTRACTS_ROUTE_REVOKE_ATTR)[0]!;
+    revoke.focus();
+    revoke.click();
+    let confirm = collectByAttr(
+      root,
+      CONTRACTS_ROUTE_REVOKE_CONFIRM_ATTR,
+    )[0]!;
+    expect(doc.activeElement).toBe(confirm);
+
+    const cancel = collectByAttr(root, CONTRACTS_ROUTE_REVOKE_CANCEL_ATTR)[0]!;
+    cancel.focus();
+    cancel.click();
+    revoke = collectByAttr(root, CONTRACTS_ROUTE_REVOKE_ATTR)[0]!;
+    expect(doc.activeElement).toBe(revoke);
+
+    revoke.click();
+    confirm = collectByAttr(root, CONTRACTS_ROUTE_REVOKE_CONFIRM_ATTR)[0]!;
+    confirm.click();
+    expect(contractsRevokeCaller).toHaveBeenCalledTimes(1);
+    const busy = collectByAttr(root, CONTRACTS_ROUTE_REVOKE_ATTR)[0]!;
+    expect(busy.textContent).toBe('Revoking…');
+    expect(busy.getAttribute('aria-disabled')).toBe('true');
+    expect(busy.getAttribute('aria-busy')).toBe('true');
+    expect(doc.activeElement).toBe(busy);
+    expect(route.hasInFlightWork()).toBe(true);
+    expect(route.inFlightWorkPrompt()).toBe(
+      'A contract action is still in progress. Leave Contracts anyway?',
+    );
+
+    resolveRevoke(agentContract({ lifecycle_state: 'revoked' }));
+    await tick(8);
+    expect(route.hasInFlightWork()).toBe(false);
+    expect(route.inFlightWorkPrompt()).toBeNull();
+    expect(collectByAttr(root, CONTRACTS_ROUTE_REVOKE_ATTR)).toHaveLength(0);
+    expect(doc.activeElement).toBe(
+      collectByAttr(root, CONTRACTS_ROUTE_DETAIL_HEADING_ATTR)[0],
+    );
+    expect(allText(root)).toContain('Revoked');
+
+    route.dispose();
+  });
+
   it('self DETAIL has no Connect tab (Ops/Entities only) and switches tabs on click', async () => {
     const { root, route } = mount({ initialContractId: 'user_self' });
     await route.whenLoaded();
@@ -717,14 +995,43 @@ describe('D-174 contracts route — list → detail shell', () => {
     const tabs = collectByAttr(root, CONTRACTS_ROUTE_TAB_ATTR);
     expect(tabs.map((t) => t.getAttribute('data-tab'))).toEqual(['ops', 'entities']);
     expect(route.getActiveTab()).toBe('ops');
+    expect(tabs[0]!.getAttribute('tabindex')).toBe('0');
+    expect(tabs[1]!.getAttribute('tabindex')).toBe('-1');
 
     tabs[1]!.click();
     expect(route.getActiveTab()).toBe('entities');
     expect(tabs[1]!.getAttribute('aria-selected')).toBe('true');
     expect(tabs[0]!.getAttribute('aria-selected')).toBe('false');
+    expect(tabs[1]!.getAttribute('tabindex')).toBe('0');
+    expect(tabs[0]!.getAttribute('tabindex')).toBe('-1');
+    const tabBody = collectByAttr(root, CONTRACTS_ROUTE_TAB_BODY_ATTR)[0]!;
+    expect(tabBody.getAttribute('role')).toBe('tabpanel');
+    expect(tabs[1]!.getAttribute('aria-controls')).toBe(tabBody.getAttribute('id'));
+    expect(tabBody.getAttribute('aria-labelledby')).toBe(tabs[1]!.getAttribute('id'));
     expect(allText(collectByAttr(root, CONTRACTS_ROUTE_TAB_BODY_ATTR)[0]!)).toContain(
       'enrichment topics',
     );
+  });
+
+  it('gives DETAIL tabs one keyboard stop with wraparound and Home/End activation', async () => {
+    const { doc, root, route } = mount({ initialContractId: 'user_self' });
+    await route.whenLoaded();
+    const tabs = collectByAttr(root, CONTRACTS_ROUTE_TAB_ATTR);
+
+    tabs[0]!.keydown('ArrowRight');
+    expect(route.getActiveTab()).toBe('entities');
+    expect(tabs[1]!.getAttribute('aria-selected')).toBe('true');
+    expect(doc.activeElement).toBe(tabs[1]);
+
+    tabs[1]!.keydown('ArrowRight');
+    expect(route.getActiveTab()).toBe('ops');
+    expect(doc.activeElement).toBe(tabs[0]);
+
+    tabs[0]!.keydown('End');
+    expect(route.getActiveTab()).toBe('entities');
+    tabs[1]!.keydown('Home');
+    expect(route.getActiveTab()).toBe('ops');
+    route.dispose();
   });
 
   it('falls back to the LIST when initialContractId is unknown', async () => {
@@ -1105,10 +1412,13 @@ describe('D-174 P2 chat route — AI-availability affordance (UX flow-09)', () =
       conn: chatConnWithConfig({}),
     });
     await tick();
-    // Open a session so Send is not disabled merely for the no-session reason —
-    // isolates the AI-unavailable disable path.
+    // Open a session and enter a real message so the AI-unavailable state is
+    // the only remaining reason Send stays disabled.
     await route.openSession('chat_1');
     await tick();
+    const input = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+    input.value = 'Ask about this account';
+    for (const listener of input.listeners.get('input') ?? []) listener();
 
     const notice = collectByAttr(root, CHAT_ROUTE_AI_UNAVAILABLE_ATTR);
     expect(notice).toHaveLength(1);
@@ -1129,7 +1439,7 @@ describe('D-174 P2 chat route — AI-availability affordance (UX flow-09)', () =
     route.dispose();
   });
 
-  it('hides the affordance and leaves Send enabled once a BYOK slot is configured', async () => {
+  it('hides the affordance and enables a real message once a BYOK slot is configured', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
     const route = bootstrapChatRoute({
@@ -1149,6 +1459,10 @@ describe('D-174 P2 chat route — AI-availability affordance (UX flow-09)', () =
 
     expect(collectByAttr(root, CHAT_ROUTE_AI_UNAVAILABLE_ATTR)).toHaveLength(0);
     const send = collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]!;
+    expect(send.disabled).toBe(true);
+    const input = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+    input.value = 'Ask about this account';
+    for (const listener of input.listeners.get('input') ?? []) listener();
     expect(send.disabled).toBe(false);
     expect(send.getAttribute('title')).toBeNull();
     expect(send.getAttribute('aria-describedby')).toBeNull();
@@ -1869,7 +2183,12 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
           status: 'resolved' | 'still_uncertain' | 'needs_new_action';
           resolved_at: number;
         };
-      };
+      } | Promise<{
+        resolution: {
+          status: 'resolved' | 'still_uncertain' | 'needs_new_action';
+          resolved_at: number;
+        };
+      }>;
     } = {},
   ): ChatRouteConn => {
     const llmConfig = config.llmConfig ?? {
@@ -2160,6 +2479,80 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe(
       'Keep the question I already started.',
     );
+    route.dispose();
+  });
+
+  it('keeps an explicit source check focused until readiness', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const readyStatus = {
+      state: 'ready' as const,
+      identity: 'person@example.com',
+      authState: 'healthy' as const,
+      lastSyncedAt: 1_700_000_000_000,
+    };
+    let settleReady!: (status: typeof readyStatus) => void;
+    const pendingReady = new Promise<typeof readyStatus>((resolve) => {
+      settleReady = resolve;
+    });
+    let statusReads = 0;
+    const statusCaller = vi.fn(() => {
+      statusReads += 1;
+      if (statusReads === 1) {
+        return Promise.resolve({
+          state: 'pending' as const,
+          identity: 'person@example.com',
+          authState: 'healthy' as const,
+          lastSyncedAt: null,
+        });
+      }
+      return pendingReady;
+    });
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn(),
+      initialConnectedSource: {
+        lane: 'mail',
+        providerId: 'gmail',
+        slug: 'work',
+      },
+      connectedSourceStatusCaller: statusCaller,
+    });
+    await tick(8);
+
+    const check = collectByAttr(
+      root,
+      CHAT_ROUTE_SOURCE_ACTION_ATTR,
+    ).find((action) => action.textContent === 'Check now')!;
+    check.focus();
+    check.click();
+    await tick();
+
+    const checking = collectByAttr(
+      root,
+      CHAT_ROUTE_SOURCE_ACTION_ATTR,
+    ).find((action) => action.textContent === 'Checking…')!;
+    expect(checking.disabled).toBe(false);
+    expect(checking.getAttribute('aria-disabled')).toBe('true');
+    expect(checking.getAttribute('aria-busy')).toBe('true');
+    expect(checking.focused).toBe(true);
+    expect(doc.activeElement).toBe(checking);
+    checking.click();
+    checking.click();
+    expect(statusCaller).toHaveBeenCalledTimes(2);
+
+    settleReady(readyStatus);
+    await tick(8);
+    const review = collectByAttr(
+      root,
+      CHAT_ROUTE_SOURCE_ACTION_ATTR,
+    ).find((action) => action.textContent === 'Review first question')!;
+    expect(review.focused).toBe(true);
+    expect(doc.activeElement).toBe(review);
+    expect(collectByAttr(root, CHAT_ROUTE_SOURCE_HANDOFF_ATTR)[0]!
+      .getAttribute('data-state')).toBe('ready');
+
     route.dispose();
   });
 
@@ -2621,7 +3014,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     fireEvent(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!, 'input', '');
     expect(collectByAttr(root, CHAT_ROUTE_FOLLOWUP_CONTEXT_ATTR)).toHaveLength(0);
     expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!
-      .getAttribute('aria-describedby')).toBe('');
+      .getAttribute('aria-describedby')).toBeNull();
 
     collectByAttr(
       sourceAnswers[1]!,
@@ -3508,6 +3901,20 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
           resolved_at: number;
         }
       | undefined;
+    let settleResolution!: (result: {
+      resolution: {
+        status: 'resolved' | 'still_uncertain' | 'needs_new_action';
+        resolved_at: number;
+      };
+    }) => void;
+    const pendingResolution = new Promise<{
+      resolution: {
+        status: 'resolved' | 'still_uncertain' | 'needs_new_action';
+        resolved_at: number;
+      };
+    }>((resolve) => {
+      settleResolution = resolve;
+    });
     const safeCheckMessage = (): ChatMessage => ({
       ...chatMessage(),
       id: 'msg_safe_check',
@@ -3555,7 +3962,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
             status: payload.status,
             resolved_at: 9_000,
           };
-          return { resolution: durableResolution };
+          return pendingResolution;
         },
       }),
       subscribe: ((kind: string, listener: (event: ServerEvent) => void) => {
@@ -3572,6 +3979,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       root,
       CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR,
     )[0]!;
+    expect(route.hasInFlightWork()).toBe(false);
     expect(initial.getAttribute('data-intent')).toBe('safe_check');
     expect(initial.getAttribute('data-resolution')).toBeNull();
     expect(initial.getAttribute('role')).toBeNull();
@@ -3587,6 +3995,42 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     closeResolved.focus();
     closeResolved.click();
     await tick();
+    expect(route.hasInFlightWork()).toBe(true);
+
+    const savingReceipt = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ATTR,
+    )[0]!;
+    const savingActions = collectByAttr(
+      savingReceipt,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ACTION_ATTR,
+    ).filter(
+      (action) => action.getAttribute('data-action')?.startsWith('resolve-'),
+    );
+    const savingResolved = savingActions.find(
+      (action) => action.getAttribute('data-action') === 'resolve-resolved',
+    )!;
+    expect(savingResolved.textContent).toBe('Saving…');
+    expect(savingResolved.disabled).toBe(false);
+    expect(savingResolved.getAttribute('aria-disabled')).toBe('true');
+    expect(savingResolved.getAttribute('aria-busy')).toBe('true');
+    expect(savingResolved.focused).toBe(true);
+    expect(doc.activeElement).toBe(savingResolved);
+    expect(savingActions.every(
+      (action) => action.getAttribute('aria-disabled') === 'true',
+    )).toBe(true);
+    savingResolved.click();
+    savingActions.find(
+      (action) => action.getAttribute('data-action')
+        === 'resolve-still_uncertain',
+    )!.click();
+    expect(calls.filter(
+      (call) => call.method === 'chat.data_diagnosis.resolve',
+    )).toHaveLength(1);
+
+    settleResolution({ resolution: durableResolution! });
+    await tick();
+    expect(route.hasInFlightWork()).toBe(false);
 
     expect(calls.find(
       (call) => call.method === 'chat.data_diagnosis.resolve',
@@ -3734,6 +4178,81 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(calls.some((call) => call.method === 'chat.plan.approve')).toBe(
       false,
     );
+    route.dispose();
+  });
+
+  it('returns a failed safe-check closure to the attempted choice', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        sessions: [sessionSummary()],
+        messages: [
+          { ...chatMessage(), id: 'msg_action' },
+          {
+            ...chatMessage(),
+            id: 'msg_safe_check_failed',
+            content: 'The read-only lookup found the expected record.',
+            data_diagnosis: {
+              kind: 'data_verification',
+              plan_id: 'plan_approved',
+              run_id: 'run/one',
+              intent: 'safe_check',
+              relationship: 'derived',
+              run_correlation: 'matched',
+            },
+          },
+        ],
+        plans: [approvedPlanRecord({
+          execution: {
+            status: 'completed',
+            turn_id: 'turn_action',
+            result_ref: 'result:one',
+            run_id: 'run/one',
+          },
+        })],
+        resolveDiagnosis: async () => {
+          throw new Error('closure save failed');
+        },
+      }),
+      initialSessionId: 'chat_1',
+    });
+    await tick(8);
+
+    const closeResolved = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ACTION_ATTR,
+    ).find(
+      (action) => action.getAttribute('data-action') === 'resolve-resolved',
+    )!;
+    closeResolved.focus();
+    closeResolved.click();
+
+    await vi.waitFor(() => {
+      const attempted = collectByAttr(
+        root,
+        CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ACTION_ATTR,
+      ).find(
+        (action) => action.getAttribute('data-action') === 'resolve-resolved',
+      );
+      expect(attempted?.textContent).toBe('Resolved — no action');
+      expect(attempted?.focused).toBe(true);
+    });
+    const restored = collectByAttr(
+      root,
+      CHAT_ROUTE_DATA_DIAGNOSIS_ANSWER_ACTION_ATTR,
+    ).find(
+      (action) => action.getAttribute('data-action') === 'resolve-resolved',
+    )!;
+    expect(restored.textContent).toBe('Resolved — no action');
+    expect(restored.disabled).toBe(false);
+    expect(restored.getAttribute('aria-disabled')).toBeNull();
+    expect(restored.getAttribute('aria-busy')).toBeNull();
+    expect(restored.focused).toBe(true);
+    expect(doc.activeElement).toBe(restored);
+
     route.dispose();
   });
 
@@ -4501,6 +5020,163 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     route.dispose();
   });
 
+  it('owns one history action menu and dismisses it with Escape or an outside press', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        sessions: [
+          sessionSummary({ id: 'chat_1', title: 'First chat' }),
+          sessionSummary({ id: 'chat_2', title: 'Second chat' }),
+        ],
+      }),
+      initialLanding: 'history',
+    });
+    await tick();
+
+    const details = collectByAttr(root, CHAT_ROUTE_SESSION_ACTIONS_ATTR);
+    const first = details.find(
+      (row) => row.getAttribute(CHAT_ROUTE_SESSION_ACTIONS_ATTR) === 'chat_1',
+    )!;
+    const second = details.find(
+      (row) => row.getAttribute(CHAT_ROUTE_SESSION_ACTIONS_ATTR) === 'chat_2',
+    )!;
+    const firstTrigger = collectByTag(first, 'summary')[0]!;
+    const secondTrigger = collectByTag(second, 'summary')[0]!;
+
+    firstTrigger.click();
+    expect(first.open).toBe(true);
+    secondTrigger.click();
+    expect(first.open).toBe(false);
+    expect(second.open).toBe(true);
+
+    const preventDefault = vi.fn();
+    const stopPropagation = vi.fn();
+    for (const listener of second.listeners.get('keydown') ?? []) {
+      listener({
+        key: 'Escape',
+        target: secondTrigger,
+        preventDefault,
+        stopPropagation,
+      });
+    }
+    expect(second.open).toBe(false);
+    expect(doc.activeElement).toBe(secondTrigger);
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(stopPropagation).toHaveBeenCalledOnce();
+
+    firstTrigger.click();
+    expect(first.open).toBe(true);
+    const search = collectByAttr(root, CHAT_ROUTE_HISTORY_SEARCH_ATTR)[0]!;
+    for (const listener of doc.listeners.get('pointerdown') ?? []) {
+      listener({ target: search });
+    }
+    expect(first.open).toBe(false);
+
+    route.dispose();
+    expect(doc.listeners.get('pointerdown')).toHaveLength(0);
+  });
+
+  it('coordinates and dismisses the docked composer action menu', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        sessions: [sessionSummary()],
+        messages: [chatMessage()],
+      }),
+      initialSessionId: 'chat_1',
+      contactUpsertCaller: vi.fn(async () => ({ contact: {} as never })),
+    });
+    await tick(8);
+
+    const composerActions = collectByAttr(
+      root,
+      CHAT_ROUTE_COMPOSER_MORE_ATTR,
+    )[0]!;
+    const composerTrigger = collectByTag(composerActions, 'summary')[0]!;
+    const historyActions = collectByAttr(
+      root,
+      CHAT_ROUTE_SESSION_ACTIONS_ATTR,
+    )[0]!;
+    const historyTrigger = collectByTag(historyActions, 'summary')[0]!;
+
+    composerTrigger.click();
+    expect(composerActions.open).toBe(true);
+    historyTrigger.click();
+    expect(composerActions.open).toBe(false);
+    expect(historyActions.open).toBe(true);
+    composerTrigger.click();
+    expect(historyActions.open).toBe(false);
+    expect(composerActions.open).toBe(true);
+
+    const preventDefault = vi.fn();
+    const stopPropagation = vi.fn();
+    for (const listener of composerActions.listeners.get('keydown') ?? []) {
+      listener({
+        key: 'Escape',
+        target: composerTrigger,
+        preventDefault,
+        stopPropagation,
+      });
+    }
+    expect(composerActions.open).toBe(false);
+    expect(doc.activeElement).toBe(composerTrigger);
+    expect(preventDefault).toHaveBeenCalledOnce();
+    expect(stopPropagation).toHaveBeenCalledOnce();
+
+    composerTrigger.click();
+    const input = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+    for (const listener of doc.listeners.get('pointerdown') ?? []) {
+      listener({ target: input });
+    }
+    expect(composerActions.open).toBe(false);
+    route.dispose();
+  });
+
+  it('returns a docked child overlay to the visible composer trigger', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        sessions: [sessionSummary()],
+        messages: [chatMessage()],
+      }),
+      initialSessionId: 'chat_1',
+      recipeListCaller: vi.fn(async () => ({ recipes: [] })),
+    });
+    await tick(8);
+
+    const composerActions = collectByAttr(
+      root,
+      CHAT_ROUTE_COMPOSER_MORE_ATTR,
+    )[0]!;
+    const trigger = collectByTag(composerActions, 'summary')[0]!;
+    trigger.click();
+    const run = collectByAttr(
+      composerActions,
+      CHAT_ROUTE_COMPOSER_ACTION_ATTR,
+    ).find(
+      (action) => action.getAttribute(CHAT_ROUTE_COMPOSER_ACTION_ATTR) === 'run',
+    )!;
+    run.focus();
+    run.click();
+    await tick();
+
+    expect(composerActions.open).toBe(false);
+    for (const listener of [...(doc.listeners.get('keydown') ?? [])]) {
+      listener({ key: 'Escape', target: doc.activeElement });
+    }
+    expect(doc.activeElement).toBe(trigger);
+    route.dispose();
+  });
+
   it('does not promote archived or zero-message sessions as the next chat', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
@@ -4555,6 +5231,110 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(collectByAttr(root, CHAT_ROUTE_HISTORY_LANDING_ATTR)).toHaveLength(0);
     expect(doc.activeElement?.getAttribute('data-recued-chat-route-thread-title'))
       .toBe('');
+    route.dispose();
+  });
+
+  it('keeps a slow history open focused, visible, and single-flight', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    let sessionGetCalls = 0;
+    let resolveOpen!: (snapshot: unknown) => void;
+    const pendingOpen = new Promise<unknown>((resolve) => {
+      resolveOpen = resolve;
+    });
+    const baseConn = stepConn({
+      sessions: [sessionSummary()],
+    }) as unknown as (
+      method: string,
+      payload?: unknown,
+    ) => Promise<unknown>;
+    const conn = (async (method: string, payload?: unknown) => {
+      if (method !== 'chat.session.get') return baseConn(method, payload);
+      sessionGetCalls += 1;
+      return pendingOpen;
+    }) as ChatRouteConn;
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialLanding: 'history',
+    });
+    await tick(8);
+
+    const initial = collectByAttr(root, CHAT_ROUTE_SESSION_ROW_ATTR)[0]!;
+    initial.focus();
+    initial.click();
+    const pending = collectByAttr(root, CHAT_ROUTE_SESSION_ROW_ATTR)[0]!;
+    expect(pending.disabled).toBe(false);
+    expect(pending.getAttribute('aria-disabled')).toBe('true');
+    expect(pending.getAttribute('aria-busy')).toBe('true');
+    expect(allText(pending)).toContain('Opening…');
+    expect(doc.activeElement).toBe(pending);
+    pending.click();
+    pending.click();
+    expect(sessionGetCalls).toBe(1);
+
+    resolveOpen({ ...chatSession(), messages: [] });
+    await tick(8);
+    expect(route.getThread().session?.id).toBe('chat_1');
+    route.dispose();
+  });
+
+  it('keeps returning-user Continue focused and blocks a competing new draft', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    let sessionGetCalls = 0;
+    let resolveOpen!: (snapshot: unknown) => void;
+    const pendingOpen = new Promise<unknown>((resolve) => {
+      resolveOpen = resolve;
+    });
+    const baseConn = stepConn({
+      sessions: [sessionSummary()],
+    }) as unknown as (
+      method: string,
+      payload?: unknown,
+    ) => Promise<unknown>;
+    const conn = (async (method: string, payload?: unknown) => {
+      if (method !== 'chat.session.get') return baseConn(method, payload);
+      sessionGetCalls += 1;
+      return pendingOpen;
+    }) as ChatRouteConn;
+    const addresses: string[] = [];
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialLanding: 'history',
+      onAddressChange: (hash) => addresses.push(hash),
+    });
+    await tick(8);
+
+    const initial = collectByAttr(root, CHAT_ROUTE_HISTORY_CONTINUE_ATTR)[0]!;
+    initial.focus();
+    initial.click();
+    const pending = collectByAttr(root, CHAT_ROUTE_HISTORY_CONTINUE_ATTR)[0]!;
+    const newChat = collectByAttr(root, CHAT_ROUTE_NEW_SESSION_ATTR)[0]!;
+    const startNew = collectByTag(root, 'button').find(
+      (button) => button.textContent === 'Start a new chat',
+    )!;
+    expect(pending.textContent).toBe('Opening chat…');
+    expect(pending.getAttribute('aria-disabled')).toBe('true');
+    expect(pending.getAttribute('aria-busy')).toBe('true');
+    expect(pending.disabled).toBe(false);
+    expect(doc.activeElement).toBe(pending);
+    expect(newChat.getAttribute('aria-disabled')).toBe('true');
+    expect(startNew.getAttribute('aria-disabled')).toBe('true');
+    pending.click();
+    newChat.click();
+    startNew.click();
+    expect(sessionGetCalls).toBe(1);
+    expect(collectByAttr(root, CHAT_ROUTE_HISTORY_LANDING_ATTR)).toHaveLength(1);
+    expect(addresses).toEqual([]);
+
+    resolveOpen({ ...chatSession(), messages: [] });
+    await tick(8);
+    expect(addresses).toEqual(['#chat/session/chat_1']);
+    expect(doc.activeElement?.getAttribute(CHAT_ROUTE_INPUT_ATTR)).toBe('');
     route.dispose();
   });
 
@@ -4643,11 +5423,50 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     await tick(8);
 
     expect(collectByAttr(root, CHAT_ROUTE_SESSION_ACTIONS_ATTR)).toHaveLength(1);
-    collectByAttr(root, CHAT_ROUTE_SESSION_EXPORT_ATTR)[0]!.click();
+    const initialActions = collectByAttr(
+      root,
+      CHAT_ROUTE_SESSION_ACTIONS_ATTR,
+    )[0]!;
+    collectByTag(initialActions, 'summary')[0]!.click();
+    const initialExport = collectByAttr(
+      root,
+      CHAT_ROUTE_SESSION_EXPORT_ATTR,
+    )[0]!;
+    initialExport.focus();
+    initialExport.click();
     expect(route.hasInFlightWork()).toBe(true);
+    const busyActions = collectByAttr(
+      root,
+      CHAT_ROUTE_SESSION_ACTIONS_ATTR,
+    )[0]!;
+    const busyExport = collectByAttr(
+      root,
+      CHAT_ROUTE_SESSION_EXPORT_ATTR,
+    )[0]!;
+    expect(busyActions.open).toBe(true);
+    expect(busyExport.textContent).toBe('Exporting…');
+    expect(busyExport.disabled).toBe(false);
+    expect(busyExport.getAttribute('aria-disabled')).toBe('true');
+    expect(busyExport.getAttribute('aria-busy')).toBe('true');
+    expect(doc.activeElement).toBe(busyExport);
+    expect(route.inFlightWorkPrompt()).toBe(
+      'A chat history action is still in progress. Leave Chat anyway?',
+    );
+    const exportNewChat = collectByAttr(
+      root,
+      CHAT_ROUTE_NEW_SESSION_ATTR,
+    )[0]!;
+    expect(exportNewChat.getAttribute('aria-disabled')).toBe('true');
+    exportNewChat.click();
+    expect(route.getThread().session?.id).toBe('chat_1');
+    expect(doc.activeElement).toBe(busyExport);
+    busyExport.click();
+    expect(calls.filter((call) => call.method === 'chat.session.export'))
+      .toHaveLength(1);
     finishExport({ session: chatSession(), messages: [chatMessage()] });
     await tick(8);
     expect(route.hasInFlightWork()).toBe(false);
+    expect(route.inFlightWorkPrompt()).toBeNull();
     expect(calls).toContainEqual({
       method: 'chat.session.export',
       payload: { session_id: 'chat_1' },
@@ -4660,9 +5479,30 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect(collectByAttr(root, CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR)).toHaveLength(1);
     collectByAttr(root, CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR)[0]!.click();
     expect(route.hasInFlightWork()).toBe(true);
+    const busyDelete = collectByAttr(
+      root,
+      CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR,
+    )[0]!;
+    expect(busyDelete.textContent).toBe('Deleting…');
+    expect(busyDelete.disabled).toBe(false);
+    expect(busyDelete.getAttribute('aria-disabled')).toBe('true');
+    expect(busyDelete.getAttribute('aria-busy')).toBe('true');
+    expect(doc.activeElement).toBe(busyDelete);
+    expect(route.inFlightWorkPrompt()).toBe(
+      'A chat history action is still in progress. Leave Chat anyway?',
+    );
+    const deleteNewChat = collectByAttr(
+      root,
+      CHAT_ROUTE_NEW_SESSION_ATTR,
+    )[0]!;
+    expect(deleteNewChat.getAttribute('aria-disabled')).toBe('true');
+    deleteNewChat.click();
+    expect(route.getThread().session?.id).toBe('chat_1');
+    expect(doc.activeElement).toBe(busyDelete);
     finishDelete({ ok: true });
     await tick(8);
     expect(route.hasInFlightWork()).toBe(false);
+    expect(route.inFlightWorkPrompt()).toBeNull();
     expect(calls).toContainEqual({
       method: 'chat.session.delete',
       payload: { session_id: 'chat_1' },
@@ -4675,15 +5515,98 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     route.dispose();
   });
 
+  it('returns rejected history actions to their visible retry controls', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: string[] = [];
+    const conn = (async (method: string) => {
+      calls.push(method);
+      if (method === 'chat.sessions.list') {
+        return { sessions: [sessionSummary()] };
+      }
+      if (method === 'chat.session.get') {
+        return { ...chatSession(), messages: [chatMessage()], plans: [] };
+      }
+      if (
+        method === 'chat.session.export'
+        || method === 'chat.session.delete'
+      ) {
+        throw new Error('simulated history action failure');
+      }
+      if (method === 'server.getLLMConfig') return { config: {} };
+      if (method === 'chat.default_model_pref.get') {
+        return { source_id: null, updated_at: 1 };
+      }
+      if (method === 'prefs.get') return { prefs: {} };
+      throw new Error(`unexpected method ${method}`);
+    }) as ChatRouteConn;
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialLanding: 'history',
+      initialSessionId: 'chat_1',
+    });
+    await tick(8);
+
+    const actions = collectByAttr(
+      root,
+      CHAT_ROUTE_SESSION_ACTIONS_ATTR,
+    )[0]!;
+    collectByTag(actions, 'summary')[0]!.click();
+    collectByAttr(root, CHAT_ROUTE_SESSION_EXPORT_ATTR)[0]!.click();
+    await tick(8);
+
+    const exportRetryActions = collectByAttr(
+      root,
+      CHAT_ROUTE_SESSION_ACTIONS_ATTR,
+    )[0]!;
+    const exportRetry = collectByAttr(
+      root,
+      CHAT_ROUTE_SESSION_EXPORT_ATTR,
+    )[0]!;
+    expect(exportRetryActions.open).toBe(true);
+    expect(doc.activeElement).toBe(exportRetry);
+    expect(allText(root)).toContain("Couldn't export this chat");
+
+    collectByAttr(root, CHAT_ROUTE_SESSION_DELETE_ATTR)[0]!.click();
+    collectByAttr(root, CHAT_ROUTE_SESSION_DELETE_CONFIRM_ATTR)[0]!.click();
+    await tick(8);
+
+    const deleteRetryActions = collectByAttr(
+      root,
+      CHAT_ROUTE_SESSION_ACTIONS_ATTR,
+    )[0]!;
+    const deleteRetry = collectByAttr(
+      root,
+      CHAT_ROUTE_SESSION_DELETE_ATTR,
+    )[0]!;
+    expect(deleteRetryActions.open).toBe(true);
+    expect(doc.activeElement).toBe(deleteRetry);
+    expect(allText(root)).toContain("Couldn't delete this chat");
+    expect(calls.filter((method) => method === 'chat.session.export'))
+      .toHaveLength(1);
+    expect(calls.filter((method) => method === 'chat.session.delete'))
+      .toHaveLength(1);
+    route.dispose();
+  });
+
   it('replaces a draft URL with the durable session minted by the first send', async () => {
     const doc = makeFakeDocument();
     const root = doc.createElement('div');
     const addresses: Array<{ hash: string; mode: string }> = [];
+    const listeners = new Map<string, Array<(event: never) => void>>();
     const route = bootstrapChatRoute({
       root: root as unknown as HTMLElement,
       document: doc as unknown as Document,
       conn: stepConn(),
       onAddressChange: (hash, mode) => addresses.push({ hash, mode }),
+      subscribe: ((kind: string, listener: (event: never) => void) => {
+        const rows = listeners.get(kind) ?? [];
+        rows.push(listener);
+        listeners.set(kind, rows);
+        return () => {};
+      }) as never,
     });
     await tick();
     await route.sendMessage('durable first message');
@@ -4692,6 +5615,20 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       hash: '#chat/session/chat_new',
       mode: 'replace',
     });
+    for (const listener of listeners.get('chat.message_complete') ?? []) {
+      listener({
+        kind: 'chat.message_complete',
+        session_id: 'chat_new',
+        turn_id: 'turn_1',
+        final: {
+          ...chatMessage(),
+          id: 'msg_durable_first',
+          session_id: 'chat_new',
+        },
+        cursor: 1,
+      } as never);
+    }
+    await tick();
     route.startNewChat();
     expect(addresses.at(-1)).toEqual({ hash: '#chat/new', mode: 'push' });
     route.dispose();
@@ -4783,6 +5720,7 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     await tick();
     expect(calls.some((c) => c.method === 'chat.session.create')).toBe(false);
     expect(collectByAttr(root, CHAT_ROUTE_GREETING_ATTR)).toHaveLength(1);
+    expect(doc.activeElement?.getAttribute(CHAT_ROUTE_INPUT_ATTR)).toBe('');
     route.dispose();
   });
 
@@ -4855,13 +5793,98 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     await route.openSession('chat_1'); // model_routing.current = 'byok' → slot_1
     await tick();
     // Pick slot_2 (the quality/thinking slot) — its layer + slot hint persist.
-    fireEvent(collectByAttr(root, CHAT_ROUTE_MODEL_PICKER_ATTR)[0]!, 'change', 'slot_2');
+    const picker = collectByAttr(root, CHAT_ROUTE_MODEL_PICKER_ATTR)[0]!;
+    picker.focus();
+    fireEvent(picker, 'change', 'slot_2');
     await tick();
     const setCall = calls.find((c) => c.method === 'chat.session.set_model_pref');
     expect(setCall?.payload).toEqual({
       session_id: 'chat_1',
       model_pref: { current: 'byok', model_hint: 'thinking', source_id: 'slot_2' },
     });
+    expect(doc.activeElement?.getAttribute(CHAT_ROUTE_MODEL_PICKER_ATTR)).toBe('');
+    route.dispose();
+  });
+
+  it('serializes rapid model changes and keeps the latest selection', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const writes: Array<{ method: string; payload?: unknown }> = [];
+    let resolveFirst!: (value: { ok: true }) => void;
+    let resolveSecond!: (value: { ok: true }) => void;
+    const first = new Promise<{ ok: true }>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const second = new Promise<{ ok: true }>((resolve) => {
+      resolveSecond = resolve;
+    });
+    const baseConn = stepConn({ llmConfig: twoSlotConfig }) as unknown as (
+      method: string,
+      payload?: unknown,
+    ) => Promise<unknown>;
+    const conn = (async (method: string, payload?: unknown) => {
+      if (method !== 'chat.session.set_model_pref') {
+        return baseConn(method, payload);
+      }
+      writes.push({ method, payload });
+      return writes.length === 1 ? first : second;
+    }) as ChatRouteConn;
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+    });
+    await tick(8);
+    await route.openSession('chat_1');
+    await tick();
+
+    const initialPicker = collectByAttr(
+      root,
+      CHAT_ROUTE_MODEL_PICKER_ATTR,
+    )[0]!;
+    initialPicker.focus();
+    fireEvent(initialPicker, 'change', 'slot_2');
+    const firstPendingPicker = collectByAttr(
+      root,
+      CHAT_ROUTE_MODEL_PICKER_ATTR,
+    )[0]!;
+    expect(firstPendingPicker.value).toBe('slot_2');
+    expect(firstPendingPicker.getAttribute('aria-busy')).toBe('true');
+    expect(doc.activeElement).toBe(firstPendingPicker);
+    expect(route.hasInFlightWork()).toBe(true);
+    expect(route.inFlightWorkPrompt()).toBe(
+      'A Chat model change is still in progress. Leave Chat anyway?',
+    );
+
+    fireEvent(firstPendingPicker, 'change', 'slot_1');
+    const latestPicker = collectByAttr(
+      root,
+      CHAT_ROUTE_MODEL_PICKER_ATTR,
+    )[0]!;
+    expect(latestPicker.value).toBe('slot_1');
+    expect(writes).toHaveLength(1);
+
+    resolveFirst({ ok: true });
+    await tick(8);
+    expect(writes).toHaveLength(2);
+    expect(writes[1]?.payload).toEqual({
+      session_id: 'chat_1',
+      model_pref: { current: 'byok', model_hint: 'fast', source_id: 'slot_1' },
+    });
+    expect(collectByAttr(root, CHAT_ROUTE_MODEL_PICKER_ATTR)[0]!.value)
+      .toBe('slot_1');
+
+    resolveSecond({ ok: true });
+    await tick(8);
+    const settledPicker = collectByAttr(
+      root,
+      CHAT_ROUTE_MODEL_PICKER_ATTR,
+    )[0]!;
+    expect(settledPicker.value).toBe('slot_1');
+    expect(settledPicker.getAttribute('aria-busy')).toBeNull();
+    expect(doc.activeElement).toBe(settledPicker);
+    expect(route.hasInFlightWork()).toBe(false);
+    expect(route.inFlightWorkPrompt()).toBeNull();
     route.dispose();
   });
 
@@ -4933,15 +5956,14 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
       'input',
       'half-written thought',
     );
-    fireEvent(
-      collectByAttr(root, CHAT_ROUTE_MODEL_PICKER_ATTR)[0]!,
-      'change',
-      'free_pool',
-    );
+    const picker = collectByAttr(root, CHAT_ROUTE_MODEL_PICKER_ATTR)[0]!;
+    picker.focus();
+    fireEvent(picker, 'change', 'free_pool');
     await tick();
     expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value).toBe(
       'half-written thought',
     );
+    expect(doc.activeElement?.getAttribute(CHAT_ROUTE_MODEL_PICKER_ATTR)).toBe('');
     route.dispose();
   });
 
@@ -5018,8 +6040,10 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     });
     await tick();
     const send = collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]!;
-    expect(send.disabled).toBe(false); // draft Send is enabled (lazy create)
+    expect(send.disabled).toBe(true);
     fireEvent(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!, 'input', 'via the button');
+    expect(send.disabled).toBe(false); // a real draft can lazy-create on Send
+    send.focus();
     send.click();
     await tick();
     expect(
@@ -5029,6 +6053,98 @@ describe('D-174 P2 chat route — shell-frame Step 3 (composer L1 upgrades)', ()
     expect((sendCall?.payload as { message?: string })?.message).toBe(
       'via the button',
     );
+    expect(doc.activeElement?.getAttribute(CHAT_ROUTE_INPUT_ATTR)).toBe('');
+    route.dispose();
+  });
+
+  it('announces a rejected send while returning to the editable draft', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const baseConn = stepConn() as unknown as (
+      method: string,
+      payload?: unknown,
+    ) => Promise<unknown>;
+    const conn = (async (method: string, payload?: unknown) => {
+      if (method === 'chat.send') {
+        throw new Error('simulated send failure');
+      }
+      return baseConn(method, payload);
+    }) as ChatRouteConn;
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+    });
+    await tick(8);
+    await route.openSession('chat_1');
+    await tick();
+
+    const input = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+    fireEvent(input, 'input', 'Keep this retryable message');
+    input.focus();
+    await route.sendMessage(input.value);
+    await tick(8);
+
+    const restoredInput = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+    const error = collectByAttr(root, CHAT_ROUTE_ERROR_ATTR)[0]!;
+    expect(error.getAttribute('role')).toBe('alert');
+    expect(allText(error).length).toBeGreaterThan(0);
+    expect(restoredInput.value).toBe('Keep this retryable message');
+    expect(doc.activeElement).toBe(restoredInput);
+    expect(collectByAttr(root, CHAT_ROUTE_SEND_ATTR)[0]!.disabled).toBe(false);
+    expect(route.hasInFlightWork()).toBe(false);
+    route.dispose();
+  });
+
+  it('keeps a pending send attached while the next composer draft stays editable', async () => {
+    const doc = makeFakeDocument();
+    const root = doc.createElement('div');
+    const calls: Array<{ method: string; payload?: unknown }> = [];
+    const addresses: string[] = [];
+    const route = bootstrapChatRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn: stepConn({
+        calls,
+        sessions: [
+          sessionSummary({ id: 'chat_1', title: 'First chat' }),
+          sessionSummary({ id: 'chat_2', title: 'Second chat' }),
+        ],
+      }),
+      initialSessionId: 'chat_1',
+      onAddressChange: (hash) => addresses.push(hash),
+    });
+    await tick(8);
+
+    const firstInput = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+    fireEvent(firstInput, 'input', 'Start the pending answer');
+    await route.sendMessage(firstInput.value);
+    await tick(8);
+    expect(route.hasInFlightWork()).toBe(true);
+
+    const nextInput = collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!;
+    fireEvent(nextInput, 'input', 'Keep this next thought');
+    nextInput.focus();
+    const newChat = collectByAttr(root, CHAT_ROUTE_NEW_SESSION_ATTR)[0]!;
+    const otherChat = collectByAttr(root, CHAT_ROUTE_SESSION_ROW_ATTR).find(
+      (row) => row.getAttribute(CHAT_ROUTE_SESSION_ROW_ATTR) === 'chat_2',
+    )!;
+    expect(newChat.disabled).toBe(false);
+    expect(newChat.getAttribute('aria-disabled')).toBe('true');
+    expect(otherChat.disabled).toBe(false);
+    expect(otherChat.getAttribute('aria-disabled')).toBe('true');
+
+    newChat.click();
+    otherChat.click();
+    await tick();
+    expect(route.getThread().session?.id).toBe('chat_1');
+    expect(collectByAttr(root, CHAT_ROUTE_HISTORY_DRAFT_GUARD_ATTR)).toHaveLength(0);
+    expect(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]!.value)
+      .toBe('Keep this next thought');
+    expect(doc.activeElement).toBe(collectByAttr(root, CHAT_ROUTE_INPUT_ATTR)[0]);
+    expect(calls.filter((call) => call.method === 'chat.session.get'))
+      .toHaveLength(1);
+    expect(addresses).toEqual([]);
     route.dispose();
   });
 

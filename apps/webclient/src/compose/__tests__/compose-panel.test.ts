@@ -210,6 +210,28 @@ const targetKeys = (root: FakeEl): string[] =>
   );
 
 describe('D-174 P5 Compose local draft route', () => {
+  it('reports unfinished values across parked target drafts', () => {
+    const { route } = mountFor();
+
+    expect(route.hasUnsavedChanges()).toBe(false);
+    route.setFieldValues({ email: 'unfinished@example.test' });
+    expect(route.hasUnsavedChanges()).toBe(true);
+
+    route.selectTarget('task');
+    expect(route.hasUnsavedChanges()).toBe(true);
+    route.selectTarget('contact');
+    route.setFieldValues({ email: '' });
+    expect(route.hasUnsavedChanges()).toBe(false);
+
+    route.selectTarget('commitment');
+    expect(route.hasUnsavedChanges()).toBe(false);
+    route.setFieldValues({ direction: 'inbound' });
+    expect(route.hasUnsavedChanges()).toBe(true);
+    route.setFieldValues({ direction: 'outbound' });
+    expect(route.hasUnsavedChanges()).toBe(false);
+    route.dispose();
+  });
+
   it('mounts local-only target chips in fixed order (incl. project), no write-back target', () => {
     const { doc, root, route } = mountFor();
     const shell = root.children[0]!;
@@ -265,6 +287,96 @@ describe('D-174 P5 Compose local draft route', () => {
     route.dispose();
   });
 
+  it('exposes one selected target in a named toggle group', () => {
+    const { root, route } = mountFor();
+    const group = collectByAttr(root, 'role').find(
+      (element) => element.getAttribute('role') === 'group',
+    );
+    const chips = collectByAttr(root, COMPOSE_ROUTE_TARGET_CHIP_ATTR);
+
+    expect(group?.getAttribute('aria-label')).toBe('Create type');
+    expect(chips.map((chip) => chip.getAttribute('aria-pressed'))).toEqual([
+      'true',
+      'false',
+      'false',
+      'false',
+      'false',
+    ]);
+
+    route.selectTarget('task');
+    expect(chips.map((chip) => chip.getAttribute('aria-pressed'))).toEqual([
+      'false',
+      'true',
+      'false',
+      'false',
+      'false',
+    ]);
+
+    route.dispose();
+  });
+
+  it('preserves each unfinished target draft while switching kinds', () => {
+    const { route } = mountFor();
+
+    route.setFieldValues({
+      email: 'lee@example.test',
+      name: 'Lee Morgan',
+    });
+    route.selectTarget('contact');
+    expect(route.getState().values).toMatchObject({
+      email: 'lee@example.test',
+      name: 'Lee Morgan',
+    });
+
+    route.selectTarget('task');
+    route.setFieldValues({
+      title: 'Prepare launch',
+      body: 'Review the final checklist.',
+    });
+    route.selectTarget('contact');
+    expect(route.getState().values).toMatchObject({
+      email: 'lee@example.test',
+      name: 'Lee Morgan',
+    });
+
+    route.selectTarget('task');
+    expect(route.getState().values).toMatchObject({
+      title: 'Prepare launch',
+      body: 'Review the final checklist.',
+    });
+
+    route.dispose();
+  });
+
+  it('updates ordinary fields without replacing their native focus targets', () => {
+    const { root, route } = mountFor();
+    route.selectTarget('task');
+
+    const title = collectByAttr(root, COMPOSE_ROUTE_FIELD_ATTR).find(
+      (field) => field.getAttribute(COMPOSE_ROUTE_FIELD_ATTR) === 'title',
+    )!;
+    title.value = 'Draft launch';
+    for (const listener of title.listeners.get('change') ?? []) listener();
+    expect(collectByAttr(root, COMPOSE_ROUTE_FIELD_ATTR).find(
+      (field) => field.getAttribute(COMPOSE_ROUTE_FIELD_ATTR) === 'title',
+    )).toBe(title);
+
+    const priority = collectByAttr(root, COMPOSE_ROUTE_FIELD_ATTR).find(
+      (field) => field.getAttribute(COMPOSE_ROUTE_FIELD_ATTR) === 'priority',
+    )!;
+    priority.value = 'high';
+    for (const listener of priority.listeners.get('change') ?? []) listener();
+    expect(collectByAttr(root, COMPOSE_ROUTE_FIELD_ATTR).find(
+      (field) => field.getAttribute(COMPOSE_ROUTE_FIELD_ATTR) === 'priority',
+    )).toBe(priority);
+    expect(route.getState().values).toMatchObject({
+      title: 'Draft launch',
+      priority: 'high',
+    });
+
+    route.dispose();
+  });
+
   it('commits contacts through contact.upsert, confirms, and resets the draft', async () => {
     const contactUpsertCaller = vi.fn<ComposeContactUpsertCaller>(async (args) => ({
       contact: contactRecord({
@@ -293,6 +405,7 @@ describe('D-174 P5 Compose local draft route', () => {
     expect(route.getState().stage).toBe('committed');
     expect(route.getState().capture_text).toBe('');
     expect(route.getState().values).toEqual({});
+    expect(route.hasUnsavedChanges()).toBe(false);
     expect(route.getState().confirmation).toMatchObject({
       target: 'contact',
       rpc: 'contact.upsert',
@@ -303,6 +416,43 @@ describe('D-174 P5 Compose local draft route', () => {
     expect(confirmationText).toContain('Lee Morgan');
     // The internal RPC name must not leak into the post-commit confirmation.
     expect(confirmationText).not.toContain('contact.upsert');
+
+    route.dispose();
+  });
+
+  it('keeps a pending commit focusable and guards duplicate writes', async () => {
+    let resolveCommit!: (value: { contact: ContactRecord }) => void;
+    const pendingCommit = new Promise<{ contact: ContactRecord }>((resolve) => {
+      resolveCommit = resolve;
+    });
+    const contactUpsertCaller = vi.fn<ComposeContactUpsertCaller>(
+      () => pendingCommit,
+    );
+    const { root, route } = mountFor({ contactUpsertCaller });
+    route.setFieldValues({
+      email: 'lee@example.com',
+      name: 'Lee Morgan',
+    });
+
+    const firstCommit = route.commitDraft();
+    const busyCommit = firstByAttr(root, COMPOSE_ROUTE_COMMIT_ATTR)!;
+    expect(route.getState().stage).toBe('committing');
+    expect(busyCommit.textContent).toBe('Committing…');
+    expect(busyCommit.disabled).toBe(false);
+    expect(busyCommit.getAttribute('aria-disabled')).toBe('true');
+    expect(busyCommit.getAttribute('aria-busy')).toBe('true');
+
+    await route.commitDraft();
+    expect(contactUpsertCaller).toHaveBeenCalledTimes(1);
+
+    resolveCommit({
+      contact: contactRecord({
+        email: 'lee@example.com',
+        name: 'Lee Morgan',
+      }),
+    });
+    await firstCommit;
+    expect(route.getState().stage).toBe('committed');
 
     route.dispose();
   });

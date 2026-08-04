@@ -29,6 +29,7 @@ import {
 } from '../contact-source-adapters/index.js';
 import type { CrmMirrorLeafDeps } from '../contact-source-adapters/crm-mirror-leaf.js';
 import type { GooglePeopleLeafDeps } from '../contact-source-adapters/google-people-leaf.js';
+import type { GraphPeopleLeafDeps } from '../contact-source-adapters/graph-people-leaf.js';
 import {
   WORK_ENTITY_SOURCE_RUNTIME_ADAPTER_KINDS,
   workEntitySourceRuntimeAdapter,
@@ -80,14 +81,22 @@ describe('D-192 — per-vendor adapter maps are complete vs their declaration re
     }
   });
 
-  it('contact-source: every CONTACT_SOURCE_DECLARATIONS vendor resolves to a leaf (crm + google wired)', () => {
-    // Provide BOTH dep families so every declared vendor's leaf is buildable —
+  it('contact-source: every CONTACT_SOURCE_DECLARATIONS vendor resolves to a leaf (all families wired)', () => {
+    // Provide EVERY dep family so every declared vendor's leaf is buildable —
     // the map is conditional on which deps the server wired, but a DECLARED
     // vendor must have a leaf reachable when its deps are present.
-    const resolve = buildContactSourceAdapterResolver({
+    //
+    // ⛔ TYPED `Required<>` ON PURPOSE. This listed two families by hand and
+    // silently stopped covering `microsoft` the moment a third was added — the
+    // resolver was right, the test simply never asked it for that vendor, so a
+    // completeness ratchet reported a completeness it had not checked. Required<>
+    // makes the next family a COMPILE error here instead of a silent gap.
+    const deps: Required<ContactSourceAdapterDeps> = {
       crm: {} as CrmMirrorLeafDeps,
       google: {} as GooglePeopleLeafDeps,
-    } as ContactSourceAdapterDeps);
+      microsoft: {} as GraphPeopleLeafDeps,
+    };
+    const resolve = buildContactSourceAdapterResolver(deps);
     expect(CONTACT_SOURCE_DECLARATIONS.length).toBeGreaterThan(0);
     for (const d of CONTACT_SOURCE_DECLARATIONS) {
       expect(

@@ -23,6 +23,7 @@ import {
   ATTENTION_RECOVERY_EXCURSION_RETURN_ATTR,
   ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
   ATTENTION_RECOVERY_INTENT_CONTINUATION_ATTR,
+  ATTENTION_RECOVERY_INTENT_EXPIRY_HANDOFF_ATTR,
   ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME_ATTR,
   ATTENTION_RECOVERY_INTENT_SERVER_STATE_ATTR,
   ATTENTION_SEE_ALL_LINK_ATTR,
@@ -33,6 +34,7 @@ import {
   type AttentionInactiveConnectionRecoveryHint,
   type AttentionRecoveryExcursionReturn,
   type AttentionRecoveryIntentContinuation,
+  type AttentionRecoveryIntentExpiryHandoff,
   type ApprovalAttentionPopoverMount,
 } from '../attention/approval-attention-popover.js';
 import type {
@@ -374,6 +376,15 @@ const mountFor = (
     onKeepRecoveryIntentReviewBlocked?: (
       continuation: AttentionRecoveryIntentContinuation,
     ) => 'started' | 'missing' | 'unavailable';
+    onDeferRecoveryIntentVerification?: (
+      continuation: AttentionRecoveryIntentContinuation,
+    ) => 'started' | 'missing' | 'unavailable';
+    initialRecoveryIntentExpiryHandoff?:
+      AttentionRecoveryIntentExpiryHandoff;
+    onReviewRecoveryIntentExpiryHandoff?: (
+      handoff: AttentionRecoveryIntentExpiryHandoff,
+    ) => 'started' | 'missing' | 'unavailable';
+    onDismissRecoveryIntentExpiryHandoff?: () => void;
     onDismissRecoveryIntentContinuation?: () => void;
     now?: () => number;
     recoverySubscription?: ReturnType<typeof makeFakeRecoverySubscribe>;
@@ -548,6 +559,30 @@ const mountFor = (
             opts.onKeepRecoveryIntentReviewBlocked,
         }
       : {}),
+    ...(opts.onDeferRecoveryIntentVerification !== undefined
+      ? {
+          onDeferRecoveryIntentVerification:
+            opts.onDeferRecoveryIntentVerification,
+        }
+      : {}),
+    ...(opts.initialRecoveryIntentExpiryHandoff !== undefined
+      ? {
+          initialRecoveryIntentExpiryHandoff:
+            opts.initialRecoveryIntentExpiryHandoff,
+        }
+      : {}),
+    ...(opts.onReviewRecoveryIntentExpiryHandoff !== undefined
+      ? {
+          onReviewRecoveryIntentExpiryHandoff:
+            opts.onReviewRecoveryIntentExpiryHandoff,
+        }
+      : {}),
+    ...(opts.onDismissRecoveryIntentExpiryHandoff !== undefined
+      ? {
+          onDismissRecoveryIntentExpiryHandoff:
+            opts.onDismissRecoveryIntentExpiryHandoff,
+        }
+      : {}),
     ...(opts.onDismissRecoveryIntentContinuation !== undefined
       ? {
           onDismissRecoveryIntentContinuation:
@@ -613,7 +648,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
     handle.dispose();
   });
 
-  it('closes from the header, Escape, outside click, and full-queue handoff', async () => {
+  it('closes from the header, Escape, outside click, focus departure, and full-queue handoff', async () => {
     const { doc, root, topbar, handle } = mountFor();
     await handle.whenLoaded();
 
@@ -635,6 +670,11 @@ describe('D-174 - approval attention top-bar adapter', () => {
 
     topbar.fireAction({ 'data-action': 'open-attention' });
     doc.fire('click', { target: root } as unknown as MouseEvent);
+    expect(handle.isOpen()).toBe(false);
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    doc.fire('focusin', { target: root } as unknown as FocusEvent);
+    await nextTask();
     expect(handle.isOpen()).toBe(false);
 
     // Another shell surface can open Attention from its own click handler.
@@ -1836,6 +1876,11 @@ describe('D-174 - approval attention top-bar adapter', () => {
     const review = vi.fn(() => 'started' as const);
     const reviewServer = vi.fn(() => 'started' as const);
     const keepBlocked = vi.fn(() => 'started' as const);
+    const deferVerification = vi.fn(
+      (): 'started' | 'missing' | 'unavailable' => 'started',
+    );
+    deferVerification.mockReturnValueOnce('unavailable');
+    const dismiss = vi.fn();
     const { root, topbar, handle } = mountFor({
       rows: () => [],
       asks: () => [],
@@ -1854,6 +1899,8 @@ describe('D-174 - approval attention top-bar adapter', () => {
       onReviewRecoveryIntentContinuation: review,
       onReviewRecoveryIntentServer: reviewServer,
       onKeepRecoveryIntentReviewBlocked: keepBlocked,
+      onDeferRecoveryIntentVerification: deferVerification,
+      onDismissRecoveryIntentContinuation: dismiss,
     });
     await handle.whenLoaded();
 
@@ -1872,6 +1919,10 @@ describe('D-174 - approval attention top-bar adapter', () => {
       'not the server action, receipt, current state, or credentials',
     );
     expect(topbar.innerHTML).toContain('Check Contracts now');
+    expect(topbar.innerHTML).toContain('Keep for later');
+    expect(topbar.innerHTML).toContain(
+      'aria-label="Keep the Contracts check for later on Home &lt;private&gt;"',
+    );
     expect(topbar.innerHTML).not.toContain(
       ATTENTION_RECOVERY_INTENT_SERVER_OUTCOME_ATTR,
     );
@@ -1884,7 +1935,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
       root,
       ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
     )?.textContent).toBe(
-      'One fresh Contracts check remains. Only the saved return was restored—not the server action, receipt, current state, or credentials. Check the area when ready; nothing will replay.',
+      'One fresh Contracts check remains. Only the saved return was restored—not the server action, receipt, current state, or credentials. Check the area now or keep it for later; nothing will replay.',
     );
     expect(ATTENTION_TOPBAR_STYLES).toContain(
       '[data-phase="verification_ready"]',
@@ -1904,6 +1955,36 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(reviewServer).not.toHaveBeenCalled();
     expect(review).not.toHaveBeenCalled();
     expect(keepBlocked).not.toHaveBeenCalled();
+
+    topbar.fireAction({
+      'data-action': 'defer-recovery-intent-verification',
+    });
+    expect(deferVerification).toHaveBeenCalledWith(continuation);
+    expect(handle.isOpen()).toBe(true);
+    expect(handle.getRecoveryIntentContinuation()).toEqual(continuation);
+    expect(topbar.innerHTML).toContain(
+      'That check couldn’t be kept for later right now',
+    );
+    expect(topbar.innerHTML).toContain(
+      'It remains here unchanged; no check or prior action ran',
+    );
+    expect(dismiss).not.toHaveBeenCalled();
+
+    topbar.fireAction({
+      'data-action': 'defer-recovery-intent-verification',
+    });
+    expect(deferVerification).toHaveBeenCalledTimes(2);
+    expect(handle.isOpen()).toBe(false);
+    expect(handle.getRecoveryIntentContinuation()).toEqual(continuation);
+    expect(dismiss).not.toHaveBeenCalled();
+
+    // Deferral is visibly reversible from the bell and cannot silently turn
+    // into either the check or the destructive Stop recovery action.
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(handle.isOpen()).toBe(true);
+    expect(topbar.innerHTML).toContain('data-phase="verification_ready"');
+    expect(topbar.innerHTML).toContain('Keep for later');
+    expect(resolveReview).not.toHaveBeenCalled();
     topbar.fireAction({
       'data-action': 'resolve-recovery-intent-review',
     });
@@ -1914,6 +1995,383 @@ describe('D-174 - approval attention top-bar adapter', () => {
       reviewTarget: 'area',
     });
     expect(handle.getRecoveryIntentContinuation()).toBeNull();
+    handle.dispose();
+  });
+
+  it('never renders an ownerless exact-area defer action', async () => {
+    const continuation: AttentionRecoveryIntentContinuation = {
+      serverProfileId: 'profile-home',
+      serverProfileLabel: 'Home server',
+      landingHash: '#contracts',
+      areaLabel: 'Contracts',
+      intent: 'choose_again',
+      phase: 'verification_ready',
+      remediation: 'escalated',
+      reviewTarget: 'server',
+    };
+    const { topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentContinuation: continuation,
+      onResumeRecoveryIntentContinuation: vi.fn(() => 'started' as const),
+      onResolveRecoveryIntentReview: vi.fn(() => 'started' as const),
+      // Deliberately omit onDeferRecoveryIntentVerification. A durable card
+      // without an owner would promise a Keep for later action that can only
+      // fail after activation.
+    });
+    await handle.whenLoaded();
+
+    expect(handle.getRecoveryIntentContinuation()).toBeNull();
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).not.toContain('verification_ready');
+    expect(topbar.innerHTML).not.toContain(
+      'data-action="defer-recovery-intent-verification"',
+    );
+    handle.dispose();
+  });
+
+  it('resurfaces a deferred exact-area check quietly with bounded timing', async () => {
+    const now = 1_700_000_600_000;
+    const continuation: AttentionRecoveryIntentContinuation = {
+      serverProfileId: 'profile-home',
+      serverProfileLabel: 'Home server',
+      landingHash: '#contracts',
+      areaLabel: 'Contracts',
+      intent: 'choose_again',
+      phase: 'verification_ready',
+      remediation: 'escalated',
+      reviewTarget: 'server',
+      deferredAt: now - 5 * 60_000,
+      expiresAt: now + 10 * 60_000,
+    };
+    const { root, topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentContinuation: continuation,
+      onResumeRecoveryIntentContinuation: vi.fn(() => 'started' as const),
+      onResolveRecoveryIntentReview: vi.fn(() => 'started' as const),
+      onDeferRecoveryIntentVerification: vi.fn(() => 'started' as const),
+      now: () => now,
+    });
+    await handle.whenLoaded();
+
+    expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
+    expect(topbar.innerHTML).toContain('top-bar-attention--saved');
+    expect(topbar.innerHTML).not.toContain('top-bar-attention--ready');
+    expect(topbar.innerHTML).toContain(
+      'No items need your attention; 1 item saved for later',
+    );
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-deferred="true"');
+    expect(topbar.innerHTML).toContain('Contracts check kept for later');
+    expect(topbar.innerHTML).toContain(
+      'This exact check is saved quietly in this tab',
+    );
+    expect(topbar.innerHTML).toContain(
+      'Kept for later 5 min ago · expires in 10 min',
+    );
+    expect(topbar.innerHTML).toContain(
+      'A Contracts check is saved quietly for later',
+    );
+    expect(firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe('');
+    handle.dispose();
+  });
+
+  it('makes expiry an intent-free one-shot broad-area handoff', async () => {
+    const now = 1_700_002_100_000;
+    const handoff: AttentionRecoveryIntentExpiryHandoff = {
+      serverProfileId: 'profile-home',
+      serverProfileLabel: 'Home <private>',
+      landingHash: '#contracts',
+      areaLabel: 'Contracts',
+      deferredAt: now - 20 * 60_000,
+      expiredAt: now - 5 * 60_000,
+      phase: 'ready',
+    };
+    const review = vi.fn(
+      (): 'started' | 'missing' | 'unavailable' => 'started',
+    );
+    review.mockReturnValueOnce('unavailable');
+    const dismiss = vi.fn();
+    const { root, topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentExpiryHandoff: handoff,
+      onReviewRecoveryIntentExpiryHandoff: review,
+      onDismissRecoveryIntentExpiryHandoff: dismiss,
+      now: () => now,
+    });
+    await handle.whenLoaded();
+
+    expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
+    expect(topbar.innerHTML).toContain('top-bar-attention--saved');
+    expect(topbar.innerHTML).toContain('top-bar-attention--ready');
+    expect(topbar.innerHTML).toContain(
+      'No items need your attention; 1 saved item ready to review',
+    );
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain(
+      ATTENTION_RECOVERY_INTENT_EXPIRY_HANDOFF_ATTR,
+    );
+    expect(topbar.innerHTML).toContain('Saved Contracts check expired');
+    expect(topbar.innerHTML).toContain(
+      'discarded the prior intent and unfinished check',
+    );
+    expect(topbar.innerHTML).toContain(
+      'Expired 5 min ago · exact return removed',
+    );
+    expect(topbar.innerHTML).toContain('Review current Contracts');
+    expect(topbar.innerHTML).not.toContain('choose_again');
+    expect(topbar.innerHTML).not.toContain('Home <private>');
+
+    topbar.fireAction({
+      'data-action': 'review-recovery-intent-expiry-handoff',
+    });
+    expect(review).toHaveBeenCalledWith(handoff);
+    expect(handle.isOpen()).toBe(true);
+    expect(handle.getRecoveryIntentExpiryHandoff()).toEqual(handoff);
+    expect(topbar.innerHTML).toContain(
+      'The expired check remains discarded',
+    );
+
+    topbar.fireAction({
+      'data-action': 'review-recovery-intent-expiry-handoff',
+    });
+    expect(handle.isOpen()).toBe(false);
+    expect(handle.getRecoveryIntentExpiryHandoff()).toBeNull();
+    expect(dismiss).not.toHaveBeenCalled();
+
+    handle.setRecoveryIntentExpiryHandoff({
+      ...handoff,
+      landingHash: '#contracts/private-contract',
+    });
+    expect(handle.getRecoveryIntentExpiryHandoff()).toBeNull();
+
+    handle.setRecoveryIntentExpiryHandoff({
+      ...handoff,
+      retryReason: 'offline',
+    });
+    expect(handle.getRecoveryIntentExpiryHandoff()).toBeNull();
+    handle.setRecoveryIntentExpiryHandoff(null);
+
+    handle.setRecoveryIntentExpiryHandoff({
+      ...handoff,
+      phase: 'retry',
+      retryReason: 'offline',
+    });
+    expect(firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )?.textContent).toBe('');
+    expect(topbar.innerHTML).toContain('top-bar-attention--retry');
+    expect(topbar.innerHTML).toContain(
+      'No items need your attention; 1 saved review needs retry',
+    );
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(topbar.innerHTML).toContain('data-phase="retry"');
+    expect(topbar.innerHTML).toContain('data-retry-reason="offline"');
+    expect(topbar.innerHTML).toContain('Contracts couldn’t be refreshed');
+    expect(topbar.innerHTML).toContain('Home &lt;private&gt; is offline');
+    expect(topbar.innerHTML).toContain('Retry current Contracts');
+    expect(topbar.innerHTML).not.toContain('Home <private>');
+
+    handle.setRecoveryIntentExpiryHandoff({
+      ...handoff,
+      phase: 'handoff',
+      diagnosisTarget: 'area',
+    });
+    expect(topbar.innerHTML).toContain('top-bar-attention--diagnosis');
+    expect(topbar.innerHTML).toContain(
+      'No items need your attention; 1 saved review needs diagnosis',
+    );
+    expect(topbar.innerHTML).toContain('data-phase="handoff"');
+    expect(topbar.innerHTML).toContain('data-diagnosis-target="area"');
+    expect(topbar.innerHTML).toContain('Contracts needs direct review');
+    expect(topbar.innerHTML).toContain('Open current Contracts');
+    expect(topbar.innerHTML).not.toContain('Retry current Contracts');
+
+    handle.setRecoveryIntentExpiryHandoff({
+      ...handoff,
+      phase: 'handoff',
+      diagnosisTarget: 'server',
+    });
+    expect(topbar.innerHTML).toContain(
+      'Home &lt;private&gt; needs connection review',
+    );
+    expect(topbar.innerHTML).toContain('Review server connection');
+    expect(topbar.innerHTML).toContain(
+      'Review Home &lt;private&gt; server connection',
+    );
+    expect(topbar.innerHTML).toContain(
+      'stopped after two connection-blocked checks',
+    );
+
+    handle.setRecoveryIntentExpiryHandoff({
+      ...handoff,
+      phase: 'outcome',
+    });
+    expect(topbar.innerHTML).toContain('top-bar-attention--decision');
+    expect(topbar.innerHTML).toContain(
+      'No items need your attention; 1 saved review needs a decision',
+    );
+    expect(topbar.innerHTML).toContain('data-phase="outcome"');
+    expect(topbar.innerHTML).toContain(
+      'Contracts is ready for one fresh check',
+    );
+    expect(topbar.innerHTML).toContain('Check current Contracts once');
+    expect(topbar.innerHTML).toContain('Close review');
+    expect(topbar.innerHTML).not.toContain('data-diagnosis-target');
+
+    handle.setRecoveryIntentExpiryHandoff({
+      ...handoff,
+      phase: 'outcome',
+      checkBlocker: 'server',
+    });
+    expect(topbar.innerHTML).toContain('data-check-blocker="server"');
+    expect(topbar.innerHTML).toContain(
+      'Reconnect Home &lt;private&gt; before the fresh check',
+    );
+    expect(topbar.innerHTML).toContain('Waiting for server');
+    expect(topbar.innerHTML).toContain('disabled');
+    expect(topbar.innerHTML).toContain(
+      'reconnect will not start it',
+    );
+
+    handle.setRecoveryIntentExpiryHandoff({
+      ...handoff,
+      phase: 'rechecking',
+    });
+    expect(topbar.innerHTML).toContain('data-phase="rechecking"');
+    expect(topbar.innerHTML).toContain('aria-busy="true"');
+    expect(topbar.innerHTML).toContain('Checking current Contracts once');
+    expect(topbar.innerHTML).toContain('Stop and close');
+    expect(topbar.innerHTML).not.toContain(
+      'data-action="review-recovery-intent-expiry-handoff"',
+    );
+
+    handle.setRecoveryIntentExpiryHandoff({
+      ...handoff,
+      phase: 'closure',
+      closureTarget: 'area',
+    });
+    expect(topbar.innerHTML).toContain('top-bar-attention--closure');
+    expect(topbar.innerHTML).toContain(
+      'No items need your attention; 1 saved review needs closure',
+    );
+    expect(topbar.innerHTML).toContain('data-phase="closure"');
+    expect(topbar.innerHTML).toContain('data-closure-target="area"');
+    expect(topbar.innerHTML).toContain(
+      'Current Contracts remains unconfirmed',
+    );
+    expect(topbar.innerHTML).toContain('Open current Contracts');
+    expect(topbar.innerHTML).toContain('Close review');
+    topbar.fireAction({
+      'data-action': 'dismiss-recovery-intent-expiry-handoff',
+    });
+    expect(dismiss).toHaveBeenCalledOnce();
+    expect(handle.getRecoveryIntentExpiryHandoff()).toBeNull();
+    handle.dispose();
+  });
+
+  it('announces only user-started expired-area checking and retry transitions', async () => {
+    const now = 1_700_002_100_000;
+    const handoff: AttentionRecoveryIntentExpiryHandoff = {
+      serverProfileId: 'profile-home',
+      serverProfileLabel: 'Home server',
+      landingHash: '#contracts',
+      areaLabel: 'Contracts',
+      deferredAt: now - 20 * 60_000,
+      expiredAt: now - 5 * 60_000,
+      phase: 'ready',
+    };
+    let publishChecking = (): void => undefined;
+    const { root, topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryIntentExpiryHandoff: handoff,
+      onReviewRecoveryIntentExpiryHandoff: () => {
+        publishChecking();
+        return 'started';
+      },
+      onDismissRecoveryIntentExpiryHandoff: vi.fn(),
+      now: () => now,
+    });
+    publishChecking = () => handle.setRecoveryIntentExpiryHandoff({
+      ...handoff,
+      phase: 'checking',
+    });
+    await handle.whenLoaded();
+
+    const announcer = firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )!;
+    expect(announcer.textContent).toBe('');
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    topbar.fireAction({
+      'data-action': 'review-recovery-intent-expiry-handoff',
+    });
+    expect(handle.isOpen()).toBe(false);
+    expect(handle.getRecoveryIntentExpiryHandoff()?.phase).toBe('checking');
+    expect(topbar.innerHTML).toContain('top-bar-attention--checking');
+    expect(topbar.innerHTML).toContain(
+      'No items need your attention; 1 saved review is being checked',
+    );
+    expect(announcer.textContent).toContain('Checking current Contracts');
+
+    handle.setRecoveryIntentExpiryHandoff({
+      ...handoff,
+      phase: 'retry',
+      retryReason: 'unavailable',
+    });
+    expect(announcer.textContent).toContain(
+      'Current Contracts could not be confirmed',
+    );
+    expect(announcer.textContent).toContain('nothing will run automatically');
+
+    handle.setRecoveryIntentExpiryHandoff(null);
+    expect(announcer.textContent).toBe('');
+    handle.dispose();
+  });
+
+  it('keeps a blocking saved return ahead of a quiet expired review in spoken priority', async () => {
+    const now = 1_700_002_100_000;
+    const { root, topbar, handle } = mountFor({
+      rows: () => [],
+      asks: () => [],
+      initialRecoveryExcursionReturn: {
+        serverProfileId: 'profile-office',
+        serverProfileLabel: 'Office server',
+      },
+      onReviewRecoveryExcursionReturn: vi.fn(() => 'opened' as const),
+      initialRecoveryIntentExpiryHandoff: {
+        serverProfileId: 'profile-home',
+        serverProfileLabel: 'Home server',
+        landingHash: '#contracts',
+        areaLabel: 'Contracts',
+        deferredAt: now - 20 * 60_000,
+        expiredAt: now - 5 * 60_000,
+        phase: 'retry',
+        retryReason: 'unavailable',
+      },
+      onReviewRecoveryIntentExpiryHandoff: vi.fn(() => 'started' as const),
+      onDismissRecoveryIntentExpiryHandoff: vi.fn(),
+      now: () => now,
+    });
+    await handle.whenLoaded();
+
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    const announcer = firstByAttr(
+      root,
+      ATTENTION_RECOVERY_EXCURSION_RETURN_ANNOUNCER_ATTR,
+    )!;
+    expect(announcer.textContent).toBe(
+      'A saved return to Office server is ready to review.',
+    );
+    expect(announcer.textContent).not.toContain('Contracts');
     handle.dispose();
   });
 
@@ -1933,6 +2391,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
     const review = vi.fn(() => 'started' as const);
     const reviewServer = vi.fn(() => 'started' as const);
     const keepBlocked = vi.fn(() => 'started' as const);
+    const deferVerification = vi.fn(() => 'started' as const);
     const dismiss = vi.fn();
     const { root, topbar, handle } = mountFor({
       rows: () => [],
@@ -1943,6 +2402,7 @@ describe('D-174 - approval attention top-bar adapter', () => {
       onReviewRecoveryIntentContinuation: review,
       onReviewRecoveryIntentServer: reviewServer,
       onKeepRecoveryIntentReviewBlocked: keepBlocked,
+      onDeferRecoveryIntentVerification: deferVerification,
       onDismissRecoveryIntentContinuation: dismiss,
     });
     await handle.whenLoaded();
@@ -1983,8 +2443,12 @@ describe('D-174 - approval attention top-bar adapter', () => {
     topbar.fireAction({
       'data-action': 'keep-recovery-intent-review-blocked',
     });
+    topbar.fireAction({
+      'data-action': 'defer-recovery-intent-verification',
+    });
     expect(reviewServer).not.toHaveBeenCalled();
     expect(keepBlocked).not.toHaveBeenCalled();
+    expect(deferVerification).not.toHaveBeenCalled();
     topbar.fireAction({
       'data-action': 'review-recovery-intent-continuation',
     });
@@ -2373,6 +2837,37 @@ describe('D-174 - approval attention top-bar adapter', () => {
     expect(handle.getApprovals()).toEqual([]);
     expect(topbar.innerHTML).not.toContain('data-approval-id="ap-1"');
     expect(topbar.innerHTML).not.toContain('top-bar-attention-badge');
+    handle.dispose();
+  });
+
+  it('reports an unresolved inline decision as in-flight work', async () => {
+    let rows: ReadonlyArray<ServerPendingApproval> = [approval('ap-owned')];
+    let resolveDecision!: () => void;
+    const decision = new Promise<void>((resolve) => {
+      resolveDecision = resolve;
+    });
+    const { topbar, handle } = mountFor({
+      rows: () => rows,
+      runApprovalResolve: vi.fn(async (args) => {
+        await decision;
+        rows = [];
+        return { approval_id: args.approval_id, accepted: true as const };
+      }),
+    });
+    await handle.whenLoaded();
+    topbar.fireAction({ 'data-action': 'open-attention' });
+    expect(handle.hasInFlightWork()).toBe(false);
+
+    topbar.fireAction({
+      'data-action': 'approval-decide-server',
+      'data-approval-id': 'ap-owned',
+      'data-decision': 'approve',
+    });
+    expect(handle.hasInFlightWork()).toBe(true);
+
+    resolveDecision();
+    await tick(12);
+    expect(handle.hasInFlightWork()).toBe(false);
     handle.dispose();
   });
 

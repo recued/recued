@@ -246,6 +246,9 @@ export interface RunModalHandle {
   toggleTrigger(triggerId: string, enabled: boolean): Promise<void>;
   /** Delete one trigger. R21. */
   removeTrigger(triggerId: string): Promise<void>;
+  /** True while a run, schedule mutation, or trigger mutation has no terminal
+   *  result yet. Hosts use this to retain the modal across route navigation. */
+  hasInFlightWork(): boolean;
   /** Remove listeners + detach the overlay. Idempotent. */
   destroy(): void;
 }

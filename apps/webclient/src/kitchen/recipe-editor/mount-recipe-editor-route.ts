@@ -54,6 +54,9 @@ export const MOUNT_RECIPE_EDITOR_STATUS_ATTR =
   'data-recued-recipe-editor-mount-status';
 /** The back-to-recipe link rendered on a not-found / error state. */
 export const MOUNT_RECIPE_EDITOR_BACK_ATTR = 'data-recued-recipe-editor-mount-back';
+/** Retry a transient recipe-list failure without leaving Kitchen. */
+export const MOUNT_RECIPE_EDITOR_RETRY_ATTR =
+  'data-recued-recipe-editor-mount-retry';
 /** Existing accepted-response recipes shown before another starter is minted. */
 export const FORM_RESPONSE_AUTOMATION_DISCOVERY_ATTR =
   'data-recued-form-response-automation-discovery';
@@ -97,6 +100,14 @@ const MOUNT_STYLES = `
   display: inline-block;
   margin-top: 12px;
   color: var(--accent);
+}
+[${MOUNT_RECIPE_EDITOR_RETRY_ATTR}] {
+  margin-top: 12px;
+  margin-right: 10px;
+}
+[${MOUNT_RECIPE_EDITOR_RETRY_ATTR}][aria-disabled="true"] {
+  cursor: progress;
+  opacity: .72;
 }
 [${FORM_RESPONSE_AUTOMATION_DISCOVERY_ATTR}] {
   max-width: 760px;
@@ -276,36 +287,94 @@ export const mountRecipeEditorRoute = (
 
   let disposed = false;
   let editor: RecipeEditorRoute | undefined;
+  let loadBusy = false;
+  let lastLoadError = '';
 
   /** Replace the host body with a status line (+ a back link on failure). */
-  const renderStatus = (message: string, state: 'loading' | 'error'): void => {
+  const renderStatus = (
+    message: string,
+    state: 'loading' | 'error',
+    statusOptions: {
+      allowRetry?: boolean;
+      retryBusy?: boolean;
+      focusRetry?: boolean;
+      focusBack?: boolean;
+    } = {},
+  ): void => {
     clearChildren(host);
     const line = doc.createElement('p');
     line.setAttribute(MOUNT_RECIPE_EDITOR_STATUS_ATTR, state);
+    line.setAttribute('role', state === 'error' ? 'alert' : 'status');
     line.textContent = message;
     host.appendChild(line);
     if (state === 'error') {
+      let retry: HTMLButtonElement | null = null;
+      if (statusOptions.allowRetry === true) {
+        retry = doc.createElement('button');
+        retry.type = 'button';
+        retry.className = 'rx-btn rx-btn-secondary rx-btn-sm';
+        retry.setAttribute(MOUNT_RECIPE_EDITOR_RETRY_ATTR, '');
+        retry.textContent = statusOptions.retryBusy === true
+          ? 'Retrying…'
+          : 'Retry';
+        if (statusOptions.retryBusy === true) {
+          retry.setAttribute('aria-disabled', 'true');
+          retry.setAttribute('aria-busy', 'true');
+        }
+        retry.addEventListener('click', () => {
+          if (loadBusy || statusOptions.retryBusy === true) return;
+          void loadRecipe(true);
+        });
+        host.appendChild(retry);
+      }
       const back = doc.createElement('a');
       back.setAttribute(MOUNT_RECIPE_EDITOR_BACK_ATTR, '');
       back.setAttribute('href', serializeShellRoute('recipes', options.recipeId));
       back.textContent = '← Back to recipe';
       host.appendChild(back);
+      if (statusOptions.focusRetry === true && retry !== null) {
+        retry.focus({ preventScroll: true });
+      } else if (statusOptions.focusBack === true) {
+        back.focus({ preventScroll: true });
+      }
     }
   };
 
-  renderStatus('Loading recipe…', 'loading');
+  const statusFocusOwner = (): { retry: boolean; back: boolean } => {
+    const active = doc.activeElement as HTMLElement | null | undefined;
+    return {
+      retry: active?.hasAttribute?.(MOUNT_RECIPE_EDITOR_RETRY_ATTR) === true,
+      back: active?.hasAttribute?.(MOUNT_RECIPE_EDITOR_BACK_ATTR) === true,
+    };
+  };
 
-  void options
-    .listCaller()
-    .then(async (result) => {
+  const loadRecipe = async (fromRetry = false): Promise<void> => {
+    if (disposed || loadBusy || editor !== undefined) return;
+    const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    const retryOwned = fromRetry
+      && activeElement?.hasAttribute?.(MOUNT_RECIPE_EDITOR_RETRY_ATTR) === true;
+    loadBusy = true;
+    if (fromRetry) {
+      renderStatus(lastLoadError, 'error', {
+        allowRetry: true,
+        retryBusy: true,
+        focusRetry: retryOwned,
+      });
+    } else {
+      renderStatus('Loading recipe…', 'loading');
+    }
+    try {
+      const result = await options.listCaller();
       if (disposed) return;
       const entry = result.recipes.find(
         (r) => r.recipe_id === options.recipeId,
       );
       if (entry === undefined) {
+        const focusOwner = statusFocusOwner();
         renderStatus(
           `Recipe "${options.recipeId}" isn't installed on this server.`,
           'error',
+          { focusBack: (retryOwned && focusOwner.retry) || focusOwner.back },
         );
         return;
       }
@@ -343,11 +412,21 @@ export const mountRecipeEditorRoute = (
         ...(webhookControl ? { webhookControl } : {}),
         ...(options.onSaved !== undefined ? { onSaved: options.onSaved } : {}),
       });
-    })
-    .catch((error: unknown) => {
+    } catch (error: unknown) {
       if (disposed) return;
-      renderStatus(humanizeRpcError(error), 'error');
-    });
+      const focusOwner = statusFocusOwner();
+      lastLoadError = humanizeRpcError(error);
+      renderStatus(lastLoadError, 'error', {
+        allowRetry: true,
+        focusRetry: retryOwned && focusOwner.retry,
+        focusBack: focusOwner.back,
+      });
+    } finally {
+      loadBusy = false;
+    }
+  };
+
+  void loadRecipe();
 
   return {
     dispose(): void {

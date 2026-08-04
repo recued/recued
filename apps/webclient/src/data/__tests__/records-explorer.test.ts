@@ -93,13 +93,20 @@ const state = (overrides: Partial<RecordsExplorerState> = {}): RecordsExplorerSt
     oldest_pending_age_ms: 60_000,
     events: [],
   },
+  outboxOpen: false,
+  outboxRefreshing: false,
   retention: { job: { mode: 'keep' } },
   loading: false,
+  loadingNamespaceKey: null,
+  loadingKind: null,
   deletePending: false,
   deleting: false,
   exporting: false,
+  exportingAction: null,
   retiringEventId: null,
+  retiringEventBusy: false,
   purgePending: false,
+  purgeConfirmation: '',
   purging: false,
   canDelete: true,
   canExport: true,
@@ -121,6 +128,8 @@ describe('D-221 #data Records explorer', () => {
     expect(html).toContain('Global Records quota');
     expect(html).toContain('Migration reserve');
     expect(html).toContain('data-action="records-open-reference"');
+    expect(html).toContain('aria-label="Open record job-1"');
+    expect(html).not.toContain('<tr tabindex=');
     expect(html).toContain('1 pending');
     expect(html).toContain('1 dead-lettered');
   });
@@ -142,14 +151,124 @@ describe('D-221 #data Records explorer', () => {
         target_entity: 'job', target_id: 'job-1',
       }],
     };
-    const html = renderRecordsExplorer(state({ detail: record, diagnostics, deletePending: true }));
+    const html = renderRecordsExplorer(state({
+      detail: record,
+      diagnostics,
+      deletePending: true,
+      deleting: true,
+    }));
     expect(html).toContain('alice@example.test');
+    expect(html).toContain('id="records-detail-title" tabindex="-1"');
+    expect(html).toContain(
+      'data-action="records-confirm-delete" aria-disabled="true" aria-busy="true"',
+    );
+    expect(html).toContain(
+      'data-action="records-cancel-delete" aria-disabled="true"',
+    );
     expect(html).toContain('Pack version 3 · revision 1');
     expect(html).toContain('1 incoming relationship will be checked');
     expect(html).toContain('Advanced raw-slot diagnostics');
     expect(html).toContain('&quot;dec1&quot;: &quot;90000&quot;');
     expect(html).toContain('job/job-2');
     expect(html).toContain('Export pack CSV');
+  });
+
+  it('keeps the initiating export focusable and marks sibling exports unavailable', () => {
+    const html = renderRecordsExplorer(state({
+      exporting: true,
+      exportingAction: 'records-export-kind-csv',
+    }));
+    const initiatingStart = html.indexOf('data-action="records-export-kind-csv"');
+    const initiating = html.slice(
+      initiatingStart,
+      html.indexOf('</button>', initiatingStart),
+    );
+    const siblingStart = html.indexOf('data-action="records-export-pack"');
+    const sibling = html.slice(siblingStart, html.indexOf('</button>', siblingStart));
+    expect(initiating).toContain('aria-disabled="true"');
+    expect(initiating).toContain('aria-busy="true"');
+    expect(initiating).toContain('Exporting…');
+    expect(initiating).not.toContain(' disabled');
+    expect(sibling).toContain('aria-disabled="true"');
+    expect(sibling).not.toContain('aria-busy');
+    expect(sibling).toContain('Export pack JSON');
+  });
+
+  it('keeps outbox refresh focusable while its read is pending', () => {
+    const html = renderRecordsExplorer(state({
+      outboxOpen: true,
+      outboxRefreshing: true,
+    }));
+    const start = html.indexOf('data-action="records-refresh-outbox"');
+    const button = html.slice(start, html.indexOf('</button>', start));
+    expect(button).toContain('aria-disabled="true"');
+    expect(button).toContain('aria-busy="true"');
+    expect(button).toContain('Refreshing…');
+    expect(button).not.toContain(' disabled');
+  });
+
+  it('identifies the exact pending Records namespace and kind without native disabling', () => {
+    const namespaceHtml = renderRecordsExplorer(state({
+      loadingNamespaceKey: 'publisher-b/same-board',
+    }));
+    const namespaceMarker = 'data-records-namespace="publisher-b/same-board"';
+    const namespaceMarkerIndex = namespaceHtml.indexOf(namespaceMarker);
+    const pendingNamespace = namespaceHtml.slice(
+      namespaceHtml.lastIndexOf('<button', namespaceMarkerIndex),
+      namespaceHtml.indexOf('</button>', namespaceMarkerIndex),
+    );
+    const selectedNamespaceMarker = 'data-records-namespace="publisher-a/same-board"';
+    const selectedNamespaceMarkerIndex = namespaceHtml.indexOf(selectedNamespaceMarker);
+    const selectedNamespace = namespaceHtml.slice(
+      namespaceHtml.lastIndexOf('<button', selectedNamespaceMarkerIndex),
+      namespaceHtml.indexOf('</button>', selectedNamespaceMarkerIndex),
+    );
+    expect(pendingNamespace).toContain('aria-disabled="true"');
+    expect(pendingNamespace).toContain('aria-busy="true"');
+    expect(pendingNamespace).not.toContain(' disabled');
+    expect(selectedNamespace).toContain('aria-disabled="true"');
+    expect(selectedNamespace).not.toContain('aria-busy');
+
+    const kindHtml = renderRecordsExplorer(state({ loadingKind: 'job' }));
+    const kindMarker = 'data-records-kind="job"';
+    const kindMarkerIndex = kindHtml.indexOf(kindMarker);
+    const pendingKind = kindHtml.slice(
+      kindHtml.lastIndexOf('<button', kindMarkerIndex),
+      kindHtml.indexOf('</button>', kindMarkerIndex),
+    );
+    expect(pendingKind).toContain('aria-disabled="true"');
+    expect(pendingKind).toContain('aria-busy="true"');
+    expect(pendingKind).not.toContain(' disabled');
+  });
+
+  it('preserves an orphaned-namespace purge confirmation while busy', () => {
+    const orphaned: RecordsNamespaceView = {
+      ...namespace('publisher-a'),
+      state: {
+        state: 'orphaned',
+        last_version: 3,
+        storage_schema_hash: 'a'.repeat(64),
+        declaration_hash: 'b'.repeat(64),
+      },
+    };
+    const html = renderRecordsExplorer(state({
+      namespaces: [orphaned],
+      selectedNamespace: orphaned,
+      purgePending: true,
+      purgeConfirmation: 'publisher-a/same-board',
+      purging: true,
+    }));
+    const inputStart = html.indexOf('data-records-purge-confirmation');
+    const input = html.slice(inputStart, html.indexOf('>', inputStart));
+    const buttonStart = html.indexOf('data-action="records-confirm-purge"');
+    const button = html.slice(buttonStart, html.indexOf('</button>', buttonStart));
+    expect(input).toContain('value="publisher-a/same-board"');
+    expect(input).toContain('readonly');
+    expect(input).toContain('aria-disabled="true"');
+    expect(button).toContain('aria-disabled="true"');
+    expect(button).toContain('aria-busy="true"');
+    expect(button).toContain('Purging…');
+    expect(button).not.toContain(' disabled');
   });
 });
 

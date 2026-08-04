@@ -23,8 +23,15 @@ import {
   openCreateOverlay,
   CREATE_OVERLAY_ATTR,
   CREATE_OVERLAY_CLOSE_ATTR,
+  CREATE_OVERLAY_DISCARD_COMMIT_ATTR,
+  CREATE_OVERLAY_DISCARD_GUARD_ATTR,
+  CREATE_OVERLAY_DISCARD_KEEP_ATTR,
 } from '../create-overlay.js';
-import { COMPOSE_ROUTE_TARGET_CHIP_ATTR } from '../compose-route.js';
+import {
+  COMPOSE_ROUTE_COMMIT_ATTR,
+  COMPOSE_ROUTE_FIELD_ATTR,
+  COMPOSE_ROUTE_TARGET_CHIP_ATTR,
+} from '../compose-route.js';
 
 // ── fake DOM ──────────────────────────────────────────────────────
 
@@ -43,6 +50,7 @@ interface FakeEl {
   setAttribute(k: string, v: string): void;
   getAttribute(k: string): string | null;
   hasAttribute(k: string): boolean;
+  removeAttribute(k: string): void;
   appendChild(c: FakeEl): FakeEl;
   removeChild(c: FakeEl): FakeEl;
   remove(): void;
@@ -77,6 +85,7 @@ const makeEl = (tag: string): FakeEl => {
     setAttribute: (k, v) => el.attrs.set(k, v),
     getAttribute: (k) => el.attrs.get(k) ?? null,
     hasAttribute: (k) => el.attrs.has(k),
+    removeAttribute: (k) => el.attrs.delete(k),
     appendChild: (c) => {
       c.parent = el;
       el.children.push(c);
@@ -290,6 +299,90 @@ describe('Shell-frame Step 5 — shared Create overlay opener', () => {
     const overlay = collectByAttr(docB.body, CREATE_OVERLAY_ATTR)[0]!;
     overlay.click(); // target === overlay → backdrop close
     expect(collectByAttr(docB.body, CREATE_OVERLAY_ATTR)).toHaveLength(0);
+  });
+
+  it('guards parked target drafts and returns cancellation to the dismissal owner', () => {
+    const doc = makeDoc();
+    const handle = open(doc)!;
+    expect(handle.hasUnsavedChanges()).toBe(false);
+    expect(handle.hasInFlightWork()).toBe(false);
+    const overlay = collectByAttr(doc.body, CREATE_OVERLAY_ATTR)[0]!;
+    const email = collectByAttr(overlay, COMPOSE_ROUTE_FIELD_ATTR).find(
+      (field) => field.getAttribute(COMPOSE_ROUTE_FIELD_ATTR) === 'email',
+    )!;
+    email.value = 'unfinished@example.test';
+    collectByAttr(overlay, COMPOSE_ROUTE_TARGET_CHIP_ATTR).find(
+      (target) => target.getAttribute(COMPOSE_ROUTE_TARGET_CHIP_ATTR) === 'task',
+    )!.click();
+    expect(handle.hasUnsavedChanges()).toBe(true);
+
+    const close = collectByAttr(overlay, CREATE_OVERLAY_CLOSE_ATTR)[0]!;
+    close.focus();
+    close.click();
+    let guard = collectByAttr(overlay, CREATE_OVERLAY_DISCARD_GUARD_ATTR)[0]!;
+    expect(guard.getAttribute('role')).toBe('alertdialog');
+    expect(doc.activeElement).toBe(guard);
+    expect(collectByAttr(doc.body, CREATE_OVERLAY_ATTR)).toHaveLength(1);
+
+    doc.fireKeydown('Escape');
+    expect(collectByAttr(overlay, CREATE_OVERLAY_DISCARD_GUARD_ATTR))
+      .toHaveLength(0);
+    expect(doc.activeElement).toBe(close);
+
+    close.click();
+    guard = collectByAttr(overlay, CREATE_OVERLAY_DISCARD_GUARD_ATTR)[0]!;
+    collectByAttr(guard, CREATE_OVERLAY_DISCARD_KEEP_ATTR)[0]!.click();
+    expect(collectByAttr(overlay, CREATE_OVERLAY_DISCARD_GUARD_ATTR))
+      .toHaveLength(0);
+    expect(doc.activeElement).toBe(close);
+
+    close.click();
+    guard = collectByAttr(overlay, CREATE_OVERLAY_DISCARD_GUARD_ATTR)[0]!;
+    collectByAttr(guard, CREATE_OVERLAY_DISCARD_COMMIT_ATTR)[0]!.click();
+    expect(collectByAttr(doc.body, CREATE_OVERLAY_ATTR)).toHaveLength(0);
+    expect(handle.hasUnsavedChanges()).toBe(false);
+    expect(handle.hasInFlightWork()).toBe(false);
+  });
+
+  it('holds user dismissal until an in-flight commit settles', async () => {
+    const doc = makeDoc();
+    let resolveCommit!: (value: { contact: never }) => void;
+    const pendingCommit = new Promise<{ contact: never }>((resolve) => {
+      resolveCommit = resolve;
+    });
+    const handle = open(doc, {
+      contactUpsertCaller: vi.fn(() => pendingCommit),
+    })!;
+    const overlay = collectByAttr(doc.body, CREATE_OVERLAY_ATTR)[0]!;
+    const email = collectByAttr(overlay, COMPOSE_ROUTE_FIELD_ATTR).find(
+      (field) => field.getAttribute(COMPOSE_ROUTE_FIELD_ATTR) === 'email',
+    )!;
+    email.value = 'lee@example.test';
+    collectByAttr(overlay, COMPOSE_ROUTE_COMMIT_ATTR)[0]!.click();
+    expect(handle.hasUnsavedChanges()).toBe(true);
+    expect(handle.hasInFlightWork()).toBe(true);
+
+    const close = collectByAttr(overlay, CREATE_OVERLAY_CLOSE_ATTR)[0]!;
+    expect(close.getAttribute('aria-disabled')).toBe('true');
+    expect(close.disabled).toBe(false);
+    doc.fireKeydown('Escape');
+    close.click();
+    overlay.click();
+    expect(collectByAttr(doc.body, CREATE_OVERLAY_ATTR)).toHaveLength(1);
+
+    resolveCommit({
+      contact: {
+        email: 'lee@example.test',
+        name: 'Lee Morgan',
+      } as never,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(handle.hasUnsavedChanges()).toBe(false);
+    expect(handle.hasInFlightWork()).toBe(false);
+    expect(close.getAttribute('aria-disabled')).toBeNull();
+    close.click();
+    expect(collectByAttr(doc.body, CREATE_OVERLAY_ATTR)).toHaveLength(0);
   });
 
   it('moves focus into the dialog on open and restores it on close', () => {

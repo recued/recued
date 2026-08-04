@@ -8,6 +8,8 @@ import type {
 import {
   PACK_APP_CONTEXT_ATTR,
   PACK_APP_OPERATION_ATTR,
+  PACK_APP_REFRESH_ATTR,
+  PACK_APP_STATUS_ATTR,
   PACK_APP_RESULT_ATTR,
   mountPackAppView,
   type PackAppExecuteCaller,
@@ -226,8 +228,24 @@ const typeGridCell = (
   key: string,
   address: string,
   value: string,
-): { submit: { disabled: boolean }; status: { dataset: Record<string, string>; textContent: string } } => {
-  const submit = { disabled: true };
+): {
+  submit: {
+    disabled: boolean;
+    tabIndex: number;
+    attrs: Map<string, string>;
+    setAttribute(name: string, value: string): void;
+    removeAttribute(name: string): void;
+  };
+  status: { dataset: Record<string, string>; textContent: string };
+} => {
+  const submitAttrs = new Map<string, string>();
+  const submit = {
+    disabled: true,
+    tabIndex: 0,
+    attrs: submitAttrs,
+    setAttribute(name: string, value: string) { submitAttrs.set(name, value); },
+    removeAttribute(name: string) { submitAttrs.delete(name); },
+  };
   const status = { dataset: {} as Record<string, string>, textContent: '' };
   const gridRoot = {
     getAttribute: (name: string) => name === RECIPES_ROUTE_RESULT_GRID_ATTR ? key : null,
@@ -258,6 +276,7 @@ describe('pack app shared editable tables', () => {
     const key = 'sheet#grid-0';
     expect(rig.root.innerHTML).toContain(`${RECIPES_ROUTE_RESULT_GRID_ATTR}="${key}"`);
     const chrome = typeGridCell(rig.root, key, '0:amount', '125.00');
+    expect(rig.view.hasUnsavedChanges()).toBe(true);
     expect(chrome.submit.disabled).toBe(false);
     expect(chrome.status).toMatchObject({
       dataset: { dirty: 'true' }, textContent: '1 row · Unsaved changes',
@@ -280,6 +299,7 @@ describe('pack app shared editable tables', () => {
         section_index: 0,
       },
     });
+    expect(rig.view.hasUnsavedChanges()).toBe(false);
     rig.view.dispose();
   });
 
@@ -327,6 +347,54 @@ describe('pack app shared editable tables', () => {
     await settle();
     expect(execute).toHaveBeenCalledTimes(1);
     expect(rig.root.innerHTML).toContain('Save the edited table first');
+    rig.view.dispose();
+  });
+
+  it('reports initial runs and result filters as in-flight host work', async () => {
+    const result = {
+      recipe_id: 'sheet', recipe_hash: 'execution-hash', success: true,
+      steps: [], errors: [],
+      output: { render: [{
+        type: 'filter', data: {},
+        filter: {
+          section_index: 0, recipe_hash: 'stored-sheet-hash',
+          fields: ['status'], hidden: [], submit: 'Search',
+          definitions: { status: { label: 'Status', type: 'text', default: 'open' } },
+          values: { status: 'open' },
+        },
+      }] },
+    } as unknown as ServerExecuteResponse;
+    let resolveFilter!: (value: ServerExecuteResponse) => void;
+    const pendingFilter = new Promise<ServerExecuteResponse>((resolve) => {
+      resolveFilter = resolve;
+    });
+    const execute = vi.fn<PackAppExecuteCaller>()
+      .mockResolvedValueOnce(result)
+      .mockReturnValueOnce(pendingFilter);
+    const rig = mount(execute);
+
+    expect(rig.view.hasInFlightWork()).toBe(true);
+    await settle();
+    expect(rig.view.hasInFlightWork()).toBe(false);
+    expect(rig.root.innerHTML).toContain('result-filter-search');
+    expect(rig.root.innerHTML).toContain('sheet:stored-sheet-hash:0');
+
+    emitAction(rig.root, 'result-filter-search', {
+      'data-recued-recipes-result-filter': 'sheet:stored-sheet-hash:0',
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(rig.view.hasInFlightWork()).toBe(true);
+    expect(rig.root.innerHTML).toMatch(
+      new RegExp(`${PACK_APP_REFRESH_ATTR}=""[^>]* disabled`),
+    );
+    emitPackControl(rig.root, PACK_APP_REFRESH_ATTR);
+    expect(execute).toHaveBeenCalledTimes(2);
+    resolveFilter(result);
+    await settle();
+    expect(rig.view.hasInFlightWork()).toBe(false);
+    expect(rig.root.innerHTML).not.toMatch(
+      new RegExp(`${PACK_APP_REFRESH_ATTR}=""[^>]* disabled`),
+    );
     rig.view.dispose();
   });
 });
@@ -503,5 +571,60 @@ describe('pack app business lifecycle', () => {
     expect(rig.root.innerHTML).toContain('Run completed · Post entry');
     expect(rig.root.innerHTML).toContain('Entry posted');
     rig.view.dispose();
+  });
+});
+
+/** ⛔ A button that answers nothing is the worst failure this surface has: the
+ *  person cannot tell a refusal from a broken build, and "nothing happened" is
+ *  neither reportable nor debuggable. Every path that declines to open a run now
+ *  names itself. */
+describe('pack app — a press that cannot open says why', () => {
+  const opsSurface = (recipeId: string): PackAppSurface => ({
+    ...surface,
+    operations: [{
+      recipe_id: recipeId,
+      name: 'Post entry',
+      description: 'Record both sides and keep the receipt.',
+      entry: taskEntry,
+    }],
+  });
+
+  it('names the target when the roster no longer holds it', async () => {
+    const rig = mount(vi.fn<PackAppExecuteCaller>().mockResolvedValue(tableResult()), {
+      surface: opsSurface(taskEntry.recipe_id),
+      installedRecipes: [entry, taskEntry],
+      openRunModal: vi.fn(),
+    });
+    await settle();
+    // A stale button id — the shape the lookup is supposed to make impossible.
+    emitPackControl(rig.root, PACK_APP_OPERATION_ATTR, 'vanished-recipe');
+    expect(rig.root.innerHTML).toContain(`${PACK_APP_STATUS_ATTR}="error"`);
+    expect(rig.root.innerHTML).toContain('vanished-recipe');
+  });
+
+  it('says so when the view cannot open a run at all', async () => {
+    // `openRunModal` absent normally hides the operations row, so this state can
+    // only arise if the two ever disagree — which is precisely when a silent
+    // swallow would be indistinguishable from a dead button.
+    const rig = mount(vi.fn<PackAppExecuteCaller>().mockResolvedValue(tableResult()), {
+      surface: opsSurface(taskEntry.recipe_id),
+      installedRecipes: [entry, taskEntry],
+    });
+    await settle();
+    emitPackControl(rig.root, PACK_APP_OPERATION_ATTR, taskEntry.recipe_id);
+    expect(rig.root.innerHTML).toContain('cannot open a run on this server');
+  });
+
+  it('a press that CAN open still opens — the guards did not eat the happy path', async () => {
+    const openRunModal = vi.fn<NonNullable<MountPackAppViewOptions['openRunModal']>>();
+    const rig = mount(vi.fn<PackAppExecuteCaller>().mockResolvedValue(tableResult()), {
+      surface: opsSurface(taskEntry.recipe_id),
+      installedRecipes: [entry, taskEntry],
+      openRunModal,
+    });
+    await settle();
+    emitPackControl(rig.root, PACK_APP_OPERATION_ATTR, taskEntry.recipe_id);
+    expect(openRunModal).toHaveBeenCalledTimes(1);
+    expect(rig.root.innerHTML).not.toContain(`${PACK_APP_STATUS_ATTR}="error"`);
   });
 });

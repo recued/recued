@@ -32,11 +32,14 @@ import {
   ARCHIVE_BACKUP_RECHECK_BTN_ATTR,
   ARCHIVE_BACKUP_PROGRESS_ATTR,
   ARCHIVE_BACKUP_PATH_OUT_ATTR,
+  ARCHIVE_RESTORE_MNEMONIC_ATTR,
+  ARCHIVE_RESTORE_PREVIEW_BTN_ATTR,
   ARCHIVE_RESTORE_MANIFEST_ATTR,
   ARCHIVE_RESTORE_REALM_KEY_ATTR,
   ARCHIVE_RESTORE_ARM_ATTR,
   ARCHIVE_RESTORE_UNCOUNTED_ATTR,
   ARCHIVE_RESTORE_COMMIT_BTN_ATTR,
+  ARCHIVE_RESTORE_COMMITTED_ATTR,
   ARCHIVE_RESTORE_SCHEMA_WARN_ATTR,
   ARCHIVE_PASSPORT_START_BTN_ATTR,
   ARCHIVE_PASSPORT_JSON_ATTR,
@@ -46,6 +49,7 @@ import {
   ARCHIVE_RESTORE_UPLOAD_INPUT_ATTR,
   ARCHIVE_RESTORE_UPLOAD_PROGRESS_ATTR,
   ARCHIVE_BACKUP_RESULT_ATTR,
+  ARCHIVE_BACKUP_BUSY_ATTR,
   mountArchiveBackupPanel,
   type ArchiveExportCaller,
   type ArchiveImportCaller,
@@ -84,11 +88,16 @@ interface FakeElement {
   remove(): void;
   addEventListener(name: string, fn: (ev: unknown) => void): void;
   removeEventListener(name: string, fn: (ev: unknown) => void): void;
+  querySelector(selector: string): FakeElement | null;
+  focus(): void;
   click(): void;
   type: string;
 }
 
-const makeFakeElement = (tagName: string): FakeElement => {
+const makeFakeElement = (
+  tagName: string,
+  onFocus?: (element: FakeElement) => void,
+): FakeElement => {
   const listeners = new Map<string, Array<(ev: unknown) => void>>();
   const attrs = new Map<string, string>();
   const children: FakeElement[] = [];
@@ -137,6 +146,21 @@ const makeFakeElement = (tagName: string): FakeElement => {
       const idx = arr.indexOf(fn);
       if (idx >= 0) arr.splice(idx, 1);
     },
+    querySelector: (selector) => {
+      const match = /^\[([^\]=]+)\]$/.exec(selector);
+      if (!match) return null;
+      const attr = match[1]!;
+      const visit = (root: FakeElement): FakeElement | null => {
+        for (const child of root.children) {
+          if (child.hasAttribute(attr)) return child;
+          const nested = visit(child);
+          if (nested) return nested;
+        }
+        return null;
+      };
+      return visit(el);
+    },
+    focus: () => onFocus?.(el),
     click: () => {
       for (const fn of listeners.get('click') ?? []) fn({ target: el });
     },
@@ -144,9 +168,20 @@ const makeFakeElement = (tagName: string): FakeElement => {
   return el;
 };
 
-const makeFakeDocument = () => ({
-  createElement: (tag: string) => makeFakeElement(tag),
-});
+interface FakeDocument {
+  activeElement: FakeElement | null;
+  createElement(tag: string): FakeElement;
+}
+
+const makeFakeDocument = (): FakeDocument => {
+  const doc: FakeDocument = {
+    activeElement: null,
+    createElement: (tag) => makeFakeElement(tag, (element) => {
+      doc.activeElement = element;
+    }),
+  };
+  return doc;
+};
 
 const findByAttr = (root: FakeElement, attr: string): FakeElement | null => {
   if (root.hasAttribute(attr)) return root;
@@ -258,7 +293,7 @@ const setupMount = (overrides: SetupOptions = {}) => {
       ? { onExportSettled: overrides.onExportSettled }
       : {}),
   });
-  return { host, mount, exportLog, importLog, passportLog, downloadLog };
+  return { host, doc, mount, exportLog, importLog, passportLog, downloadLog };
 };
 
 const rpcError = (code: string, message = code): Error =>
@@ -360,6 +395,42 @@ describe('R26.4 Delta 2b — export', () => {
     mount.clickBackup();
     expect(mount.getView()).toBe('export-entry');
     expect(findByAttr(host, ARCHIVE_BACKUP_RUN_BTN_ATTR)).not.toBeNull();
+  });
+
+  it('keeps a keyboard-owned export on its progress and hands completion to Download', async () => {
+    const runStatus = statusSequence(
+      { state: 'running', bytes_written: 1024, progress_pct: 40 },
+      {
+        state: 'done',
+        bytes_written: 4096,
+        progress_pct: 100,
+        path: DONE_PATH,
+      },
+    );
+    const { host, doc, mount } = setupMount({
+      runStatus,
+      archiveDownload: () => () => {},
+    });
+    mount.clickBackup();
+    mount.setExportMnemonic(KNOWN);
+    findByAttr(host, ARCHIVE_BACKUP_RUN_BTN_ATTR)?.focus();
+
+    const start = mount.clickStartBackup();
+    let progress = findByAttr(host, ARCHIVE_BACKUP_PROGRESS_ATTR);
+    expect(mount.getView()).toBe('export-running');
+    expect(progress?.getAttribute('tabindex')).toBe('-1');
+    expect(doc.activeElement).toBe(progress);
+
+    await start;
+    progress = findByAttr(host, ARCHIVE_BACKUP_PROGRESS_ATTR);
+    expect(mount.getProgress().pct).toBe(40);
+    expect(doc.activeElement).toBe(progress);
+
+    await mount.tickPoll();
+    expect(mount.getView()).toBe('export-done');
+    expect(doc.activeElement).toBe(
+      findByAttr(host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR),
+    );
   });
 
   it('a client-side-invalid phrase never reaches the server', async () => {
@@ -552,7 +623,7 @@ describe('R26.4 Delta 2b — export', () => {
       };
     };
     const onExportSettled = vi.fn();
-    const { host, mount } = setupMount({
+    const { host, doc, mount } = setupMount({
       runStatus,
       resumeExportStart: () => Promise.resolve({ job_id: 'job-existing' }),
       onExportSettled,
@@ -562,15 +633,26 @@ describe('R26.4 Delta 2b — export', () => {
     expect(mount.getView()).toBe('export-error');
     expect(mount.getError()).toContain('connection interrupted');
     expect(onExportSettled).not.toHaveBeenCalled();
+    findByAttr(host, ARCHIVE_BACKUP_CANCEL_BTN_ATTR)?.focus();
     findByAttr(host, ARCHIVE_BACKUP_CANCEL_BTN_ATTR)?.click();
     expect(mount.getView()).toBe('menu');
     expect(findByAttr(host, ARCHIVE_BACKUP_RECHECK_BTN_ATTR)?.textContent)
       .toBe('Continue active backup');
+    expect(doc.activeElement).toBe(
+      findByAttr(host, ARCHIVE_BACKUP_RECHECK_BTN_ATTR),
+    );
     findByAttr(host, ARCHIVE_BACKUP_RECHECK_BTN_ATTR)?.click();
+    expect(mount.getView()).toBe('export-running');
+    expect(doc.activeElement).toBe(
+      findByAttr(host, ARCHIVE_BACKUP_PROGRESS_ATTR),
+    );
     await flush();
 
     expect(mount.getView()).toBe('export-done');
     expect(onExportSettled).toHaveBeenCalledTimes(1);
+    expect(doc.activeElement).toBe(
+      findByAttr(host, ARCHIVE_BACKUP_CANCEL_BTN_ATTR),
+    );
   });
 });
 
@@ -597,6 +679,24 @@ describe('R26.4 Delta 2b — restore preview', () => {
     expect(text).not.toContain('2026-06-25T12:00:00.000Z');
     expect(text).toContain('Includes files: yes');
     expect(mount.getManifest()?.record_count).toBe(1243);
+  });
+
+  it('keeps a keyboard-owned preview on its busy status and hands off to the arm control', async () => {
+    const { host, doc, mount } = setupMount();
+    mount.clickRestore();
+    mount.setRestorePath(DONE_PATH);
+    mount.setRestoreMnemonic(KNOWN);
+    findByAttr(host, ARCHIVE_RESTORE_PREVIEW_BTN_ATTR)?.focus();
+
+    const preview = mount.clickPreview();
+    const busy = findByAttr(host, ARCHIVE_BACKUP_BUSY_ATTR);
+    expect(mount.getView()).toBe('restore-busy');
+    expect(busy?.getAttribute('tabindex')).toBe('-1');
+    expect(doc.activeElement).toBe(busy);
+
+    await preview;
+    expect(mount.getView()).toBe('restore-preview');
+    expect(doc.activeElement).toBe(findByAttr(host, ARCHIVE_RESTORE_ARM_ATTR));
   });
 
   it('the preview surfaces whether the archive embeds an identity passport', async () => {
@@ -685,13 +785,17 @@ describe('R26.4 Delta 2b — restore preview', () => {
         'ARCHIVE_INVALID_SIGNATURE: HMAC trailer mismatch — archive tampered or wrong recovery key',
       );
     };
-    const { mount } = setupMount({ runImport });
+    const { host, doc, mount } = setupMount({ runImport });
     mount.clickRestore();
     mount.setRestorePath(DONE_PATH);
     mount.setRestoreMnemonic(KNOWN);
+    findByAttr(host, ARCHIVE_RESTORE_PREVIEW_BTN_ATTR)?.focus();
     await mount.clickPreview();
     expect(mount.getView()).toBe('restore-entry');
     expect(mount.getError()).toMatch(/doesn't match/);
+    expect(doc.activeElement).toBe(
+      findByAttr(host, ARCHIVE_RESTORE_MNEMONIC_ATTR),
+    );
   });
 
   it('a server-side bad_request (malformed key) shows the invalid-key copy, not the mismatch copy', async () => {
@@ -723,10 +827,11 @@ describe('R26.4 Delta 2b — restore preview', () => {
       realm: 'same',
       schema_compat: { status: 'archive_too_new', server_schema_version: 2 },
     });
-    const { host, mount } = setupMount({ runImport });
+    const { host, doc, mount } = setupMount({ runImport });
     mount.clickRestore();
     mount.setRestorePath(DONE_PATH);
     mount.setRestoreMnemonic(KNOWN);
+    findByAttr(host, ARCHIVE_RESTORE_PREVIEW_BTN_ATTR)?.focus();
     await mount.clickPreview();
     expect(mount.getView()).toBe('restore-preview');
     expect(findByAttr(host, ARCHIVE_RESTORE_SCHEMA_WARN_ATTR)).not.toBeNull();
@@ -735,6 +840,9 @@ describe('R26.4 Delta 2b — restore preview', () => {
     // button is rendered.
     expect(findByAttr(host, ARCHIVE_RESTORE_ARM_ATTR)).toBeNull();
     expect(findByAttr(host, ARCHIVE_RESTORE_COMMIT_BTN_ATTR)).toBeNull();
+    expect(doc.activeElement).toBe(
+      findByAttr(host, ARCHIVE_BACKUP_CANCEL_BTN_ATTR),
+    );
   });
 
   it('a schema_compat ok preview renders the normal confirm path (no upgrade block)', async () => {
@@ -780,17 +888,29 @@ describe('R26.4 Delta 2b — restore commit', () => {
   });
 
   it('the commit button is disabled until the arm checkbox is ticked', async () => {
-    const { host, mount } = await toPreview();
+    const { host, doc, mount } = await toPreview();
     expect(findByAttr(host, ARCHIVE_RESTORE_COMMIT_BTN_ATTR)?.hasAttribute('disabled')).toBe(true);
+    findByAttr(host, ARCHIVE_RESTORE_ARM_ATTR)?.focus();
     mount.setArmed(true);
     expect(findByAttr(host, ARCHIVE_RESTORE_COMMIT_BTN_ATTR)?.hasAttribute('disabled')).toBe(false);
+    expect(doc.activeElement).toBe(findByAttr(host, ARCHIVE_RESTORE_ARM_ATTR));
   });
 
   it('armed commit calls dry_run:false and shows the restarting state', async () => {
-    const { mount, importLog } = await toPreview();
+    const { host, doc, mount, importLog } = await toPreview();
     mount.setArmed(true);
-    await mount.clickCommit();
+    findByAttr(host, ARCHIVE_RESTORE_COMMIT_BTN_ATTR)?.focus();
+    const commit = mount.clickCommit();
+    const busy = findByAttr(host, ARCHIVE_BACKUP_BUSY_ATTR);
+    expect(mount.getView()).toBe('restore-busy');
+    expect(textOf(host)).toContain('Restoring the backup…');
+    expect(doc.activeElement).toBe(busy);
+
+    await commit;
     expect(mount.getView()).toBe('restore-committed');
+    expect(doc.activeElement).toBe(
+      findByAttr(host, ARCHIVE_RESTORE_COMMITTED_ATTR),
+    );
     expect(importLog).toEqual([
       { path: DONE_PATH, recoveryKey: KNOWN, dry_run: true },
       { path: DONE_PATH, recoveryKey: KNOWN, dry_run: false },
@@ -1124,9 +1244,17 @@ describe('R26.4 M1 — passport-only export', () => {
   });
 
   it('Export identity passport → signed JSON + a wired download seam', async () => {
-    const { host, mount, passportLog, downloadLog } = setupMount();
-    await mount.clickPassportExport();
+    const { host, doc, mount, passportLog, downloadLog } = setupMount();
+    findByAttr(host, ARCHIVE_PASSPORT_START_BTN_ATTR)?.focus();
+    const pending = mount.clickPassportExport();
+    expect(mount.getView()).toBe('passport-exporting');
+    expect(doc.activeElement).toBe(findByAttr(host, ARCHIVE_BACKUP_BUSY_ATTR));
+
+    await pending;
     expect(mount.getView()).toBe('passport-done');
+    expect(doc.activeElement).toBe(
+      findByAttr(host, ARCHIVE_PASSPORT_DOWNLOAD_BTN_ATTR),
+    );
     // Only the lightweight support/audit profile is driven.
     expect(passportLog).toEqual([{ profile: 'support_redacted' }]);
     const ta = findByAttr(host, ARCHIVE_PASSPORT_JSON_ATTR);
@@ -1137,16 +1265,30 @@ describe('R26.4 M1 — passport-only export', () => {
     expect(downloadLog).toHaveLength(1);
     expect(downloadLog[0]?.filename).toMatch(/\.json$/);
     expect(downloadLog[0]?.json).toContain('support_redacted');
+
+    const back = findByAttr(host, ARCHIVE_BACKUP_CANCEL_BTN_ATTR)!;
+    back.focus();
+    back.click();
+    expect(doc.activeElement).toBe(
+      findByAttr(host, ARCHIVE_PASSPORT_START_BTN_ATTR),
+    );
   });
 
   it('a failed passport export surfaces an error', async () => {
     const runPassportExport: ArchivePassportExportCaller = async () => {
       throw new Error('sign failed');
     };
-    const { mount } = setupMount({ runPassportExport });
+    const { host, doc, mount } = setupMount({ runPassportExport });
+    findByAttr(host, ARCHIVE_PASSPORT_START_BTN_ATTR)?.focus();
     await mount.clickPassportExport();
     expect(mount.getView()).toBe('passport-error');
     expect(mount.getError()).toContain('sign failed');
+    const back = findByAttr(host, ARCHIVE_BACKUP_CANCEL_BTN_ATTR)!;
+    expect(doc.activeElement).toBe(back);
+    back.click();
+    expect(doc.activeElement).toBe(
+      findByAttr(host, ARCHIVE_PASSPORT_START_BTN_ATTR),
+    );
   });
 });
 
@@ -1268,15 +1410,24 @@ describe('M4 browser download', () => {
     const btn = findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR);
     expect(btn).not.toBeNull();
 
+    btn!.focus();
     btn!.click();
     expect(s.mount.isDownloading()).toBe(true);
     expect(dl.calls).toHaveLength(1);
+    const pending = findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR);
+    expect(pending?.hasAttribute('disabled')).toBe(false);
+    expect(pending?.getAttribute('aria-disabled')).toBe('true');
+    expect(pending?.getAttribute('aria-busy')).toBe('true');
+    expect(s.doc.activeElement).toBe(pending);
     // The name is the basename of the completed export path (DONE_PATH).
     expect(dl.calls[0].name).toBe('recued-2026-06-25.recued.archive');
 
     dl.calls[0].onDone();
     expect(s.mount.isDownloading()).toBe(false);
     expect(textOf(s.host)).toContain('Downloaded to this device');
+    expect(s.doc.activeElement).toBe(
+      findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR),
+    );
   });
 
   it('surfaces a download failure note', async () => {
@@ -1284,9 +1435,13 @@ describe('M4 browser download', () => {
     const s = setupMount({ archiveDownload: dl.fn });
     await driveToExportDone(s);
     findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)!.click();
+    findByAttr(s.host, ARCHIVE_BACKUP_CANCEL_BTN_ATTR)!.focus();
     dl.calls[0].onError('the server is gone');
     expect(s.mount.isDownloading()).toBe(false);
     expect(textOf(s.host)).toContain('Download failed: the server is gone');
+    expect(s.doc.activeElement).toBe(
+      findByAttr(s.host, ARCHIVE_BACKUP_CANCEL_BTN_ATTR),
+    );
   });
 
   it('hides the Download button when no seam is wired (server-path only)', async () => {
@@ -1300,8 +1455,8 @@ describe('M4 browser download', () => {
     const s = setupMount({ archiveDownload: dl.fn });
     await driveToExportDone(s);
     findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)!.click();
-    // Re-render relabeled the button to "Downloading…" + disabled; clicking
-    // again is a no-op (the guard lives in startDownload, not the DOM).
+    // Re-render relabels the focusable owner to "Downloading…"; clicking again
+    // is a no-op because the guard lives in startDownload, not the DOM.
     findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)!.click();
     expect(dl.calls).toHaveLength(1);
     expect(textOf(s.host)).toContain('Downloading…');
@@ -1314,9 +1469,14 @@ describe('M4 browser download', () => {
     await driveToExportDone(s);
     findByAttr(s.host, ARCHIVE_BACKUP_DOWNLOAD_BTN_ATTR)!.click();
     expect(s.mount.isDownloading()).toBe(true);
-    s.mount.clickCancel(); // back to menu
+    const back = findByAttr(s.host, ARCHIVE_BACKUP_CANCEL_BTN_ATTR)!;
+    back.focus();
+    back.click();
     expect(cancelled).toBe(1);
     expect(s.mount.isDownloading()).toBe(false);
+    expect(s.doc.activeElement).toBe(
+      findByAttr(s.host, ARCHIVE_BACKUP_START_BTN_ATTR),
+    );
   });
 });
 
@@ -1367,20 +1527,24 @@ describe('M4b.2 restore upload', () => {
 
   it('the file input change handler starts the upload with the picked file', () => {
     const up = captureUpload();
-    const { host, mount } = setupMount({ archiveUpload: up.fn });
+    const { host, doc, mount } = setupMount({ archiveUpload: up.fn });
     mount.clickRestore();
     const input = findByAttr(host, ARCHIVE_RESTORE_UPLOAD_INPUT_ATTR)!;
+    input.focus();
     // Stub the browser FileList the change handler reads.
     (input as unknown as { files: ArchiveUploadFile[] }).files = [fakeFile()];
     for (const fn of input.listeners.get('change') ?? []) fn({ target: input });
     expect(up.calls).toHaveLength(1);
     expect(up.calls[0].file.name).toBe('my-backup.recued.archive');
     expect(mount.getView()).toBe('restore-uploading');
+    const progress = findByAttr(host, ARCHIVE_RESTORE_UPLOAD_PROGRESS_ATTR);
+    expect(progress?.getAttribute('tabindex')).toBe('-1');
+    expect(doc.activeElement).toBe(progress);
   });
 
   it('uploads, renders progress, then feeds the staged name into Preview', async () => {
     const up = captureUpload();
-    const { host, mount, importLog } = setupMount({ archiveUpload: up.fn });
+    const { host, doc, mount, importLog } = setupMount({ archiveUpload: up.fn });
     mount.clickRestore();
     mount.chooseRestoreFile(fakeFile());
     expect(mount.getView()).toBe('restore-uploading');
@@ -1388,11 +1552,15 @@ describe('M4b.2 restore upload', () => {
     expect(up.calls).toHaveLength(1);
 
     // A progress tick repaints the bar at the right percentage.
+    findByAttr(host, ARCHIVE_RESTORE_UPLOAD_PROGRESS_ATTR)?.focus();
     up.calls[0].onProgress(1024, 2048);
     expect(mount.getUploadProgress()).toEqual({ sent: 1024, total: 2048 });
     expect(
       findByAttr(host, ARCHIVE_RESTORE_UPLOAD_PROGRESS_ATTR)?.getAttribute('data-pct'),
     ).toBe('50');
+    expect(doc.activeElement).toBe(
+      findByAttr(host, ARCHIVE_RESTORE_UPLOAD_PROGRESS_ATTR),
+    );
 
     // Done → drop back to entry, capture the staged name + a friendly note.
     up.calls[0].onDone({
@@ -1402,6 +1570,9 @@ describe('M4b.2 restore upload', () => {
     expect(mount.getView()).toBe('restore-entry');
     expect(mount.isUploading()).toBe(false);
     expect(textOf(host)).toContain('Uploaded my-backup.recued.archive');
+    expect(doc.activeElement).toBe(
+      findByAttr(host, ARCHIVE_RESTORE_MNEMONIC_ATTR),
+    );
 
     // The staged basename now drives the EXISTING import flow as the path.
     mount.setRestoreMnemonic(KNOWN);
@@ -1418,11 +1589,15 @@ describe('M4b.2 restore upload', () => {
 
   it('preserves a pre-typed recovery key across the upload', async () => {
     const up = captureUpload();
-    const { mount, importLog } = setupMount({ archiveUpload: up.fn });
+    const { host, doc, mount, importLog } = setupMount({ archiveUpload: up.fn });
     mount.clickRestore();
     mount.setRestoreMnemonic(KNOWN); // key entered BEFORE picking the file
     mount.chooseRestoreFile(fakeFile());
+    findByAttr(host, ARCHIVE_RESTORE_UPLOAD_PROGRESS_ATTR)?.focus();
     up.calls[0].onDone({ staged_name: 'recued-upload-xy.recued.archive', size_bytes: 1 });
+    expect(doc.activeElement).toBe(
+      findByAttr(host, ARCHIVE_RESTORE_PREVIEW_BTN_ATTR),
+    );
     // No re-typing needed — Preview works straight away.
     await mount.clickPreview();
     expect(importLog[0]).toEqual({
@@ -1434,24 +1609,33 @@ describe('M4b.2 restore upload', () => {
 
   it('surfaces an upload failure note and returns to entry', () => {
     const up = captureUpload();
-    const { mount } = setupMount({ archiveUpload: up.fn });
+    const { host, doc, mount } = setupMount({ archiveUpload: up.fn });
     mount.clickRestore();
     mount.chooseRestoreFile(fakeFile());
+    findByAttr(host, ARCHIVE_RESTORE_UPLOAD_PROGRESS_ATTR)?.focus();
     up.calls[0].onError('the connection was lost.');
     expect(mount.getView()).toBe('restore-entry');
     expect(mount.getError()).toContain('Upload failed: the connection was lost.');
     expect(mount.isUploading()).toBe(false);
+    expect(doc.activeElement).toBe(
+      findByAttr(host, ARCHIVE_RESTORE_UPLOAD_INPUT_ATTR),
+    );
   });
 
   it('the upload-view Cancel button aborts the seam and returns to entry', () => {
     const up = captureUpload();
-    const { host, mount } = setupMount({ archiveUpload: up.fn });
+    const { host, doc, mount } = setupMount({ archiveUpload: up.fn });
     mount.clickRestore();
     mount.chooseRestoreFile(fakeFile());
-    findByAttr(host, ARCHIVE_BACKUP_CANCEL_BTN_ATTR)!.click();
+    const cancel = findByAttr(host, ARCHIVE_BACKUP_CANCEL_BTN_ATTR)!;
+    cancel.focus();
+    cancel.click();
     expect(up.cancelled()).toBe(1);
     expect(mount.getView()).toBe('restore-entry');
     expect(mount.isUploading()).toBe(false);
+    expect(doc.activeElement).toBe(
+      findByAttr(host, ARCHIVE_RESTORE_UPLOAD_INPUT_ATTR),
+    );
   });
 
   it('ignores a second file choice while an upload is already in flight', () => {

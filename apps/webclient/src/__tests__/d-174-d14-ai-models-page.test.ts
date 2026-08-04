@@ -10,6 +10,9 @@ import type {
 
 import {
   AI_MODELS_ACTION_ERROR_ATTR,
+  AI_MODELS_ALLOW_BYOK_TOGGLE_ATTR,
+  AI_MODELS_BUDGET_INPUT_ATTR,
+  AI_MODELS_BUDGET_SAVE_ATTR,
   AI_MODELS_CATALOG_MODE_SELECT_ATTR,
   AI_MODELS_CHAT_SETUP_ADVANCED_ATTR,
   AI_MODELS_CHAT_SETUP_ATTR,
@@ -22,9 +25,18 @@ import {
   AI_MODELS_CHAT_SETUP_STATUS_ATTR,
   AI_MODELS_CHAT_SETUP_SUBMIT_ATTR,
   AI_MODELS_CONTEXT_WINDOW_INPUT_ATTR,
+  AI_MODELS_EMBEDDINGS_FIELD_ATTR,
   AI_MODELS_FAIL_LOUD_ATTR,
+  AI_MODELS_MODEL_PREF_BUTTON_ATTR,
+  AI_MODELS_PAUSE_BUTTON_ATTR,
   AI_MODELS_PENDING_CONTROL_ATTR,
+  AI_MODELS_POOL_ADD_ATTR,
+  AI_MODELS_POOL_ADD_FIELD_ATTR,
+  AI_MODELS_POOL_REMOVE_CANCEL_ATTR,
+  AI_MODELS_POOL_REMOVE_CONFIRM_ATTR,
+  AI_MODELS_POOL_REMOVE_DIALOG_ATTR,
   AI_MODELS_POOL_REMOVE_ATTR,
+  AI_MODELS_POOL_TOGGLE_ATTR,
   AI_MODELS_PROMPT_BADGE_ATTR,
   AI_MODELS_PROMPT_RESET_ATTR,
   AI_MODELS_PROMPT_ROLE_ATTR,
@@ -33,8 +45,14 @@ import {
   AI_MODELS_PROMPT_POLICY_ATTR,
   AI_MODELS_PROMPT_SECTION_ATTR,
   AI_MODELS_PROMPT_TEXT_ATTR,
+  AI_MODELS_SLOT_FIELD_ATTR,
+  AI_MODELS_SLOT_CLEAR_ATTR,
+  AI_MODELS_SLOT_CLEAR_CANCEL_ATTR,
+  AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR,
+  AI_MODELS_SLOT_CLEAR_DIALOG_ATTR,
   AI_MODELS_SLOT_SAVE_ATTR,
   AI_MODELS_TAB_ATTR,
+  AI_MODELS_TAB_PANEL_ATTR,
   mountAiModelsPage,
 } from '../settings/ai-models-page.js';
 
@@ -376,6 +394,39 @@ describe('D-174 D14 — AI / Models initial load', () => {
     mount.dispose();
   });
 
+  it('exposes one roving tab stop with linked tabpanels', async () => {
+    const { host, mount } = mountFixture();
+    await mount.whenLoaded();
+
+    const preference = findByAttrValue(host, AI_MODELS_TAB_ATTR, 'preference')!;
+    const providers = findByAttrValue(host, AI_MODELS_TAB_ATTR, 'providers')!;
+    const providersPanel = findByAttrValue(
+      host,
+      AI_MODELS_TAB_PANEL_ATTR,
+      'providers',
+    )!;
+    expect(preference.getAttribute('tabindex')).toBe('0');
+    expect(providers.getAttribute('tabindex')).toBe('-1');
+    expect(providers.getAttribute('aria-controls')).toBe(
+      providersPanel.getAttribute('id'),
+    );
+    expect(providersPanel.getAttribute('role')).toBe('tabpanel');
+    expect(providersPanel.getAttribute('aria-labelledby')).toBe(
+      providers.getAttribute('id'),
+    );
+
+    const preventDefault = vi.fn();
+    for (const listener of preference.listeners.get('keydown') ?? []) {
+      listener({ key: 'ArrowRight', preventDefault });
+    }
+    expect(preventDefault).toHaveBeenCalledTimes(1);
+    expect(preference.getAttribute('tabindex')).toBe('-1');
+    expect(providers.getAttribute('aria-selected')).toBe('true');
+    expect(providers.getAttribute('tabindex')).toBe('0');
+    expect(providersPanel.getAttribute('data-active')).toBe('true');
+    mount.dispose();
+  });
+
   it('surfaces D-167 fail-loud when the current preference cannot resolve', async () => {
     const { host, mount } = mountFixture({
       // The stored default points at slot_2, but only slot_1 is configured →
@@ -453,6 +504,87 @@ describe('Set up Chat — focused first-run journey', () => {
     ).not.toBeNull();
     expect(findByTagText(host, 'a', 'Start chatting')?.getAttribute('href'))
       .toBe('#chat/session/chat%2Fone');
+    mount.dispose();
+  });
+
+  it('owns and serializes both writes in the new-source handoff', async () => {
+    let resolveSlot!: (value: { ok: true }) => void;
+    let resolvePreference!: (value: {
+      source_id: 'slot_1';
+      updated_at: number;
+    }) => void;
+    const runSetLLMSlot = vi.fn(
+      () => new Promise<{ ok: true }>((resolve) => {
+        resolveSlot = resolve;
+      }),
+    );
+    const runSetDefaultModelPref = vi.fn(
+      () => new Promise<{
+        source_id: 'slot_1';
+        updated_at: number;
+      }>((resolve) => {
+        resolvePreference = resolve;
+      }),
+    );
+    const onChatSetupComplete = vi.fn();
+    const { host, mount } = mountFixture({
+      initialView: 'chat-setup',
+      onChatSetupComplete,
+      runGetDefaultModelPref: vi.fn(async () => ({
+        source_id: null,
+        updated_at: 0,
+      })),
+      runGetLLMConfig: vi.fn(async () => ({ config: {} })),
+      runSetLLMSlot,
+      runSetDefaultModelPref,
+    });
+    await mount.whenLoaded();
+    expect(mount.hasInFlightWork()).toBe(false);
+
+    inputByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR, 'sk-setup');
+    clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
+    expect(mount.hasInFlightWork()).toBe(true);
+
+    const saving = findByAttrValue(
+      host,
+      AI_MODELS_CHAT_SETUP_SUBMIT_ATTR,
+      'new',
+    );
+    expect(saving?.textContent).toBe('Saving setup…');
+    expect(saving?.getAttribute('aria-disabled')).toBe('true');
+    expect(saving?.getAttribute('aria-busy')).toBe('true');
+    expect(saving?.disabled).toBe(false);
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_PROVIDER_ATTR)?.disabled)
+      .toBe(true);
+    expect(findByAttr(host, AI_MODELS_CHAT_SETUP_KEY_ATTR)?.readOnly)
+      .toBe(true);
+    clickByAttrValue(host, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR, 'new');
+    expect(runSetLLMSlot).toHaveBeenCalledTimes(1);
+    expect(runSetDefaultModelPref).not.toHaveBeenCalled();
+
+    resolveSlot({ ok: true });
+    await flush();
+    const finishing = findByAttrValue(
+      host,
+      AI_MODELS_CHAT_SETUP_STATUS_ATTR,
+      'saving',
+    );
+    expect(finishing?.textContent).toBe('Finishing Chat setup…');
+    expect(finishing?.getAttribute('role')).toBe('status');
+    expect(finishing?.getAttribute('tabindex')).toBe('-1');
+    expect(runSetDefaultModelPref).toHaveBeenCalledTimes(1);
+    expect(onChatSetupComplete).not.toHaveBeenCalled();
+    expect(mount.hasInFlightWork()).toBe(true);
+
+    resolvePreference({ source_id: 'slot_1', updated_at: 1 });
+    await flush();
+    expect(
+      findByAttrValue(host, AI_MODELS_CHAT_SETUP_STATUS_ATTR, 'ready'),
+    ).not.toBeNull();
+    expect(runSetLLMSlot).toHaveBeenCalledTimes(1);
+    expect(runSetDefaultModelPref).toHaveBeenCalledTimes(1);
+    expect(onChatSetupComplete).toHaveBeenCalledTimes(1);
+    expect(mount.hasInFlightWork()).toBe(false);
     mount.dispose();
   });
 
@@ -665,6 +797,224 @@ describe('Set up Chat — focused first-run journey', () => {
 });
 
 describe('D-174 D14 — AI / Models write-through controls', () => {
+  it('keeps model preference selection focusable, busy, and single-flight', async () => {
+    let resolvePreference!: (value: {
+      source_id: 'slot_1' | 'slot_2' | 'free_pool';
+      updated_at: number;
+    }) => void;
+    const runSetDefaultModelPref = vi.fn(
+      () => new Promise<{
+        source_id: 'slot_1' | 'slot_2' | 'free_pool';
+        updated_at: number;
+      }>((resolve) => {
+        resolvePreference = resolve;
+      }),
+    );
+    const { host, mount } = mountFixture({ runSetDefaultModelPref });
+    await mount.whenLoaded();
+    expect(mount.hasInFlightWork()).toBe(false);
+
+    clickByAttrValue(host, AI_MODELS_MODEL_PREF_BUTTON_ATTR, 'free_pool');
+    const pending = findByAttrValue(
+      host,
+      AI_MODELS_MODEL_PREF_BUTTON_ATTR,
+      'free_pool',
+    );
+    const sibling = findByAttrValue(
+      host,
+      AI_MODELS_MODEL_PREF_BUTTON_ATTR,
+      'slot_1',
+    );
+    expect(pending?.textContent).toContain('Selecting ');
+    expect(pending?.getAttribute('aria-disabled')).toBe('true');
+    expect(pending?.getAttribute('aria-busy')).toBe('true');
+    expect(pending?.disabled).toBe(false);
+    expect(sibling?.getAttribute('aria-disabled')).toBe('true');
+    expect(sibling?.getAttribute('aria-busy')).toBeNull();
+    expect(mount.hasInFlightWork()).toBe(true);
+    clickByAttrValue(host, AI_MODELS_MODEL_PREF_BUTTON_ATTR, 'free_pool');
+    clickByAttrValue(host, AI_MODELS_MODEL_PREF_BUTTON_ATTR, 'slot_1');
+    expect(runSetDefaultModelPref).toHaveBeenCalledTimes(1);
+
+    resolvePreference({ source_id: 'free_pool', updated_at: 2 });
+    await flush();
+    const selected = findByAttrValue(
+      host,
+      AI_MODELS_MODEL_PREF_BUTTON_ATTR,
+      'free_pool',
+    );
+    expect(selected?.textContent).toContain('Selected:');
+    expect(selected?.getAttribute('aria-disabled')).toBeNull();
+    expect(selected?.getAttribute('aria-busy')).toBeNull();
+    expect(mount.hasInFlightWork()).toBe(false);
+    mount.dispose();
+  });
+
+  it('keeps BYOK slot save focusable, busy, and single-flight', async () => {
+    let resolveSave!: (value: { ok: true }) => void;
+    const runSetLLMSlot = vi.fn(
+      () => new Promise<{ ok: true }>((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+    const { host, mount } = mountFixture({ runSetLLMSlot });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_1');
+    const pending = findByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_1');
+    const sibling = findByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_2');
+    const clear = findByAttrValue(host, AI_MODELS_SLOT_CLEAR_ATTR, 'slot_1');
+    expect(pending?.textContent).toBe('Saving slot…');
+    expect(pending?.getAttribute('aria-disabled')).toBe('true');
+    expect(pending?.getAttribute('aria-busy')).toBe('true');
+    expect(pending?.disabled).toBe(false);
+    expect(sibling?.getAttribute('aria-disabled')).toBe('true');
+    expect(clear?.getAttribute('aria-disabled')).toBe('true');
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_SLOT_FIELD_ATTR,
+      'slot_1:model',
+    )?.readOnly).toBe(true);
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_1');
+    clickByAttrValue(host, AI_MODELS_SLOT_CLEAR_ATTR, 'slot_1');
+    expect(runSetLLMSlot).toHaveBeenCalledTimes(1);
+
+    resolveSave({ ok: true });
+    await flush();
+    const settled = findByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_1');
+    expect(settled?.textContent).toBe('Save slot');
+    expect(settled?.getAttribute('aria-disabled')).toBeNull();
+    expect(settled?.getAttribute('aria-busy')).toBeNull();
+    mount.dispose();
+  });
+
+  it('requires labelled confirmation before clearing a BYOK slot', async () => {
+    const { host, mount, opts } = mountFixture();
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_CLEAR_ATTR, 'slot_1');
+    const dialog = findByAttrValue(
+      host,
+      AI_MODELS_SLOT_CLEAR_DIALOG_ATTR,
+      'slot_1',
+    );
+    expect(dialog?.getAttribute('role')).toBe('alertdialog');
+    expect(dialog?.getAttribute('aria-modal')).toBe('true');
+    expect(dialog?.getAttribute('aria-labelledby')).not.toBeNull();
+    expect(dialog?.getAttribute('aria-describedby')).not.toBeNull();
+    expect(hasText(dialog!, 'Clear Slot 1: fast?')).toBe(true);
+    expect(hasText(dialog!, 'saved provider settings and API key')).toBe(true);
+    expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_CLEAR_CANCEL_ATTR, 'slot_1');
+    expect(findByAttr(host, AI_MODELS_SLOT_CLEAR_DIALOG_ATTR)).toBeNull();
+    expect(opts.runSetLLMSlot).not.toHaveBeenCalled();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_CLEAR_ATTR, 'slot_1');
+    clickByAttrValue(host, AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR, 'slot_1');
+    await flush();
+    expect(opts.runSetLLMSlot).toHaveBeenCalledTimes(1);
+    expect(opts.runSetLLMSlot).toHaveBeenLastCalledWith({
+      slot_key: 'slot_1',
+      slot: null,
+    });
+    expect(findByAttr(host, AI_MODELS_SLOT_CLEAR_DIALOG_ATTR)).toBeNull();
+    mount.dispose();
+  });
+
+  it('keeps a confirmed BYOK slot clear owned and single-flight through failure', async () => {
+    let rejectClear!: (reason: Error) => void;
+    const runSetLLMSlot = vi.fn(
+      () => new Promise<{ ok: true }>((_resolve, reject) => {
+        rejectClear = reject;
+      }),
+    );
+    const { host, mount } = mountFixture({ runSetLLMSlot });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_CLEAR_ATTR, 'slot_1');
+    clickByAttrValue(host, AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR, 'slot_1');
+    const pendingDialog = findByAttrValue(
+      host,
+      AI_MODELS_SLOT_CLEAR_DIALOG_ATTR,
+      'slot_1',
+    );
+    const pendingConfirm = findByAttrValue(
+      host,
+      AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR,
+      'slot_1',
+    );
+    const pendingCancel = findByAttrValue(
+      host,
+      AI_MODELS_SLOT_CLEAR_CANCEL_ATTR,
+      'slot_1',
+    );
+    expect(pendingDialog?.getAttribute('aria-busy')).toBe('true');
+    expect(pendingConfirm?.textContent).toBe('Clearing slot…');
+    expect(pendingConfirm?.getAttribute('aria-disabled')).toBe('true');
+    expect(pendingConfirm?.getAttribute('aria-busy')).toBe('true');
+    expect(pendingConfirm?.disabled).toBe(false);
+    expect(pendingCancel?.getAttribute('aria-disabled')).toBe('true');
+    expect(pendingCancel?.disabled).toBe(false);
+    clickByAttrValue(host, AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR, 'slot_1');
+    clickByAttrValue(host, AI_MODELS_SLOT_CLEAR_CANCEL_ATTR, 'slot_1');
+    expect(runSetLLMSlot).toHaveBeenCalledTimes(1);
+    expect(findByAttr(host, AI_MODELS_SLOT_CLEAR_DIALOG_ATTR)).not.toBeNull();
+
+    rejectClear(new Error('clear failed'));
+    await flush();
+    const retry = findByAttrValue(
+      host,
+      AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR,
+      'slot_1',
+    );
+    expect(findByAttr(host, AI_MODELS_SLOT_CLEAR_DIALOG_ATTR)).not.toBeNull();
+    expect(hasText(host, 'clear failed')).toBe(true);
+    expect(retry?.textContent).toBe('Clear slot');
+    expect(retry?.getAttribute('aria-disabled')).toBeNull();
+    expect(retry?.getAttribute('aria-busy')).toBeNull();
+    clickByAttrValue(host, AI_MODELS_SLOT_CLEAR_CANCEL_ATTR, 'slot_1');
+    expect(findByAttr(host, AI_MODELS_SLOT_CLEAR_DIALOG_ATTR)).toBeNull();
+    mount.dispose();
+  });
+
+  it('routes embeddings Clear through the shared labelled confirmation', async () => {
+    const { host, mount, opts } = mountFixture();
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_CLEAR_ATTR, 'embeddings_slot');
+    const dialog = findByAttrValue(
+      host,
+      AI_MODELS_SLOT_CLEAR_DIALOG_ATTR,
+      'embeddings_slot',
+    );
+    expect(dialog?.getAttribute('role')).toBe('alertdialog');
+    expect(dialog?.getAttribute('aria-modal')).toBe('true');
+    expect(hasText(dialog!, 'Clear Embeddings slot?')).toBe(true);
+    expect(hasText(dialog!, 'saved provider settings and API key')).toBe(true);
+    expect(opts.runSetEmbeddingsSlot).not.toHaveBeenCalled();
+
+    clickByAttrValue(
+      host,
+      AI_MODELS_SLOT_CLEAR_CANCEL_ATTR,
+      'embeddings_slot',
+    );
+    expect(findByAttr(host, AI_MODELS_SLOT_CLEAR_DIALOG_ATTR)).toBeNull();
+    expect(opts.runSetEmbeddingsSlot).not.toHaveBeenCalled();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_CLEAR_ATTR, 'embeddings_slot');
+    clickByAttrValue(
+      host,
+      AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR,
+      'embeddings_slot',
+    );
+    await flush();
+    expect(opts.runSetEmbeddingsSlot).toHaveBeenCalledTimes(1);
+    expect(opts.runSetEmbeddingsSlot).toHaveBeenLastCalledWith({ slot: null });
+    expect(findByAttr(host, AI_MODELS_SLOT_CLEAR_DIALOG_ATTR)).toBeNull();
+    mount.dispose();
+  });
+
   it('writes model preference and reflects the live broadcast', async () => {
     const { mount, opts, subscriptions } = mountFixture();
     await mount.whenLoaded();
@@ -747,6 +1097,153 @@ describe('D-174 D14 — AI / Models write-through controls', () => {
     mount.dispose();
   });
 
+  it('preserves a sibling provider draft while a slot save rerenders', async () => {
+    const { host, mount } = mountFixture();
+    await mount.whenLoaded();
+
+    const siblingModel = findByAttrValue(
+      host,
+      AI_MODELS_SLOT_FIELD_ATTR,
+      'slot_2:model',
+    )!;
+    siblingModel.value = 'draft-model-id';
+    for (const listener of siblingModel.listeners.get('input') ?? []) listener({});
+
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_1');
+    await flush();
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_SLOT_FIELD_ATTR,
+      'slot_2:model',
+    )?.value).toBe('draft-model-id');
+    mount.dispose();
+  });
+
+  it('preserves an embeddings draft across a sibling provider action', async () => {
+    const { host, mount, opts } = mountFixture();
+    await mount.whenLoaded();
+
+    const values: ReadonlyArray<readonly [string, string]> = [
+      ['provider', 'openai-compatible'],
+      ['model', 'text-embedding-demo'],
+      ['api-key', 'embedding-secret'],
+      ['base-url', 'https://embeddings.example.test/v1'],
+    ];
+    for (const [field, value] of values) {
+      const input = findByAttrValue(
+        host,
+        AI_MODELS_EMBEDDINGS_FIELD_ATTR,
+        field,
+      )!;
+      input.value = value;
+      for (const listener of input.listeners.get('input') ?? []) listener({});
+    }
+
+    clickByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'groq');
+    await flush();
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_EMBEDDINGS_FIELD_ATTR,
+      'model',
+    )?.value).toBe('text-embedding-demo');
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_EMBEDDINGS_FIELD_ATTR,
+      'api-key',
+    )?.value).toBe('embedding-secret');
+
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'embeddings_slot');
+    await flush();
+    expect(opts.runSetEmbeddingsSlot).toHaveBeenLastCalledWith({
+      slot: expect.objectContaining({
+        provider: 'openai-compatible',
+        model: 'text-embedding-demo',
+        api_key: 'embedding-secret',
+        base_url: 'https://embeddings.example.test/v1',
+      }),
+    });
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_EMBEDDINGS_FIELD_ATTR,
+      'api-key',
+    )?.value).toBe('');
+    mount.dispose();
+  });
+
+  it('keeps embeddings slot save focusable, busy, and single-flight', async () => {
+    let resolveSave!: (value: { ok: true }) => void;
+    const runSetEmbeddingsSlot = vi.fn(
+      () => new Promise<{ ok: true }>((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+    const { host, mount } = mountFixture({ runSetEmbeddingsSlot });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'embeddings_slot');
+    const pending = findByAttrValue(
+      host,
+      AI_MODELS_SLOT_SAVE_ATTR,
+      'embeddings_slot',
+    );
+    const clear = findByAttrValue(
+      host,
+      AI_MODELS_SLOT_CLEAR_ATTR,
+      'embeddings_slot',
+    );
+    expect(pending?.textContent).toBe('Saving slot…');
+    expect(pending?.getAttribute('aria-disabled')).toBe('true');
+    expect(pending?.getAttribute('aria-busy')).toBe('true');
+    expect(pending?.disabled).toBe(false);
+    expect(clear?.getAttribute('aria-disabled')).toBe('true');
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_EMBEDDINGS_FIELD_ATTR,
+      'model',
+    )?.readOnly).toBe(true);
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'embeddings_slot');
+    clickByAttrValue(host, AI_MODELS_SLOT_CLEAR_ATTR, 'embeddings_slot');
+    expect(runSetEmbeddingsSlot).toHaveBeenCalledTimes(1);
+
+    resolveSave({ ok: true });
+    await flush();
+    const settled = findByAttrValue(
+      host,
+      AI_MODELS_SLOT_SAVE_ATTR,
+      'embeddings_slot',
+    );
+    expect(settled?.textContent).toBe('Save slot');
+    expect(settled?.getAttribute('aria-disabled')).toBeNull();
+    expect(settled?.getAttribute('aria-busy')).toBeNull();
+    mount.dispose();
+  });
+
+  it('clears a persisted slot base URL when the owner empties the field', async () => {
+    const { host, mount, opts } = mountFixture();
+    await mount.whenLoaded();
+
+    const baseUrl = findByAttrValue(
+      host,
+      AI_MODELS_SLOT_FIELD_ATTR,
+      'slot_1:base-url',
+    )!;
+    baseUrl.value = '';
+    for (const listener of baseUrl.listeners.get('input') ?? []) listener({});
+    const apiKey = findByAttrValue(
+      host,
+      AI_MODELS_SLOT_FIELD_ATTR,
+      'slot_1:api-key',
+    )!;
+    apiKey.value = 'replacement-key';
+    for (const listener of apiKey.listeners.get('input') ?? []) listener({});
+
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_1');
+    await flush();
+    const written = vi.mocked(opts.runSetLLMSlot).mock.calls.at(-1)![0].slot;
+    expect(written).not.toHaveProperty('base_url');
+    mount.dispose();
+  });
+
   it('removes a free-pool entry via removeFreePoolEntry (the prior gap)', async () => {
     const { host, mount, opts } = mountFixture();
     await mount.whenLoaded();
@@ -759,6 +1256,233 @@ describe('D-174 D14 — AI / Models write-through controls', () => {
     mount.dispose();
   });
 
+  it('requires confirmation before removing a rendered free-pool entry', async () => {
+    const { host, mount, opts } = mountFixture();
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_POOL_REMOVE_ATTR, 'groq');
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_POOL_REMOVE_DIALOG_ATTR,
+      'groq',
+    )).not.toBeNull();
+    expect(opts.runRemoveFreePoolEntry).not.toHaveBeenCalled();
+
+    clickByAttrValue(host, AI_MODELS_POOL_REMOVE_CANCEL_ATTR, 'groq');
+    expect(findByAttr(host, AI_MODELS_POOL_REMOVE_DIALOG_ATTR)).toBeNull();
+    expect(findByAttrValue(host, AI_MODELS_POOL_REMOVE_ATTR, 'groq'))
+      .not.toBeNull();
+
+    clickByAttrValue(host, AI_MODELS_POOL_REMOVE_ATTR, 'groq');
+    clickByAttrValue(host, AI_MODELS_POOL_REMOVE_CONFIRM_ATTR, 'groq');
+    await flush();
+    expect(opts.runRemoveFreePoolEntry).toHaveBeenCalledTimes(1);
+    expect(findByAttr(host, AI_MODELS_POOL_REMOVE_DIALOG_ATTR)).toBeNull();
+    expect(findByAttrValue(host, AI_MODELS_POOL_REMOVE_ATTR, 'groq')).toBeNull();
+    mount.dispose();
+  });
+
+  it('keeps pool removal focusable, busy, and single-flight', async () => {
+    let resolveRemove!: (value: { ok: true; removed: true }) => void;
+    const runRemoveFreePoolEntry = vi.fn(
+      () => new Promise<{ ok: true; removed: true }>((resolve) => {
+        resolveRemove = resolve;
+      }),
+    );
+    const { host, mount } = mountFixture({ runRemoveFreePoolEntry });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_POOL_REMOVE_ATTR, 'groq');
+    clickByAttrValue(host, AI_MODELS_POOL_REMOVE_CONFIRM_ATTR, 'groq');
+    const dialog = findByAttrValue(
+      host,
+      AI_MODELS_POOL_REMOVE_DIALOG_ATTR,
+      'groq',
+    );
+    const confirm = findByAttrValue(
+      host,
+      AI_MODELS_POOL_REMOVE_CONFIRM_ATTR,
+      'groq',
+    );
+    const cancel = findByAttrValue(
+      host,
+      AI_MODELS_POOL_REMOVE_CANCEL_ATTR,
+      'groq',
+    );
+    expect(dialog?.getAttribute('aria-busy')).toBe('true');
+    expect(confirm?.textContent).toBe('Removing…');
+    expect(confirm?.getAttribute('aria-disabled')).toBe('true');
+    expect(confirm?.getAttribute('aria-busy')).toBe('true');
+    expect(confirm?.disabled).toBe(false);
+    expect(cancel?.getAttribute('aria-disabled')).toBe('true');
+    expect(cancel?.disabled).toBe(false);
+    clickByAttrValue(host, AI_MODELS_POOL_REMOVE_CONFIRM_ATTR, 'groq');
+    clickByAttrValue(host, AI_MODELS_POOL_REMOVE_CANCEL_ATTR, 'groq');
+    expect(runRemoveFreePoolEntry).toHaveBeenCalledTimes(1);
+
+    resolveRemove({ ok: true, removed: true });
+    await flush();
+    expect(findByAttr(host, AI_MODELS_POOL_REMOVE_DIALOG_ATTR)).toBeNull();
+    expect(findByAttrValue(host, AI_MODELS_POOL_REMOVE_ATTR, 'groq')).toBeNull();
+    mount.dispose();
+  });
+
+  it('keeps a failed pool removal confirmable for retry', async () => {
+    const { host, mount, opts } = mountFixture({
+      runRemoveFreePoolEntry: vi.fn(async () => {
+        throw new Error('remove failed');
+      }),
+    });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_POOL_REMOVE_ATTR, 'groq');
+    clickByAttrValue(host, AI_MODELS_POOL_REMOVE_CONFIRM_ATTR, 'groq');
+    await flush();
+
+    expect(opts.runRemoveFreePoolEntry).toHaveBeenCalledTimes(1);
+    expect(findByAttr(host, AI_MODELS_ACTION_ERROR_ATTR)).not.toBeNull();
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_POOL_REMOVE_DIALOG_ATTR,
+      'groq',
+    )).not.toBeNull();
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_POOL_REMOVE_CONFIRM_ATTR,
+      'groq',
+    )?.disabled).toBe(false);
+    mount.dispose();
+  });
+
+  it('preserves the free-pool add draft across a sibling toggle', async () => {
+    const { host, mount } = mountFixture();
+    await mount.whenLoaded();
+
+    const id = findByAttrValue(
+      host,
+      AI_MODELS_POOL_ADD_FIELD_ATTR,
+      'id',
+    )!;
+    const model = findByAttrValue(
+      host,
+      AI_MODELS_POOL_ADD_FIELD_ATTR,
+      'model',
+    )!;
+    id.value = 'draft-entry';
+    model.value = 'draft-model';
+    for (const listener of id.listeners.get('input') ?? []) listener({});
+    for (const listener of model.listeners.get('input') ?? []) listener({});
+
+    clickByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'groq');
+    await flush();
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_POOL_ADD_FIELD_ATTR,
+      'id',
+    )?.value).toBe('draft-entry');
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_POOL_ADD_FIELD_ATTR,
+      'model',
+    )?.value).toBe('draft-model');
+    mount.dispose();
+  });
+
+  it('keeps each free-pool toggle focusable, busy, and single-flight', async () => {
+    let resolveToggle!: (value: { ok: true; found: true }) => void;
+    const runSetFreePoolEntryEnabled = vi.fn(
+      () => new Promise<{ ok: true; found: true }>((resolve) => {
+        resolveToggle = resolve;
+      }),
+    );
+    const { host, mount } = mountFixture({ runSetFreePoolEntryEnabled });
+    await mount.whenLoaded();
+
+    clickByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'groq');
+    const pending = findByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'groq');
+    const remove = findByAttrValue(host, AI_MODELS_POOL_REMOVE_ATTR, 'groq');
+    expect(pending?.textContent).toBe('Disabling…');
+    expect(pending?.getAttribute('aria-disabled')).toBe('true');
+    expect(pending?.getAttribute('aria-busy')).toBe('true');
+    expect(pending?.disabled).toBe(false);
+    expect(remove?.getAttribute('aria-disabled')).toBe('true');
+    expect(remove?.disabled).toBe(false);
+    clickByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'groq');
+    clickByAttrValue(host, AI_MODELS_POOL_REMOVE_ATTR, 'groq');
+    expect(runSetFreePoolEntryEnabled).toHaveBeenCalledTimes(1);
+    expect(findByAttr(host, AI_MODELS_POOL_REMOVE_DIALOG_ATTR)).toBeNull();
+
+    resolveToggle({ ok: true, found: true });
+    await flush();
+    const settled = findByAttrValue(host, AI_MODELS_POOL_TOGGLE_ATTR, 'groq');
+    expect(settled?.textContent).toBe('Enable');
+    expect(settled?.getAttribute('aria-disabled')).toBeNull();
+    expect(settled?.getAttribute('aria-busy')).toBeNull();
+    mount.dispose();
+  });
+
+  it('clears the free-pool add draft only after the write confirms', async () => {
+    let resolveAdd!: (value: { ok: true }) => void;
+    const runUpsertFreePoolEntry = vi.fn(
+      () => new Promise<{ ok: true }>((resolve) => {
+        resolveAdd = resolve;
+      }),
+    );
+    const { host, mount } = mountFixture({ runUpsertFreePoolEntry });
+    await mount.whenLoaded();
+
+    const values: ReadonlyArray<readonly [string, string]> = [
+      ['id', 'openrouter'],
+      ['model', 'free-model'],
+      ['api-key', 'secret'],
+    ];
+    for (const [field, value] of values) {
+      const input = findByAttrValue(host, AI_MODELS_POOL_ADD_FIELD_ATTR, field)!;
+      input.value = value;
+      for (const listener of input.listeners.get('input') ?? []) listener({});
+    }
+    clickByAttrValue(host, AI_MODELS_POOL_ADD_ATTR, '');
+    expect(runUpsertFreePoolEntry).toHaveBeenLastCalledWith({
+      entry: expect.objectContaining({
+        id: 'openrouter',
+        model: 'free-model',
+        api_key: 'secret',
+      }),
+    });
+    const pending = findByAttrValue(host, AI_MODELS_POOL_ADD_ATTR, '');
+    expect(pending?.textContent).toBe('Adding entry…');
+    expect(pending?.getAttribute('aria-disabled')).toBe('true');
+    expect(pending?.getAttribute('aria-busy')).toBe('true');
+    expect(pending?.disabled).toBe(false);
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_POOL_ADD_FIELD_ATTR,
+      'api-key',
+    )?.value).toBe('secret');
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_POOL_ADD_FIELD_ATTR,
+      'api-key',
+    )?.readOnly).toBe(true);
+    clickByAttrValue(host, AI_MODELS_POOL_ADD_ATTR, '');
+    clickByAttrValue(host, AI_MODELS_POOL_ADD_ATTR, '');
+    expect(runUpsertFreePoolEntry).toHaveBeenCalledTimes(1);
+
+    resolveAdd({ ok: true });
+    await flush();
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_POOL_ADD_FIELD_ATTR,
+      'id',
+    )?.value).toBe('');
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_POOL_ADD_FIELD_ATTR,
+      'provider',
+    )?.value).toBe('openai-compatible');
+    mount.dispose();
+  });
+
   it('surfaces a failed write as an action-error banner (no unhandled rejection)', async () => {
     const { host, mount } = mountFixture({
       runSetLLMSlot: vi.fn(async () => {
@@ -767,14 +1491,25 @@ describe('D-174 D14 — AI / Models write-through controls', () => {
     });
     await mount.whenLoaded();
     expect(findByAttr(host, AI_MODELS_ACTION_ERROR_ATTR)).toBeNull();
-    // Click "Save slot" on slot_2 → the button handler fires the action
-    // through surface(), which catches the rejected rpc and renders the
-    // banner (vs the old bare `void api.x()` unhandled rejection).
+    const failedDraft = findByAttrValue(
+      host,
+      AI_MODELS_SLOT_FIELD_ATTR,
+      'slot_2:model',
+    )!;
+    failedDraft.value = 'retry-this-model';
+    for (const listener of failedDraft.listeners.get('input') ?? []) listener({});
+    // Click "Save slot" on slot_2 → the dedicated save owner catches the
+    // rejected rpc and renders the banner without losing the retry draft.
     clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'slot_2');
     await flush();
     const banner = findByAttr(host, AI_MODELS_ACTION_ERROR_ATTR);
     expect(banner).not.toBeNull();
     expect(banner!.textContent.length).toBeGreaterThan(0);
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_SLOT_FIELD_ATTR,
+      'slot_2:model',
+    )?.value).toBe('retry-this-model');
     mount.dispose();
   });
 
@@ -931,6 +1666,168 @@ describe('D-174 D14 — AI / Models write-through controls', () => {
     });
     mount.dispose();
   });
+
+  it('keeps shared AI policy writes focusable, busy, and single-flight', async () => {
+    let resolveWrite!: (value: {
+      ok: true;
+      effective: HousekeepingConfigRow;
+    }) => void;
+    const runWriteHousekeepingConfig = vi.fn(
+      () => new Promise<{
+        ok: true;
+        effective: HousekeepingConfigRow;
+      }>((resolve) => {
+        resolveWrite = resolve;
+      }),
+    );
+    const { host, mount } = mountFixture({ runWriteHousekeepingConfig });
+    await mount.whenLoaded();
+
+    clickByAttrValue(
+      host,
+      AI_MODELS_ALLOW_BYOK_TOGGLE_ATTR,
+      'background',
+    );
+    const allow = findByAttrValue(
+      host,
+      AI_MODELS_ALLOW_BYOK_TOGGLE_ATTR,
+      'background',
+    );
+    const pause = findByAttrValue(host, AI_MODELS_PAUSE_BUTTON_ATTR, '1h');
+    const resume = findByAttrValue(
+      host,
+      AI_MODELS_PAUSE_BUTTON_ATTR,
+      'resume',
+    );
+    expect(allow?.textContent).toBe('Updating background BYOK…');
+    expect(allow?.getAttribute('aria-disabled')).toBe('true');
+    expect(allow?.getAttribute('aria-busy')).toBe('true');
+    expect(allow?.disabled).toBe(false);
+    expect(pause?.getAttribute('aria-disabled')).toBe('true');
+    expect(resume?.getAttribute('aria-disabled')).toBe('true');
+    clickByAttrValue(host, AI_MODELS_PAUSE_BUTTON_ATTR, '1h');
+    clickByAttrValue(host, AI_MODELS_PAUSE_BUTTON_ATTR, 'resume');
+    clickByAttrValue(
+      host,
+      AI_MODELS_ALLOW_BYOK_TOGGLE_ATTR,
+      'background',
+    );
+    expect(runWriteHousekeepingConfig).toHaveBeenCalledTimes(1);
+
+    resolveWrite({
+      ok: true,
+      effective: housekeeping({ allow_byok_background: true }),
+    });
+    await flush();
+    const settled = findByAttrValue(
+      host,
+      AI_MODELS_ALLOW_BYOK_TOGGLE_ATTR,
+      'background',
+    );
+    expect(settled?.textContent).toBe('Disable background BYOK');
+    expect(settled?.getAttribute('aria-disabled')).toBeNull();
+    expect(settled?.getAttribute('aria-busy')).toBeNull();
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_PAUSE_BUTTON_ATTR,
+      '1h',
+    )?.getAttribute('aria-disabled')).toBeNull();
+    mount.dispose();
+  });
+
+  it('preserves an unsaved budget across a sibling policy write', async () => {
+    const { host, mount, opts } = mountFixture();
+    await mount.whenLoaded();
+
+    const budget = findByAttrValue(
+      host,
+      AI_MODELS_BUDGET_INPUT_ATTR,
+      'llm.budget',
+    )!;
+    budget.value = '1234';
+    for (const listener of budget.listeners.get('input') ?? []) listener({});
+
+    clickByAttrValue(host, AI_MODELS_ALLOW_BYOK_TOGGLE_ATTR, 'background');
+    await flush();
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_BUDGET_INPUT_ATTR,
+      'llm.budget',
+    )?.value).toBe('1234');
+
+    clickByAttrValue(host, AI_MODELS_BUDGET_SAVE_ATTR, 'llm.budget');
+    await flush();
+    expect(opts.runSetConfigField).toHaveBeenLastCalledWith({
+      key: 'llm.budget',
+      value: 1234,
+    });
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_BUDGET_INPUT_ATTR,
+      'llm.budget',
+    )?.value).toBe('1234');
+    mount.dispose();
+  });
+
+  it('keeps budget Save focusable, busy, and single-flight', async () => {
+    let resolveSave!: (value: { ok: true }) => void;
+    const runSetConfigField = vi.fn(
+      () => new Promise<{ ok: true }>((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+    const { host, mount } = mountFixture({ runSetConfigField });
+    await mount.whenLoaded();
+
+    const budget = findByAttrValue(
+      host,
+      AI_MODELS_BUDGET_INPUT_ATTR,
+      'llm.budget',
+    )!;
+    budget.value = '1234';
+    for (const listener of budget.listeners.get('input') ?? []) listener({});
+    clickByAttrValue(host, AI_MODELS_BUDGET_SAVE_ATTR, 'llm.budget');
+
+    const pending = findByAttrValue(
+      host,
+      AI_MODELS_BUDGET_SAVE_ATTR,
+      'llm.budget',
+    );
+    expect(pending?.textContent).toBe('Saving budget…');
+    expect(pending?.getAttribute('aria-disabled')).toBe('true');
+    expect(pending?.getAttribute('aria-busy')).toBe('true');
+    expect(pending?.disabled).toBe(false);
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_BUDGET_INPUT_ATTR,
+      'llm.budget',
+    )?.readOnly).toBe(true);
+    clickByAttrValue(host, AI_MODELS_BUDGET_SAVE_ATTR, 'llm.budget');
+    clickByAttrValue(host, AI_MODELS_BUDGET_SAVE_ATTR, 'llm.budget');
+    expect(runSetConfigField).toHaveBeenCalledTimes(1);
+
+    resolveSave({ ok: true });
+    await flush();
+    const settled = findByAttrValue(
+      host,
+      AI_MODELS_BUDGET_SAVE_ATTR,
+      'llm.budget',
+    );
+    expect(settled?.textContent).toBe('Save budget');
+    expect(settled?.getAttribute('aria-disabled')).toBeNull();
+    expect(settled?.getAttribute('aria-busy')).toBeNull();
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_BUDGET_INPUT_ATTR,
+      'llm.budget',
+    )?.readOnly).toBe(false);
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_BUDGET_INPUT_ATTR,
+      'llm.budget',
+    )?.value).toBe('1234');
+    mount.dispose();
+  });
 });
 
 describe('D-174 R28 Slice B — api_key redaction', () => {
@@ -1067,6 +1964,43 @@ describe('D-174 R28 Slice C — embeddings slot card', () => {
     mount.dispose();
   });
 
+  it('clears a persisted embeddings base URL when the owner empties the field', async () => {
+    const { host, mount, opts } = mountFixture({
+      runGetLLMConfig: vi.fn(async () => ({
+        config: {
+          embeddings_slot: {
+            provider: 'openai-compatible',
+            model: 'old-embedding-model',
+            base_url: 'https://old-embeddings.example.test/v1',
+            has_key: true,
+          },
+        },
+      })),
+    });
+    await mount.whenLoaded();
+
+    const baseUrl = findByAttrValue(
+      host,
+      AI_MODELS_EMBEDDINGS_FIELD_ATTR,
+      'base-url',
+    )!;
+    baseUrl.value = '';
+    for (const listener of baseUrl.listeners.get('input') ?? []) listener({});
+    const apiKey = findByAttrValue(
+      host,
+      AI_MODELS_EMBEDDINGS_FIELD_ATTR,
+      'api-key',
+    )!;
+    apiKey.value = 'replacement-key';
+    for (const listener of apiKey.listeners.get('input') ?? []) listener({});
+
+    clickByAttrValue(host, AI_MODELS_SLOT_SAVE_ATTR, 'embeddings_slot');
+    await flush();
+    const written = vi.mocked(opts.runSetEmbeddingsSlot).mock.calls.at(-1)![0].slot;
+    expect(written).not.toHaveProperty('base_url');
+    mount.dispose();
+  });
+
   it('clearEmbeddingsSlot sends slot:null and clears local state', async () => {
     const { mount, opts } = mountFixture();
     await mount.whenLoaded();
@@ -1083,6 +2017,67 @@ describe('Lever-2 per-slot (Phase 3) — chat catalog mode', () => {
     modes: Record<string, string>,
   ): (() => Promise<{ config: Record<string, unknown> }>) =>
     vi.fn(async () => ({ config: { ...llmConfig(), catalog_modes: modes } }));
+
+  it('keeps the shared catalog map focusable, busy, and single-flight', async () => {
+    let resolveWrite!: (value: { ok: true }) => void;
+    const runSetChatCatalogMode = vi.fn(
+      () => new Promise<{ ok: true }>((resolve) => {
+        resolveWrite = resolve;
+      }),
+    );
+    const { host, mount } = mountFixture({ runSetChatCatalogMode });
+    await mount.whenLoaded();
+
+    changeSelect(host, AI_MODELS_CATALOG_MODE_SELECT_ATTR, 'slot_1', 'index');
+    const slotOne = findByAttrValue(
+      host,
+      AI_MODELS_CATALOG_MODE_SELECT_ATTR,
+      'slot_1',
+    );
+    const slotTwo = findByAttrValue(
+      host,
+      AI_MODELS_CATALOG_MODE_SELECT_ATTR,
+      'slot_2',
+    );
+    expect(slotOne?.value).toBe('index');
+    expect(slotOne?.getAttribute('aria-disabled')).toBe('true');
+    expect(slotOne?.getAttribute('aria-busy')).toBe('true');
+    expect(slotOne?.disabled).toBe(false);
+    expect(slotTwo?.getAttribute('aria-disabled')).toBe('true');
+    changeSelect(host, AI_MODELS_CATALOG_MODE_SELECT_ATTR, 'slot_1', 'full');
+    changeSelect(
+      host,
+      AI_MODELS_CATALOG_MODE_SELECT_ATTR,
+      'slot_2',
+      'lean-core',
+    );
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_CATALOG_MODE_SELECT_ATTR,
+      'slot_1',
+    )?.value).toBe('index');
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_CATALOG_MODE_SELECT_ATTR,
+      'slot_2',
+    )?.value).toBe('');
+    expect(runSetChatCatalogMode).toHaveBeenCalledTimes(1);
+
+    resolveWrite({ ok: true });
+    await flush();
+    const settled = findByAttrValue(
+      host,
+      AI_MODELS_CATALOG_MODE_SELECT_ATTR,
+      'slot_1',
+    );
+    expect(settled?.value).toBe('index');
+    expect(settled?.getAttribute('aria-disabled')).toBeNull();
+    expect(settled?.getAttribute('aria-busy')).toBeNull();
+    expect(mount.getState().llmConfig?.catalog_modes).toEqual({
+      slot_1: 'index',
+    });
+    mount.dispose();
+  });
 
   it('renders a catalog <select> per source with Automatic + the 3 modes, reflecting the current override', async () => {
     const { host, mount } = mountFixture({
@@ -1278,6 +2273,24 @@ describe('System prompts — the box holds the role, not the whole prompt', () =
     mount.dispose();
   });
 
+  it('keeps the prompt controls mounted while an owner drafts', async () => {
+    const { host, mount } = mountFixture();
+    await mount.whenLoaded();
+
+    const area = findByAttrValue(host, AI_MODELS_PROMPT_TEXT_ATTR, 'chat')!;
+    const role = findByAttrValue(host, AI_MODELS_PROMPT_ROLE_ATTR, 'chat')!;
+    area.value = 'A two-keystroke draft';
+    for (const listener of area.listeners.get('input') ?? []) listener({});
+    expect(findByAttrValue(host, AI_MODELS_PROMPT_TEXT_ATTR, 'chat')).toBe(area);
+
+    role.value = 'user';
+    for (const listener of role.listeners.get('change') ?? []) listener({});
+    expect(findByAttrValue(host, AI_MODELS_PROMPT_ROLE_ATTR, 'chat')).toBe(role);
+    expect(findByAttrValue(host, AI_MODELS_PROMPT_TEXT_ATTR, 'chat')?.value)
+      .toBe('A two-keystroke draft');
+    mount.dispose();
+  });
+
   it('shows the always-on text the owner cannot edit', async () => {
     const { host, mount } = mountFixture();
     await mount.whenLoaded();
@@ -1319,6 +2332,62 @@ describe('System prompts — the box holds the role, not the whole prompt', () =
 });
 
 describe('System prompts — saving, the policy, and the reset that is a delete', () => {
+  it('keeps each prompt mutation focusable, busy, and single-flight', async () => {
+    let resolveSave!: (value: { ok: true }) => void;
+    const runSetLlmPrompt = vi.fn(
+      () => new Promise<{ ok: true }>((resolve) => {
+        resolveSave = resolve;
+      }),
+    );
+    const { host, mount } = mountFixture({ runSetLlmPrompt });
+    await mount.whenLoaded();
+
+    const area = findByAttrValue(host, AI_MODELS_PROMPT_TEXT_ATTR, 'chat')!;
+    area.value = 'A durable owner-authored prompt.';
+    for (const fn of area.listeners.get('input') ?? []) fn({});
+    clickByAttrValue(host, AI_MODELS_PROMPT_SAVE_ATTR, 'chat');
+
+    const pending = findByAttrValue(host, AI_MODELS_PROMPT_SAVE_ATTR, 'chat');
+    const reset = findByAttrValue(host, AI_MODELS_PROMPT_RESET_ATTR, 'chat');
+    expect(pending?.textContent).toBe('Saving…');
+    expect(pending?.getAttribute('aria-disabled')).toBe('true');
+    expect(pending?.getAttribute('aria-busy')).toBe('true');
+    expect(pending?.disabled).toBe(false);
+    expect(reset?.getAttribute('aria-disabled')).toBe('true');
+    expect(reset?.disabled).toBe(false);
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_PROMPT_TEXT_ATTR,
+      'chat',
+    )?.readOnly).toBe(true);
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_PROMPT_ROLE_ATTR,
+      'chat',
+    )?.disabled).toBe(true);
+    clickByAttrValue(host, AI_MODELS_PROMPT_SAVE_ATTR, 'chat');
+    clickByAttrValue(host, AI_MODELS_PROMPT_RESET_ATTR, 'chat');
+    expect(runSetLlmPrompt).toHaveBeenCalledTimes(1);
+
+    resolveSave({ ok: true });
+    await flush();
+    const settled = findByAttrValue(host, AI_MODELS_PROMPT_SAVE_ATTR, 'chat');
+    expect(settled?.textContent).toBe('Save');
+    expect(settled?.getAttribute('aria-disabled')).toBeNull();
+    expect(settled?.getAttribute('aria-busy')).toBeNull();
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_PROMPT_TEXT_ATTR,
+      'chat',
+    )?.readOnly).toBe(false);
+    expect(findByAttrValue(
+      host,
+      AI_MODELS_PROMPT_ROLE_ATTR,
+      'chat',
+    )?.disabled).toBe(false);
+    mount.dispose();
+  });
+
   it('sends block 1, the wire role, and the caller policy', async () => {
     const { host, mount, opts } = mountFixture();
     await mount.whenLoaded();

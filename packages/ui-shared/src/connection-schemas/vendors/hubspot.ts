@@ -152,6 +152,8 @@ const HUBSPOT_FIELDS: readonly ConnectionField[] = [
     key: 'auth.refresh_token',
     label: 'Refresh Token',
     type: 'secret',
+    // Filled by the OAuth dance (`applyVendorOAuthResultValues`), never typed.
+    autofilled: true,
     showWhen: ifAuth('oauth2_refresh'),
     help:
       'Long-lived refresh token from the HubSpot OAuth flow. ' +

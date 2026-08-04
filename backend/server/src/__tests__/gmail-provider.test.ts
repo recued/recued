@@ -216,6 +216,100 @@ describe('GmailProvider — initialScan', () => {
     expect(h.store.data.get('gmail.work.history_id')).toBe('1000');
   });
 
+  it('rejects when it cannot establish the pre-scan history watermark', async () => {
+    h = newHarness({
+      routes: [
+        { match: (u) => u.includes('/profile'),
+          response: { status: 503, body: { error: 'temporarily unavailable' } } },
+      ],
+    });
+    await h.provider.connect();
+
+    await expect(h.provider.initialScan({
+      backfill_days: 7,
+      onMessage: async () => true,
+    })).rejects.toThrow('could not establish a history watermark');
+    expect(h.store.data.has('gmail.work.history_id')).toBe(false);
+  });
+
+  it('rejects an incomplete list page instead of completing the backfill', async () => {
+    h = newHarness({
+      routes: [
+        { match: (u) => u.includes('/profile'),
+          response: { status: 200, body: { historyId: 'before-list-failure' } } },
+        { match: (u) => u.includes('/messages?'),
+          response: { status: 503, body: { error: 'temporarily unavailable' } } },
+      ],
+    });
+    await h.provider.connect();
+
+    await expect(h.provider.initialScan({
+      backfill_days: 7,
+      onMessage: async () => true,
+    })).rejects.toThrow('could not fetch a complete message page');
+    expect(h.store.data.get('gmail.work.history_id')).toBe('before-list-failure');
+  });
+
+  it('preserves the first pre-scan watermark when an item fails and the backfill retries', async () => {
+    const raw = makeRfc822Base64Url({ subject: 'retry me' });
+    let profileCalls = 0;
+    const store = makeStore({
+      'gmail.work.access_token': 'at',
+      'gmail.work.expires_at': String(Date.now() + 3600_000),
+      'gmail.work.refresh_token': 'rt',
+    });
+    const fetcher: HttpFetcher = async (url) => {
+      if (url.includes('/profile')) {
+        profileCalls++;
+        return {
+          status: 200,
+          ok: true,
+          async json() { return { historyId: profileCalls === 1 ? 'before-scan' : 'too-late' }; },
+          async text() { return '{}'; },
+        };
+      }
+      if (url.includes('/messages?')) {
+        return {
+          status: 200,
+          ok: true,
+          async json() { return { messages: [{ id: 'retry-id', threadId: 't' }] }; },
+          async text() { return '{}'; },
+        };
+      }
+      if (url.includes('/messages/retry-id')) {
+        return {
+          status: 200,
+          ok: true,
+          async json() {
+            return { id: 'retry-id', threadId: 't', raw, internalDate: '1' };
+          },
+          async text() { return '{}'; },
+        };
+      }
+      return { status: 404, ok: false, async json() { return {}; }, async text() { return 'nope'; } };
+    };
+    const provider = createGmailProvider({
+      slug: 'work',
+      config: () => mkConfig(),
+      accountStore: store,
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    await provider.connect();
+
+    await expect(provider.initialScan({
+      backfill_days: 7,
+      onMessage: async () => { throw new Error('collection unavailable'); },
+    })).rejects.toThrow('gmail initial scan was incomplete');
+    expect(store.data.get('gmail.work.history_id')).toBe('before-scan');
+
+    await provider.initialScan({ backfill_days: 7, onMessage: async () => true });
+    expect(profileCalls).toBe(1);
+    expect(store.data.get('gmail.work.history_id')).toBe('before-scan');
+    await provider.close();
+  });
+
   it('honors onMessage returning false (abort)', async () => {
     const rawA = makeRfc822Base64Url({ subject: 'a' });
     const rawB = makeRfc822Base64Url({ subject: 'b' });
@@ -512,6 +606,135 @@ describe('GmailProvider — incremental sync', () => {
     expect(store.data.get('gmail.work.history_id')).toBe('999');
     await provider.close();
   });
+
+  it('replays the current window before replacing an aged-out history watermark', async () => {
+    const raw = makeRfc822Base64Url({ subject: 'recovered from full scan' });
+    const store = makeStore({
+      'gmail.work.access_token': 'at',
+      'gmail.work.expires_at': String(Date.now() + 3600_000),
+      'gmail.work.refresh_token': 'rt',
+      'gmail.work.history_id': 'expired',
+    });
+    const fetcher: HttpFetcher = async (url) => {
+      if (url.includes('/history')) {
+        return {
+          status: 404,
+          ok: false,
+          async json() { return { error: 'historyId too old' }; },
+          async text() { return 'historyId too old'; },
+        };
+      }
+      if (url.includes('/profile')) {
+        return {
+          status: 200,
+          ok: true,
+          async json() { return { historyId: 'replacement' }; },
+          async text() { return '{}'; },
+        };
+      }
+      if (url.includes('/messages?')) {
+        return {
+          status: 200,
+          ok: true,
+          async json() { return { messages: [{ id: 'recovered-id' }] }; },
+          async text() { return '{}'; },
+        };
+      }
+      if (url.includes('/messages/recovered-id')) {
+        return {
+          status: 200,
+          ok: true,
+          async json() {
+            return { id: 'recovered-id', threadId: 't', raw, internalDate: '1' };
+          },
+          async text() { return '{}'; },
+        };
+      }
+      return { status: 404, ok: false, async json() { return {}; }, async text() { return 'nope'; } };
+    };
+    const provider = createGmailProvider({
+      slug: 'work',
+      config: () => mkConfig(),
+      accountStore: store,
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    await provider.connect();
+    const events: ProviderSyncEvent[] = [];
+
+    const stop = await provider.startSync(async (event) => { events.push(event); });
+    await stop();
+
+    expect(events).toEqual([
+      expect.objectContaining({ kind: 'updated', source_id: 'recovered-id' }),
+    ]);
+    expect(store.data.get('gmail.work.history_id')).toBe('replacement');
+    await provider.close();
+  });
+
+  it('holds and replays the history watermark after a collection callback rejects', async () => {
+    const raw = makeRfc822Base64Url({ subject: 'must replay' });
+    const store = makeStore({
+      'gmail.work.access_token': 'at',
+      'gmail.work.expires_at': String(Date.now() + 3600_000),
+      'gmail.work.refresh_token': 'rt',
+      'gmail.work.history_id': '100',
+    });
+    const fetcher: HttpFetcher = async (url) => {
+      if (url.includes('/history')) {
+        return {
+          status: 200,
+          ok: true,
+          async json() {
+            return {
+              history: [{ id: '101', messagesAdded: [{ message: { id: 'retry-id' } }] }],
+              historyId: '101',
+            };
+          },
+          async text() { return '{}'; },
+        };
+      }
+      if (url.includes('/messages/retry-id')) {
+        return {
+          status: 200,
+          ok: true,
+          async json() {
+            return { id: 'retry-id', threadId: 't', raw, internalDate: '1' };
+          },
+          async text() { return '{}'; },
+        };
+      }
+      return { status: 404, ok: false, async json() { return {}; }, async text() { return 'nope'; } };
+    };
+    const provider = createGmailProvider({
+      slug: 'work',
+      config: () => mkConfig(),
+      accountStore: store,
+      providerConfig,
+      fetcher,
+      scheduler: () => () => undefined,
+    });
+    const outcomes: Array<{ ok: boolean }> = [];
+    provider.onSyncOutcome?.((outcome) => { outcomes.push(outcome); });
+    await provider.connect();
+
+    let attempts = 0;
+    const firstStop = await provider.startSync(async () => {
+      attempts++;
+      throw new Error('sqlite busy');
+    });
+    await firstStop();
+    expect(store.data.get('gmail.work.history_id')).toBe('100');
+    expect(outcomes.at(-1)).toMatchObject({ ok: false });
+
+    const secondStop = await provider.startSync(async () => { attempts++; });
+    await secondStop();
+    expect(attempts).toBe(2);
+    expect(store.data.get('gmail.work.history_id')).toBe('101');
+    expect(outcomes.at(-1)).toMatchObject({ ok: true });
+    await provider.close();
+  });
 });
 
 // ────────────────────────────────────────────────────────────────
@@ -531,8 +754,22 @@ describe('canonicalizeGmail', () => {
     expect(msg.source_id).toBe('id-1');
     expect(msg.thread_id).toBe('t-1');
     expect(msg.folder_or_label).toBe('INBOX');
+    expect(msg.direction).toBe('inbound');
     expect(msg.labels).toEqual(['INBOX', 'IMPORTANT']);
     expect(msg.is_read).toBe(true);  // no UNREAD in labels
+  });
+
+  it('uses stable system labels for direction and excludes sent drafts regardless of UI language', async () => {
+    const raw = makeRfc822Base64Url({});
+    const sent = await canonicalizeGmail({
+      id: 'sent-1', threadId: 't', labelIds: ['SENT', 'INBOX'], raw, internalDate: '1',
+    });
+    const draft = await canonicalizeGmail({
+      id: 'draft-1', threadId: 't', labelIds: ['DRAFT', 'INBOX'], raw, internalDate: '1',
+    });
+
+    expect(sent.direction).toBe('outbound');
+    expect(draft.direction).toBe('draft');
   });
 
   it('marks as unread when UNREAD label present', async () => {

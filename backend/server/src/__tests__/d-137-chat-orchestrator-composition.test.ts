@@ -695,6 +695,36 @@ describe('composeChatOrchestrator', () => {
     expect(bundle.chatDeps.auditLog).toBe(auditLog);
   });
 
+  it('threads the durable callback mailbox into every token authority mutation', async () => {
+    const sharedStore = {
+      list: vi.fn(async () => []),
+      read: vi.fn(async () => null),
+      compareAndSet: vi.fn(),
+    };
+    const { bundle } = composeHarness({ sharedStore });
+    const issued = bundle.inboundTokenStore.issueToken({
+      value: {
+        label: 'callback lifecycle',
+        grants: { 'recued-core/query': true },
+        concurrency_tier: 3,
+        expires_at: 0,
+        chat_mode: null,
+        contract_id: 'ct_callbacks',
+      },
+      now: 1,
+    });
+    bundle.inboundTokenStore.revokeToken({
+      token_id: issued.record.token_id,
+      now: 2,
+    });
+    await bundle.inboundTokenStore.drainAuthorityChanges();
+
+    expect(Object.keys(bundle.chatDeps).sort()).toEqual(expectedChatDepsKeys);
+    expect(sharedStore.list).toHaveBeenCalledWith(
+      `mcp.recipe-callback.${issued.record.token_id}`,
+    );
+  });
+
   it('wires owner-only D-214 aggregate diagnostics without raw rows', async () => {
     const { bundle } = composeHarness();
     const diagnostics = await bundle.chatDeps.executionCaseDiagnostics?.() as {

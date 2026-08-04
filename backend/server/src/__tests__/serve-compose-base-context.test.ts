@@ -1,4 +1,11 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  renameSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +14,10 @@ import { afterEach, describe, expect, it } from 'vitest';
 
 import type { BootTraceEvent } from '../cli/boot-trace.js';
 import { composeBaseContext } from '../serve/compose-base-context.js';
+import {
+  prepareServerBundleSwap,
+  reconcileServerBundleSwap,
+} from '../archive/server-bundle-swap.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, '..', '..', '..', '..');
@@ -117,6 +128,39 @@ bind_port = 8080
 
     expect(context.port).toBe(9000);
     expect(context.loadedConfig.bootstrap.bind_port).toBe(8080);
+  });
+
+  it('finishes post-commit config recovery before derived boot settings escape', () => {
+    const dir = makeTmp();
+    const configPath = join(dir, 'config.toml');
+    const dbPath = join(dir, 'server.db');
+    const stagingPath = `${dbPath}.staging-${'a'.repeat(16)}`;
+    writeFileSync(configPath, '[bootstrap]\nbind_port = 8080\n');
+    writeFileSync(dbPath, 'old-db');
+    writeFileSync(stagingPath, 'new-db');
+    const prepared = prepareServerBundleSwap({
+      dbPath,
+      stagingDbPath: stagingPath,
+      stamp: '2023-11-14T22-13-20-000Z-deadbeef',
+      configPath,
+      nextConfig: Buffer.from('[bootstrap]\nbind_port = 9090\n'),
+    });
+
+    // Hard-exit state immediately after the database commit point: the new db
+    // is live, while config is still staged and the old file is what an eager
+    // one-pass loader would read.
+    renameSync(dbPath, prepared.dbBackupPath);
+    renameSync(stagingPath, dbPath);
+    expect(readFileSync(configPath, 'utf8')).toContain('8080');
+
+    const context = composeBaseContext(['--config', configPath, '--db', dbPath], {
+      env: { HOME: dir },
+    });
+    expect(context.port).toBe(9090);
+    expect(readFileSync(configPath, 'utf8')).toContain('9090');
+    expect(
+      reconcileServerBundleSwap(dbPath, () => true, { configPath }).recovery,
+    ).toBe('completed');
   });
 
   it('keeps the base context free of storage, listener, scheduler, and composition imports', () => {

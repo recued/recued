@@ -20,6 +20,10 @@
  */
 
 import { resolvePackInput } from './bootstrap-packs-route.js';
+import {
+  DISCOVER_PANEL_ACTION_ATTR,
+  DISCOVER_PANEL_CARD_ATTR,
+} from '../discover/discover-panel.js';
 
 export const PACKS_SURFACE_HOST_ATTR = 'data-recued-packs-surface';
 export const PACKS_SURFACE_LIST_ATTR = 'data-recued-packs-surface-list';
@@ -27,6 +31,13 @@ export const PACKS_SURFACE_DETAIL_ATTR = 'data-recued-packs-surface-detail';
 export const PACKS_SURFACE_ADD_INPUT_ATTR = 'data-recued-packs-surface-add-input';
 export const PACKS_SURFACE_ADD_SUBMIT_ATTR = 'data-recued-packs-surface-add-submit';
 export const PACKS_SURFACE_ADD_ERROR_ATTR = 'data-recued-packs-surface-add-error';
+/** The installed-only filter toggle. The `[Installed | Discover]` tab split was
+ *  retired for one list + a per-row badge; this is what replaces the TAB, since
+ *  a badge tells you a row's state but gives you no way to ASK for your own
+ *  packs across a 954-row paged corpus. */
+export const PACKS_SURFACE_INSTALLED_ONLY_ATTR = 'data-recued-packs-surface-installed-only';
+export const PACKS_SURFACE_INSTALLED_ONLY_ERROR_ATTR =
+  'data-recued-packs-surface-installed-only-error';
 
 /** The subset of the detail panel's mount the surface drives + tears down. Both
  *  drivers route THROUGH the panel (which then fires `onSelectSlug`) so the
@@ -36,6 +47,9 @@ export const PACKS_SURFACE_ADD_ERROR_ATTR = 'data-recued-packs-surface-add-error
 export interface PacksSurfaceDetailHandle {
   clickSelectPack(slug: string): void;
   clickBackToList(): void;
+  /** Optional readiness seam used by a direct detail mount: the surface first
+   *  owns the detail host, then upgrades focus to its first real control. */
+  whenLoaded?(): Promise<void>;
   dispose(): void;
 }
 
@@ -46,7 +60,19 @@ export interface MountPacksSurfaceOptions {
   mountList: (
     host: HTMLElement,
     onSelect: (slug: string) => void,
-  ) => { dispose: () => void };
+  ) => {
+    dispose: () => void;
+    /** Switch the list between the marketplace corpus and the installed roster.
+     *  Optional so a host that mounts a plain list (tests, a private mirror)
+     *  still satisfies the contract — the toggle simply does not render. */
+    setInstalledOnly?: (on: boolean) => Promise<void>;
+    /** The list decides the installed-first default itself, once its roster
+     *  lands — the host cannot know at mount time whether anything is installed.
+     *  This is how the toggle learns it started pressed. Without it the list
+     *  would filter while the control claimed it wasn't, and the first press
+     *  would appear to do nothing. */
+    onInstalledOnlyChange?: (cb: (on: boolean) => void) => void;
+  };
   /** Mount the detail panel into `host`. `onSelectSlug` fires on the panel's own
    *  selection changes (a detail action / Back → null) — the single funnel the
    *  surface reacts to. */
@@ -56,6 +82,10 @@ export interface MountPacksSurfaceOptions {
   ) => PacksSurfaceDetailHandle;
   /** Deep-link segment — open this pack's detail on mount (else the list). */
   initialSlug?: string;
+  /** The route-owned scroll container. Browse and detail have independent
+   *  reading positions even though they share one mounted surface: opening a
+   *  card starts detail at the top, while Back restores the browse position. */
+  scrollRoot?: HTMLElement;
   /** Fired AFTER an in-page selection change so the host can `replaceState` the
    *  `#packs/<slug>` (or bare `#packs`) hash + keep the router's `activeHash` in
    *  lockstep (no remount). Not called for the initial deep-link (hash already
@@ -97,6 +127,7 @@ export const mountPacksSurface = (
   // ── List view (Add header + the browse list) ──────────────────────
   const listView = doc.createElement('div');
   listView.setAttribute(PACKS_SURFACE_LIST_ATTR, '');
+  listView.setAttribute('tabindex', '-1');
 
   let addError: HTMLElement | null = null;
   const setAddError = (msg: string | null): void => {
@@ -152,23 +183,195 @@ export const mountPacksSurface = (
     listView.appendChild(addError);
   }
 
+  // Installed-only toggle. Rendered only when the list can actually honour it,
+  // so it is never a control that looks live and does nothing.
   const listHost = doc.createElement('div');
+  let installedOnly = false;
+  let installedOnlyBusy = false;
+  const installedToggle = doc.createElement('button');
+  installedToggle.type = 'button';
+  installedToggle.setAttribute(PACKS_SURFACE_INSTALLED_ONLY_ATTR, '');
+  installedToggle.className = 'packs-surface-installed-toggle';
+  installedToggle.textContent = 'Installed only';
+  installedToggle.setAttribute('aria-pressed', 'false');
+  const installedToggleError = doc.createElement('p');
+  installedToggleError.setAttribute(PACKS_SURFACE_INSTALLED_ONLY_ERROR_ATTR, '');
+  installedToggleError.setAttribute('role', 'alert');
+  installedToggleError.className = 'packs-surface-installed-error';
+  installedToggleError.hidden = true;
+  listView.appendChild(installedToggle);
+  listView.appendChild(installedToggleError);
   listView.appendChild(listHost);
 
   // ── Detail host ───────────────────────────────────────────────────
   const detailHost = doc.createElement('div');
   detailHost.setAttribute(PACKS_SURFACE_DETAIL_ATTR, '');
+  detailHost.setAttribute('tabindex', '-1');
 
   root.appendChild(listView);
   root.appendChild(detailHost);
   opts.root.appendChild(root);
 
+  let active: string | null = opts.initialSlug ?? null;
+  let listReturnTarget: HTMLElement | null = null;
+  let listReturnIdentity: { id: string; action: boolean } | null = null;
+  const scrollRoot = opts.scrollRoot ?? opts.root;
+  let listScrollPosition = { top: 0, left: 0 };
+  let focusGeneration = 0;
+
+  const containsNode = (
+    host: HTMLElement,
+    candidate: HTMLElement | null,
+  ): boolean => {
+    if (candidate === null) return false;
+    try {
+      return host.contains(candidate);
+    } catch {
+      return false;
+    }
+  };
+
+  const firstFocusable = (host: HTMLElement): HTMLElement | null => {
+    const query = (host as unknown as {
+      querySelector?: (selector: string) => Element | null;
+    }).querySelector;
+    if (typeof query !== 'function') return null;
+    try {
+      return query.call(
+        host,
+        'button:not([disabled]), a[href], input:not([disabled]), '
+          + 'select:not([disabled]), textarea:not([disabled]), '
+          + '[tabindex]:not([tabindex="-1"])',
+      ) as HTMLElement | null;
+    } catch {
+      return null;
+    }
+  };
+
+  const findDescendant = (
+    host: HTMLElement,
+    attribute: string,
+    id: string,
+  ): HTMLElement | null => {
+    const walk = (node: HTMLElement): HTMLElement | null => {
+      if (
+        node.hasAttribute?.(attribute)
+        && node.getAttribute?.('data-id') === id
+      ) {
+        return node;
+      }
+      const children = (
+        node as unknown as { children?: ArrayLike<HTMLElement> }
+      ).children;
+      if (children === undefined) return null;
+      for (let index = 0; index < children.length; index += 1) {
+        const hit = walk(children[index] as HTMLElement);
+        if (hit !== null) return hit;
+      }
+      return null;
+    };
+    return walk(host);
+  };
+
+  const restoredSelectionTarget = (): HTMLElement | null => {
+    if (listReturnIdentity === null) return null;
+    if (listReturnIdentity.action) {
+      const action = findDescendant(
+        listView,
+        DISCOVER_PANEL_ACTION_ATTR,
+        listReturnIdentity.id,
+      );
+      if (action?.tagName === 'BUTTON' && !action.hasAttribute?.('disabled')) {
+        return action;
+      }
+    }
+    return findDescendant(
+      listView,
+      DISCOVER_PANEL_CARD_ATTR,
+      listReturnIdentity.id,
+    );
+  };
+
+  const focusElement = (element: HTMLElement | null): void => {
+    if (element === null || element.hasAttribute?.('disabled')) return;
+    try {
+      element.focus?.({ preventScroll: true });
+    } catch {
+      // Reduced/fake DOMs keep focus handoff best-effort.
+    }
+  };
+
+  const readScrollPosition = (): { top: number; left: number } => {
+    try {
+      return {
+        top: Number.isFinite(scrollRoot.scrollTop) ? scrollRoot.scrollTop : 0,
+        left: Number.isFinite(scrollRoot.scrollLeft) ? scrollRoot.scrollLeft : 0,
+      };
+    } catch {
+      return { top: 0, left: 0 };
+    }
+  };
+
+  const restoreScrollPosition = (position: { top: number; left: number }): void => {
+    try {
+      scrollRoot.scrollTop = position.top;
+      scrollRoot.scrollLeft = position.left;
+    } catch {
+      // Reduced/fake DOMs keep scroll restoration best-effort.
+    }
+  };
+
   // Mount both children ONCE — neither is torn down on the toggle, so the list's
   // browse state + the detail's resolved manifest both survive.
   const listMount = opts.mountList(listHost, (slug) => goToDetail(slug));
+  const setInstalledOnly = listMount.setInstalledOnly;
+  if (setInstalledOnly === undefined) {
+    installedToggle.remove();
+    installedToggleError.remove();
+  } else {
+    // The list turns this on for itself when the roster shows anything installed
+    // (see `applyInstalledFirstDefault`). Mirror it onto the control, which is
+    // the only place the state is visible to the user.
+    listMount.onInstalledOnlyChange?.((on) => {
+      if (installedOnlyBusy) return; // a user press is mid-flight and owns the state
+      installedOnly = on;
+      installedToggle.setAttribute('aria-pressed', on ? 'true' : 'false');
+    });
+    installedToggle.addEventListener('click', () => {
+      if (installedOnlyBusy) return;
+      const previous = installedOnly;
+      installedOnly = !previous;
+      // `aria-pressed` is the ONLY state carrier — the stylesheet keys off
+      // `[aria-pressed="true"]`. A parallel class would be a second source of
+      // truth for one fact, and the two drift.
+      installedToggle.setAttribute('aria-pressed', installedOnly ? 'true' : 'false');
+      installedToggleError.textContent = '';
+      installedToggleError.hidden = true;
+      // Keep the focused owner in the Tab order while the source swaps. ARIA
+      // communicates the inert/busy state; the explicit guard below prevents
+      // pointer or synthetic re-entry while native `disabled` would blur it.
+      installedOnlyBusy = true;
+      installedToggle.setAttribute('aria-disabled', 'true');
+      installedToggle.setAttribute('aria-busy', 'true');
+      void setInstalledOnly(installedOnly)
+        .catch(() => {
+          installedOnly = previous;
+          installedToggle.setAttribute(
+            'aria-pressed',
+            installedOnly ? 'true' : 'false',
+          );
+          installedToggleError.textContent =
+            'Couldn’t switch pack views. Try again.';
+          installedToggleError.hidden = false;
+        })
+        .finally(() => {
+          installedOnlyBusy = false;
+          installedToggle.removeAttribute('aria-disabled');
+          installedToggle.removeAttribute('aria-busy');
+        });
+    });
+  }
   const detailMount = opts.mountDetail(detailHost, (slug) => handleSelection(slug));
-
-  let active: string | null = opts.initialSlug ?? null;
 
   const paint = (): void => {
     const onDetail = active !== null;
@@ -181,11 +384,51 @@ export const mountPacksSurface = (
   function handleSelection(slug: string | null): void {
     active = slug;
     paint();
+    const generation = ++focusGeneration;
+    if (slug === null) {
+      const exactTarget = containsNode(listView, listReturnTarget)
+        ? listReturnTarget
+        : null;
+      focusElement(
+        exactTarget
+          ?? restoredSelectionTarget()
+          ?? firstFocusable(listView)
+          ?? listView,
+      );
+      restoreScrollPosition(listScrollPosition);
+      listReturnTarget = null;
+      listReturnIdentity = null;
+    } else {
+      restoreScrollPosition({ top: 0, left: 0 });
+      // The panel calls this selection hook immediately before it rebuilds the
+      // detail. Defer one microtask so the new Back/primary control exists.
+      void Promise.resolve().then(() => {
+        if (active !== slug || focusGeneration !== generation) return;
+        focusElement(firstFocusable(detailHost) ?? detailHost);
+      });
+    }
     opts.onNavigate?.(slug);
   }
 
   function goToDetail(slug: string): void {
     setAddError(null);
+    if (active === null) {
+      const focused = (
+        doc as unknown as { activeElement?: HTMLElement | null }
+      ).activeElement ?? null;
+      listReturnTarget = containsNode(listView, focused) ? focused : null;
+      const focusedId = listReturnTarget?.getAttribute?.('data-id') ?? null;
+      const isAction = listReturnTarget?.hasAttribute?.(
+        DISCOVER_PANEL_ACTION_ATTR,
+      ) === true;
+      const isCard = listReturnTarget?.hasAttribute?.(
+        DISCOVER_PANEL_CARD_ATTR,
+      ) === true;
+      listReturnIdentity = focusedId === slug && (isAction || isCard)
+        ? { id: slug, action: isAction }
+        : null;
+      listScrollPosition = readScrollPosition();
+    }
     // Drive the panel; its onSelectSlug → handleSelection does the toggle + hash.
     detailMount.clickSelectPack(slug);
   }
@@ -197,9 +440,43 @@ export const mountPacksSurface = (
 
   // Initial paint — a deep-link opens the detail directly (the panel was mounted
   // with `initialSlug`, so it already shows it); no `onNavigate` (hash matches).
-  paint();
-
   let disposed = false;
+  paint();
+  if (active !== null) {
+    restoreScrollPosition({ top: 0, left: 0 });
+    const initialSlug = active;
+    const generation = ++focusGeneration;
+    const stillInitialDetail = (): boolean =>
+      !disposed
+      && active === initialSlug
+      && focusGeneration === generation;
+    const focusInitialDetail = (): void => {
+      if (
+        !stillInitialDetail()
+        || containsNode(
+          detailHost,
+          (doc as unknown as { activeElement?: HTMLElement | null })
+            .activeElement ?? null,
+        )
+      ) return;
+      focusElement(firstFocusable(detailHost) ?? detailHost);
+    };
+    void Promise.resolve().then(focusInitialDetail);
+    const detailLoaded = detailMount.whenLoaded?.();
+    if (detailLoaded !== undefined) {
+      void detailLoaded.then(() => {
+        if (!stillInitialDetail()) return;
+        const focused = (
+          doc as unknown as { activeElement?: HTMLElement | null }
+        ).activeElement ?? null;
+        // The first pass deliberately owns the stable host while the detail is
+        // loading. Upgrade only that ownership; never steal a user's later move.
+        if (focused !== detailHost) return;
+        focusElement(firstFocusable(detailHost) ?? detailHost);
+      }, () => {});
+    }
+  }
+
   return {
     activeSlug: () => active,
     goToDetail,
@@ -248,8 +525,33 @@ export const PACKS_SURFACE_STYLES = `
 [${PACKS_SURFACE_ADD_ERROR_ATTR}] {
   margin: 0 0 8px; font-size: 12px; color: var(--danger);
 }
+[${PACKS_SURFACE_HOST_ATTR}] .packs-surface-installed-toggle {
+  min-height: 36px; margin: 0 0 10px; padding: 6px 12px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--surface); color: var(--fg-muted); cursor: pointer;
+  font: inherit; font-size: 12px;
+  transition: border-color 90ms ease, background 90ms ease, color 90ms ease;
+}
+[${PACKS_SURFACE_HOST_ATTR}] .packs-surface-installed-toggle:hover {
+  border-color: var(--border-strong); color: var(--fg);
+}
+[${PACKS_SURFACE_HOST_ATTR}] .packs-surface-installed-toggle[aria-pressed="true"] {
+  border-color: var(--accent); background: var(--accent-weak);
+  color: var(--fg); font-weight: 650;
+}
+[${PACKS_SURFACE_HOST_ATTR}] .packs-surface-installed-toggle[aria-disabled="true"] {
+  cursor: progress; opacity: .72;
+}
+[${PACKS_SURFACE_HOST_ATTR}] .packs-surface-installed-toggle:focus-visible {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-weak);
+}
+[${PACKS_SURFACE_INSTALLED_ONLY_ERROR_ATTR}] {
+  margin: -4px 0 10px; font-size: 12px; color: var(--danger);
+}
 @media (max-width: 560px) {
   [${PACKS_SURFACE_HOST_ATTR}] .packs-surface-add { padding: 8px; }
   [${PACKS_SURFACE_HOST_ATTR}] .packs-surface-add-submit { flex: 0 0 auto; }
+  [${PACKS_SURFACE_HOST_ATTR}] .packs-surface-installed-toggle { min-height: 44px; }
 }
 `;

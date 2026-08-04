@@ -19,6 +19,26 @@ import { mountDevicesPage } from '../settings/devices-page-mount.js';
 
 const makeFakeHost = () => {
   let html = '';
+  let focusedTarget:
+    | { action: string; instanceId: string }
+    | { receipt: true }
+    | undefined;
+  const body = {} as HTMLElement;
+  const fakeDocument = {
+    get activeElement() {
+      const target = focusedTarget;
+      if (target === undefined) return body;
+      if ('receipt' in target) return {} as HTMLElement;
+      return {
+        getAttribute: (name: string) => {
+          if (name === 'data-action') return target.action;
+          if (name === 'data-instance-id') return target.instanceId;
+          return null;
+        },
+      } as HTMLElement;
+    },
+    body,
+  } as unknown as Document;
   const listeners: Record<string, Set<(event: Event) => void>> = {};
   const host = {
     get innerHTML() {
@@ -26,12 +46,51 @@ const makeFakeHost = () => {
     },
     set innerHTML(value: string) {
       html = value;
+      focusedTarget = undefined;
     },
+    ownerDocument: fakeDocument,
     addEventListener: (evt: string, fn: (event: Event) => void): void => {
       (listeners[evt] ??= new Set()).add(fn);
     },
     removeEventListener: (evt: string, fn: (event: Event) => void): void => {
       listeners[evt]?.delete(fn);
+    },
+    querySelectorAll: (selector: string): HTMLElement[] => {
+      const action = /^\[data-action="([^"]+)"\]$/.exec(selector)?.[1];
+      if (action === undefined) return [];
+      return [...html.matchAll(/<button\b([^>]*)>/g)]
+        .map((match) => match[1] ?? '')
+        .filter((attributes) =>
+          attributes.includes(`data-action="${action}"`),
+        )
+        .map((attributes) => {
+          const instanceId = /data-instance-id="([^"]+)"/.exec(attributes)?.[1] ?? '';
+          return {
+            getAttribute: (name: string) => {
+              if (name === 'data-action') return action;
+              if (name === 'data-instance-id') return instanceId;
+              return null;
+            },
+            focus: () => {
+              focusedTarget = { action, instanceId };
+            },
+            scrollIntoView: () => {},
+          } as unknown as HTMLElement;
+        });
+    },
+    querySelector: (selector: string): HTMLElement | null => {
+      if (
+        selector !== '[data-device-revoke-success]'
+        || !html.includes('data-device-revoke-success')
+      ) {
+        return null;
+      }
+      return {
+        focus: () => {
+          focusedTarget = { receipt: true };
+        },
+        scrollIntoView: () => {},
+      } as unknown as HTMLElement;
     },
   } as unknown as HTMLElement;
   const fire = (evt: string, target: unknown): void => {
@@ -42,6 +101,11 @@ const makeFakeHost = () => {
   return {
     host,
     getHtml: () => html,
+    getFocusedAction: () =>
+      focusedTarget !== undefined && 'action' in focusedTarget
+        ? focusedTarget
+        : undefined,
+    getFocusedTarget: () => focusedTarget,
     listenerCount: () => Object.values(listeners).reduce((n, s) => n + s.size, 0),
     clickAction: (action: string, instanceId?: string): void => {
       const actionEl = {
@@ -199,6 +263,73 @@ describe('mountDevicesPage — initial render + roster fetch', () => {
     expect(onListError.mock.calls[0][0]).toBeInstanceOf(Error);
   });
 
+  it('keeps list Retry focused, single-flight, and advances into recovered rows', async () => {
+    const fakeHost = makeFakeHost();
+    let listCalls = 0;
+    let resolveRetry!: (value: { devices: ServerPairedDevice[] }) => void;
+    const runPairList = vi.fn(async () => {
+      listCalls += 1;
+      if (listCalls === 1) throw new Error('network down');
+      return new Promise<{ devices: ServerPairedDevice[] }>((resolve) => {
+        resolveRetry = resolve;
+      });
+    });
+
+    mountDevicesPage({
+      host: fakeHost.host,
+      runPairList,
+      runPairRevoke: vi.fn(),
+      now: () => FIXED_NOW,
+    });
+    await flush();
+
+    fakeHost.clickAction('retry-list');
+    expect(fakeHost.getHtml()).toContain('Retrying…');
+    expect(fakeHost.getHtml()).toContain('aria-disabled="true"');
+    expect(fakeHost.getHtml()).toContain('aria-busy="true"');
+    expect(fakeHost.getHtml()).not.toMatch(/data-action="retry-list"[^>]* disabled/);
+    expect(fakeHost.getFocusedAction()).toEqual({
+      action: 'retry-list',
+      instanceId: '',
+    });
+    fakeHost.clickAction('retry-list');
+    expect(runPairList).toHaveBeenCalledTimes(2);
+
+    resolveRetry({
+      devices: [buildDevice({ instance_id: 'inst-recovered' })],
+    });
+    await flush();
+    expect(fakeHost.getHtml()).not.toContain('data-error="list"');
+    expect(fakeHost.getFocusedAction()).toEqual({
+      action: 'revoke-device',
+      instanceId: 'inst-recovered',
+    });
+  });
+
+  it('returns a failed list Retry to the recreated retry action', async () => {
+    const fakeHost = makeFakeHost();
+    const runPairList = vi.fn(async () => {
+      throw new Error('network down');
+    });
+
+    mountDevicesPage({
+      host: fakeHost.host,
+      runPairList,
+      runPairRevoke: vi.fn(),
+      now: () => FIXED_NOW,
+    });
+    await flush();
+
+    fakeHost.clickAction('retry-list');
+    await flush();
+    expect(runPairList).toHaveBeenCalledTimes(2);
+    expect(fakeHost.getHtml()).toContain('>Retry</button>');
+    expect(fakeHost.getFocusedAction()).toEqual({
+      action: 'retry-list',
+      instanceId: '',
+    });
+  });
+
   it('passes currentInstanceId through to the renderer (self-revoke gating)', async () => {
     const fakeHost = makeFakeHost();
     const runPairList = vi.fn(async () => ({
@@ -339,52 +470,74 @@ describe('mountDevicesPage — two-stage revoke confirm', () => {
 
     fakeHost.clickAction('revoke-device', 'inst-A');
     expect(fakeHost.getHtml()).toContain('account-devices-confirm-row');
+    expect(fakeHost.getFocusedAction()).toEqual({
+      action: 'cancel-revoke',
+      instanceId: 'inst-A',
+    });
     fakeHost.clickAction('cancel-revoke', 'inst-A');
     expect(fakeHost.getHtml()).not.toContain('account-devices-confirm-row');
     expect(runPairRevoke).not.toHaveBeenCalled();
+    expect(fakeHost.getFocusedAction()).toEqual({
+      action: 'revoke-device',
+      instanceId: 'inst-A',
+    });
   });
 
   it('"Yes, revoke" calls pair.revoke + refreshes roster on success', async () => {
     const fakeHost = makeFakeHost();
     let listCallCount = 0;
+    let resolveRefresh!: (value: { devices: ServerPairedDevice[] }) => void;
     const runPairList = vi.fn(async () => {
       listCallCount++;
-      return {
-        devices:
-          listCallCount === 1
-            ? [
-                buildDevice({ instance_id: 'inst-A', display_name: 'Phone' }),
-              ]
-            : [
-                buildDevice({
-                  instance_id: 'inst-A',
-                  display_name: 'Phone',
-                  revoked_at: 1_999_999,
-                  connected: false,
-                  connected_at: undefined,
-                }),
-              ],
-      };
+      if (listCallCount === 1) {
+        return {
+          devices: [
+            buildDevice({ instance_id: 'inst-A', display_name: 'Phone' }),
+          ],
+        };
+      }
+      return new Promise<{ devices: ServerPairedDevice[] }>((resolve) => {
+        resolveRefresh = resolve;
+      });
     });
     const runPairRevoke = vi.fn(async () => ({ ok: true as const }));
 
-    mountDevicesPage({
+    const mount = mountDevicesPage({
       host: fakeHost.host,
       runPairList,
       runPairRevoke,
       now: () => FIXED_NOW,
     });
     await flush();
+    expect(mount.hasInFlightWork()).toBe(false);
 
     fakeHost.clickAction('revoke-device', 'inst-A');
     fakeHost.clickAction('confirm-revoke', 'inst-A');
-    // The rpc is async — flush to let the resolve land + the refresh
-    // pump complete.
+    expect(mount.hasInFlightWork()).toBe(true);
+    // The accepted receipt owns focus even while the authoritative roster
+    // reconciliation remains in flight.
     await flush();
+    expect(listCallCount).toBe(2);
+    expect(fakeHost.getHtml()).toContain('Loading devices…');
+    expect(fakeHost.getHtml()).toContain('Device revoked.');
+    expect(fakeHost.getFocusedTarget()).toEqual({ receipt: true });
+    expect(mount.hasInFlightWork()).toBe(true);
+
+    resolveRefresh({
+      devices: [
+        buildDevice({
+          instance_id: 'inst-A',
+          display_name: 'Phone',
+          revoked_at: 1_999_999,
+          connected: false,
+          connected_at: undefined,
+        }),
+      ],
+    });
     await flush();
 
     expect(runPairRevoke).toHaveBeenCalledWith({ instance_id: 'inst-A' });
-    expect(listCallCount).toBeGreaterThanOrEqual(2);
+    expect(listCallCount).toBe(2);
     const html = fakeHost.getHtml();
     // R30 — after the refresh the now-revoked device drops off the roster
     // entirely (no struck-through row); here it was the only device.
@@ -392,6 +545,9 @@ describe('mountDevicesPage — two-stage revoke confirm', () => {
     expect(html).toContain('No paired devices yet');
     // The confirm panel collapsed.
     expect(html).not.toContain('account-devices-confirm-row');
+    expect(html).toContain('Device revoked. It no longer has access');
+    expect(fakeHost.getFocusedTarget()).toEqual({ receipt: true });
+    expect(mount.hasInFlightWork()).toBe(false);
   });
 
   it('pair.revoke failure keeps the confirm panel open + surfaces inline error', async () => {
@@ -403,7 +559,7 @@ describe('mountDevicesPage — two-stage revoke confirm', () => {
       throw new Error('forbidden');
     });
 
-    mountDevicesPage({
+    const mount = mountDevicesPage({
       host: fakeHost.host,
       runPairList,
       runPairRevoke,
@@ -419,7 +575,12 @@ describe('mountDevicesPage — two-stage revoke confirm', () => {
     // The confirm panel stays expanded for retry.
     expect(html).toContain('account-devices-confirm-row');
     expect(html).toContain('Could not revoke this device');
-    expect(html).toContain('forbidden');
+    expect(html).toContain('forbidden. Try again');
+    expect(fakeHost.getFocusedAction()).toEqual({
+      action: 'confirm-revoke',
+      instanceId: 'inst-A',
+    });
+    expect(mount.hasInFlightWork()).toBe(false);
   });
 
   it('R30 defect #1 — a self-targeted revoke is refused at the handler (no rpc, no confirm)', async () => {

@@ -568,6 +568,21 @@ const clickAction = (host: FakeEl, action: string, ruleId: string): void => {
   }
 };
 
+const clickDishHistoryRetry = (host: FakeEl, dishId: string): void => {
+  const target = {
+    closest: (selector: string) =>
+      selector.includes('data-recued-dish-history-retry')
+        ? {
+            getAttribute: (name: string) =>
+              name === 'data-recued-dish-history-retry' ? dishId : null,
+          }
+        : null,
+  };
+  for (const fn of host.listeners.get('click') ?? []) {
+    fn({ target } as unknown as Event);
+  }
+};
+
 describe('D-215 slice 4 — the write lands on the RIGHT rpc', () => {
   const rig4 = async (patch: Partial<Dish>, sched?: Record<string, unknown>) => {
     const calls: string[] = [];
@@ -593,6 +608,8 @@ describe('D-215 slice 4 — the write lands on the RIGHT rpc', () => {
   it('an ASSIGNED dish removes through dishes.delete', async () => {
     const { rig, calls } = await rig4({});
     clickAction(rig.root.children[0] as FakeEl, 'delete:dish', 'dsh_t');
+    expect(calls).toEqual([]);
+    clickAction(rig.root.children[0] as FakeEl, 'delete-confirm:dish', 'dsh_t');
     await settle();
     expect(calls).toEqual(['dishes.delete:dsh_t']);
   });
@@ -622,6 +639,8 @@ describe('D-215 slice 4 — the write lands on the RIGHT rpc', () => {
       { mode: 'one_shot', run_at: NOW + 5_000, enabled: false, last_status: 'error' },
     );
     clickAction(rig.root.children[0] as FakeEl, 'delete:dish', 'dsh_t');
+    expect(calls).toEqual([]);
+    clickAction(rig.root.children[0] as FakeEl, 'delete-confirm:dish', 'dsh_t');
     await settle();
     expect(calls).toEqual(['schedules.delete:sch_9']);
   });
@@ -808,6 +827,65 @@ describe('D-215 slice 5 — the dish detail, and the RETIRED case', () => {
     });
     expect(rig.host.innerHTML).toContain('it broke');
     expect(rig.host.innerHTML).toContain('failed');
+  });
+
+  it('distinguishes a history read failure from a dish with no runs', async () => {
+    const rig = await openDetail({
+      dishesHistoryCaller: async () => { throw new Error('history unavailable'); },
+    });
+    const html = rig.host.innerHTML;
+    expect(html).toContain('role="alert"');
+    expect(html).toContain('history unavailable');
+    expect(html).toContain('data-recued-dish-history-retry="dsh_a"');
+    expect(html).not.toContain('No runs recorded');
+  });
+
+  it('keeps a history retry visible, single-flight, and reconciles its success', async () => {
+    const pending: { resolve?: (v: { runs: DishRunRow[] }) => void } = {};
+    let calls = 0;
+    const rig = await openDetail({
+      dishesHistoryCaller: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('history unavailable');
+        return new Promise<{ runs: DishRunRow[] }>((resolve) => {
+          pending.resolve = resolve;
+        });
+      },
+    });
+    const host = rig.root.children[0] as FakeEl;
+    clickDishHistoryRetry(host, 'dsh_a');
+    clickDishHistoryRetry(host, 'dsh_a');
+
+    expect(calls).toBe(2);
+    expect(rig.host.innerHTML).toContain('Retrying…');
+    expect(rig.host.innerHTML).toContain('aria-disabled="true"');
+    expect(rig.host.innerHTML).toContain('aria-busy="true"');
+    expect(rig.host.innerHTML).toContain('history unavailable');
+
+    pending.resolve?.({ runs: [runRow({ error: 'RECOVERED-HISTORY' })] });
+    await settle();
+    await settle();
+    expect(rig.host.innerHTML).toContain('RECOVERED-HISTORY');
+    expect(rig.host.innerHTML).not.toContain('history unavailable');
+    expect(rig.host.innerHTML).not.toContain('data-recued-dish-history-retry');
+  });
+
+  it('loads history when mounted directly at a dish detail URL', async () => {
+    const history = vi.fn(async () => ({
+      runs: [runRow({ error: 'DEEPLINK-HISTORY' })],
+    }));
+    const rig = mount({
+      initialDetailId: 'dsh_a',
+      dishesListCaller: async () => ({ dishes: [dish()] }),
+      dishesHistoryCaller: history,
+    });
+    await rig.route.whenLoaded();
+    await settle();
+    await settle();
+
+    expect(history).toHaveBeenCalledOnce();
+    expect(rig.host.innerHTML).toContain('DEEPLINK-HISTORY');
+    expect(rig.host.innerHTML).not.toContain('Loading history');
   });
 
   it('omits the history block entirely when no caller is wired', async () => {

@@ -145,8 +145,26 @@ export const apiSchema: ConnectionSchema = {
       key: 'auth.refresh_token',
       label: 'Refresh Token',
       type: 'secret',
+      // Filled by the OAuth dance (`applyVendorOAuthResultValues`), never typed.
+      autofilled: true,
       showWhen: ifAuth('oauth2_refresh'),
-      help: 'Long-lived refresh token; the adapter mints fresh access tokens automatically.',
+      // ⚠ Stays REQUIRED — the connection genuinely cannot work without one, and
+      // marking it optional would let an owner save a connection that can never
+      // mint an access token. But the old help ("the adapter mints fresh access
+      // tokens automatically") described what the ADAPTER does with the value,
+      // never how the owner GETS it — so a required secret field with a `*`
+      // read as "go and obtain this yourself", when the normal path fills it
+      // for you: `applyVendorOAuthResultValues` writes `auth.refresh_token`
+      // from the dance's result (`vendors/index.ts`), for any vendor.
+      //
+      // The registered vendor schemas already say this (SharePoint: "populated
+      // automatically by the in-app OAuth dance"); the GENERIC form — the one
+      // an unknown vendor lands on, where nobody can look the answer up — did
+      // not.
+      help:
+        'Filled automatically when you click Authorize below. Paste one only if '
+        + 'you already hold a refresh token for this app; the adapter then mints '
+        + 'fresh access tokens from it.',
     },
     {
       key: 'auth.client_id',

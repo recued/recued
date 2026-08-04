@@ -391,6 +391,8 @@ export interface PermissionsPanelMount {
   /** Initial load promise — resolves after the most recent list settles
    *  (success → `'ready'`, failure → `'error'`). */
   whenLoaded(): Promise<void>;
+  /** True while an override or credential mutation owns this panel. */
+  hasInFlightWork(): boolean;
   /** Delete one override — commits directly (the programmatic equivalent of the
    *  UI's arm-then-Confirm two-stage click). A no-op for an unknown row or a row
    *  with a delete already in flight. Test seam + host convenience; awaits the
@@ -3414,6 +3416,8 @@ export const mountPermissionsPanel = (
     getListError: () => state.listError,
     refresh: () => doRefresh(),
     whenLoaded: () => pendingLoad,
+    hasInFlightWork: () =>
+      state.creating || state.doorBusy || pendingByRow.size > 0,
     deleteOverride: async (actor, ingredientId, operationId) => {
       const target = operationId ?? null;
       const view = state.overrides.find(

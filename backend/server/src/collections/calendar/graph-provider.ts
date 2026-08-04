@@ -49,7 +49,6 @@ import type {
   CalendarProvider,
   CalendarProviderHealth,
   CalendarSyncCallback,
-  CalendarSyncEvent,
   CreateEventInput,
   InitialScanOptions,
   ProbedCalendarCaps,
@@ -509,8 +508,8 @@ export const createGraphCalProvider = (
   // ── initial scan ────────────────────────────────────────────
   const runInitialScan = async (
     scanOpts: InitialScanOptions,
+    calendars: GraphCalListEntry[],
   ): Promise<void> => {
-    const calendars = await selectedCalendars();
     const now = nowOf();
     const startDateTime = new Date(now - scanOpts.backfill_days * 86_400_000)
       .toISOString();
@@ -519,6 +518,7 @@ export const createGraphCalProvider = (
     ).toISOString();
 
     let aborted = false;
+    const failures: unknown[] = [];
     for (const cal of calendars) {
       if (aborted) break;
       const base = new URL(
@@ -548,6 +548,7 @@ export const createGraphCalProvider = (
             }
           } catch (err) {
             markError(`graph canonicalize failed id=${event.id}`, err);
+            failures.push(err);
           }
         }
         url = readProviderStringContinuation(
@@ -556,16 +557,47 @@ export const createGraphCalProvider = (
         );
       }
     }
+    if (!aborted && failures.length > 0) {
+      throw new AggregateError(failures, 'Graph calendar initial scan was incomplete');
+    }
   };
 
   // ── incremental sync tick ───────────────────────────────────
+  const emitDeltaEvent = async (
+    calendar: GraphCalListEntry,
+    event: GraphCalEvent,
+    cb: CalendarSyncCallback,
+  ): Promise<boolean> => {
+    pendingQueueSize++;
+    try {
+      if (event['@removed'] || event.isCancelled) {
+        await cb({ kind: 'deleted', source_id: event.id });
+      } else {
+        const payload = buildPayload(event, calendar.id, calendar.name);
+        await cb({
+          kind: 'updated',
+          source_id: event.id,
+          payload,
+        });
+      }
+      lastSuccessfulSyncAt = nowOf();
+      return true;
+    } catch (err) {
+      markError(`graph dispatch failed id=${event.id}`, err);
+      return false;
+    } finally {
+      pendingQueueSize = Math.max(0, pendingQueueSize - 1);
+    }
+  };
+
   const seedDeltaLink = async (
-    calendarId: string,
+    calendar: GraphCalListEntry,
     startDateTime: string,
     endDateTime: string,
+    recoveryCallback?: CalendarSyncCallback,
   ): Promise<string | null> => {
     const base = new URL(
-      `${GRAPH_API_BASE}/me/calendars/${encodeURIComponent(calendarId)}/calendarView/delta`,
+      `${GRAPH_API_BASE}/me/calendars/${encodeURIComponent(calendar.id)}/calendarView/delta`,
     );
     base.searchParams.set('startDateTime', startDateTime);
     base.searchParams.set('endDateTime', endDateTime);
@@ -573,11 +605,20 @@ export const createGraphCalProvider = (
     const pagination = new ProviderPaginationGuard('graph calendar delta seed', {
       trustedBaseUrl: GRAPH_API_BASE,
     });
+    let terminalDeltaLink: string | undefined;
+    let deliveryFailed = false;
     while (url) {
       const page: GraphListResponse<GraphCalEvent> = await graphGet(
         pagination.claim(url),
         'calendarView.delta (seed)',
       );
+      if (recoveryCallback) {
+        for (const event of page.value ?? []) {
+          if (!(await emitDeltaEvent(calendar, event, recoveryCallback))) {
+            deliveryFailed = true;
+          }
+        }
+      }
       const rawDeltaLink = readProviderStringContinuation(
         page['@odata.deltaLink'],
         'graph calendar delta watermark',
@@ -588,15 +629,21 @@ export const createGraphCalProvider = (
           GRAPH_API_BASE,
           'graph calendar delta watermark',
         );
-        await opts.accountStore.set(deltaLinkKey(calendarId), deltaLink);
-        return deltaLink;
+        terminalDeltaLink = deltaLink;
       }
       url = readProviderStringContinuation(
         page['@odata.nextLink'],
         'graph calendar delta seed',
       );
     }
-    return null;
+    if (deliveryFailed) {
+      throw new Error(
+        `Graph calendar delta recovery was not acknowledged for '${calendar.id}'`,
+      );
+    }
+    if (terminalDeltaLink === undefined) return null;
+    await opts.accountStore.set(deltaLinkKey(calendar.id), terminalDeltaLink);
+    return terminalDeltaLink;
   };
 
   const runSyncTick = async (cb: CalendarSyncCallback): Promise<void> => {
@@ -615,13 +662,15 @@ export const createGraphCalProvider = (
       // after a 410 Gone forces a fresh seed + scan.
       for (let attempt = 0; attempt < 2; attempt++) {
         let retry = false;
+        let deliveryFailed = false;
+        let terminalDeltaLink: string | undefined;
         let url: string | undefined;
         if (link) {
           url = link;
         } else {
           // No cached link — seed from the current window without
           // emitting (same as mail graph's seed behaviour).
-          const seeded = await seedDeltaLink(cal.id, startDateTime, endDateTime);
+          const seeded = await seedDeltaLink(cal, startDateTime, endDateTime);
           if (!seeded) break;
           link = seeded;
           break;
@@ -645,43 +694,33 @@ export const createGraphCalProvider = (
               err.message.includes('410') &&
               attempt === 0
             ) {
-              await opts.accountStore.delete(deltaLinkKey(cal.id));
-              link = null;
-              retry = true;
+              // A new delta query is a full current-state walk. Replay it
+              // before replacing the rejected cursor; otherwise recovery makes
+              // the adapter look healthy while silently discarding the gap.
+              // Keep the old link when the replay is not acknowledged so the
+              // next tick retries this same recovery path.
+              markError(`graph delta cursor expired calendar=${cal.id}`, err);
+              try {
+                const seeded = await seedDeltaLink(
+                  cal,
+                  startDateTime,
+                  endDateTime,
+                  cb,
+                );
+                if (seeded === null) {
+                  throw new Error('replacement delta sync returned no watermark');
+                }
+                link = seeded;
+              } catch (recoveryErr) {
+                markError(`graph delta recovery failed calendar=${cal.id}`, recoveryErr);
+              }
+              retry = false;
               break;
             }
             throw err;
           }
           for (const event of page.value ?? []) {
-            pendingQueueSize++;
-            try {
-              if (event['@removed']) {
-                const sync: CalendarSyncEvent = {
-                  kind: 'deleted',
-                  source_id: event.id,
-                };
-                await cb(sync);
-              } else if (event.isCancelled) {
-                const sync: CalendarSyncEvent = {
-                  kind: 'deleted',
-                  source_id: event.id,
-                };
-                await cb(sync);
-              } else {
-                const payload = buildPayload(event, cal.id, cal.name);
-                const sync: CalendarSyncEvent = {
-                  kind: 'updated',
-                  source_id: event.id,
-                  payload,
-                };
-                await cb(sync);
-              }
-              lastSuccessfulSyncAt = nowOf();
-            } catch (err) {
-              markError(`graph dispatch failed id=${event.id}`, err);
-            } finally {
-              pendingQueueSize = Math.max(0, pendingQueueSize - 1);
-            }
+            if (!(await emitDeltaEvent(cal, event, cb))) deliveryFailed = true;
           }
           const rawDeltaLink = readProviderStringContinuation(
             page['@odata.deltaLink'],
@@ -693,8 +732,7 @@ export const createGraphCalProvider = (
               GRAPH_API_BASE,
               'graph calendar delta watermark',
             );
-            await opts.accountStore.set(deltaLinkKey(cal.id), deltaLink);
-            link = deltaLink;
+            terminalDeltaLink = deltaLink;
           }
           url = readProviderStringContinuation(
             page['@odata.nextLink'],
@@ -703,6 +741,13 @@ export const createGraphCalProvider = (
         }
 
         if (retry) continue;
+        // The stored deltaLink is the replay boundary. Advance it only after
+        // every event in the drained range has been acknowledged by the
+        // collection; otherwise the next tick replays the range.
+        if (!deliveryFailed && terminalDeltaLink !== undefined) {
+          await opts.accountStore.set(deltaLinkKey(cal.id), terminalDeltaLink);
+          link = terminalDeltaLink;
+        }
         break;
       }
     }
@@ -818,7 +863,28 @@ export const createGraphCalProvider = (
     },
 
     async initialScan(scanOpts) {
-      await runInitialScan(scanOpts);
+      const calendars = await selectedCalendars();
+      // Capture the delta boundary before walking the backfill. A message/event
+      // created or deleted during a long initial list must remain visible to the
+      // first live tick. Preserve that first boundary across failed retries.
+      const now = nowOf();
+      const startDateTime = new Date(
+        now - scanOpts.expansion_past_days * 86_400_000,
+      ).toISOString();
+      const endDateTime = new Date(
+        now + scanOpts.expansion_future_days * 86_400_000,
+      ).toISOString();
+      for (const cal of calendars) {
+        if ((await opts.accountStore.get(deltaLinkKey(cal.id))) === null) {
+          const seeded = await seedDeltaLink(cal, startDateTime, endDateTime);
+          if (seeded === null) {
+            throw new Error(
+              `Graph calendar initial scan could not establish a delta watermark for '${cal.id}'`,
+            );
+          }
+        }
+      }
+      await runInitialScan(scanOpts, calendars);
     },
 
     async startSync(cb) {

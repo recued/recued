@@ -62,7 +62,7 @@ export const WEBCLIENT_SERVICE_WORKER_SCOPE = './' as const;
  *
  *  `service-worker-cache-name-parity.test.ts` now reads `public/sw.js` and
  *  fails if the two disagree. Bump BOTH or that test goes red. */
-export const WEBCLIENT_SHELL_CACHE_NAME = 'webclient-shell-v7' as const;
+export const WEBCLIENT_SHELL_CACHE_NAME = 'webclient-shell-v8' as const;
 
 /** Test-only seam — both the `navigator.serviceWorker` access path
  *  and the `caches` access path are overridable so the helper can be

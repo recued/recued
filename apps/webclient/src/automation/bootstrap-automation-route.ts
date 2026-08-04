@@ -80,7 +80,10 @@ export const AUTOMATION_ROUTE_SECTION_ATTR = 'data-recued-automation-section';
 export const AUTOMATION_ROUTE_ROW_ATTR = 'data-recued-automation-row';
 export const AUTOMATION_ROUTE_STATE_ATTR = 'data-recued-automation-state';
 export const AUTOMATION_ROUTE_ERROR_ATTR = 'data-recued-automation-error';
+export const AUTOMATION_ROUTE_RETRY_ATTR = 'data-recued-automation-retry';
 export const AUTOMATION_ROUTE_EMPTY_ATTR = 'data-recued-automation-empty';
+export const AUTOMATION_ROUTE_DETAIL_HEADING_ATTR =
+  'data-recued-automation-detail-heading';
 /** R21 — one sub-nav tab per section. Value = the section HASH token
  *  (`auto-run` / `triggers` / `schedules`); `data-active` marks the
  *  visible one. */
@@ -91,6 +94,14 @@ export const AUTOMATION_ROUTE_POLL_ATTR = 'data-recued-automation-poll';
 /** R21 — a section's "Add" (create) disclosure button. Value = the
  *  section hash token (`triggers` / `schedules`). */
 export const AUTOMATION_ROUTE_ADD_ATTR = 'data-recued-automation-add';
+/** A failed full-recipe inventory read inside an Add disclosure. Value =
+ *  the section whose picker owns the failure. */
+export const AUTOMATION_ROUTE_ADD_ERROR_ATTR =
+  'data-recued-automation-add-error';
+/** Retry a failed full-recipe inventory read. Value = the section whose
+ *  Add disclosure (or Dishes config affordances) needs that inventory. */
+export const AUTOMATION_ROUTE_ADD_RETRY_ATTR =
+  'data-recued-automation-add-retry';
 /** D-215 slice 4 — a subordinate managed dish's link to the rule that owns
  *  its lifecycle. Value = the owning rule id. */
 export const DISH_OWNER_LINK_ATTR = 'data-recued-dish-owner-link';
@@ -98,6 +109,10 @@ export const DISH_OWNER_LINK_ATTR = 'data-recued-dish-owner-link';
 export const DISH_RENAME_INPUT_ATTR = 'data-recued-dish-rename';
 /** D-215 slice 5 — the dish detail's run-history list. Value = dish_id. */
 export const DISH_HISTORY_ATTR = 'data-recued-dish-history';
+/** D-215 slice 5 — a dish-history read failure. Value = dish_id. */
+export const DISH_HISTORY_ERROR_ATTR = 'data-recued-dish-history-error';
+/** D-215 slice 5 — retry the open dish's history read. Value = dish_id. */
+export const DISH_HISTORY_RETRY_ATTR = 'data-recued-dish-history-retry';
 /** D-215 slice 5 — the RETIRED-dish notice (history without a dish row). */
 export const DISH_RETIRED_ATTR = 'data-recued-dish-retired';
 /** R21 — the status filter select (armed/paused/tripped). */
@@ -130,6 +145,17 @@ export type AutomationSectionKind =
    *  no remove); slice 4 wires the mutations onto the same namespace. */
   | 'dish';
 
+interface AutomationActionFocus {
+  verb: string;
+  section: AutomationSectionKind;
+  rule_id: string;
+}
+
+interface AutomationDeleteConfirmation {
+  section: AutomationSectionKind;
+  rule_id: string;
+}
+
 /** R21 — the three rendered sections, as their HASH tokens (the
  *  `#automation/<section>` segment; R16 deep-link pattern). */
 export type AutomationSectionToken =
@@ -146,6 +172,15 @@ export const isAutomationSectionToken = (
   v: string,
 ): v is AutomationSectionToken =>
   (AUTOMATION_SECTION_TOKENS as readonly string[]).includes(v);
+
+type AutomationCreateSectionToken = Extract<
+  AutomationSectionToken,
+  'triggers' | 'schedules' | 'dishes'
+>;
+const isAutomationCreateSectionToken = (
+  value: string,
+): value is AutomationCreateSectionToken =>
+  value === 'triggers' || value === 'schedules' || value === 'dishes';
 
 export type SchedulesListCaller = () => Promise<{ schedules: ServerSchedule[] }>;
 export type SchedulesUpdateCaller = (args: {
@@ -325,6 +360,10 @@ export interface AutomationRoute {
   getMutationErrors(): AutomationLoadErrors;
   refresh(): Promise<void>;
   whenLoaded(): Promise<void>;
+  /** True while a row mutation or child editor owns an unresolved command. */
+  hasInFlightWork(): boolean;
+  /** Contextual shell guard for Automation commands that cannot be recalled. */
+  inFlightWorkPrompt(): string | null;
   dispose(): void;
 }
 
@@ -374,6 +413,10 @@ const AUTOMATION_ROUTE_STYLES = `
   margin: 0 0 4px;
   font-size: 15px;
   font-weight: 650;
+}
+[${AUTOMATION_ROUTE_DETAIL_HEADING_ATTR}]:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
 }
 [${AUTOMATION_ROUTE_HOST_ATTR}] .automation-section-hint {
   margin: 0 0 10px;
@@ -455,7 +498,8 @@ const AUTOMATION_ROUTE_STYLES = `
   background: var(--accent);
   color: var(--on-accent);
 }
-[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-button:disabled {
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-button:disabled,
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-button[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: .65;
 }
@@ -465,15 +509,23 @@ const AUTOMATION_ROUTE_STYLES = `
   text-decoration: none;
 }
 [${AUTOMATION_ROUTE_ERROR_ATTR}],
+[${AUTOMATION_ROUTE_ADD_ERROR_ATTR}],
 [${AUTOMATION_ROUTE_EMPTY_ATTR}] {
   margin: 4px 0 0;
   font-size: 13px;
   line-height: 1.45;
 }
-[${AUTOMATION_ROUTE_ERROR_ATTR}] {
+[${AUTOMATION_ROUTE_ERROR_ATTR}],
+[${AUTOMATION_ROUTE_ADD_ERROR_ATTR}] {
   border-left: 2px solid var(--danger);
   padding-left: 8px;
   color: var(--danger);
+}
+[${AUTOMATION_ROUTE_HOST_ATTR}] .automation-load-error {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 [${AUTOMATION_ROUTE_EMPTY_ATTR}] {
   color: var(--muted);
@@ -642,11 +694,24 @@ const renderRow = (args: {
    *  rows' inline backing-poll status). Caller-escaped. */
   extra?: string;
   busy: boolean;
+  busyVerb: string | undefined;
+  confirmingDelete: boolean;
 }): string => {
   const metaSpans = args.meta.map((m) => `<span>${e(m)}</span>`).join('');
   const title = args.titleHref
     ? `<a href="${e(args.titleHref)}">${e(args.title)}</a>`
     : e(args.title);
+  const busyAttrs = (verb: string): string =>
+    args.busy
+      ? ` aria-disabled="true"${args.busyVerb === verb ? ' aria-busy="true"' : ''}`
+      : '';
+  const toggleLabel = args.busy && args.busyVerb === 'toggle'
+    ? args.toggleLabel === 'Re-arm'
+      ? 'Re-arming…'
+      : args.toggleTo
+        ? 'Resuming…'
+        : 'Pausing…'
+    : args.toggleLabel;
   return `
     <li ${AUTOMATION_ROUTE_ROW_ATTR}="${e(`${args.section}:${args.rule_id}`)}" data-armed="${args.armed}">
       <div>
@@ -663,17 +728,24 @@ const renderRow = (args: {
         ${args.toggleLabel !== undefined
           ? `<button type="button" class="automation-button"
           ${ACTION_ATTR}="toggle:${e(args.section)}:${args.toggleTo ? 'on' : 'off'}"
-          ${ROW_ID_ATTR}="${e(args.rule_id)}"${args.busy ? ' disabled' : ''}>${e(args.toggleLabel)}</button>`
+          ${ROW_ID_ATTR}="${e(args.rule_id)}"${busyAttrs('toggle')}>${e(toggleLabel ?? args.toggleLabel)}</button>`
           : ''}
         ${args.canRunNow
           ? `<button type="button" class="automation-button"
               ${ACTION_ATTR}="run:${e(args.section)}"
-              ${ROW_ID_ATTR}="${e(args.rule_id)}"${args.busy ? ' disabled' : ''}>Run now</button>`
+              ${ROW_ID_ATTR}="${e(args.rule_id)}"${busyAttrs('run')}>${args.busyVerb === 'run' ? 'Running…' : 'Run now'}</button>`
           : ''}
         ${args.canDelete
-          ? `<button type="button" class="automation-button automation-button--danger"
-              ${ACTION_ATTR}="delete:${e(args.section)}"
-              ${ROW_ID_ATTR}="${e(args.rule_id)}"${args.busy ? ' disabled' : ''}>Remove</button>`
+          ? args.confirmingDelete
+            ? `<button type="button" class="automation-button automation-button--danger"
+                ${ACTION_ATTR}="delete-confirm:${e(args.section)}"
+                ${ROW_ID_ATTR}="${e(args.rule_id)}"${busyAttrs('delete-confirm')}>${args.busyVerb === 'delete-confirm' ? 'Removing…' : 'Confirm remove'}</button>
+              <button type="button" class="automation-button"
+                ${ACTION_ATTR}="delete-cancel:${e(args.section)}"
+                ${ROW_ID_ATTR}="${e(args.rule_id)}"${busyAttrs('delete-cancel')}>Cancel</button>`
+            : `<button type="button" class="automation-button automation-button--danger"
+                ${ACTION_ATTR}="delete:${e(args.section)}"
+                ${ROW_ID_ATTR}="${e(args.rule_id)}">Remove</button>`
           : ''}
         ${args.canDetail
           ? `<button type="button" class="automation-button"
@@ -687,6 +759,8 @@ const renderRow = (args: {
 
 const renderSection = (args: {
   section: AutomationSectionKind;
+  retryToken: AutomationSectionToken;
+  retryable: boolean;
   title: string;
   hint: string;
   rows: string[];
@@ -701,7 +775,19 @@ const renderSection = (args: {
 }): string => {
   let body: string;
   if (args.error !== undefined) {
-    body = `<p ${AUTOMATION_ROUTE_ERROR_ATTR}="${args.section}">${e(args.error)}</p>`;
+    const retrying = args.loading;
+    const retry = args.retryable
+      ? `<button type="button" class="automation-button"
+          ${AUTOMATION_ROUTE_RETRY_ATTR}="${args.retryToken}"
+          ${retrying ? 'aria-disabled="true" aria-busy="true"' : ''}>
+          ${retrying ? 'Retrying…' : 'Retry'}
+        </button>`
+      : '';
+    body = `<div class="automation-load-error"
+      ${AUTOMATION_ROUTE_ERROR_ATTR}="${args.section}"
+      role="${retrying ? 'status' : 'alert'}">
+      <span>${e(args.error)}</span>${retry}
+    </div>`;
   } else if (args.loading && args.rows.length === 0) {
     body = `<p ${AUTOMATION_ROUTE_EMPTY_ATTR}="${args.section}">Loading...</p>`;
   } else if (args.rows.length === 0) {
@@ -710,7 +796,7 @@ const renderSection = (args: {
     body = `<ul class="automation-list" role="list">${args.rows.join('')}</ul>`;
   }
   const mutationLine = args.mutationError !== undefined
-    ? `<p ${AUTOMATION_ROUTE_ERROR_ATTR}="${args.section}:mutation">${e(args.mutationError)}</p>`
+    ? `<p ${AUTOMATION_ROUTE_ERROR_ATTR}="${args.section}:mutation" role="alert">${e(args.mutationError)}</p>`
     : '';
   return `
     <section ${AUTOMATION_ROUTE_SECTION_ATTR}="${args.section}">
@@ -771,10 +857,14 @@ export const bootstrapAutomationRoute = (
    *  null. Kept as state (not DOM) because the section repaints wholesale
    *  on every broadcast; an in-DOM-only edit box would vanish mid-type. */
   let renamingDishId: string | null = null;
-  /** D-215 slice 5 — the open dish detail's history, keyed by dish_id so a
-   *  stale response for a previously-open dish can never paint into the
-   *  current one. `null` = not loaded / loading. */
+  /** D-215 slice 5 — the open dish detail's history and read lifecycle.
+   *  Every result is keyed both by dish and request identity: closing and
+   *  reopening the SAME dish must not let an older request win. */
   let dishHistory: { dish_id: string; runs: DishRunRow[] } | null = null;
+  let dishHistoryError: { dish_id: string; message: string } | null = null;
+  let dishHistoryRequest: { dish_id: string; seq: number } | null = null;
+  let dishHistoryRequestSeq = 0;
+  let pendingDishHistoryRetryFocus: string | null = null;
   // R21 — the visible section. A section deep-link seeds it; a legacy
   // recipe deep-link leaves it on the default and the post-load one-shot
   // below repoints it at the first section with rows for that recipe.
@@ -814,10 +904,155 @@ export const bootstrapAutomationRoute = (
   // fold). Cleared per section on the next successful mutation there.
   let mutationErrors: AutomationLoadErrors = {};
   let loading = false;
+  // An explicit load Retry owns focus through the busy repaint. Success
+  // advances to the selected section tab; failure returns to Retry. Moving
+  // elsewhere while the read is in flight cancels that ownership.
+  let pendingRetryFocus: AutomationSectionToken | null = null;
   let disposed = false;
   let loadSeq = 0;
-  /** Rule ids with an in-flight mutation — their buttons disable. */
+  /** Rule ids with an in-flight mutation — their actions remain focusable but
+   *  are guarded by the delegated busy check. */
   const busy = new Set<string>();
+  /** The exact mutation owning a busy row. This drives visible progress and
+   *  distinguishes the initiator from sibling controls that are merely locked. */
+  const busyActions = new Map<string, AutomationActionFocus>();
+  let deleteConfirmation: AutomationDeleteConfirmation | null = null;
+  // Carry a focused row mutation's semantic identity through its busy repaint
+  // and the authoritative re-list (for example Pause → Pausing… → Resume).
+  let pendingActionFocus: AutomationActionFocus | null = null;
+  // Delete has no same-row successor: fall through to a neighboring row's
+  // safe Details action after a successful authoritative re-list.
+  let pendingActionFallbackFocus: AutomationActionFocus | null = null;
+
+  const busyVerbFor = (
+    section: AutomationSectionKind,
+    rule_id: string,
+  ): string | undefined => {
+    const action = busyActions.get(rule_id);
+    return action?.section === section ? action.verb : undefined;
+  };
+
+  const mutationBusyAttrs = (
+    section: AutomationSectionKind,
+    rule_id: string,
+    verb: string,
+  ): string =>
+    busy.has(rule_id)
+      ? ` aria-disabled="true"${busyVerbFor(section, rule_id) === verb
+        ? ' aria-busy="true"'
+        : ''}`
+      : '';
+
+  const mutationToggleLabel = (
+    section: AutomationSectionKind,
+    rule_id: string,
+    label: string,
+    toggleTo: boolean,
+  ): string => {
+    if (busyVerbFor(section, rule_id) !== 'toggle') return label;
+    if (label === 'Re-arm') return 'Re-arming…';
+    return toggleTo ? 'Resuming…' : 'Pausing…';
+  };
+
+  const confirmingDeleteFor = (
+    section: AutomationSectionKind,
+    rule_id: string,
+  ): boolean =>
+    deleteConfirmation?.section === section
+    && deleteConfirmation.rule_id === rule_id;
+
+  const automationRuleExists = (
+    section: AutomationSectionKind,
+    rule_id: string,
+  ): boolean => {
+    switch (section) {
+      case 'schedule':
+        return schedules.some((row) => row.schedule_id === rule_id);
+      case 'event_trigger':
+        return triggers.some((row) => row.trigger_id === rule_id);
+      case 'watch':
+        return watches.some((row) => row.watch_key === rule_id);
+      case 'auto_run':
+        return autoRun.some((row) => row.recipe_id === rule_id);
+      case 'dish':
+        return dishes.some((row) => row.dish_id === rule_id);
+    }
+  };
+
+  const renderDeleteButtons = (
+    section: AutomationSectionKind,
+    rule_id: string,
+  ): string =>
+    confirmingDeleteFor(section, rule_id)
+      ? `<button type="button" class="automation-button automation-button--danger"
+          ${ACTION_ATTR}="delete-confirm:${e(section)}"
+          ${ROW_ID_ATTR}="${e(rule_id)}"${mutationBusyAttrs(section, rule_id, 'delete-confirm')}>${busyVerbFor(section, rule_id) === 'delete-confirm' ? 'Removing…' : 'Confirm remove'}</button>
+        <button type="button" class="automation-button"
+          ${ACTION_ATTR}="delete-cancel:${e(section)}"
+          ${ROW_ID_ATTR}="${e(rule_id)}"${mutationBusyAttrs(section, rule_id, 'delete-cancel')}>Cancel</button>`
+      : `<button type="button" class="automation-button automation-button--danger"
+          ${ACTION_ATTR}="delete:${e(section)}"
+          ${ROW_ID_ATTR}="${e(rule_id)}">Remove</button>`;
+
+  const matchesActionFocus = (
+    element: { getAttribute?: (name: string) => string | null } | null | undefined,
+    focus: AutomationActionFocus,
+  ): boolean => {
+    const action = element?.getAttribute?.(ACTION_ATTR);
+    const prefix = `${focus.verb}:${focus.section}`;
+    return element?.getAttribute?.(ROW_ID_ATTR) === focus.rule_id
+      && (action === prefix || action?.startsWith(`${prefix}:`) === true);
+  };
+
+  const findActionFocusTarget = (
+    focus: AutomationActionFocus,
+  ): HTMLElement | null => {
+    const candidates = routeRoot.querySelectorAll?.(
+      `[${ACTION_ATTR}][${ROW_ID_ATTR}]`,
+    );
+    if (candidates === undefined) return null;
+    const match = Array.from(candidates).find((candidate) =>
+      matchesActionFocus(candidate, focus));
+    return (match as HTMLElement | undefined) ?? null;
+  };
+
+  /** Internal view controls bypass the shell's route-switch work tracker. If
+   * one is activated while a row mutation owns the route, return focus to the
+   * semantic owner instead of letting a tab/filter repaint hide it. */
+  const focusPendingMutationOwner = (): void => {
+    const focus = pendingActionFocus
+      ?? Array.from(busyActions.values()).find((candidate) =>
+        busy.has(candidate.rule_id))
+      ?? null;
+    if (focus === null) return;
+    const owner = findActionFocusTarget(focus);
+    owner?.focus?.({ preventScroll: true });
+    owner?.scrollIntoView?.({ block: 'nearest' });
+  };
+
+  const deletionFallbackFocus = (
+    section: AutomationSectionKind,
+    rule_id: string,
+  ): AutomationActionFocus | null => {
+    const candidates = routeRoot.querySelectorAll?.(
+      `[${ACTION_ATTR}][${ROW_ID_ATTR}]`,
+    );
+    if (candidates === undefined) return null;
+    const buttons = (Array.from(candidates) as HTMLElement[]).filter((button) => {
+      const action = button.getAttribute?.(ACTION_ATTR);
+      return action === `delete:${section}`
+        || action === `delete-confirm:${section}`;
+    });
+    const removedIndex = buttons.findIndex(
+      (button) => button.getAttribute?.(ROW_ID_ATTR) === rule_id,
+    );
+    if (removedIndex < 0) return null;
+    const neighbor = buttons[removedIndex + 1] ?? buttons[removedIndex - 1];
+    const neighborId = neighbor?.getAttribute?.(ROW_ID_ATTR);
+    return neighborId === null || neighborId === undefined
+      ? null
+      : { verb: 'detail', section, rule_id: neighborId };
+  };
 
   const nameFor = (recipe_id: string): string =>
     recipeNames.get(recipe_id) ?? recipe_id;
@@ -872,6 +1107,11 @@ export const bootstrapAutomationRoute = (
         minChars: 0,
         initialValue: resolveRecipeSelection(),
         onChange: (selection) => {
+          if (busy.size > 0) {
+            recipePicker?.setValue(resolveRecipeSelection());
+            focusPendingMutationOwner();
+            return;
+          }
           recipeFilter = selection?.id ?? null;
           render();
         },
@@ -884,19 +1124,31 @@ export const bootstrapAutomationRoute = (
   // ── R21 create path — per-section "Add" → recipe picker → the shared
   // run-modal opened on the Schedule|Trigger tab. ──
   /** Which section's Add picker is disclosed (`triggers` / `schedules`). */
-  let addPickerFor: Extract<AutomationSectionToken, 'triggers' | 'schedules' | 'dishes'> | null =
-    null;
+  let addPickerFor: AutomationCreateSectionToken | null = null;
   let addPicker: RefPicker.RefPickerHandle | null = null;
-  /** Full recipe entries (the modal needs the recipe body) — lazy-loaded
-   *  on the first Add click. `[]` after a failed load (empty picker). */
+  /** Full recipe entries (the modal and Dishes config affordances need the
+   *  recipe body). Null is strictly "not loaded" — a failed read retains
+   *  provenance below instead of becoming a false empty inventory. */
   let recipeEntries: ServerRecipeListEntry[] | null = null;
+  let recipeEntriesError: string | null = null;
+  let recipeEntriesRequest: number | null = null;
+  let recipeEntriesRequestSeq = 0;
+  /** A focused Add/Retry owns the async replacement. Initial success moves
+   *  into the picker; retry success does the same, while failure returns to
+   *  Retry. Moving to another live control cancels that ownership. */
+  let pendingRecipeEntriesFocus: AutomationCreateSectionToken | null = null;
   let openModal: RunModal.RunModalHandle | null = null;
+  /** Add disclosure to restore after its modal closes. It remains armed
+   *  through the close-triggered re-list, unless the user moves elsewhere. */
+  let pendingModalReturnFocus:
+    | Extract<AutomationSectionToken, 'triggers' | 'schedules'>
+    | null = null;
   // D-179 — the auto-run config editor (the shared config-editor overlay).
   // Detached on close / route teardown.
   let autoRunConfigHandle: ConfigEditorOverlayHandle | null = null;
 
   const canCreate = (
-    section: Extract<AutomationSectionToken, 'triggers' | 'schedules' | 'dishes'>,
+    section: AutomationCreateSectionToken,
   ): boolean =>
     opts.recipeEntriesCaller !== undefined
     && (section === 'schedules'
@@ -909,26 +1161,35 @@ export const bootstrapAutomationRoute = (
         ? opts.dishesCreateCaller !== undefined
         : opts.triggersCreateCaller !== undefined);
 
-  const loadRecipeEntries = async (): Promise<void> => {
-    if (recipeEntries !== null || opts.recipeEntriesCaller === undefined) return;
-    try {
-      const { recipes } = await opts.recipeEntriesCaller();
-      if (disposed) return;
-      recipeEntries = recipes;
-    } catch {
-      if (disposed) return;
-      recipeEntries = [];
-    }
-    // Repaint if the Add picker is still disclosed — its first search may
-    // have run against the not-yet-loaded (empty) list and shown a false
-    // "no recipes match" (codex R21 LOW); the rewire re-searches.
-    //
-    // D-215 slice 4b — ALSO repaint for the Dishes section, which reads
-    // these entries to decide whether a row offers Config (the recipe
-    // declares the variables; the dish only stores values). Without this
-    // the button appeared only after some unrelated repaint — the load
-    // populated the list and nothing asked for a new paint.
-    if (addPickerFor !== null || activeSection === 'dishes') render();
+  const loadRecipeEntries = (explicitRetry = false): boolean => {
+    if (
+      recipeEntries !== null
+      || opts.recipeEntriesCaller === undefined
+      || recipeEntriesRequest !== null
+      // A background Dishes repaint must not turn a persistent failure into
+      // an unbounded retry loop. Only the visible Retry clears this gate.
+      || (!explicitRetry && recipeEntriesError !== null)
+    ) return false;
+
+    const request = ++recipeEntriesRequestSeq;
+    recipeEntriesRequest = request;
+    void (async () => {
+      try {
+        const { recipes } = await opts.recipeEntriesCaller!();
+        if (disposed || recipeEntriesRequest !== request) return;
+        recipeEntries = recipes;
+        recipeEntriesError = null;
+      } catch (error) {
+        if (disposed || recipeEntriesRequest !== request) return;
+        recipeEntriesError = messageForError(error);
+      }
+      if (recipeEntriesRequest !== request) return;
+      recipeEntriesRequest = null;
+      // Repaint an open Add disclosure, and the Dishes section whose Config
+      // affordances depend on recipe variable definitions.
+      if (addPickerFor !== null || activeSection === 'dishes') render();
+    })();
+    return true;
   };
 
   const allRecipeOptions = (): RefPicker.RefPickerOption[] =>
@@ -951,6 +1212,8 @@ export const bootstrapAutomationRoute = (
     tab: 'schedule' | 'trigger',
   ): void => {
     openModal?.destroy();
+    pendingModalReturnFocus = null;
+    const returnSection = tab === 'schedule' ? 'schedules' : 'triggers';
     const handle = RunModal.wireRunModal({
       recipe: entry,
       document: doc,
@@ -985,6 +1248,8 @@ export const bootstrapAutomationRoute = (
       onClose: () => {
         openModal?.destroy();
         openModal = null;
+        if (disposed) return;
+        pendingModalReturnFocus = returnSection;
         // The modal mutates rules — re-list so the section reflects them.
         void loadAll();
       },
@@ -996,7 +1261,7 @@ export const bootstrapAutomationRoute = (
   /** (Re-)attach the Add recipe picker after a paint, mirroring
    *  `mountRecipePicker`; torn down whenever the disclosure closes. */
   const mountAddPicker = (): void => {
-    if (addPickerFor === null) {
+    if (addPickerFor === null || recipeEntries === null) {
       addPicker?.destroy();
       addPicker = null;
       return;
@@ -1015,6 +1280,7 @@ export const bootstrapAutomationRoute = (
           if (entry === undefined) return;
           if (addPickerFor === 'dishes') {
             addPickerFor = null;
+            pendingRecipeEntriesFocus = null;
             const create = opts.dishesCreateCaller;
             if (create !== undefined) {
               // Named after the recipe by default — the owner renames it
@@ -1032,6 +1298,7 @@ export const bootstrapAutomationRoute = (
           }
           const tab = addPickerFor === 'schedules' ? 'schedule' : 'trigger';
           addPickerFor = null;
+          pendingRecipeEntriesFocus = null;
           openCreateModal(entry, tab);
           render();
         },
@@ -1079,6 +1346,8 @@ export const bootstrapAutomationRoute = (
         canDelete: true,
         canDetail: true,
         busy: busy.has(s.schedule_id),
+        busyVerb: busyVerbFor('schedule', s.schedule_id),
+        confirmingDelete: confirmingDeleteFor('schedule', s.schedule_id),
       });
     });
 
@@ -1151,20 +1420,44 @@ export const bootstrapAutomationRoute = (
    *  way. Rename is offered on a MANAGED dish too: `name` is a label, it
    *  changes no resolution, and the slice-0 guard leaves it writable on
    *  purpose (only `config_overlay` / `enabled` / `group_id` are frozen). */
-  /** D-215 slice 5 — load the open dish's history. Fire-and-forget with a
-   *  key check on paint: the detail can change while this is in flight. */
-  const loadDishHistory = async (dish_id: string): Promise<void> => {
+  /** D-215 slice 5 — load the open dish's history. A request identity is
+   *  required in addition to the dish id: the user can leave and reopen the
+   *  same detail while its prior read is still settling. */
+  const loadDishHistory = (dish_id: string): boolean => {
     const caller = opts.dishesHistoryCaller;
-    if (caller === undefined) return;
-    try {
-      const { runs } = await caller({ dish_id });
-      if (disposed || detailId !== dish_id || activeSection !== 'dishes') return;
-      dishHistory = { dish_id, runs };
-    } catch {
-      if (disposed || detailId !== dish_id) return;
-      dishHistory = { dish_id, runs: [] };
+    if (caller === undefined || dishHistoryRequest?.dish_id === dish_id) {
+      return false;
     }
-    render();
+    const request = { dish_id, seq: ++dishHistoryRequestSeq };
+    dishHistoryRequest = request;
+    void (async () => {
+      try {
+        const { runs } = await caller({ dish_id });
+        if (
+          disposed
+          || dishHistoryRequest !== request
+          || detailId !== dish_id
+          || activeSection !== 'dishes'
+        ) return;
+        dishHistory = { dish_id, runs };
+        dishHistoryError = null;
+      } catch (err) {
+        if (
+          disposed
+          || dishHistoryRequest !== request
+          || detailId !== dish_id
+          || activeSection !== 'dishes'
+        ) return;
+        dishHistory = null;
+        dishHistoryError = { dish_id, message: messageForError(err) };
+      } finally {
+        if (dishHistoryRequest !== request) return;
+        dishHistoryRequest = null;
+        if (disposed || detailId !== dish_id || activeSection !== 'dishes') return;
+        render();
+      }
+    })();
+    return true;
   };
 
   const dishRowExtra = (
@@ -1188,15 +1481,14 @@ export const bootstrapAutomationRoute = (
           ${ACTION_ATTR}="rename-cancel:dish" ${ROW_ID_ATTR}="${e(d.dish_id)}">Cancel</button>
       </div>`;
     }
-    const disabled = busy.has(d.dish_id) ? ' disabled' : '';
     const parts = [
       ctx.canConfigure
         ? `<button type="button" class="automation-button"
-             ${ACTION_ATTR}="configure:dish" ${ROW_ID_ATTR}="${e(d.dish_id)}"${disabled}>Config</button>`
+             ${ACTION_ATTR}="configure:dish" ${ROW_ID_ATTR}="${e(d.dish_id)}"${mutationBusyAttrs('dish', d.dish_id, 'configure')}>Config</button>`
         : '',
       ctx.canRename
         ? `<button type="button" class="automation-button"
-             ${ACTION_ATTR}="rename:dish" ${ROW_ID_ATTR}="${e(d.dish_id)}"${disabled}>Rename</button>`
+             ${ACTION_ATTR}="rename:dish" ${ROW_ID_ATTR}="${e(d.dish_id)}"${mutationBusyAttrs('dish', d.dish_id, 'rename')}>Rename</button>`
         : '',
       ctx.target.kind === 'owner'
         ? `<a class="recipes-inline-link"
@@ -1268,6 +1560,8 @@ export const bootstrapAutomationRoute = (
             renaming: renamingDishId === d.dish_id,
           }),
           busy: busy.has(d.dish_id),
+          busyVerb: busyVerbFor('dish', d.dish_id),
+          confirmingDelete: confirmingDeleteFor('dish', d.dish_id),
         });
       });
 
@@ -1320,6 +1614,8 @@ export const bootstrapAutomationRoute = (
         extra: pollStatusBlock(t),
         canDetail: true,
         busy: busy.has(t.trigger_id),
+        busyVerb: busyVerbFor('event_trigger', t.trigger_id),
+        confirmingDelete: confirmingDeleteFor('event_trigger', t.trigger_id),
       });
     });
 
@@ -1398,7 +1694,6 @@ export const bootstrapAutomationRoute = (
     watchesForTrigger(t)
       .map((w) => {
         const d = watchDisplay(w);
-        const isBusy = busy.has(w.watch_key);
         return `
           <div class="automation-poll" ${AUTOMATION_ROUTE_POLL_ATTR}="${e(w.watch_key)}" data-armed="${d.armed}">
             <span class="automation-poll-state" data-armed="${d.armed}">${e(d.stateLabel)}</span>
@@ -1406,11 +1701,13 @@ export const bootstrapAutomationRoute = (
             ${w.last_error ? `<span class="automation-row-error">${e(w.last_error)}</span>` : ''}
             <button type="button" class="automation-button automation-button--small"
               ${ACTION_ATTR}="toggle:watch:${!w.enabled ? 'on' : 'off'}"
-              ${ROW_ID_ATTR}="${e(w.watch_key)}"${isBusy ? ' disabled' : ''}>${e(d.toggleLabel)}</button>
+              ${ROW_ID_ATTR}="${e(w.watch_key)}"${mutationBusyAttrs('watch', w.watch_key, 'toggle')}>${e(
+                mutationToggleLabel('watch', w.watch_key, d.toggleLabel, !w.enabled),
+              )}</button>
             ${w.active && opts.watchRunNowCaller !== undefined
               ? `<button type="button" class="automation-button automation-button--small"
                   ${ACTION_ATTR}="run:watch"
-                  ${ROW_ID_ATTR}="${e(w.watch_key)}"${isBusy ? ' disabled' : ''}>Run now</button>`
+                  ${ROW_ID_ATTR}="${e(w.watch_key)}"${mutationBusyAttrs('watch', w.watch_key, 'run')}>${busyVerbFor('watch', w.watch_key) === 'run' ? 'Running…' : 'Run now'}</button>`
               : ''}
           </div>`;
       })
@@ -1462,6 +1759,8 @@ export const bootstrapAutomationRoute = (
           // than render a button that 409s.
           canRunNow: w.active && opts.watchRunNowCaller !== undefined,
           busy: busy.has(w.watch_key),
+          busyVerb: busyVerbFor('watch', w.watch_key),
+          confirmingDelete: false,
         });
       });
   };
@@ -1507,6 +1806,8 @@ export const bootstrapAutomationRoute = (
         canDelete: false,
         canDetail: true,
         busy: busy.has(a.recipe_id),
+        busyVerb: busyVerbFor('auto_run', a.recipe_id),
+        confirmingDelete: false,
       });
     });
 
@@ -1514,7 +1815,9 @@ export const bootstrapAutomationRoute = (
   // and lets the user change or clear it (× → the full cross-pack view).
   // The deep-link seeds it; the picker mutates `recipeFilter` in-memory.
   const filterBar = (): string => `
-    <div class="automation-filter">
+    <div class="automation-filter"${busy.size > 0
+      ? ' inert aria-disabled="true"'
+      : ''}>
       <span class="automation-filter-label">Filter by recipe</span>
       ${RefPicker.renderRefPicker(
         RefPicker.initialRefPickerState(resolveRecipeSelection()),
@@ -1573,6 +1876,17 @@ export const bootstrapAutomationRoute = (
     }
   };
 
+  const actionSectionForToken = (
+    token: AutomationSectionToken,
+  ): AutomationSectionKind => {
+    switch (token) {
+      case 'auto-run': return 'auto_run';
+      case 'triggers': return 'event_trigger';
+      case 'schedules': return 'schedule';
+      case 'dishes': return 'dish';
+    }
+  };
+
   const syncHash = (): void => {
     try {
       const hash = serializeShellRoute('automation', activeSection, detailId);
@@ -1597,6 +1911,7 @@ export const bootstrapAutomationRoute = (
         <button type="button" class="automation-subnav-tab" role="tab"
           ${AUTOMATION_ROUTE_SUBNAV_ATTR}="${token}"
           aria-selected="${activeSection === token ? 'true' : 'false'}"
+          ${busy.size > 0 ? 'aria-disabled="true"' : ''}
           data-active="${activeSection === token ? 'true' : 'false'}">
           ${e(SECTION_LABEL[token])}${loading ? '' : ` <span class="automation-subnav-count">${sectionCount(token)}</span>`}
         </button>`).join('')}
@@ -1608,25 +1923,52 @@ export const bootstrapAutomationRoute = (
    *  wired create caller; auto-run has no create (a recipe DECLARES
    *  auto_run — arming is the row toggle). */
   const sectionActions = (
-    section: Extract<AutomationSectionToken, 'triggers' | 'schedules' | 'dishes'>,
+    section: AutomationCreateSectionToken,
   ): string => {
-    if (!canCreate(section)) return '';
+    const addAvailable = canCreate(section);
     const open = addPickerFor === section;
+    // Dishes consumes the same inventory for Config buttons even when this
+    // host has no create caller. Surface a failed background read there so
+    // configuration does not silently disappear with no recovery path.
+    const showClosedDishesFailure =
+      section === 'dishes'
+      && recipeEntriesError !== null
+      && opts.recipeEntriesCaller !== undefined;
+    if (!addAvailable && !showClosedDishesFailure) return '';
+    const inventoryLoading = recipeEntriesRequest !== null;
+    const inventoryFailure = recipeEntriesError === null
+      ? ''
+      : `<div class="automation-load-error"
+          ${AUTOMATION_ROUTE_ADD_ERROR_ATTR}="${section}"
+          role="${inventoryLoading ? 'status' : 'alert'}">
+          <span>Could not load installed recipes: ${e(recipeEntriesError)}</span>
+          <button type="button" class="automation-button"
+            ${AUTOMATION_ROUTE_ADD_RETRY_ATTR}="${section}"
+            ${inventoryLoading ? 'aria-disabled="true" aria-busy="true"' : ''}>
+            ${inventoryLoading ? 'Retrying…' : 'Retry'}
+          </button>
+        </div>`;
     return `
       <div class="automation-section-actions">
-        <button type="button" class="automation-button"
-          ${AUTOMATION_ROUTE_ADD_ATTR}="${section}"
-          aria-expanded="${open ? 'true' : 'false'}">
-          ${section === 'schedules' ? 'Add schedule'
-            : section === 'dishes' ? 'Add dish'
-            : 'Add trigger'}
-        </button>
-        ${open
-          ? `<div class="automation-add-picker">${RefPicker.renderRefPicker(
-              RefPicker.initialRefPickerState(null),
-              ADD_PICKER_CONFIG,
-            )}</div>`
+        ${addAvailable
+          ? `<button type="button" class="automation-button"
+              ${AUTOMATION_ROUTE_ADD_ATTR}="${section}"
+              aria-expanded="${open ? 'true' : 'false'}">
+              ${section === 'schedules' ? 'Add schedule'
+                : section === 'dishes' ? 'Add dish'
+                : 'Add trigger'}
+            </button>`
           : ''}
+        ${open
+          ? recipeEntriesError !== null
+            ? inventoryFailure
+            : recipeEntries === null
+              ? '<p class="automation-section-hint" role="status">Loading installed recipes…</p>'
+              : `<div class="automation-add-picker">${RefPicker.renderRefPicker(
+                  RefPicker.initialRefPickerState(null),
+                  ADD_PICKER_CONFIG,
+                )}</div>`
+          : showClosedDishesFailure ? inventoryFailure : ''}
       </div>`;
   };
 
@@ -1636,6 +1978,8 @@ export const bootstrapAutomationRoute = (
       case 'auto-run':
         return renderSection({
           section: 'auto_run',
+          retryToken: 'auto-run',
+          retryable: opts.autoRunListCaller !== undefined,
           title: 'Auto-run',
           hint: 'Reactive recipes that tick on their own interval and decide each time whether to act.',
           rows: autoRunRows(),
@@ -1649,6 +1993,8 @@ export const bootstrapAutomationRoute = (
       case 'dishes':
         return renderSection({
           section: 'dish',
+          retryToken: 'dishes',
+          retryable: opts.dishesListCaller !== undefined,
           title: 'Dishes',
           hint: 'Every standing instance of a recipe — what is queued, what config it '
             + 'carries, and when it last ran. A dish minted BY a schedule / trigger / '
@@ -1667,6 +2013,10 @@ export const bootstrapAutomationRoute = (
       case 'triggers':
         return renderSection({
           section: 'event_trigger',
+          retryToken: 'triggers',
+          retryable: errors.triggers !== undefined
+            ? opts.triggersListCaller !== undefined
+            : opts.watchListCaller !== undefined,
           title: 'Triggers',
           hint: 'Recipes that fire when warehouse data changes (mail, calendar, files, '
             + 'contacts). Each row carries the poll loop feeding it, when one does — '
@@ -1685,6 +2035,8 @@ export const bootstrapAutomationRoute = (
       case 'schedules':
         return renderSection({
           section: 'schedule',
+          retryToken: 'schedules',
+          retryable: opts.schedulesListCaller !== undefined,
           title: 'Schedules',
           hint: 'Recurring recipes and pending one-time runs.',
           rows: scheduleRows(),
@@ -1711,12 +2063,15 @@ export const bootstrapAutomationRoute = (
       `<dl class="automation-detail-facts">${pairs
         .map(([k, v]) => `<dt>${e(k)}</dt><dd>${v}</dd>`)
         .join('')}</dl>`;
+    const heading = (content: string): string =>
+      `<h2 class="automation-section-title" tabindex="-1" `
+      + `${AUTOMATION_ROUTE_DETAIL_HEADING_ATTR}>${content}</h2>`;
     let body: string | null = null;
     if (activeSection === 'schedules') {
       const s = schedules.find((x) => x.schedule_id === detailId);
       if (s !== undefined) {
         body = `
-          <h2 class="automation-section-title"><a href="${e(recipeHref(s.recipe_id))}">${e(nameFor(s.recipe_id))}</a></h2>
+          ${heading(`<a href="${e(recipeHref(s.recipe_id))}">${e(nameFor(s.recipe_id))}</a>`)}
           ${facts([
             ['Cadence', scheduleCadence(s)],
             ['State', e(s.enabled ? 'On' : 'Paused')],
@@ -1725,16 +2080,31 @@ export const bootstrapAutomationRoute = (
           ])}
           ${s.last_error ? `<p class="automation-row-error">${e(s.last_error)}</p>` : ''}
           <div class="automation-row-actions">
-            <button type="button" class="automation-button" ${ACTION_ATTR}="toggle:schedule:${!s.enabled ? 'on' : 'off'}" ${ROW_ID_ATTR}="${e(s.schedule_id)}"${busy.has(s.schedule_id) ? ' disabled' : ''}>${s.enabled ? 'Pause' : 'Resume'}</button>
-            <button type="button" class="automation-button automation-button--danger" ${ACTION_ATTR}="delete:schedule" ${ROW_ID_ATTR}="${e(s.schedule_id)}"${busy.has(s.schedule_id) ? ' disabled' : ''}>Remove</button>
+            <button type="button" class="automation-button" ${ACTION_ATTR}="toggle:schedule:${!s.enabled ? 'on' : 'off'}" ${ROW_ID_ATTR}="${e(s.schedule_id)}"${mutationBusyAttrs('schedule', s.schedule_id, 'toggle')}>${e(mutationToggleLabel('schedule', s.schedule_id, s.enabled ? 'Pause' : 'Resume', !s.enabled))}</button>
+            ${renderDeleteButtons('schedule', s.schedule_id)}
           </div>`;
       }
     } else if (activeSection === 'dishes' && detailId !== null) {
       const d = dishes.find((x) => x.dish_id === detailId);
       const runs = dishHistory?.dish_id === detailId ? dishHistory.runs : null;
+      const historyError = dishHistoryError?.dish_id === detailId
+        ? dishHistoryError.message
+        : null;
+      const historyLoading = dishHistoryRequest?.dish_id === detailId;
       const historyBlock = opts.dishesHistoryCaller === undefined
         ? ''
-        : runs === null
+        : historyError !== null
+          ? `<div class="automation-load-error"
+              ${DISH_HISTORY_ERROR_ATTR}="${e(detailId)}"
+              role="${historyLoading ? 'status' : 'alert'}">
+              <span>Could not load run history: ${e(historyError)}</span>
+              <button type="button" class="automation-button"
+                ${DISH_HISTORY_RETRY_ATTR}="${e(detailId)}"
+                ${historyLoading ? 'aria-disabled="true" aria-busy="true"' : ''}>
+                ${historyLoading ? 'Retrying…' : 'Retry'}
+              </button>
+            </div>`
+          : runs === null
           ? '<p class="automation-empty">Loading history…</p>'
           : runs.length === 0
             ? '<p class="automation-empty">No runs recorded for this dish.</p>'
@@ -1752,7 +2122,7 @@ export const bootstrapAutomationRoute = (
       if (d !== undefined) {
         const origin = dishOrigin(d);
         body = `
-          <h2 class="automation-section-title"><a href="${e(recipeHref(d.recipe_id))}">${e(dishTitle(d))}</a></h2>
+          ${heading(`<a href="${e(recipeHref(d.recipe_id))}">${e(dishTitle(d))}</a>`)}
           ${facts([
             ['Origin', e(origin.label)],
             ['State', e(d.enabled ? 'On' : 'Paused')],
@@ -1769,7 +2139,7 @@ export const bootstrapAutomationRoute = (
         // the very next refresh. It must read as RETIRED, never as an error
         // and never as an empty state, because the history below is real.
         body = `
-          <h2 class="automation-section-title">Retired dish</h2>
+          ${heading('Retired dish')}
           <p class="automation-detail-note" ${DISH_RETIRED_ATTR}="${e(detailId)}">
             This dish no longer exists — a one-shot retires itself once it
             succeeds, and a config change replaces the dish it versioned.
@@ -1783,7 +2153,7 @@ export const bootstrapAutomationRoute = (
       if (t !== undefined) {
         const armed = t.enabled ? 'on' : t.last_error ? 'tripped' : 'off';
         body = `
-          <h2 class="automation-section-title"><a href="${e(recipeHref(t.recipe_id))}">${e(nameFor(t.recipe_id))}</a></h2>
+          ${heading(`<a href="${e(recipeHref(t.recipe_id))}">${e(nameFor(t.recipe_id))}</a>`)}
           ${facts([
             ['Pattern', `<code>${e(t.pattern)}</code>`],
             ['State', e(t.enabled ? 'On' : armed === 'tripped' ? 'Auto-disabled' : 'Paused')],
@@ -1796,8 +2166,8 @@ export const bootstrapAutomationRoute = (
           ${t.last_error ? `<p class="automation-row-error">${e(t.last_error)}</p>` : ''}
           ${pollStatusBlock(t)}
           <div class="automation-row-actions">
-            <button type="button" class="automation-button" ${ACTION_ATTR}="toggle:event_trigger:${!t.enabled ? 'on' : 'off'}" ${ROW_ID_ATTR}="${e(t.trigger_id)}"${busy.has(t.trigger_id) ? ' disabled' : ''}>${t.enabled ? 'Pause' : 'Resume'}</button>
-            ${t.origin === 'recipe' ? '' : `<button type="button" class="automation-button automation-button--danger" ${ACTION_ATTR}="delete:event_trigger" ${ROW_ID_ATTR}="${e(t.trigger_id)}"${busy.has(t.trigger_id) ? ' disabled' : ''}>Remove</button>`}
+            <button type="button" class="automation-button" ${ACTION_ATTR}="toggle:event_trigger:${!t.enabled ? 'on' : 'off'}" ${ROW_ID_ATTR}="${e(t.trigger_id)}"${mutationBusyAttrs('event_trigger', t.trigger_id, 'toggle')}>${e(mutationToggleLabel('event_trigger', t.trigger_id, t.enabled ? 'Pause' : 'Resume', !t.enabled))}</button>
+            ${t.origin === 'recipe' ? '' : renderDeleteButtons('event_trigger', t.trigger_id)}
           </div>`;
       }
     } else {
@@ -1805,7 +2175,7 @@ export const bootstrapAutomationRoute = (
       if (a !== undefined) {
         const tripped = a.enabled && a.auto_disabled;
         body = `
-          <h2 class="automation-section-title"><a href="${e(recipeHref(a.recipe_id))}">${e(a.recipe_name ?? a.recipe_id)}</a></h2>
+          ${heading(`<a href="${e(recipeHref(a.recipe_id))}">${e(a.recipe_name ?? a.recipe_id)}</a>`)}
           ${facts([
             ['Cadence', e(`every ${formatInterval(a.interval_ms)}${a.dynamic ? ' (dynamic)' : ''}`)],
             ['State', e(!a.enabled ? 'Paused' : tripped ? `Tripped (${a.consecutive_failures} failures)` : 'On')],
@@ -1815,9 +2185,9 @@ export const bootstrapAutomationRoute = (
           ${a.last_failure_reason ? `<p class="automation-row-error">${e(a.last_failure_reason)}</p>` : ''}
           <div class="automation-row-actions">
             ${a.enabled && !a.auto_disabled && Object.keys(a.variables ?? {}).length > 0
-              ? `<button type="button" class="automation-button" ${ACTION_ATTR}="configure:auto_run" ${ROW_ID_ATTR}="${e(a.recipe_id)}"${busy.has(a.recipe_id) ? ' disabled' : ''}>Configure</button>`
+              ? `<button type="button" class="automation-button" ${ACTION_ATTR}="configure:auto_run" ${ROW_ID_ATTR}="${e(a.recipe_id)}"${mutationBusyAttrs('auto_run', a.recipe_id, 'configure')}>Configure</button>`
               : ''}
-            <button type="button" class="automation-button" ${ACTION_ATTR}="toggle:auto_run:${!a.enabled || a.auto_disabled ? 'on' : 'off'}" ${ROW_ID_ATTR}="${e(a.recipe_id)}"${busy.has(a.recipe_id) ? ' disabled' : ''}>${!a.enabled ? 'Resume' : a.auto_disabled ? 'Re-arm' : 'Pause'}</button>
+            <button type="button" class="automation-button" ${ACTION_ATTR}="toggle:auto_run:${!a.enabled || a.auto_disabled ? 'on' : 'off'}" ${ROW_ID_ATTR}="${e(a.recipe_id)}"${mutationBusyAttrs('auto_run', a.recipe_id, 'toggle')}>${e(mutationToggleLabel('auto_run', a.recipe_id, !a.enabled ? 'Resume' : a.auto_disabled ? 'Re-arm' : 'Pause', !a.enabled || a.auto_disabled))}</button>
           </div>`;
       }
     }
@@ -1831,7 +2201,175 @@ export const bootstrapAutomationRoute = (
       </section>`;
   };
 
+  const focusRenderedDetailHeading = (): void => {
+    const heading = routeRoot.querySelector?.(
+      `[${AUTOMATION_ROUTE_DETAIL_HEADING_ATTR}]`,
+    ) as HTMLElement | null | undefined;
+    const fallback = routeRoot.querySelector?.(
+      '[data-recued-automation-back]',
+    ) as HTMLElement | null | undefined;
+    (heading ?? fallback)?.focus?.({ preventScroll: true });
+  };
+
   const render = (): void => {
+    // This route replaces every sub-nav button and native filter when state or
+    // async reads repaint it. Preserve ownership only when one of those controls
+    // currently has focus; otherwise activation detaches it and strands focus
+    // on <body>.
+    const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    const focusedRetryRaw = activeElement?.getAttribute?.(
+      AUTOMATION_ROUTE_RETRY_ATTR,
+    );
+    const focusedRetry = focusedRetryRaw !== null
+      && focusedRetryRaw !== undefined
+      && isAutomationSectionToken(focusedRetryRaw)
+        ? focusedRetryRaw
+        : null;
+    const focusedDishHistoryRetryRaw = activeElement?.getAttribute?.(
+      DISH_HISTORY_RETRY_ATTR,
+    );
+    const focusedDishHistoryRetry =
+      focusedDishHistoryRetryRaw !== null
+      && focusedDishHistoryRetryRaw !== undefined
+      && focusedDishHistoryRetryRaw.length > 0
+        ? focusedDishHistoryRetryRaw
+        : null;
+    const focusedRecipeEntriesRetryRaw = activeElement?.getAttribute?.(
+      AUTOMATION_ROUTE_ADD_RETRY_ATTR,
+    );
+    const focusedRecipeEntriesRetry =
+      focusedRecipeEntriesRetryRaw !== null
+      && focusedRecipeEntriesRetryRaw !== undefined
+      && isAutomationCreateSectionToken(focusedRecipeEntriesRetryRaw)
+        ? focusedRecipeEntriesRetryRaw
+        : null;
+    const focusedAddRaw = activeElement?.getAttribute?.(
+      AUTOMATION_ROUTE_ADD_ATTR,
+    );
+    const focusedAdd =
+      focusedAddRaw !== null
+      && focusedAddRaw !== undefined
+      && isAutomationCreateSectionToken(focusedAddRaw)
+        ? focusedAddRaw
+        : null;
+    const focusedAddPicker =
+      activeElement?.hasAttribute?.(RefPicker.REF_PICKER_INPUT_ATTR) === true
+      && activeElement.closest?.(
+        `[data-ref-picker="${ADD_PICKER_CONFIG.pickerId}"]`,
+      ) !== null;
+    if (pendingRetryFocus !== null) {
+      const liveOwnerMovedElsewhere =
+        activeElement !== null
+        && activeElement !== undefined
+        && activeElement !== doc.body
+        && activeElement.isConnected !== false
+        && focusedRetry !== pendingRetryFocus;
+      if (liveOwnerMovedElsewhere) pendingRetryFocus = null;
+    }
+    if (pendingDishHistoryRetryFocus !== null) {
+      const liveOwnerMovedElsewhere =
+        activeElement !== null
+        && activeElement !== undefined
+        && activeElement !== doc.body
+        && activeElement.isConnected !== false
+        && focusedDishHistoryRetry !== pendingDishHistoryRetryFocus;
+      if (liveOwnerMovedElsewhere) pendingDishHistoryRetryFocus = null;
+    }
+    if (pendingRecipeEntriesFocus !== null) {
+      const stillOwnsRequest =
+        focusedRecipeEntriesRetry === pendingRecipeEntriesFocus
+        || focusedAdd === pendingRecipeEntriesFocus
+        || (focusedAddPicker && addPickerFor === pendingRecipeEntriesFocus);
+      const liveOwnerMovedElsewhere =
+        activeElement !== null
+        && activeElement !== undefined
+        && activeElement !== doc.body
+        && activeElement.isConnected !== false
+        && !stillOwnsRequest;
+      if (
+        activeSection !== pendingRecipeEntriesFocus
+        || detailId !== null
+        || liveOwnerMovedElsewhere
+      ) pendingRecipeEntriesFocus = null;
+    }
+    if (pendingModalReturnFocus !== null) {
+      const focusedReturn =
+        activeElement?.getAttribute?.(AUTOMATION_ROUTE_ADD_ATTR)
+          === pendingModalReturnFocus;
+      const liveOwnerMovedElsewhere =
+        activeElement !== null
+        && activeElement !== undefined
+        && activeElement !== doc.body
+        && activeElement.isConnected !== false;
+      if (
+        activeSection !== pendingModalReturnFocus
+        || detailId !== null
+        || addPickerFor !== null
+        || (!focusedReturn && liveOwnerMovedElsewhere)
+      ) {
+        pendingModalReturnFocus = null;
+      }
+    }
+    const focusedDetailHeading = activeElement?.hasAttribute?.(
+      AUTOMATION_ROUTE_DETAIL_HEADING_ATTR,
+    ) === true;
+    if (
+      pendingActionFocus !== null
+      && activeElement !== null
+      && activeElement !== undefined
+      && activeElement !== doc.body
+      && !matchesActionFocus(activeElement, pendingActionFocus)
+    ) {
+      // Do not pull the user back to a completed mutation after they moved to
+      // another control while its RPC was in flight.
+      pendingActionFocus = null;
+      pendingActionFallbackFocus = null;
+    }
+    const focusedSectionRaw = activeElement?.getAttribute?.(
+      AUTOMATION_ROUTE_SUBNAV_ATTR,
+    );
+    const focusedSection = focusedSectionRaw !== null
+      && focusedSectionRaw !== undefined
+      && isAutomationSectionToken(focusedSectionRaw)
+        ? focusedSectionRaw
+        : null;
+    const focusedFilter = activeElement?.hasAttribute?.(
+      AUTOMATION_ROUTE_STATUS_FILTER_ATTR,
+    ) === true
+      ? 'status'
+      : activeElement?.hasAttribute?.(AUTOMATION_ROUTE_ORIGIN_FILTER_ATTR)
+        === true
+        ? 'origin'
+        : null;
+    const focusedPickerShell = activeElement?.closest?.('[data-ref-picker]');
+    const focusedPickerId = activeElement?.hasAttribute?.(
+      RefPicker.REF_PICKER_INPUT_ATTR,
+    ) === true
+      ? focusedPickerShell?.getAttribute?.('data-ref-picker')
+      : null;
+    const focusedRoutePickerId = focusedPickerId === RECIPE_PICKER_CONFIG.pickerId
+      || focusedPickerId === ADD_PICKER_CONFIG.pickerId
+        ? focusedPickerId
+        : null;
+    const focusedPickerHandle = focusedRoutePickerId === RECIPE_PICKER_CONFIG.pickerId
+      ? recipePicker
+      : focusedRoutePickerId === ADD_PICKER_CONFIG.pickerId
+        ? addPicker
+        : null;
+    const focusedPickerQuery = focusedRoutePickerId === null
+      ? null
+      : focusedPickerHandle?.getQuery()
+        ?? (activeElement as HTMLInputElement).value;
+    const focusedPickerCommittedLabel = focusedPickerHandle?.getValue()?.label ?? '';
+    const focusedPickerSelection = focusedRoutePickerId === null
+      ? null
+      : {
+          query: focusedPickerQuery !== focusedPickerCommittedLabel
+            ? focusedPickerQuery
+            : null,
+          start: (activeElement as HTMLInputElement).selectionStart,
+          end: (activeElement as HTMLInputElement).selectionEnd,
+        };
     routeRoot.innerHTML = `
       <header class="automation-header">
         <h1 class="automation-title" ${AUTOMATION_ROUTE_HEADING_ATTR}>Automation</h1>
@@ -1843,12 +2381,137 @@ export const bootstrapAutomationRoute = (
       ${subNav()}
       ${detailId !== null ? renderDetail() : `${filterBar()}${activeSectionHtml()}`}
     `;
+    if (focusedSection !== null) {
+      const replacement = routeRoot.querySelector(
+        `[${AUTOMATION_ROUTE_SUBNAV_ATTR}="${focusedSection}"]`,
+      ) as HTMLElement | null;
+      replacement?.focus?.({ preventScroll: true });
+    }
+    const retryFocus = pendingRetryFocus ?? focusedRetry;
+    if (retryFocus !== null) {
+      const replacement = routeRoot.querySelector?.(
+        `[${AUTOMATION_ROUTE_RETRY_ATTR}="${retryFocus}"]`,
+      ) as HTMLElement | null | undefined;
+      const fallback = routeRoot.querySelector?.(
+        `[${AUTOMATION_ROUTE_SUBNAV_ATTR}="${retryFocus}"]`,
+      ) as HTMLElement | null | undefined;
+      (replacement ?? (!loading ? fallback : null))
+        ?.focus?.({ preventScroll: true });
+    }
+    const dishHistoryRetryFocus = pendingDishHistoryRetryFocus
+      ?? focusedDishHistoryRetry;
+    if (dishHistoryRetryFocus !== null) {
+      const replacement = routeRoot.querySelector?.(
+        `[${DISH_HISTORY_RETRY_ATTR}="${dishHistoryRetryFocus}"]`,
+      ) as HTMLElement | null | undefined;
+      const historyStillLoading =
+        dishHistoryRequest?.dish_id === dishHistoryRetryFocus;
+      const fallback = routeRoot.querySelector?.(
+        `[${AUTOMATION_ROUTE_DETAIL_HEADING_ATTR}]`,
+      ) as HTMLElement | null | undefined;
+      (replacement ?? (!historyStillLoading ? fallback : null))
+        ?.focus?.({ preventScroll: true });
+      if (!historyStillLoading) pendingDishHistoryRetryFocus = null;
+    }
+    if (focusedFilter !== null) {
+      const attr = focusedFilter === 'status'
+        ? AUTOMATION_ROUTE_STATUS_FILTER_ATTR
+        : AUTOMATION_ROUTE_ORIGIN_FILTER_ATTR;
+      const replacement = routeRoot.querySelector(
+        `[${attr}]`,
+      ) as HTMLElement | null;
+      replacement?.focus?.({ preventScroll: true });
+    }
+    if (pendingActionFocus !== null) {
+      const replacement = findActionFocusTarget(pendingActionFocus)
+        ?? (busy.has(pendingActionFocus.rule_id)
+          || pendingActionFallbackFocus === null
+          ? null
+          : findActionFocusTarget(pendingActionFallbackFocus));
+      const fallback = routeRoot.querySelector?.(
+        `[${AUTOMATION_ROUTE_SUBNAV_ATTR}="${activeSection}"]`,
+      ) as HTMLElement | null | undefined;
+      (replacement ?? (busy.has(pendingActionFocus.rule_id) ? null : fallback))
+        ?.focus?.({ preventScroll: true });
+    }
+    if (focusedDetailHeading) focusRenderedDetailHeading();
     if (detailId === null) {
       // (Re-)attach the recipe-filter combobox to the freshly-painted shell.
       mountRecipePicker();
       // (Re-)attach / tear down the Add recipe picker (R21 create path).
       mountAddPicker();
+      if (focusedRoutePickerId !== null) {
+        const replacementHandle = focusedRoutePickerId === RECIPE_PICKER_CONFIG.pickerId
+          ? recipePicker
+          : addPicker;
+        const replacement = routeRoot.querySelector?.(
+          `[data-ref-picker="${focusedRoutePickerId}"] `
+          + `[${RefPicker.REF_PICKER_INPUT_ATTR}]`,
+        ) as HTMLInputElement | null | undefined;
+        if (
+          focusedPickerSelection !== null
+          && focusedPickerSelection.query !== null
+        ) {
+          replacementHandle?.setQuery(focusedPickerSelection.query);
+        }
+        replacement?.focus?.({ preventScroll: true });
+        if (
+          focusedPickerSelection !== null
+          && focusedPickerSelection.start !== null
+          && focusedPickerSelection.end !== null
+        ) {
+          replacement?.setSelectionRange?.(
+            focusedPickerSelection.start,
+            focusedPickerSelection.end,
+          );
+        }
+      }
+      const recipeEntriesFocus = pendingRecipeEntriesFocus
+        ?? focusedRecipeEntriesRetry;
+      if (recipeEntriesFocus !== null && activeSection === recipeEntriesFocus) {
+        const retry = routeRoot.querySelector?.(
+          `[${AUTOMATION_ROUTE_ADD_RETRY_ATTR}="${recipeEntriesFocus}"]`,
+        ) as HTMLElement | null | undefined;
+        const add = routeRoot.querySelector?.(
+          `[${AUTOMATION_ROUTE_ADD_ATTR}="${recipeEntriesFocus}"]`,
+        ) as HTMLElement | null | undefined;
+        const picker = routeRoot.querySelector?.(
+          `[data-ref-picker="${ADD_PICKER_CONFIG.pickerId}"] `
+          + `[${RefPicker.REF_PICKER_INPUT_ATTR}]`,
+        ) as HTMLElement | null | undefined;
+        const tab = routeRoot.querySelector?.(
+          `[${AUTOMATION_ROUTE_SUBNAV_ATTR}="${recipeEntriesFocus}"]`,
+        ) as HTMLElement | null | undefined;
+        const replacement = recipeEntriesError !== null
+          ? retry
+          : addPickerFor === recipeEntriesFocus && recipeEntries !== null
+            ? picker
+            : addPickerFor === recipeEntriesFocus
+              ? add
+              : add ?? tab;
+        replacement?.focus?.({ preventScroll: true });
+        if (
+          pendingRecipeEntriesFocus !== null
+          && (
+            recipeEntriesRequest === null
+            || (addPickerFor !== recipeEntriesFocus && recipeEntriesError === null)
+          )
+        ) pendingRecipeEntriesFocus = null;
+      }
     }
+    if (pendingModalReturnFocus !== null) {
+      const replacement = routeRoot.querySelector?.(
+        `[${AUTOMATION_ROUTE_ADD_ATTR}="${pendingModalReturnFocus}"]`,
+      ) as HTMLElement | null | undefined;
+      const fallback = routeRoot.querySelector?.(
+        `[${AUTOMATION_ROUTE_SUBNAV_ATTR}="${pendingModalReturnFocus}"]`,
+      ) as HTMLElement | null | undefined;
+      (replacement ?? fallback)?.focus?.({ preventScroll: true });
+      if (!loading && (replacement ?? fallback) != null) {
+        pendingModalReturnFocus = null;
+      }
+    }
+    if (!loading && pendingRetryFocus !== null) pendingRetryFocus = null;
   };
 
   const loadAll = async (): Promise<void> => {
@@ -1983,8 +2646,30 @@ export const bootstrapAutomationRoute = (
         }
       }
     }
+    if (
+      deleteConfirmation !== null
+      && !automationRuleExists(
+        deleteConfirmation.section,
+        deleteConfirmation.rule_id,
+      )
+    ) {
+      deleteConfirmation = null;
+    }
     errors = next;
     loading = false;
+    if (
+      activeSection === 'dishes'
+      && detailId !== null
+      && opts.dishesHistoryCaller !== undefined
+      && dishHistory?.dish_id !== detailId
+      && dishHistoryError?.dish_id !== detailId
+      && dishHistoryRequest?.dish_id !== detailId
+    ) {
+      // A URL can mount directly at #automation/dishes/<id>; unlike an
+      // in-page Details click, that path has no click handler to start the
+      // additive history read after the dish list resolves.
+      loadDishHistory(detailId);
+    }
     render();
   };
 
@@ -1992,7 +2677,16 @@ export const bootstrapAutomationRoute = (
     rule_id: string,
     section: AutomationSectionKind,
     mutate: () => Promise<unknown>,
+    focus?: AutomationActionFocus,
+    fallbackFocus?: AutomationActionFocus | null,
+    action?: AutomationActionFocus,
   ): Promise<void> => {
+    if (busy.has(rule_id)) return;
+    if (focus !== undefined) {
+      pendingActionFocus = focus;
+      pendingActionFallbackFocus = fallbackFocus ?? null;
+    }
+    if (action !== undefined) busyActions.set(rule_id, action);
     busy.add(rule_id);
     render();
     try {
@@ -2004,12 +2698,23 @@ export const bootstrapAutomationRoute = (
         ...mutationErrors,
         [sectionErrorKey(section)]: messageForError(err),
       };
-    } finally {
-      busy.delete(rule_id);
     }
     // Re-list either way — on failure the fresh list shows the
-    // authoritative state next to the preserved mutation error.
-    await loadAll();
+    // authoritative state next to the preserved mutation error. The action
+    // remains busy through this reconciliation; an acknowledged write is not
+    // finished from the user's perspective until its authoritative row is
+    // back on screen.
+    try {
+      await loadAll();
+    } finally {
+      busy.delete(rule_id);
+      busyActions.delete(rule_id);
+      if (!disposed) render();
+      if (pendingActionFocus === focus) {
+        pendingActionFocus = null;
+        pendingActionFallbackFocus = null;
+      }
+    }
   };
 
   // D-179 — the auto-run config editor. Renders the recipe's variable
@@ -2122,16 +2827,18 @@ export const bootstrapAutomationRoute = (
     section: AutomationSectionKind,
     rule_id: string,
     enabled: boolean,
+    focus?: AutomationActionFocus,
   ): void => {
+    const action = { verb: 'toggle', section, rule_id } satisfies AutomationActionFocus;
     if (section === 'schedule' && opts.schedulesUpdateCaller) {
       void runMutation(rule_id, section, () =>
-        opts.schedulesUpdateCaller!({ schedule_id: rule_id, enabled }));
+        opts.schedulesUpdateCaller!({ schedule_id: rule_id, enabled }), focus, undefined, action);
     } else if (section === 'event_trigger' && opts.triggersUpdateCaller) {
       void runMutation(rule_id, section, () =>
-        opts.triggersUpdateCaller!({ trigger_id: rule_id, enabled }));
+        opts.triggersUpdateCaller!({ trigger_id: rule_id, enabled }), focus, undefined, action);
     } else if (section === 'watch' && opts.watchUpdateCaller) {
       void runMutation(rule_id, section, () =>
-        opts.watchUpdateCaller!({ watch_key: rule_id, enabled }));
+        opts.watchUpdateCaller!({ watch_key: rule_id, enabled }), focus, undefined, action);
     } else if (section === 'dish') {
       // D-215 slice 4 — route by write target, never by "it's a dish".
       const d = dishes.find((x) => x.dish_id === rule_id);
@@ -2139,13 +2846,13 @@ export const bootstrapAutomationRoute = (
       const target = dishWriteTarget(d);
       if (target.kind === 'own' && opts.dishesUpdateCaller) {
         void runMutation(rule_id, section, () =>
-          opts.dishesUpdateCaller!({ dish_id: rule_id, enabled }));
+          opts.dishesUpdateCaller!({ dish_id: rule_id, enabled }), focus, undefined, action);
       } else if (target.kind === 'one_shot' && opts.schedulesUpdateCaller) {
         // The § 3 exception: inline for the OWNER, but the write lands on
         // the schedule — `dishes.update` would be refused by the slice-0
         // guard, and rightly so.
         void runMutation(rule_id, section, () =>
-          opts.schedulesUpdateCaller!({ schedule_id: target.schedule_id, enabled }));
+          opts.schedulesUpdateCaller!({ schedule_id: target.schedule_id, enabled }), focus, undefined, action);
       }
     } else if (section === 'auto_run' && opts.autoRunUpdateCaller) {
       const entry = autoRun.find((a) => a.recipe_id === rule_id);
@@ -2157,31 +2864,67 @@ export const bootstrapAutomationRoute = (
         return;
       }
       void runMutation(rule_id, section, () =>
-        opts.autoRunUpdateCaller!({ recipe_id: rule_id, enabled }));
+        opts.autoRunUpdateCaller!({ recipe_id: rule_id, enabled }), focus, undefined, action);
     }
   };
 
-  const onRunNow = (section: AutomationSectionKind, rule_id: string): void => {
+  const onRunNow = (
+    section: AutomationSectionKind,
+    rule_id: string,
+    focus?: AutomationActionFocus,
+  ): void => {
     if (section === 'watch' && opts.watchRunNowCaller) {
       void runMutation(rule_id, section, () =>
-        opts.watchRunNowCaller!({ watch_key: rule_id }));
+        opts.watchRunNowCaller!({ watch_key: rule_id }), focus, undefined, {
+          verb: 'run', section, rule_id,
+        });
     }
   };
 
-  const onDelete = (section: AutomationSectionKind, rule_id: string): void => {
+  const onDelete = (
+    section: AutomationSectionKind,
+    rule_id: string,
+    focus?: AutomationActionFocus,
+  ): void => {
+    const action = {
+      verb: focus?.verb ?? 'delete-confirm',
+      section,
+      rule_id,
+    } satisfies AutomationActionFocus;
+    const fallbackFocus = focus === undefined
+      ? undefined
+      : deletionFallbackFocus(section, rule_id);
     if (section === 'schedule' && opts.schedulesDeleteCaller) {
-      void runMutation(rule_id, section, () =>
-        opts.schedulesDeleteCaller!({ schedule_id: rule_id }));
+      void runMutation(
+        rule_id,
+        section,
+        () => opts.schedulesDeleteCaller!({ schedule_id: rule_id }),
+        focus,
+        fallbackFocus,
+        action,
+      );
     } else if (section === 'event_trigger' && opts.triggersDeleteCaller) {
-      void runMutation(rule_id, section, () =>
-        opts.triggersDeleteCaller!({ trigger_id: rule_id }));
+      void runMutation(
+        rule_id,
+        section,
+        () => opts.triggersDeleteCaller!({ trigger_id: rule_id }),
+        focus,
+        fallbackFocus,
+        action,
+      );
     } else if (section === 'dish') {
       const d = dishes.find((x) => x.dish_id === rule_id);
       if (d === undefined) return;
       const target = dishWriteTarget(d);
       if (target.kind === 'own' && opts.dishesDeleteCaller) {
-        void runMutation(rule_id, section, () =>
-          opts.dishesDeleteCaller!({ dish_id: rule_id }));
+        void runMutation(
+          rule_id,
+          section,
+          () => opts.dishesDeleteCaller!({ dish_id: rule_id }),
+          focus,
+          fallbackFocus,
+          action,
+        );
       } else if (target.kind === 'one_shot' && opts.schedulesDeleteCaller) {
         // D-215 § 5.2 — THE DISPOSAL PATH for a retained one-shot (an
         // errored or skipped fire is kept, disabled, and cleared BY HAND).
@@ -2189,21 +2932,98 @@ export const bootstrapAutomationRoute = (
         // drops the row and dissolves the dish behind it. Calling
         // `dishes.delete` here would be refused by the slice-0 guard AND
         // would orphan the schedule if it were not.
-        void runMutation(rule_id, section, () =>
-          opts.schedulesDeleteCaller!({ schedule_id: target.schedule_id }));
+        void runMutation(
+          rule_id,
+          section,
+          () => opts.schedulesDeleteCaller!({ schedule_id: target.schedule_id }),
+          focus,
+          fallbackFocus,
+          action,
+        );
       }
     }
   };
 
   const onClick = (ev: Event): void => {
+    const dishHistoryRetryButton = (ev.target as (Element & {
+      closest?: (selector: string) => Element | null;
+    }) | null)?.closest?.(`[${DISH_HISTORY_RETRY_ATTR}]`) as
+      | HTMLElement
+      | null
+      | undefined;
+    if (dishHistoryRetryButton) {
+      const dishId = dishHistoryRetryButton.getAttribute(
+        DISH_HISTORY_RETRY_ATTR,
+      );
+      if (
+        dishId === null
+        || activeSection !== 'dishes'
+        || detailId !== dishId
+        || dishHistoryRequest?.dish_id === dishId
+      ) return;
+      pendingDishHistoryRetryFocus =
+        doc.activeElement === dishHistoryRetryButton ? dishId : null;
+      if (loadDishHistory(dishId)) render();
+      return;
+    }
+    const recipeEntriesRetryButton = (ev.target as (Element & {
+      closest?: (selector: string) => Element | null;
+    }) | null)?.closest?.(`[${AUTOMATION_ROUTE_ADD_RETRY_ATTR}]`) as
+      | HTMLElement
+      | null
+      | undefined;
+    if (recipeEntriesRetryButton) {
+      const section = recipeEntriesRetryButton.getAttribute(
+        AUTOMATION_ROUTE_ADD_RETRY_ATTR,
+      );
+      if (
+        section === null
+        || !isAutomationCreateSectionToken(section)
+        || activeSection !== section
+        || recipeEntriesError === null
+        || recipeEntriesRequest !== null
+      ) return;
+      pendingRecipeEntriesFocus =
+        doc.activeElement === recipeEntriesRetryButton ? section : null;
+      if (loadRecipeEntries(true)) render();
+      return;
+    }
+    const retryButton = (ev.target as (Element & {
+      closest?: (selector: string) => Element | null;
+    }) | null)?.closest?.(`[${AUTOMATION_ROUTE_RETRY_ATTR}]`) as
+      | HTMLElement
+      | null
+      | undefined;
+    if (retryButton) {
+      const token = retryButton.getAttribute(AUTOMATION_ROUTE_RETRY_ATTR);
+      if (token === null || !isAutomationSectionToken(token) || loading) return;
+      pendingRetryFocus = doc.activeElement === retryButton ? token : null;
+      void loadAll();
+      return;
+    }
     // R21 detail — the back button returns to the section list.
     const backButton = (ev.target as (Element & {
       closest?: (selector: string) => Element | null;
     }) | null)?.closest?.('[data-recued-automation-back]');
     if (backButton) {
+      const returnFocus = detailId === null
+        ? null
+        : {
+            verb: 'detail',
+            section: actionSectionForToken(activeSection),
+            rule_id: detailId,
+          } satisfies AutomationActionFocus;
       detailId = null;
+      pendingDishHistoryRetryFocus = null;
       syncHash();
       render();
+      const replacement = returnFocus === null
+        ? null
+        : findActionFocusTarget(returnFocus);
+      const fallback = routeRoot.querySelector?.(
+        `[${AUTOMATION_ROUTE_SUBNAV_ATTR}="${activeSection}"]`,
+      ) as HTMLElement | null | undefined;
+      (replacement ?? fallback)?.focus?.({ preventScroll: true });
       return;
     }
     // R21 create path — the per-section Add disclosure.
@@ -2213,9 +3033,35 @@ export const bootstrapAutomationRoute = (
     if (add) {
       const section = add.getAttribute(AUTOMATION_ROUTE_ADD_ATTR);
       if (section === 'triggers' || section === 'schedules' || section === 'dishes') {
-        addPickerFor = addPickerFor === section ? null : section;
+        const opening = addPickerFor !== section;
+        addPickerFor = opening ? section : null;
+        pendingRecipeEntriesFocus =
+          opening && recipeEntries === null && doc.activeElement === add
+            ? section
+            : null;
         if (addPickerFor !== null) void loadRecipeEntries();
         render();
+        // `render()` replaces both the disclosure button and, when opening,
+        // introduces a new combobox. Keep the keyboard path continuous:
+        // enter the disclosed picker, or return to the replacement toggle
+        // when the user closes it.
+        const focusTarget = opening
+          ? recipeEntriesError !== null
+            ? routeRoot.querySelector?.(
+                `[${AUTOMATION_ROUTE_ADD_RETRY_ATTR}="${section}"]`,
+              )
+            : recipeEntries !== null
+              ? routeRoot.querySelector?.(
+                  `[data-ref-picker="${ADD_PICKER_CONFIG.pickerId}"] `
+                  + `[${RefPicker.REF_PICKER_INPUT_ATTR}]`,
+                )
+              : routeRoot.querySelector?.(
+                  `[${AUTOMATION_ROUTE_ADD_ATTR}="${section}"]`,
+                )
+          : routeRoot.querySelector?.(
+              `[${AUTOMATION_ROUTE_ADD_ATTR}="${section}"]`,
+            );
+        (focusTarget as HTMLElement | null | undefined)?.focus?.({ preventScroll: true });
       }
       return;
     }
@@ -2224,6 +3070,10 @@ export const bootstrapAutomationRoute = (
       closest?: (selector: string) => Element | null;
     }) | null)?.closest?.(`[${AUTOMATION_ROUTE_SUBNAV_ATTR}]`);
     if (tab) {
+      if (busy.size > 0) {
+        focusPendingMutationOwner();
+        return;
+      }
       const token = tab.getAttribute(AUTOMATION_ROUTE_SUBNAV_ATTR);
       if (token !== null && isAutomationSectionToken(token) && token !== activeSection) {
         activeSection = token;
@@ -2232,7 +3082,11 @@ export const bootstrapAutomationRoute = (
         // state — returning later shouldn't resurrect it; codex R21 LOW),
         // and supersedes a pending legacy auto-pick.
         detailId = null;
+        pendingDishHistoryRetryFocus = null;
+        pendingRecipeEntriesFocus = null;
         addPickerFor = null;
+        deleteConfirmation = null;
+        pendingModalReturnFocus = null;
         sectionAutoPickPending = false;
         syncHash();
         render();
@@ -2256,15 +3110,51 @@ export const bootstrapAutomationRoute = (
       detailId = ruleId;
       if (section === 'dish') {
         dishHistory = null;
-        void loadDishHistory(ruleId);
+        dishHistoryError = null;
+        pendingDishHistoryRetryFocus = null;
+        loadDishHistory(ruleId);
       }
       syncHash();
       render();
+      focusRenderedDetailHeading();
       return;
     }
     if (busy.has(ruleId)) return;
     if (verb === 'toggle') {
-      onToggle(section, ruleId, to === 'on');
+      onToggle(section, ruleId, to === 'on', doc.activeElement === target
+        ? { verb, section, rule_id: ruleId }
+        : undefined);
+    } else if (verb === 'delete') {
+      if (!automationRuleExists(section, ruleId)) return;
+      deleteConfirmation = { section, rule_id: ruleId };
+      render();
+      const confirm = findActionFocusTarget({
+        verb: 'delete-confirm',
+        section,
+        rule_id: ruleId,
+      });
+      confirm?.focus?.({ preventScroll: true });
+      confirm?.scrollIntoView?.({ block: 'nearest' });
+    } else if (verb === 'delete-cancel') {
+      if (!confirmingDeleteFor(section, ruleId)) return;
+      deleteConfirmation = null;
+      render();
+      const remove = findActionFocusTarget({
+        verb: 'delete',
+        section,
+        rule_id: ruleId,
+      });
+      remove?.focus?.({ preventScroll: true });
+      remove?.scrollIntoView?.({ block: 'nearest' });
+    } else if (verb === 'delete-confirm') {
+      if (!confirmingDeleteFor(section, ruleId)) return;
+      onDelete(
+        section,
+        ruleId,
+        doc.activeElement === target
+          ? { verb, section, rule_id: ruleId }
+          : undefined,
+      );
     } else if (verb === 'rename' && section === 'dish') {
       renamingDishId = ruleId;
       render();
@@ -2296,9 +3186,9 @@ export const bootstrapAutomationRoute = (
       const entry = autoRun.find((a) => a.recipe_id === ruleId);
       if (entry) openAutoRunConfigModal(entry, 'edit');
     } else if (verb === 'run') {
-      onRunNow(section, ruleId);
-    } else if (verb === 'delete') {
-      onDelete(section, ruleId);
+      onRunNow(section, ruleId, doc.activeElement === target
+        ? { verb, section, rule_id: ruleId }
+        : undefined);
     }
   };
 
@@ -2307,6 +3197,10 @@ export const bootstrapAutomationRoute = (
   const onFilterChange = (ev: Event): void => {
     const target = ev.target as (Element & { value?: string }) | null;
     if (target === null || typeof target.hasAttribute !== 'function') return;
+    if (busy.size > 0) {
+      focusPendingMutationOwner();
+      return;
+    }
     if (target.hasAttribute(AUTOMATION_ROUTE_STATUS_FILTER_ATTR)) {
       const v = target.value ?? 'all';
       statusFilter =
@@ -2341,6 +3235,10 @@ export const bootstrapAutomationRoute = (
 
   render();
   const initialLoad = loadAll();
+  const hasAutomationInFlightWork = (): boolean =>
+    busy.size > 0
+    || openModal?.hasInFlightWork() === true
+    || autoRunConfigHandle?.hasInFlightWork() === true;
 
   return {
     getSchedules: () => schedules,
@@ -2354,6 +3252,11 @@ export const bootstrapAutomationRoute = (
     getMutationErrors: () => mutationErrors,
     refresh: () => loadAll(),
     whenLoaded: () => initialLoad,
+    hasInFlightWork: hasAutomationInFlightWork,
+    inFlightWorkPrompt: () =>
+      hasAutomationInFlightWork()
+        ? 'An automation action is still in progress. Leave Automation anyway?'
+        : null,
     dispose: () => {
       if (disposed) return;
       disposed = true;

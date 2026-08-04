@@ -133,6 +133,12 @@ export interface CatalogIngredientView {
   ingredient_id: string;
   name: string;
   operations: CatalogOperationView[];
+  /** The AUTHORED slug of the pack that installed this ingredient, when the
+   *  server resolved one from its inventory. Grant surfaces filter a pack's
+   *  slice of the op universe with it; the manifest-derived composition slug is
+   *  only a fallback, and it is WRONG for a Records pack, whose catalog
+   *  registers under a content-addressed `records-<hash>` id. */
+  pack_slug?: string;
   /** The ingredient's `IngredientKind` (from the manifest). Grant surfaces read
    *  it to ROUTE a per-op toggle to the right authority store: a `cli` op's
    *  admission is the SEPARATE `cli_reachability` allowlist (fail-closed), NOT

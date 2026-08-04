@@ -11,8 +11,10 @@
  *  widened with `innerHTML` / `contains` / `querySelector`). */
 
 import { describe, expect, it, vi } from 'vitest';
+import type { FoundationalOAuthEnv } from '../connections/foundational-oauth-popup.js';
 
 import {
+  type ConnectionsCompleteVendorOAuthCaller,
   mountConnectionsEnrollPanel,
   type ConnectionsEnrollListCaller,
   type ConnectionsEnrollCaller,
@@ -586,6 +588,8 @@ interface MountOpts {
   copyText?: (value: string) => Promise<void>;
   runPacksList?: () => Promise<{ packs: ReadonlyArray<PackListEntry> }>;
   oauth?: {
+    runComplete?: ConnectionsCompleteVendorOAuthCaller;
+    foundationalEnv?: FoundationalOAuthEnv;
     env?: VendorOAuthBrowserEnv;
     subscribe?: BroadcastSubscriber['on'];
     runStart?: ConnectionsStartVendorOAuthCaller;
@@ -805,6 +809,12 @@ const mountPanel = (opts: MountOpts = {}) => {
       : {}),
     ...(opts.oauth?.subscribe !== undefined ? { subscribe: opts.oauth.subscribe } : {}),
     ...(opts.oauth?.env !== undefined ? { oauthEnv: opts.oauth.env } : {}),
+    ...(opts.oauth?.runComplete !== undefined
+      ? { runCompleteVendorOAuth: opts.oauth.runComplete }
+      : {}),
+    ...(opts.oauth?.foundationalEnv !== undefined
+      ? { foundationalOAuthEnv: opts.oauth.foundationalEnv }
+      : {}),
     ...(opts.runPacksList !== undefined ? { runPacksList: opts.runPacksList } : {}),
   });
 
@@ -1230,6 +1240,207 @@ describe('D-165 P3 connections enrollment panel — add flow', () => {
     // Field absent → start passes nothing → the server computes the union (A).
     expect(mount.getState().dialog.values['auth.scopes']).toBeUndefined();
     mount.dispose();
+  });
+
+  it('surfaces and retries a failed pack-context read', async () => {
+    let packReads = 0;
+    const hubspotPack = {
+      slug: 'hubspot-workflows',
+      installed: true,
+      manifest: {
+        manifest_version: 2,
+        artifact_type: 'pack',
+        slug: 'hubspot-workflows',
+        publisher: 'recued-core',
+        version: 1,
+        contents: [{
+          type: 'composition',
+          composition: {
+            schema_version: 1,
+            slug: 'hubspot-catalog',
+            ingredients: [{
+              slug: 'hubspot-catalog',
+              kind: 'http',
+              http: {
+                base: 'https://api.hubapi.com',
+                connection: 'hubspot',
+              },
+            }],
+            operations: [{
+              op: 'deal.create',
+              ingredient: 'hubspot-catalog',
+              risk: 'write',
+              approval: 'never',
+              required_scopes: ['crm.objects.deals.write'],
+              bind: { method: 'POST', path: '/deals' },
+            }],
+          },
+        }],
+      },
+    } as unknown as PackListEntry;
+    const panel = mountPanel({
+      connections: [connection('hubspot-work', {
+        vendor: 'hubspot',
+        granted_scopes: ['crm.objects.deals.read'],
+        bound_pack_slugs: ['hubspot-workflows'],
+      })],
+      runPacksList: async () => {
+        packReads += 1;
+        if (packReads === 1) throw new Error('pack inventory unavailable');
+        return { packs: [hubspotPack] };
+      },
+    });
+    await panel.mount.whenLoaded();
+
+    expect(packReads).toBe(1);
+    expect(panel.getHtml()).toContain('data-connections-pack-inventory="error"');
+    expect(panel.getHtml()).toContain('Pack context unavailable');
+
+    panel.click({ action: 'connections-retry-pack-context' });
+    await tick();
+
+    expect(packReads).toBe(2);
+    expect(panel.getHtml()).not.toContain('data-connections-pack-inventory');
+    expect(panel.getHtml()).toContain('Used by packs');
+    expect(panel.getHtml()).toContain('hubspot-workflows');
+    panel.mount.dispose();
+  });
+
+  it('serializes live pack-context refreshes and drops the stale middle roster', async () => {
+    const pack = (slug: string): PackListEntry => ({
+      slug,
+      installed: true,
+      manifest: {
+        manifest_version: 2,
+        artifact_type: 'pack',
+        slug,
+        publisher: 'recued-core',
+        version: 1,
+        contents: [{
+          type: 'composition',
+          composition: {
+            schema_version: 1,
+            slug: `${slug}-catalog`,
+            ingredients: [{
+              slug: `${slug}-catalog`,
+              kind: 'http',
+              http: {
+                base: 'https://api.hubapi.com',
+                connection: 'hubspot',
+              },
+            }],
+            operations: [{
+              op: 'deal.read',
+              ingredient: `${slug}-catalog`,
+              risk: 'read',
+              approval: 'never',
+              required_scopes: ['crm.objects.deals.read'],
+              bind: { method: 'GET', path: '/deals' },
+            }],
+          },
+        }],
+      },
+    } as unknown as PackListEntry);
+    const second = deferred<{ packs: ReadonlyArray<PackListEntry> }>();
+    const third = deferred<{ packs: ReadonlyArray<PackListEntry> }>();
+    let packReads = 0;
+    const listeners = new Map<string, (event: never) => void>();
+    const subscribe = ((kind: string, listener: (event: never) => void) => {
+      listeners.set(kind, listener);
+      return () => listeners.delete(kind);
+    }) as unknown as BroadcastSubscriber['on'];
+    const panel = mountPanel({
+      connections: [connection('hubspot-work', {
+        vendor: 'hubspot',
+        granted_scopes: ['crm.objects.deals.read'],
+      })],
+      runPacksList: () => {
+        packReads += 1;
+        if (packReads === 1) return Promise.resolve({ packs: [pack('initial-pack')] });
+        if (packReads === 2) return second.promise;
+        return third.promise;
+      },
+      oauth: { subscribe },
+    });
+    await panel.mount.whenLoaded();
+    expect(panel.getHtml()).toContain('initial-pack');
+
+    listeners.get('pack_uninstalled')?.({
+      kind: 'pack_uninstalled',
+      pack_slug: 'initial-pack',
+      pack_name: 'Initial Pack',
+      pack_version: 1,
+      removed_recipe_count: 1,
+      cursor: 1,
+    } as never);
+    await tick();
+    expect(packReads).toBe(2);
+
+    listeners.get('pack_installed')?.({
+      kind: 'pack_installed',
+      pack_slug: 'current-pack',
+      pack_name: 'Current Pack',
+      pack_version: 1,
+      installed_recipe_count: 1,
+      cursor: 2,
+    } as never);
+    expect(packReads).toBe(2);
+
+    second.resolve({ packs: [pack('stale-pack')] });
+    await tick();
+    expect(packReads).toBe(3);
+    expect(panel.getHtml()).not.toContain('stale-pack');
+
+    third.resolve({ packs: [pack('current-pack')] });
+    await tick();
+    expect(panel.getHtml()).toContain('current-pack');
+    expect(panel.getHtml()).not.toContain('initial-pack');
+    expect(panel.getHtml()).not.toContain('stale-pack');
+
+    panel.mount.dispose();
+    expect(listeners.has('pack_installed')).toBe(false);
+    expect(listeners.has('pack_uninstalled')).toBe(false);
+  });
+
+  it('keeps initial readiness pending through an overtaking pack broadcast', async () => {
+    const first = deferred<{ packs: ReadonlyArray<PackListEntry> }>();
+    const latest = deferred<{ packs: ReadonlyArray<PackListEntry> }>();
+    const listeners = new Map<string, (event: never) => void>();
+    const subscribe = ((kind: string, listener: (event: never) => void) => {
+      listeners.set(kind, listener);
+      return () => listeners.delete(kind);
+    }) as unknown as BroadcastSubscriber['on'];
+    let packReads = 0;
+    const panel = mountPanel({
+      runPacksList: () => {
+        packReads += 1;
+        return packReads === 1 ? first.promise : latest.promise;
+      },
+      oauth: { subscribe },
+    });
+    let loaded = false;
+    const whenLoaded = panel.mount.whenLoaded().then(() => { loaded = true; });
+    await tick();
+    expect(packReads).toBe(1);
+
+    listeners.get('pack_installed')?.({
+      kind: 'pack_installed',
+      pack_slug: 'new-pack',
+      pack_name: 'New Pack',
+      pack_version: 1,
+      installed_recipe_count: 1,
+      cursor: 3,
+    } as never);
+    first.resolve({ packs: [] });
+    await tick();
+
+    expect(packReads).toBe(2);
+    expect(loaded).toBe(false);
+
+    latest.resolve({ packs: [] });
+    await whenLoaded;
+    expect(loaded).toBe(true);
+    panel.mount.dispose();
   });
 
   it('back + cancel navigate the dialog stages', async () => {
@@ -2284,6 +2495,7 @@ describe('D-165 P3 connections enrollment panel — submit', () => {
     expect(getFocusedSelector()).toBe(fieldSelector('name'));
 
     field('name', 'my-api');
+
     expect(getRenderCount()).toBe(formRenderCount);
     expect(validationPanel.getAttribute('data-status')).toBe('blocked');
     expect(validationPanel.getAttribute('data-field-key')).toBe('display_name');
@@ -10335,6 +10547,12 @@ describe('D-165 slice 3 connections enrollment panel — vendor OAuth popup', ()
   ): void => {
     click({ action: 'connections-open-add' });
     click({ action: 'connections-pick-vendor', vendor: 'hubspot' });
+    // Past the naming step. `name` / `display_name` joined the readiness
+    // checklist (required for the OWNER to finish, even though the authorize
+    // call reads neither), so a form left unnamed now blocks on NAMING before it
+    // reaches the credential behaviour every test below is about.
+    field('name', 'hubspot');
+    field('display_name', 'HubSpot');
     // HubSpot defaults to the Service Key path. Exercise the real reachable
     // OAuth control by deliberately choosing the refresh-token flow.
     field('auth.type', 'oauth2_refresh', 'SELECT');
@@ -10568,6 +10786,7 @@ describe('D-165 slice 3 connections enrollment panel — vendor OAuth popup', ()
     click({ action: 'connections-pick-kind', kind: 'api' });
     field('auth.type', 'oauth2_refresh', 'SELECT'); // reveal the oauth fields
     field('name', 'my-thing');
+    field('display_name', 'my-thing');
     field('auth.client_id', 'cid');
     field('auth.authorize_url', 'https://auth.example.com/authorize');
     field('auth.token_endpoint', 'https://auth.example.com/token');
@@ -10611,6 +10830,10 @@ describe('D-165 slice 3 connections enrollment panel — vendor OAuth popup', ()
     click({ action: 'connections-open-add' });
     click({ action: 'connections-pick-kind', kind: 'api' });
     field('auth.type', 'oauth2_refresh', 'SELECT');
+    // Named first — the checklist blocks on naming before endpoints, and this
+    // test is about the ENDPOINTS.
+    field('name', 'generic');
+    field('display_name', 'Generic');
     field('auth.client_id', 'cid'); // but no authorize_url / token_endpoint
     click({ action: 'connections-authorize-vendor' });
 
@@ -10641,6 +10864,9 @@ describe('D-165 slice 3 connections enrollment panel — vendor OAuth popup', ()
     click({ action: 'connections-open-add' });
     click({ action: 'connections-pick-kind', kind: 'api' });
     field('auth.type', 'oauth2_refresh', 'SELECT');
+    // Named first — see the note above; this test is about an UNSAFE endpoint.
+    field('name', 'generic');
+    field('display_name', 'Generic');
     field('auth.client_id', 'cid');
     field('auth.token_endpoint', 'http://provider.example/token');
     field('auth.authorize_url', 'https://provider.example/authorize');
@@ -11150,6 +11376,171 @@ describe('D-223 — a pre-filled box says who filled it', () => {
     click({ action: 'connections-pick-vendor', vendor: 'acme' });
     expect(mount.getState().dialog.hintedFields).toEqual({});
     expect(getHtml()).not.toContain('Suggested by');
+    mount.dispose();
+  });
+});
+
+describe('R26.2 Option B — a LOOPBACK PWA authorizes without a public server', () => {
+  const loopbackEnv = (onMessage: { fire?: (ev: { origin: string; data: unknown }) => void }) => ({
+    origin: 'http://127.0.0.1:7841',
+    randomState: () => 'nonce',
+    onMessage: (h: (ev: { origin: string; data: unknown }) => void) => {
+      onMessage.fire = h;
+      return () => undefined;
+    },
+    setTimeout: () => () => undefined,
+    setInterval: () => () => undefined,
+  });
+
+  it('never calls startVendorOAuth, and exchanges through completeVendorOAuth', async () => {
+    const popup = makeFakePopup();
+    const oauthEnv = makeFakeOAuthEnv(popup);
+    const bus: { fire?: (ev: { origin: string; data: unknown }) => void } = {};
+    const runStart = vi.fn();
+    const runComplete = vi.fn(async () => ({
+      refresh_token: 'RT-loopback',
+      granted_scopes: ['Contacts.Read'],
+    }));
+    const { mount, click, field } = mountPanel({
+      connections: [],
+      oauth: {
+        env: oauthEnv.env,
+        runStart: runStart as never,
+        runComplete,
+        foundationalEnv: loopbackEnv(bus),
+      },
+    });
+    await mount.whenLoaded();
+
+    click({ action: 'connections-open-add' });
+    click({ action: 'connections-pick-kind', kind: 'api' });
+    field('auth.type', 'oauth2_refresh', 'SELECT');
+    field('name', 'ms-contacts');
+    field('display_name', 'Outlook Contacts');
+    field('auth.client_id', 'cid');
+    field('auth.authorize_url', 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize');
+    field('auth.token_endpoint', 'https://login.microsoftonline.com/common/oauth2/v2.0/token');
+    field('auth.scopes', 'offline_access Contacts.Read');
+    click({ action: 'connections-authorize-vendor' });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+
+    // ⛔ The point of the whole change: the rpc that demands a public HTTPS
+    // server URL is never reached.
+    expect(runStart).not.toHaveBeenCalled();
+
+    // The popup went to the provider with OUR OWN origin as the callback.
+    const navigated = String(popup.location.href);
+    expect(navigated).toContain('login.microsoftonline.com');
+    expect(navigated).toContain(
+      encodeURIComponent('http://127.0.0.1:7841/webclient/oauth-callback.html'),
+    );
+    // No query marker — Entra rejects a query string in a registered redirect.
+    expect(navigated).not.toContain('recued_relay');
+
+    // The same-origin relay page hands the code back.
+    bus.fire?.({
+      origin: 'http://127.0.0.1:7841',
+      data: { kind: 'recued:oauth-code', code: 'CODE', state: 'frelay_nonce' },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(runComplete).toHaveBeenCalledTimes(1);
+    const calls = runComplete.mock.calls as unknown as readonly (readonly Record<string, unknown>[])[];
+    const sent = calls[0]![0]!;
+    expect(sent.code).toBe('CODE');
+    expect(sent.redirect_uri).toBe('http://127.0.0.1:7841/webclient/oauth-callback.html');
+    expect(sent.token_endpoint).toBe('https://login.microsoftonline.com/common/oauth2/v2.0/token');
+    // The returned token lands in the form, so Save persists a working connection.
+    expect(mount.getState().dialog.values['auth.refresh_token']).toBe('RT-loopback');
+    mount.dispose();
+  });
+
+  /** The exchange persists NOTHING — the token sits in the draft until Save.
+   *  So Cancel here throws away a completed provider consent, and the generic
+   *  "credential fields cannot be restored" phrasing reads as "retype your
+   *  secret", not "go back through the consent screen". Name the real cost. */
+  it('Cancel after a completed consent warns that the authorization itself is discarded', async () => {
+    const popup = makeFakePopup();
+    const oauthEnv = makeFakeOAuthEnv(popup);
+    const bus: { fire?: (ev: { origin: string; data: unknown }) => void } = {};
+    const confirmDiscardDraft = vi.fn((_message: string) => false);
+    const { mount, click, field } = mountPanel({
+      connections: [],
+      confirmDiscardDraft,
+      oauth: {
+        env: oauthEnv.env,
+        runStart: vi.fn() as never,
+        runComplete: vi.fn(async () => ({
+          refresh_token: 'RT-loopback',
+          granted_scopes: ['Contacts.Read'],
+        })),
+        foundationalEnv: loopbackEnv(bus),
+      },
+    });
+    await mount.whenLoaded();
+
+    click({ action: 'connections-open-add' });
+    click({ action: 'connections-pick-kind', kind: 'api' });
+    field('auth.type', 'oauth2_refresh', 'SELECT');
+    field('name', 'ms-contacts');
+    field('display_name', 'Outlook Contacts');
+    field('auth.client_id', 'cid');
+    field('auth.authorize_url', 'https://login.microsoftonline.com/common/oauth2/v2.0/authorize');
+    field('auth.token_endpoint', 'https://login.microsoftonline.com/common/oauth2/v2.0/token');
+    field('auth.scopes', 'offline_access Contacts.Read');
+    click({ action: 'connections-authorize-vendor' });
+    for (let i = 0; i < 6; i += 1) await Promise.resolve();
+    bus.fire?.({
+      origin: 'http://127.0.0.1:7841',
+      data: { kind: 'recued:oauth-code', code: 'CODE', state: 'frelay_nonce' },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+    expect(mount.getState().dialog.oauthGrantedScopes).toEqual(['Contacts.Read']);
+
+    click({ action: 'connections-cancel-dialog' });
+
+    expect(confirmDiscardDraft).toHaveBeenCalledOnce();
+    const prompt = confirmDiscardDraft.mock.calls[0]![0]!;
+    expect(prompt).toMatch(/authorization you just completed/i);
+    expect(prompt).toMatch(/authorize with the provider again/i);
+    // The prompt is a warning, not a leak — the minted token stays out of it.
+    expect(prompt).not.toContain('RT-loopback');
+    // Declining keeps the authorization intact.
+    expect(mount.getState().dialog.stage).toBe('form');
+    expect(mount.getState().dialog.values['auth.refresh_token']).toBe('RT-loopback');
+    mount.dispose();
+  });
+
+  it('⛔ a NON-loopback origin keeps the cloud path', async () => {
+    const popup = makeFakePopup();
+    const oauthEnv = makeFakeOAuthEnv(popup);
+    const bus: { fire?: (ev: { origin: string; data: unknown }) => void } = {};
+    const runStart = vi.fn(async () => { throw new Error('start reached'); });
+    const runComplete = vi.fn();
+    const { mount, click, field } = mountPanel({
+      connections: [],
+      oauth: {
+        env: oauthEnv.env,
+        runStart: runStart as never,
+        runComplete: runComplete as never,
+        foundationalEnv: { ...loopbackEnv(bus), origin: 'https://app.recued.com' },
+      },
+    });
+    await mount.whenLoaded();
+    click({ action: 'connections-open-add' });
+    click({ action: 'connections-pick-vendor', vendor: 'hubspot' });
+    field('name', 'hubspot');
+    field('display_name', 'HubSpot');
+    field('auth.type', 'oauth2_refresh', 'SELECT');
+    field('auth.client_id', 'cid');
+    field('auth.client_secret', 'sec');
+    click({ action: 'connections-authorize-vendor', vendor: 'hubspot' });
+    await Promise.resolve();
+    // Self-serve is loopback-only: every other origin still needs the signed
+    // state + a reachable server, and must not silently change behaviour.
+    expect(runComplete).not.toHaveBeenCalled();
     mount.dispose();
   });
 });

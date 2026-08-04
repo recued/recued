@@ -66,11 +66,15 @@ interface FakeElement {
   remove(): void;
   addEventListener(name: string, fn: (ev: unknown) => void): void;
   removeEventListener(name: string, fn: (ev: unknown) => void): void;
+  focus(): void;
   click(): void;
   type: string;
 }
 
-const makeFakeElement = (tagName: string): FakeElement => {
+const makeFakeElement = (
+  tagName: string,
+  onFocus?: (element: FakeElement) => void,
+): FakeElement => {
   const listeners = new Map<string, Array<(ev: unknown) => void>>();
   const attrs = new Map<string, string>();
   const children: FakeElement[] = [];
@@ -117,6 +121,7 @@ const makeFakeElement = (tagName: string): FakeElement => {
       const idx = arr.indexOf(fn);
       if (idx >= 0) arr.splice(idx, 1);
     },
+    focus: () => onFocus?.(el),
     click: () => {
       const arr = listeners.get('click') ?? [];
       for (const fn of arr) fn({ target: el });
@@ -126,12 +131,19 @@ const makeFakeElement = (tagName: string): FakeElement => {
 };
 
 interface FakeDocument {
+  activeElement: FakeElement | null;
   createElement(tag: string): FakeElement;
 }
 
-const makeFakeDocument = (): FakeDocument => ({
-  createElement: (tag) => makeFakeElement(tag),
-});
+const makeFakeDocument = (): FakeDocument => {
+  const doc: FakeDocument = {
+    activeElement: null,
+    createElement: (tag) => makeFakeElement(tag, (element) => {
+      doc.activeElement = element;
+    }),
+  };
+  return doc;
+};
 
 const findByAttr = (root: FakeElement, attr: string): FakeElement | null => {
   if (root.hasAttribute(attr)) return root;
@@ -349,6 +361,20 @@ describe('D-148 § A.4.1 — mountClearThisBrowserPanel: state machine', () => {
     expect(findByAttr(host, CLEAR_THIS_BROWSER_CANCEL_BTN_ATTR)).not.toBeNull();
   });
 
+  it('keeps the keyboard safety loop on Cancel, then returns to Clear', () => {
+    const { host, doc } = setupMount();
+    const clear = findByAttr(host, CLEAR_THIS_BROWSER_CLEAR_BTN_ATTR)!;
+    clear.focus();
+    clear.click();
+
+    const cancel = findByAttr(host, CLEAR_THIS_BROWSER_CANCEL_BTN_ATTR)!;
+    expect(doc.activeElement).toBe(cancel);
+    cancel.click();
+    expect(doc.activeElement).toBe(
+      findByAttr(host, CLEAR_THIS_BROWSER_CLEAR_BTN_ATTR),
+    );
+  });
+
   it('confirm state surfaces the confirm-question status with role=alert', () => {
     const { host, mount } = setupMount();
     mount.clickClear();
@@ -434,21 +460,31 @@ describe('D-148 § A.4.1 — mountClearThisBrowserPanel: state machine', () => {
   });
 
   it('error state offers Retry → confirm', async () => {
-    const { mount } = setupMount({ injectClearThrow: true });
+    const { host, doc, mount } = setupMount({ injectClearThrow: true });
     mount.clickClear();
     await mount.clickConfirm();
     expect(mount.getState()).toBe('error');
-    mount.clickRetry();
+    const retry = findByAttr(host, CLEAR_THIS_BROWSER_RETRY_BTN_ATTR)!;
+    retry.focus();
+    retry.click();
     expect(mount.getState()).toBe('confirm');
+    expect(doc.activeElement).toBe(
+      findByAttr(host, CLEAR_THIS_BROWSER_CANCEL_BTN_ATTR),
+    );
   });
 
   it('error state offers Cancel → idle', async () => {
-    const { mount } = setupMount({ injectClearThrow: true });
+    const { host, doc, mount } = setupMount({ injectClearThrow: true });
     mount.clickClear();
     await mount.clickConfirm();
     expect(mount.getState()).toBe('error');
-    mount.clickCancel();
+    const cancel = findByAttr(host, CLEAR_THIS_BROWSER_CANCEL_BTN_ATTR)!;
+    cancel.focus();
+    cancel.click();
     expect(mount.getState()).toBe('idle');
+    expect(doc.activeElement).toBe(
+      findByAttr(host, CLEAR_THIS_BROWSER_CLEAR_BTN_ATTR),
+    );
   });
 
   it('Codex slice-109 P2 fold — error copy does not claim atomic rollback', async () => {
@@ -526,9 +562,13 @@ describe('D-148 § A.4.1 — mountClearThisBrowserPanel: state machine', () => {
 
     mount.clickClear();
     expect(mount.getState()).toBe('confirm');
+    findByAttr(host, CLEAR_THIS_BROWSER_CONFIRM_BTN_ATTR)!.focus();
     const confirmPromise = mount.clickConfirm(); // do NOT await — keep clear() pending
     // After the click handler runs (sync) the state transitions to busy.
     expect(mount.getState()).toBe('busy');
+    let status = findByAttr(host, CLEAR_THIS_BROWSER_STATUS_ATTR)!;
+    expect(status.getAttribute('tabindex')).toBe('-1');
+    expect(doc.activeElement).toBe(status);
     const confirmBtn = findByAttr(host, CLEAR_THIS_BROWSER_CONFIRM_BTN_ATTR);
     const cancelBtn = findByAttr(host, CLEAR_THIS_BROWSER_CANCEL_BTN_ATTR);
     expect(confirmBtn?.disabled).toBe(true);
@@ -537,6 +577,9 @@ describe('D-148 § A.4.1 — mountClearThisBrowserPanel: state machine', () => {
     resolveClear();
     await confirmPromise;
     expect(mount.getState()).toBe('done');
+    status = findByAttr(host, CLEAR_THIS_BROWSER_STATUS_ATTR)!;
+    expect(status.getAttribute('role')).toBe('status');
+    expect(doc.activeElement).toBe(status);
   });
 });
 

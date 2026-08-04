@@ -13,6 +13,8 @@
  *                            replaced + orphans from a prior process
  *                            lifetime, since the in-memory job map is gone
  *                            after a restart but the file persists).
+ *    - `pruneInterruptedExportPartials` — removes authenticated-ciphertext
+ *                            assembly files a hard exit stranded mid-export.
  *    - `estimateExportBytes` — conservative peak-disk estimate for the
  *                            statfs pre-flight (refuse before ENOSPC).
  *
@@ -50,6 +52,13 @@ const GENERATED_EXPORT_RE =
 /** True iff `name` is an RPC-generated export slot file (see the regex). */
 export const isGeneratedExportName = (name: string): boolean =>
   GENERATED_EXPORT_RE.test(name);
+
+/** Exact hard-exit residue of an RPC-generated export. The suffix is appended
+ *  to a name we already own; hand-placed archives and arbitrary `.partial`
+ *  files never match. */
+export const isGeneratedExportPartialName = (name: string): boolean =>
+  name.endsWith('.partial')
+  && isGeneratedExportName(name.slice(0, -'.partial'.length));
 
 /** Prefix for an M4b.1 archive-upload STAGING file. Deliberately NOT the
  *  `recued-` export prefix, so `isGeneratedExportName` is false for it: the
@@ -136,10 +145,29 @@ export const pruneStagedArchives = (
 /** `<data_path>/exports/` — where exports land. */
 export const exportsDir = (dataPath: string): string => join(dataPath, 'exports');
 
+/** Reclaim incomplete RPC export assembly after a process death. No age gate:
+ *  this runs while composing a fresh archive runtime, before an export can be
+ *  active in this process. The bytes are encrypted, but a multi-GB partial that
+ *  no GC recognizes is still a launch-threatening disk leak. */
+export const pruneInterruptedExportPartials = (dataPath: string): string[] => {
+  const dir = exportsDir(dataPath);
+  let names: string[];
+  try { names = readdirSync(dir); } catch { return []; }
+  const deleted: string[] = [];
+  for (const name of names) {
+    if (!isGeneratedExportPartialName(name)) continue;
+    const path = join(dir, name);
+    try {
+      unlinkSync(path);
+      deleted.push(path);
+    } catch { /* best effort */ }
+  }
+  return deleted;
+};
+
 /** A fresh, unique export path: `recued-<iso-datetime>-<rand>.recued.archive`.
  *  The datetime IS the snapshot cutoff; the random suffix guarantees two
- *  exports in the same millisecond never collide (and thus never share the
- *  derived `${dest}.db.tmp` backup path inside `exportArchive`). The name
+ *  exports in the same millisecond never collide. The name
  *  always satisfies `GENERATED_EXPORT_RE` so the GC recognizes it as its own. */
 export const newExportPath = (dataPath: string, nowMs: number): string => {
   const stamp = new Date(nowMs).toISOString().replace(/[:.]/g, '-');
@@ -148,8 +176,8 @@ export const newExportPath = (dataPath: string, nowMs: number): string => {
 };
 
 /** Absolute paths of every RPC-GENERATED export archive on disk. Restricted
- *  to `GENERATED_EXPORT_RE` so the in-flight `${dest}.db.tmp` backup (wrong
- *  suffix) AND any user-/CLI-staged restore archive (wrong name shape) are
+ *  to `GENERATED_EXPORT_RE` so an in-flight `.partial` assembly (wrong suffix)
+ *  AND any user-/CLI-staged restore archive (wrong name shape) are
  *  both left untouched by the cleanup paths that consume this list. */
 const listExports = (dataPath: string): string[] => {
   const dir = exportsDir(dataPath);

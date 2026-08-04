@@ -33,12 +33,17 @@ import {
 export const COLLECTION_SELECT_INSTANCE_ACTION = 'collection-select-instance';
 export const COLLECTION_OPEN_RECORD_ACTION = 'collection-open-record';
 export const COLLECTION_DETAIL_CLOSE_ACTION = 'collection-detail-close';
+export const COLLECTION_RETRY_ACTION = 'collection-retry';
+export const COLLECTION_DETAIL_RETRY_ACTION = 'collection-detail-retry';
 /** `slug` of the instance the user picked / the `record_id` of the opened row. */
 export const COLLECTION_INSTANCE_SLUG_ATTR = 'data-collection-slug';
 export const COLLECTION_RECORD_ID_ATTR = 'data-collection-record';
 /** Programmatic focus target for an exact record deep-link. */
 export const COLLECTION_DETAIL_HEADING_ATTR =
   'data-recued-collection-detail-heading';
+export const COLLECTION_RETRY_ATTR = 'data-recued-collection-retry';
+export const COLLECTION_DETAIL_RETRY_ATTR =
+  'data-recued-collection-detail-retry';
 
 /** The open record detail — the lazy `collection.get` result for one record. */
 export interface CollectionExplorerDetailState {
@@ -62,6 +67,11 @@ export interface CollectionExplorerProps {
   records: readonly CollectionRecord[];
   /** The open record detail (from `collection.get`), or null/absent = the list. */
   detail?: CollectionExplorerDetailState | null;
+  /** True only when the open detail failed an available `collection.get`. */
+  detailRetryable?: boolean;
+  /** Keeps the failed detail and its Retry action visible while a fresh exact
+   * read settles. */
+  detailRetrying?: boolean;
   /** Pre-rendered controls slotted into the record-detail bar, beside "← Back".
    *  The route builds them; the explorer only renders the string (kept generic).
    *  The Files tab passes its D-172 "Download file" button here so a browsed
@@ -83,6 +93,12 @@ export interface CollectionExplorerProps {
   singleCollection?: boolean;
   loading: boolean;
   error?: string;
+  /** True only for a failed read. Guidance and missing-wiring messages remain
+   * alerts without offering a retry that cannot help. */
+  retryable?: boolean;
+  /** Keeps a failed list read visible and its Retry action focusable while a
+   * fresh instance/list attempt settles. */
+  retrying?: boolean;
   /** Wall-clock now for relative-time formatting (tests pass a fixed value). */
   now: number;
   /** The route's action-attribute name (`DATA_ROUTE_ACTION_ATTR`). */
@@ -155,26 +171,37 @@ const formatFieldValue = (field: string, value: unknown, now: number): string =>
   }
 };
 
-/** The record's title = its `primary_field` (schema), falling back to the
- *  `record_id` so a row with a missing primary still identifies itself. */
+/** The record's title = the first of the schema's title fields present on the
+ *  record (`primary_field`, then `primary_field_fallbacks` in order), falling
+ *  back to the `record_id` so a row with none of them still identifies itself.
+ *
+ *  The chain exists because one canonical collection can hold several record
+ *  SHAPES — `file` covers a watched-folder entry (`path`) and an inbound upload
+ *  (`filename`, no `path`). With a single field the second shape titled every
+ *  row with its 32-hex id, which reads as an id column rather than as a field
+ *  the record happens to lack. `record_id` stays the last resort, not the
+ *  routine answer. */
 const recordTitle = (
   record: CollectionRecord,
-  primaryField: string,
+  titleFields: readonly string[],
 ): string => {
-  const raw = readDisplayField(record as unknown as Record<string, unknown>, primaryField);
-  const title = typeof raw === 'string' ? raw : raw === undefined ? '' : String(raw);
-  return title.length > 0 ? title : record.record_id;
+  for (const field of titleFields) {
+    const raw = readDisplayField(record as unknown as Record<string, unknown>, field);
+    const title = typeof raw === 'string' ? raw : raw === undefined ? '' : String(raw);
+    if (title.length > 0) return title;
+  }
+  return record.record_id;
 };
 
 /** One list row — the primary field as title + the summary fields as sub-text. */
 const renderRow = (
   record: CollectionRecord,
-  primaryField: string,
+  titleFields: readonly string[],
   summaryFields: readonly string[],
   now: number,
   actionAttr: string,
 ): string => {
-  const title = recordTitle(record, primaryField);
+  const title = recordTitle(record, titleFields);
   const summary = summaryFields
     .map((f) => {
       const val = formatFieldValue(
@@ -222,10 +249,12 @@ const renderInstanceBar = (
 const renderDetail = (
   detail: CollectionExplorerDetailState,
   collection: CanonicalCollectionName,
-  primaryField: string,
+  titleFields: readonly string[],
   summaryFields: readonly string[],
   now: number,
   actionAttr: string,
+  detailRetryable: boolean,
+  detailRetrying: boolean,
   detailActionsHtml: string,
   /** Single-collection (provenance) records carry no bytes and set source_id ===
    *  record_id, so their Size / Source-id / Modified meta rows are always empty
@@ -240,7 +269,16 @@ const renderDetail = (
   const back = `<button type="button" class="col-explorer-btn" ${actionAttr}="${COLLECTION_DETAIL_CLOSE_ACTION}">← Back</button>`;
   let body: string;
   if (detail.error !== undefined) {
-    body = `<p class="col-explorer-error" role="alert">${e(detail.error)}</p>`;
+    body = `<div class="col-explorer-recovery">
+      <p class="col-explorer-error" role="alert">${e(detail.error)}</p>
+      ${detailRetryable
+        ? `<button type="button" class="col-explorer-btn"
+          ${actionAttr}="${COLLECTION_DETAIL_RETRY_ACTION}" ${COLLECTION_DETAIL_RETRY_ATTR}
+          ${detailRetrying ? 'aria-disabled="true" aria-busy="true"' : ''}>${
+            detailRetrying ? 'Retrying…' : 'Retry'
+          }</button>`
+        : ''}
+    </div>`;
   } else if (detail.loading || detail.record === undefined) {
     body = `<p class="col-explorer-loading">Loading record…</p>`;
   } else if (detail.record === null) {
@@ -248,7 +286,7 @@ const renderDetail = (
   } else {
     const record = detail.record;
     const rec = record as unknown as Record<string, unknown>;
-    const title = recordTitle(record, primaryField);
+    const title = recordTitle(record, titleFields);
     // Field list: the schema's summary fields + the always-present meta.
     const metaFields: Array<[string, string]> = [
       ...summaryFields.map(
@@ -271,6 +309,23 @@ const renderDetail = (
     if (!compact || record.source_id !== record.record_id) {
       metaFields.push(['Source id', record.source_id]);
     }
+    // The record_id is the only handle a recipe can reference a stored record by
+    // — `{{config.invoice_template}}` resolving to a `file:<32 hex>` is how
+    // officecli's `document.template_fill` names the template it fills.
+    //
+    // ⚠ An uploaded file's id is ALREADY on screen today, but only by accident:
+    // the `file` display schema declares `primary_field: 'path'`, inbound
+    // records (`DataFileHotFields`) carry filename/mime_type/size and no `path`,
+    // so `recordTitle` falls through to its `record_id` fallback. That is a
+    // coincidence of two shapes sharing one schema (a watched-folder file DOES
+    // have `path`) — the moment the schema gains a fallback chain and titles
+    // these rows by filename, the id disappears. Stating it explicitly makes the
+    // handle survive that fix rather than depend on the bug.
+    //
+    // `Source id` is not a substitute: for a webclient upload it is the upload
+    // SESSION id (`session.upload_id`), and in compact mode it is dropped
+    // precisely because it equals record_id.
+    metaFields.push(['Record id', record.record_id]);
     const fields = metaFields
       .filter(([, v]) => typeof v === 'string' && v.length > 0)
       .map(
@@ -308,7 +363,12 @@ const renderDetail = (
 export const renderCollectionExplorer = (props: CollectionExplorerProps): string => {
   const schema = getCollectionDisplaySchema(props.collection);
   // Defensive: an unknown collection (deep link with a bad name) → json defaults.
-  const primaryField = schema?.primary_field ?? 'record_id';
+  // The title chain is primary → declared fallbacks; `recordTitle` supplies the
+  // `record_id` last resort itself, so an unknown collection resolves to an
+  // empty chain rather than needing `record_id` spelled in here.
+  const titleFields = schema
+    ? [schema.primary_field, ...(schema.primary_field_fallbacks ?? [])]
+    : [];
   const summaryFields = schema?.summary_fields ?? [];
   const detail = props.detail ?? null;
 
@@ -317,10 +377,12 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
     return `<section class="col-explorer" data-recued-collection-explorer>${renderDetail(
       detail,
       props.collection,
-      primaryField,
+      titleFields,
       summaryFields,
       props.now,
       props.actionAttr,
+      props.detailRetryable ?? false,
+      props.detailRetrying ?? false,
       props.detailActionsHtml ?? '',
       props.singleCollection ?? false,
       props.detailTimelineHtml ?? '',
@@ -333,7 +395,16 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
 
   let body: string;
   if (props.error !== undefined) {
-    body = `<p class="col-explorer-error" role="alert">${e(props.error)}</p>`;
+    body = `<div class="col-explorer-recovery">
+      <p class="col-explorer-error" role="alert">${e(props.error)}</p>
+      ${props.retryable
+        ? `<button type="button" class="col-explorer-btn"
+          ${props.actionAttr}="${COLLECTION_RETRY_ACTION}" ${COLLECTION_RETRY_ATTR}
+          ${props.retrying ? 'aria-disabled="true" aria-busy="true"' : ''}>${
+            props.retrying ? 'Retrying…' : 'Retry'
+          }</button>`
+        : ''}
+    </div>`;
   } else if (!props.singleCollection && props.instances.length === 0) {
     body = `<p class="col-explorer-empty">Nothing connected for ${e(props.collection)} yet.</p>`;
   } else if (!props.singleCollection && props.selectedSlug === null && props.instances.length > 1) {
@@ -344,7 +415,7 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
     body = `<p class="col-explorer-empty">No records in this collection yet.</p>`;
   } else {
     body = `<ul class="col-explorer-list" role="list">${props.records
-      .map((r) => renderRow(r, primaryField, summaryFields, props.now, props.actionAttr))
+      .map((r) => renderRow(r, titleFields, summaryFields, props.now, props.actionAttr))
       .join('')}</ul>`;
   }
 
@@ -356,6 +427,13 @@ export const renderCollectionExplorer = (props: CollectionExplorerProps): string
 
 export const COLLECTION_EXPLORER_STYLES = `
 .col-explorer { display: flex; flex-direction: column; gap: 0.75rem; }
+.col-explorer-recovery { display: grid; justify-items: start; gap: 0.5rem; }
+.col-explorer-btn {
+  font: inherit; font-size: 0.8125rem; padding: 0.375rem 0.75rem;
+  border: 1px solid var(--border); border-radius: 0.375rem;
+  background: var(--surface); color: var(--fg); cursor: pointer;
+}
+.col-explorer-btn[aria-disabled="true"] { cursor: wait; opacity: 0.65; }
 .col-explorer-instances { display: flex; flex-wrap: wrap; gap: 0.375rem; }
 .col-explorer-instance-chip {
   font: inherit; font-size: 0.8125rem; padding: 0.25rem 0.625rem; border-radius: 999px;

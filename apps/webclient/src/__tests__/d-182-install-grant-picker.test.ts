@@ -620,6 +620,10 @@ const baseEntry = (manifest: BulkPackManifest): PackListEntry => ({
   installed: false,
   requires: [...manifest.requires],
   recipe_count: manifest.recipes.length,
+  recipe_refs: manifest.recipes.map((r) => ({ slug: r.slug, version: r.version })),
+  body_visibility_grant_keys: [...(manifest.mcp_body_visibility_grants ?? [])],
+    ...(typeof manifest.service_kind === 'string' ? { service_kind: manifest.service_kind } : {}),
+    ...(typeof manifest.repo === 'string' ? { repo: manifest.repo } : {}),
   body_visibility_grant_count: manifest.mcp_body_visibility_grants?.length ?? 0,
   manifest,
 });
@@ -816,5 +820,67 @@ describe('D-182 §7.1 (5b.2) — picker presentation contract', () => {
       '.igp-scope-row:has(.igp-scope-check:checked)',
     );
     expect(INSTALL_GRANT_PICKER_STYLES).toContain('@media (max-width: 640px)');
+  });
+});
+
+/** Access and Scope are ONE decision in two steps — grant THESE ops to THOSE
+ *  contracts. Described separately ("Choose what this pack may do" / "Who may use
+ *  these grants") the tier reads as a global capability switch and the pairing
+ *  that actually governs the install is invisible.
+ *
+ *  Pinned because it is copy: nothing else fails when it drifts, and the drift
+ *  reintroduces exactly the misreading it was written to remove. */
+describe('install grant picker — the two steps say they are two steps', () => {
+  const twoStepModel = installGrantModelFromManifest(
+    // `manifestWith` takes PackContentRefs, not raw operation rows — every other
+    // call site here goes through compositionPack, which wraps them.
+    compositionPack('http', [
+      op('invoice.read', 'read'),
+      op('invoice.create', 'write'),
+      op('invoice.delete', 'destructive'),
+    ]),
+  )!;
+
+  const render = () => {
+    const doc = makeFakeDocument();
+    return renderInstallGrantPicker({
+      document: doc as unknown as Document,
+      model: twoStepModel,
+      access: 'read',
+      scope: 'owner',
+      onAccess: () => {},
+      onScope: () => {},
+    }) as unknown as FakeElement;
+  };
+
+  it('numbers both halves so neither reads as the whole choice', () => {
+    const text = collectText(render());
+    expect(text).toContain('step 1 of 2');
+    expect(text).toContain('step 2 of 2');
+  });
+
+  it('each half points at the other', () => {
+    const text = collectText(render());
+    // Access says where its grants land…
+    expect(text).toContain('contracts you choose in step 2');
+    // …and Scope says what it is distributing.
+    expect(text).toContain('chosen in step 1');
+  });
+
+  it('⛔ says the tiers are cumulative, and that YOU are one of the contracts', () => {
+    const text = collectText(render());
+    // Without this, `write` reads as write-only and `read` reads as harmless.
+    expect(text).toContain('includes the ones above it');
+    // The fact that explains why a read-only install denies the pack's OWN write
+    // recipes when the owner runs them.
+    expect(text).toContain('is a contract like any other');
+  });
+
+  it('the per-tier op list says it ADDS, not that it is the whole grant', () => {
+    // The server grants the cumulative band, so a `write` tier listing one write
+    // op while also granting every read op read as exhaustive.
+    const text = collectText(render());
+    expect(text).toContain('Adds: ');
+    expect(text).not.toContain('Grants: ');
   });
 });

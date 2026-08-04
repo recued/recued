@@ -114,6 +114,58 @@ describe('createKernelAdapter', () => {
       .rejects.toBeInstanceOf(IngredientError);
   });
 
+  it('routes a recipe callback with engine-stamped recipe provenance', async () => {
+    let captured: unknown;
+    const adapter = createKernelAdapter({
+      notificationRecipeCallback: async (input) => {
+        captured = input;
+        return {
+          queued_to: 1,
+          failed_to: 0,
+          coalesced: true,
+          skipped_reason: null,
+        };
+      },
+    });
+    const result = await adapter(mkCall(
+      'core-notification-recipe-callback',
+      {
+        destination_contract_id: 'ct_office',
+        topic: 'mail.action-required',
+        query_tool: 'recued-core/mail-action-required-query',
+        arguments: { mail_slug: 'work', record_id: 'mail:1' },
+        ttl_seconds: 3600,
+      },
+      { step_id: 'notify', recipe_id: 'mail-action-required-watch' },
+    ));
+    expect(result).toMatchObject({ queued_to: 1, coalesced: true });
+    expect(captured).toEqual({
+      destination_contract_id: 'ct_office',
+      topic: 'mail.action-required',
+      query_tool: 'recued-core/mail-action-required-query',
+      arguments: { mail_slug: 'work', record_id: 'mail:1' },
+      ttl_seconds: 3600,
+      source_recipe_id: 'mail-action-required-watch',
+    });
+  });
+
+  it('rejects a recipe callback outside a recipe execution context', async () => {
+    const adapter = createKernelAdapter({
+      notificationRecipeCallback: async () => ({
+        queued_to: 0,
+        failed_to: 0,
+        coalesced: true,
+        skipped_reason: null,
+      }),
+    });
+    await expect(adapter(mkCall('core-notification-recipe-callback', {
+      destination_contract_id: 'ct_office',
+      topic: 'mail.action-required',
+      query_tool: 'recued-core/mail-action-required-query',
+      arguments: {},
+    }))).rejects.toMatchObject({ code: 'BAD_INPUT' });
+  });
+
   it('routes schedule-recipe to the schedule dispatcher', async () => {
     let captured: unknown;
     const adapter = createKernelAdapter({

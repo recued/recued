@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type {
+  ContactImportFilePlan,
   ContactMergeCandidate,
   ContactRecord,
   ContactSourceCycleCounts,
@@ -18,9 +19,11 @@ import { FILE_VENDOR_DECLARATIONS, WORK_ENTITY_KINDS } from '@recued/contracts';
 
 import {
   DATA_ROUTE_CONTACT_DETAIL_ATTR,
+  DATA_ROUTE_CONTACT_DISCARD_GUARD_ATTR,
   DATA_ROUTE_CONTACT_DIALOG_ATTR,
   DATA_ROUTE_CONTACT_LINKS_ATTR,
   DATA_ROUTE_CONTACT_LOAD_MORE_ATTR,
+  DATA_ROUTE_CONTACT_IMPORT_RESULT_ATTR,
   DATA_ROUTE_CONTACT_ROLLUP_ATTR,
   DATA_ROUTE_CONTACT_PROVENANCE_ATTR,
   DATA_ROUTE_CONTACT_SCAN_ATTR,
@@ -32,6 +35,7 @@ import {
   DATA_ROUTE_FILE_SOURCE_LINK_ATTR,
   DATA_ROUTE_FORM_RESPONSE_AUTOMATE_ATTR,
   DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR,
+  DATA_ROUTE_FORM_RESPONSE_DISCARD_GUARD_ATTR,
   DATA_ROUTE_FORM_RESPONSE_EMAIL_ATTR,
   DATA_ROUTE_FORM_RESPONSE_LOAD_MORE_ATTR,
   DATA_ROUTE_FORM_RESPONSE_RUN_ATTR,
@@ -84,11 +88,35 @@ import {
 import {
   COLLECTION_DETAIL_CLOSE_ACTION,
   COLLECTION_DETAIL_HEADING_ATTR,
+  COLLECTION_DETAIL_RETRY_ACTION,
   COLLECTION_INSTANCE_SLUG_ATTR,
   COLLECTION_OPEN_RECORD_ACTION,
   COLLECTION_RECORD_ID_ATTR,
   COLLECTION_SELECT_INSTANCE_ACTION,
 } from '../data/collection-explorer.js';
+import {
+  MEMORY_ADD_ACTION,
+  MEMORY_COMPOSE_CANCEL_ACTION,
+  MEMORY_COMPOSE_DISCARD_COMMIT_ACTION,
+  MEMORY_COMPOSE_DISCARD_GUARD_ATTR,
+  MEMORY_COMPOSE_DISCARD_KEEP_ACTION,
+  MEMORY_COMPOSE_SUBMIT_ACTION,
+  MEMORY_DELETE_ACTION,
+  MEMORY_DELETE_CANCEL_ACTION,
+  MEMORY_DELETE_CONFIRM_ACTION,
+  MEMORY_DETAIL_CLOSE_ACTION,
+  MEMORY_EDIT_ACTION,
+  MEMORY_FIELD_ATTR,
+  MEMORY_IMPORT_ACTION,
+  MEMORY_IMPORT_CANCEL_ACTION,
+  MEMORY_IMPORT_DISCARD_COMMIT_ACTION,
+  MEMORY_IMPORT_DISCARD_GUARD_ATTR,
+  MEMORY_IMPORT_DISCARD_KEEP_ACTION,
+  MEMORY_IMPORT_SUBMIT_ACTION,
+  MEMORY_LENS_SELECT_ACTION,
+  MEMORY_LENS_VALUE_ATTR,
+  MEMORY_OPEN_ACTION,
+} from '../data/memory-lens.js';
 
 interface FakeEl {
   tagName: string;
@@ -261,6 +289,18 @@ const emitClick = (
   for (const listener of routeRoot.listeners.get('click') ?? []) {
     listener({ target } as unknown as Event);
   }
+};
+
+const emitMemoryInput = (
+  routeRoot: FakeEl,
+  field: 'kind' | 'summary' | 'body' | 'import',
+  value: string,
+): void => {
+  emitInput(routeRoot, {
+    value,
+    hasAttribute: () => false,
+    getAttribute: (key) => key === MEMORY_FIELD_ATTR ? field : null,
+  });
 };
 
 const taskEntity = (
@@ -538,6 +578,12 @@ const mountRoute = (overrides: {
   timelineCaller?: DataTimelineCaller;
   mirrorSearchCaller?: DataMirrorSearchCaller;
   fileReadCaller?: DataFileReadCaller;
+  memoryListCaller?: NonNullable<BootstrapDataRouteOptions['memoryListCaller']>;
+  memoryGetCaller?: NonNullable<BootstrapDataRouteOptions['memoryGetCaller']>;
+  memoryCreateCaller?: NonNullable<BootstrapDataRouteOptions['memoryCreateCaller']>;
+  memoryUpdateCaller?: NonNullable<BootstrapDataRouteOptions['memoryUpdateCaller']>;
+  memoryDeleteCaller?: NonNullable<BootstrapDataRouteOptions['memoryDeleteCaller']>;
+  memoryImportCaller?: NonNullable<BootstrapDataRouteOptions['memoryImportCaller']>;
   collectionListInstancesCaller?: BootstrapDataRouteOptions['collectionListInstancesCaller'];
   collectionListCaller?: BootstrapDataRouteOptions['collectionListCaller'];
   collectionGetCaller?: BootstrapDataRouteOptions['collectionGetCaller'];
@@ -557,8 +603,11 @@ const mountRoute = (overrides: {
     unused: string,
     url?: string | URL | null,
   ) => void;
+  onHashSync?: BootstrapDataRouteOptions['onHashSync'];
   subscribe?: BootstrapDataRouteOptions['subscribe'];
   liveRefreshDebounceMs?: number;
+  contactSearchDebounceMs?: number;
+  bookingSearchDebounceMs?: number;
 } = {}) => {
   const doc = makeFakeDocument();
   if (overrides.replaceState !== undefined) {
@@ -727,6 +776,24 @@ const mountRoute = (overrides: {
     // picker it once fed was retired once mail/calendar/files moved to the
     // collection explorer.
     mirrorSearchCaller,
+    ...(overrides.memoryListCaller !== undefined
+      ? { memoryListCaller: overrides.memoryListCaller }
+      : {}),
+    ...(overrides.memoryGetCaller !== undefined
+      ? { memoryGetCaller: overrides.memoryGetCaller }
+      : {}),
+    ...(overrides.memoryCreateCaller !== undefined
+      ? { memoryCreateCaller: overrides.memoryCreateCaller }
+      : {}),
+    ...(overrides.memoryUpdateCaller !== undefined
+      ? { memoryUpdateCaller: overrides.memoryUpdateCaller }
+      : {}),
+    ...(overrides.memoryDeleteCaller !== undefined
+      ? { memoryDeleteCaller: overrides.memoryDeleteCaller }
+      : {}),
+    ...(overrides.memoryImportCaller !== undefined
+      ? { memoryImportCaller: overrides.memoryImportCaller }
+      : {}),
     ...(overrides.collectionListInstancesCaller !== undefined
       ? { collectionListInstancesCaller: overrides.collectionListInstancesCaller }
       : {}),
@@ -768,10 +835,15 @@ const mountRoute = (overrides: {
     ...(overrides.verifyInitialSourceRecord === true
       ? { verifyInitialSourceRecord: true }
       : {}),
+    ...(overrides.onHashSync !== undefined
+      ? { onHashSync: overrides.onHashSync }
+      : {}),
     ...(overrides.subscribe !== undefined ? { subscribe: overrides.subscribe } : {}),
     ...(overrides.liveRefreshDebounceMs !== undefined
       ? { liveRefreshDebounceMs: overrides.liveRefreshDebounceMs }
       : {}),
+    contactSearchDebounceMs: overrides.contactSearchDebounceMs ?? 0,
+    bookingSearchDebounceMs: overrides.bookingSearchDebounceMs ?? 0,
     // D-205 #2b — opt-in, so the bare rig has NO merge callers and the
     // no-entry-point-when-unwired invariant is the default state under test.
     ...(overrides.contactMergeListCaller !== undefined
@@ -858,6 +930,494 @@ describe('D-174 P5 Data route', () => {
 
     rig.route.dispose();
     expect(rig.root.children).toHaveLength(0);
+  });
+
+  it('reviews an unfinished Memory compose before Cancel discards it', async () => {
+    const memoryListCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryListCaller']>>(
+      async () => ({
+        entries: [{
+          memory_id: 'memory-1',
+          origin_actor: 'user_self',
+          kind: 'note',
+          summary: 'Saved memory',
+          body_preview: 'Saved body',
+          has_body: true,
+          ts: NOW,
+        }],
+      }),
+    );
+    const memoryGetCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryGetCaller']>>(
+      async ({ memory_id }) => ({
+        memory_id,
+        origin_actor: 'user_self',
+        kind: 'note',
+        body: 'Saved body',
+        ts: NOW,
+      }),
+    );
+    const memoryCreateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryCreateCaller']>>(
+      async () => ({ memory_id: 'memory-new', provenance_edges_written: 0 }),
+    );
+    const memoryUpdateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryUpdateCaller']>>(
+      async ({ memory_id }) => ({ memory_id, provenance_edges_written: 0 }),
+    );
+    const memoryDeleteCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryDeleteCaller']>>(
+      async ({ memory_id }) => ({ memory_id, deleted: true, redacted: false }),
+    );
+    const rig = mountRoute({
+      initialTab: 'memory',
+      memoryListCaller,
+      memoryGetCaller,
+      memoryCreateCaller,
+      memoryUpdateCaller,
+      memoryDeleteCaller,
+    });
+    await rig.route.whenLoaded();
+    const routeRoot = rig.root.children[0]!;
+
+    emitClick(routeRoot, MEMORY_ADD_ACTION);
+    emitMemoryInput(routeRoot, 'kind', 'preference');
+    emitMemoryInput(routeRoot, 'body', 'Keep answers concise');
+    emitClick(routeRoot, MEMORY_COMPOSE_CANCEL_ACTION);
+
+    expect(routeRoot.innerHTML).toContain(MEMORY_COMPOSE_DISCARD_GUARD_ATTR);
+    expect(routeRoot.innerHTML).toContain('Keep answers concise');
+    expect(routeRoot.innerHTML).toContain(
+      'class="memory-compose-editor" inert aria-hidden="true"',
+    );
+
+    emitClick(routeRoot, MEMORY_COMPOSE_DISCARD_KEEP_ACTION);
+    expect(routeRoot.innerHTML).not.toContain(MEMORY_COMPOSE_DISCARD_GUARD_ATTR);
+    expect(routeRoot.innerHTML).toContain('Keep answers concise');
+
+    emitClick(routeRoot, MEMORY_COMPOSE_CANCEL_ACTION);
+    emitClick(routeRoot, MEMORY_COMPOSE_DISCARD_COMMIT_ACTION);
+    expect(routeRoot.innerHTML).not.toContain('New memory');
+    expect(routeRoot.innerHTML).toContain(MEMORY_ADD_ACTION);
+    expect(memoryCreateCaller).not.toHaveBeenCalled();
+
+    emitClick(routeRoot, MEMORY_EDIT_ACTION, {
+      'data-memory-id': 'memory-1',
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(routeRoot.innerHTML).toContain('Edit memory');
+    expect(routeRoot.innerHTML).toContain('Saved body');
+
+    emitMemoryInput(routeRoot, 'body', 'Edited but unfinished');
+    emitClick(routeRoot, MEMORY_COMPOSE_CANCEL_ACTION);
+    expect(routeRoot.innerHTML).toContain(MEMORY_COMPOSE_DISCARD_GUARD_ATTR);
+    expect(routeRoot.innerHTML).toContain('Edited but unfinished');
+    emitClick(routeRoot, MEMORY_COMPOSE_DISCARD_COMMIT_ACTION);
+    expect(routeRoot.innerHTML).not.toContain('Edit memory');
+    expect(routeRoot.innerHTML).toContain('Saved memory');
+    expect(memoryUpdateCaller).not.toHaveBeenCalled();
+    rig.route.dispose();
+  });
+
+  it('serializes Memory compose writes and keeps its owner visible while saving', async () => {
+    let finishCreate!: (result: {
+      memory_id: string;
+      provenance_edges_written: number;
+    }) => void;
+    const createPending = new Promise<{
+      memory_id: string;
+      provenance_edges_written: number;
+    }>((resolve) => {
+      finishCreate = resolve;
+    });
+    const memoryListCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryListCaller']>>(
+      async () => ({ entries: [] }),
+    );
+    const memoryGetCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryGetCaller']>>(
+      async ({ memory_id }) => ({
+        memory_id,
+        origin_actor: 'user_self',
+        kind: 'note',
+        body: 'Saved body',
+        ts: NOW,
+      }),
+    );
+    const memoryCreateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryCreateCaller']>>(
+      () => createPending,
+    );
+    const memoryUpdateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryUpdateCaller']>>(
+      async ({ memory_id }) => ({ memory_id, provenance_edges_written: 0 }),
+    );
+    const memoryDeleteCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryDeleteCaller']>>(
+      async ({ memory_id }) => ({ memory_id, deleted: true, redacted: false }),
+    );
+    const rig = mountRoute({
+      initialTab: 'memory',
+      memoryListCaller,
+      memoryGetCaller,
+      memoryCreateCaller,
+      memoryUpdateCaller,
+      memoryDeleteCaller,
+    });
+    await rig.route.whenLoaded();
+    const routeRoot = rig.root.children[0]!;
+
+    emitClick(routeRoot, MEMORY_ADD_ACTION);
+    emitMemoryInput(routeRoot, 'kind', 'preference');
+    emitMemoryInput(routeRoot, 'body', 'Keep answers concise');
+    emitClick(routeRoot, MEMORY_COMPOSE_SUBMIT_ACTION);
+
+    expect(memoryCreateCaller).toHaveBeenCalledTimes(1);
+    expect(memoryCreateCaller).toHaveBeenCalledWith({
+      kind: 'preference',
+      body: 'Keep answers concise',
+    });
+    expect(routeRoot.innerHTML).toContain('Saving…');
+    expect(routeRoot.innerHTML).toMatch(
+      new RegExp(`${MEMORY_COMPOSE_SUBMIT_ACTION}[^>]*aria-disabled="true"[^>]*aria-busy="true"`),
+    );
+
+    emitClick(routeRoot, MEMORY_COMPOSE_SUBMIT_ACTION);
+    emitClick(routeRoot, MEMORY_COMPOSE_CANCEL_ACTION);
+    emitClick(routeRoot, MEMORY_LENS_SELECT_ACTION, {
+      [MEMORY_LENS_VALUE_ATTR]: 'data',
+    });
+    expect(memoryCreateCaller).toHaveBeenCalledTimes(1);
+    expect(rig.route.activeLens()).toBe('memory');
+    expect(routeRoot.innerHTML).toContain('Saving…');
+
+    finishCreate({ memory_id: 'memory-new', provenance_edges_written: 0 });
+    await Promise.resolve();
+    await Promise.resolve();
+    await rig.route.whenLoaded();
+    expect(routeRoot.innerHTML).not.toContain('New memory');
+    expect(routeRoot.innerHTML).toContain(MEMORY_ADD_ACTION);
+    rig.route.dispose();
+  });
+
+  it('reviews pasted Memory import JSON before Close discards it', async () => {
+    const memoryListCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryListCaller']>>(
+      async () => ({ entries: [] }),
+    );
+    const memoryGetCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryGetCaller']>>(
+      async ({ memory_id }) => ({
+        memory_id,
+        origin_actor: 'user_self',
+        kind: 'note',
+        ts: NOW,
+      }),
+    );
+    const memoryCreateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryCreateCaller']>>(
+      async () => ({ memory_id: 'memory-new', provenance_edges_written: 0 }),
+    );
+    const memoryUpdateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryUpdateCaller']>>(
+      async ({ memory_id }) => ({ memory_id, provenance_edges_written: 0 }),
+    );
+    const memoryDeleteCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryDeleteCaller']>>(
+      async ({ memory_id }) => ({ memory_id, deleted: true, redacted: false }),
+    );
+    const memoryImportCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryImportCaller']>>(
+      async () => ({ merged: 0, inserted: 1, deduped: 0, skipped: 0 }),
+    );
+    const rig = mountRoute({
+      initialTab: 'memory',
+      memoryListCaller,
+      memoryGetCaller,
+      memoryCreateCaller,
+      memoryUpdateCaller,
+      memoryDeleteCaller,
+      memoryImportCaller,
+    });
+    await rig.route.whenLoaded();
+    const routeRoot = rig.root.children[0]!;
+
+    emitClick(routeRoot, MEMORY_IMPORT_ACTION);
+    emitMemoryInput(
+      routeRoot,
+      'import',
+      '{"entries":[{"origin_actor":"user_self","kind":"note"}]}',
+    );
+    emitClick(routeRoot, MEMORY_IMPORT_CANCEL_ACTION);
+
+    expect(routeRoot.innerHTML).toContain(MEMORY_IMPORT_DISCARD_GUARD_ATTR);
+    expect(routeRoot.innerHTML).toContain('&quot;origin_actor&quot;');
+    expect(routeRoot.innerHTML).toContain(
+      'class="memory-import-editor" inert aria-hidden="true"',
+    );
+
+    emitClick(routeRoot, MEMORY_IMPORT_DISCARD_KEEP_ACTION);
+    expect(routeRoot.innerHTML).not.toContain(MEMORY_IMPORT_DISCARD_GUARD_ATTR);
+    expect(routeRoot.innerHTML).toContain('&quot;origin_actor&quot;');
+
+    emitClick(routeRoot, MEMORY_IMPORT_CANCEL_ACTION);
+    emitClick(routeRoot, MEMORY_IMPORT_DISCARD_COMMIT_ACTION);
+    expect(routeRoot.innerHTML).not.toContain('Import memory');
+    expect(routeRoot.innerHTML).toContain(MEMORY_IMPORT_ACTION);
+    expect(memoryImportCaller).not.toHaveBeenCalled();
+    rig.route.dispose();
+  });
+
+  it('serializes Memory imports and keeps the panel owned until completion', async () => {
+    let finishImport!: (result: {
+      merged: number;
+      inserted: number;
+      deduped: number;
+      skipped: number;
+    }) => void;
+    const importPending = new Promise<{
+      merged: number;
+      inserted: number;
+      deduped: number;
+      skipped: number;
+    }>((resolve) => {
+      finishImport = resolve;
+    });
+    const memoryListCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryListCaller']>>(
+      async () => ({ entries: [] }),
+    );
+    const memoryGetCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryGetCaller']>>(
+      async ({ memory_id }) => ({
+        memory_id,
+        origin_actor: 'user_self',
+        kind: 'note',
+        ts: NOW,
+      }),
+    );
+    const memoryCreateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryCreateCaller']>>(
+      async () => ({ memory_id: 'memory-new', provenance_edges_written: 0 }),
+    );
+    const memoryUpdateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryUpdateCaller']>>(
+      async ({ memory_id }) => ({ memory_id, provenance_edges_written: 0 }),
+    );
+    const memoryDeleteCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryDeleteCaller']>>(
+      async ({ memory_id }) => ({ memory_id, deleted: true, redacted: false }),
+    );
+    const memoryImportCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryImportCaller']>>(
+      () => importPending,
+    );
+    const rig = mountRoute({
+      initialTab: 'memory',
+      memoryListCaller,
+      memoryGetCaller,
+      memoryCreateCaller,
+      memoryUpdateCaller,
+      memoryDeleteCaller,
+      memoryImportCaller,
+    });
+    await rig.route.whenLoaded();
+    const routeRoot = rig.root.children[0]!;
+
+    emitClick(routeRoot, MEMORY_IMPORT_ACTION);
+    emitMemoryInput(
+      routeRoot,
+      'import',
+      '{"entries":[{"origin_actor":"user_self","kind":"note"}]}',
+    );
+    emitClick(routeRoot, MEMORY_IMPORT_SUBMIT_ACTION);
+
+    expect(memoryImportCaller).toHaveBeenCalledTimes(1);
+    expect(memoryImportCaller).toHaveBeenCalledWith({
+      entries: [{ origin_actor: 'user_self', kind: 'note' }],
+    });
+    expect(routeRoot.innerHTML).toContain('Importing…');
+    expect(routeRoot.innerHTML).toMatch(
+      new RegExp(`${MEMORY_IMPORT_SUBMIT_ACTION}[^>]*aria-disabled="true"[^>]*aria-busy="true"`),
+    );
+
+    emitClick(routeRoot, MEMORY_IMPORT_SUBMIT_ACTION);
+    emitClick(routeRoot, MEMORY_IMPORT_CANCEL_ACTION);
+    emitClick(routeRoot, MEMORY_LENS_SELECT_ACTION, {
+      [MEMORY_LENS_VALUE_ATTR]: 'data',
+    });
+    expect(memoryImportCaller).toHaveBeenCalledTimes(1);
+    expect(rig.route.activeLens()).toBe('memory');
+    expect(routeRoot.innerHTML).toContain('Importing…');
+
+    finishImport({ merged: 0, inserted: 1, deduped: 0, skipped: 0 });
+    await Promise.resolve();
+    await Promise.resolve();
+    await rig.route.whenLoaded();
+    expect(routeRoot.innerHTML).toContain('Imported — merged 0, inserted 1');
+
+    emitClick(routeRoot, MEMORY_IMPORT_CANCEL_ACTION);
+    expect(routeRoot.innerHTML).not.toContain(MEMORY_IMPORT_DISCARD_GUARD_ATTR);
+    expect(routeRoot.innerHTML).not.toContain('Import memory');
+    expect(routeRoot.innerHTML).toContain(MEMORY_IMPORT_ACTION);
+    rig.route.dispose();
+  });
+
+  it('owns Memory row deletion from confirmation through refreshed completion', async () => {
+    let rowPresent = true;
+    let finishDelete!: (result: {
+      memory_id: string;
+      deleted: boolean;
+      redacted: boolean;
+    }) => void;
+    const deletePending = new Promise<{
+      memory_id: string;
+      deleted: boolean;
+      redacted: boolean;
+    }>((resolve) => {
+      finishDelete = (result) => {
+        rowPresent = false;
+        resolve(result);
+      };
+    });
+    const memoryListCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryListCaller']>>(
+      async () => ({
+        entries: rowPresent
+          ? [{
+              memory_id: 'memory-1',
+              origin_actor: 'user_self',
+              kind: 'preference',
+              summary: 'Concise answers',
+              ts: NOW,
+            }]
+          : [],
+      }),
+    );
+    const memoryGetCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryGetCaller']>>(
+      async ({ memory_id }) => ({
+        memory_id,
+        origin_actor: 'user_self',
+        kind: 'preference',
+        ts: NOW,
+      }),
+    );
+    const memoryCreateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryCreateCaller']>>(
+      async () => ({ memory_id: 'memory-new', provenance_edges_written: 0 }),
+    );
+    const memoryUpdateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryUpdateCaller']>>(
+      async ({ memory_id }) => ({ memory_id, provenance_edges_written: 0 }),
+    );
+    const memoryDeleteCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryDeleteCaller']>>(
+      () => deletePending,
+    );
+    const rig = mountRoute({
+      initialTab: 'memory',
+      memoryListCaller,
+      memoryGetCaller,
+      memoryCreateCaller,
+      memoryUpdateCaller,
+      memoryDeleteCaller,
+    });
+    await rig.route.whenLoaded();
+    const routeRoot = rig.root.children[0]!;
+    const rowAttrs = { 'data-memory-id': 'memory-1' };
+
+    emitClick(routeRoot, MEMORY_DELETE_ACTION, rowAttrs);
+    expect(routeRoot.innerHTML).toContain('Delete this memory?');
+    emitClick(routeRoot, MEMORY_DELETE_CANCEL_ACTION, rowAttrs);
+    expect(routeRoot.innerHTML).not.toContain('Delete this memory?');
+    expect(routeRoot.innerHTML).toContain('>Delete</button>');
+
+    emitClick(routeRoot, MEMORY_DELETE_ACTION, rowAttrs);
+    emitClick(routeRoot, MEMORY_DELETE_CONFIRM_ACTION, rowAttrs);
+    expect(memoryDeleteCaller).toHaveBeenCalledTimes(1);
+    expect(memoryDeleteCaller).toHaveBeenCalledWith({ memory_id: 'memory-1' });
+    expect(routeRoot.innerHTML).toContain('Deleting…');
+    expect(routeRoot.innerHTML).toMatch(
+      new RegExp(`${MEMORY_DELETE_CONFIRM_ACTION}[^>]*aria-disabled="true"[^>]*aria-busy="true"`),
+    );
+
+    emitClick(routeRoot, MEMORY_DELETE_CONFIRM_ACTION, rowAttrs);
+    emitClick(routeRoot, MEMORY_DELETE_CANCEL_ACTION, rowAttrs);
+    emitClick(routeRoot, MEMORY_LENS_SELECT_ACTION, {
+      [MEMORY_LENS_VALUE_ATTR]: 'data',
+    });
+    expect(memoryDeleteCaller).toHaveBeenCalledTimes(1);
+    expect(rig.route.activeLens()).toBe('memory');
+    expect(routeRoot.innerHTML).toContain('Deleting…');
+
+    finishDelete({ memory_id: 'memory-1', deleted: true, redacted: false });
+    await Promise.resolve();
+    await Promise.resolve();
+    await rig.route.whenLoaded();
+    expect(routeRoot.innerHTML).not.toContain('Concise answers');
+    expect(routeRoot.innerHTML).toContain(MEMORY_ADD_ACTION);
+    rig.route.dispose();
+  });
+
+  it('drops a stale Memory detail response after Back reopens the same row', async () => {
+    let finishFirst!: (result: {
+      memory_id: string;
+      origin_actor: 'user_self';
+      kind: string;
+      body: string;
+      ts: number;
+    }) => void;
+    let finishSecond!: typeof finishFirst;
+    const first = new Promise<Parameters<typeof finishFirst>[0]>((resolve) => {
+      finishFirst = resolve;
+    });
+    const second = new Promise<Parameters<typeof finishSecond>[0]>((resolve) => {
+      finishSecond = resolve;
+    });
+    const reads = [first, second];
+    const memoryListCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryListCaller']>>(
+      async () => ({
+        entries: [{
+          memory_id: 'memory-1',
+          origin_actor: 'user_self',
+          kind: 'preference',
+          summary: 'Concise answers',
+          body_preview: 'Saved body',
+          has_body: true,
+          ts: NOW,
+        }],
+      }),
+    );
+    const memoryGetCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryGetCaller']>>(
+      () => reads.shift()!,
+    );
+    const memoryCreateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryCreateCaller']>>(
+      async () => ({ memory_id: 'memory-new', provenance_edges_written: 0 }),
+    );
+    const memoryUpdateCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryUpdateCaller']>>(
+      async ({ memory_id }) => ({ memory_id, provenance_edges_written: 0 }),
+    );
+    const memoryDeleteCaller = vi.fn<NonNullable<BootstrapDataRouteOptions['memoryDeleteCaller']>>(
+      async ({ memory_id }) => ({ memory_id, deleted: true, redacted: false }),
+    );
+    const rig = mountRoute({
+      initialTab: 'memory',
+      memoryListCaller,
+      memoryGetCaller,
+      memoryCreateCaller,
+      memoryUpdateCaller,
+      memoryDeleteCaller,
+    });
+    await rig.route.whenLoaded();
+    const routeRoot = rig.root.children[0]!;
+    const rowAttrs = { 'data-memory-id': 'memory-1' };
+
+    emitClick(routeRoot, MEMORY_OPEN_ACTION, rowAttrs);
+    expect(routeRoot.innerHTML).toContain('Loading memory…');
+    emitClick(routeRoot, MEMORY_DETAIL_CLOSE_ACTION);
+    emitClick(routeRoot, MEMORY_OPEN_ACTION, rowAttrs);
+    expect(memoryGetCaller).toHaveBeenCalledTimes(2);
+    expect(routeRoot.innerHTML).toContain('Loading memory…');
+
+    finishFirst({
+      memory_id: 'memory-1',
+      origin_actor: 'user_self',
+      kind: 'preference',
+      body: 'Stale body',
+      ts: NOW,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(routeRoot.innerHTML).toContain('Loading memory…');
+    expect(routeRoot.innerHTML).not.toContain('Stale body');
+
+    finishSecond({
+      memory_id: 'memory-1',
+      origin_actor: 'user_self',
+      kind: 'preference',
+      body: 'Fresh body',
+      ts: NOW,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(routeRoot.innerHTML).toContain('Fresh body');
+    expect(routeRoot.innerHTML).not.toContain('Stale body');
+    rig.route.dispose();
   });
 
   it('shows a connect-a-source CTA instead of a bare empty message when the warehouse is empty', async () => {
@@ -948,6 +1508,67 @@ describe('D-174 P5 Data route', () => {
     rig.route.dispose();
   });
 
+  it('reviews an unfinished form-response edit before returning to the list', async () => {
+    const rig = mountRoute();
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('form_response');
+    await rig.route.openFormResponse('submission-1');
+    installFormResponseControls(rig.root.children[0]!, {
+      values: JSON.stringify({ project: 'Unfinished owner revision' }),
+      email: 'visitor@example.test',
+      lifecycle: 'received',
+    });
+
+    emitClick(rig.root.children[0]!, 'close-form-response');
+    expect(rig.root.children[0]?.innerHTML ?? '')
+      .toContain(DATA_ROUTE_FORM_RESPONSE_DISCARD_GUARD_ATTR);
+    expect(rig.root.children[0]?.innerHTML ?? '')
+      .toContain('data-form-response-detail-content" inert aria-hidden="true"');
+
+    emitClick(rig.root.children[0]!, 'keep-form-response-draft');
+    expect(rig.root.children[0]?.innerHTML ?? '')
+      .not.toContain(DATA_ROUTE_FORM_RESPONSE_DISCARD_GUARD_ATTR);
+    expect(rig.root.children[0]?.innerHTML ?? '')
+      .toContain('Unfinished owner revision');
+
+    emitClick(rig.root.children[0]!, 'close-form-response');
+    emitClick(rig.root.children[0]!, 'discard-form-response-draft');
+    expect(rig.root.children[0]?.innerHTML ?? '')
+      .toContain(DATA_ROUTE_FORM_RESPONSE_ROW_ATTR);
+    expect(rig.root.children[0]?.innerHTML ?? '')
+      .not.toContain(DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR);
+    rig.route.dispose();
+  });
+
+  it('reviews an unfinished form-response edit before changing Data tabs', async () => {
+    const rig = mountRoute();
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('form_response');
+    await rig.route.openFormResponse('submission-1');
+    installFormResponseControls(rig.root.children[0]!, {
+      values: JSON.stringify({ project: 'Tab-owned revision' }),
+      email: 'visitor@example.test',
+      lifecycle: 'received',
+    });
+
+    await rig.route.selectTab('contact');
+    expect(rig.route.activeTab()).toBe('form_response');
+    expect(rig.root.children[0]?.innerHTML ?? '')
+      .toContain(DATA_ROUTE_FORM_RESPONSE_DISCARD_GUARD_ATTR);
+
+    emitClick(rig.root.children[0]!, 'keep-form-response-draft');
+    expect(rig.route.activeTab()).toBe('form_response');
+    expect(rig.root.children[0]?.innerHTML ?? '').toContain('Tab-owned revision');
+
+    await rig.route.selectTab('contact');
+    emitClick(rig.root.children[0]!, 'discard-form-response-draft');
+    await rig.route.whenLoaded();
+    expect(rig.route.activeTab()).toBe('contact');
+    expect(rig.root.children[0]?.innerHTML ?? '')
+      .not.toContain(DATA_ROUTE_FORM_RESPONSE_DETAIL_ATTR);
+    rig.route.dispose();
+  });
+
   it('saves edited form-response content and lifecycle through the two narrow RPCs', async () => {
     const formResponseUpdateCaller = vi.fn<DataFormResponseUpdateCaller>(async (args) => ({
       response: formResponse({
@@ -1004,7 +1625,87 @@ describe('D-174 P5 Data route', () => {
     await rig.route.saveFormResponse();
     expect(formResponseUpdateCaller).not.toHaveBeenCalled();
     expect(formResponseSetStateCaller).not.toHaveBeenCalled();
-    expect(rig.root.children[0]?.innerHTML).toContain('Answers must be a JSON object');
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('Answers must be a JSON object');
+    expect(html).toContain('[&quot;not&quot;, &quot;an&quot;, &quot;object&quot;]');
+    rig.route.dispose();
+  });
+
+  it('keeps the form-response save action focusable and inert while writing', async () => {
+    let finishUpdate!: (result: { response: FormResponse | null }) => void;
+    const updatePending = new Promise<{ response: FormResponse | null }>(
+      (resolve) => {
+        finishUpdate = resolve;
+      },
+    );
+    const formResponseUpdateCaller = vi.fn<DataFormResponseUpdateCaller>(
+      () => updatePending,
+    );
+    const formResponseSetStateCaller = vi.fn<DataFormResponseSetStateCaller>();
+    const rig = mountRoute({ formResponseUpdateCaller, formResponseSetStateCaller });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('form_response');
+    await rig.route.openFormResponse('submission-1');
+    installFormResponseControls(rig.root.children[0]!, {
+      values: JSON.stringify({ project: 'Owner revised' }),
+      email: 'visitor@example.test',
+      lifecycle: 'received',
+    });
+
+    const save = rig.route.saveFormResponse();
+    let html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(
+      'save-form-response" aria-disabled="true" aria-busy="true">Saving…',
+    );
+    expect(html).not.toContain('save-form-response" disabled');
+    expect(html).toContain(`${DATA_ROUTE_FORM_RESPONSE_VALUES_ATTR} disabled`);
+
+    finishUpdate({
+      response: formResponse({ values: { project: 'Owner revised' } }),
+    });
+    await save;
+    html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('Save changes');
+    expect(html).not.toContain('aria-busy="true"');
+    expect(formResponseUpdateCaller).toHaveBeenCalledTimes(1);
+    expect(formResponseSetStateCaller).not.toHaveBeenCalled();
+    rig.route.dispose();
+  });
+
+  it('re-reads the authoritative form response after a rejected save', async () => {
+    let getCount = 0;
+    const formResponseGetCaller = vi.fn<DataFormResponseGetCaller>(async () => {
+      getCount += 1;
+      return {
+        response: formResponse({
+          values: {
+            project: getCount === 1 ? 'Original' : 'Server current',
+          },
+        }),
+      };
+    });
+    const formResponseUpdateCaller = vi.fn<DataFormResponseUpdateCaller>(
+      async () => {
+        throw new Error('write rejected');
+      },
+    );
+    const rig = mountRoute({ formResponseGetCaller, formResponseUpdateCaller });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('form_response');
+    await rig.route.openFormResponse('submission-1');
+    installFormResponseControls(rig.root.children[0]!, {
+      values: JSON.stringify({ project: 'Unsaved owner draft' }),
+      email: 'visitor@example.test',
+      lifecycle: 'received',
+    });
+
+    await rig.route.saveFormResponse();
+
+    expect(formResponseGetCaller).toHaveBeenCalledTimes(2);
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('write rejected');
+    expect(html).toContain('Server current');
+    expect(html).not.toContain('Unsaved owner draft');
     rig.route.dispose();
   });
 
@@ -1024,6 +1725,40 @@ describe('D-174 P5 Data route', () => {
     await rig.route.exportFormResponses('csv');
     expect(formResponseExportCaller).toHaveBeenCalledWith({ format: 'csv' });
     expect(formResponseDownload).toHaveBeenCalledWith(file);
+    rig.route.dispose();
+  });
+
+  it('keeps one form-response export active and recovers its controls on failure', async () => {
+    let rejectExport!: (error: Error) => void;
+    const exportPending = new Promise<never>((_resolve, reject) => {
+      rejectExport = reject;
+    });
+    const formResponseExportCaller = vi.fn<DataFormResponseExportCaller>(
+      () => exportPending,
+    );
+    const rig = mountRoute({ formResponseExportCaller });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('form_response');
+
+    const first = rig.route.exportFormResponses('csv');
+    const duplicate = rig.route.exportFormResponses('json');
+    let html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(
+      'data-format="csv"\n            data-recued-data-action="export-form-responses" aria-disabled="true" aria-busy="true">Exporting CSV…',
+    );
+    expect(html).toContain(
+      'data-format="json"\n            data-recued-data-action="export-form-responses" aria-disabled="true">Export JSON',
+    );
+    expect(html).not.toContain('export-form-responses" disabled');
+
+    rejectExport(new Error('export unavailable'));
+    await Promise.all([first, duplicate]);
+
+    expect(formResponseExportCaller).toHaveBeenCalledTimes(1);
+    html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('export unavailable');
+    expect(html).not.toContain('Exporting CSV');
+    expect(html).not.toContain('aria-disabled="true"');
     rig.route.dispose();
   });
 
@@ -1216,6 +1951,37 @@ describe('D-174 P5 Data route', () => {
     rig.route.dispose();
   });
 
+  it('keeps automation discovery single-flight and exposes its pending state', async () => {
+    let resolveRecipes!: (value: { recipes: ServerRecipeListEntry[] }) => void;
+    const pending = new Promise<{ recipes: ServerRecipeListEntry[] }>((resolve) => {
+      resolveRecipes = resolve;
+    });
+    const recipeListCaller = vi.fn<DataRecipeListCaller>(() => pending);
+    const rig = mountRoute({ recipeListCaller });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('form_response');
+    await rig.route.openFormResponse('submission-1');
+
+    const discovery = rig.route.discoverFormResponseAutomations();
+    const duplicate = rig.route.discoverFormResponseAutomations();
+
+    expect(recipeListCaller).toHaveBeenCalledTimes(1);
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    const trigger = html.match(
+      /<button[^>]*data-recued-data-form-response-run[^>]*>Finding automations…<\/button>/,
+    )?.[0] ?? '';
+    expect(trigger).toContain('aria-disabled="true"');
+    expect(trigger).toContain('aria-busy="true"');
+    expect(trigger).not.toMatch(/\sdisabled(?:\s|=|>)/);
+
+    resolveRecipes({ recipes: [formResponseAutomationEntry()] });
+    await Promise.all([discovery, duplicate]);
+    expect(rig.root.children[0]?.innerHTML).toContain(
+      `${DATA_ROUTE_FORM_RESPONSE_RUN_PICKER_ATTR}="ready"`,
+    );
+    rig.route.dispose();
+  });
+
   it('drops a late automation lookup and hides manual run when callers are absent', async () => {
     let resolveRecipes!: (value: { recipes: ServerRecipeListEntry[] }) => void;
     const pending = new Promise<{ recipes: ServerRecipeListEntry[] }>((resolve) => {
@@ -1382,6 +2148,61 @@ describe('D-174 P5 Data route', () => {
     rig.route.dispose();
   });
 
+  it('queues only one form-response page for same-tick Load more activations', async () => {
+    const firstCursor = {
+      accepted_at: 1_700_000_005_000,
+      submission_id: 'submission-1',
+    };
+    const secondCursor = {
+      accepted_at: 1_700_000_004_000,
+      submission_id: 'submission-0',
+    };
+    let resolveFirstAppend!: (value: {
+      responses: FormResponseListItem[];
+      next_cursor: typeof secondCursor;
+    }) => void;
+    const firstAppend = new Promise<{
+      responses: FormResponseListItem[];
+      next_cursor: typeof secondCursor;
+    }>((resolve) => {
+      resolveFirstAppend = resolve;
+    });
+    const formResponseListCaller = vi.fn<DataFormResponseListCaller>(async (args) => {
+      if (args.before === undefined) {
+        return {
+          responses: [formResponseListItem()],
+          next_cursor: firstCursor,
+        };
+      }
+      if (args.before.submission_id === firstCursor.submission_id) {
+        return firstAppend;
+      }
+      return {
+        responses: [formResponseListItem({ submission_id: 'submission--1' })],
+      };
+    });
+    const rig = mountRoute({ formResponseListCaller });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('form_response');
+
+    emitClick(rig.root.children[0]!, 'load-more-form-responses');
+    emitClick(rig.root.children[0]!, 'load-more-form-responses');
+    await Promise.resolve();
+    resolveFirstAppend({
+      responses: [formResponseListItem({ submission_id: 'submission-0' })],
+      next_cursor: secondCursor,
+    });
+    await rig.route.whenLoaded();
+
+    expect(formResponseListCaller).toHaveBeenCalledTimes(2);
+    expect(rig.route.formResponses().map((row) => row.submission_id)).toEqual([
+      'submission-1',
+      'submission-0',
+    ]);
+
+    rig.route.dispose();
+  });
+
   it('wires contact create/edit through contact.* callers', async () => {
     const contactUpsertCaller = vi.fn<DataContactUpsertCaller>(async (args) => ({
       contact: contactRecord({
@@ -1415,6 +2236,90 @@ describe('D-174 P5 Data route', () => {
       phone: '+15555550123',
       company: 'Example Co',
     });
+
+    rig.route.dispose();
+  });
+
+  it('reviews an unfinished contact edit before dropping it', async () => {
+    const rig = mountRoute();
+    await rig.route.whenLoaded();
+    await rig.route.openEditContactDialog('sam@example.com');
+    rig.route.setContactDialogValues({ name: 'Unfinished Sam' });
+
+    emitClick(rig.root.children[0]!, 'close-contact-dialog');
+    expect(rig.root.children[0]?.innerHTML ?? '')
+      .toContain(DATA_ROUTE_CONTACT_DISCARD_GUARD_ATTR);
+    expect(rig.root.children[0]?.innerHTML ?? '')
+      .toContain('data-contact-dialog-editor" inert aria-hidden="true"');
+    expect(rig.root.children[0]?.innerHTML ?? '').toContain('Unfinished Sam');
+
+    emitClick(rig.root.children[0]!, 'keep-contact-dialog');
+    expect(rig.root.children[0]?.innerHTML ?? '')
+      .not.toContain(DATA_ROUTE_CONTACT_DISCARD_GUARD_ATTR);
+    expect(rig.root.children[0]?.innerHTML ?? '').toContain('Unfinished Sam');
+
+    emitClick(rig.root.children[0]!, 'close-contact-dialog');
+    emitClick(rig.root.children[0]!, 'discard-contact-dialog');
+    expect(rig.root.children[0]?.innerHTML ?? '')
+      .not.toContain(DATA_ROUTE_CONTACT_DIALOG_ATTR);
+    rig.route.dispose();
+  });
+
+  it('keeps an in-flight contact save focusable and single-flight', async () => {
+    type ContactUpsertResponse = Awaited<ReturnType<DataContactUpsertCaller>>;
+    let resolveUpsert!: (value: ContactUpsertResponse) => void;
+    const pendingUpsert = new Promise<ContactUpsertResponse>((resolve) => {
+      resolveUpsert = resolve;
+    });
+    const contactUpsertCaller = vi.fn<DataContactUpsertCaller>(
+      () => pendingUpsert,
+    );
+    const rig = mountRoute({ contactUpsertCaller });
+    await rig.route.whenLoaded();
+
+    rig.route.openCreateContactDialog();
+    rig.route.setContactDialogValues({
+      email: 'lee@example.com',
+      name: 'Lee Morgan',
+    });
+    const firstSave = rig.route.confirmContactDialog();
+    const duplicateSave = rig.route.confirmContactDialog();
+    await Promise.resolve();
+
+    expect(contactUpsertCaller).toHaveBeenCalledTimes(1);
+    expect(rig.route.hasInFlightWork()).toBe(true);
+    expect(rig.route.inFlightWorkPrompt()).toBe(
+      'A Data action is still in progress. Leave Data anyway?',
+    );
+    expect(rig.root.children[0]?.innerHTML).toContain('Saving…');
+    expect(rig.root.children[0]?.innerHTML).toContain('aria-disabled="true"');
+    expect(rig.root.children[0]?.innerHTML).toContain('aria-busy="true"');
+    expect(rig.root.children[0]?.innerHTML).not.toContain(
+      'data-recued-data-action="submit-contact-dialog"\n            disabled',
+    );
+    const busyHtml = rig.root.children[0]?.innerHTML ?? '';
+    for (const field of ['email', 'name', 'phone', 'company']) {
+      expect(busyHtml).toContain(
+        `data-recued-data-contact-field="${field}"\n      readonly`,
+      );
+    }
+
+    // A late input event belongs to neither the payload already in flight nor a
+    // new draft. Do not accept it only to discard it when this save succeeds.
+    rig.route.setContactDialogValues({ name: 'Unsubmitted mutation' });
+    expect(rig.root.children[0]?.innerHTML ?? '').not.toContain(
+      'Unsubmitted mutation',
+    );
+
+    resolveUpsert({
+      contact: contactRecord({
+        email: 'lee@example.com',
+        name: 'Lee Morgan',
+      }),
+    });
+    await Promise.all([firstSave, duplicateSave]);
+    expect(rig.route.hasInFlightWork()).toBe(false);
+    expect(rig.route.inFlightWorkPrompt()).toBeNull();
 
     rig.route.dispose();
   });
@@ -1498,6 +2403,47 @@ describe('D-174 P5 Data route', () => {
       limit: 100,
     });
     rig.route.dispose();
+  });
+
+  it('coalesces rapid booking search input into one server-filtered refresh', async () => {
+    vi.useFakeTimers();
+    let rig: ReturnType<typeof mountRoute> | null = null;
+    try {
+      const workEntityListCaller = vi.fn<DataWorkEntityListCaller>(async () => ({
+        entities: [bookingEntity()],
+        total: 1,
+      }));
+      rig = mountRoute({
+        workEntityListCaller,
+        bookingSearchDebounceMs: 180,
+      });
+      await rig.route.whenLoaded();
+      await rig.route.selectTab('booking');
+      const callsBefore = workEntityListCaller.mock.calls.length;
+
+      for (const value of ['o', 'op', 'opa', 'opaq', 'opaqu', 'opaque']) {
+        emitInput(rig.root.children[0]!, {
+          value,
+          hasAttribute: () => false,
+          getAttribute: (attr) => attr === 'data-action'
+            ? 'search-work-entities'
+            : attr === 'data-kind' ? 'booking' : null,
+        });
+      }
+
+      expect(workEntityListCaller).toHaveBeenCalledTimes(callsBefore);
+      await vi.advanceTimersByTimeAsync(180);
+      await rig.route.whenLoaded();
+      expect(workEntityListCaller).toHaveBeenCalledTimes(callsBefore + 1);
+      expect(workEntityListCaller).toHaveBeenLastCalledWith({
+        kind: 'booking',
+        search: 'opaque',
+        limit: 100,
+      });
+    } finally {
+      rig?.route.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it('opens owner booking detail with prior terminal history and the edit affordance', async () => {
@@ -2384,6 +3330,89 @@ describe('D-174 P5 Data route', () => {
     rig.route.dispose();
   });
 
+  it('D-205 #2b: keeps one merge decision owned through queue reconciliation', async () => {
+    type RejectResult = Awaited<ReturnType<DataContactMergeRejectCaller>>;
+    let finishReject!: (result: RejectResult) => void;
+    const pendingReject = new Promise<RejectResult>((resolve) => {
+      finishReject = resolve;
+    });
+    let resolved = false;
+    const rejectCaller = vi.fn<DataContactMergeRejectCaller>(async () => {
+      const result = await pendingReject;
+      resolved = true;
+      return result;
+    });
+    const scanCaller = vi.fn<DataContactMergeScanNowCaller>(async () => ({
+      mode: 'full',
+      iterated: 0,
+      surfaced_count: 0,
+    }));
+    const contacts: Record<string, ContactRecord> = {
+      'a@x.com': contactRecord({ email: 'a@x.com', name: 'Alice A' }),
+      'b@x.com': contactRecord({ email: 'b@x.com', name: 'Alice B' }),
+    };
+    const listCaller = vi.fn<DataContactMergeListCaller>(async () => ({
+      candidates: resolved
+        ? []
+        : [mergeCandidate({ id: 'cand-ab', email_a: 'a@x.com', email_b: 'b@x.com' })],
+    }));
+    const rig = mountRoute({
+      contactGetCaller: vi.fn<DataContactGetCaller>(async ({ email }) => ({
+        contact: contacts[email] ?? null,
+      })),
+      contactMergeListCaller: listCaller,
+      contactMergeRejectCaller: rejectCaller,
+      contactMergeScanNowCaller: scanCaller,
+    });
+    await rig.route.whenLoaded();
+    await rig.route.openContactScan();
+
+    const rejecting = rig.route.resolveMergeItem('reject');
+    const actionMarkup = (action: string): string => {
+      const html = rig.root.children[0]?.innerHTML ?? '';
+      return html.match(new RegExp(
+        `<button[^>]+data-action="${action}"[^>]*>`,
+      ))?.[0] ?? '';
+    };
+
+    expect(rig.route.hasInFlightWork()).toBe(true);
+    expect(actionMarkup('contact-merge-reject')).toContain(
+      'aria-disabled="true" aria-busy="true"',
+    );
+    expect(actionMarkup('contact-merge-reject')).not.toMatch(/\sdisabled(?:\s|>)/);
+    expect(actionMarkup('contact-merge-confirm')).toMatch(/\sdisabled(?:\s|>)/);
+    expect(rig.root.children[0]?.innerHTML ?? '').toContain('Marking as different…');
+    expect(rig.root.children[0]?.innerHTML ?? '').toContain(
+      'close-contact-scan"\n          aria-disabled="true"',
+    );
+
+    rig.route.setMergeSurvivor('a@x.com');
+    rig.route.closeContactScan();
+    void rig.route.runMergeScan();
+    await rig.route.resolveMergeItem('reject');
+    expect(rig.route.contactScan()?.dialog.survivor_overrides).toEqual({});
+    expect(rejectCaller).toHaveBeenCalledTimes(1);
+    expect(scanCaller).not.toHaveBeenCalled();
+    expect(rig.route.contactScan()).not.toBeNull();
+
+    finishReject({ candidates: [], rejection_rows_written: 1 });
+    await rejecting;
+
+    expect(rejectCaller).toHaveBeenCalledWith({ candidate_ids: ['cand-ab'] });
+    expect(listCaller).toHaveBeenCalledTimes(2);
+    expect(rig.route.hasInFlightWork()).toBe(false);
+    expect(rig.route.contactScan()).toMatchObject({
+      loading: false,
+      last_resolution: 'reject',
+      dialog: { items: [], saving: false },
+    });
+    const settledHtml = rig.root.children[0]?.innerHTML ?? '';
+    expect(settledHtml).toContain('data-recued-data-merge-result');
+    expect(settledHtml).toContain('role="status" tabindex="-1"');
+    expect(settledHtml).toContain('Marked as different');
+    rig.route.dispose();
+  });
+
   it('D-205 #2b: a re-hydrate DROPS survivor overrides — they are keyed by a cursor that re-indexes', async () => {
     // survivor_overrides is keyed by CURSOR (a position in the queue). Resolving
     // a cluster removes it, so everything after shifts up by one. Carrying the
@@ -2488,6 +3517,11 @@ describe('D-174 P5 Data route', () => {
       contactMergeListCaller: vi.fn<DataContactMergeListCaller>(async () => ({
         candidates: [],
       })),
+      contactMergeScanNowCaller: vi.fn<DataContactMergeScanNowCaller>(async () => ({
+        mode: 'full',
+        iterated: 0,
+        surfaced_count: 0,
+      })),
     });
     await rig.route.whenLoaded();
     await rig.route.openContactScan();
@@ -2508,7 +3542,91 @@ describe('D-174 P5 Data route', () => {
     expect(html).toContain(DATA_ROUTE_SCAN_PROGRESS_ATTR);
     expect(html).toContain('Compared 120 of 1,000 contacts');
     expect(html).toContain('3 possible duplicates');
+    expect(html).toContain(
+      'run-merge-scan"\n        aria-disabled="true" aria-busy="true"',
+    );
+    expect(html).not.toContain('merge-review-dialog');
 
+    rig.route.dispose();
+  });
+
+  it('D-205 #2b: keeps one scan owned and withholds the stale review queue', async () => {
+    type ScanResult = Awaited<ReturnType<DataContactMergeScanNowCaller>>;
+    let finishScan!: (result: ScanResult) => void;
+    const pendingScan = new Promise<ScanResult>((resolve) => {
+      finishScan = resolve;
+    });
+    const scanCaller = vi.fn<DataContactMergeScanNowCaller>(() => pendingScan);
+    const rejectCaller = vi.fn<DataContactMergeRejectCaller>(async () => ({
+      candidates: [],
+      rejection_rows_written: 1,
+    }));
+    const contacts: Record<string, ContactRecord> = {
+      'a@x.com': contactRecord({ email: 'a@x.com', name: 'Alice A' }),
+      'b@x.com': contactRecord({ email: 'b@x.com', name: 'Alice B' }),
+    };
+    const rig = mountRoute({
+      contactGetCaller: vi.fn<DataContactGetCaller>(async ({ email }) => ({
+        contact: contacts[email] ?? null,
+      })),
+      contactMergeListCaller: vi.fn<DataContactMergeListCaller>(async () => ({
+        candidates: [
+          mergeCandidate({ id: 'cand-ab', email_a: 'a@x.com', email_b: 'b@x.com' }),
+        ],
+      })),
+      contactMergeRejectCaller: rejectCaller,
+      contactMergeScanNowCaller: scanCaller,
+    });
+    await rig.route.whenLoaded();
+    await rig.route.openContactScan();
+    expect(rig.root.children[0]?.innerHTML ?? '').toContain('merge-review-dialog');
+
+    const scanning = rig.route.runMergeScan();
+    const actionMarkup = (action: string): string => {
+      const html = rig.root.children[0]?.innerHTML ?? '';
+      return html.match(new RegExp(
+        `<[^>]+data-recued-data-action="${action}"[^>]*>`,
+      ))?.[0] ?? '';
+    };
+
+    expect(rig.route.hasInFlightWork()).toBe(true);
+    expect(actionMarkup('run-merge-scan')).toContain(
+      'aria-disabled="true" aria-busy="true"',
+    );
+    expect(actionMarkup('run-merge-scan')).not.toMatch(/\sdisabled(?:\s|>)/);
+    expect(actionMarkup('close-contact-scan')).toContain('aria-disabled="true"');
+    expect(rig.root.children[0]?.innerHTML ?? '').not.toContain('merge-review-dialog');
+
+    // Synthetic/direct calls bypass the hidden and aria-disabled controls.
+    await rig.route.resolveMergeItem('reject');
+    rig.route.setMergeSurvivor('a@x.com');
+    rig.route.closeContactScan();
+    void rig.route.runMergeScan();
+    expect(rejectCaller).not.toHaveBeenCalled();
+    expect(scanCaller).toHaveBeenCalledTimes(1);
+    expect(rig.route.contactScan()).toMatchObject({
+      scanning: true,
+      dialog: { survivor_overrides: {} },
+    });
+
+    finishScan({
+      mode: 'full',
+      iterated: 42,
+      surfaced_count: 1,
+      yield_reason: 'no_work',
+    });
+    await scanning;
+
+    expect(rig.route.hasInFlightWork()).toBe(false);
+    expect(rig.route.contactScan()).toMatchObject({
+      scanning: false,
+      loading: false,
+      last_scan: { iterated: 42, surfaced_count: 1 },
+    });
+    const settledHtml = rig.root.children[0]?.innerHTML ?? '';
+    expect(settledHtml).toContain('data-recued-data-scan-result');
+    expect(settledHtml).toContain('role="status" tabindex="-1"');
+    expect(settledHtml).toContain('merge-review-dialog');
     rig.route.dispose();
   });
 
@@ -2715,6 +3833,58 @@ describe('D-174 P5 Data route', () => {
     for (let i = 0; i < 6; i += 1) await new Promise((r) => setTimeout(r, 0));
   };
 
+  it('keeps a failed collection.get visible and serializes its inline retry', async () => {
+    const mailRecord = {
+      record_id: 'msg-1', received_at: 1, modified_at: 1,
+      hot_fields: { subject: 'Renewal' }, size_bytes: 0, source_id: 'msg-1',
+    };
+    let resolveRetry!: (value: { record: typeof mailRecord }) => void;
+    const retry = new Promise<{ record: typeof mailRecord }>((resolve) => {
+      resolveRetry = resolve;
+    });
+    let attempts = 0;
+    const get = vi.fn(() => {
+      attempts += 1;
+      if (attempts === 1) {
+        return Promise.reject(new Error('Mail detail is temporarily unavailable.'));
+      }
+      return retry;
+    });
+    const rig = mountRoute({
+      collectionListInstancesCaller: vi.fn(async () => ({
+        instances: [
+          { slug: 'gmail', platform: 'mail', adapter_type: 'gmail', caps: {}, auth_state: 'ok', last_synced_at: null },
+        ],
+      })) as never,
+      collectionListCaller: vi.fn(async () => ({ records: [mailRecord] })) as never,
+      collectionGetCaller: get as never,
+    });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('mail');
+    emitClick(rig.root.children[0]!, COLLECTION_OPEN_RECORD_ACTION, {
+      [COLLECTION_RECORD_ID_ATTR]: 'msg-1',
+    });
+    await flushOpen();
+
+    let html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('Mail detail is temporarily unavailable.');
+    expect(html).toContain(COLLECTION_DETAIL_RETRY_ACTION);
+
+    emitClick(rig.root.children[0]!, COLLECTION_DETAIL_RETRY_ACTION);
+    emitClick(rig.root.children[0]!, COLLECTION_DETAIL_RETRY_ACTION);
+    expect(get).toHaveBeenCalledTimes(2);
+    html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('aria-disabled="true" aria-busy="true"');
+    expect(html).toContain('Retrying…');
+
+    resolveRetry({ record: mailRecord });
+    await flushOpen();
+    html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('>Renewal</h2>');
+    expect(html).not.toContain(COLLECTION_DETAIL_RETRY_ACTION);
+    rig.route.dispose();
+  });
+
   it('opening a calendar record fetches its timeline (calendar:<source_id>) and renders it below the fields', async () => {
     const calRecord = {
       record_id: 'evt-1', received_at: 1, modified_at: 1,
@@ -2852,6 +4022,53 @@ describe('D-174 P5 Data route', () => {
         new_end_at: expectedStart + (RESCHED_T2 - RESCHED_T1),
       },
     });
+    rig.route.dispose();
+  });
+
+  it('keeps one reschedule submit active and recovers its form on failure', async () => {
+    let resolveExecute!: (response: ServerExecuteResponse) => void;
+    const pendingExecute = new Promise<ServerExecuteResponse>((resolve) => {
+      resolveExecute = resolve;
+    });
+    const recipeExecuteCaller = vi.fn<
+      NonNullable<BootstrapDataRouteOptions['recipeExecuteCaller']>
+    >(() => pendingExecute);
+    const rig = mountCalendar({ recipeExecuteCaller });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('calendar');
+    emitClick(rig.root.children[0]!, COLLECTION_OPEN_RECORD_ACTION, {
+      [COLLECTION_RECORD_ID_ATTR]: 'evt-1',
+    });
+    await flushOpen();
+    emitClick(rig.root.children[0]!, 'reschedule-open');
+    emitInput(rig.root.children[0]!, {
+      value: '2026-05-01T09:30',
+      hasAttribute: () => false,
+      getAttribute: (key) =>
+        key === 'data-recued-data-action' ? 'reschedule-input' : null,
+    });
+
+    emitClick(rig.root.children[0]!, 'reschedule-submit');
+    emitClick(rig.root.children[0]!, 'reschedule-submit');
+
+    expect(recipeExecuteCaller).toHaveBeenCalledTimes(1);
+    let html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain(
+      'reschedule-submit" aria-disabled="true" aria-busy="true">Rescheduling…',
+    );
+    expect(html).toContain('reschedule-cancel" aria-disabled="true">Cancel');
+    expect(html).not.toContain('reschedule-submit" disabled');
+
+    resolveExecute({
+      ...executeResponse('reschedule-calendar-event'),
+      success: false,
+    });
+    await flushOpen();
+
+    html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('Reschedule failed. Please try again.');
+    expect(html).toContain('reschedule-submit">Save');
+    expect(html).not.toContain('aria-busy="true"');
     rig.route.dispose();
   });
 
@@ -3158,6 +4375,43 @@ describe('D-174 P5 Data route', () => {
     const html = rig.root.children[0]?.innerHTML ?? '';
     expect(html).toContain('data-recued-data-timeline-entity');
     expect(html).not.toContain('data-ref-picker="data-mirror-search"');
+    rig.route.dispose();
+  });
+
+  it('keeps a CRM timeline load focusable, single-flight, and cancelable by navigation', async () => {
+    let resolveTimeline!: (response: TimelineResponse) => void;
+    const pendingTimeline = new Promise<TimelineResponse>((resolve) => {
+      resolveTimeline = resolve;
+    });
+    const timelineCaller = vi.fn<DataTimelineCaller>(() => pendingTimeline);
+    const rig = mountRoute({ timelineCaller });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('crm');
+
+    emitInput(rig.root.children[0]!, {
+      value: 'crm-1',
+      hasAttribute: (key) => key === 'data-recued-data-timeline-entity',
+      getAttribute: () => null,
+    });
+    emitClick(rig.root.children[0]!, 'load-timeline');
+    emitClick(rig.root.children[0]!, 'load-timeline');
+
+    expect(timelineCaller).toHaveBeenCalledTimes(1);
+    let html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('aria-disabled="true" aria-busy="true"');
+    expect(html).toContain('Loading…');
+    expect(html).not.toContain('load-timeline"\n        disabled');
+
+    await rig.route.selectTab('task');
+    await rig.route.selectTab('crm');
+    html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('Open timeline');
+    expect(html).not.toContain('aria-busy="true"');
+
+    resolveTimeline(timelineResponse());
+    await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    expect(rig.route.timeline()).toBeNull();
+    expect(rig.root.children[0]?.innerHTML ?? '').toContain('Open timeline');
     rig.route.dispose();
   });
 
@@ -3789,21 +5043,36 @@ describe('R18 — Data deep-linking (#data/<tab>/<entity_id>)', () => {
 
   it('syncs the URL via replaceState on tab switch + timeline open (no remount)', async () => {
     const replaceState = vi.fn();
-    const rig = mountRoute();
-    // Attach a fake window/history to the route's document.
-    (rig.doc as unknown as { defaultView: unknown }).defaultView = {
-      history: { replaceState },
-    };
+    const onHashSync = vi.fn();
+    const rig = mountRoute({ replaceState, onHashSync });
     await rig.route.whenLoaded();
 
     await rig.route.selectTab('task');
     expect(replaceState).toHaveBeenLastCalledWith(null, '', '#data/task');
+    expect(onHashSync).toHaveBeenLastCalledWith('#data/task');
 
     await rig.route.openTimelineDrilldown('mail', 'msg-1');
     // Synced at open (raw) then re-synced after the id normalizes to `mail:msg-1`
     // (codex fold #3) — the final URL matches the rendered entity.
     expect(replaceState).toHaveBeenCalledWith(null, '', '#data/mail/msg-1');
     expect(replaceState).toHaveBeenLastCalledWith(null, '', '#data/mail/mail%3Amsg-1');
+    expect(onHashSync).toHaveBeenLastCalledWith('#data/mail/mail%3Amsg-1');
+
+    rig.route.dispose();
+  });
+
+  it('does not desync the shell cache when replaceState rejects the URL', async () => {
+    const onHashSync = vi.fn();
+    const rig = mountRoute({
+      replaceState: vi.fn(() => {
+        throw new Error('history unavailable');
+      }),
+      onHashSync,
+    });
+    await rig.route.whenLoaded();
+
+    await rig.route.selectTab('task');
+    expect(onHashSync).not.toHaveBeenCalled();
 
     rig.route.dispose();
   });
@@ -4000,6 +5269,43 @@ describe('R18 — codex fold (stale-response guards + URL honesty)', () => {
 
     rig.route.dispose();
   });
+
+  it('reviews an unfinished work-entity edit before dropping its address', async () => {
+    const replaceState = vi.fn();
+    const rig = mountRoute({ initialTab: 'task', initialEntityId: 'task-1' });
+    (rig.doc as unknown as { defaultView: unknown }).defaultView = {
+      history: { replaceState },
+    };
+    await rig.route.whenLoaded();
+    const dialog = rig.route.workEntityState().dialog;
+    rig.route.setWorkEntityDialogValues({
+      ...(dialog?.values ?? {}),
+      title: 'Unfinished task edit',
+    });
+
+    emitClick(rig.root.children[0]!, 'close-work-entity-dialog');
+    expect(rig.route.workEntityState().dialog?.values.title)
+      .toBe('Unfinished task edit');
+    expect(rig.root.children[0]?.innerHTML ?? '')
+      .toContain('data-recued-data-work-entity-discard-guard');
+    expect(replaceState).toHaveBeenLastCalledWith(
+      null,
+      '',
+      '#data/task/task-1',
+    );
+
+    emitClick(rig.root.children[0]!, 'keep-work-entity-dialog');
+    expect(rig.root.children[0]?.innerHTML ?? '')
+      .not.toContain('data-recued-data-work-entity-discard-guard');
+    expect(rig.route.workEntityState().dialog?.values.title)
+      .toBe('Unfinished task edit');
+
+    emitClick(rig.root.children[0]!, 'close-work-entity-dialog');
+    emitClick(rig.root.children[0]!, 'discard-work-entity-dialog');
+    expect(rig.route.workEntityState().dialog).toBeNull();
+    expect(replaceState).toHaveBeenLastCalledWith(null, '', '#data/task');
+    rig.route.dispose();
+  });
 });
 
 describe('D-174 P5 Data route — R18 contact load-more pagination', () => {
@@ -4086,6 +5392,49 @@ describe('D-174 P5 Data route — R18 contact load-more pagination', () => {
     rig.route.dispose();
   });
 
+  it('queues only one contact page for same-tick Load more activations', async () => {
+    let resolveFirstAppend!: (value: {
+      contacts: ContactRecord[];
+      total: number;
+    }) => void;
+    const firstAppend = new Promise<{
+      contacts: ContactRecord[];
+      total: number;
+    }>((resolve) => {
+      resolveFirstAppend = resolve;
+    });
+    const contactListCaller = vi.fn<DataContactListCaller>(async (args) => {
+      const offset = args.offset ?? 0;
+      if (offset === 0) {
+        return { contacts: [contactRecord()], total: 3 };
+      }
+      if (offset === 1) return firstAppend;
+      return {
+        contacts: [contactRecord({ email: 'third@x.test' })],
+        total: 3,
+      };
+    });
+    const rig = mountRoute({ contactListCaller });
+    await rig.route.whenLoaded();
+
+    emitClick(rig.root.children[0]!, 'load-more-contacts');
+    emitClick(rig.root.children[0]!, 'load-more-contacts');
+    await Promise.resolve();
+    resolveFirstAppend({
+      contacts: [contactRecord({ email: 'second@x.test' })],
+      total: 3,
+    });
+    await rig.route.whenLoaded();
+
+    expect(contactListCaller).toHaveBeenCalledTimes(2);
+    expect(rig.route.contacts().map((contact) => contact.email)).toEqual([
+      contactRecord().email,
+      'second@x.test',
+    ]);
+
+    rig.route.dispose();
+  });
+
   it('drops the footer once every contact is loaded', async () => {
     const contactListCaller = pagedContactCaller(3);
     const rig = mountRoute({ contactListCaller });
@@ -4109,6 +5458,38 @@ describe('D-174 P5 Data route — R18 contact load-more pagination', () => {
       DATA_ROUTE_CONTACT_LOAD_MORE_ATTR,
     );
     rig.route.dispose();
+  });
+
+  it('coalesces rapid contact search input into one authoritative refresh', async () => {
+    vi.useFakeTimers();
+    let rig: ReturnType<typeof mountRoute> | null = null;
+    try {
+      const contactListCaller = pagedContactCaller(5);
+      rig = mountRoute({ contactListCaller, contactSearchDebounceMs: 180 });
+      await rig.route.whenLoaded();
+      const callsBefore = contactListCaller.mock.calls.length;
+
+      for (const value of ['m', 'ma', 'mar', 'mary']) {
+        emitInput(rig.root.children[0]!, {
+          value,
+          hasAttribute: (k) => k === 'data-recued-data-contact-search',
+          getAttribute: () => null,
+        });
+      }
+
+      expect(contactListCaller).toHaveBeenCalledTimes(callsBefore);
+      await vi.advanceTimersByTimeAsync(180);
+      await rig.route.whenLoaded();
+      expect(contactListCaller).toHaveBeenCalledTimes(callsBefore + 1);
+      expect(contactListCaller).toHaveBeenLastCalledWith({
+        limit: 100,
+        name_contains: 'mary',
+        with_rollups: true,
+      });
+    } finally {
+      rig?.route.dispose();
+      vi.useRealTimers();
+    }
   });
 
   it('carries the active search filter into the load-more offset fetch', async () => {
@@ -4179,6 +5560,50 @@ describe('D-174 P5 Data route — R18 work-entity load-more pagination', () => {
     expect(html).toContain('Task 0'); // kept
     expect(html).toContain('Task 2'); // appended
     expect(html).toContain('Task 3');
+
+    rig.route.dispose();
+  });
+
+  it('queues only one work-entity page for same-tick Load more activations', async () => {
+    let resolveFirstAppend!: (value: {
+      entities: WorkEntity[];
+      total: number;
+    }) => void;
+    const firstAppend = new Promise<{
+      entities: WorkEntity[];
+      total: number;
+    }>((resolve) => {
+      resolveFirstAppend = resolve;
+    });
+    const workEntityListCaller = vi.fn<DataWorkEntityListCaller>(async (args) => {
+      const offset = args.offset ?? 0;
+      if (offset === 0) {
+        return { entities: [taskEntity({ id: 'task-0' })], total: 3 };
+      }
+      if (offset === 1) return firstAppend;
+      return {
+        entities: [taskEntity({ id: 'task-2', title: 'Task 2' })],
+        total: 3,
+      };
+    });
+    const rig = mountRoute({ workEntityListCaller });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('task');
+
+    emitClick(rig.root.children[0]!, 'load-more-work-entities');
+    emitClick(rig.root.children[0]!, 'load-more-work-entities');
+    await Promise.resolve();
+    resolveFirstAppend({
+      entities: [taskEntity({ id: 'task-1', title: 'Task 1' })],
+      total: 3,
+    });
+    await rig.route.whenLoaded();
+
+    expect(workEntityListCaller).toHaveBeenCalledTimes(2);
+    expect(rig.route.workEntities().map((entity) => entity.id)).toEqual([
+      'task-0',
+      'task-1',
+    ]);
 
     rig.route.dispose();
   });
@@ -4280,6 +5705,95 @@ describe('D-174 P5 Data route — work-entity edit dialog robustness', () => {
     });
     return { promise, resolve };
   };
+
+  it('keeps a pending edit read single-flight and marks its exact row busy', async () => {
+    const detail = deferred<{ entity: WorkEntity | null }>();
+    const workEntityGetCaller = vi.fn<DataWorkEntityGetCaller>(
+      () => detail.promise,
+    );
+    const rig = mountRoute({ workEntityGetCaller });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('task');
+
+    const first = rig.route.openEditWorkEntityDialog('task', 'task-1');
+    const duplicate = rig.route.openEditWorkEntityDialog('task', 'task-1');
+
+    expect(workEntityGetCaller).toHaveBeenCalledTimes(1);
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    const row = html.match(
+      /<button[^>]*data-entity-id="task-1"[^>]*>[\s\S]*?<\/button>/,
+    )?.[0] ?? '';
+    expect(row).toContain('aria-disabled="true"');
+    expect(row).toContain('aria-busy="true"');
+    expect(row).not.toMatch(/\sdisabled(?:\s|=|>)/);
+    expect(row).toContain('Opening…');
+
+    detail.resolve({ entity: taskEntity() });
+    await Promise.all([first, duplicate]);
+    expect(rig.route.workEntityState().dialog?.entity_id).toBe('task-1');
+    rig.route.dispose();
+  });
+
+  it('keeps a pending edit save single-flight and exposes its busy state', async () => {
+    const saved = deferred<{ entity: WorkEntity }>();
+    const workEntityUpsertCaller = vi.fn<DataWorkEntityUpsertCaller>(
+      () => saved.promise,
+    );
+    const rig = mountRoute({ workEntityUpsertCaller });
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('task');
+    await rig.route.openEditWorkEntityDialog('task', 'task-1');
+
+    const first = rig.route.confirmWorkEntityDialog();
+    const duplicate = rig.route.confirmWorkEntityDialog();
+
+    expect(workEntityUpsertCaller).toHaveBeenCalledTimes(1);
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    const submit = html.match(
+      /<button[^>]*data-action="submit-work-entity-dialog"[^>]*>[\s\S]*?<\/button>/,
+    )?.[0] ?? '';
+    expect(submit).toContain('aria-disabled="true"');
+    expect(submit).toContain('aria-busy="true"');
+    expect(submit).not.toMatch(/\sdisabled(?:\s|=|>)/);
+    expect(submit).toContain('Saving…');
+    expect(rig.route.hasInFlightWork()).toBe(true);
+    expect(rig.route.inFlightWorkPrompt()).toBe(
+      'A Data action is still in progress. Leave Data anyway?',
+    );
+
+    saved.resolve({ entity: taskEntity({ title: 'Saved task' }) });
+    await Promise.all([first, duplicate]);
+    expect(rig.route.workEntityState().dialog).toBeNull();
+    expect(rig.route.hasInFlightWork()).toBe(false);
+    expect(rig.route.inFlightWorkPrompt()).toBeNull();
+    rig.route.dispose();
+  });
+
+  it('marks the first invalid work-entity field without dispatching a write', async () => {
+    const rig = mountRoute();
+    await rig.route.whenLoaded();
+    await rig.route.selectTab('task');
+    await rig.route.openEditWorkEntityDialog('task', 'task-1');
+    const dialog = rig.route.workEntityState().dialog;
+    rig.route.setWorkEntityDialogValues({
+      ...(dialog?.values ?? {}),
+      title: '',
+    });
+
+    await rig.route.confirmWorkEntityDialog();
+
+    expect(rig.workEntityUpsertCaller).not.toHaveBeenCalled();
+    expect(rig.route.workEntityState().dialog?.errors.title).toBe('Required');
+    const html = rig.root.children[0]?.innerHTML ?? '';
+    const title = html.match(
+      /<input[^>]*data-form-field="title"[^>]*>/,
+    )?.[0] ?? '';
+    expect(title).toContain('aria-invalid="true"');
+    expect(title).toContain(
+      'aria-describedby="form-renderer-title-error"',
+    );
+    rig.route.dispose();
+  });
 
   it('withholds reviewed until the exact work entity finishes loading', async () => {
     const detail = deferred<{ entity: WorkEntity | null }>();
@@ -4424,6 +5938,51 @@ describe('D-174 P5 Data route — D-172 file download (explorer detail)', () => 
     // The explorer record id is passed WHOLE to data.file.read (this fixture's
     // id has no `file:` prefix; the realistic-id cases below cover the prefix).
     expect(fileReadCaller).toHaveBeenCalledWith({ record_id: 'rec-1' });
+    rig.route.dispose();
+  });
+
+  it('keeps one file download active and recovers its detail control', async () => {
+    let resolveRead!: (file: Awaited<ReturnType<DataFileReadCaller>>) => void;
+    const pendingRead = new Promise<Awaited<ReturnType<DataFileReadCaller>>>(
+      (resolve) => {
+        resolveRead = resolve;
+      },
+    );
+    const fileReadCaller = vi.fn<DataFileReadCaller>(() => pendingRead);
+    const rig = mountRoute({
+      initialTab: 'files',
+      fileReadCaller,
+      collectionListInstancesCaller: fileInstances as never,
+      collectionListCaller: (vi.fn(async () => ({ records: [fileRecord] }))) as never,
+      collectionGetCaller: (vi.fn(async () => ({ record: fileRecord }))) as never,
+    });
+    await rig.route.whenLoaded();
+    emitClick(rig.root.children[0]!, COLLECTION_OPEN_RECORD_ACTION, {
+      [COLLECTION_RECORD_ID_ATTR]: 'rec-1',
+    });
+    await rig.route.whenLoaded();
+
+    emitClick(rig.root.children[0]!, 'download-file');
+    emitClick(rig.root.children[0]!, 'download-file');
+
+    expect(fileReadCaller).toHaveBeenCalledTimes(1);
+    let html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('aria-disabled="true" aria-busy="true"');
+    expect(html).toContain('Downloading…');
+    expect(html).not.toContain('download-file" disabled');
+
+    resolveRead({
+      record_id: 'rec-1',
+      bytes_b64: 'aGVsbG8=',
+      mime_type: 'text/plain',
+      filename: 'notes.txt',
+      size_bytes: 5,
+    });
+    await rig.route.whenLoaded();
+
+    html = rig.root.children[0]?.innerHTML ?? '';
+    expect(html).toContain('Download file');
+    expect(html).not.toContain('aria-busy="true"');
     rig.route.dispose();
   });
 
@@ -4666,6 +6225,91 @@ describe('D-205 #5b — the import page', () => {
     rig.route.dispose();
   });
 
+  it('keeps one CRM promotion attached to the reviewed source and selection', async () => {
+    type PromoteResult = Awaited<ReturnType<DataContactImportPromoteCaller>>;
+    let finishPromote!: (result: PromoteResult) => void;
+    const pendingPromote = new Promise<PromoteResult>((resolve) => {
+      finishPromote = resolve;
+    });
+    const candidatesCaller = vi.fn<DataContactImportCandidatesCaller>(async () => ({
+      candidates: [
+        { target_id: 'hubspot:contact:work:hs_2', email: 'carol@acme.test', name: 'Carol Jones' },
+        { target_id: 'hubspot:contact:work:hs_3', email: 'dave@acme.test', name: 'Dave Lee' },
+      ],
+      total: 2,
+      mirrored: 10_000,
+    }));
+    const promoteCaller = vi.fn<DataContactImportPromoteCaller>(
+      () => pendingPromote,
+    );
+    const rig = rigWithImport({
+      contactImportCandidatesCaller: candidatesCaller,
+      contactImportPromoteCaller: promoteCaller,
+    });
+    await rig.route.whenLoaded();
+    await rig.route.openContactImport();
+    await rig.route.browseImportSource('hubspot.work.contact');
+    rig.route.toggleImportTarget('hubspot:contact:work:hs_2');
+
+    const promoting = rig.route.promoteImport();
+    const actionMarkup = (action: string): string => {
+      const html = rig.root.children[0]?.innerHTML ?? '';
+      return html.match(new RegExp(
+        `<[^>]+data-recued-data-action="${action}"[^>]*>`,
+      ))?.[0] ?? '';
+    };
+
+    expect(rig.route.hasInFlightWork()).toBe(true);
+    expect(actionMarkup('contact-import-search')).toMatch(/\sdisabled(?:\s|\/>)/);
+    expect(actionMarkup('contact-import-toggle')).toMatch(/\sdisabled(?:\s|\/>)/);
+    expect(actionMarkup('contact-import-promote')).toContain(
+      'aria-disabled="true" aria-busy="true"',
+    );
+    expect(actionMarkup('contact-import-promote')).not.toMatch(
+      /\sdisabled(?:\s|>)/,
+    );
+    expect(actionMarkup('contact-import-overview')).toContain(
+      'aria-disabled="true"',
+    );
+
+    // These calls deliberately bypass the rendered disabled state. The operation
+    // must retain the exact Source + checked ids it dispatched with.
+    emitInput(rig.root.children[0]!, {
+      value: 'newer query',
+      hasAttribute: () => false,
+      getAttribute: (key) => key === 'data-recued-data-action'
+        ? 'contact-import-search'
+        : null,
+    });
+    emitClick(rig.root.children[0]!, 'contact-import-toggle', {
+      'data-import-target': 'hubspot:contact:work:hs_3',
+    });
+    emitClick(rig.root.children[0]!, 'contact-import-overview');
+    await rig.route.browseImportSource('salesforce.crm.contact');
+    await rig.route.promoteImport();
+    expect(candidatesCaller).toHaveBeenCalledTimes(1);
+    expect(promoteCaller).toHaveBeenCalledTimes(1);
+    expect(rig.route.contactImport()).toMatchObject({
+      source_id: 'hubspot.work.contact',
+      query: '',
+      promoting: true,
+    });
+    expect(rig.route.contactImport()?.selected).toEqual(
+      new Set(['hubspot:contact:work:hs_2']),
+    );
+
+    finishPromote({ created: 1, already_known: 0, failures: [] });
+    await promoting;
+    expect(rig.route.hasInFlightWork()).toBe(false);
+    expect(rig.route.contactImport()).toMatchObject({
+      source_id: 'hubspot.work.contact',
+      promoting: false,
+      result: { created: 1, already_known: 0, failures: [] },
+    });
+    expect(rig.route.contactImport()?.selected.size).toBe(0);
+    rig.route.dispose();
+  });
+
   it('🔑 leaving a Source DROPS the selection — a tick must never cross CRMs', async () => {
     // The same `target_id` addresses a different person in a different CRM. Carrying a
     // tick across would promote someone the user never looked at.
@@ -4679,6 +6323,46 @@ describe('D-205 #5b — the import page', () => {
 
     await rig.route.browseImportSource('salesforce.crm.contact');
     expect(rig.route.contactImport()?.selected.size).toBe(0);
+    rig.route.dispose();
+  });
+
+  it('retires a Source candidate read when returning to the import overview', async () => {
+    type CandidatesResult = Awaited<ReturnType<DataContactImportCandidatesCaller>>;
+    let finishCandidates!: (result: CandidatesResult) => void;
+    const pendingCandidates = new Promise<CandidatesResult>((resolve) => {
+      finishCandidates = resolve;
+    });
+    const candidatesCaller = vi.fn<DataContactImportCandidatesCaller>(
+      () => pendingCandidates,
+    );
+    const rig = rigWithImport({ contactImportCandidatesCaller: candidatesCaller });
+    await rig.route.whenLoaded();
+    await rig.route.openContactImport();
+
+    const browsing = rig.route.browseImportSource('hubspot.work.contact');
+    await vi.waitFor(() => expect(candidatesCaller).toHaveBeenCalledTimes(1));
+    emitClick(rig.root.children[0]!, 'contact-import-overview');
+    expect(rig.route.contactImport()).toMatchObject({
+      source_id: null,
+      candidates: [],
+      loading: false,
+    });
+
+    finishCandidates({
+      candidates: [
+        { target_id: 'hubspot:contact:work:late', email: 'late@acme.test', name: 'Late Result' },
+      ],
+      total: 1,
+      mirrored: 10_000,
+    });
+    await browsing;
+    expect(rig.route.contactImport()).toMatchObject({
+      source_id: null,
+      candidates: [],
+      total: 0,
+      loading: false,
+    });
+    expect(rig.root.children[0]?.innerHTML ?? '').not.toContain('Late Result');
     rig.route.dispose();
   });
 
@@ -4702,8 +6386,11 @@ describe('D-205 #5b — the import page', () => {
 const fakeFile = (name: string, text: string): File =>
   ({ name, text: async () => text }) as unknown as File;
 
-const samplePlan = () => ({
-  format: 'vcard' as const,
+// Annotated to the CONTRACT rather than `as const`: `format` is genuinely
+// 'vcard' | 'csv', and pinning it to the literal made a spread-and-override
+// for the csv cases a type error, in tests whose whole subject is csv.
+const samplePlan = (): ContactImportFilePlan => ({
+  format: 'vcard',
   adds: 2,
   unchanged: 5,
   changes: [
@@ -4774,6 +6461,51 @@ describe('D-205 #5c — the file import panel', () => {
     rig.route.dispose();
   });
 
+  it('keeps a late preview from an earlier file out of the current review', async () => {
+    let resolveFirstPlan!: (plan: ReturnType<typeof samplePlan>) => void;
+    let resolveSecondPlan!: (plan: ReturnType<typeof samplePlan>) => void;
+    const firstPlan = new Promise<ReturnType<typeof samplePlan>>((resolve) => {
+      resolveFirstPlan = resolve;
+    });
+    const secondPlan = new Promise<ReturnType<typeof samplePlan>>((resolve) => {
+      resolveSecondPlan = resolve;
+    });
+    const previewCaller = vi.fn<DataContactImportFilePreviewCaller>(
+      ({ text }) => text === 'first-file' ? firstPlan : secondPlan,
+    );
+    const rig = rigWithFile({ contactImportFilePreviewCaller: previewCaller });
+    await rig.route.whenLoaded();
+    await rig.route.openContactImport();
+
+    const firstPreview = rig.route.previewImportFile(
+      fakeFile('first.csv', 'first-file'),
+    );
+    const secondPreview = rig.route.previewImportFile(
+      fakeFile('second.csv', 'second-file'),
+    );
+    await vi.waitFor(() => expect(previewCaller).toHaveBeenCalledTimes(2));
+
+    resolveSecondPlan({ ...samplePlan(), format: 'csv', adds: 22 });
+    await secondPreview;
+    expect(rig.route.contactImport()?.file).toMatchObject({
+      name: 'second.csv',
+      text: 'second-file',
+      plan: { format: 'csv', adds: 22 },
+      busy: false,
+    });
+
+    resolveFirstPlan({ ...samplePlan(), format: 'csv', adds: 11 });
+    await firstPreview;
+    expect(rig.route.contactImport()?.file).toMatchObject({
+      name: 'second.csv',
+      text: 'second-file',
+      plan: { format: 'csv', adds: 22 },
+      busy: false,
+    });
+
+    rig.route.dispose();
+  });
+
   it('applying sends the SAME bytes the plan came from, with the users choice', async () => {
     const applyCaller = vi.fn<DataContactImportFileApplyCaller>(async () => ({
       added: 2,
@@ -4800,6 +6532,87 @@ describe('D-205 #5c — the file import panel', () => {
     // have already moved.
     expect(rig.route.contactImport()?.file?.plan).toBeNull();
     expect(rig.root.children[0]?.innerHTML ?? '').toContain('2 added · 1 changed');
+    rig.route.dispose();
+  });
+
+  it('keeps one file apply owned and rejects replacement until its durable receipt', async () => {
+    type ApplyResult = Awaited<ReturnType<DataContactImportFileApplyCaller>>;
+    let finishApply!: (result: ApplyResult) => void;
+    const pendingApply = new Promise<ApplyResult>((resolve) => {
+      finishApply = resolve;
+    });
+    const previewCaller = vi.fn<DataContactImportFilePreviewCaller>(
+      async () => samplePlan(),
+    );
+    const applyCaller = vi.fn<DataContactImportFileApplyCaller>(
+      () => pendingApply,
+    );
+    const rig = rigWithFile({
+      contactImportFilePreviewCaller: previewCaller,
+      contactImportFileApplyCaller: applyCaller,
+    });
+    await rig.route.whenLoaded();
+    await rig.route.openContactImport();
+    await rig.route.previewImportFile(fakeFile('first.vcf', 'first-file'));
+    rig.route.setImportApplyChanges(true);
+
+    const applying = rig.route.applyImportFile();
+    const actionMarkup = (action: string): string => {
+      const html = rig.root.children[0]?.innerHTML ?? '';
+      return html.match(new RegExp(
+        `<[^>]+data-recued-data-action="${action}"[^>]*>`,
+      ))?.[0] ?? '';
+    };
+
+    expect(rig.route.hasInFlightWork()).toBe(true);
+    expect(actionMarkup('contact-import-file-pick')).toMatch(/\sdisabled(?:\s|\/>)/);
+    expect(actionMarkup('contact-import-file-toggle-changes')).toMatch(
+      /\sdisabled(?:\s|\/>)/,
+    );
+    expect(actionMarkup('contact-import-file-apply')).toContain(
+      'aria-disabled="true" aria-busy="true"',
+    );
+    expect(actionMarkup('contact-import-file-apply')).not.toMatch(
+      /\sdisabled(?:\s|>)/,
+    );
+    expect(actionMarkup('contact-import-file-clear')).toContain(
+      'aria-disabled="true"',
+    );
+    expect(actionMarkup('close-contact-import')).toContain(
+      'aria-disabled="true"',
+    );
+
+    // Even programmatic/synthetic dispatch cannot replace the bytes, toggle the
+    // reviewed posture, dismiss the only visible owner, or double-submit.
+    await rig.route.previewImportFile(fakeFile('second.csv', 'second-file'));
+    rig.route.setImportApplyChanges(false);
+    emitClick(rig.root.children[0]!, 'contact-import-file-clear');
+    emitClick(rig.root.children[0]!, 'close-contact-import');
+    await rig.route.applyImportFile();
+    expect(previewCaller).toHaveBeenCalledTimes(1);
+    expect(applyCaller).toHaveBeenCalledTimes(1);
+    expect(rig.route.contactImport()?.file).toMatchObject({
+      name: 'first.vcf',
+      text: 'first-file',
+      apply_changes: true,
+      busy: true,
+    });
+
+    finishApply({ added: 2, changed: 1, skipped: 0, failures: [] });
+    await applying;
+
+    expect(rig.route.hasInFlightWork()).toBe(false);
+    expect(rig.route.contactImport()?.file).toMatchObject({
+      name: 'first.vcf',
+      busy: false,
+      plan: null,
+      result: { added: 2, changed: 1, skipped: 0 },
+    });
+    const receipt = rig.root.children[0]?.innerHTML ?? '';
+    expect(receipt).toContain(DATA_ROUTE_CONTACT_IMPORT_RESULT_ATTR);
+    expect(receipt).toContain('role="status" tabindex="-1"');
+    await rig.route.applyImportFile();
+    expect(applyCaller).toHaveBeenCalledTimes(1);
     rig.route.dispose();
   });
 });

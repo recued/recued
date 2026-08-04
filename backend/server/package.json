@@ -1,6 +1,6 @@
 {
   "name": "@recued/server",
-  "version": "26.8.2",
+  "version": "26.8.4",
   "description": "Personal automation server — data warehouse + scheduler + MCP host",
   "license": "AGPL-3.0-only",
   "homepage": "https://recued.com",
@@ -83,6 +83,7 @@
     "@types/ws": "^8.18.1",
     "better-sqlite3": "^12.8.0",
     "esbuild": "^0.27.7",
-    "mailparser": "^3.9.8"
+    "mailparser": "^3.9.8",
+    "postject": "^1.0.0-alpha.6"
   }
 }

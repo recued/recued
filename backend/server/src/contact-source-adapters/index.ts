@@ -25,20 +25,29 @@
  *  arrive as a side-effect of something else Recued already syncs, and a contact
  *  book's do not.
  *
- *  ⚠ **MS Graph contacts and CardDAV are still absent, and that is a decision, not
- *  an omission.** Neither has a leaf, and `CONTACT_SOURCE_DECLARATIONS` does not
- *  declare them — so nothing here is waiting on a leaf that will never come. They
- *  land together, as `google` just did. */
+ *  **The Graph contacts leaf — the second contact book, same shape as the first.**
+ *  Microsoft's `/me/contacts` has no mirror either, so it goes to the source the
+ *  same way: dispatching the `microsoft-contacts` pack's own `contact.list` through
+ *  the catalog gateway. It is a separate leaf rather than a parameter of the Google
+ *  one because the two vendors' record shapes share nothing — Graph has no primary
+ *  flag on emails, spreads phones across three fields, carries three address slots,
+ *  and cannot supply a photo at all (its `photo` is bytes, not a URL).
+ *
+ *  ⚠ **CardDAV is still absent, and that is a decision, not an omission.** It has no
+ *  leaf, and `CONTACT_SOURCE_DECLARATIONS` does not declare it — so nothing here is
+ *  waiting on a leaf that will never come. It lands as `google` and `microsoft`
+ *  did. */
 
 import { buildCrmMirrorContactLeaf, type CrmMirrorLeafDeps } from './crm-mirror-leaf.js';
 import { createGooglePeopleLeaf, type GooglePeopleLeafDeps } from './google-people-leaf.js';
+import { createGraphPeopleLeaf, type GraphPeopleLeafDeps } from './graph-people-leaf.js';
 import type {
   ContactSourceAdapterResolver,
   ContactSourceListFn,
 } from '../contact-source-sync.js';
 
-export type { CrmMirrorLeafDeps, GooglePeopleLeafDeps };
-export { buildCrmMirrorContactLeaf, createGooglePeopleLeaf };
+export type { CrmMirrorLeafDeps, GooglePeopleLeafDeps, GraphPeopleLeafDeps };
+export { buildCrmMirrorContactLeaf, createGooglePeopleLeaf, createGraphPeopleLeaf };
 
 /** What the resolver needs to build EVERY leaf it can.
  *
@@ -56,8 +65,16 @@ export interface ContactSourceAdapterDeps {
   /** The CRM mirror the reconcilers maintain. Absent ⇒ no CRM contact leaves (and
    *  that is not an error — this server syncs no CRM). */
   crm?: CrmMirrorLeafDeps;
-  /** The gated catalog-op dispatcher's deps. Absent ⇒ no contact-book leaves. */
+  /** The gated catalog-op dispatcher's deps. Absent ⇒ no Google contact book. */
   google?: GooglePeopleLeafDeps;
+  /** The same dispatcher bundle, for the Microsoft contact book.
+   *
+   *  ⚠ Separate from `google` and independently optional, for the reason the header
+   *  gives: a dep bundle that couples two unrelated vendors is exactly how a Source
+   *  registers, shows in the health strip, and silently never syncs. The two books
+   *  are unrelated — a Microsoft-only server has no Google deps and must still
+   *  import its contacts. */
+  microsoft?: GraphPeopleLeafDeps;
 }
 
 /** Build the per-vendor `ContactSourceListFn` resolver the slice-6 wire consumes
@@ -81,6 +98,10 @@ export const buildContactSourceAdapterResolver = (
 
   if (deps.google !== undefined) {
     leaves.google = createGooglePeopleLeaf(deps.google);
+  }
+
+  if (deps.microsoft !== undefined) {
+    leaves.microsoft = createGraphPeopleLeaf(deps.microsoft);
   }
 
   return (vendor) => leaves[vendor];

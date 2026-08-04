@@ -363,6 +363,63 @@ describe('D-192 P1 work_entity_sources section validation', () => {
     expect(collectWorkEntityIssues(manifest)).toEqual([]);
   });
 
+  it('accepts ops.create on a read-through Source (create is vendor-first, id minted from the response)', () => {
+    const manifest = validCatalog();
+    const declaration = source(manifest);
+    // The base fixture declares list + read + create + update. A read-through
+    // create needs no incoming qualified id — the vendor mints the record and
+    // its id becomes the `we1` identity the caller answers with.
+    declaration.sync = {
+      posture: 'read_through',
+      mode: 'read_write',
+      depth: 'meta',
+    };
+    declaration.read_resolution = {
+      default: 'source',
+      wild_query: {
+        remote_fanout: 'bounded_targeted',
+        max_sources: 3,
+        max_remote_records: 10,
+        on_exceeds_cap: 'ask_to_narrow',
+      },
+    };
+
+    expect(collectWorkEntityIssues(manifest)).toEqual([]);
+  });
+
+  it('a read-through create still requires ops.read — the universal rule already covers it', () => {
+    const manifest = validCatalog();
+    const declaration = source(manifest);
+    declaration.sync = {
+      posture: 'read_through',
+      mode: 'read_write',
+      depth: 'meta',
+    };
+    declaration.read_resolution = {
+      default: 'source',
+      wild_query: {
+        remote_fanout: 'bounded_targeted',
+        max_sources: 3,
+        max_remote_records: 10,
+        on_exceeds_cap: 'ask_to_narrow',
+      },
+    };
+    // A read-through create projects the new record by reading it back — there
+    // is no sync cycle to fill it in later. Pinned here because that need is
+    // specific to read-through, while the rule enforcing it is the generic
+    // `ops.read` requirement: if the generic rule is ever narrowed, this fails.
+    delete declaration.ops.read;
+    delete declaration.ops.update;
+    delete declaration.op_bindings;
+
+    expectIssue(
+      collectWorkEntityIssues(manifest),
+      'WORK_ENTITY_SOURCES_OP_INVALID',
+      'work_entity_sources[0].ops.read',
+      'ops.read is required',
+    );
+  });
+
   it('rejects mirror lifecycle fields on a read-through Source', () => {
     const manifest = validCatalog();
     const declaration = source(manifest);

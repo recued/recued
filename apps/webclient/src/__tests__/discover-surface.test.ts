@@ -91,6 +91,12 @@ const makeEl = (tag: string) => {
     click: () => {
       for (const fn of listeners.get('click') ?? []) fn({ stopPropagation() {} });
     },
+    focus: () => {},
+    keydown: (key: string) => {
+      for (const fn of listeners.get('keydown') ?? []) {
+        fn({ key, preventDefault() {} });
+      }
+    },
   };
   return el;
 };
@@ -173,6 +179,24 @@ describe('mountDiscoverySurface', () => {
     expect(surface.activeTab()).toBe('discover');
   });
 
+  it('uses one tab stop and activates adjacent tabs with arrow keys', () => {
+    const { root, surface } = setup();
+    const installed = findTab(root, 'installed');
+    const discover = findTab(root, 'discover');
+    expect(installed.tabIndex).toBe(0);
+    expect(discover.tabIndex).toBe(-1);
+
+    installed.keydown('ArrowRight');
+    expect(surface.activeTab()).toBe('discover');
+    expect(installed.tabIndex).toBe(-1);
+    expect(discover.tabIndex).toBe(0);
+
+    discover.keydown('ArrowLeft');
+    expect(surface.activeTab()).toBe('installed');
+    expect(installed.tabIndex).toBe(0);
+    expect(discover.tabIndex).toBe(-1);
+  });
+
   it('fires onReactivate on a RE-visit to an already-mounted pane, not first mount', () => {
     const { surface, onReactivate } = setup();
     surface.showTab('discover'); // first open = mount, not a reactivation
@@ -188,6 +212,56 @@ describe('mountDiscoverySurface', () => {
     const { surface, onReactivate } = setup();
     surface.showTab('installed'); // already active (default) → no change, no reactivate
     expect(onReactivate).not.toHaveBeenCalled();
+  });
+
+  it('forwards installed-route in-flight ownership through the tab shell', () => {
+    const root = makeEl('div');
+    let pending = true;
+    const surface = mountDiscoverySurface({
+      root: root as unknown as HTMLElement,
+      document: fakeDoc(),
+      mountInstalled: () => ({
+        dispose: vi.fn(),
+        hasInFlightWork: () => pending,
+        inFlightWorkPrompt: () =>
+          pending ? 'A recipe action is still in progress.' : null,
+      }),
+      mountDiscover: () => ({ dispose: vi.fn() }),
+    });
+
+    expect(surface.hasInFlightWork()).toBe(true);
+    expect(surface.inFlightWorkPrompt()).toBe(
+      'A recipe action is still in progress.',
+    );
+    pending = false;
+    expect(surface.hasInFlightWork()).toBe(false);
+    expect(surface.inFlightWorkPrompt()).toBeNull();
+    surface.dispose();
+  });
+
+  it('forwards installed-route unsaved ownership through the tab shell', () => {
+    const root = makeEl('div');
+    let dirty = true;
+    const surface = mountDiscoverySurface({
+      root: root as unknown as HTMLElement,
+      document: fakeDoc(),
+      mountInstalled: () => ({
+        dispose: vi.fn(),
+        hasUnsavedChanges: () => dirty,
+        unsavedChangesPrompt: () =>
+          dirty ? 'This recipe result has unsaved table changes.' : null,
+      }),
+      mountDiscover: () => ({ dispose: vi.fn() }),
+    });
+
+    expect(surface.hasUnsavedChanges()).toBe(true);
+    expect(surface.unsavedChangesPrompt()).toBe(
+      'This recipe result has unsaved table changes.',
+    );
+    dirty = false;
+    expect(surface.hasUnsavedChanges()).toBe(false);
+    expect(surface.unsavedChangesPrompt()).toBeNull();
+    surface.dispose();
   });
 
   it('dispose tears down both mounted children', () => {

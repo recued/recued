@@ -33,9 +33,9 @@ import { CORE_CAPABILITY_SLUGS, stripCorePrefix } from '../core-pack.js';
 const EXPECTED_DOMAIN_COUNTS: Record<string, number> = {
   ai: 11,
   mail: 9, // D-210 §7 — + core.mail.notify-booking-visitor
-  contact: 3,
+  contact: 4,
   customer: 1,
-  notification: 1,
+  notification: 2,
   // D-192 F1 added core.work-entity.commitment.propose (the review-then-
   // approve proposal surface). 2026-07-16 added the NATIVE `core.work-entity.read`
   // verb-op (15 writes → +1 read): the domain's READ half had no grant handle at
@@ -172,6 +172,7 @@ describe('D-182 slice 3a — kernel op registry', () => {
       // run history is its own kernel surface, not the knowledge pool.
       'core.audit.read|audit|(native)|read',
       // D-187 slice 3b — NATIVE verb-op for `recued_contactEngagementsList`.
+      'core.contact.business-context|contact|contact-business-context|read',
       'core.contact.engagements.read|contact|(native)|read',
       'core.contact.resolve|contact|contact-resolve|read',
       'core.contact.upsert|contact|contact-upsert|write',
@@ -221,6 +222,7 @@ describe('D-182 slice 3a — kernel op registry', () => {
       'core.memory.read|memory|(native)|read',
       'core.memory.timeline.read|memory|timeline-read|read',
       'core.memory.write|memory|(native)|write',
+      'core.notification.recipe-callback|notification|core-notification-recipe-callback|write',
       'core.notification.send|notification|core-notification-send|write',
       'core.schedule.recipe|schedule|schedule-recipe|write',
       // D-207 §4.5 — the op path moved under `seller`; the backing capability

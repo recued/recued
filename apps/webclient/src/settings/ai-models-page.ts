@@ -20,7 +20,11 @@ import {
   type ServerLlmPrompt,
   type ServerLlmPromptSurface,
 } from '@recued/contracts';
-import { formatClientDateTime } from '@recued/ui-shared';
+import {
+  formatClientDateTime,
+  wireFocusTrap,
+  type FocusTrapHandle,
+} from '@recued/ui-shared';
 
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 import {
@@ -52,6 +56,12 @@ export const AI_MODELS_FAIL_LOUD_ATTR = 'data-recued-ai-models-fail-loud';
 // (an unmatched stored default) and the load-error list (read failures).
 export const AI_MODELS_ACTION_ERROR_ATTR = 'data-recued-ai-models-action-error';
 export const AI_MODELS_POOL_REMOVE_ATTR = 'data-recued-ai-models-pool-remove';
+export const AI_MODELS_POOL_REMOVE_DIALOG_ATTR =
+  'data-recued-ai-models-pool-remove-dialog';
+export const AI_MODELS_POOL_REMOVE_CANCEL_ATTR =
+  'data-recued-ai-models-pool-remove-cancel';
+export const AI_MODELS_POOL_REMOVE_CONFIRM_ATTR =
+  'data-recued-ai-models-pool-remove-confirm';
 export const AI_MODELS_MODEL_PREF_BUTTON_ATTR =
   'data-recued-ai-models-model-pref';
 /** D-174 R28 Slice A — the empty-state "add a source" jump button (Preference
@@ -59,12 +69,26 @@ export const AI_MODELS_MODEL_PREF_BUTTON_ATTR =
 export const AI_MODELS_MODEL_PREF_EMPTY_JUMP_ATTR =
   'data-recued-ai-models-model-pref-empty-jump';
 export const AI_MODELS_SLOT_SAVE_ATTR = 'data-recued-ai-models-slot-save';
+export const AI_MODELS_SLOT_CLEAR_ATTR = 'data-recued-ai-models-slot-clear';
+export const AI_MODELS_SLOT_CLEAR_DIALOG_ATTR =
+  'data-recued-ai-models-slot-clear-dialog';
+export const AI_MODELS_SLOT_CLEAR_CANCEL_ATTR =
+  'data-recued-ai-models-slot-clear-cancel';
+export const AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR =
+  'data-recued-ai-models-slot-clear-confirm';
+export const AI_MODELS_SLOT_FIELD_ATTR = 'data-recued-ai-models-slot-field';
+export const AI_MODELS_EMBEDDINGS_FIELD_ATTR =
+  'data-recued-ai-models-embeddings-field';
 /** Per-source model context-window input. Values are `slot_1`, `slot_2`, or
  *  `free_pool:new` for the API-entry creation form. */
 export const AI_MODELS_CONTEXT_WINDOW_INPUT_ATTR =
   'data-recued-ai-models-context-window-input';
 export const AI_MODELS_POOL_TOGGLE_ATTR = 'data-recued-ai-models-pool-toggle';
+export const AI_MODELS_POOL_ADD_ATTR = 'data-recued-ai-models-pool-add';
+export const AI_MODELS_POOL_ADD_FIELD_ATTR =
+  'data-recued-ai-models-pool-add-field';
 export const AI_MODELS_BUDGET_SAVE_ATTR = 'data-recued-ai-models-budget-save';
+export const AI_MODELS_BUDGET_INPUT_ATTR = 'data-recued-ai-models-budget-input';
 export const AI_MODELS_ALLOW_BYOK_TOGGLE_ATTR =
   'data-recued-ai-models-allow-byok-toggle';
 export const AI_MODELS_PAUSE_BUTTON_ATTR = 'data-recued-ai-models-pause';
@@ -120,10 +144,44 @@ const AI_MODELS_TABS: ReadonlyArray<{ id: AiModelsTab; label: string }> = [
   { id: 'usage', label: 'Usage & budget' },
 ];
 
+const isAiModelsTab = (value: string | null): value is AiModelsTab =>
+  AI_MODELS_TABS.some((tab) => tab.id === value);
+
 type LlmConfigRecord = Record<string, unknown>;
 type LlmSlotKey = 'slot_1' | 'slot_2';
+type ClearableSlotKey = LlmSlotKey | 'embeddings_slot';
 type LlmSlotRecord = Record<string, unknown>;
 type FreePoolEntryRecord = Record<string, unknown>;
+
+interface ByokSlotDraft {
+  provider: string;
+  model: string;
+  baseUrl: string;
+  apiKey: string;
+  budget: string;
+  contextWindow: string;
+}
+
+interface FreePoolAddDraft {
+  id: string;
+  provider: string;
+  model: string;
+  apiKey: string;
+  baseUrl: string;
+  contextWindow: string;
+}
+
+interface EmbeddingsSlotDraft {
+  provider: string;
+  model: string;
+  baseUrl: string;
+  apiKey: string;
+}
+
+interface PoolFocusTarget {
+  attr: typeof AI_MODELS_POOL_REMOVE_ATTR | typeof AI_MODELS_POOL_ADD_ATTR;
+  value: string;
+}
 
 export type AiModelsInitialView = 'manage' | 'chat-setup';
 
@@ -318,6 +376,8 @@ export interface AiModelsPageMount {
   getState(): AiModelsResolvedState;
   refresh(): Promise<void>;
   whenLoaded(): Promise<void>;
+  /** True while any user-started AI configuration write is unresolved. */
+  hasInFlightWork(): boolean;
   /** Set the global default to a configured source (slot id or `'free_pool'`,
    *  from the resolved model's options). Persists the source's layer + § A.14
    *  slot hint. */
@@ -725,16 +785,103 @@ export const mountAiModelsPage = (
    *  server's truth) so a re-render never silently discards what the owner is
    *  mid-way through typing. */
   const promptDrafts = new Map<ServerLlmPromptSurface, PromptDraft>();
+  const promptMutationPending = new Map<
+    ServerLlmPromptSurface,
+    'save' | 'reset'
+  >();
+  const byokSlotDrafts = new Map<LlmSlotKey, ByokSlotDraft>();
+  let embeddingsSlotDraft: EmbeddingsSlotDraft | null = null;
+  const freePoolAddDraft: FreePoolAddDraft = {
+    id: '',
+    provider: 'openai-compatible',
+    model: '',
+    apiKey: '',
+    baseUrl: '',
+    contextWindow: '',
+  };
+  const resetFreePoolAddDraft = (): void => {
+    Object.assign(freePoolAddDraft, {
+      id: '',
+      provider: 'openai-compatible',
+      model: '',
+      apiKey: '',
+      baseUrl: '',
+      contextWindow: '',
+    });
+  };
+  const poolTogglePendingTargets = new Map<string, boolean>();
+  let freePoolAddPending = false;
+  let poolRemoveDialogId: string | null = null;
+  let poolRemovePending = false;
+  let poolRemoveNeedsInitialFocus = false;
+  let poolRemoveNeedsConfirmFocus = false;
+  let poolFocusAfterRender: PoolFocusTarget | null = null;
+  let poolRemoveFocusTrap: FocusTrapHandle | null = null;
+  let renderedPoolRemovePanel: HTMLElement | null = null;
+  let renderedPoolRemoveCancel: HTMLButtonElement | null = null;
+  let renderedPoolRemoveConfirm: HTMLButtonElement | null = null;
+  let slotClearDialogKey: ClearableSlotKey | null = null;
+  let slotClearPendingKey: ClearableSlotKey | null = null;
+  let slotClearNeedsInitialFocus = false;
+  let slotClearNeedsConfirmFocus = false;
+  let slotClearFocusAfterRender: ClearableSlotKey | null = null;
+  let slotClearFocusTrap: FocusTrapHandle | null = null;
+  let renderedSlotClearPanel: HTMLElement | null = null;
+  let renderedSlotClearCancel: HTMLButtonElement | null = null;
+  let renderedSlotClearConfirm: HTMLButtonElement | null = null;
+  const focusRenderedPoolRemoveCancel = (): boolean => {
+    const cancel = renderedPoolRemoveCancel as {
+      focus?: (options?: FocusOptions) => void;
+    } | null;
+    if (cancel === null || typeof cancel.focus !== 'function') return false;
+    cancel.focus({ preventScroll: true });
+    return true;
+  };
+  const focusRenderedPoolRemoveConfirm = (): boolean => {
+    const confirm = renderedPoolRemoveConfirm as {
+      focus?: (options?: FocusOptions) => void;
+    } | null;
+    if (confirm === null || typeof confirm.focus !== 'function') return false;
+    confirm.focus({ preventScroll: true });
+    return true;
+  };
+  const focusRenderedSlotClearCancel = (): boolean => {
+    const cancel = renderedSlotClearCancel as {
+      focus?: (options?: FocusOptions) => void;
+    } | null;
+    if (cancel === null || typeof cancel.focus !== 'function') return false;
+    cancel.focus({ preventScroll: true });
+    return true;
+  };
+  const focusRenderedSlotClearConfirm = (): boolean => {
+    const confirm = renderedSlotClearConfirm as {
+      focus?: (options?: FocusOptions) => void;
+    } | null;
+    if (confirm === null || typeof confirm.focus !== 'function') return false;
+    confirm.focus({ preventScroll: true });
+    return true;
+  };
+  let budgetDraft: string | null = null;
+  let budgetSavePending = false;
+  let aiPolicyPendingAction: 'allow' | 'pause' | 'resume' | null = null;
+  let catalogModePending: {
+    source: ChatModelSourceId;
+    mode: ChatCatalogDeliveryMode | null;
+  } | null = null;
   let loadErrors: string[] = [];
   // D-174 R28 — last failed write action (cleared on the next success).
-  // The render-layer button handlers fire actions through `surface(...)`
+  // Most render-layer button handlers fire actions through `surface(...)`
   // so an unwired caller / rejected rpc shows as a banner instead of an
   // unhandled promise rejection.
   let actionError: string | null = null;
+  let modelPreferencePendingId: ChatModelSourceId | null = null;
+  let byokSlotSavePendingKey: LlmSlotKey | null = null;
+  let embeddingsSlotSavePending = false;
   let chatSetupError: string | null = null;
   let chatSetupSubmitting = false;
   let chatSetupCompleted = false;
   let chatSetupExistingSourceId: ChatModelSourceId | null = null;
+  let chatSetupFocusOwner: { attr: string; value: string } | null = null;
   const chatSetupDraft: {
     provider: ChatSetupProvider;
     model: string;
@@ -747,6 +894,45 @@ export const mountAiModelsPage = (
     baseUrl: '',
   };
   let pendingLoad: Promise<void> = Promise.resolve();
+
+  const captureChatSetupFocusOwner = (): {
+    attr: string;
+    value: string;
+  } | null => {
+    const active = (doc as Partial<Document>).activeElement as
+      | HTMLElement
+      | null
+      | undefined;
+    if (active === null || active === undefined) return null;
+    for (const attr of [
+      AI_MODELS_CHAT_SETUP_PROVIDER_ATTR,
+      AI_MODELS_CHAT_SETUP_MODEL_ATTR,
+      AI_MODELS_CHAT_SETUP_KEY_ATTR,
+      AI_MODELS_CHAT_SETUP_BASE_URL_ATTR,
+      AI_MODELS_CHAT_SETUP_SOURCE_ATTR,
+      AI_MODELS_CHAT_SETUP_SUBMIT_ATTR,
+    ]) {
+      const value = active.getAttribute?.(attr);
+      if (value !== null && value !== undefined) return { attr, value };
+    }
+    return null;
+  };
+
+  const restoreChatSetupFocus = (
+    element: HTMLElement,
+    attr: string,
+  ): void => {
+    if (
+      chatSetupFocusOwner?.attr !== attr
+      || chatSetupFocusOwner.value !== element.getAttribute(attr)
+    ) return;
+    element.focus?.({ preventScroll: true });
+  };
+
+  const focusChatSetupProgress = (element: HTMLElement): void => {
+    if (chatSetupFocusOwner === null) return;
+    element.focus?.({ preventScroll: true });
+  };
 
   /** Run a write action, surfacing failures as the action-error banner
    *  (and clearing a stale banner on success). */
@@ -791,6 +977,24 @@ export const mountAiModelsPage = (
     });
   }
 
+  const hasAiModelsInFlightWork = (): boolean =>
+    !disposed
+    && (
+      promptMutationPending.size > 0
+      || poolTogglePendingTargets.size > 0
+      || freePoolAddPending
+      || poolRemovePending
+      || slotClearPendingKey !== null
+      || budgetSavePending
+      || aiPolicyPendingAction !== null
+      || catalogModePending !== null
+      || modelPreferencePendingId !== null
+      || byokSlotSavePendingKey !== null
+      || embeddingsSlotSavePending
+      || chatSetupSubmitting
+      || cacheCard?.hasInFlightWork() === true
+    );
+
   const renderPending = (parent: HTMLElement, id: string): void => {
     const row = doc.createElement('div');
     row.className = 'ai-models-pending';
@@ -798,6 +1002,157 @@ export const mountAiModelsPage = (
     appendHeading(doc, row, 'h4', CONTROL_COPY[id]?.title ?? id);
     appendText(doc, row, CONTROL_COPY[id]?.body ?? 'Pending backend support.');
     parent.appendChild(row);
+  };
+
+  const submitModelPreference = async (
+    sourceId: ChatModelSourceId,
+  ): Promise<void> => {
+    if (disposed || modelPreferencePendingId !== null) return;
+    modelPreferencePendingId = sourceId;
+    actionError = null;
+    render();
+    try {
+      await api.setModelPreference(sourceId);
+      if (disposed) return;
+      modelPreferencePendingId = null;
+      render();
+    } catch (err) {
+      if (disposed) return;
+      modelPreferencePendingId = null;
+      actionError = stringifyError(err);
+      render();
+    }
+  };
+
+  const submitByokSlotSave = async (
+    slotKey: LlmSlotKey,
+    patch: Parameters<AiModelsPageMount['saveByokSlot']>[1],
+  ): Promise<void> => {
+    if (
+      disposed
+      || byokSlotSavePendingKey !== null
+      || slotClearPendingKey !== null
+    ) return;
+    byokSlotSavePendingKey = slotKey;
+    actionError = null;
+    render();
+    try {
+      await api.saveByokSlot(slotKey, patch);
+      if (disposed) return;
+      byokSlotSavePendingKey = null;
+      render();
+    } catch (err) {
+      if (disposed) return;
+      byokSlotSavePendingKey = null;
+      actionError = stringifyError(err);
+      render();
+    }
+  };
+
+  const submitEmbeddingsSlotSave = async (
+    patch: Parameters<AiModelsPageMount['saveEmbeddingsSlot']>[0],
+  ): Promise<void> => {
+    if (
+      disposed
+      || embeddingsSlotSavePending
+      || slotClearPendingKey !== null
+    ) return;
+    embeddingsSlotSavePending = true;
+    actionError = null;
+    render();
+    try {
+      await api.saveEmbeddingsSlot(patch);
+      if (disposed) return;
+      embeddingsSlotSavePending = false;
+      render();
+    } catch (err) {
+      if (disposed) return;
+      embeddingsSlotSavePending = false;
+      actionError = stringifyError(err);
+      render();
+    }
+  };
+
+  const submitBudgetSave = async (tokens: number): Promise<void> => {
+    if (disposed || budgetSavePending) return;
+    budgetSavePending = true;
+    actionError = null;
+    render();
+    try {
+      await api.setBudget(tokens);
+      if (disposed) return;
+      budgetSavePending = false;
+      render();
+    } catch (err) {
+      if (disposed) return;
+      budgetSavePending = false;
+      actionError = stringifyError(err);
+      render();
+    }
+  };
+
+  const submitPromptMutation = async (
+    surface: ServerLlmPromptSurface,
+    kind: 'save' | 'reset',
+    run: () => Promise<void>,
+  ): Promise<void> => {
+    if (disposed || promptMutationPending.has(surface)) return;
+    promptMutationPending.set(surface, kind);
+    actionError = null;
+    render();
+    try {
+      await run();
+      if (disposed) return;
+      promptMutationPending.delete(surface);
+      render();
+    } catch (err) {
+      if (disposed) return;
+      promptMutationPending.delete(surface);
+      actionError = stringifyError(err);
+      render();
+    }
+  };
+
+  const submitAiPolicyMutation = async (
+    action: 'allow' | 'pause' | 'resume',
+    run: () => Promise<void>,
+  ): Promise<void> => {
+    if (disposed || aiPolicyPendingAction !== null) return;
+    aiPolicyPendingAction = action;
+    actionError = null;
+    render();
+    try {
+      await run();
+      if (disposed) return;
+      aiPolicyPendingAction = null;
+      render();
+    } catch (err) {
+      if (disposed) return;
+      aiPolicyPendingAction = null;
+      actionError = stringifyError(err);
+      render();
+    }
+  };
+
+  const submitCatalogMode = async (
+    source: ChatModelSourceId,
+    mode: ChatCatalogDeliveryMode | null,
+  ): Promise<void> => {
+    if (disposed || catalogModePending !== null) return;
+    catalogModePending = { source, mode };
+    actionError = null;
+    render();
+    try {
+      await api.setChatCatalogMode(source, mode);
+      if (disposed) return;
+      catalogModePending = null;
+      render();
+    } catch (err) {
+      if (disposed) return;
+      catalogModePending = null;
+      actionError = stringifyError(err);
+      render();
+    }
   };
 
   const renderModelPreference = (parent: HTMLElement): void => {
@@ -830,18 +1185,25 @@ export const mountAiModelsPage = (
       const optionsWrap = doc.createElement('div');
       optionsWrap.className = 'ai-models-choice-row';
       for (const option of modelPreference.options) {
-        appendButton(
+        const pendingThis = modelPreferencePendingId === option.id;
+        const button = appendButton(
           doc,
           optionsWrap,
-          `${option.selected ? 'Selected: ' : ''}${option.label}`,
+          pendingThis
+            ? `Selecting ${option.label}…`
+            : `${option.selected ? 'Selected: ' : ''}${option.label}`,
           () => {
-            surface(api.setModelPreference(option.id));
+            void submitModelPreference(option.id);
           },
           [
             [AI_MODELS_MODEL_PREF_BUTTON_ATTR, option.id],
             ['aria-pressed', option.selected ? 'true' : 'false'],
           ],
         );
+        if (modelPreferencePendingId !== null) {
+          button.setAttribute('aria-disabled', 'true');
+        }
+        if (pendingThis) button.setAttribute('aria-busy', 'true');
       }
       section.appendChild(optionsWrap);
     }
@@ -889,12 +1251,28 @@ export const mountAiModelsPage = (
     // Setting `.value` selects the matching <option> in a real browser (and
     // is a plain field in the test's fake DOM). An unset override → the
     // empty-valued Automatic option.
-    select.value = current ?? '';
+    const renderedValue = catalogModePending?.source === source
+      ? catalogModePending.mode
+      : current;
+    select.value = renderedValue ?? '';
+    if (catalogModePending !== null) {
+      select.setAttribute('aria-disabled', 'true');
+      if (catalogModePending.source === source) {
+        select.setAttribute('aria-busy', 'true');
+      }
+    }
     select.addEventListener('change', () => {
+      if (catalogModePending !== null) {
+        const ownedValue = catalogModePending.source === source
+          ? catalogModePending.mode
+          : current;
+        select.value = ownedValue ?? '';
+        return;
+      }
       // Empty value → clear the override (Automatic, `null`); a known mode
       // sets it. A stray non-mode value falls back to a clear, never a throw.
       const mode = isChatCatalogDeliveryMode(select.value) ? select.value : null;
-      surface(api.setChatCatalogMode(source, mode));
+      void submitCatalogMode(source, mode);
     });
     wrap.appendChild(select);
     parent.appendChild(wrap);
@@ -929,6 +1307,20 @@ export const mountAiModelsPage = (
 
   const renderSlot = (parent: HTMLElement, slotKey: LlmSlotKey): void => {
     const slot = getSlot(llmConfig, slotKey);
+    const savingThis = byokSlotSavePendingKey === slotKey;
+    const clearingThis = slotClearPendingKey === slotKey;
+    const budgetRaw = slot?.daily_budget_tokens;
+    const draft = byokSlotDrafts.get(slotKey) ?? {
+      provider: asString(slot?.provider),
+      model: asString(slot?.model),
+      baseUrl: asString(slot?.base_url),
+      apiKey: '',
+      budget:
+        typeof budgetRaw === 'number' && budgetRaw > 0 ? String(budgetRaw) : '',
+      contextWindow:
+        asPositiveSafeInteger(slot?.context_window_tokens)?.toString() ?? '',
+    };
+    const fieldId = (field: string): string => `${slotKey}:${field}`;
     const title = slotKey === 'slot_1' ? 'Slot 1: fast' : 'Slot 2: quality / thinking';
     const card = doc.createElement('div');
     card.className = 'ai-models-slot';
@@ -941,15 +1333,24 @@ export const mountAiModelsPage = (
         ? ` ${asString(slot.provider) || 'provider?'} / ${asString(slot.model) || 'model?'}`
         : ' Not configured.',
     );
-    const provider = appendInput(doc, card, 'Provider', asString(slot?.provider));
-    const model = appendInput(doc, card, 'Model', asString(slot?.model));
-    const baseUrl = appendInput(doc, card, 'Base URL', asString(slot?.base_url));
+    const provider = appendInput(doc, card, 'Provider', draft.provider, [
+      [AI_MODELS_SLOT_FIELD_ATTR, fieldId('provider')],
+    ]);
+    const model = appendInput(doc, card, 'Model', draft.model, [
+      [AI_MODELS_SLOT_FIELD_ATTR, fieldId('model')],
+    ]);
+    const baseUrl = appendInput(doc, card, 'Base URL', draft.baseUrl, [
+      [AI_MODELS_SLOT_FIELD_ATTR, fieldId('base-url')],
+    ]);
     const apiKey = appendInput(
       doc,
       card,
       'API key',
-      '',
-      [['placeholder', slot?.has_key === true ? 'Leave blank to keep existing key' : 'Required']],
+      draft.apiKey,
+      [
+        ['placeholder', slot?.has_key === true ? 'Leave blank to keep existing key' : 'Required'],
+        [AI_MODELS_SLOT_FIELD_ATTR, fieldId('api-key')],
+      ],
     );
     // The key never round-trips to the browser (the server redacts it to
     // `has_key`); mask the field so a typed-but-unsaved key isn't shoulder-
@@ -958,22 +1359,26 @@ export const mountAiModelsPage = (
     // Per-slot daily token budget (D-079/D-094, reinstated). Blank / 0 =
     // unlimited; over budget, the slot stops matching until the next daily
     // reset (enforced in the LLM match layer).
-    const budgetRaw = slot?.daily_budget_tokens;
     const budget = appendInput(
       doc,
       card,
       'Daily token budget',
-      typeof budgetRaw === 'number' && budgetRaw > 0 ? String(budgetRaw) : '',
-      [['placeholder', 'Blank = unlimited'], ['inputmode', 'numeric']],
+      draft.budget,
+      [
+        ['placeholder', 'Blank = unlimited'],
+        ['inputmode', 'numeric'],
+        [AI_MODELS_SLOT_FIELD_ATTR, fieldId('daily-budget')],
+      ],
     );
     budget.type = 'number';
     const contextWindow = appendInput(
       doc,
       card,
       'Context window (tokens)',
-      asPositiveSafeInteger(slot?.context_window_tokens)?.toString() ?? '',
+      draft.contextWindow,
       [
         [AI_MODELS_CONTEXT_WINDOW_INPUT_ATTR, slotKey],
+        [AI_MODELS_SLOT_FIELD_ATTR, fieldId('context-window')],
         ['placeholder', 'e.g. 128000'],
         ['inputmode', 'numeric'],
         ['min', '1'],
@@ -981,18 +1386,39 @@ export const mountAiModelsPage = (
       ],
     );
     contextWindow.type = 'number';
-    appendButton(
+    const syncDraft = (): void => {
+      byokSlotDrafts.set(slotKey, {
+        provider: provider.value,
+        model: model.value,
+        baseUrl: baseUrl.value,
+        apiKey: apiKey.value,
+        budget: budget.value,
+        contextWindow: contextWindow.value,
+      });
+    };
+    for (const input of [
+      provider,
+      model,
+      baseUrl,
+      apiKey,
+      budget,
+      contextWindow,
+    ]) {
+      input.addEventListener('input', syncDraft);
+      if (savingThis || clearingThis) input.readOnly = true;
+    }
+    const save = appendButton(
       doc,
       card,
-      'Save slot',
+      savingThis ? 'Saving slot…' : 'Save slot',
       () => {
         const budgetNum = Number(budget.value);
         const contextWindowTokens = parsePositiveSafeInteger(contextWindow.value);
-        surface(api.saveByokSlot(slotKey, {
+        void submitByokSlotSave(slotKey, {
           provider: provider.value,
           model: model.value,
           ...(apiKey.value.trim().length > 0 ? { api_key: apiKey.value } : {}),
-          ...(baseUrl.value.trim().length > 0 ? { base_url: baseUrl.value } : {}),
+          base_url: baseUrl.value,
           daily_budget_tokens:
             budget.value.trim().length > 0 && Number.isFinite(budgetNum) && budgetNum > 0
               ? budgetNum
@@ -1000,18 +1426,170 @@ export const mountAiModelsPage = (
           ...(contextWindowTokens !== undefined
             ? { context_window_tokens: contextWindowTokens }
             : {}),
-        }));
+        });
       },
       [[AI_MODELS_SLOT_SAVE_ATTR, slotKey]],
     );
-    appendButton(doc, card, 'Clear slot', () => {
-      surface(api.clearByokSlot(slotKey));
-    });
+    if (
+      byokSlotSavePendingKey !== null
+      || slotClearPendingKey !== null
+    ) {
+      save.setAttribute('aria-disabled', 'true');
+    }
+    if (savingThis) save.setAttribute('aria-busy', 'true');
+    const clear = appendButton(
+      doc,
+      card,
+      'Clear slot',
+      () => {
+        if (
+          byokSlotSavePendingKey !== null
+          || slotClearPendingKey !== null
+        ) return;
+        actionError = null;
+        slotClearDialogKey = slotKey;
+        slotClearNeedsInitialFocus = true;
+        slotClearNeedsConfirmFocus = false;
+        render();
+      },
+      [[AI_MODELS_SLOT_CLEAR_ATTR, slotKey]],
+    );
+    if (
+      byokSlotSavePendingKey !== null
+      || slotClearPendingKey !== null
+    ) {
+      clear.setAttribute('aria-disabled', 'true');
+    }
     // Instant-apply per-source catalog-mode control (distinct from the
     // Save-gated slot fields above), placed after the buttons so it reads
     // as its own control.
     renderCatalogModeControl(card, slotKey);
     parent.appendChild(card);
+  };
+
+  const closeSlotClearDialog = (): void => {
+    const slotKey = slotClearDialogKey;
+    if (slotKey === null || slotClearPendingKey !== null) return;
+    slotClearDialogKey = null;
+    slotClearNeedsInitialFocus = false;
+    slotClearNeedsConfirmFocus = false;
+    slotClearFocusAfterRender = slotKey;
+    render();
+  };
+
+  const submitSlotClear = async (): Promise<void> => {
+    const slotKey = slotClearDialogKey;
+    if (
+      disposed
+      || slotKey === null
+      || slotClearPendingKey !== null
+      || (slotKey === 'embeddings_slot'
+        ? embeddingsSlotSavePending
+        : byokSlotSavePendingKey !== null)
+    ) return;
+    slotClearPendingKey = slotKey;
+    actionError = null;
+    render();
+    try {
+      if (slotKey === 'embeddings_slot') {
+        await api.clearEmbeddingsSlot();
+      } else {
+        await api.clearByokSlot(slotKey);
+      }
+      if (disposed) return;
+      slotClearPendingKey = null;
+      slotClearDialogKey = null;
+      slotClearNeedsInitialFocus = false;
+      slotClearNeedsConfirmFocus = false;
+      slotClearFocusAfterRender = slotKey;
+      render();
+    } catch (err) {
+      if (disposed) return;
+      slotClearPendingKey = null;
+      actionError = stringifyError(err);
+      slotClearNeedsConfirmFocus = true;
+      render();
+    }
+  };
+
+  const renderSlotClearDialog = (parent: HTMLElement): void => {
+    const slotKey = slotClearDialogKey;
+    if (slotKey === null) return;
+    const clearingThis = slotClearPendingKey === slotKey;
+    const slotLabel = slotKey === 'slot_1'
+      ? 'Slot 1: fast'
+      : slotKey === 'slot_2'
+        ? 'Slot 2: quality / thinking'
+        : 'Embeddings slot';
+    const titleId = `recued-ai-models-${slotKey}-clear-title`;
+    const bodyId = `recued-ai-models-${slotKey}-clear-body`;
+
+    const overlay = doc.createElement('div');
+    overlay.className = 'ai-models-confirm-overlay';
+    const panel = doc.createElement('div');
+    panel.className = 'ai-models-confirm-dialog';
+    panel.setAttribute(AI_MODELS_SLOT_CLEAR_DIALOG_ATTR, slotKey);
+    panel.setAttribute('role', 'alertdialog');
+    panel.setAttribute('aria-modal', 'true');
+    panel.setAttribute('aria-labelledby', titleId);
+    panel.setAttribute('aria-describedby', bodyId);
+    panel.setAttribute('tabindex', '-1');
+    if (clearingThis) panel.setAttribute('aria-busy', 'true');
+
+    const title = appendHeading(doc, panel, 'h4', `Clear ${slotLabel}?`);
+    title.setAttribute('id', titleId);
+    const body = doc.createElement('p');
+    body.setAttribute('id', bodyId);
+    body.textContent =
+      'This removes the saved provider settings and API key from this Recued server. '
+      + 'You will need to enter them again to restore this slot.';
+    panel.appendChild(body);
+    if (actionError !== null) {
+      const error = doc.createElement('p');
+      error.className = 'ai-models-confirm-error';
+      error.setAttribute('role', 'alert');
+      error.textContent = actionError;
+      panel.appendChild(error);
+    }
+
+    const actions = doc.createElement('div');
+    actions.className = 'ai-models-confirm-actions';
+    const cancel = appendButton(
+      doc,
+      actions,
+      'Cancel',
+      closeSlotClearDialog,
+      [[AI_MODELS_SLOT_CLEAR_CANCEL_ATTR, slotKey]],
+    );
+    const confirm = appendButton(
+      doc,
+      actions,
+      clearingThis ? 'Clearing slot…' : 'Clear slot',
+      () => {
+        void submitSlotClear();
+      },
+      [[AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR, slotKey]],
+    );
+    if (clearingThis) {
+      cancel.setAttribute('aria-disabled', 'true');
+      confirm.setAttribute('aria-disabled', 'true');
+      confirm.setAttribute('aria-busy', 'true');
+    }
+    panel.appendChild(actions);
+    panel.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape' || clearingThis) return;
+      event.preventDefault();
+      event.stopPropagation();
+      closeSlotClearDialog();
+    });
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) closeSlotClearDialog();
+    });
+    overlay.appendChild(panel);
+    parent.appendChild(overlay);
+    renderedSlotClearPanel = panel;
+    renderedSlotClearCancel = cancel;
+    renderedSlotClearConfirm = confirm;
   };
 
   // D-174 R28 Slice C — the dedicated embeddings slot card. Mirrors a BYOK
@@ -1030,6 +1608,13 @@ export const mountAiModelsPage = (
       return;
     }
     const slot = getEmbeddingsSlot(llmConfig);
+    const clearingThis = slotClearPendingKey === 'embeddings_slot';
+    const draft = embeddingsSlotDraft ?? {
+      provider: asString(slot?.provider),
+      model: asString(slot?.model),
+      baseUrl: asString(slot?.base_url),
+      apiKey: '',
+    };
     const card = doc.createElement('div');
     card.className = 'ai-models-slot';
     card.setAttribute(AI_MODELS_CONTROL_ATTR, 'embeddings_slot');
@@ -1041,42 +1626,80 @@ export const mountAiModelsPage = (
         ? ` ${asString(slot.provider) || 'provider?'} / ${asString(slot.model) || 'model?'}`
         : ' Not configured.',
     );
-    const provider = appendInput(doc, card, 'Provider', asString(slot?.provider));
+    const provider = appendInput(doc, card, 'Provider', draft.provider, [
+      [AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'provider'],
+    ]);
     const model = appendInput(
       doc,
       card,
       'Model',
-      asString(slot?.model),
-      [['placeholder', 'e.g. text-embedding-3-small']],
+      draft.model,
+      [
+        ['placeholder', 'e.g. text-embedding-3-small'],
+        [AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'model'],
+      ],
     );
-    const baseUrl = appendInput(doc, card, 'Base URL', asString(slot?.base_url));
+    const baseUrl = appendInput(doc, card, 'Base URL', draft.baseUrl, [
+      [AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'base-url'],
+    ]);
     const apiKey = appendInput(
       doc,
       card,
       'API key',
-      '',
-      [['placeholder', slot?.has_key === true ? 'Leave blank to keep existing key' : 'Required']],
+      draft.apiKey,
+      [
+        ['placeholder', slot?.has_key === true ? 'Leave blank to keep existing key' : 'Required'],
+        [AI_MODELS_EMBEDDINGS_FIELD_ATTR, 'api-key'],
+      ],
     );
     // Same handling as the BYOK card: the key never round-trips (server
     // redacts to `has_key`), so mask it; leaving it blank keeps the stored key.
     apiKey.type = 'password';
-    appendButton(
+    const syncDraft = (): void => {
+      embeddingsSlotDraft = {
+        provider: provider.value,
+        model: model.value,
+        baseUrl: baseUrl.value,
+        apiKey: apiKey.value,
+      };
+    };
+    for (const input of [provider, model, baseUrl, apiKey]) {
+      input.addEventListener('input', syncDraft);
+      if (embeddingsSlotSavePending || clearingThis) input.readOnly = true;
+    }
+    const save = appendButton(
       doc,
       card,
-      'Save slot',
+      embeddingsSlotSavePending ? 'Saving slot…' : 'Save slot',
       () => {
-        surface(api.saveEmbeddingsSlot({
+        void submitEmbeddingsSlotSave({
           provider: provider.value,
           model: model.value,
           ...(apiKey.value.trim().length > 0 ? { api_key: apiKey.value } : {}),
-          ...(baseUrl.value.trim().length > 0 ? { base_url: baseUrl.value } : {}),
-        }));
+          base_url: baseUrl.value,
+        });
       },
       [[AI_MODELS_SLOT_SAVE_ATTR, 'embeddings_slot']],
     );
-    appendButton(doc, card, 'Clear slot', () => {
-      surface(api.clearEmbeddingsSlot());
-    });
+    const clear = appendButton(
+      doc,
+      card,
+      'Clear slot',
+      () => {
+        if (embeddingsSlotSavePending || slotClearPendingKey !== null) return;
+        actionError = null;
+        slotClearDialogKey = 'embeddings_slot';
+        slotClearNeedsInitialFocus = true;
+        slotClearNeedsConfirmFocus = false;
+        render();
+      },
+      [[AI_MODELS_SLOT_CLEAR_ATTR, 'embeddings_slot']],
+    );
+    if (embeddingsSlotSavePending || slotClearPendingKey !== null) {
+      save.setAttribute('aria-disabled', 'true');
+      clear.setAttribute('aria-disabled', 'true');
+    }
+    if (embeddingsSlotSavePending) save.setAttribute('aria-busy', 'true');
     parent.appendChild(card);
   };
 
@@ -1092,6 +1715,166 @@ export const mountAiModelsPage = (
       renderSlot(section, 'slot_2');
     }
     parent.appendChild(section);
+  };
+
+  const closePoolRemoveDialog = (): void => {
+    if (poolRemoveDialogId === null || poolRemovePending) return;
+    const id = poolRemoveDialogId;
+    poolRemoveDialogId = null;
+    poolRemoveNeedsInitialFocus = false;
+    poolRemoveNeedsConfirmFocus = false;
+    poolFocusAfterRender = { attr: AI_MODELS_POOL_REMOVE_ATTR, value: id };
+    render();
+  };
+
+  const openPoolRemoveDialog = (id: string): void => {
+    if (poolRemovePending) return;
+    actionError = null;
+    poolRemoveDialogId = id;
+    poolRemoveNeedsInitialFocus = true;
+    poolRemoveNeedsConfirmFocus = false;
+    render();
+  };
+
+  const submitPoolRemove = async (id: string): Promise<void> => {
+    if (
+      disposed
+      || poolRemovePending
+      || poolRemoveDialogId !== id
+    ) return;
+    poolRemovePending = true;
+    poolRemoveNeedsConfirmFocus = false;
+    actionError = null;
+    render();
+    try {
+      await api.removeFreePoolEntry(id);
+    } catch (err) {
+      if (disposed || poolRemoveDialogId !== id) return;
+      poolRemovePending = false;
+      poolRemoveNeedsConfirmFocus = true;
+      actionError = stringifyError(err);
+      render();
+    }
+  };
+
+  const renderPoolRemoveDialog = (parent: HTMLElement): void => {
+    const id = poolRemoveDialogId;
+    if (id === null) return;
+
+    const overlay = doc.createElement('div');
+    overlay.className = 'ai-models-confirm-overlay';
+    const panel = doc.createElement('div');
+    panel.className = 'ai-models-confirm-dialog';
+    panel.setAttribute(AI_MODELS_POOL_REMOVE_DIALOG_ATTR, id);
+    panel.setAttribute('role', 'alertdialog');
+    panel.setAttribute('aria-modal', 'true');
+    panel.setAttribute('aria-labelledby', 'recued-ai-models-remove-title');
+    panel.setAttribute('aria-describedby', 'recued-ai-models-remove-body');
+    panel.setAttribute('tabindex', '-1');
+    if (poolRemovePending) panel.setAttribute('aria-busy', 'true');
+
+    const title = appendHeading(
+      doc,
+      panel,
+      'h4',
+      `Remove ${id} from the free pool?`,
+    );
+    title.setAttribute('id', 'recued-ai-models-remove-title');
+    const body = doc.createElement('p');
+    body.setAttribute('id', 'recued-ai-models-remove-body');
+    body.textContent =
+      'This deletes the saved entry and API key from this Recued server. '
+      + 'You will need to add both again to restore it.';
+    panel.appendChild(body);
+    if (actionError !== null) {
+      const error = doc.createElement('p');
+      error.className = 'ai-models-confirm-error';
+      error.setAttribute('role', 'alert');
+      error.textContent = actionError;
+      panel.appendChild(error);
+    }
+
+    const actions = doc.createElement('div');
+    actions.className = 'ai-models-confirm-actions';
+    const cancel = appendButton(
+      doc,
+      actions,
+      'Cancel',
+      () => {
+        closePoolRemoveDialog();
+      },
+      [[AI_MODELS_POOL_REMOVE_CANCEL_ATTR, id]],
+    );
+    const confirm = appendButton(
+      doc,
+      actions,
+      poolRemovePending ? 'Removing…' : 'Remove entry',
+      () => {
+        void submitPoolRemove(id);
+      },
+      [[AI_MODELS_POOL_REMOVE_CONFIRM_ATTR, id]],
+    );
+    if (poolRemovePending) {
+      cancel.setAttribute('aria-disabled', 'true');
+      confirm.setAttribute('aria-disabled', 'true');
+      confirm.setAttribute('aria-busy', 'true');
+    }
+    panel.appendChild(actions);
+    panel.addEventListener('keydown', (event) => {
+      if (event.key !== 'Escape' || poolRemovePending) return;
+      event.preventDefault();
+      event.stopPropagation();
+      closePoolRemoveDialog();
+    });
+    overlay.addEventListener('click', (event) => {
+      if (event.target === overlay) closePoolRemoveDialog();
+    });
+    overlay.appendChild(panel);
+    parent.appendChild(overlay);
+    renderedPoolRemovePanel = panel;
+    renderedPoolRemoveCancel = cancel;
+    renderedPoolRemoveConfirm = confirm;
+  };
+
+  const submitFreePoolToggle = async (
+    id: string,
+    enabled: boolean,
+  ): Promise<void> => {
+    if (disposed || poolTogglePendingTargets.has(id)) return;
+    poolTogglePendingTargets.set(id, enabled);
+    actionError = null;
+    render();
+    try {
+      await api.setFreePoolEntryEnabled(id, enabled);
+      if (disposed) return;
+      poolTogglePendingTargets.delete(id);
+      render();
+    } catch (err) {
+      if (disposed) return;
+      poolTogglePendingTargets.delete(id);
+      actionError = stringifyError(err);
+      render();
+    }
+  };
+
+  const submitFreePoolAdd = async (
+    entry: Parameters<AiModelsPageMount['addFreePoolApiEntry']>[0],
+  ): Promise<void> => {
+    if (disposed || freePoolAddPending) return;
+    freePoolAddPending = true;
+    actionError = null;
+    render();
+    try {
+      await api.addFreePoolApiEntry(entry);
+      if (disposed) return;
+      freePoolAddPending = false;
+      render();
+    } catch (err) {
+      if (disposed) return;
+      freePoolAddPending = false;
+      actionError = stringifyError(err);
+      render();
+    }
   };
 
   const renderFreePool = (parent: HTMLElement): void => {
@@ -1113,6 +1896,9 @@ export const mountAiModelsPage = (
     }
     for (const entry of entries) {
       const id = asString(entry.id);
+      const togglePending = poolTogglePendingTargets.has(id);
+      const pendingTarget = poolTogglePendingTargets.get(id);
+      const enabling = entry.enabled === false;
       const row = doc.createElement('div');
       row.className = 'ai-models-pool-row';
       row.setAttribute(AI_MODELS_CONTROL_ATTR, `free_pool:${id}`);
@@ -1122,42 +1908,65 @@ export const mountAiModelsPage = (
         `${id || 'entry'}: ${asString(entry.provider) || asString(entry.type)} / ${asString(entry.model) || asString(entry.tab)} (${entry.enabled === false ? 'disabled' : 'enabled'})`,
       );
       if (id.length > 0) {
-        appendButton(
+        const toggle = appendButton(
           doc,
           row,
-          entry.enabled === false ? 'Enable' : 'Disable',
+          togglePending
+            ? pendingTarget === true ? 'Enabling…' : 'Disabling…'
+            : enabling ? 'Enable' : 'Disable',
           () => {
-            surface(api.setFreePoolEntryEnabled(id, entry.enabled === false));
+            void submitFreePoolToggle(id, enabling);
           },
           [[AI_MODELS_POOL_TOGGLE_ATTR, id]],
         );
-        appendButton(
+        const remove = appendButton(
           doc,
           row,
           'Remove',
           () => {
-            surface(api.removeFreePoolEntry(id));
+            if (poolTogglePendingTargets.has(id)) return;
+            openPoolRemoveDialog(id);
           },
           [[AI_MODELS_POOL_REMOVE_ATTR, id]],
         );
+        if (togglePending) {
+          toggle.setAttribute('aria-disabled', 'true');
+          toggle.setAttribute('aria-busy', 'true');
+          remove.setAttribute('aria-disabled', 'true');
+        }
       }
       section.appendChild(row);
     }
     const add = doc.createElement('div');
     add.className = 'ai-models-add-pool';
-    const id = appendInput(doc, add, 'ID', '');
-    const provider = appendInput(doc, add, 'Provider', 'openai-compatible');
-    const model = appendInput(doc, add, 'Model', '');
-    const key = appendInput(doc, add, 'API key', '');
+    const id = appendInput(doc, add, 'ID', freePoolAddDraft.id, [
+      [AI_MODELS_POOL_ADD_FIELD_ATTR, 'id'],
+    ]);
+    const provider = appendInput(
+      doc,
+      add,
+      'Provider',
+      freePoolAddDraft.provider,
+      [[AI_MODELS_POOL_ADD_FIELD_ATTR, 'provider']],
+    );
+    const model = appendInput(doc, add, 'Model', freePoolAddDraft.model, [
+      [AI_MODELS_POOL_ADD_FIELD_ATTR, 'model'],
+    ]);
+    const key = appendInput(doc, add, 'API key', freePoolAddDraft.apiKey, [
+      [AI_MODELS_POOL_ADD_FIELD_ATTR, 'api-key'],
+    ]);
     key.type = 'password';
-    const baseUrl = appendInput(doc, add, 'Base URL', '');
+    const baseUrl = appendInput(doc, add, 'Base URL', freePoolAddDraft.baseUrl, [
+      [AI_MODELS_POOL_ADD_FIELD_ATTR, 'base-url'],
+    ]);
     const contextWindow = appendInput(
       doc,
       add,
       'Context window (tokens)',
-      '',
+      freePoolAddDraft.contextWindow,
       [
         [AI_MODELS_CONTEXT_WINDOW_INPUT_ATTR, 'free_pool:new'],
+        [AI_MODELS_POOL_ADD_FIELD_ATTR, 'context-window'],
         ['placeholder', 'e.g. 128000'],
         ['inputmode', 'numeric'],
         ['min', '1'],
@@ -1165,21 +1974,46 @@ export const mountAiModelsPage = (
       ],
     );
     contextWindow.type = 'number';
-    appendButton(doc, add, 'Add API entry', () => {
-      const contextWindowTokens = parsePositiveSafeInteger(contextWindow.value);
-      surface(api.addFreePoolApiEntry({
+    const syncAddDraft = (): void => {
+      Object.assign(freePoolAddDraft, {
         id: id.value,
         provider: provider.value,
         model: model.value,
-        api_key: key.value,
-        ...(baseUrl.value.trim().length > 0 ? { base_url: baseUrl.value } : {}),
-        ...(contextWindowTokens !== undefined
-          ? { context_window_tokens: contextWindowTokens }
-          : {}),
-      }));
-    });
+        apiKey: key.value,
+        baseUrl: baseUrl.value,
+        contextWindow: contextWindow.value,
+      });
+    };
+    for (const input of [id, provider, model, key, baseUrl, contextWindow]) {
+      input.addEventListener('input', syncAddDraft);
+      if (freePoolAddPending) input.readOnly = true;
+    }
+    const addEntry = appendButton(
+      doc,
+      add,
+      freePoolAddPending ? 'Adding entry…' : 'Add API entry',
+      () => {
+        const contextWindowTokens = parsePositiveSafeInteger(contextWindow.value);
+        void submitFreePoolAdd({
+          id: id.value,
+          provider: provider.value,
+          model: model.value,
+          api_key: key.value,
+          ...(baseUrl.value.trim().length > 0 ? { base_url: baseUrl.value } : {}),
+          ...(contextWindowTokens !== undefined
+            ? { context_window_tokens: contextWindowTokens }
+            : {}),
+        });
+      },
+      [[AI_MODELS_POOL_ADD_ATTR, '']],
+    );
+    if (freePoolAddPending) {
+      addEntry.setAttribute('aria-disabled', 'true');
+      addEntry.setAttribute('aria-busy', 'true');
+    }
     section.appendChild(add);
     parent.appendChild(section);
+    renderPoolRemoveDialog(parent);
   };
 
   const renderAiPolicy = (parent: HTMLElement): void => {
@@ -1194,14 +2028,19 @@ export const mountAiModelsPage = (
     }
     const allow = housekeepingConfig?.allow_byok_background === true;
     appendText(doc, section, ` Background BYOK: ${allow ? 'allowed' : 'free pool only'}.`);
-    appendButton(
+    const allowButton = appendButton(
       doc,
       section,
-      allow ? 'Disable background BYOK' : 'Allow background BYOK',
+      aiPolicyPendingAction === 'allow'
+        ? 'Updating background BYOK…'
+        : allow ? 'Disable background BYOK' : 'Allow background BYOK',
       () => {
-        surface(api.setAllowByokBackground(!allow));
+        void submitAiPolicyMutation(
+          'allow',
+          () => api.setAllowByokBackground(!allow),
+        );
       },
-      [[AI_MODELS_ALLOW_BYOK_TOGGLE_ATTR, allow ? 'false' : 'true']],
+      [[AI_MODELS_ALLOW_BYOK_TOGGLE_ATTR, 'background']],
     );
     const pause = housekeepingConfig?.pause_background_ai_until ?? null;
     appendText(
@@ -1211,24 +2050,43 @@ export const mountAiModelsPage = (
         ? ' Pause-AI: not active.'
         : ` Pause-AI until ${formatClientDateTime(pause, { invalidText: 'unknown time' })}.`,
     );
-    appendButton(
+    const pauseButton = appendButton(
       doc,
       section,
-      'Pause 1h',
+      aiPolicyPendingAction === 'pause' ? 'Pausing AI…' : 'Pause 1h',
       () => {
-        surface(api.setPauseBackgroundAiUntil((opts.now ?? Date.now)() + 60 * 60 * 1000));
+        void submitAiPolicyMutation(
+          'pause',
+          () => api.setPauseBackgroundAiUntil(
+            (opts.now ?? Date.now)() + 60 * 60 * 1000,
+          ),
+        );
       },
       [[AI_MODELS_PAUSE_BUTTON_ATTR, '1h']],
     );
-    appendButton(
+    const resumeButton = appendButton(
       doc,
       section,
-      'Resume AI',
+      aiPolicyPendingAction === 'resume' ? 'Resuming AI…' : 'Resume AI',
       () => {
-        surface(api.setPauseBackgroundAiUntil(null));
+        void submitAiPolicyMutation(
+          'resume',
+          () => api.setPauseBackgroundAiUntil(null),
+        );
       },
       [[AI_MODELS_PAUSE_BUTTON_ATTR, 'resume']],
     );
+    if (aiPolicyPendingAction !== null) {
+      allowButton.setAttribute('aria-disabled', 'true');
+      pauseButton.setAttribute('aria-disabled', 'true');
+      resumeButton.setAttribute('aria-disabled', 'true');
+      const activeButton = aiPolicyPendingAction === 'allow'
+        ? allowButton
+        : aiPolicyPendingAction === 'pause'
+          ? pauseButton
+          : resumeButton;
+      activeButton.setAttribute('aria-busy', 'true');
+    }
     parent.appendChild(section);
   };
 
@@ -1248,12 +2106,20 @@ export const mountAiModelsPage = (
       return;
     }
     for (const record of llmPrompts) {
+      const pendingMutation = promptMutationPending.get(record.surface);
       const copy = PROMPT_SURFACE_COPY[record.surface];
       const draft = promptDrafts.get(record.surface) ?? {
         role_instructions: record.role_instructions,
         role: record.role,
         caller_system_policy:
           record.caller_system_policy ?? DEFAULT_CALLER_SYSTEM_POLICY,
+      };
+      const currentDraft = (): PromptDraft =>
+        promptDrafts.get(record.surface) ?? draft;
+      const updateDraft = (patch: Partial<PromptDraft>): PromptDraft => {
+        const next = { ...currentDraft(), ...patch };
+        promptDrafts.set(record.surface, next);
+        return next;
       };
       const section = doc.createElement('section');
       section.className = 'ai-models-prompt';
@@ -1283,12 +2149,9 @@ export const mountAiModelsPage = (
       area.rows = 8;
       area.spellcheck = false;
       area.value = draft.role_instructions;
+      if (pendingMutation !== undefined) area.readOnly = true;
       area.addEventListener('input', () => {
-        promptDrafts.set(record.surface, {
-          ...draft,
-          role_instructions: area.value,
-        });
-        render();
+        updateDraft({ role_instructions: area.value });
       });
       section.appendChild(area);
 
@@ -1312,17 +2175,15 @@ export const mountAiModelsPage = (
           policySelect.appendChild(option);
         }
         policySelect.value = draft.caller_system_policy;
+        if (pendingMutation !== undefined) policySelect.disabled = true;
         policySelect.addEventListener('change', () => {
           const next = CALLER_SYSTEM_POLICIES.includes(
             policySelect.value as ServerLlmCallerSystemPolicy,
           )
             ? policySelect.value as ServerLlmCallerSystemPolicy
             : DEFAULT_CALLER_SYSTEM_POLICY;
-          promptDrafts.set(record.surface, {
-            ...draft,
-            caller_system_policy: next,
-          });
-          render();
+          updateDraft({ caller_system_policy: next });
+          policyHint.textContent = CALLER_SYSTEM_POLICY_HINTS[next];
         });
         policyLabel.appendChild(policySelect);
         const policyHint = doc.createElement('small');
@@ -1345,12 +2206,12 @@ export const mountAiModelsPage = (
         roleSelect.appendChild(option);
       }
       roleSelect.value = draft.role;
+      if (pendingMutation !== undefined) roleSelect.disabled = true;
       roleSelect.addEventListener('change', () => {
         const role = PROMPT_ROLES.includes(roleSelect.value as ServerLlmMessageRole)
           ? roleSelect.value as ServerLlmMessageRole
           : 'system';
-        promptDrafts.set(record.surface, { ...draft, role });
-        render();
+        updateDraft({ role });
       });
       roleLabel.appendChild(roleSelect);
       const roleHint = doc.createElement('small');
@@ -1359,27 +2220,42 @@ export const mountAiModelsPage = (
       roleLabel.appendChild(roleHint);
       controls.appendChild(roleLabel);
 
-      appendButton(
+      const save = appendButton(
         doc,
         controls,
-        'Save',
+        pendingMutation === 'save' ? 'Saving…' : 'Save',
         () => {
-          surface(api.saveLlmPrompt(record.surface, draft));
+          const nextDraft = currentDraft();
+          void submitPromptMutation(
+            record.surface,
+            'save',
+            () => api.saveLlmPrompt(record.surface, nextDraft),
+          );
         },
         [[AI_MODELS_PROMPT_SAVE_ATTR, record.surface]],
       );
       // Offered even on a Default record: the owner may have typed into the box
       // without saving, and "put it back" should not require them to have
       // committed the mistake first.
-      appendButton(
+      const reset = appendButton(
         doc,
         controls,
-        'Reset to default',
+        pendingMutation === 'reset' ? 'Resetting…' : 'Reset to default',
         () => {
-          surface(api.resetLlmPrompt(record.surface));
+          void submitPromptMutation(
+            record.surface,
+            'reset',
+            () => api.resetLlmPrompt(record.surface),
+          );
         },
         [[AI_MODELS_PROMPT_RESET_ATTR, record.surface]],
       );
+      if (pendingMutation !== undefined) {
+        save.setAttribute('aria-disabled', 'true');
+        reset.setAttribute('aria-disabled', 'true');
+        (pendingMutation === 'save' ? save : reset)
+          .setAttribute('aria-busy', 'true');
+      }
       section.appendChild(controls);
 
       // Everything the owner CANNOT edit, shown so they know it is there. This
@@ -1410,17 +2286,31 @@ export const mountAiModelsPage = (
     if (!budget || !opts.runGetConfigSchema || !opts.runSetConfigField) {
       renderPending(section, 'budget');
     } else {
-      const input = appendInput(doc, section, 'Daily tokens', String(budget.value));
-      input.type = 'number';
-      appendButton(
+      const input = appendInput(
         doc,
         section,
-        'Save budget',
+        'Daily tokens',
+        budgetDraft ?? String(budget.value),
+        [[AI_MODELS_BUDGET_INPUT_ATTR, 'llm.budget']],
+      );
+      input.type = 'number';
+      input.addEventListener('input', () => {
+        budgetDraft = input.value;
+      });
+      if (budgetSavePending) input.readOnly = true;
+      const save = appendButton(
+        doc,
+        section,
+        budgetSavePending ? 'Saving budget…' : 'Save budget',
         () => {
-          surface(api.setBudget(Number(input.value)));
+          void submitBudgetSave(Number(input.value));
         },
         [[AI_MODELS_BUDGET_SAVE_ATTR, 'llm.budget']],
       );
+      if (budgetSavePending) {
+        save.setAttribute('aria-disabled', 'true');
+        save.setAttribute('aria-busy', 'true');
+      }
     }
     parent.appendChild(section);
   };
@@ -1452,12 +2342,14 @@ export const mountAiModelsPage = (
     chatSetupDraft.apiKey = '';
     render();
     opts.onChatSetupComplete?.();
+    chatSetupFocusOwner = null;
   };
 
   const useExistingChatSource = async (
     sourceId: ChatModelSourceId,
   ): Promise<void> => {
     if (chatSetupSubmitting) return;
+    chatSetupFocusOwner = captureChatSetupFocusOwner();
     chatSetupSubmitting = true;
     chatSetupError = null;
     render();
@@ -1474,6 +2366,7 @@ export const mountAiModelsPage = (
 
   const saveNewChatSource = async (): Promise<void> => {
     if (chatSetupSubmitting) return;
+    chatSetupFocusOwner = captureChatSetupFocusOwner();
     const provider = chatSetupDraft.provider;
     const model = chatSetupDraft.model.trim();
     const apiKey = chatSetupDraft.apiKey.trim();
@@ -1517,6 +2410,12 @@ export const mountAiModelsPage = (
         base_url: provider === 'openai-compatible' ? baseUrl : '',
         speed: 'fast',
       });
+      if (chatSetupFocusOwner !== null) {
+        chatSetupFocusOwner = {
+          attr: AI_MODELS_CHAT_SETUP_SUBMIT_ATTR,
+          value: 'existing',
+        };
+      }
       // The field-level slot write updates the live manager. Pinning slot_1 as
       // the default is the second and final confirmed write before navigation.
       await persistModelPreference('slot_1');
@@ -1656,6 +2555,7 @@ export const mountAiModelsPage = (
       ready.className = 'ai-models-chat-setup-ready';
       ready.setAttribute(AI_MODELS_CHAT_SETUP_STATUS_ATTR, 'ready');
       ready.setAttribute('role', 'status');
+      ready.setAttribute('tabindex', '-1');
       appendHeading(doc, ready, 'h4', 'Model selected for Chat');
       const detail = doc.createElement('p');
       detail.textContent = selectedSource === null
@@ -1665,6 +2565,7 @@ export const mountAiModelsPage = (
       section.appendChild(ready);
       appendChatSetupExits(section, true);
       parent.appendChild(section);
+      focusChatSetupProgress(ready);
       return;
     }
 
@@ -1672,9 +2573,11 @@ export const mountAiModelsPage = (
       const finishing = doc.createElement('div');
       finishing.setAttribute(AI_MODELS_CHAT_SETUP_STATUS_ATTR, 'saving');
       finishing.setAttribute('role', 'status');
+      finishing.setAttribute('tabindex', '-1');
       finishing.textContent = 'Finishing Chat setup…';
       section.appendChild(finishing);
       parent.appendChild(section);
+      focusChatSetupProgress(finishing);
       return;
     }
 
@@ -1728,6 +2631,8 @@ export const mountAiModelsPage = (
       if (!opts.runSetDefaultModelPref) useButton.disabled = true;
       appendChatSetupExits(section, false);
       parent.appendChild(section);
+      restoreChatSetupFocus(sourceSelect, AI_MODELS_CHAT_SETUP_SOURCE_ATTR);
+      restoreChatSetupFocus(useButton, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR);
       return;
     }
 
@@ -1746,6 +2651,7 @@ export const mountAiModelsPage = (
       providerSelect.appendChild(option);
     }
     providerSelect.value = chatSetupDraft.provider;
+    providerSelect.disabled = chatSetupSubmitting;
     providerLabel.appendChild(providerSelect);
     section.appendChild(providerLabel);
 
@@ -1763,6 +2669,7 @@ export const mountAiModelsPage = (
     modelInput.addEventListener('input', () => {
       chatSetupDraft.model = modelInput.value;
     });
+    if (chatSetupSubmitting) modelInput.readOnly = true;
     const modelHint = doc.createElement('span');
     modelHint.className = 'ai-models-chat-setup-helper';
     modelHint.textContent = 'This suggestion is editable if your provider gave you a different model ID.';
@@ -1782,6 +2689,7 @@ export const mountAiModelsPage = (
     keyInput.addEventListener('input', () => {
       chatSetupDraft.apiKey = keyInput.value;
     });
+    if (chatSetupSubmitting) keyInput.readOnly = true;
     const keyHint = doc.createElement('span');
     keyHint.className = 'ai-models-chat-setup-helper';
     keyHint.textContent =
@@ -1808,6 +2716,7 @@ export const mountAiModelsPage = (
     baseUrlInput.addEventListener('input', () => {
       chatSetupDraft.baseUrl = baseUrlInput.value;
     });
+    if (chatSetupSubmitting) baseUrlInput.readOnly = true;
     section.appendChild(baseUrlWrap);
 
     const submitOnEnter = (event: KeyboardEvent): void => {
@@ -1861,10 +2770,12 @@ export const mountAiModelsPage = (
     );
     save.className = 'rx-btn rx-btn-primary ai-models-chat-setup-submit';
     save.disabled =
-      chatSetupSubmitting
-      || !opts.runSetLLMSlot
+      !opts.runSetLLMSlot
       || !opts.runSetDefaultModelPref;
-    if (chatSetupSubmitting) save.setAttribute('aria-busy', 'true');
+    if (chatSetupSubmitting) {
+      save.setAttribute('aria-disabled', 'true');
+      save.setAttribute('aria-busy', 'true');
+    }
     if (!opts.runSetLLMSlot || !opts.runSetDefaultModelPref) {
       const unavailable = doc.createElement('p');
       unavailable.className = 'ai-models-chat-setup-helper';
@@ -1874,17 +2785,148 @@ export const mountAiModelsPage = (
     }
     appendChatSetupExits(section, false);
     parent.appendChild(section);
+    restoreChatSetupFocus(providerSelect, AI_MODELS_CHAT_SETUP_PROVIDER_ATTR);
+    restoreChatSetupFocus(modelInput, AI_MODELS_CHAT_SETUP_MODEL_ATTR);
+    restoreChatSetupFocus(keyInput, AI_MODELS_CHAT_SETUP_KEY_ATTR);
+    restoreChatSetupFocus(baseUrlInput, AI_MODELS_CHAT_SETUP_BASE_URL_ATTR);
+    restoreChatSetupFocus(save, AI_MODELS_CHAT_SETUP_SUBMIT_ATTR);
   };
 
-  /** Switch the internal sub-view. Pure re-render — no rpc. */
-  const setAiTab = (tab: AiModelsTab): void => {
-    if (disposed || aiTab === tab) return;
+  /** Switch the internal sub-view without rebuilding its unsaved form DOM. */
+  interface AiTabItem {
+    id: AiModelsTab;
+    btn: HTMLButtonElement;
+    panel: HTMLElement;
+  }
+  let aiTabItems: AiTabItem[] = [];
+
+  const ownedFocusAttrs = [
+    AI_MODELS_PROMPT_TEXT_ATTR,
+    AI_MODELS_PROMPT_ROLE_ATTR,
+    AI_MODELS_PROMPT_POLICY_ATTR,
+    AI_MODELS_PROMPT_SAVE_ATTR,
+    AI_MODELS_PROMPT_RESET_ATTR,
+    AI_MODELS_SLOT_FIELD_ATTR,
+    AI_MODELS_EMBEDDINGS_FIELD_ATTR,
+    AI_MODELS_SLOT_SAVE_ATTR,
+    AI_MODELS_SLOT_CLEAR_ATTR,
+    AI_MODELS_SLOT_CLEAR_CANCEL_ATTR,
+    AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR,
+    AI_MODELS_POOL_ADD_FIELD_ATTR,
+    AI_MODELS_POOL_ADD_ATTR,
+    AI_MODELS_POOL_TOGGLE_ATTR,
+    AI_MODELS_POOL_REMOVE_ATTR,
+    AI_MODELS_POOL_REMOVE_CANCEL_ATTR,
+    AI_MODELS_POOL_REMOVE_CONFIRM_ATTR,
+    AI_MODELS_CATALOG_MODE_SELECT_ATTR,
+    AI_MODELS_MODEL_PREF_BUTTON_ATTR,
+    AI_MODELS_BUDGET_INPUT_ATTR,
+    AI_MODELS_BUDGET_SAVE_ATTR,
+    AI_MODELS_ALLOW_BYOK_TOGGLE_ATTR,
+    AI_MODELS_PAUSE_BUTTON_ATTR,
+  ] as const;
+  interface OwnedFocusSnapshot {
+    attr: (typeof ownedFocusAttrs)[number];
+    value: string;
+    selection: {
+      start: number;
+      end: number;
+      direction: 'forward' | 'backward' | 'none';
+    } | null;
+  }
+
+  const captureOwnedFocus = (): OwnedFocusSnapshot | null => {
+    const active = (doc as Partial<Document>).activeElement as
+      | (HTMLElement & {
+          selectionStart?: number | null;
+          selectionEnd?: number | null;
+          selectionDirection?: 'forward' | 'backward' | 'none' | null;
+        })
+      | null
+      | undefined;
+    if (active === undefined || active === null) return null;
+    for (const attr of ownedFocusAttrs) {
+      const value = active.getAttribute?.(attr);
+      if (value === null || value === undefined) continue;
+      const selection = typeof active.selectionStart === 'number'
+        && typeof active.selectionEnd === 'number'
+        ? {
+            start: active.selectionStart,
+            end: active.selectionEnd,
+            direction: active.selectionDirection ?? 'none' as const,
+          }
+        : null;
+      return { attr, value, selection };
+    }
+    return null;
+  };
+
+  const restoreOwnedFocus = (snapshot: OwnedFocusSnapshot | null): boolean => {
+    if (snapshot === null || typeof dynamicHost.querySelectorAll !== 'function') {
+      return false;
+    }
+    const candidates = dynamicHost.querySelectorAll(`[${snapshot.attr}]`);
+    for (const candidate of Array.from(candidates)) {
+      const element = candidate as HTMLElement & {
+        setSelectionRange?: (
+          start: number,
+          end: number,
+          direction?: 'forward' | 'backward' | 'none',
+        ) => void;
+      };
+      if (element.getAttribute(snapshot.attr) !== snapshot.value) continue;
+      element.focus?.({ preventScroll: true });
+      if (
+        snapshot.selection !== null
+        && typeof element.setSelectionRange === 'function'
+      ) {
+        const { start, end, direction } = snapshot.selection;
+        element.setSelectionRange(start, end, direction);
+      }
+      return true;
+    }
+    return false;
+  };
+
+  const activateAiTab = (tab: AiModelsTab, focus = false): void => {
     aiTab = tab;
-    render();
+    for (const item of aiTabItems) {
+      const active = item.id === tab;
+      item.btn.setAttribute('aria-selected', active ? 'true' : 'false');
+      item.btn.setAttribute('tabindex', active ? '0' : '-1');
+      item.btn.setAttribute('data-active', active ? 'true' : 'false');
+      item.panel.setAttribute('data-active', active ? 'true' : 'false');
+    }
+    if (focus) {
+      aiTabItems.find((item) => item.id === tab)?.btn.focus?.({
+        preventScroll: true,
+      });
+    }
+  };
+
+  const setAiTab = (tab: AiModelsTab): void => {
+    if (disposed) return;
+    activateAiTab(tab, true);
   };
 
   const render = (): void => {
     if (disposed) return;
+    const ownedFocus = captureOwnedFocus();
+    poolRemoveFocusTrap?.release();
+    poolRemoveFocusTrap = null;
+    renderedPoolRemovePanel = null;
+    renderedPoolRemoveCancel = null;
+    renderedPoolRemoveConfirm = null;
+    slotClearFocusTrap?.release();
+    slotClearFocusTrap = null;
+    renderedSlotClearPanel = null;
+    renderedSlotClearCancel = null;
+    renderedSlotClearConfirm = null;
+    const active = (doc as Partial<Document>).activeElement as
+      HTMLElement | null | undefined;
+    const focusedTab = active !== undefined && active !== null
+      ? active.getAttribute?.(AI_MODELS_TAB_ATTR) ?? null
+      : null;
     wrapper.setAttribute(AI_MODELS_PAGE_STATE_ATTR, state);
     removeChildren(dynamicHost);
     if (chatSetupMode) {
@@ -1909,6 +2951,7 @@ export const mountAiModelsPage = (
     if (actionError !== null) {
       const alert = doc.createElement('div');
       alert.setAttribute(AI_MODELS_ACTION_ERROR_ATTR, '');
+      alert.setAttribute('role', 'alert');
       alert.textContent = actionError;
       dynamicHost.appendChild(alert);
     }
@@ -1921,7 +2964,11 @@ export const mountAiModelsPage = (
     tabStrip.className = 'ai-models-tabs';
     tabStrip.setAttribute('role', 'tablist');
     tabStrip.setAttribute('aria-label', 'AI / Models sections');
+    tabStrip.setAttribute('aria-orientation', 'horizontal');
+    aiTabItems = [];
     for (const tab of AI_MODELS_TABS) {
+      const tabDomId = `recued-ai-models-${tab.id}-tab`;
+      const panelDomId = `recued-ai-models-${tab.id}-panel`;
       const btn = appendButton(
         doc,
         tabStrip,
@@ -1932,34 +2979,120 @@ export const mountAiModelsPage = (
         [
           [AI_MODELS_TAB_ATTR, tab.id],
           ['role', 'tab'],
+          ['id', tabDomId],
+          ['aria-controls', panelDomId],
           ['aria-selected', aiTab === tab.id ? 'true' : 'false'],
+          ['tabindex', aiTab === tab.id ? '0' : '-1'],
           ['data-active', aiTab === tab.id ? 'true' : 'false'],
         ],
       );
       btn.className = 'ai-models-tab';
+      btn.addEventListener('keydown', (event) => {
+        const currentIndex = aiTabItems.findIndex((item) => item.id === tab.id);
+        if (currentIndex < 0) return;
+        let nextIndex: number | null = null;
+        if (event.key === 'ArrowRight') {
+          nextIndex = (currentIndex + 1) % aiTabItems.length;
+        } else if (event.key === 'ArrowLeft') {
+          nextIndex = (currentIndex - 1 + aiTabItems.length) % aiTabItems.length;
+        } else if (event.key === 'Home') {
+          nextIndex = 0;
+        } else if (event.key === 'End') {
+          nextIndex = aiTabItems.length - 1;
+        }
+        if (nextIndex === null) return;
+        event.preventDefault();
+        setAiTab(aiTabItems[nextIndex]!.id);
+      });
+
+      const panel = doc.createElement('div');
+      panel.className = 'ai-models-tabpanel';
+      panel.setAttribute(AI_MODELS_TAB_PANEL_ATTR, tab.id);
+      panel.setAttribute('id', panelDomId);
+      panel.setAttribute('role', 'tabpanel');
+      panel.setAttribute('aria-labelledby', tabDomId);
+      aiTabItems.push({ id: tab.id, btn, panel });
     }
     dynamicHost.appendChild(tabStrip);
 
     const panels = {} as Record<AiModelsTab, HTMLElement>;
-    for (const tab of AI_MODELS_TABS) {
-      const panel = doc.createElement('div');
-      panel.className = 'ai-models-tabpanel';
-      panel.setAttribute(AI_MODELS_TAB_PANEL_ATTR, tab.id);
-      panel.setAttribute('data-active', aiTab === tab.id ? 'true' : 'false');
-      panels[tab.id] = panel;
-      dynamicHost.appendChild(panel);
+    for (const item of aiTabItems) {
+      panels[item.id] = item.panel;
+      dynamicHost.appendChild(item.panel);
     }
+    activateAiTab(aiTab);
 
     renderModelPreference(panels.preference);
     renderByok(panels.providers);
     renderFreePool(panels.providers);
     renderEmbeddingsSlot(panels.providers);
+    renderSlotClearDialog(panels.providers);
     renderPrompts(panels.prompts);
     renderAiPolicy(panels.usage);
     renderBudget(panels.usage);
     // The LLM result cache card is a persistent sub-mount — re-parent its
     // host into the Usage panel each render (the sub-mount keeps working).
     if (cacheHost !== null) panels.usage.appendChild(cacheHost);
+    if (renderedPoolRemovePanel !== null) {
+      poolRemoveFocusTrap = wireFocusTrap({
+        document: doc,
+        getContainer: () => renderedPoolRemovePanel,
+        initialFocus: false,
+        restoreFocus: false,
+      });
+    }
+    if (renderedSlotClearPanel !== null) {
+      slotClearFocusTrap = wireFocusTrap({
+        document: doc,
+        getContainer: () => renderedSlotClearPanel,
+        initialFocus: false,
+        restoreFocus: false,
+      });
+    }
+    let focusRestored = false;
+    if (slotClearNeedsInitialFocus) {
+      slotClearNeedsInitialFocus = false;
+      focusRestored = focusRenderedSlotClearCancel();
+    }
+    if (!focusRestored && slotClearNeedsConfirmFocus) {
+      slotClearNeedsConfirmFocus = false;
+      focusRestored = focusRenderedSlotClearConfirm();
+    }
+    if (poolRemoveNeedsInitialFocus) {
+      poolRemoveNeedsInitialFocus = false;
+      focusRestored = focusRenderedPoolRemoveCancel();
+    }
+    if (!focusRestored && poolRemoveNeedsConfirmFocus) {
+      poolRemoveNeedsConfirmFocus = false;
+      focusRestored = focusRenderedPoolRemoveConfirm();
+    }
+    if (!focusRestored) focusRestored = restoreOwnedFocus(ownedFocus);
+    const slotClearFocusKey = slotClearFocusAfterRender;
+    slotClearFocusAfterRender = null;
+    if (slotClearFocusKey !== null && !focusRestored) {
+      focusRestored = restoreOwnedFocus({
+        attr: AI_MODELS_SLOT_CLEAR_ATTR,
+        value: slotClearFocusKey,
+        selection: null,
+      });
+    }
+    const poolFocus = poolFocusAfterRender;
+    poolFocusAfterRender = null;
+    if (poolFocus !== null && !focusRestored) {
+      focusRestored = restoreOwnedFocus({ ...poolFocus, selection: null });
+      if (!focusRestored && poolFocus.attr === AI_MODELS_POOL_REMOVE_ATTR) {
+        focusRestored = restoreOwnedFocus({
+          attr: AI_MODELS_POOL_ADD_ATTR,
+          value: '',
+          selection: null,
+        });
+      }
+    }
+    if (!focusRestored && isAiModelsTab(focusedTab)) {
+      aiTabItems.find((item) => item.id === focusedTab)?.btn.focus?.({
+        preventScroll: true,
+      });
+    }
   };
 
   /** Re-read the prompt state from the server. Called after every write —
@@ -2069,6 +3202,7 @@ export const mountAiModelsPage = (
       return pendingLoad;
     },
     whenLoaded: () => pendingLoad,
+    hasInFlightWork: hasAiModelsInFlightWork,
     setModelPreference: async (sourceId) => {
       // D-174 R28 Slice A — the picker and the rpc both speak `source_id`, so
       // we persist the chosen id directly (no layer/hint round-trip; the server
@@ -2164,6 +3298,7 @@ export const mountAiModelsPage = (
         // showing a slot the server just dropped.
         next[slotKey] = null;
       }
+      byokSlotDrafts.delete(slotKey);
       commitLocal(next);
     },
     clearByokSlot: async (slotKey) => {
@@ -2173,6 +3308,7 @@ export const mountAiModelsPage = (
       await opts.runSetLLMSlot({ slot_key: slotKey, slot: null });
       const next = cloneConfig(llmConfig);
       next[slotKey] = null;
+      byokSlotDrafts.delete(slotKey);
       commitLocal(next);
     },
     saveEmbeddingsSlot: async (patch) => {
@@ -2223,6 +3359,7 @@ export const mountAiModelsPage = (
         // the server's loadSlot drops a keyless slot, so mirror it as cleared.
         next.embeddings_slot = null;
       }
+      embeddingsSlotDraft = null;
       commitLocal(next);
     },
     clearEmbeddingsSlot: async () => {
@@ -2232,6 +3369,7 @@ export const mountAiModelsPage = (
       await opts.runSetEmbeddingsSlot({ slot: null });
       const next = cloneConfig(llmConfig);
       next.embeddings_slot = null;
+      embeddingsSlotDraft = null;
       commitLocal(next);
     },
     addFreePoolApiEntry: async (entry) => {
@@ -2264,6 +3402,7 @@ export const mountAiModelsPage = (
       const pool = getPoolEntries(next).filter((row) => asString(row.id) !== entry.id);
       pool.push(localEntry);
       next.free_pool = pool;
+      resetFreePoolAddDraft();
       commitLocal(next);
     },
     setFreePoolEntryEnabled: async (id, enabled) => {
@@ -2282,8 +3421,26 @@ export const mountAiModelsPage = (
         throw new Error('AI / Models: server.removeFreePoolEntry caller is not wired');
       }
       await opts.runRemoveFreePoolEntry({ id });
+      const currentPool = getPoolEntries(llmConfig);
+      const removedIndex = currentPool.findIndex((entry) => asString(entry.id) === id);
+      const remainingPool = currentPool.filter((entry) => asString(entry.id) !== id);
+      if (poolRemoveDialogId === id) {
+        const fallbackEntry = remainingPool.length > 0
+          ? remainingPool[Math.min(Math.max(removedIndex, 0), remainingPool.length - 1)]
+          : null;
+        poolRemoveDialogId = null;
+        poolRemovePending = false;
+        poolRemoveNeedsInitialFocus = false;
+        poolRemoveNeedsConfirmFocus = false;
+        poolFocusAfterRender = fallbackEntry === null
+          ? { attr: AI_MODELS_POOL_ADD_ATTR, value: '' }
+          : {
+              attr: AI_MODELS_POOL_REMOVE_ATTR,
+              value: asString(fallbackEntry.id),
+            };
+      }
       const next = cloneConfig(llmConfig);
-      next.free_pool = getPoolEntries(next).filter((entry) => asString(entry.id) !== id);
+      next.free_pool = remainingPool;
       commitLocal(next);
     },
     setChatCatalogMode: async (source, mode) => {
@@ -2355,6 +3512,7 @@ export const mountAiModelsPage = (
       configSchema = configSchema.map((field) =>
         field.key === 'llm.budget' ? { ...field, value: tokens } : field,
       );
+      budgetDraft = null;
       render();
     },
     setAllowByokBackground: async (allow) => {
@@ -2385,6 +3543,10 @@ export const mountAiModelsPage = (
       disposed = true;
       for (const unsubscribe of unsubscribers) unsubscribe();
       if (cacheCard !== null) cacheCard.dispose();
+      poolRemoveFocusTrap?.release();
+      poolRemoveFocusTrap = null;
+      slotClearFocusTrap?.release();
+      slotClearFocusTrap = null;
       wrapper.remove();
     },
   };
@@ -2544,6 +3706,50 @@ export const AI_MODELS_PAGE_STYLES = `
 }
 [${AI_MODELS_PAGE_ATTR}] button {
   margin: 8px 8px 0 0;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-confirm-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  padding: 16px;
+  background: rgba(0, 0, 0, 0.52);
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-confirm-dialog {
+  width: min(100%, 440px);
+  box-sizing: border-box;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  padding: 18px;
+  background: var(--surface);
+  color: var(--fg);
+  box-shadow: 0 18px 54px rgba(0, 0, 0, 0.28);
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-confirm-dialog p {
+  margin: 0;
+  color: var(--fg-muted);
+  line-height: 1.5;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-confirm-dialog .ai-models-confirm-error {
+  margin-top: 12px;
+  color: var(--danger);
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-confirm-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 18px;
+}
+[${AI_MODELS_PAGE_ATTR}] .ai-models-confirm-actions button {
+  margin: 0;
+}
+[${AI_MODELS_POOL_REMOVE_CONFIRM_ATTR}],
+[${AI_MODELS_SLOT_CLEAR_CONFIRM_ATTR}] {
+  border-color: var(--danger);
+  background: var(--danger);
+  color: var(--on-danger, #fff);
 }
 /* System prompts — the textarea is the surface, so give it real room. */
 [${AI_MODELS_PAGE_ATTR}] .ai-models-prompt-head {

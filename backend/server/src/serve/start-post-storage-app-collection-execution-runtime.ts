@@ -25,7 +25,10 @@ import { resolveReceptionInboxFanoutModeFromStore } from '../ports/reception/han
 import type { KeyManager } from '../key-manager.js';
 import { autoUnlockServerVaultFromKeyfile } from '../server-vault-enrollment.js';
 import { createServerBundleStore } from '../server-bundle-store.js';
-import { reconcileServerBundleSwap } from '../archive/server-bundle-swap.js';
+import {
+  reconcileServerBundleSwap,
+  sweepOrphanedRestoreStaging,
+} from '../archive/server-bundle-swap.js';
 import { reclaimDisplacedBlobs } from '../archive/archive-restore.js';
 
 type CollectionDerivedKeys =
@@ -165,12 +168,16 @@ export const startPostBaseStorageVaultRuntime = async (
   // still exists. Reclaiming afterwards meant a kill in the gap left "parks,
   // no marker" — read by the next boot as an uncommitted restore.
   let reclaimedParks = { restored: 0, reaped: 0, complete: true };
-  const bundleSwapRecovery = reconcileServerBundleSwap(base.dbPath, (committed) => {
-    reclaimedParks = reclaimDisplacedBlobs(dirname(base.dbPath), committed);
-    // Reported back so the journal keeps its marker when a park could not be
-    // resolved — the next boot then re-decides it rather than losing the verdict.
-    return reclaimedParks.complete;
-  });
+  const bundleSwapRecovery = reconcileServerBundleSwap(
+    base.dbPath,
+    (committed) => {
+      reclaimedParks = reclaimDisplacedBlobs(dirname(base.dbPath), committed);
+      // Reported back so the journal keeps its marker when a park could not be
+      // resolved — the next boot then re-decides it rather than losing the verdict.
+      return reclaimedParks.complete;
+    },
+    { configPath: base.loadedConfig.source },
+  );
   if (bundleSwapRecovery.recovery !== 'none') {
     console.warn(
       `[archive] ${bundleSwapRecovery.recovery} interrupted db + server-bundle restore swap`,
@@ -184,6 +191,19 @@ export const startPostBaseStorageVaultRuntime = async (
     console.warn(
       '[archive] a parked pre-restore blob could not be reclaimed; the restore journal is kept '
         + 'for the next boot. Archive restores are refused until it retires.',
+    );
+  }
+  // A kill before the marker publication has no journal transaction to consume
+  // the complete staged database. Reconcile first so any marker-owned staging
+  // is either consumed or explicitly preserved, then reap every other exact
+  // restore-staging shape before opening SQLite.
+  const sweptRestoreStaging = sweepOrphanedRestoreStaging(
+    base.dbPath,
+    base.loadedConfig.source,
+  );
+  if (sweptRestoreStaging > 0) {
+    console.warn(
+      `[archive] reclaimed ${sweptRestoreStaging} orphaned restore staging artifact(s)`,
     );
   }
   // No journal at all — so no restore reached the point of having one, and any
@@ -206,6 +226,7 @@ export const startPostBaseStorageVaultRuntime = async (
   let keysRef: KeyManager | undefined;
   const storageContext = await composeStorageContext({
     dbPath: base.dbPath,
+    restoreJournalReconciled: true,
     bootTrace: base.bootTrace,
     runtimeConfig: base.runtimeConfig,
     vaultQuotas: base.vaultQuotas,
@@ -341,6 +362,7 @@ export const startPostBaseStorageVaultRuntime = async (
           },
           recovery: {
             bootSigningIdentity,
+            configPath: base.loadedConfig.source,
             checkpointStore: storageContext.checkpointStore,
             auditLog: storageContext.auditLog,
             commitStore: storageContext.commitStore,

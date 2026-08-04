@@ -497,11 +497,11 @@ export const autoRegisterRecuedBuiltinSources = (
   }
 };
 
-/** Parse the connection row's vendor from `config_json`. Generic since
- *  D-192 P2 — ANY vendor may carry declarations (kernel or catalog);
- *  the closed `TASK_CAPABLE_VENDORS` gate retired with the hardcoded
- *  path. Exported since P5 — the sync wire threads the vendor into
- *  each task's input for edge resolution (platform links, `crm_alias`). */
+/** Parse an API connection row's vendor from `config_json`. Catalog-declared
+ *  Sources may also ride MCP connections, but the compatibility registry below
+ *  remains vendor/API-specific. Exported since P5 — the sync wire threads the
+ *  vendor into each task's input for edge resolution (platform links,
+ *  `crm_alias`). */
 export const connectionVendorOf = (row: ConnectionRow): string | null => {
   if (row.kind !== 'api') return null;
   let config: Record<string, unknown> = {};
@@ -517,15 +517,16 @@ export const connectionVendorOf = (row: ConnectionRow): string | null => {
   return typeof vendor === 'string' && vendor.length > 0 ? vendor : null;
 };
 
-/** Parse an api connection row's non-secret config object — the source for a
- *  declaration's `op_arg_bindings` / `create_arg_bindings` per-connection scoping
- *  values (Asana `workspace`, Google Tasks `tasklist`, Linear `teamId`). Same
- *  parse as `connectionVendorOf`; a non-api row / malformed config yields
+/** Parse a dispatchable connection row's non-secret config object — the source
+ *  for a declaration's `op_arg_bindings` / `create_arg_bindings`
+ *  per-connection scoping values (Asana `workspace`, Google Tasks `tasklist`,
+ *  Linear `teamId`, federated Recued `project_ref`). Both API and MCP catalog
+ *  transports are dispatchable; notification rows / malformed config yield
  *  undefined (the resolver then config-fails the bound arg). */
 export const connectionConfigOf = (
   row: ConnectionRow,
 ): Record<string, unknown> | undefined => {
-  if (row.kind !== 'api') return undefined;
+  if (row.kind !== 'api' && row.kind !== 'mcp') return undefined;
   try {
     const parsed: unknown = JSON.parse(row.config_json);
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
@@ -581,6 +582,30 @@ export interface DesiredWorkEntitySource {
   declaration: KernelWorkEntitySourceDeclaration;
 }
 
+/** One desired Source pinned to the concrete connection row that will dispatch
+ *  it. A connection name is not unique by itself (`connections` is keyed by
+ *  `(kind, name)`), so read/write/sync consumers must retain this ownership
+ *  instead of later assuming every Source came from `kind: api`. */
+export interface BoundDesiredWorkEntitySource {
+  row: ConnectionRow;
+  desired: DesiredWorkEntitySource;
+}
+
+/** A catalog's API-surface transport determines which connection-row kind may
+ *  own its declarations. This prevents a same-name API row from accidentally
+ *  claiming an MCP catalog (or vice versa) merely because the legacy binding
+ *  table is keyed by connection name. Older API fixtures omit `surfaces`; they
+ *  retain the pre-MCP API default. */
+const catalogMatchesConnectionKind = (
+  row: ConnectionRow,
+  manifest: IngredientManifest,
+): boolean => {
+  const transport = manifest.surfaces?.api?.transport;
+  if (row.kind === 'mcp') return transport === 'mcp';
+  if (row.kind === 'api') return transport !== 'mcp';
+  return false;
+};
+
 /** Resolve the declarations that apply to one connection row: its bound catalog
  *  manifest's `work_entity_sources` (when the caller wires the resolver), then
  *  the legacy kernel compatibility registry for its vendor, deduped by
@@ -594,7 +619,10 @@ export const desiredWorkEntitySourcesFor = (
   const vendor = connectionVendorOf(row);
   const declarations: KernelWorkEntitySourceDeclaration[] = [];
   const manifest = resolveCatalogManifest?.(row);
-  if (manifest?.work_entity_sources !== undefined) {
+  if (
+    manifest?.work_entity_sources !== undefined
+    && catalogMatchesConnectionKind(row, manifest)
+  ) {
     declarations.push(...manifest.work_entity_sources);
   }
   if (vendor !== null) {
@@ -617,6 +645,47 @@ export const desiredWorkEntitySourcesFor = (
     });
   }
   return out;
+};
+
+/** Resolve every declaration-owned Source for one connection NAME across the
+ *  two dispatchable connection kinds. API is visited first to preserve the
+ *  registered-vendor precedence used throughout the catalog binding layer;
+ *  Source ids are deduped so a malformed/conflicting pair cannot double-own a
+ *  write route. Notification connections are intentionally inert. */
+export const desiredWorkEntitySourceBindingsForName = (
+  connectionStore: Pick<ConnectionStoreSqlite, 'get'>,
+  connection_name: string,
+  resolveCatalogManifest?: (row: ConnectionRow) => IngredientManifest | null | undefined,
+): BoundDesiredWorkEntitySource[] => {
+  const out: BoundDesiredWorkEntitySource[] = [];
+  const seen = new Set<string>();
+  for (const kind of ['api', 'mcp'] as const) {
+    const row = connectionStore.get(kind, connection_name);
+    if (row === null) continue;
+    for (const desired of desiredWorkEntitySourcesFor(row, resolveCatalogManifest)) {
+      if (seen.has(desired.id)) continue;
+      seen.add(desired.id);
+      out.push({ row, desired });
+    }
+  }
+  return out;
+};
+
+/** Resolve the concrete connection + declaration for a qualified Source id.
+ *  Shared by targeted reads, generic writes, and the sync config resolver so
+ *  every consumer routes through the same `(kind, name)` ownership decision. */
+export const resolveWorkEntitySourceBinding = (
+  connectionStore: Pick<ConnectionStoreSqlite, 'get'>,
+  source_id: string,
+  resolveCatalogManifest?: (row: ConnectionRow) => IngredientManifest | null | undefined,
+): BoundDesiredWorkEntitySource | null => {
+  const connectionName = sourceIdConnectionName(source_id);
+  if (connectionName === null) return null;
+  return desiredWorkEntitySourceBindingsForName(
+    connectionStore,
+    connectionName,
+    resolveCatalogManifest,
+  ).find((binding) => binding.desired.id === source_id) ?? null;
 };
 
 /** Seed / refresh the Source's sync-state row (P3b). Idempotent:
@@ -833,45 +902,47 @@ export const wireWorkEntitySourceBoot = (
   } = input;
   const now = input.now ?? ((): number => Date.now());
 
-  // Reconcile ONE connection name against its current declarations — a null row
-  // (deleted / never enrolled) yields the empty desired set (unregister). The
-  // single primitive every path below drives so boot scan, observers, and the
-  // install/uninstall by-name reconcile can never diverge.
-  const reconcile = (row: ConnectionRow | null, name: string): void => {
+  // Reconcile ONE connection name against the union of its dispatchable rows.
+  // The store permits an API and MCP row with the same name; resolving the union
+  // means deleting/upserting one can never sweep the other's Sources.
+  const reconcile = (name: string): void => {
     reconcileConnectionSources(
       store,
-      row === null ? [] : desiredWorkEntitySourcesFor(row, resolveCatalogManifest),
+      desiredWorkEntitySourceBindingsForName(
+        connectionStore,
+        name,
+        resolveCatalogManifest,
+      ).map((binding) => binding.desired),
       name, now(), syncState, edges, dependencyEntities, purgeMirroredData,
     );
   };
 
-  // Boot scan — reconcile every api-kind connection's Sources against
-  // its current declarations. Source registry rows survive across
+  // Boot scan — reconcile every API/MCP connection name's Sources against its
+  // current declarations. Source registry rows survive across
   // server restarts, so a vendor flip / declaration change that
   // happened while the server was stopped still leaves stale rows —
   // the reconcile drops them exactly as the upsert observer would at
   // runtime.
-  for (const row of connectionStore.list({ kind: 'api' })) {
-    reconcile(row, row.name);
+  const bootNames = new Set([
+    ...connectionStore.list({ kind: 'api' }).map((row) => row.name),
+    ...connectionStore.list({ kind: 'mcp' }).map((row) => row.name),
+  ]);
+  for (const name of bootNames) {
+    reconcile(name);
   }
 
-  // Future enrollments + vendor flips. Non-api upserts (kind: 'mcp' /
-  // 'notification') are ignored: the connection store's `(kind, name)`
-  // PK lets a non-api row coexist with an api row sharing the same
-  // name — reconciling on them would wrongly drop the api row's
-  // Sources.
+  // Future enrollments + vendor flips. Notification rows remain inert. API and
+  // MCP both reconcile the full same-name union, preserving a coexisting row.
   connectionStore.addOnUpsert((row) => {
-    if (row.kind !== 'api') return;
-    reconcile(row, row.name);
+    if (row.kind !== 'api' && row.kind !== 'mcp') return;
+    reconcile(row.name);
   });
 
-  // Deletions — the row is gone, so the desired set is empty and the
-  // reconcile unregisters every connection Source parsed to this name
-  // (no closed vendor list needed — an improvement over the old path,
-  // which could only try known vendors).
+  // Deletions — the row is already gone, so recompute from any surviving
+  // same-name dispatchable row; absent both, every Source for the name drops.
   connectionStore.addOnDelete((kind, name) => {
-    if (kind !== 'api') return;
-    reconcile(null, name);
+    if (kind !== 'api' && kind !== 'mcp') return;
+    reconcile(name);
   });
 
   // D-192 — the by-name reconcile the install/uninstall deps call post-commit
@@ -880,7 +951,7 @@ export const wireWorkEntitySourceBoot = (
   // this registers its Sources at once instead of at the next upsert / restart;
   // uninstall drops the binding → the resolver yields nothing → unregister.
   const reconcileConnection = (connectionName: string): void => {
-    reconcile(connectionStore.get('api', connectionName), connectionName);
+    reconcile(connectionName);
   };
 
   return { reconcileConnection };

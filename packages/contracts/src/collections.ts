@@ -50,7 +50,7 @@ export interface CollectionRecord {
   modified_at: number;
   /** Hand-specified "hot" fields indexed for cheap filtering. Per-
    *  collection schema:
-   *    - mail: { from, subject, thread_id, folder, is_read, labels? }
+   *    - mail: { from, subject, thread_id, folder, direction, is_read, labels? }
    *    - file: { path, mime_type, size, mtime }
    *    - webhook: { method, headers_subset, remote_ip, query }
    *  Stored as JSON; queryable via SQLite `json_extract`. */

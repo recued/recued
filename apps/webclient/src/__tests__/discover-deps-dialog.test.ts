@@ -4,7 +4,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   mountRecipeInstallDialog,
+  RECIPE_DIALOG_CANCEL_ATTR,
   RECIPE_DIALOG_DEP_ATTR,
+  RECIPE_DIALOG_DEP_TOGGLE_ATTR,
+  RECIPE_DIALOG_ERROR_ATTR,
   RECIPE_DIALOG_INSTALL_ATTR,
   RECIPE_DIALOG_STYLES,
   type MountRecipeInstallDialogOptions,
@@ -48,7 +51,7 @@ const connManifest = (
   ],
 });
 
-const makeEl = (tag: string) => {
+const makeEl = (tag: string, onFocus?: (el: any) => void) => {
   const children: any[] = [];
   const attrs = new Map<string, string>();
   const listeners = new Map<string, Array<(ev: unknown) => void>>();
@@ -84,10 +87,35 @@ const makeEl = (tag: string) => {
     remove: () => {
       if (el.parent) el.parent.removeChild(el);
     },
+    focus: () => onFocus?.(el),
   };
   return el;
 };
-const fakeDoc = () => ({ createElement: (t: string) => makeEl(t) }) as unknown as Document;
+const fakeDoc = () => {
+  const listeners = new Map<string, Array<(ev: unknown) => void>>();
+  const doc: any = {
+    activeElement: null,
+    listeners,
+    addEventListener: (type: string, listener: (ev: unknown) => void) => {
+      const current = listeners.get(type) ?? [];
+      current.push(listener);
+      listeners.set(type, current);
+    },
+    removeEventListener: (type: string, listener: (ev: unknown) => void) => {
+      const current = listeners.get(type);
+      if (current === undefined) return;
+      const index = current.indexOf(listener);
+      if (index >= 0) current.splice(index, 1);
+    },
+    dispatch: (type: string, event: unknown) => {
+      for (const listener of [...(listeners.get(type) ?? [])]) listener(event);
+    },
+  };
+  doc.createElement = (tag: string) => makeEl(tag, (el) => {
+    doc.activeElement = el;
+  });
+  return doc as Document & { dispatch(type: string, event: unknown): void };
+};
 
 const walk = (el: any, pred: (e: any) => boolean, out: any[] = []): any[] => {
   for (const c of el.children ?? []) {
@@ -98,6 +126,10 @@ const walk = (el: any, pred: (e: any) => boolean, out: any[] = []): any[] => {
 };
 const depRows = (host: any) => walk(host, (e) => e.getAttribute?.(RECIPE_DIALOG_DEP_ATTR) !== null);
 const installBtn = (host: any) => walk(host, (e) => e.getAttribute?.(RECIPE_DIALOG_INSTALL_ATTR) !== null)[0];
+const cancelBtn = (host: any) => walk(host, (e) => e.getAttribute?.(RECIPE_DIALOG_CANCEL_ATTR) !== null)[0];
+const dialogBox = (host: any) => walk(host, (e) => e.getAttribute?.('role') === 'dialog')[0];
+const depToggles = (host: any) => walk(host, (e) => e.getAttribute?.(RECIPE_DIALOG_DEP_TOGGLE_ATTR) !== null);
+const errors = (host: any) => walk(host, (e) => e.getAttribute?.(RECIPE_DIALOG_ERROR_ATTR) !== null);
 const pickers = (host: any) => walk(host, (e) => e.getAttribute?.(INSTALL_GRANT_PICKER_ATTR) !== null);
 const scopeRadios = (host: any) => walk(host, (e) => e.getAttribute?.(INSTALL_GRANT_SCOPE_OPTION_ATTR) !== null);
 const collectText = (host: any): string =>
@@ -117,19 +149,20 @@ const dep = (over: Partial<ResolvedDep>): ResolvedDep => ({
 const recipe = { recipe_id: 'deal-risk', name: 'Deal Risk', publisher_id: 'recued-core', version: 3 };
 
 const setup = (over: Partial<MountRecipeInstallDialogOptions> = {}) => {
-  const host = makeEl('div');
+  const document = fakeDoc();
+  const host = document.createElement('div') as any;
   const installPack = vi.fn(async () => ({ ok: true }));
   const installRecipe = vi.fn(async () => ({ ok: true }));
   const onInstalled = vi.fn();
   const dialog = mountRecipeInstallDialog({
     host: host as unknown as HTMLElement,
-    document: fakeDoc(),
+    document,
     installPack,
     installRecipe,
     onInstalled,
     ...over,
   });
-  return { host, dialog, installPack, installRecipe, onInstalled };
+  return { host, document, dialog, installPack, installRecipe, onInstalled };
 };
 
 const deps: ResolvedDep[] = [
@@ -150,6 +183,74 @@ describe('mountRecipeInstallDialog', () => {
     // hubspot installed (no checkbox), salesforce missing+known (checked),
     // thirdparty unknown (no checkbox) → only salesforce selected.
     expect(dialog.getSelectedPacks()).toEqual(['salesforce']);
+  });
+
+  it('opens as a labelled modal, owns initial focus, and restores its opener', () => {
+    const { host, document, dialog } = setup();
+    const opener = document.createElement('button') as any;
+    opener.focus();
+
+    dialog.open(recipe, deps);
+
+    const box = dialogBox(host);
+    expect(box.getAttribute('aria-modal')).toBe('true');
+    expect(box.getAttribute('aria-label')).toBe('Install Deal Risk');
+    expect(document.activeElement).toBe(box);
+    expect(cancelBtn(host)).toBeDefined();
+
+    dialog.clickCancel();
+    expect(dialog.isOpen()).toBe(false);
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it('keeps the pending Install command focused and single-flight through failure', async () => {
+    let release: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const installRecipe = vi.fn(async () => {
+      await gate;
+      return { ok: false, message: 'Recipe install unavailable.' };
+    });
+    const { host, document, dialog } = setup({ installRecipe });
+    dialog.open(recipe, []);
+    const original = installBtn(host);
+    original.focus();
+
+    const pending = dialog.clickInstall();
+    const busy = installBtn(host);
+    expect(busy).not.toBe(original);
+    expect(busy.disabled).not.toBe(true);
+    expect(busy.getAttribute('aria-disabled')).toBe('true');
+    expect(busy.getAttribute('aria-busy')).toBe('true');
+    expect(busy.textContent).toBe('Installing…');
+    expect(document.activeElement).toBe(busy);
+
+    await dialog.clickInstall();
+    expect(installRecipe).toHaveBeenCalledTimes(1);
+    release();
+    await pending;
+
+    const retry = installBtn(host);
+    expect(retry).not.toBe(busy);
+    expect(retry.getAttribute('aria-disabled')).toBeNull();
+    expect(retry.getAttribute('aria-busy')).toBeNull();
+    expect(document.activeElement).toBe(retry);
+    expect(errors(host)).toHaveLength(1);
+    expect(errors(host)[0].getAttribute('role')).toBe('alert');
+    expect(errors(host)[0].textContent).toBe('Recipe install unavailable.');
+  });
+
+  it('keeps the changed dependency checkbox focused through its repaint', () => {
+    const { host, document, dialog } = setup();
+    dialog.open(recipe, deps);
+    const original = depToggles(host)[0];
+    original.focus();
+
+    for (const listener of original.listeners.get('change') ?? []) listener({});
+
+    const replacement = depToggles(host)[0];
+    expect(replacement).not.toBe(original);
+    expect(replacement.getAttribute(RECIPE_DIALOG_DEP_TOGGLE_ATTR)).toBe('salesforce');
+    expect(document.activeElement).toBe(replacement);
   });
 
   it('ships a scroll-safe, responsive consent surface', () => {
@@ -265,6 +366,25 @@ describe('mountRecipeInstallDialog — per-dep grant scope (§7.1/§7.2)', () =>
     ]);
     expect(dialog.getDepGrantModel('salesforce')).not.toBeNull();
     expect(dialog.getDepGrantModel('plain')).toBeNull();
+  });
+
+  it('keeps the changed dependency grant choice focused through its repaint', () => {
+    const { host, document, dialog } = setup();
+    dialog.open(recipe, [connDep('salesforce')]);
+    const original = scopeRadios(host).find(
+      (radio) => radio.getAttribute('data-scope') === 'all_customers',
+    );
+    original.checked = true;
+    original.focus();
+
+    for (const listener of original.listeners.get('change') ?? []) listener({});
+
+    const replacement = scopeRadios(host).find(
+      (radio) => radio.getAttribute('data-scope') === 'all_customers',
+    );
+    expect(replacement).not.toBe(original);
+    expect(document.activeElement).toBe(replacement);
+    expect(dialog.getDepScope('salesforce')).toBe('all_customers');
   });
 
   it('defaults to You only (owner) + read, and sends install_scope on co-install', async () => {

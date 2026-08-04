@@ -340,6 +340,9 @@ export interface UpdatesPageMount {
   /** Run a check now (mount + Check button + poll all route through this). */
   refresh: () => Promise<void>;
   getState: () => UpdatesPageState;
+  /** User-started writes whose authoritative outcome is not known yet.
+   * Availability and mode reads are deliberately excluded. */
+  hasInFlightWork: () => boolean;
   dispose: () => void;
 }
 
@@ -428,6 +431,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
     rollbackResult: null,
     rollbackError: null,
   };
+  let pendingMode: UpdateMode | null = null;
   let queuedPostRestartCheck = false;
 
   const make = (
@@ -780,6 +784,15 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   }
   modeSelect.addEventListener('change', () => {
     const v = modeSelect.value;
+    if (
+      state.modeBusy
+      || readServerUpdateProgress() !== null
+      || state.mode?.env_locked === true
+      || opts.runSetMode === undefined
+    ) {
+      modeSelect.value = pendingMode ?? state.mode?.mode ?? '';
+      return;
+    }
     if (isUpdateMode(v)) void doSetMode(v);
   });
   modeBlock.appendChild(modeSelect);
@@ -1016,6 +1029,12 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   };
 
   const renderAvailable = (): void => {
+    const active = (doc as Document & { activeElement?: Element | null })
+      .activeElement;
+    const restoreApplyFocus =
+      active?.hasAttribute?.(UPDATES_APPLY_BTN_ATTR) === true;
+    const restoreForceApplyFocus =
+      active?.hasAttribute?.(UPDATES_FORCE_APPLY_BTN_ATTR) === true;
     clear(availableEl);
     // The "available" card reflects the LATEST authoritative signal, not just the
     // last stored check: hide it when the most recent check FAILED (phase
@@ -1033,6 +1052,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
         : undefined;
     if (a === undefined) {
       setHidden(availableEl, true);
+      if (restoreApplyFocus || restoreForceApplyFocus) focusElement(versionEl);
       return;
     }
     setHidden(availableEl, false);
@@ -1067,26 +1087,46 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
           : 'Update now',
       attrs: { type: 'button', [UPDATES_APPLY_BTN_ATTR]: '' },
     });
+    const localApplyPending = state.applying;
+    const serverActionElsewhere =
+      !localApplyPending && readServerUpdateProgress() !== null;
     setDisabled(
       applyBtn,
-      state.applying
-        || readServerUpdateProgress() !== null
+      serverActionElsewhere
         || opts.runApply === undefined,
     );
+    if (localApplyPending) {
+      applyBtn.setAttribute('aria-disabled', 'true');
+      applyBtn.setAttribute('aria-busy', 'true');
+    }
     applyBtn.addEventListener('click', () => void doApply(false));
     availableEl.appendChild(applyBtn);
     // The server refuses a major bump until forced; surface an explicit confirm.
+    let forceBtn: HTMLElement | null = null;
     if (state.applyResult?.status === 'major-blocked') {
-      const forceBtn = make('button', {
+      forceBtn = make('button', {
         text: 'Update anyway (major)',
         attrs: { type: 'button', [UPDATES_FORCE_APPLY_BTN_ATTR]: '' },
       });
       setDisabled(
         forceBtn,
-        state.applying || readServerUpdateProgress() !== null,
+        serverActionElsewhere,
       );
+      if (localApplyPending) {
+        forceBtn.setAttribute('aria-disabled', 'true');
+        forceBtn.setAttribute('aria-busy', 'true');
+      }
       forceBtn.addEventListener('click', () => void doApply(true));
       availableEl.appendChild(forceBtn);
+    }
+    if (restoreApplyFocus) focusElement(applyBtn);
+    else if (restoreForceApplyFocus) {
+      // A terminal force result removes its one-shot control. Return to the
+      // ordinary action when it remains available instead of dropping focus
+      // into the document body during the rebuild.
+      if (forceBtn !== null) focusElement(forceBtn);
+      else if (!applyBtn.hasAttribute('disabled')) focusElement(applyBtn);
+      else focusElement(versionEl);
     }
   };
 
@@ -1705,12 +1745,21 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
         ? `Current version ${state.check.current_version} · ${state.check.channel} channel`
         : 'Current version —';
 
+    const checkBusy = state.phase === 'checking';
+    // A manually initiated check owns this stable button for the full read.
+    // Keep it focusable while the state guard rejects duplicate clicks; native
+    // disablement is reserved for a genuinely unavailable/superseded command.
     setDisabled(
       checkBtn,
-      state.phase === 'checking'
-        || tabProgress !== null
-        || opts.runCheck === undefined,
+      !checkBusy && (tabProgress !== null || opts.runCheck === undefined),
     );
+    if (checkBusy) {
+      checkBtn.setAttribute('aria-disabled', 'true');
+      checkBtn.setAttribute('aria-busy', 'true');
+    } else {
+      checkBtn.removeAttribute('aria-disabled');
+      checkBtn.removeAttribute('aria-busy');
+    }
     checkBtn.textContent = state.phase === 'checking'
       ? 'Checking…'
       : tabProgress !== null
@@ -1753,14 +1802,22 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
 
     if (state.mode !== null) {
       setHidden(modeBlock, false);
-      modeSelect.value = state.mode.mode;
+      modeSelect.value = state.modeBusy && pendingMode !== null
+        ? pendingMode
+        : state.mode.mode;
       setDisabled(
         modeSelect,
         state.mode.env_locked
-          || state.modeBusy
-          || tabProgress !== null
+          || (!state.modeBusy && tabProgress !== null)
           || opts.runSetMode === undefined,
       );
+      if (state.modeBusy) {
+        modeSelect.setAttribute('aria-disabled', 'true');
+        modeSelect.setAttribute('aria-busy', 'true');
+      } else {
+        modeSelect.removeAttribute('aria-disabled');
+        modeSelect.removeAttribute('aria-busy');
+      }
       const notes: string[] = [];
       if (state.mode.env_locked) notes.push('Locked by RECUED_SELF_UPDATE on the server.');
       else notes.push(`Default for the ${MODE_SHORT[state.mode.channel_default]} setting on this channel.`);
@@ -1772,11 +1829,17 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
 
     setDisabled(
       rollbackBtn,
-      state.rollbackBusy
-        || state.applying
-        || tabProgress !== null
+      state.applying
+        || (!state.rollbackBusy && tabProgress !== null)
         || opts.runRollback === undefined,
     );
+    if (state.rollbackBusy) {
+      rollbackBtn.setAttribute('aria-disabled', 'true');
+      rollbackBtn.setAttribute('aria-busy', 'true');
+    } else {
+      rollbackBtn.removeAttribute('aria-disabled');
+      rollbackBtn.removeAttribute('aria-busy');
+    }
     rollbackBtn.textContent = state.rollbackBusy
       ? 'Rolling back…'
       : 'Roll back to previous version';
@@ -1962,6 +2025,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       || state.modeBusy
       || readServerUpdateProgress() !== null
     ) return;
+    pendingMode = mode;
     state.modeBusy = true;
     state.modeError = null;
     render();
@@ -1971,6 +2035,7 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
       state.modeError = humanizeRpcError(err);
     }
     if (disposed) return;
+    pendingMode = null;
     state.modeBusy = false;
     render();
   }
@@ -2141,6 +2206,8 @@ export const mountUpdatesPage = (opts: MountUpdatesPageOptions): UpdatesPageMoun
   return {
     refresh: () => doCheck(),
     getState: () => state,
+    hasInFlightWork: () =>
+      !disposed && (state.applying || state.modeBusy || state.rollbackBusy),
     dispose: () => {
       if (disposed) return;
       disposed = true;

@@ -95,6 +95,10 @@ export const INGREDIENT_BUILDER_STYLES_MARKER =
   'data-recued-ingredient-builder-styles';
 export const INGREDIENT_BUILDER_ROUTE_ATTR =
   'data-recued-ingredient-builder-route';
+export const INGREDIENT_BUILDER_HEADING_ATTR =
+  'data-recued-ingredient-builder-heading';
+const INGREDIENT_BUILDER_FOCUS_FIELD_ATTR =
+  'data-recued-ingredient-builder-focus-field';
 export const INGREDIENT_BUILDER_TABLE_ATTR =
   'data-recued-ingredient-operation-family-table';
 export const INGREDIENT_BUILDER_ROW_ATTR =
@@ -197,6 +201,8 @@ export const INGREDIENT_BUILDER_DRAFT_PICKER_ATTR =
   'data-recued-ingredient-draft-picker';
 export const INGREDIENT_BUILDER_DRAFT_REFRESH_ATTR =
   'data-recued-ingredient-draft-refresh';
+export const INGREDIENT_BUILDER_DRAFT_NEW_ATTR =
+  'data-recued-ingredient-draft-new';
 export const INGREDIENT_BUILDER_PREVIEW_OPERATION_ATTR =
   'data-recued-ingredient-preview-operation';
 export const INGREDIENT_BUILDER_PREVIEW_ARGS_ATTR =
@@ -474,11 +480,19 @@ interface IngredientBuilderState {
    *  every rerender snaps a card back to its `!reviewed` default, losing the
    *  user's toggles. Reset on draft switch; pruned on row removal. */
   opCardOpen: Map<string, boolean>;
+  /** UI-only — the nested Advanced disclosure for each operation. Argument
+   *  add/remove and binding-shape repaints must not collapse the panel the
+   *  author is actively using. Reset on draft switch; pruned on row removal. */
+  opAdvancedOpen: Map<string, boolean>;
   /** UI-only — bumped by every markDirty. A save captures the epoch at
    *  dispatch; if edits landed while the save/decompose was in flight, the
    *  completion must NOT report the draft clean ('Saved') — those keystrokes
    *  are not in the saved body. */
   editEpoch: number;
+  /** UI-only — bumped by every input that affects the install manifest,
+   *  including Publish metadata that deliberately does not dirty/re-review
+   *  the composition draft. */
+  installInputEpoch: number;
   /** UI-only — the editEpoch value at the last CLEAN point (fresh/blank
    *  state, draft applied, save completed with no interim edits). Dirty ⇔
    *  editEpoch !== cleanEpoch: user edits since the last clean sync, which a
@@ -508,7 +522,7 @@ export interface IngredientBuilderRoute {
    *  the shell's leave-guard seam (same predicate as the Unsaved cue and
    *  the two-tap New confirm). */
   hasUnsavedChanges(): boolean;
-  /** Save/review chain already dispatched to the source server. */
+  /** Save/review or install work already dispatched to the source server. */
   hasInFlightWork(): boolean;
   getState(): {
     draftId?: string;
@@ -1647,6 +1661,7 @@ const markDirty = (state: IngredientBuilderState): void => {
   state.review = undefined;
   state.reviewIssues = [];
   state.editEpoch += 1;
+  state.installInputEpoch += 1;
   // Starting to edit cancels a pending "Discard & New?" confirm.
   state.newConfirmPending = false;
   clearPreviewState(state);
@@ -1655,6 +1670,7 @@ const markDirty = (state: IngredientBuilderState): void => {
 };
 
 const markInstallDirty = (state: IngredientBuilderState): void => {
+  state.installInputEpoch += 1;
   clearInstallState(state);
 };
 
@@ -2120,7 +2136,9 @@ const stateFromBody = (
     newConfirmPending: false,
     activeSection: 'overview' as const,
     opCardOpen: new Map<string, boolean>(),
+    opAdvancedOpen: new Map<string, boolean>(),
     editEpoch: 0,
+    installInputEpoch: 0,
     cleanEpoch: 0,
   };
   const { composition, pack } = compositionRecordFromBody(body);
@@ -2736,6 +2754,11 @@ const makeButton = (
   return btn;
 };
 
+const ingredientBuilderFocusFieldKey = (
+  attrName: string,
+  attrValue: string,
+): string => JSON.stringify([attrName, attrValue]);
+
 const makeTextInputWithAttr = (
   doc: Document,
   value: string,
@@ -2747,6 +2770,10 @@ const makeTextInputWithAttr = (
   input.type = 'text';
   input.value = value;
   input.setAttribute(attrName, attrValue);
+  input.setAttribute(
+    INGREDIENT_BUILDER_FOCUS_FIELD_ATTR,
+    ingredientBuilderFocusFieldKey(attrName, attrValue),
+  );
   input.addEventListener('input', () => onInput(input.value));
   return input;
 };
@@ -2761,6 +2788,10 @@ const makeTextareaWithAttr = (
   const textarea = doc.createElement('textarea');
   textarea.value = value;
   textarea.setAttribute(attrName, attrValue);
+  textarea.setAttribute(
+    INGREDIENT_BUILDER_FOCUS_FIELD_ATTR,
+    ingredientBuilderFocusFieldKey(attrName, attrValue),
+  );
   textarea.addEventListener('input', () => onInput(textarea.value));
   return textarea;
 };
@@ -2792,6 +2823,10 @@ const makeSelectWithAttr = <T extends string>(
   const select = doc.createElement('select');
   select.value = value;
   select.setAttribute(attrName, attrValue);
+  select.setAttribute(
+    INGREDIENT_BUILDER_FOCUS_FIELD_ATTR,
+    ingredientBuilderFocusFieldKey(attrName, attrValue),
+  );
   for (const option of options) {
     const el = doc.createElement('option');
     el.value = option;
@@ -2963,6 +2998,11 @@ const makeOperationAdvancedSelect = <T extends string>(
     onChange,
   );
 
+interface OperationArgumentFocusTargets {
+  keyInputs: HTMLInputElement[];
+  addButton?: HTMLButtonElement;
+}
+
 /** The op's Arguments repeater — one row per `OperationArgEntry` (key + type +
  *  D-177 `affects_target`), plus an "Add argument" button. This is the op's
  *  callable-input declaration: it drives Compose autocomplete and the authority
@@ -2973,6 +3013,8 @@ const renderOperationArgsSubsection = (
   entry: OperationFamilyRowDraft,
   host: HTMLElement,
   rerender: () => void,
+  focusTargets: OperationArgumentFocusTargets,
+  rerenderOperationArgument: (rowId: string, argIndex: number | null) => void,
 ): void => {
   const section = doc.createElement('div');
   section.className = 'ingredient-builder-advanced-subsection';
@@ -3006,6 +3048,7 @@ const renderOperationArgsSubsection = (
     );
     keyInput.setAttribute('aria-label', 'Argument key');
     keyInput.setAttribute('placeholder', 'arg_key');
+    focusTargets.keyInputs.push(keyInput);
     argRow.appendChild(keyInput);
 
     const typeSelect = makeSelectWithAttr(
@@ -3031,6 +3074,13 @@ const renderOperationArgsSubsection = (
       INGREDIENT_BUILDER_OPERATION_ARG_FIELD_ATTR,
       `${entry.id}:${argIdx}:affects_target`,
     );
+    affectsBox.setAttribute(
+      INGREDIENT_BUILDER_FOCUS_FIELD_ATTR,
+      ingredientBuilderFocusFieldKey(
+        INGREDIENT_BUILDER_OPERATION_ARG_FIELD_ATTR,
+        `${entry.id}:${argIdx}:affects_target`,
+      ),
+    );
     affectsBox.addEventListener('change', () => {
       arg.affectsTarget = affectsBox.checked;
       markDirty(state);
@@ -3042,7 +3092,11 @@ const renderOperationArgsSubsection = (
     const remove = makeButton(doc, 'Remove', 'danger-text', 'xs', () => {
       entry.args.splice(argIdx, 1);
       markDirty(state);
-      rerender();
+      state.opAdvancedOpen.set(entry.id, true);
+      const nextIndex = entry.args.length === 0
+        ? null
+        : Math.min(argIdx, entry.args.length - 1);
+      rerenderOperationArgument(entry.id, nextIndex);
     });
     remove.setAttribute(
       INGREDIENT_BUILDER_OPERATION_ARG_REMOVE_ATTR,
@@ -3056,11 +3110,14 @@ const renderOperationArgsSubsection = (
   section.appendChild(list);
 
   const add = makeButton(doc, 'Add argument', 'secondary', 'xs', () => {
+    const nextIndex = entry.args.length;
     entry.args.push({ key: '', type: 'string', affectsTarget: false });
     markDirty(state);
-    rerender();
+    state.opAdvancedOpen.set(entry.id, true);
+    rerenderOperationArgument(entry.id, nextIndex);
   });
   add.setAttribute(INGREDIENT_BUILDER_OPERATION_ARG_ADD_ATTR, entry.id);
+  focusTargets.addButton = add;
   section.appendChild(add);
 
   host.appendChild(section);
@@ -3072,8 +3129,18 @@ const renderOperationAdvancedFields = (
   entry: OperationFamilyRowDraft,
   host: HTMLElement,
   rerender: () => void,
+  argumentFocusTargets: OperationArgumentFocusTargets,
+  rerenderOperationArgument: (rowId: string, argIndex: number | null) => void,
 ): void => {
-  renderOperationArgsSubsection(doc, state, entry, host, rerender);
+  renderOperationArgsSubsection(
+    doc,
+    state,
+    entry,
+    host,
+    rerender,
+    argumentFocusTargets,
+    rerenderOperationArgument,
+  );
   // D-170 — per-kind binding fields. The card body already renders the kind's
   // PRIMARY field; the remaining typed binding fields live in a "Binding"
   // sub-section, gated by kind. Fallback kinds (webhook/queue/push) carry no
@@ -3379,6 +3446,20 @@ const renderOperationCard = (
   state: IngredientBuilderState,
   entry: OperationFamilyRowDraft,
   rerender: () => void,
+  focusTargets: Map<string, {
+    card: HTMLElement;
+    summary: HTMLElement;
+    firstField: HTMLInputElement;
+    bindingKind: HTMLSelectElement;
+    reviewed: HTMLInputElement;
+    arguments: OperationArgumentFocusTargets;
+  }>,
+  removeOperation: (entry: OperationFamilyRowDraft) => void,
+  rerenderOperationField: (
+    rowId: string,
+    field: 'bindingKind' | 'reviewed' | 'summary',
+  ) => void,
+  rerenderOperationArgument: (rowId: string, argIndex: number | null) => void,
 ): HTMLElement => {
   const idx = state.rows.indexOf(entry);
   const card = doc.createElement('details');
@@ -3431,13 +3512,13 @@ const renderOperationCard = (
   addPill(doc, summary, entry.risk_tier);
   addPill(doc, summary, `approval: ${entry.approval}`);
 
-  const remove = makeButton(doc, 'Remove', 'danger-text', 'xs', () => {
-    state.rows.splice(state.rows.indexOf(entry), 1);
-    // Prune the removed row's open override — row ids can be re-minted.
-    state.opCardOpen.delete(entry.id);
-    markDirty(state);
-    rerender();
-  });
+  const remove = makeButton(
+    doc,
+    'Remove',
+    'danger-text',
+    'xs',
+    () => removeOperation(entry),
+  );
   remove.disabled = state.rows.length <= 1;
   remove.setAttribute(INGREDIENT_BUILDER_REMOVE_ROW_ATTR, entry.id);
   remove.setAttribute('aria-label', `Remove operation ${operationName || 'untitled'}`);
@@ -3451,10 +3532,11 @@ const renderOperationCard = (
   const grid = doc.createElement('div');
   grid.className = 'ingredient-builder-field-grid';
 
-  addCardField(doc, grid, 'Family', makeTextInput(doc, entry.family, 'family', (next) => {
+  const familyInput = makeTextInput(doc, entry.family, 'family', (next) => {
     entry.family = next;
     markDirty(state);
-  }));
+  });
+  addCardField(doc, grid, 'Family', familyInput);
   addCardField(doc, grid, 'Operation', makeTextInput(doc, entry.operation, 'operation', (next) => {
     entry.operation = next;
     markDirty(state);
@@ -3463,11 +3545,18 @@ const renderOperationCard = (
     entry.verb = next;
     markDirty(state);
   }));
-  addCardField(doc, grid, 'Kind', makeSelect(doc, entry.bindingKind, BINDING_KINDS, 'bindingKind', (next) => {
-    entry.bindingKind = next;
-    markDirty(state);
-    rerender();
-  }));
+  const bindingKindSelect = makeSelect(
+    doc,
+    entry.bindingKind,
+    BINDING_KINDS,
+    'bindingKind',
+    (next) => {
+      entry.bindingKind = next;
+      markDirty(state);
+      rerenderOperationField(entry.id, 'bindingKind');
+    },
+  );
+  addCardField(doc, grid, 'Kind', bindingKindSelect);
 
   const primary = primaryBindingField(entry);
   const primaryControl = WIDE_PRIMARY_FIELDS.has(primary.field)
@@ -3498,10 +3587,15 @@ const renderOperationCard = (
   checkbox.type = 'checkbox';
   checkbox.checked = entry.reviewed;
   checkbox.setAttribute(INGREDIENT_BUILDER_FIELD_ATTR, 'reviewed');
+  checkbox.setAttribute(
+    INGREDIENT_BUILDER_FOCUS_FIELD_ATTR,
+    ingredientBuilderFocusFieldKey(INGREDIENT_BUILDER_FIELD_ATTR, 'reviewed'),
+  );
   checkbox.addEventListener('change', () => {
     entry.reviewed = checkbox.checked;
     markDirty(state);
-    rerender();
+    const remainsOpen = state.opCardOpen.get(entry.id) ?? !entry.reviewed;
+    rerenderOperationField(entry.id, remainsOpen ? 'reviewed' : 'summary');
   });
   reviewLabel.appendChild(checkbox);
   appendText(doc, reviewLabel, 'span', 'Reviewed');
@@ -3512,14 +3606,41 @@ const renderOperationCard = (
 
   const advanced = doc.createElement('details');
   advanced.className = 'ingredient-builder-panel';
+  if (state.opAdvancedOpen.get(entry.id) ?? false) {
+    advanced.setAttribute('open', '');
+  }
+  advanced.addEventListener('toggle', () => {
+    const el = advanced as unknown as { open?: boolean; isConnected?: boolean };
+    if (el.isConnected === false) return;
+    const isOpen = el.open === true;
+    if (isOpen === (state.opAdvancedOpen.get(entry.id) ?? false)) return;
+    state.opAdvancedOpen.set(entry.id, isOpen);
+  });
   appendPanelSummary(doc, advanced, 'Advanced', 'options');
   const advancedBody = doc.createElement('div');
   advancedBody.className = 'ingredient-builder-panel-body';
-  renderOperationAdvancedFields(doc, state, entry, advancedBody, rerender);
+  const argumentFocusTargets: OperationArgumentFocusTargets = { keyInputs: [] };
+  renderOperationAdvancedFields(
+    doc,
+    state,
+    entry,
+    advancedBody,
+    rerender,
+    argumentFocusTargets,
+    rerenderOperationArgument,
+  );
   advanced.appendChild(advancedBody);
   body.appendChild(advanced);
 
   card.appendChild(body);
+  focusTargets.set(entry.id, {
+    card,
+    summary,
+    firstField: familyInput,
+    bindingKind: bindingKindSelect,
+    reviewed: checkbox,
+    arguments: argumentFocusTargets,
+  });
   return card;
 };
 
@@ -3528,6 +3649,20 @@ const renderTable = (
   state: IngredientBuilderState,
   host: HTMLElement,
   rerender: () => void,
+  focusTargets: Map<string, {
+    card: HTMLElement;
+    summary: HTMLElement;
+    firstField: HTMLInputElement;
+    bindingKind: HTMLSelectElement;
+    reviewed: HTMLInputElement;
+    arguments: OperationArgumentFocusTargets;
+  }>,
+  removeOperation: (entry: OperationFamilyRowDraft) => void,
+  rerenderOperationField: (
+    rowId: string,
+    field: 'bindingKind' | 'reviewed' | 'summary',
+  ) => void,
+  rerenderOperationArgument: (rowId: string, argIndex: number | null) => void,
 ): void => {
   // The `TABLE_ATTR` marker now rides the operations cards CONTAINER (no
   // `<table>`); descendant `ROW_ATTR` cards still count as operation rows.
@@ -3585,7 +3720,16 @@ const renderTable = (
     if (!onlyBlankDefault) groupEl.appendChild(groupHeader);
 
     for (const entry of group.rows) {
-      groupEl.appendChild(renderOperationCard(doc, state, entry, rerender));
+      groupEl.appendChild(renderOperationCard(
+        doc,
+        state,
+        entry,
+        rerender,
+        focusTargets,
+        removeOperation,
+        rerenderOperationField,
+        rerenderOperationArgument,
+      ));
     }
     container.appendChild(groupEl);
   }
@@ -3600,16 +3744,21 @@ const addCheckboxCell = (
   attrName: string,
   attrValue: string,
   onChange: (next: boolean) => void,
-): void => {
+): HTMLInputElement => {
   const cell = doc.createElement('td');
   cell.className = 'review-cell';
   const checkbox = doc.createElement('input');
   checkbox.type = 'checkbox';
   checkbox.checked = checked;
   checkbox.setAttribute(attrName, attrValue);
+  checkbox.setAttribute(
+    INGREDIENT_BUILDER_FOCUS_FIELD_ATTR,
+    ingredientBuilderFocusFieldKey(attrName, attrValue),
+  );
   checkbox.addEventListener('change', () => onChange(checkbox.checked));
   cell.appendChild(checkbox);
   row.appendChild(cell);
+  return checkbox;
 };
 
 /** D-182 Tier-2 — the per-field "Advanced" extras: a second full-width row under
@@ -3708,14 +3857,26 @@ const appendEntityFieldRow = (
   entry: EntityFieldRowDraft,
   tbody: HTMLElement,
   rerender: () => void,
+  focusTargets: Map<string, {
+    row: HTMLElement;
+    firstField: HTMLInputElement;
+    optional: HTMLInputElement;
+    reviewed: HTMLInputElement;
+  }>,
+  removeEntityField: (entry: EntityFieldRowDraft) => void,
+  rerenderEntityField: (
+    fieldId: string,
+    field: 'optional' | 'reviewed',
+  ) => void,
 ): void => {
   const tr = doc.createElement('tr');
   tr.setAttribute(INGREDIENT_BUILDER_ENTITY_ROW_ATTR, entry.id);
 
-  addCell(doc, tr, makeEntityTextInput(doc, entry.entity, 'entity', (next) => {
+  const entityInput = makeEntityTextInput(doc, entry.entity, 'entity', (next) => {
     entry.entity = next;
     markDirty(state);
-  }));
+  });
+  addCell(doc, tr, entityInput);
   addCell(doc, tr, makeEntityTextInput(doc, entry.field_path, 'field_path', (next) => {
     entry.field_path = next;
     markDirty(state);
@@ -3728,11 +3889,18 @@ const appendEntityFieldRow = (
     entry.maps_to = next;
     markDirty(state);
   }));
-  addCheckboxCell(doc, tr, entry.optional, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'optional', (next) => {
-    entry.optional = next;
-    markDirty(state);
-    rerender();
-  });
+  const optionalCheckbox = addCheckboxCell(
+    doc,
+    tr,
+    entry.optional,
+    INGREDIENT_BUILDER_ENTITY_FIELD_ATTR,
+    'optional',
+    (next) => {
+      entry.optional = next;
+      markDirty(state);
+      rerenderEntityField(entry.id, 'optional');
+    },
+  );
   addCell(doc, tr, makeEntitySelect(doc, entry.applies, ENTITY_FIELD_APPLIES, 'applies', (next) => {
     entry.applies = next;
     markDirty(state);
@@ -3745,24 +3913,38 @@ const appendEntityFieldRow = (
     entry.source = next;
     markDirty(state);
   }));
-  addCheckboxCell(doc, tr, entry.reviewed, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'reviewed', (next) => {
-    entry.reviewed = next;
-    markDirty(state);
-    rerender();
-  });
+  const reviewedCheckbox = addCheckboxCell(
+    doc,
+    tr,
+    entry.reviewed,
+    INGREDIENT_BUILDER_ENTITY_FIELD_ATTR,
+    'reviewed',
+    (next) => {
+      entry.reviewed = next;
+      markDirty(state);
+      rerenderEntityField(entry.id, 'reviewed');
+    },
+  );
 
   const removeCell = doc.createElement('td');
-  const remove = makeButton(doc, 'Remove', 'danger-text', 'xs', () => {
-    const at = state.entityFields.indexOf(entry);
-    if (at >= 0) state.entityFields.splice(at, 1);
-    markDirty(state);
-    rerender();
-  });
+  const remove = makeButton(
+    doc,
+    'Remove',
+    'danger-text',
+    'xs',
+    () => removeEntityField(entry),
+  );
   remove.setAttribute(INGREDIENT_BUILDER_ENTITY_REMOVE_ROW_ATTR, entry.id);
   removeCell.appendChild(remove);
   tr.appendChild(removeCell);
 
   tbody.appendChild(tr);
+  focusTargets.set(entry.id, {
+    row: tr,
+    firstField: entityInput,
+    optional: optionalCheckbox,
+    reviewed: reviewedCheckbox,
+  });
   appendEntityExtrasRow(doc, tbody, state, entry);
 };
 
@@ -3808,6 +3990,17 @@ const renderEntityGroup = (
   state: IngredientBuilderState,
   group: EntityFieldGroup,
   rerender: () => void,
+  focusTargets: Map<string, {
+    row: HTMLElement;
+    firstField: HTMLInputElement;
+    optional: HTMLInputElement;
+    reviewed: HTMLInputElement;
+  }>,
+  removeEntityField: (entry: EntityFieldRowDraft) => void,
+  rerenderEntityField: (
+    fieldId: string,
+    field: 'optional' | 'reviewed',
+  ) => void,
 ): HTMLElement => {
   const groupEl = doc.createElement('div');
   groupEl.className = 'ingredient-builder-entity-group';
@@ -3837,7 +4030,18 @@ const renderEntityGroup = (
   thead.appendChild(headerRow);
   table.appendChild(thead);
   const tbody = doc.createElement('tbody');
-  for (const entry of group.rows) appendEntityFieldRow(doc, state, entry, tbody, rerender);
+  for (const entry of group.rows) {
+    appendEntityFieldRow(
+      doc,
+      state,
+      entry,
+      tbody,
+      rerender,
+      focusTargets,
+      removeEntityField,
+      rerenderEntityField,
+    );
+  }
   table.appendChild(tbody);
   wrap.appendChild(table);
   groupEl.appendChild(wrap);
@@ -3849,6 +4053,17 @@ const renderEntityFieldTable = (
   state: IngredientBuilderState,
   host: HTMLElement,
   rerender: () => void,
+  focusTargets: Map<string, {
+    row: HTMLElement;
+    firstField: HTMLInputElement;
+    optional: HTMLInputElement;
+    reviewed: HTMLInputElement;
+  }>,
+  removeEntityField: (entry: EntityFieldRowDraft) => void,
+  rerenderEntityField: (
+    fieldId: string,
+    field: 'optional' | 'reviewed',
+  ) => void,
 ): void => {
   // The `ENTITY_TABLE_ATTR` marker rides the groups CONTAINER (each entity gets
   // its own `<table>` below); descendant `ENTITY_ROW_ATTR` rows still count as
@@ -3884,7 +4099,15 @@ const renderEntityFieldTable = (
   }
 
   for (const group of groups) {
-    container.appendChild(renderEntityGroup(doc, state, group, rerender));
+    container.appendChild(renderEntityGroup(
+      doc,
+      state,
+      group,
+      rerender,
+      focusTargets,
+      removeEntityField,
+      rerenderEntityField,
+    ));
   }
   host.appendChild(container);
 };
@@ -4061,8 +4284,17 @@ const previewStatusText = (state: IngredientBuilderState): string => {
     : `Preview executed: ${preview.execution.status}`;
 };
 
-const installStatusText = (state: IngredientBuilderState): string => {
-  if (state.installStage === 'installing') return 'Installing reviewed draft';
+const installStatusText = (
+  state: IngredientBuilderState,
+  installInFlight = false,
+  installBelongsToCurrentDraft = true,
+): string => {
+  if (installInFlight) {
+    if (!installBelongsToCurrentDraft) return 'Finishing install for previous draft';
+    return state.installStage === 'installing'
+      ? 'Installing reviewed draft'
+      : 'Installing earlier reviewed draft';
+  }
   if (state.installStage === 'installed' || state.installStage === 'error') {
     return state.installMessage;
   }
@@ -4099,9 +4331,8 @@ const BLANK_DRAFT_SLUG = 'local-ingredient';
 const draftHasUnsavedContent = (state: IngredientBuilderState): boolean =>
   state.editEpoch !== state.cleanEpoch;
 
-/** The Save button's label carries the clean/dirty/busy signal (the button
- *  itself stays enabled except while busy). Shared by the render and the
- *  in-place topbar sync. */
+/** The Save button's label carries the clean/dirty/busy signal. Shared by the
+ *  render and the in-place topbar sync. */
 const saveButtonLabel = (state: IngredientBuilderState): string =>
   state.saveStage === 'saving'
     ? 'Saving'
@@ -4115,6 +4346,8 @@ const saveButtonLabel = (state: IngredientBuilderState): string =>
 interface DraftPickerRefs {
   dirtyCue: HTMLElement;
   saveBtn: HTMLButtonElement;
+  refreshBtn: HTMLButtonElement;
+  newBtn: HTMLButtonElement;
 }
 
 const renderDraftPicker = (
@@ -4137,6 +4370,10 @@ const renderDraftPicker = (
   field.appendChild(label);
   const select = doc.createElement('select');
   select.setAttribute(INGREDIENT_BUILDER_DRAFT_PICKER_ATTR, '');
+  select.setAttribute(
+    INGREDIENT_BUILDER_FOCUS_FIELD_ATTR,
+    ingredientBuilderFocusFieldKey(INGREDIENT_BUILDER_DRAFT_PICKER_ATTR, ''),
+  );
   select.setAttribute('aria-label', 'Draft');
   select.disabled = state.draftsStage === 'loading';
 
@@ -4154,8 +4391,24 @@ const renderDraftPicker = (
   }
   select.value = state.draftId ?? '';
   select.addEventListener('change', () => {
-    if (select.value === '') newDraft();
-    else loadDraft(select.value);
+    const currentDraftId = state.draftId ?? '';
+    const nextDraftId = select.value;
+    if (nextDraftId === currentDraftId) return;
+    if (draftHasUnsavedContent(state)) {
+      const target = state.drafts.find((draft) => draft.draft_id === nextDraftId);
+      const prompt = nextDraftId === ''
+        ? 'Discard unsaved changes and start a new draft?'
+        : `Discard unsaved changes and open "${
+            target?.title?.trim() || target?.slug?.trim() || nextDraftId
+          }"?`;
+      const view = doc.defaultView;
+      if (view === null || !view.confirm(prompt)) {
+        select.value = currentDraftId;
+        return;
+      }
+    }
+    if (nextDraftId === '') newDraft();
+    else loadDraft(nextDraftId);
   });
   field.appendChild(select);
   wrap.appendChild(field);
@@ -4182,11 +4435,13 @@ const renderDraftPicker = (
     'sm',
     saveDraft,
   );
-  // Disable only while busy — NOT when `saved`. A field edit calls markDirty
-  // without a rerender (to keep input focus), so a save-disabled button would
-  // go stale-disabled and block the very re-save the edit needs. The label
-  // ('Saved' vs 'Save') carries the clean/dirty signal; the button stays live.
-  save.disabled = busy;
+  // Keep the guarded RPC action focusable while busy. Native `disabled` drops
+  // focus when the repaint replaces an active Save button; saveInFlight + the
+  // stage guard remain the single-flight authority. Explicit ARIA exposes the
+  // same unavailable/progress state without stranding keyboard focus.
+  save.disabled = false;
+  save.setAttribute('aria-disabled', String(busy));
+  save.setAttribute('aria-busy', String(busy));
   save.setAttribute(INGREDIENT_BUILDER_SAVE_ATTR, '');
   save.setAttribute('title', 'Save and validate draft (⌘S or Ctrl+S)');
   draftActions.appendChild(save);
@@ -4198,7 +4453,13 @@ const renderDraftPicker = (
     'sm',
     refreshDrafts,
   );
-  refresh.disabled = state.draftsStage === 'loading';
+  const refreshBusy = state.draftsStage === 'loading';
+  // Keep this owner reachable across its pending repaint. refreshDrafts owns
+  // single-flight authority; ARIA conveys the guarded/progress state without
+  // native disabling dropping keyboard focus.
+  refresh.disabled = false;
+  refresh.setAttribute('aria-disabled', String(refreshBusy));
+  refresh.setAttribute('aria-busy', String(refreshBusy));
   refresh.setAttribute(INGREDIENT_BUILDER_DRAFT_REFRESH_ATTR, '');
   refresh.setAttribute('title', 'Reload saved drafts');
   draftActions.appendChild(refresh);
@@ -4218,6 +4479,7 @@ const renderDraftPicker = (
       newDraft();
     },
   );
+  newBtn.setAttribute(INGREDIENT_BUILDER_DRAFT_NEW_ATTR, '');
   draftActions.appendChild(newBtn);
 
   wrap.appendChild(draftActions);
@@ -4232,7 +4494,7 @@ const renderDraftPicker = (
     wrap.appendChild(error);
   }
   host.appendChild(wrap);
-  return { dirtyCue: dirty, saveBtn: save };
+  return { dirtyCue: dirty, saveBtn: save, refreshBtn: refresh, newBtn };
 };
 
 const renderPackSettings = (
@@ -4241,7 +4503,9 @@ const renderPackSettings = (
   host: HTMLElement,
   rerender: () => void,
   target: 'setup' | 'publish',
-): void => {
+  rerenderSetting?: (field: 'authModel') => void,
+): { authModel?: HTMLSelectElement } => {
+  const focusTargets: { authModel?: HTMLSelectElement } = {};
   appendSectionIntro(
     doc,
     host,
@@ -4291,9 +4555,11 @@ const renderPackSettings = (
           state.authModel = next;
           state.ingredientKind = next === 'cli_delegated' ? 'cli' : 'http';
           markDirty(state);
-          rerender();
+          if (rerenderSetting === undefined) rerender();
+          else rerenderSetting('authModel');
         },
       );
+      focusTargets.authModel = authSelect;
       addField('Auth model', authSelect);
     }
     if (state.ingredientKind === 'cli') {
@@ -4375,7 +4641,7 @@ const renderPackSettings = (
       ));
     }
     host.appendChild(grid);
-    return;
+    return focusTargets;
   }
 
   // target === 'publish' — the marketplace / install metadata. The editor always
@@ -4475,13 +4741,14 @@ const renderPackSettings = (
   ));
 
   host.appendChild(grid);
+  return focusTargets;
 };
 
 const renderPreviewDetail = (
   doc: Document,
   state: IngredientBuilderState,
   host: HTMLElement,
-): void => {
+): HTMLElement | undefined => {
   const preview = state.preview;
   if (preview === undefined) return;
   const detail = doc.createElement('div');
@@ -4489,7 +4756,7 @@ const renderPreviewDetail = (
   if (!preview.ok) {
     appendText(doc, detail, 'span', preview.message);
     host.appendChild(detail);
-    return;
+    return detail;
   }
   appendText(doc, detail, 'span', `${preview.risk_tier} / ${preview.approval}`);
   appendText(doc, detail, 'code', preview.target.request);
@@ -4505,6 +4772,7 @@ const renderPreviewDetail = (
     appendText(doc, detail, 'span', `${plural(preview.execution.mapping_preview.length, 'mapping')} checked`);
   }
   host.appendChild(detail);
+  return detail;
 };
 
 const renderInstallDetail = (
@@ -4535,18 +4803,57 @@ const renderInstallDetail = (
   host.appendChild(detail);
 };
 
+const syncWorkflowActionAvailability = (
+  button: HTMLButtonElement,
+  busy: boolean,
+  available: boolean,
+): void => {
+  // A genuinely unavailable workflow stays natively disabled. Once activated,
+  // however, its busy replacement must remain focusable across the repaint;
+  // the preview/install stage guards remain the single-flight authority.
+  button.disabled = !busy && !available;
+  button.setAttribute('aria-disabled', String(busy || !available));
+  button.setAttribute('aria-busy', String(busy));
+};
+
 const renderWorkflow = (
   doc: Document,
   state: IngredientBuilderState,
   host: HTMLElement,
+  invalidatePreview: () => void,
   runPreview: () => void,
   runInstall: () => void,
+  installInFlight: boolean,
+  installBelongsToCurrentDraft: boolean,
   setInstallAccess: (tier: InstallAccessTier) => void,
   setInstallAudience: (audience: InstallAudienceSelection) => void,
-): void => {
+): {
+  previewBtn: HTMLButtonElement;
+  installBtn: HTMLButtonElement;
+} => {
   const section = doc.createElement('section');
   section.className = 'ingredient-builder-workflow';
   appendText(doc, section, 'h2', 'Publish');
+  const previewStatus = doc.createElement('div');
+  previewStatus.className = 'ingredient-builder-workflow-status';
+  previewStatus.setAttribute(INGREDIENT_BUILDER_PREVIEW_STATUS_ATTR, '');
+  previewStatus.textContent = previewStatusText(state);
+  let previewDetail: HTMLElement | undefined;
+  let renderedPreviewBtn: HTMLButtonElement | undefined;
+  const clearRenderedPreview = (): void => {
+    invalidatePreview();
+    previewStatus.textContent = previewStatusText(state);
+    previewDetail?.remove();
+    previewDetail = undefined;
+    if (renderedPreviewBtn !== undefined) {
+      renderedPreviewBtn.textContent = 'Preview';
+      syncWorkflowActionAvailability(
+        renderedPreviewBtn,
+        false,
+        canPreview(state),
+      );
+    }
+  };
 
   // D-182 §7.1 / D-196 — the {Access × Audience} grant picker for a
   // connection-backed reviewed draft. Renders only once the draft validates
@@ -4570,7 +4877,7 @@ const renderWorkflow = (
         model: grantModel,
         access: effectiveAccess,
         audience: state.installAudience,
-        disabled: state.installStage === 'installing',
+        disabled: installInFlight,
         onAccess: setInstallAccess,
         onAudience: setInstallAudience,
       }),
@@ -4597,7 +4904,7 @@ const renderWorkflow = (
     '',
     (next) => {
       state.previewOperationKey = next;
-      clearPreviewState(state);
+      clearRenderedPreview();
     },
   );
   opSelect.disabled = keys.length === 0;
@@ -4616,7 +4923,7 @@ const renderWorkflow = (
     '',
     (next) => {
       state.previewArgsText = next;
-      clearPreviewState(state);
+      clearRenderedPreview();
     },
   ));
   controls.appendChild(argsField);
@@ -4628,39 +4935,53 @@ const renderWorkflow = (
     'sm',
     runPreview,
   );
-  preview.disabled = !canPreview(state);
+  syncWorkflowActionAvailability(
+    preview,
+    state.previewStage === 'previewing',
+    canPreview(state),
+  );
   preview.setAttribute(INGREDIENT_BUILDER_PREVIEW_ATTR, '');
+  renderedPreviewBtn = preview;
   controls.appendChild(preview);
 
   const install = makeButton(
     doc,
-    state.installStage === 'installing' ? 'Installing' : 'Install',
+    installInFlight ? 'Installing' : 'Install',
     'primary',
     'sm',
     runInstall,
   );
   const blocked = installBlockedReason(state);
-  install.disabled = blocked !== null || state.installStage === 'installing';
-  if (blocked !== null) install.title = blocked;
+  syncWorkflowActionAvailability(
+    install,
+    installInFlight,
+    blocked === null,
+  );
+  if (installInFlight) {
+    install.title = installBelongsToCurrentDraft
+      ? 'A reviewed version of this draft is installing'
+      : 'Another reviewed draft is still installing';
+  } else if (blocked !== null) install.title = blocked;
   install.setAttribute(INGREDIENT_BUILDER_INSTALL_ATTR, '');
   controls.appendChild(install);
   section.appendChild(controls);
 
-  const previewStatus = doc.createElement('div');
-  previewStatus.className = 'ingredient-builder-workflow-status';
-  previewStatus.setAttribute(INGREDIENT_BUILDER_PREVIEW_STATUS_ATTR, '');
-  previewStatus.textContent = previewStatusText(state);
   section.appendChild(previewStatus);
-  renderPreviewDetail(doc, state, section);
+  previewDetail = renderPreviewDetail(doc, state, section);
 
   const installStatus = doc.createElement('div');
   installStatus.className = 'ingredient-builder-workflow-status';
   installStatus.setAttribute(INGREDIENT_BUILDER_INSTALL_STATUS_ATTR, '');
-  installStatus.textContent = installStatusText(state);
+  installStatus.textContent = installStatusText(
+    state,
+    installInFlight,
+    installBelongsToCurrentDraft,
+  );
   section.appendChild(installStatus);
   renderInstallDetail(doc, state, section);
 
   host.appendChild(section);
+  return { previewBtn: preview, installBtn: install };
 };
 
 /** Live refs the topbar sync updates in place on a focused field edit. */
@@ -4735,6 +5056,18 @@ export const bootstrapIngredientBuilderRoute = (
   }
   injectStyles(doc);
 
+  const focusDocument = doc as Partial<Pick<Document, 'activeElement' | 'body'>>;
+  const activeBeforeMount = focusDocument.activeElement ?? null;
+  let focusHeadingOnMount = activeBeforeMount === null
+    || activeBeforeMount === focusDocument.body;
+  if (!focusHeadingOnMount && activeBeforeMount !== null) {
+    try {
+      focusHeadingOnMount = options.root.contains(activeBeforeMount);
+    } catch {
+      focusHeadingOnMount = false;
+    }
+  }
+
   const state = stateFromBody(
     options.initialBody,
     options.initialTitle,
@@ -4746,11 +5079,73 @@ export const bootstrapIngredientBuilderRoute = (
   /** True while a save→decompose chain is in flight (saveStage can't carry
    *  this — markDirty resets it to 'idle' on a mid-save edit). */
   let saveInFlight = false;
+  /** The install stage lives in rendered state and is cleared when an author
+   *  edits or swaps drafts. The RPC does not disappear with that repaint, so
+   *  keep its ownership outside state: this is the single-flight authority
+   *  and the generation/epoch boundary for late completions. */
+  let installFlight: {
+    draftGeneration: number;
+    editEpoch: number;
+    installInputEpoch: number;
+  } | null = null;
   /** Bumped on every draft swap (load / new). Async continuations capture it
    *  at dispatch and drop their verdicts when it moved — a slow save/load for
    *  a PREVIOUS draft must never stomp the currently shown one (success AND
    *  failure paths alike). */
   let draftGeneration = 0;
+  // Save owns focus across its saving → reviewing → settled repaint chain.
+  // Its guarded busy replacement remains focusable; cancel the intent if the
+  // user deliberately focuses another connected control.
+  let saveBtn: HTMLButtonElement | undefined;
+  let draftRefreshBtn: HTMLButtonElement | undefined;
+  let newDraftBtn: HTMLButtonElement | undefined;
+  let routeHeading: HTMLElement | undefined;
+  let pendingSaveFocus = false;
+  let pendingDraftRefreshFocus = false;
+  let pendingNewDraftFocus = false;
+  // A save completion may need a newer list than an already-running manual
+  // refresh can provide. Queue one follow-up instead of overlapping list RPCs.
+  let draftRefreshQueued = false;
+  // Preview and Install own focus across their busy → settled repaint chains.
+  // Their guarded busy replacements remain focusable; cancel the intent when
+  // the author moves to another live control during the request.
+  let previewBtn: HTMLButtonElement | undefined;
+  let installBtn: HTMLButtonElement | undefined;
+  let pendingWorkflowFocus: 'preview' | 'install' | null = null;
+  let previewGeneration = 0;
+  let pendingAddedOperationFocusId: string | null = null;
+  let pendingRemovedOperationFocusId: string | null = null;
+  let pendingOperationFieldFocus: {
+    rowId: string;
+    field: 'bindingKind' | 'reviewed' | 'summary';
+  } | null = null;
+  let pendingOperationArgumentFocus: {
+    rowId: string;
+    argIndex: number | null;
+  } | null = null;
+  let pendingPackSettingFocus: 'authModel' | null = null;
+  let pendingAddedEntityFieldFocusId: string | null = null;
+  let pendingRemovedEntityFieldFocus: { fieldId: string | null } | null = null;
+  let pendingEntityFieldFocus: {
+    fieldId: string;
+    field: 'optional' | 'reviewed';
+  } | null = null;
+  let addEntityFieldBtn: HTMLButtonElement | undefined;
+  let renderedOperationFocusTargets = new Map<string, {
+    card: HTMLElement;
+    summary: HTMLElement;
+    firstField: HTMLInputElement;
+    bindingKind: HTMLSelectElement;
+    reviewed: HTMLInputElement;
+    arguments: OperationArgumentFocusTargets;
+  }>();
+  let renderedEntityFieldFocusTargets = new Map<string, {
+    row: HTMLElement;
+    firstField: HTMLInputElement;
+    optional: HTMLInputElement;
+    reviewed: HTMLInputElement;
+  }>();
+  let renderedPackSettingFocusTargets: { authModel?: HTMLSelectElement } = {};
 
   const host = doc.createElement('section');
   host.setAttribute(INGREDIENT_BUILDER_ROUTE_ATTR, '');
@@ -4775,6 +5170,77 @@ export const bootstrapIngredientBuilderRoute = (
   // leaves the announcer (above) attached across renders.
   const content = doc.createElement('div');
   host.appendChild(content);
+
+  // Async draft validation/save completion repaints the whole editor while an
+  // author may already be typing. Preserve the live control by semantic field
+  // key + same-key occurrence (operation/entity rows repeat column keys), plus
+  // a text selection when the control carries one.
+  type IngredientBuilderFieldFocus = {
+    fieldKey: string;
+    occurrence: number;
+    selectionStart: number | null;
+    selectionEnd: number | null;
+  };
+
+  const editorFields = (fieldKey: string): HTMLElement[] => {
+    const matches: HTMLElement[] = [];
+    const walk = (element: HTMLElement): void => {
+      if (element.getAttribute?.(INGREDIENT_BUILDER_FOCUS_FIELD_ATTR) === fieldKey) {
+        matches.push(element);
+      }
+      const children = (
+        element as unknown as { children?: ArrayLike<HTMLElement> }
+      ).children;
+      if (children === undefined) return;
+      for (let index = 0; index < children.length; index += 1) {
+        walk(children[index] as HTMLElement);
+      }
+    };
+    walk(content);
+    return matches;
+  };
+
+  const captureFieldFocus = (
+    element: HTMLElement,
+  ): IngredientBuilderFieldFocus | null => {
+    const fieldKey = element.getAttribute?.(INGREDIENT_BUILDER_FOCUS_FIELD_ATTR) ?? null;
+    if (fieldKey === null) return null;
+    const occurrence = editorFields(fieldKey).indexOf(element);
+    if (occurrence < 0) return null;
+    const selection = element as unknown as {
+      selectionStart?: number | null;
+      selectionEnd?: number | null;
+    };
+    return {
+      fieldKey,
+      occurrence,
+      selectionStart: typeof selection.selectionStart === 'number'
+        ? selection.selectionStart
+        : null,
+      selectionEnd: typeof selection.selectionEnd === 'number'
+        ? selection.selectionEnd
+        : null,
+    };
+  };
+
+  const restoreFieldFocus = (focus: IngredientBuilderFieldFocus): boolean => {
+    const target = editorFields(focus.fieldKey)[focus.occurrence];
+    if (target === undefined || (target as HTMLInputElement).disabled === true) {
+      return false;
+    }
+    target.focus?.({ preventScroll: true });
+    if (focus.selectionStart !== null && focus.selectionEnd !== null) {
+      try {
+        (target as HTMLInputElement | HTMLTextAreaElement).setSelectionRange?.(
+          focus.selectionStart,
+          focus.selectionEnd,
+        );
+      } catch {
+        // Selects and non-text inputs have no caret to restore.
+      }
+    }
+    return true;
+  };
 
   // Live refs for post-completion scrolling: the sticky topbar (its measured
   // height keeps scrolled-to content clear of the overlay) and the host-level
@@ -4844,8 +5310,10 @@ export const bootstrapIngredientBuilderRoute = (
     state.previewArgsText = '{}';
     // Per-card open overrides belong to the OLD draft's rows — reset.
     state.opCardOpen = new Map();
+    state.opAdvancedOpen = new Map();
     // The applied body IS the clean baseline — nothing user-authored yet.
     state.cleanEpoch = state.editEpoch;
+    state.installInputEpoch = next.installInputEpoch;
     // Invalidate in-flight continuations dispatched against the old draft.
     draftGeneration += 1;
     clearPreviewState(state);
@@ -4859,22 +5327,34 @@ export const bootstrapIngredientBuilderRoute = (
     options.onDraftChange?.(next.draftId);
   };
 
-  const refreshDrafts = (): void => {
+  const refreshDrafts = (queueWhenBusy = false): void => {
     if (disposed) return;
+    if (state.draftsStage === 'loading') {
+      if (queueWhenBusy === true) draftRefreshQueued = true;
+      return;
+    }
     state.draftsStage = 'loading';
     state.draftsError = '';
     rerender();
+    const settleDraftRefresh = (): void => {
+      if (draftRefreshQueued) {
+        draftRefreshQueued = false;
+        refreshDrafts();
+        return;
+      }
+      rerender();
+    };
     void options.conn('ingredient.draft.list', undefined)
       .then((result) => {
         state.drafts = result.drafts;
         state.draftsStage = 'loaded';
         state.draftsError = '';
-        rerender();
+        settleDraftRefresh();
       })
       .catch((error: unknown) => {
         state.draftsStage = 'error';
         state.draftsError = errorMessage(error);
-        rerender();
+        settleDraftRefresh();
       });
   };
 
@@ -4959,6 +5439,10 @@ export const bootstrapIngredientBuilderRoute = (
 
   const runPreview = (): void => {
     if (!canPreview(state) || state.draftId === undefined) return;
+    previewGeneration += 1;
+    const previewGenerationAtDispatch = previewGeneration;
+    const draftGenerationAtDispatch = draftGeneration;
+    const editEpochAtDispatch = state.editEpoch;
     const args = parsePreviewArgs(state.previewArgsText);
     if (!args.ok) {
       state.previewStage = 'error';
@@ -4977,6 +5461,12 @@ export const bootstrapIngredientBuilderRoute = (
       args: args.value,
     })
       .then((result) => {
+        if (
+          disposed
+          || previewGeneration !== previewGenerationAtDispatch
+          || draftGeneration !== draftGenerationAtDispatch
+          || state.editEpoch !== editEpochAtDispatch
+        ) return;
         state.preview = result;
         state.previewStage = result.ok ? 'ready' : 'error';
         state.previewError = result.ok ? '' : result.message;
@@ -4984,6 +5474,12 @@ export const bootstrapIngredientBuilderRoute = (
         announce(previewStatusText(state));
       })
       .catch((error: unknown) => {
+        if (
+          disposed
+          || previewGeneration !== previewGenerationAtDispatch
+          || draftGeneration !== draftGenerationAtDispatch
+          || state.editEpoch !== editEpochAtDispatch
+        ) return;
         state.previewStage = 'error';
         state.previewError = errorMessage(error);
         state.preview = undefined;
@@ -4993,8 +5489,16 @@ export const bootstrapIngredientBuilderRoute = (
   };
 
   const runInstall = (): void => {
+    if (installFlight !== null) return;
     const blocked = installBlockedReason(state);
-    if (blocked !== null || state.draftId === undefined || state.installStage === 'installing') return;
+    if (blocked !== null || state.draftId === undefined) return;
+    const flight = {
+      draftGeneration,
+      editEpoch: state.editEpoch,
+      installInputEpoch: state.installInputEpoch,
+    };
+    installFlight = flight;
+    let installRequestSent = false;
     state.installStage = 'installing';
     state.installMessage = 'Installing reviewed draft';
     state.installResult = undefined;
@@ -5002,10 +5506,16 @@ export const bootstrapIngredientBuilderRoute = (
     rerender();
     void options.conn('ingredient.draft.get', { draft_id: state.draftId })
       .then(async (draft) => {
+        if (
+          disposed
+          || installFlight !== flight
+          || draftGeneration !== flight.draftGeneration
+          || state.editEpoch !== flight.editEpoch
+          || state.installInputEpoch !== flight.installInputEpoch
+        ) return;
         if (!draft.ok) {
           state.installStage = 'error';
           state.installMessage = draft.message;
-          rerender();
           return;
         }
         // D-182 §7.1/§7.2 — send the picked Access tier + Scope as `install_scope`
@@ -5028,31 +5538,65 @@ export const bootstrapIngredientBuilderRoute = (
                 audience: state.installAudience,
               }
             : undefined;
+        const manifest = installManifestFor(state, draft.draft.body);
+        installRequestSent = true;
         const result = await options.conn('ingredient.install', {
-          manifest: installManifestFor(state, draft.draft.body),
+          manifest,
           ...(installScope !== undefined ? { install_scope: installScope } : {}),
         });
+        if (
+          disposed
+          || installFlight !== flight
+          || draftGeneration !== flight.draftGeneration
+        ) return;
+        const newerEdits = state.editEpoch !== flight.editEpoch
+          || state.installInputEpoch !== flight.installInputEpoch;
         state.installResult = result;
         state.installWarnings = result.ok ? result.warnings : result.issues;
         if (result.ok) {
           state.installStage = 'installed';
-          state.installMessage = result.installed.kind === 'pack'
+          const receipt = result.installed.kind === 'pack'
             ? `Installed pack ${result.installed.pack_slug}`
             : `Installed ingredient ${result.installed.ingredient_id}`;
+          state.installMessage = newerEdits
+            ? `${receipt} — newer edits pending`
+            : receipt;
         } else {
           state.installStage = 'error';
-          state.installMessage = result.message;
+          state.installMessage = newerEdits
+            ? `${result.message} — newer edits pending`
+            : result.message;
         }
-        rerender();
         announce(state.installMessage);
       })
       .catch((error: unknown) => {
+        if (
+          disposed
+          || installFlight !== flight
+          || draftGeneration !== flight.draftGeneration
+          || (
+            !installRequestSent
+            && (
+              state.editEpoch !== flight.editEpoch
+              || state.installInputEpoch !== flight.installInputEpoch
+            )
+          )
+        ) return;
+        const newerEdits = state.editEpoch !== flight.editEpoch
+          || state.installInputEpoch !== flight.installInputEpoch;
         state.installStage = 'error';
-        state.installMessage = errorMessage(error);
+        const message = errorMessage(error);
+        state.installMessage = newerEdits
+          ? `${message} — newer edits pending`
+          : message;
         state.installResult = undefined;
         state.installWarnings = [];
-        rerender();
         announce(state.installMessage);
+      })
+      .finally(() => {
+        if (installFlight !== flight) return;
+        installFlight = null;
+        rerender();
       });
   };
 
@@ -5129,7 +5673,7 @@ export const bootstrapIngredientBuilderRoute = (
           state.saveStage = 'idle';
           state.status = 'Saved — newer edits pending';
           state.previewOperationKey = state.previewOperationKey || firstOperationKey(state.rows);
-          refreshDrafts();
+          refreshDrafts(true);
         } else {
           state.review = decompose.review;
           state.reviewIssues = decompose.ok ? [] : decompose.issues;
@@ -5139,7 +5683,7 @@ export const bootstrapIngredientBuilderRoute = (
             state.cleanEpoch = epochAtSave;
             state.status = 'Draft saved and validated';
             state.previewOperationKey = state.previewOperationKey || firstOperationKey(state.rows);
-            refreshDrafts();
+            refreshDrafts(true);
           } else if (decompose.code === 'validation_failed') {
             state.status = 'Validation failed';
           } else {
@@ -5164,9 +5708,114 @@ export const bootstrapIngredientBuilderRoute = (
       });
   };
 
+  const removeOperation = (entry: OperationFamilyRowDraft): void => {
+    const renderedIds = [...renderedOperationFocusTargets.keys()];
+    const renderedIndex = renderedIds.indexOf(entry.id);
+    const stateIndex = state.rows.indexOf(entry);
+    if (renderedIndex < 0 || stateIndex < 0) return;
+    state.rows.splice(stateIndex, 1);
+    // Prune the removed row's open override — row ids can be re-minted.
+    state.opCardOpen.delete(entry.id);
+    state.opAdvancedOpen.delete(entry.id);
+    const survivors = renderedIds.filter((id) => id !== entry.id);
+    pendingRemovedOperationFocusId =
+      survivors[Math.min(renderedIndex, survivors.length - 1)] ?? null;
+    markDirty(state);
+    rerender();
+  };
+
+  const removeEntityField = (entry: EntityFieldRowDraft): void => {
+    const renderedIds = [...renderedEntityFieldFocusTargets.keys()];
+    const renderedIndex = renderedIds.indexOf(entry.id);
+    const stateIndex = state.entityFields.indexOf(entry);
+    if (renderedIndex < 0 || stateIndex < 0) return;
+    state.entityFields.splice(stateIndex, 1);
+    const survivors = renderedIds.filter((id) => id !== entry.id);
+    pendingRemovedEntityFieldFocus = {
+      fieldId: survivors[Math.min(renderedIndex, survivors.length - 1)] ?? null,
+    };
+    markDirty(state);
+    rerender();
+  };
+
+  const rerenderOperationField = (
+    rowId: string,
+    field: 'bindingKind' | 'reviewed' | 'summary',
+  ): void => {
+    pendingOperationFieldFocus = { rowId, field };
+    rerender();
+  };
+
+  const rerenderEntityField = (
+    fieldId: string,
+    field: 'optional' | 'reviewed',
+  ): void => {
+    pendingEntityFieldFocus = { fieldId, field };
+    rerender();
+  };
+
+  const rerenderOperationArgument = (
+    rowId: string,
+    argIndex: number | null,
+  ): void => {
+    pendingOperationArgumentFocus = { rowId, argIndex };
+    rerender();
+  };
+
+  const rerenderPackSetting = (field: 'authModel'): void => {
+    pendingPackSettingFocus = field;
+    rerender();
+  };
+
   const rerender = (): void => {
     if (disposed) return;
+    const activeBeforeRender = (
+      doc.activeElement as HTMLElement | null | undefined
+    ) ?? null;
+    const restoreHeadingFocus = activeBeforeRender === routeHeading;
+    const restoreActiveField = activeBeforeRender === null
+      ? null
+      : captureFieldFocus(activeBeforeRender);
+    if (activeBeforeRender === saveBtn) {
+      pendingSaveFocus = true;
+      pendingWorkflowFocus = null;
+    } else if (activeBeforeRender === previewBtn) {
+      pendingSaveFocus = false;
+      pendingWorkflowFocus = 'preview';
+    } else if (activeBeforeRender === installBtn) {
+      pendingSaveFocus = false;
+      pendingWorkflowFocus = 'install';
+    } else if (
+      activeBeforeRender !== null
+      && activeBeforeRender !== doc.body
+      && activeBeforeRender.isConnected
+    ) {
+      pendingSaveFocus = false;
+      pendingWorkflowFocus = null;
+    }
+    if (activeBeforeRender === newDraftBtn) {
+      pendingNewDraftFocus = true;
+    } else if (
+      activeBeforeRender !== null
+      && activeBeforeRender !== doc.body
+      && activeBeforeRender.isConnected
+    ) {
+      pendingNewDraftFocus = false;
+    }
+    if (activeBeforeRender === draftRefreshBtn) {
+      pendingDraftRefreshFocus = true;
+    } else if (
+      activeBeforeRender !== null
+      && activeBeforeRender !== doc.body
+      && activeBeforeRender.isConnected
+    ) {
+      pendingDraftRefreshFocus = false;
+    }
+    previewBtn = undefined;
+    installBtn = undefined;
     clearChildren(content);
+    renderedOperationFocusTargets = new Map();
+    renderedEntityFieldFocusTargets = new Map();
 
     // Slim sticky header: title + draft picker (Save lives in the picker
     // actions) + the status / review chip + the section nav. Identity,
@@ -5179,7 +5828,9 @@ export const bootstrapIngredientBuilderRoute = (
     header.className = 'ingredient-builder-header';
     const eyebrow = appendText(doc, header, 'span', 'Ingredient workspace');
     eyebrow.className = 'ingredient-builder-eyebrow';
-    appendText(doc, header, 'h1', 'Pack editor');
+    routeHeading = appendText(doc, header, 'h1', 'Pack editor');
+    routeHeading.setAttribute(INGREDIENT_BUILDER_HEADING_ATTR, '');
+    routeHeading.tabIndex = -1;
     const subtitle = appendText(
       doc,
       header,
@@ -5190,8 +5841,11 @@ export const bootstrapIngredientBuilderRoute = (
     topbar.appendChild(header);
 
     const pickerRefs = renderDraftPicker(
-      doc, state, topbar, loadDraft, newDraft, refreshDrafts, saveDraft, rerender,
+      doc, state, topbar, loadDraft, newDraft, () => refreshDrafts(), saveDraft, rerender,
     );
+    saveBtn = pickerRefs.saveBtn;
+    draftRefreshBtn = pickerRefs.refreshBtn;
+    newDraftBtn = pickerRefs.newBtn;
     const statusRefs = renderStatusLine(doc, state, topbar);
 
     // Section nav: the mini-app menu, INSIDE the sticky topbar so switching
@@ -5253,7 +5907,7 @@ export const bootstrapIngredientBuilderRoute = (
     // rerender): flip the dirty cue, relabel Save (and promote it back to the
     // primary look), clear the stale status, downgrade the review chip. While
     // a save is IN FLIGHT the busy label + progress status stay put — the
-    // still-disabled button must not read as an actionable 'Save', and the
+    // guarded button must not read as an actionable 'Save', and the
     // completion (epoch-checked) reports the pending edits.
     topbarSyncByState.set(state, () => {
       pickerRefs.dirtyCue.textContent = draftHasUnsavedContent(state) ? 'Unsaved' : '';
@@ -5354,7 +6008,14 @@ export const bootstrapIngredientBuilderRoute = (
 
     // ── Setup — the connector. renderPackSettings('setup') owns it all: auth
     //    model + (api: base URL / connection / dialects | cli: binary + probe).
-    renderPackSettings(doc, state, view('setup'), rerender, 'setup');
+    renderedPackSettingFocusTargets = renderPackSettings(
+      doc,
+      state,
+      view('setup'),
+      rerender,
+      'setup',
+      rerenderPackSetting,
+    );
 
     // ── Operations — family-grouped op cards.
     const operationsView = view('operations');
@@ -5373,14 +6034,25 @@ export const bootstrapIngredientBuilderRoute = (
       plural(authoredOperationRows(state.rows).length, 'operation'),
     );
     const add = makeButton(doc, 'Add operation', 'secondary', 'sm', () => {
-      state.rows.push(defaultRow(`row-${nextRowId}`));
+      const id = `row-${nextRowId}`;
+      state.rows.push(defaultRow(id));
       nextRowId += 1;
       markDirty(state);
+      pendingAddedOperationFocusId = id;
       rerender();
     });
     add.setAttribute(INGREDIENT_BUILDER_ADD_ROW_ATTR, '');
     operationsHeader.appendChild(add);
-    renderTable(doc, state, operations, rerender);
+    renderTable(
+      doc,
+      state,
+      operations,
+      rerender,
+      renderedOperationFocusTargets,
+      removeOperation,
+      rerenderOperationField,
+      rerenderOperationArgument,
+    );
     operationsView.appendChild(operations);
 
     // ── Data fields — entity schema.
@@ -5400,14 +6072,25 @@ export const bootstrapIngredientBuilderRoute = (
       plural(state.entityFields.length, 'field'),
     );
     const addField = makeButton(doc, 'Add field', 'secondary', 'sm', () => {
-      state.entityFields.push(defaultEntityField(`field-${nextFieldId}`));
+      const id = `field-${nextFieldId}`;
+      state.entityFields.push(defaultEntityField(id));
       nextFieldId += 1;
       markDirty(state);
+      pendingAddedEntityFieldFocusId = id;
       rerender();
     });
     addField.setAttribute(INGREDIENT_BUILDER_ENTITY_ADD_ROW_ATTR, '');
+    addEntityFieldBtn = addField;
     entityHeader.appendChild(addField);
-    renderEntityFieldTable(doc, state, entitySection, rerender);
+    renderEntityFieldTable(
+      doc,
+      state,
+      entitySection,
+      rerender,
+      renderedEntityFieldFocusTargets,
+      removeEntityField,
+      rerenderEntityField,
+    );
     dataView.appendChild(entitySection);
 
     // ── Publish — pack metadata + (once validated) preview / install.
@@ -5424,12 +6107,18 @@ export const bootstrapIngredientBuilderRoute = (
       publishView.appendChild(hint);
     }
     if (isWorkflowReady(state)) {
-      renderWorkflow(
+      const workflowRefs = renderWorkflow(
         doc,
         state,
         publishView,
+        () => {
+          previewGeneration += 1;
+          clearPreviewState(state);
+        },
         runPreview,
         runInstall,
+        installFlight !== null,
+        installFlight?.draftGeneration === draftGeneration,
         (tier) => {
           // D-182 §7.1 (inc 5b.2) — record the owner's Access pick + re-render. No
           // offered-tier guard needed: the picker only renders the tiers in
@@ -5443,10 +6132,94 @@ export const bootstrapIngredientBuilderRoute = (
           rerender();
         },
       );
+      previewBtn = workflowRefs.previewBtn;
+      installBtn = workflowRefs.installBtn;
+    }
+    if (restoreHeadingFocus) {
+      routeHeading.focus({ preventScroll: true });
+    }
+    if (pendingSaveFocus && saveBtn !== undefined && !saveBtn.disabled) {
+      pendingSaveFocus = false;
+      saveBtn.focus({ preventScroll: true });
+    }
+    if (pendingNewDraftFocus && newDraftBtn !== undefined) {
+      pendingNewDraftFocus = false;
+      newDraftBtn.focus({ preventScroll: true });
+    }
+    if (pendingDraftRefreshFocus && draftRefreshBtn !== undefined) {
+      pendingDraftRefreshFocus = false;
+      draftRefreshBtn.focus({ preventScroll: true });
+    }
+    if (pendingWorkflowFocus !== null) {
+      const target = pendingWorkflowFocus === 'preview'
+        ? previewBtn
+        : installBtn;
+      if (target !== undefined && !target.disabled) {
+        pendingWorkflowFocus = null;
+        target.focus({ preventScroll: true });
+      }
+    }
+    if (restoreActiveField !== null) restoreFieldFocus(restoreActiveField);
+    if (pendingAddedOperationFocusId !== null) {
+      const id = pendingAddedOperationFocusId;
+      pendingAddedOperationFocusId = null;
+      const target = renderedOperationFocusTargets.get(id);
+      target?.firstField.focus({ preventScroll: true });
+      target?.card.scrollIntoView?.({ block: 'nearest' });
+    }
+    if (pendingRemovedOperationFocusId !== null) {
+      const id = pendingRemovedOperationFocusId;
+      pendingRemovedOperationFocusId = null;
+      renderedOperationFocusTargets.get(id)?.summary.focus({ preventScroll: true });
+    }
+    if (pendingAddedEntityFieldFocusId !== null) {
+      const id = pendingAddedEntityFieldFocusId;
+      pendingAddedEntityFieldFocusId = null;
+      const target = renderedEntityFieldFocusTargets.get(id);
+      target?.firstField.focus({ preventScroll: true });
+      target?.row.scrollIntoView?.({ block: 'nearest' });
+    }
+    if (pendingRemovedEntityFieldFocus !== null) {
+      const pending = pendingRemovedEntityFieldFocus;
+      pendingRemovedEntityFieldFocus = null;
+      const target = pending.fieldId === null
+        ? addEntityFieldBtn
+        : renderedEntityFieldFocusTargets.get(pending.fieldId)?.firstField;
+      target?.focus({ preventScroll: true });
+    }
+    if (pendingOperationFieldFocus !== null) {
+      const pending = pendingOperationFieldFocus;
+      pendingOperationFieldFocus = null;
+      renderedOperationFocusTargets.get(pending.rowId)?.[pending.field]
+        .focus({ preventScroll: true });
+    }
+    if (pendingEntityFieldFocus !== null) {
+      const pending = pendingEntityFieldFocus;
+      pendingEntityFieldFocus = null;
+      renderedEntityFieldFocusTargets.get(pending.fieldId)?.[pending.field]
+        .focus({ preventScroll: true });
+    }
+    if (pendingOperationArgumentFocus !== null) {
+      const pending = pendingOperationArgumentFocus;
+      pendingOperationArgumentFocus = null;
+      const targets = renderedOperationFocusTargets.get(pending.rowId)?.arguments;
+      const target = pending.argIndex === null
+        ? targets?.addButton
+        : targets?.keyInputs[pending.argIndex];
+      target?.focus({ preventScroll: true });
+      target?.scrollIntoView?.({ block: 'nearest' });
+    }
+    if (pendingPackSettingFocus !== null) {
+      const field = pendingPackSettingFocus;
+      pendingPackSettingFocus = null;
+      renderedPackSettingFocusTargets[field]?.focus({ preventScroll: true });
     }
   };
 
   rerender();
+  if (focusHeadingOnMount) {
+    routeHeading?.focus?.({ preventScroll: true });
+  }
   refreshDrafts();
 
   // Edit→Kitchen deep-link arrival — an `initialDraftId` WITHOUT an
@@ -5506,7 +6279,7 @@ export const bootstrapIngredientBuilderRoute = (
       return saveInFlight || draftHasUnsavedContent(state);
     },
     hasInFlightWork() {
-      return saveInFlight;
+      return saveInFlight || installFlight !== null;
     },
     getState() {
       return {

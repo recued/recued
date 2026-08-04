@@ -9,9 +9,11 @@ import {
   type DiscoverSpec,
 } from '../discover/discover-model.js';
 import {
+  DISCOVER_PANEL_ACTION_ATTR,
   DISCOVER_PANEL_CARD_ATTR,
   DISCOVER_PANEL_FACET_MORE_ATTR,
   DISCOVER_PANEL_FACET_SEARCH_ATTR,
+  DISCOVER_PANEL_PAGE_ATTR,
   DISCOVER_PANEL_SUMMARY_ATTR,
   mountDiscoverPanel,
   type MountDiscoverPanelOptions,
@@ -19,7 +21,7 @@ import {
 
 // ── minimal fake DOM (only what the panel touches) ──────────────────
 type El = ReturnType<typeof makeEl>;
-const makeEl = (tag: string) => {
+const makeEl = (tag: string, onFocus?: (el: any) => void) => {
   const children: any[] = [];
   const attrs = new Map<string, string>();
   const listeners = new Map<string, Array<(ev: unknown) => void>>();
@@ -61,10 +63,17 @@ const makeEl = (tag: string) => {
     remove: () => {
       if (el.parent) el.parent.removeChild(el);
     },
+    focus: () => onFocus?.(el),
   };
   return el;
 };
-const fakeDoc = () => ({ createElement: (tag: string) => makeEl(tag) }) as unknown as Document;
+const fakeDoc = () => {
+  const doc: any = { activeElement: null };
+  doc.createElement = (tag: string) => makeEl(tag, (el) => {
+    doc.activeElement = el;
+  });
+  return doc as Document;
+};
 
 const walk = (el: El, pred: (e: El) => boolean, out: El[] = []): El[] => {
   for (const c of el.children) {
@@ -75,6 +84,8 @@ const walk = (el: El, pred: (e: El) => boolean, out: El[] = []): El[] => {
 };
 const cardEls = (host: El): El[] =>
   walk(host, (e) => e.getAttribute(DISCOVER_PANEL_CARD_ATTR) !== null);
+const actionEls = (host: El): El[] =>
+  walk(host, (e) => e.getAttribute(DISCOVER_PANEL_ACTION_ATTR) !== null);
 const summaryEl = (host: El): El | undefined =>
   walk(host, (e) => e.getAttribute(DISCOVER_PANEL_SUMMARY_ATTR) !== null)[0];
 
@@ -115,11 +126,12 @@ const spec: DiscoverSpec<PackRow> = {
 
 const mount = (over: Partial<MountDiscoverPanelOptions<PackRow>> = {}) => {
   const host = makeEl('div');
+  const document = fakeDoc();
   const install = { label: 'Install', run: vi.fn(async () => ({ ok: true })) };
   const upgrade = { run: vi.fn(async () => ({ ok: true })) };
   const panel = mountDiscoverPanel<PackRow>({
     host: host as unknown as HTMLElement,
-    document: fakeDoc(),
+    document,
     spec,
     fetchCatalog: async () => ({ status: 'ok', rows: corpus }),
     identity: (r) => r.slug,
@@ -143,7 +155,7 @@ const mount = (over: Partial<MountDiscoverPanelOptions<PackRow>> = {}) => {
     perPage: 24,
     ...over,
   });
-  return { host, panel, install, upgrade };
+  return { host, panel, install, upgrade, document };
 };
 
 describe('mountDiscoverPanel', () => {
@@ -185,6 +197,66 @@ describe('mountDiscoverPanel', () => {
     expect(panel.getRenderedIdentities().sort()).toEqual(['installed-pack', 'sales-pack', 'wf-pack']);
     panel.toggleFilter('kind', 'entity'); // deselect
     expect(panel.getRenderedIdentities()).toEqual(['wf-pack']);
+  });
+
+  it('keeps focus on a facet chip when the filtered view repaints it', async () => {
+    const { host, panel, document } = mount();
+    await panel.whenLoaded();
+    const chip = walk(
+      host,
+      (el) => el.getAttribute('data-facet') === 'kind'
+        && el.getAttribute('data-value') === 'entity',
+    )[0]!;
+    chip.focus();
+
+    for (const listener of chip.listeners.get('click') ?? []) {
+      listener({ stopPropagation: () => {} });
+    }
+
+    const replacement = walk(
+      host,
+      (el) => el.getAttribute('data-facet') === 'kind'
+        && el.getAttribute('data-value') === 'entity',
+    )[0]!;
+    expect(replacement).not.toBe(chip);
+    expect(replacement.getAttribute('aria-pressed')).toBe('true');
+    expect((document as Document).activeElement).toBe(replacement);
+  });
+
+  it('keeps focus on the same card through a background catalogue refresh', async () => {
+    const { host, panel, document } = mount({ onSelect: vi.fn() });
+    await panel.whenLoaded();
+    const card = cardEls(host).find(
+      (element) => element.getAttribute('data-id') === 'mail-pack',
+    )!;
+    card.focus();
+
+    await panel.refresh();
+
+    const replacement = cardEls(host).find(
+      (element) => element.getAttribute('data-id') === 'mail-pack',
+    )!;
+    expect(replacement).not.toBe(card);
+    expect((document as Document).activeElement).toBe(replacement);
+  });
+
+  it('moves focus to the first surviving card when a refresh removes its owner', async () => {
+    let refreshedRows = corpus;
+    const { host, panel, document } = mount({
+      onSelect: vi.fn(),
+      fetchCatalog: async () => ({ status: 'ok', rows: refreshedRows }),
+    });
+    await panel.whenLoaded();
+    const removed = cardEls(host).find(
+      (element) => element.getAttribute('data-id') === 'mail-pack',
+    )!;
+    removed.focus();
+    refreshedRows = corpus.filter((row) => row.slug !== 'mail-pack');
+
+    await panel.refresh();
+
+    expect(cardEls(host)).not.toContain(removed);
+    expect((document as Document).activeElement).toBe(cardEls(host)[0]);
   });
 
   it('bounds large facet groups and keeps the remainder searchable', async () => {
@@ -243,6 +315,24 @@ describe('mountDiscoverPanel', () => {
     expect(panel.getPage()).toBe(2);
   });
 
+  it('keeps pager focus through repaint and moves off a disabled boundary', async () => {
+    const { host, panel, document } = mount({ perPage: 2, onSelect: vi.fn() });
+    await panel.whenLoaded();
+    const next = walk(
+      host,
+      (element) => element.getAttribute(DISCOVER_PANEL_PAGE_ATTR) === 'next',
+    )[0]!;
+    next.focus();
+    for (const listener of next.listeners.get('click') ?? []) listener({});
+
+    const prev = walk(
+      host,
+      (element) => element.getAttribute(DISCOVER_PANEL_PAGE_ATTR) === 'prev',
+    )[0]!;
+    expect(panel.getPage()).toBe(2);
+    expect((document as Document).activeElement).toBe(prev);
+  });
+
   it('installs an available row → runs install.run → badge flips to installed', async () => {
     const { panel, install, upgrade } = mount();
     await panel.whenLoaded();
@@ -282,6 +372,52 @@ describe('mountDiscoverPanel', () => {
     expect(panel.getInstallState('mail-pack')).toBe('available');
     panel.setInstalled((slug) => (slug === 'mail-pack' ? 3 : null));
     expect(panel.getInstallState('mail-pack')).toBe('installed');
+  });
+
+  it('keeps a handed-off Install action focused, operable, and single-flight', async () => {
+    let release: (value: { ok: true; handedOff: true }) => void = () => {};
+    const gate = new Promise<{ ok: true; handedOff: true }>((resolve) => {
+      release = resolve;
+    });
+    const install = { label: 'Install', run: vi.fn(() => gate) };
+    const { host, panel, document } = mount({ install });
+    await panel.whenLoaded();
+    const original = actionEls(host).find(
+      (action) => action.getAttribute('data-id') === 'mail-pack',
+    )!;
+    original.focus();
+
+    const pending = panel.clickInstall('mail-pack');
+    const busy = actionEls(host).find(
+      (action) => action.getAttribute('data-id') === 'mail-pack',
+    )!;
+    expect(busy).not.toBe(original);
+    expect(busy.disabled).not.toBe(true);
+    expect(busy.getAttribute('aria-disabled')).toBe('true');
+    expect(busy.getAttribute('aria-busy')).toBe('true');
+    expect(busy.textContent).toBe('Installing…');
+    expect(document.activeElement).toBe(busy);
+
+    await panel.clickInstall('mail-pack');
+    expect(install.run).toHaveBeenCalledTimes(1);
+    release({ ok: true, handedOff: true });
+    await pending;
+
+    const ready = actionEls(host).find(
+      (action) => action.getAttribute('data-id') === 'mail-pack',
+    )!;
+    expect(ready).not.toBe(busy);
+    expect(ready.getAttribute('aria-disabled')).toBeNull();
+    expect(ready.getAttribute('aria-busy')).toBeNull();
+    expect(document.activeElement).toBe(ready);
+    expect(panel.focusAction('mail-pack')).toBe(true);
+
+    panel.setInstalled((slug) => (slug === 'mail-pack' ? 3 : null));
+    const receipt = cardEls(host).find(
+      (card) => card.getAttribute('data-id') === 'mail-pack',
+    )!;
+    expect(receipt.getAttribute('tabindex')).toBe('-1');
+    expect(document.activeElement).toBe(receipt);
   });
 
   it('a failed install surfaces the message + leaves state unchanged', async () => {

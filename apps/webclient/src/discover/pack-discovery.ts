@@ -178,7 +178,18 @@ export const packMeta = (r: CatalogPackRow): string => {
 
 export const mountPackDiscovery = (
   opts: MountPackDiscoveryOptions,
-): { dispose: () => void; panel: DiscoverPanelMount } => {
+): {
+  dispose: () => void;
+  panel: DiscoverPanelMount;
+  /** Toggle the installed-only view. Re-runs the current query, so the search
+   *  box / sort / page the user already set carry across the switch. Calling it
+   *  also marks the state user-owned, so the installed-first default stops
+   *  re-deciding on later query runs. */
+  setInstalledOnly: (on: boolean) => Promise<void>;
+  /** Observe state the list decides for itself — the installed-first default,
+   *  which can only be resolved once the roster has loaded. */
+  onInstalledOnlyChange: (cb: (on: boolean) => void) => void;
+} => {
   const doc = opts.document ?? (globalThis as { document?: Document }).document;
   if (doc === undefined) {
     throw new Error('mountPackDiscovery: no document available — pass opts.document');
@@ -201,6 +212,9 @@ export const mountPackDiscovery = (
   // FIRST render (before any `setInstalled`) already sees the version map the
   // union load builds, and a broadcast just swaps the closure + re-renders.
   let currentLookup: (slug: string) => number | null = () => null;
+  /** The `installed_versions` inventory from the last roster snapshot — the ONLY
+   *  place a marketplace-installed pack (absent from `packs[]`) appears. */
+  let installedInventory: ReadonlyArray<{ slug: string; version: number }> = [];
   // Last SUCCESSFUL roster — reused when a refresh's `packs.list` transiently
   // rejects (e.g. a broadcast-driven refresh racing a server hiccup) so the
   // install-state + roster-only rows keep their last-known values rather than
@@ -267,6 +281,7 @@ export const mountPackDiscovery = (
   ): ReadonlyArray<RosterPack> => {
     const roster = src?.packs ?? [];
     bundledRoster = roster;
+    installedInventory = src?.installed_versions ?? [];
     currentLookup = buildLookup(roster, src?.installed_versions);
     const ids = [
       ...roster.map((p) => p.slug),
@@ -288,10 +303,78 @@ export const mountPackDiscovery = (
   // Load the roster once before the first server render so install-state is
   // right from the start (the panel reads `currentLookup` live); later calls
   // reuse it. A broadcast forces a fresh fetch via `refreshRoster`.
+  /** "Installed only" view. The `[Installed | Discover]` tab split was retired
+   *  for one unified list, and install state became a per-row badge — but nothing
+   *  replaced the TAB, so on a 954-pack corpus finding your own packs meant
+   *  scanning badges page by page.
+   *
+   *  🔑 It cannot be a facet. Browse runs in SERVER mode: the marketplace pages
+   *  the rows and computes the facet counts, and the marketplace cannot know what
+   *  this server has installed. So the toggle swaps the SOURCE instead — the
+   *  roster `packs.list` already loads for the badges, searched by the same local
+   *  engine the pinned strip uses, so search / sort / facets keep working over it. */
+  let installedOnly = false;
+  /** The user pressed the toggle themselves — stop auto-deciding for them. Without
+   *  this, any later re-run of the query (a `pack_installed` broadcast, a search
+   *  keystroke) would re-apply the default and yank them back out of the
+   *  marketplace they deliberately opened. */
+  let installedOnlyUserSet = false;
+  let installedOnlyDefaulted = false;
+  let installedOnlyListener: ((on: boolean) => void) | null = null;
+  /** 🔑 Your own packs are the DEFAULT view, not a filter you re-apply on every
+   *  visit. Browsing a marketplace is occasional; reaching for a pack you already
+   *  installed is daily, and making the daily case the one that costs a click had
+   *  it backwards.
+   *
+   *  Decided here rather than at mount because it depends on the roster, and the
+   *  roster is only guaranteed loaded at this point (the first search awaits it).
+   *  A server with nothing installed still opens on the marketplace — defaulting
+   *  to an empty list would be a worse first run than no default at all. */
+  const applyInstalledFirstDefault = (): void => {
+    if (installedOnlyDefaulted || installedOnlyUserSet) return;
+    installedOnlyDefaulted = true;
+    if (installedRosterRows().length === 0) return;
+    installedOnly = true;
+    installedOnlyListener?.(true);
+  };
   let rosterLoad: Promise<ReadonlyArray<RosterPack>> | null = null;
   const ensureRoster = (): Promise<ReadonlyArray<RosterPack>> => {
     if (rosterLoad === null) rosterLoad = refreshRoster();
     return rosterLoad;
+  };
+
+  /** The packs this server actually HAS, as browse rows.
+   *
+   *  ⛔ `bundledRoster` is NOT that set. `packs.list` returns the whole bundled
+   *  corpus — ~950 rows, each carrying its own `installed` flag — so handing it
+   *  to the filter unchanged showed every pack on the disk and reported the
+   *  corpus size as the result count. The toggle looked like it did nothing
+   *  because, apart from swapping the data source, it did nothing.
+   *
+   *  `currentLookup` is the authority, not `p.installed`: it already unions the
+   *  bundled flags (`installed` OR `installed_any_version` — owned at a
+   *  DIFFERENT version still counts as owned) with the `installed_versions`
+   *  inventory, and it is the same oracle that draws the per-row badges. Reusing
+   *  it means the filter and the badge can never disagree.
+   *
+   *  Inventory-only slugs — marketplace packs absent from `packs[]` entirely —
+   *  are synthesized, because they are exactly the ones a corpus scan cannot
+   *  find. `RosterPack` allows the display fields to be absent; the projection
+   *  falls back to the slug. */
+  const installedRosterRows = (): CatalogPackRow[] => {
+    const rows = bundledRoster
+      .filter((p) => currentLookup(p.slug) !== null)
+      .map(projectRosterPackRow);
+    const listed = new Set(bundledRoster.map((p) => p.slug));
+    for (const iv of installedInventory) {
+      if (listed.has(iv.slug)) continue;
+      rows.push(projectRosterPackRow({
+        slug: iv.slug,
+        version: iv.version,
+        installed: true,
+      }));
+    }
+    return rows;
   };
 
   /** Bundled packs the marketplace catalogue doesn't carry — projected as
@@ -339,6 +422,23 @@ export const mountPackDiscovery = (
             // Install-state must be ready before the first page renders, so the
             // roster load blocks the first search only (memoised thereafter).
             await ensureRoster();
+            applyInstalledFirstDefault();
+            // Installed-only — answer from the roster, never the marketplace. The
+            // roster IS the complete set of installed packs, so this is exact
+            // rather than "the installed ones that happen to be on this page".
+            if (installedOnly) {
+              const local = runDiscover(installedRosterRows(), packSpec, query);
+              return {
+                status: 'ok' as const,
+                page: {
+                  rows: local.pageRows,
+                  total: local.total,
+                  totalPages: local.totalPages,
+                  page: local.page,
+                  facets: local.facets,
+                },
+              };
+            }
             const res = await searchFn(query);
             if (res.status !== 'ok') return { status: 'error' as const, message: res.message };
             // Pinned: the bundled-but-unpublished packs that match THIS query.
@@ -401,6 +501,29 @@ export const mountPackDiscovery = (
 
   return {
     panel,
+    /** Register for state the LIST decides on its own — today only the
+     *  installed-first default, which is resolved after the roster lands and so
+     *  cannot be known by the host at mount time. The host owns the toggle's
+     *  appearance; this is how it learns the toggle started pressed. */
+    onInstalledOnlyChange: (cb: (on: boolean) => void): void => {
+      installedOnlyListener = cb;
+    },
+    setInstalledOnly: async (on: boolean): Promise<void> => {
+      installedOnlyUserSet = true;
+      if (installedOnly === on) return;
+      const previous = installedOnly;
+      installedOnly = on;
+      // The roster must be loaded before the first installed-only page, and
+      // `refresh()` re-runs the CURRENT query so the user's search / sort / page
+      // survive the switch.
+      try {
+        await ensureRoster();
+        await panel.refresh();
+      } catch (error) {
+        installedOnly = previous;
+        throw error;
+      }
+    },
     dispose: () => {
       for (const u of unsubs) {
         try {

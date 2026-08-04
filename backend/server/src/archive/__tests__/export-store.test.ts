@@ -20,8 +20,10 @@ import {
   formatBytes,
   isArchiveStagingName,
   isGeneratedExportName,
+  isGeneratedExportPartialName,
   newExportPath,
   pruneExpiredExports,
+  pruneInterruptedExportPartials,
   pruneStagedArchives,
 } from '../export-store.js';
 
@@ -49,7 +51,7 @@ const makeGenExport = async (mtimeMs: number): Promise<string> => {
 };
 
 /** Write an arbitrarily-named file under exports/ (a user-staged restore
- *  archive, or the in-flight .db.tmp backup) with an explicit mtime. */
+ *  archive or unrelated legacy temp) with an explicit mtime. */
 const makeRawFile = async (name: string, mtimeMs: number): Promise<string> => {
   await mkdir(exportsDir(root), { recursive: true });
   const path = join(exportsDir(root), name);
@@ -83,6 +85,27 @@ describe('newExportPath', () => {
 
   it('never collides for two calls at the same instant (random suffix)', () => {
     expect(newExportPath(root, BASE_MS)).not.toBe(newExportPath(root, BASE_MS));
+  });
+});
+
+describe('interrupted export partials', () => {
+  it('reclaims only exact RPC-generated partials, without an age delay', async () => {
+    const generated = basename(newExportPath(root, BASE_MS));
+    const partial = await makeRawFile(`${generated}.partial`, BASE_MS);
+    const userPartial = await makeRawFile('my-backup.recued.archive.partial', BASE_MS);
+    const unrelated = await makeRawFile(`${generated}.partial.notes`, BASE_MS);
+
+    expect(isGeneratedExportPartialName(basename(partial))).toBe(true);
+    expect(isGeneratedExportPartialName(basename(userPartial))).toBe(false);
+    expect(pruneInterruptedExportPartials(root)).toEqual([partial]);
+    expect(await remainingNames()).toEqual([
+      basename(unrelated),
+      basename(userPartial),
+    ].sort());
+  });
+
+  it('is a no-op without an exports directory', () => {
+    expect(pruneInterruptedExportPartials(root)).toEqual([]);
   });
 });
 
@@ -126,7 +149,7 @@ describe('evictOtherExports', () => {
     expect(await remainingNames()).toEqual([basename(a)]);
   });
 
-  it('leaves user-staged restore archives + the in-flight .db.tmp untouched', async () => {
+  it('leaves user-staged restore archives + unrelated legacy temps untouched', async () => {
     const keep = await makeGenExport(3_000);
     const userArchive = await makeRawFile(`my-restore${EXPORT_SUFFIX}`, 1_000); // older, but not ours
     const tmp = await makeRawFile(`${basename(keep)}.db.tmp`, 1_000);
@@ -135,7 +158,7 @@ describe('evictOtherExports', () => {
 
     const names = await remainingNames();
     expect(names).toContain(basename(userArchive)); // user restore source untouched
-    expect(names).toContain(basename(tmp)); // in-flight backup untouched
+    expect(names).toContain(basename(tmp)); // unrelated legacy temp untouched
     expect(names).toContain(basename(keep));
   });
 });

@@ -23,7 +23,6 @@
 
 import { closeSync, existsSync, openSync, readSync, statSync, unlinkSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { randomBytes } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import {
   recoveryKeyToEntropy,
@@ -56,6 +55,7 @@ import {
   evictOtherExports,
   formatBytes,
   newExportPath,
+  pruneInterruptedExportPartials,
   pruneExpiredExports,
 } from './export-store.js';
 import {
@@ -79,6 +79,7 @@ import type {
   ArchiveRuntime,
 } from './archive-handler.js';
 import { assertRecordsRestoreCoherence } from '../records/store.js';
+import { previewDatabaseScratchPath } from './archive-scratch.js';
 
 /** Attribution stamped onto an archive-embedded passport's
  *  `exported_by_client_id`. The archive rpc is operator-only, so this is
@@ -755,7 +756,7 @@ export const createArchiveRuntime = (deps: ArchiveRuntimeDeps): ArchiveRuntime =
       // buffering the db or overlaying blobs: the db record streams to a
       // throwaway temp file we open read-only to count rows, blobs are
       // authenticated then discarded. Memory-flat preview.
-      const tmp = join(dataPath, `.archive-count-${randomBytes(8).toString('hex')}.sqlite`);
+      const tmp = previewDatabaseScratchPath(dataPath);
       try {
         const preview = await previewToTempDb(tmp, {
           archivePath: path,
@@ -1042,6 +1043,7 @@ export const composeArchiveRpcDeps = (
   // (updates, reboots) that boot + export-start sweeps honor the 7-day TTL
   // in practice. Best-effort — never block boot on it.
   try {
+    pruneInterruptedExportPartials(dataPath);
     runtime.pruneExpiredExports();
   } catch (err) {
     console.error('[archive] boot-time export prune failed', err);

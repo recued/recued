@@ -22,8 +22,11 @@ import {
   INGREDIENT_BUILDER_HTTP_RESULT_PATH_ATTR,
   INGREDIENT_BUILDER_HTTP_SEARCH_STYLE_ATTR,
   INGREDIENT_BUILDER_HTTP_WRITE_STYLE_ATTR,
+  INGREDIENT_BUILDER_HEADING_ATTR,
   INGREDIENT_BUILDER_INGREDIENT_KIND_ATTR,
+  INGREDIENT_BUILDER_DRAFT_NEW_ATTR,
   INGREDIENT_BUILDER_DRAFT_PICKER_ATTR,
+  INGREDIENT_BUILDER_DRAFT_REFRESH_ATTR,
   INGREDIENT_BUILDER_ENTITY_ADD_ROW_ATTR,
   INGREDIENT_BUILDER_ENTITY_ALIAS_ATTR,
   INGREDIENT_BUILDER_ENTITY_FIELD_ATTR,
@@ -95,10 +98,15 @@ interface FakeElement {
   addEventListener(name: string, fn: () => void): void;
   click(): void;
   dispatch(name: string): void;
+  focus(): void;
 }
 
 interface FakeDocument {
   styleElements: FakeElement[];
+  activeElement: FakeElement | null;
+  defaultView: {
+    confirm(message: string): boolean;
+  };
   head: {
     querySelector(sel: string): FakeElement | null;
     appendChild(el: FakeElement): FakeElement;
@@ -106,7 +114,10 @@ interface FakeDocument {
   createElement(tag: string): FakeElement;
 }
 
-const makeFakeElement = (tagName: string): FakeElement => {
+const makeFakeElement = (
+  tagName: string,
+  onFocus: (element: FakeElement) => void = () => {},
+): FakeElement => {
   const el: FakeElement = {
     tagName: tagName.toUpperCase(),
     textContent: '',
@@ -160,6 +171,9 @@ const makeFakeElement = (tagName: string): FakeElement => {
     dispatch(name) {
       for (const fn of el.listeners.get(name) ?? []) fn();
     },
+    focus() {
+      onFocus(el);
+    },
   };
   return el;
 };
@@ -170,8 +184,12 @@ const makeFakeDocument = (): FakeDocument => {
     const m = sel.match(/^style\[([\w-]+)\]$/);
     return m === null ? null : m[1]!;
   };
-  return {
+  const doc: FakeDocument = {
     styleElements,
+    activeElement: null,
+    defaultView: {
+      confirm: () => true,
+    },
     head: {
       querySelector(sel) {
         const attr = attrFromSelector(sel);
@@ -183,8 +201,11 @@ const makeFakeDocument = (): FakeDocument => {
         return el;
       },
     },
-    createElement: (tag) => makeFakeElement(tag),
+    createElement: (tag) => makeFakeElement(tag, (element) => {
+      doc.activeElement = element;
+    }),
   };
+  return doc;
 };
 
 const findAllByAttr = (
@@ -264,13 +285,25 @@ const validReview = (overrides: Partial<CompositionReviewView> = {}): Compositio
   ...overrides,
 });
 
+const validDecompose = (): CompositionDecomposeResult => ({
+  ok: true,
+  draft_id: 'draft-1',
+  artifacts: {
+    entity_schemas: [],
+    operation_groups: [],
+    default_grants: [],
+  },
+  review: validReview(),
+});
+
 const makeConn = (options: {
-  decompose?: CompositionDecomposeResult;
+  decompose?: CompositionDecomposeResult | Promise<CompositionDecomposeResult>;
   draftListError?: Error;
   drafts?: IngredientDraftSummary[];
+  draftListResults?: Array<IngredientDraftSummary[] | Promise<IngredientDraftSummary[]>>;
   draftBodies?: Record<string, { title?: string; body: unknown }>;
-  preview?: IngredientPreviewResult;
-  install?: IngredientInstallResult;
+  preview?: IngredientPreviewResult | Promise<IngredientPreviewResult>;
+  install?: IngredientInstallResult | Promise<IngredientInstallResult>;
 } = {}) => {
   const calls: Array<{ method: string; payload: unknown }> = [];
   const savedDrafts = new Map<string, { title?: string; body: unknown }>();
@@ -281,7 +314,11 @@ const makeConn = (options: {
     calls.push({ method, payload });
     if (method === 'ingredient.draft.list') {
       if (options.draftListError !== undefined) throw options.draftListError;
-      return { ok: true, drafts: options.drafts ?? [] };
+      const listCall = calls.filter((call) => call.method === method).length - 1;
+      const drafts = await (
+        options.draftListResults?.[listCall] ?? options.drafts ?? []
+      );
+      return { ok: true, drafts };
     }
     if (method === 'ingredient.draft.get') {
       const draftId = (payload as { draft_id?: string }).draft_id ?? '';
@@ -301,16 +338,7 @@ const makeConn = (options: {
       };
     }
     if (method === 'ingredient.compose.decompose') {
-      return options.decompose ?? {
-        ok: true,
-        draft_id: 'draft-1',
-        artifacts: {
-          entity_schemas: [],
-          operation_groups: [],
-          default_grants: [],
-        },
-        review: validReview(),
-      };
+      return options.decompose ?? validDecompose();
     }
     if (method === 'ingredient.preview') {
       return options.preview ?? {
@@ -539,12 +567,27 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
       conn,
     });
 
-    findByAttr(root, INGREDIENT_BUILDER_ADD_ROW_ATTR)?.click();
+    const add = findByAttr(root, INGREDIENT_BUILDER_ADD_ROW_ATTR)!;
+    add.focus();
+    add.click();
     expect(findAllByAttr(root, INGREDIENT_BUILDER_REMOVE_ROW_ATTR)).toHaveLength(2);
+    expect(doc.activeElement).toBe(
+      findAllByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'family')[1],
+    );
 
-    findAllByAttr(root, INGREDIENT_BUILDER_REMOVE_ROW_ATTR)[1]!.click();
+    const reviewed = findAllByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'reviewed')[1]!;
+    reviewed.focus();
+    setChecked(reviewed, true);
+    expect(doc.activeElement?.className).toBe('ingredient-builder-op-card-summary');
+    expect(doc.activeElement?.parent?.getAttribute(INGREDIENT_BUILDER_ROW_ATTR)).toBe('row-1');
+
+    const remove = findAllByAttr(root, INGREDIENT_BUILDER_REMOVE_ROW_ATTR)[1]!;
+    remove.focus();
+    remove.click();
     expect(findAllByAttr(root, INGREDIENT_BUILDER_REMOVE_ROW_ATTR)).toHaveLength(1);
     expect(findAllByAttr(root, INGREDIENT_BUILDER_REMOVE_ROW_ATTR)[0]!.disabled).toBe(true);
+    expect(doc.activeElement?.className).toBe('ingredient-builder-op-card-summary');
+    expect(doc.activeElement?.parent?.getAttribute(INGREDIENT_BUILDER_ROW_ATTR)).toBe('row-0');
   });
 
   it('edits entity-field rows and serializes explicit per-field privacy tags', () => {
@@ -558,8 +601,13 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
       conn,
     });
 
-    findByAttr(root, INGREDIENT_BUILDER_ENTITY_ADD_ROW_ATTR)?.click();
+    const add = findByAttr(root, INGREDIENT_BUILDER_ENTITY_ADD_ROW_ATTR)!;
+    add.focus();
+    add.click();
     expect(findAllByAttr(root, INGREDIENT_BUILDER_ENTITY_REMOVE_ROW_ATTR)).toHaveLength(1);
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'entity'),
+    );
 
     const piiSelect = findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'pii');
     expect(piiSelect?.children.map((child) => child.value)).toEqual([
@@ -576,11 +624,23 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
     );
     setValue(findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'type'), 'string');
     setValue(findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'maps_to'), 'email');
-    setChecked(findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'optional'), true);
+    const optional = findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'optional')!;
+    optional.focus();
+    setChecked(optional, true);
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'optional'),
+    );
+    expect(doc.activeElement).not.toBe(optional);
     setValue(findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'applies'), 'resp');
     setValue(findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'pii'), 'email');
     setValue(findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'source'), 'schema');
-    setChecked(findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'reviewed'), true);
+    const reviewed = findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'reviewed')!;
+    reviewed.focus();
+    setChecked(reviewed, true);
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_FIELD_ATTR, 'reviewed'),
+    );
+    expect(doc.activeElement).not.toBe(reviewed);
 
     expect(route.buildDraftBody().ingredients[0]!.entities).toEqual({
       Contact: {
@@ -598,8 +658,11 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
       },
     });
 
-    findByAttr(root, INGREDIENT_BUILDER_ENTITY_REMOVE_ROW_ATTR)?.click();
+    const remove = findByAttr(root, INGREDIENT_BUILDER_ENTITY_REMOVE_ROW_ATTR)!;
+    remove.focus();
+    remove.click();
     expect(route.buildDraftBody().ingredients[0]!.entities).toBeUndefined();
+    expect(doc.activeElement).toBe(findByAttr(root, INGREDIENT_BUILDER_ENTITY_ADD_ROW_ATTR));
   });
 
   it('round-trips entity-field extras: description, source_operation, date_granularity, derivation (Tier-2)', () => {
@@ -1182,7 +1245,14 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
     // Start with no args; add four rows (each add re-renders).
     expect(findAllByAttr(root, INGREDIENT_BUILDER_OPERATION_ARG_REMOVE_ATTR)).toHaveLength(0);
     for (let i = 0; i < 4; i += 1) {
-      findByAttrValue(root, INGREDIENT_BUILDER_OPERATION_ARG_ADD_ATTR, 'row-0')?.click();
+      const add = findByAttrValue(root, INGREDIENT_BUILDER_OPERATION_ARG_ADD_ATTR, 'row-0')!;
+      add.focus();
+      add.click();
+      expect(doc.activeElement).toBe(findByAttrValue(
+        root,
+        INGREDIENT_BUILDER_OPERATION_ARG_FIELD_ATTR,
+        `row-0:${i}:key`,
+      ));
     }
     expect(findAllByAttr(root, INGREDIENT_BUILDER_OPERATION_ARG_REMOVE_ATTR)).toHaveLength(4);
 
@@ -1231,11 +1301,33 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
 
     expect(findAllByAttr(root, INGREDIENT_BUILDER_OPERATION_ARG_REMOVE_ATTR)).toHaveLength(2);
     // Remove the first arg (`contact_id`).
-    findByAttrValue(root, INGREDIENT_BUILDER_OPERATION_ARG_REMOVE_ATTR, 'row-0:0')?.click();
+    const removeFirst = findByAttrValue(
+      root,
+      INGREDIENT_BUILDER_OPERATION_ARG_REMOVE_ATTR,
+      'row-0:0',
+    )!;
+    removeFirst.focus();
+    removeFirst.click();
     expect(findAllByAttr(root, INGREDIENT_BUILDER_OPERATION_ARG_REMOVE_ATTR)).toHaveLength(1);
+    expect(doc.activeElement).toBe(findByAttrValue(
+      root,
+      INGREDIENT_BUILDER_OPERATION_ARG_FIELD_ATTR,
+      'row-0:0:key',
+    ));
 
     const op = route.buildDraftBody().operations[0]!;
     expect(op.args).toEqual([{ key: 'limit', type: 'number' }]);
+
+    const removeLast = findByAttrValue(
+      root,
+      INGREDIENT_BUILDER_OPERATION_ARG_REMOVE_ATTR,
+      'row-0:0',
+    )!;
+    removeLast.focus();
+    removeLast.click();
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, INGREDIENT_BUILDER_OPERATION_ARG_ADD_ATTR, 'row-0'),
+    );
   });
 
   // The structured repeater is the SOLE source of `args` — `args` typed into the
@@ -1649,7 +1741,12 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
       conn,
     });
 
-    setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'bindingKind'), 'cli_invocation');
+    const kind = findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'bindingKind')!;
+    kind.focus();
+    setValue(kind, 'cli_invocation');
+    expect(doc.activeElement).toBe(
+      findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'bindingKind'),
+    );
     setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'family'), 'container');
     setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'operation'), 'container.ls');
     setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'verb'), 'ls');
@@ -1695,7 +1792,10 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
     });
 
     setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'bindingKind'), 'cli_invocation');
-    setValue(findByAttr(root, INGREDIENT_BUILDER_AUTH_MODEL_ATTR), 'cli_delegated');
+    const authModel = findByAttr(root, INGREDIENT_BUILDER_AUTH_MODEL_ATTR)!;
+    authModel.focus();
+    setValue(authModel, 'cli_delegated');
+    expect(doc.activeElement).toBe(findByAttr(root, INGREDIENT_BUILDER_AUTH_MODEL_ATTR));
     setValue(findByAttr(root, INGREDIENT_BUILDER_CLI_TOOL_ATTR), 'codex');
     setValue(findByAttr(root, INGREDIENT_BUILDER_CLI_READINESS_ATTR), '["codex","--version"]');
     setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'family'), 'codex');
@@ -2099,7 +2199,16 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
     findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.click();
     await tick();
     setValue(findByAttr(root, INGREDIENT_BUILDER_PREVIEW_ARGS_ATTR), '{"contact_id":"C1"}');
-    findByAttr(root, INGREDIENT_BUILDER_PREVIEW_ATTR)?.click();
+    const preview = findByAttr(root, INGREDIENT_BUILDER_PREVIEW_ATTR);
+    preview?.focus();
+    preview?.click();
+    const busyPreview = findByAttr(root, INGREDIENT_BUILDER_PREVIEW_ATTR)!;
+    expect(busyPreview.disabled).toBe(false);
+    expect(busyPreview.getAttribute('aria-disabled')).toBe('true');
+    expect(busyPreview.getAttribute('aria-busy')).toBe('true');
+    expect(doc.activeElement).toBe(busyPreview);
+    busyPreview.click();
+    expect(calls.filter((call) => call.method === 'ingredient.preview')).toHaveLength(1);
     await tick();
 
     const previewCall = calls.find((call) => call.method === 'ingredient.preview');
@@ -2113,6 +2222,73 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
     });
     expect(findByAttr(root, INGREDIENT_BUILDER_PREVIEW_STATUS_ATTR)?.textContent)
       .toBe('Preview executed: 200');
+    expect(doc.activeElement).toBe(
+      findByAttr(root, INGREDIENT_BUILDER_PREVIEW_ATTR),
+    );
+
+    const args = findByAttr(root, INGREDIENT_BUILDER_PREVIEW_ARGS_ATTR);
+    args?.focus();
+    setValue(args, '{"contact_id":"C2"}');
+    expect(findByAttr(root, INGREDIENT_BUILDER_PREVIEW_STATUS_ATTR)?.textContent)
+      .toBe('Preview ready');
+    expect(doc.activeElement).toBe(args);
+  });
+
+  it('drops an in-flight preview verdict after its inputs change', async () => {
+    let resolvePreview: (result: IngredientPreviewResult) => void = () => {};
+    const pendingPreview = new Promise<IngredientPreviewResult>((resolve) => {
+      resolvePreview = resolve;
+    });
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const { conn } = makeConn({ preview: pendingPreview });
+    const route = bootstrapIngredientBuilderRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+    });
+
+    setValue(findByAttr(root, INGREDIENT_BUILDER_SLUG_ATTR), 'hubspot-local');
+    setValue(findByAttr(root, INGREDIENT_BUILDER_CONNECTION_ATTR), 'hubspot-main');
+    setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'family'), 'contact');
+    setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'operation'), 'contact.read');
+    setValue(
+      findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'restPathTemplate'),
+      '/crm/v3/objects/contacts/{contact_id}',
+    );
+    setChecked(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'reviewed'), true);
+    findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.click();
+    await tick();
+
+    const preview = findByAttr(root, INGREDIENT_BUILDER_PREVIEW_ATTR);
+    preview?.focus();
+    preview?.click();
+    expect(findByAttr(root, INGREDIENT_BUILDER_PREVIEW_ATTR)?.disabled).toBe(false);
+    expect(findByAttr(root, INGREDIENT_BUILDER_PREVIEW_ATTR)?.getAttribute('aria-busy'))
+      .toBe('true');
+
+    const args = findByAttr(root, INGREDIENT_BUILDER_PREVIEW_ARGS_ATTR);
+    args?.focus();
+    setValue(args, '{"contact_id":"C2"}');
+    expect(findByAttr(root, INGREDIENT_BUILDER_PREVIEW_STATUS_ATTR)?.textContent)
+      .toBe('Preview ready');
+    expect(findByAttr(root, INGREDIENT_BUILDER_PREVIEW_ATTR)?.disabled).toBe(false);
+    expect(findByAttr(root, INGREDIENT_BUILDER_PREVIEW_ATTR)?.getAttribute('aria-disabled'))
+      .toBe('false');
+    expect(findByAttr(root, INGREDIENT_BUILDER_PREVIEW_ATTR)?.getAttribute('aria-busy'))
+      .toBe('false');
+
+    resolvePreview({
+      ok: false,
+      code: 'bad_request',
+      message: 'stale preview result',
+    });
+    await tick();
+
+    expect(findByAttr(root, INGREDIENT_BUILDER_PREVIEW_STATUS_ATTR)?.textContent)
+      .toBe('Preview ready');
+    expect(route.getState().preview).toBeUndefined();
+    expect(doc.activeElement).toBe(args);
   });
 
   it('blocks install until review passes and installs the saved privacy-tagged draft', async () => {
@@ -2152,9 +2328,18 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
       .toBe('Ready to install from reviewed draft');
     expect(findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR)?.disabled).toBe(false);
 
-    findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR)?.click();
+    const install = findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR);
+    install?.focus();
+    install?.click();
+    const busyInstall = findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR)!;
+    expect(busyInstall.disabled).toBe(false);
+    expect(busyInstall.getAttribute('aria-disabled')).toBe('true');
+    expect(busyInstall.getAttribute('aria-busy')).toBe('true');
+    expect(doc.activeElement).toBe(busyInstall);
+    busyInstall.click();
     await tick();
 
+    expect(calls.filter((call) => call.method === 'ingredient.install')).toHaveLength(1);
     const installCall = calls.find((call) => call.method === 'ingredient.install');
     const manifest = (installCall?.payload as { manifest: unknown }).manifest as {
       manifest_version: number;
@@ -2193,6 +2378,114 @@ describe('D-170 N.7.1/N.7.2 webclient ingredient builder tables', () => {
     });
     expect(findByAttr(root, INGREDIENT_BUILDER_INSTALL_STATUS_ATTR)?.textContent)
       .toBe('Installed pack hubspot-local-pack');
+    expect(doc.activeElement).toBe(
+      findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR),
+    );
+  });
+
+  it('keeps an in-flight install single-flight across newer metadata and labels its receipt', async () => {
+    let resolveInstall: (result: IngredientInstallResult) => void = () => {};
+    const pendingInstall = new Promise<IngredientInstallResult>((resolve) => {
+      resolveInstall = resolve;
+    });
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const { conn, calls } = makeConn({ install: pendingInstall });
+    const route = bootstrapIngredientBuilderRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+    });
+
+    setValue(findByAttr(root, INGREDIENT_BUILDER_SLUG_ATTR), 'hubspot-local');
+    setValue(findByAttr(root, INGREDIENT_BUILDER_CONNECTION_ATTR), 'hubspot-main');
+    setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'family'), 'contact');
+    setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'operation'), 'contact.read');
+    setChecked(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'reviewed'), true);
+    findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.click();
+    await tick();
+
+    findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR)?.click();
+    await tick();
+    expect(route.hasInFlightWork()).toBe(true);
+    expect(calls.filter((call) => call.method === 'ingredient.install')).toHaveLength(1);
+
+    setValue(
+      findByAttr(root, INGREDIENT_BUILDER_PACK_DESCRIPTION_ATTR),
+      'Newer install description',
+    );
+
+    const install = findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR);
+    expect(install?.textContent).toBe('Installing');
+    expect(install?.getAttribute('aria-busy')).toBe('true');
+    install?.click();
+    expect(calls.filter((call) => call.method === 'ingredient.install')).toHaveLength(1);
+
+    resolveInstall({
+      ok: true,
+      installed: {
+        kind: 'pack',
+        pack_slug: 'hubspot-local-pack',
+        pack_version: 1,
+        catalog_id: 'hubspot-local',
+        entity_schema_count: 0,
+      },
+      ingredient_ids: ['hubspot-local'],
+      warnings: [],
+    });
+    await tick();
+
+    expect(route.hasInFlightWork()).toBe(false);
+    expect(findByAttr(root, INGREDIENT_BUILDER_INSTALL_STATUS_ATTR)?.textContent)
+      .toBe('Installed pack hubspot-local-pack — newer edits pending');
+  });
+
+  it('drops an install completion after switching drafts', async () => {
+    let resolveInstall: (result: IngredientInstallResult) => void = () => {};
+    const pendingInstall = new Promise<IngredientInstallResult>((resolve) => {
+      resolveInstall = resolve;
+    });
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const { conn } = makeConn({ install: pendingInstall });
+    const route = bootstrapIngredientBuilderRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+    });
+
+    setValue(findByAttr(root, INGREDIENT_BUILDER_SLUG_ATTR), 'hubspot-local');
+    setValue(findByAttr(root, INGREDIENT_BUILDER_CONNECTION_ATTR), 'hubspot-main');
+    setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'family'), 'contact');
+    setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'operation'), 'contact.read');
+    setChecked(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'reviewed'), true);
+    findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.click();
+    await tick();
+    findByAttr(root, INGREDIENT_BUILDER_INSTALL_ATTR)?.click();
+    await tick();
+
+    setValue(findByAttr(root, INGREDIENT_BUILDER_DRAFT_PICKER_ATTR), '');
+    expect(route.getState().draftId).toBeUndefined();
+
+    resolveInstall({
+      ok: true,
+      installed: {
+        kind: 'pack',
+        pack_slug: 'stale-pack',
+        pack_version: 1,
+        catalog_id: 'hubspot-local',
+        entity_schema_count: 0,
+      },
+      ingredient_ids: ['hubspot-local'],
+      warnings: [],
+    });
+    await tick();
+
+    expect(route.hasInFlightWork()).toBe(false);
+    expect(route.getState()).toMatchObject({
+      installStage: 'idle',
+      installMessage: '',
+    });
   });
 
   it('installs a reviewed draft with authored v3 pack metadata', async () => {
@@ -2663,9 +2956,69 @@ describe('Edit→Kitchen — initialDraftId self-load + onDraftChange (deep link
     ).toBe(true);
     // Its body rendered into the editor (proves the load applied).
     expect(findByAttrValue(root, INGREDIENT_BUILDER_ENTITY_ALIAS_ATTR, 'Deal')?.value).toBe('deal');
+    // Entry context owns focus across list → fetch → decompose repaints.
+    expect(doc.activeElement).toBe(findByAttr(root, INGREDIENT_BUILDER_HEADING_ATTR));
     // onDraftChange fired with the loaded id — this drives the URL sync to
     // `#kitchen/pack/draft-crm`.
     expect(draftChanges).toContain('draft-crm');
+  });
+
+  it('does not steal Pack entry focus from an independent control', async () => {
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const outside = doc.createElement('button');
+    outside.focus();
+    const { conn } = crmDraftConn();
+
+    bootstrapIngredientBuilderRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialDraftId: 'draft-crm',
+    });
+    await tick();
+
+    expect(doc.activeElement).toBe(outside);
+  });
+
+  it('preserves an active Pack field when initial validation completes', async () => {
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    let finishDecompose: ((result: CompositionDecomposeResult) => void) | undefined;
+    const decompose = new Promise<CompositionDecomposeResult>((resolve) => {
+      finishDecompose = resolve;
+    });
+    const { conn } = makeConn({
+      drafts: [{
+        draft_id: 'draft-crm',
+        title: 'CRM saved',
+        slug: 'crm-saved',
+        surface: 'api',
+        operation_count: 0,
+        created_at: 1,
+        updated_at: 2,
+      }],
+      draftBodies: { 'draft-crm': { title: 'CRM saved', body: crmSavedBody() } },
+      decompose,
+    });
+
+    bootstrapIngredientBuilderRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialDraftId: 'draft-crm',
+    });
+    await tick();
+
+    const title = findByAttr(root, INGREDIENT_BUILDER_TITLE_ATTR)!;
+    title.focus();
+    setValue(title, 'CRM saved — editing');
+    finishDecompose?.(validDecompose());
+    await tick();
+
+    expect(findByAttr(root, INGREDIENT_BUILDER_TITLE_ATTR)?.value)
+      .toBe('CRM saved — editing');
+    expect(doc.activeElement).toBe(findByAttr(root, INGREDIENT_BUILDER_TITLE_ATTR));
   });
 
   it('does NOT self-load when an initialBody is supplied (draft already in hand)', async () => {
@@ -2825,6 +3178,162 @@ describe('pack editor polish — feedback correctness', () => {
     expect(
       findByAttr(root, INGREDIENT_BUILDER_REVIEW_STATUS_ATTR)?.getAttribute('data-state'),
     ).toBe('pending');
+  });
+
+  it('Save retains focus through its busy and settled repaints', async () => {
+    const { doc, root, calls } = mount();
+    setValue(findByAttrValue(root, INGREDIENT_BUILDER_FIELD_ATTR, 'operation'), 'contact.read');
+
+    const save = findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)!;
+    save.focus();
+    save.click();
+    const busySave = findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)!;
+    expect(busySave.disabled).toBe(false);
+    expect(busySave.getAttribute('aria-disabled')).toBe('true');
+    expect(busySave.getAttribute('aria-busy')).toBe('true');
+    expect(doc.activeElement).toBe(busySave);
+    busySave.click();
+    expect(calls.filter((call) => call.method === 'ingredient.draft.save')).toHaveLength(1);
+    await tick();
+
+    expect(findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.textContent).toBe('Saved');
+    expect(findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.getAttribute('aria-disabled'))
+      .toBe('false');
+    expect(findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR)?.getAttribute('aria-busy'))
+      .toBe('false');
+    expect(doc.activeElement).toBe(findByAttr(root, INGREDIENT_BUILDER_SAVE_ATTR));
+  });
+
+  it('New retains focus through discard confirmation and reset', () => {
+    const { doc, root } = mount();
+    setValue(findByAttr(root, INGREDIENT_BUILDER_TITLE_ATTR), 'Discard this draft');
+
+    const startNew = findByAttr(root, INGREDIENT_BUILDER_DRAFT_NEW_ATTR)!;
+    startNew.focus();
+    startNew.click();
+
+    const confirm = findByAttr(root, INGREDIENT_BUILDER_DRAFT_NEW_ATTR)!;
+    expect(confirm.textContent).toBe('Discard & New?');
+    expect(doc.activeElement).toBe(confirm);
+    confirm.click();
+
+    expect(findByAttr(root, INGREDIENT_BUILDER_TITLE_ATTR)?.value)
+      .toBe('Local ingredient');
+    expect(findByAttr(root, INGREDIENT_BUILDER_STATUS_ATTR)?.textContent)
+      .toBe('New draft');
+    expect(doc.activeElement).toBe(findByAttr(root, INGREDIENT_BUILDER_DRAFT_NEW_ATTR));
+  });
+
+  it('the draft picker guards unsaved switches and preserves its focus', async () => {
+    const doc = makeFakeDocument();
+    const root = makeFakeElement('main');
+    const { conn, calls } = makeConn({
+      drafts: [
+        {
+          draft_id: 'draft-a',
+          title: 'Draft A',
+          slug: 'draft-a',
+          surface: 'api',
+          operation_count: 0,
+          created_at: 1,
+          updated_at: 2,
+        },
+        {
+          draft_id: 'draft-b',
+          title: 'Draft B',
+          slug: 'draft-b',
+          surface: 'api',
+          operation_count: 0,
+          created_at: 1,
+          updated_at: 2,
+        },
+      ],
+      draftBodies: {
+        'draft-b': {
+          title: 'Draft B',
+          body: {
+            schema_version: 1,
+            slug: 'draft-b',
+            catalog_kind: 'private_byo',
+            ingredients: [],
+            operations: [],
+          },
+        },
+      },
+    });
+    bootstrapIngredientBuilderRoute({
+      root: root as unknown as HTMLElement,
+      document: doc as unknown as Document,
+      conn,
+      initialDraftId: 'draft-a',
+      initialTitle: 'Draft A',
+      initialBody: {
+        schema_version: 1,
+        slug: 'draft-a',
+        catalog_kind: 'private_byo',
+        ingredients: [],
+        operations: [],
+      },
+    });
+    await tick();
+    setValue(findByAttr(root, INGREDIENT_BUILDER_TITLE_ATTR), 'Keep this edit');
+
+    const prompts: string[] = [];
+    doc.defaultView.confirm = (message) => {
+      prompts.push(message);
+      return prompts.length > 1;
+    };
+    const picker = findByAttr(root, INGREDIENT_BUILDER_DRAFT_PICKER_ATTR)!;
+    picker.focus();
+    setValue(picker, 'draft-b');
+
+    expect(prompts).toEqual(['Discard unsaved changes and open "Draft B"?']);
+    expect(findByAttr(root, INGREDIENT_BUILDER_TITLE_ATTR)?.value).toBe('Keep this edit');
+    expect(findByAttr(root, INGREDIENT_BUILDER_DRAFT_PICKER_ATTR)?.value).toBe('draft-a');
+    expect(doc.activeElement).toBe(picker);
+    expect(calls.filter((call) => call.method === 'ingredient.draft.get')).toHaveLength(0);
+
+    setValue(picker, 'draft-b');
+    expect(prompts).toHaveLength(2);
+    await tick();
+    expect(findByAttr(root, INGREDIENT_BUILDER_TITLE_ATTR)?.value).toBe('Draft B');
+    expect(findByAttr(root, INGREDIENT_BUILDER_STATUS_ATTR)?.textContent)
+      .toBe('Draft loaded and validated');
+    expect(findByAttr(root, INGREDIENT_BUILDER_DRAFT_PICKER_ATTR)?.value).toBe('draft-b');
+    expect(doc.activeElement).toBe(findByAttr(root, INGREDIENT_BUILDER_DRAFT_PICKER_ATTR));
+  });
+
+  it('Refresh stays focusable, single-flight, and focused while pending', async () => {
+    let finishRefresh: ((drafts: IngredientDraftSummary[]) => void) | undefined;
+    const pendingRefresh = new Promise<IngredientDraftSummary[]>((resolve) => {
+      finishRefresh = resolve;
+    });
+    const { doc, root, calls } = mount({
+      draftListResults: [[], pendingRefresh],
+    });
+    await tick();
+
+    const refresh = findByAttr(root, INGREDIENT_BUILDER_DRAFT_REFRESH_ATTR)!;
+    refresh.focus();
+    refresh.click();
+
+    const busyRefresh = findByAttr(root, INGREDIENT_BUILDER_DRAFT_REFRESH_ATTR)!;
+    expect(busyRefresh.textContent).toBe('Refreshing');
+    expect(busyRefresh.disabled).toBe(false);
+    expect(busyRefresh.getAttribute('aria-disabled')).toBe('true');
+    expect(busyRefresh.getAttribute('aria-busy')).toBe('true');
+    expect(doc.activeElement).toBe(busyRefresh);
+    busyRefresh.click();
+    busyRefresh.click();
+    expect(calls.filter((call) => call.method === 'ingredient.draft.list')).toHaveLength(2);
+
+    finishRefresh?.([]);
+    await tick();
+    const settledRefresh = findByAttr(root, INGREDIENT_BUILDER_DRAFT_REFRESH_ATTR)!;
+    expect(settledRefresh.textContent).toBe('Refresh');
+    expect(settledRefresh.getAttribute('aria-disabled')).toBe('false');
+    expect(settledRefresh.getAttribute('aria-busy')).toBe('false');
+    expect(doc.activeElement).toBe(settledRefresh);
   });
 
   it('validation issues render host-level (outside every section view)', async () => {

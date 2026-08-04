@@ -225,6 +225,10 @@ export const createConnectionsReadinessController = (
     // not just OAuth-scope-bearing ones — so an API-key connection (Stripe) shows
     // a "set up" row too. Scope-bearing slots carry their scope union; no-scope
     // slots carry `[]` and reduce to a plain enrolled/not-set-up readiness.
+    // No manifest ⇒ the pack is not installed, and its connection slots are
+    // unknown rather than empty. Rendering nothing is the honest degradation;
+    // an empty slot map would claim it binds no connections.
+    if (pack.manifest === undefined) return null;
     const scopesBySlot = declaredConnectionSlots(pack.manifest);
     const slots = Object.keys(scopesBySlot).sort();
     if (slots.length === 0) return null; // pack binds no connection (cli/ai only)

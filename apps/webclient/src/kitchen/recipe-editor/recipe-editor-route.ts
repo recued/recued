@@ -85,6 +85,9 @@ import { humanizeRpcError } from '../../shell/rpc-error-copy.js';
 
 export const RECIPE_EDITOR_STYLES_MARKER = 'data-recued-recipe-editor-styles';
 export const RECIPE_EDITOR_ROUTE_ATTR = 'data-recued-recipe-editor-route';
+/** Programmatic route-entry target; focus announces the editor without placing
+ *  a caret in a mutable recipe field. */
+export const RECIPE_EDITOR_HEADING_ATTR = 'data-recued-recipe-editor-heading';
 /** Each step card — value is the step id. */
 export const RECIPE_EDITOR_ROW_ATTR = 'data-recued-recipe-editor-step';
 /** Each editable field — value is a `data-field` key like `param:foo`,
@@ -1251,6 +1254,18 @@ export const bootstrapRecipeEditorRoute = (
   }
   injectStyles(doc);
 
+  const focusDocument = doc as Partial<Pick<Document, 'activeElement' | 'body'>>;
+  const activeBeforeMount = focusDocument.activeElement ?? null;
+  let focusHeadingOnMount = activeBeforeMount === null
+    || activeBeforeMount === focusDocument.body;
+  if (!focusHeadingOnMount && activeBeforeMount !== null) {
+    try {
+      focusHeadingOnMount = options.root.contains(activeBeforeMount);
+    } catch {
+      focusHeadingOnMount = false;
+    }
+  }
+
   const state: RecipeEditorState = {
     // ⛔ NORMALISE, don't guard each read. `prefetch_steps` is OPTIONAL in a
     // valid recipe (`parseRecipe` accepts one without the key), but this editor
@@ -1314,6 +1329,77 @@ export const bootstrapRecipeEditorRoute = (
   const content = doc.createElement('div');
   host.appendChild(content);
 
+  type RecipeEditorFieldFocus = {
+    fieldKey: string;
+    occurrence: number;
+    selectionStart: number | null;
+    selectionEnd: number | null;
+    reveal?: boolean;
+  };
+
+  const editorFields = (fieldKey: string): HTMLElement[] => {
+    const matches: HTMLElement[] = [];
+    const walk = (element: HTMLElement): void => {
+      if (element.getAttribute?.(RECIPE_EDITOR_FIELD_ATTR) === fieldKey) {
+        matches.push(element);
+      }
+      const children = (
+        element as unknown as { children?: ArrayLike<HTMLElement> }
+      ).children;
+      if (children === undefined) return;
+      for (let index = 0; index < children.length; index += 1) {
+        walk(children[index] as HTMLElement);
+      }
+    };
+    walk(content);
+    return matches;
+  };
+
+  const captureFieldFocus = (
+    element: HTMLElement,
+  ): RecipeEditorFieldFocus | null => {
+    const fieldKey = element.getAttribute?.(RECIPE_EDITOR_FIELD_ATTR) ?? null;
+    if (fieldKey === null) return null;
+    const occurrence = editorFields(fieldKey).indexOf(element);
+    if (occurrence < 0) return null;
+    const selection = element as unknown as {
+      selectionStart?: number | null;
+      selectionEnd?: number | null;
+    };
+    return {
+      fieldKey,
+      occurrence,
+      selectionStart: typeof selection.selectionStart === 'number'
+        ? selection.selectionStart
+        : null,
+      selectionEnd: typeof selection.selectionEnd === 'number'
+        ? selection.selectionEnd
+        : null,
+    };
+  };
+
+  const restoreFieldFocus = (focus: RecipeEditorFieldFocus): boolean => {
+    const target = editorFields(focus.fieldKey)[focus.occurrence];
+    if (target === undefined || (target as HTMLInputElement).disabled === true) {
+      return false;
+    }
+    target.focus?.({ preventScroll: true });
+    if (focus.reveal === true) {
+      target.scrollIntoView?.({ block: 'nearest' });
+    }
+    if (focus.selectionStart !== null && focus.selectionEnd !== null) {
+      try {
+        (target as HTMLInputElement | HTMLTextAreaElement).setSelectionRange?.(
+          focus.selectionStart,
+          focus.selectionEnd,
+        );
+      } catch {
+        // Selects and non-text inputs have no caret to restore.
+      }
+    }
+    return true;
+  };
+
   /** A field edit that must NOT trigger a rerender (keeps input focus). Marks
    *  the recipe dirty + invalidates the prior validate result, and updates the
    *  Save button label in place via `syncActionLabels`. */
@@ -1357,6 +1443,19 @@ export const bootstrapRecipeEditorRoute = (
   let dirtyCue: HTMLElement | undefined;
   let issuesPanel: HTMLElement | undefined;
   let topbarEl: HTMLElement | undefined;
+  let routeHeading: HTMLElement | undefined;
+  let webhookAuthorityBtn: HTMLButtonElement | undefined;
+  // Render-owning controls rebuild the entire editor. Remember which one had
+  // focus, then restore its durable replacement; Validate/Save and webhook
+  // Arm/Disarm hold ownership across their guarded, aria-busy paint. A user
+  // who moves to another connected element while an RPC runs cancels it.
+  let pendingActionFocus:
+    | 'validate'
+    | 'save'
+    | 'collapse-all'
+    | 'webhook-authority'
+    | null = null;
+  let pendingFieldFocus: RecipeEditorFieldFocus | null = null;
 
   const saveLabel = (): string => {
     switch (state.saveStage) {
@@ -1384,16 +1483,24 @@ export const bootstrapRecipeEditorRoute = (
     const busy = state.saveStage === 'validating'
       || state.saveStage === 'saving'
       || webhookBusy;
+    const syncBusyState = (button: HTMLButtonElement): void => {
+      // These RPC actions remain focusable while guarded. Native `disabled`
+      // drops focus when rerender replaces the active button, stranding a
+      // keyboard user on the document until the request settles. The handler
+      // guards above remain the single-flight authority; ARIA exposes the same
+      // unavailable + progress state without destroying focus ownership.
+      button.disabled = false;
+      button.setAttribute('aria-disabled', String(busy));
+      button.setAttribute('aria-busy', String(busy));
+    };
     if (saveBtn !== undefined) {
       saveBtn.textContent = saveLabel();
-      // Disable ONLY while busy — never on clean, so a re-save is always
-      // possible after a focused field edit.
-      saveBtn.disabled = busy;
+      syncBusyState(saveBtn);
     }
     if (validateBtn !== undefined) {
       validateBtn.textContent =
         state.saveStage === 'validating' ? 'Validating…' : 'Validate';
-      validateBtn.disabled = busy;
+      syncBusyState(validateBtn);
     }
     if (dirtyCue !== undefined) {
       // Text-only carrier — the ● comes from the ::before dot; an empty cue
@@ -1425,16 +1532,22 @@ export const bootstrapRecipeEditorRoute = (
     state.status = 'Validating…';
     rerender();
     rpcInFlight = true;
+    // Fields remain editable while validation runs. A response only describes
+    // the snapshot dispatched at this epoch, never edits made afterward.
+    const epochAtValidate = state.editEpoch;
     void options
       .validateCaller({ recipe: state.recipe })
       .then((result) => {
         rpcInFlight = false;
         if (disposed) return;
-        state.issues = result.issues;
-        state.saveStage = result.ok ? 'idle' : 'error';
-        state.status = result.ok
-          ? 'Valid'
-          : `Validation failed: ${plural(result.issues.length, 'issue')}`;
+        const staleEdits = state.editEpoch !== epochAtValidate;
+        state.issues = staleEdits ? [] : result.issues;
+        state.saveStage = staleEdits ? 'idle' : result.ok ? 'idle' : 'error';
+        state.status = staleEdits
+          ? 'Validation finished — newer edits pending'
+          : result.ok
+            ? 'Valid'
+            : `Validation failed: ${plural(result.issues.length, 'issue')}`;
         // Validating never clears `dirty` — the edits are still unsaved.
         rerender();
         announce(state.status);
@@ -1604,13 +1717,14 @@ export const bootstrapRecipeEditorRoute = (
     }
 
     const parsed = parseCondition(current);
+    const conditionKey = `${step.id}:${field}`;
     const parts = {
       field: parsed.field ?? '',
       operator: parsed.operator ?? '',
       value: parsed.value ?? '',
     };
 
-    const applyCondition = (): void => {
+    const applyCondition = (rebuild: boolean): void => {
       const built = formatCondition(parts);
       const value = parseStepFieldValue(built, 'string', true);
       const nextList = applyFieldToStep(
@@ -1619,12 +1733,22 @@ export const bootstrapRecipeEditorRoute = (
         field,
         value,
       );
-      // No structural change to step ids — patch the list in place; the value
-      // hide/show on unary ops needs a rerender, so we rerender.
-      mutateAndRerender({
+      const nextRecipe = {
         ...state.recipe,
         [listKey]: nextList,
-      } as RecipeDefinition);
+      } as RecipeDefinition;
+      // Once someone is editing a condition, keep the builder revealed even
+      // if its current parts temporarily format to an empty value.
+      state.openConditions.add(conditionKey);
+      if (rebuild) {
+        pendingConditionFocus = { conditionKey, part: 'operator' };
+        mutateAndRerender(nextRecipe);
+      } else {
+        // Source/value commits do not change the row shape. Updating in place
+        // lets native Tab/Shift+Tab continue through the builder uninterrupted.
+        state.recipe = nextRecipe;
+        markDirty();
+      }
     };
 
     const section = doc.createElement('div');
@@ -1640,13 +1764,15 @@ export const bootstrapRecipeEditorRoute = (
       parts.field = next;
     });
     fieldInput.setAttribute('placeholder', '{{step.x}}');
-    fieldInput.addEventListener('change', applyCondition);
+    fieldInput.addEventListener('change', () => applyCondition(false));
     row.appendChild(fieldInput);
 
     const opOptions = ['', ...CONDITION_OP_LABELS.map((entry) => entry.op)];
     const opSelect = makeSelect(doc, parts.operator, opOptions, `${field}_op`, (next) => {
+      const priorUnary = UNARY_OPS.has(parts.operator as ConditionOp);
       parts.operator = next;
-      applyCondition();
+      const nextUnary = UNARY_OPS.has(parts.operator as ConditionOp);
+      applyCondition(priorUnary !== nextUnary);
     });
     row.appendChild(opSelect);
 
@@ -1656,9 +1782,14 @@ export const bootstrapRecipeEditorRoute = (
         parts.value = next;
       });
       valueInput.setAttribute('placeholder', 'value');
-      valueInput.addEventListener('change', applyCondition);
+      valueInput.addEventListener('change', () => applyCondition(false));
       row.appendChild(valueInput);
     }
+
+    renderedConditionFocusTargets.set(conditionKey, {
+      field: fieldInput,
+      operator: opSelect,
+    });
 
     section.appendChild(row);
     grid.appendChild(section);
@@ -1913,6 +2044,20 @@ export const bootstrapRecipeEditorRoute = (
       row.appendChild(valueInput);
 
       const removeArg = makeButton(doc, 'Remove', 'danger-text', 'xs', () => {
+        const fresh = (state.recipe[listKey] as RecipeStep[]).find(
+          (candidate) => candidate.id === step.id,
+        );
+        const orderedBefore = fresh === undefined
+          ? []
+          : enumerateOpArgs(fresh).map((arg) => arg.name);
+        const removedIndex = orderedBefore.indexOf(name);
+        const orderedAfter = orderedBefore.filter((argName) => argName !== name);
+        pendingRemovedOpArgFocus = {
+          stepId: step.id,
+          argName: removedIndex < 0
+            ? null
+            : orderedAfter[Math.min(removedIndex, orderedAfter.length - 1)] ?? null,
+        };
         const nextList = (state.recipe[listKey] as Array<{ id: string }>).map((s) => {
           if (s.id !== step.id) return s;
           const nextArgs = { ...((s as { args?: Record<string, unknown> }).args ?? {}) };
@@ -1924,6 +2069,10 @@ export const bootstrapRecipeEditorRoute = (
       removeArg.setAttribute(RECIPE_EDITOR_OP_ARG_REMOVE_ATTR, name);
       removeArg.setAttribute('aria-label', `Remove arg ${name}`);
       row.appendChild(removeArg);
+      renderedOpArgFocusTargets.set(
+        `${step.id}\u0000${name}`,
+        valueInput,
+      );
 
       wrap.appendChild(row);
       grid.appendChild(wrap);
@@ -1944,6 +2093,7 @@ export const bootstrapRecipeEditorRoute = (
     });
     nameInput.setAttribute(RECIPE_EDITOR_OP_ARG_NAME_ATTR, '');
     nameInput.setAttribute('placeholder', 'arg name');
+    renderedOpArgDraftTargets.set(step.id, nameInput);
     nameField.appendChild(nameInput);
     addWrap.appendChild(nameField);
 
@@ -1959,6 +2109,7 @@ export const bootstrapRecipeEditorRoute = (
             }
           : s,
       );
+      pendingAddedOpArgFocus = { stepId: step.id, argName: name };
       mutateAndRerender({ ...state.recipe, [listKey]: nextList } as RecipeDefinition);
     });
     addArg.setAttribute(RECIPE_EDITOR_OP_ARG_ADD_ATTR, '');
@@ -2027,6 +2178,7 @@ export const bootstrapRecipeEditorRoute = (
     idInput.value = step.id;
     idInput.setAttribute(RECIPE_EDITOR_FIELD_ATTR, 'step_id');
     idInput.setAttribute('aria-label', `Step id (${step.id})`);
+    let renameFocusTarget: 'self' | 'previous' | 'next' = 'self';
     const commitRename = (): void => {
       const proposed = idInput.value;
       if (proposed === step.id) return;
@@ -2036,6 +2188,7 @@ export const bootstrapRecipeEditorRoute = (
         state.status = verdict.error;
         state.saveStage = 'error';
         idInput.value = step.id; // revert
+        pendingRenamedStepFocus = { stepId: step.id, target: 'self' };
         rerender();
         return;
       }
@@ -2047,8 +2200,14 @@ export const bootstrapRecipeEditorRoute = (
           state.openConditions.add(`${proposed}:${field}`);
         }
       }
+      pendingRenamedStepFocus = { stepId: proposed, target: renameFocusTarget };
       mutateAndRerender(renameStepIdInRecipe(state.recipe, step.id, proposed));
     };
+    idInput.addEventListener('keydown', (event) => {
+      if (event.key === 'Tab') {
+        renameFocusTarget = event.shiftKey ? 'previous' : 'next';
+      }
+    });
     idInput.addEventListener('change', commitRename);
     idWrap.appendChild(idInput);
     summary.appendChild(idWrap);
@@ -2063,34 +2222,65 @@ export const bootstrapRecipeEditorRoute = (
     // replace state.recipe without a rerender (markDirty path), so the
     // render-time list/index — fine for the disabled cues below — would
     // silently revert those edits if committed.
-    const moveTo = (offset: number): void => {
+    const moveTo = (offset: number): boolean => {
       const fresh = state.recipe[listKey] as Array<{ id: string }>;
       const from = fresh.findIndex((s) => s.id === step.id);
-      if (from < 0) return;
+      if (from < 0) return false;
       const nextList = reorderSteps(fresh, from, from + offset);
-      if (nextList === fresh) return;
+      if (nextList === fresh) return false;
       mutateAndRerender({
         ...state.recipe,
         [listKey]: nextList,
       } as RecipeDefinition);
+      return true;
     };
-    const moveUp = makeButton(doc, '↑', 'secondary', 'xs', () => moveTo(-1));
+    const requestMove = (
+      action: 'move-up' | 'move-down',
+      offset: number,
+    ): void => {
+      pendingStepActionFocus = { stepId: step.id, action };
+      if (!moveTo(offset)) pendingStepActionFocus = null;
+    };
+    const moveUp = makeButton(
+      doc,
+      '↑',
+      'secondary',
+      'xs',
+      () => requestMove('move-up', -1),
+    );
     moveUp.setAttribute(RECIPE_EDITOR_MOVE_UP_ATTR, step.id);
     moveUp.setAttribute('aria-label', `Move step ${step.id} up`);
     moveUp.setAttribute('title', 'Move up');
     moveUp.disabled = index <= 0;
 
-    const moveDown = makeButton(doc, '↓', 'secondary', 'xs', () => moveTo(1));
+    const moveDown = makeButton(
+      doc,
+      '↓',
+      'secondary',
+      'xs',
+      () => requestMove('move-down', 1),
+    );
     moveDown.setAttribute(RECIPE_EDITOR_MOVE_DOWN_ATTR, step.id);
     moveDown.setAttribute('aria-label', `Move step ${step.id} down`);
     moveDown.setAttribute('title', 'Move down');
     moveDown.disabled = index >= listLength - 1;
 
     const remove = makeButton(doc, 'Remove', 'danger-text', 'xs', () => {
+      const orderedBefore = allStepIds(state.recipe);
+      const removedIndex = orderedBefore.indexOf(step.id);
+      if (removedIndex < 0) return;
       const nextList = removeStepById(
         state.recipe[listKey] as Array<{ id: string }>,
         step.id,
       );
+      const nextRecipe = {
+        ...state.recipe,
+        [listKey]: nextList,
+      } as RecipeDefinition;
+      const orderedAfter = allStepIds(nextRecipe);
+      pendingRemovedStepFocus = {
+        stepId: orderedAfter[Math.min(removedIndex, orderedAfter.length - 1)] ?? null,
+      };
       // Prune the removed id's UI state — generateStepId reuses freed ids, so
       // a stale entry would make a later fresh step render collapsed (or with
       // a pre-revealed condition builder).
@@ -2098,10 +2288,7 @@ export const bootstrapRecipeEditorRoute = (
       for (const field of CONDITION_FIELDS) {
         state.openConditions.delete(`${step.id}:${field}`);
       }
-      mutateAndRerender({
-        ...state.recipe,
-        [listKey]: nextList,
-      } as RecipeDefinition);
+      mutateAndRerender(nextRecipe);
     });
     remove.setAttribute(RECIPE_EDITOR_REMOVE_ATTR, step.id);
     remove.setAttribute('aria-label', `Remove step ${step.id}`);
@@ -2115,6 +2302,14 @@ export const bootstrapRecipeEditorRoute = (
     actions.appendChild(moveDown);
     actions.appendChild(remove);
     summary.appendChild(actions);
+
+    renderedStepFocusTargets.set(step.id, {
+      summary,
+      idInput,
+      moveUp,
+      moveDown,
+      remove,
+    });
 
     card.appendChild(summary);
 
@@ -2158,7 +2353,9 @@ export const bootstrapRecipeEditorRoute = (
           'secondary',
           'xs',
           () => {
-            state.openConditions.add(`${step.id}:${field}`);
+            const conditionKey = `${step.id}:${field}`;
+            state.openConditions.add(conditionKey);
+            pendingConditionFocus = { conditionKey, part: 'field' };
             rerender();
           },
         );
@@ -2182,6 +2379,42 @@ export const bootstrapRecipeEditorRoute = (
    *  CURRENT state (manual summary toggles update state.collapsed without a
    *  rerender, so anything captured at render time goes stale). */
   let collapseAllBtn: HTMLButtonElement | undefined;
+  let pendingStepActionFocus: {
+    stepId: string;
+    action: 'move-up' | 'move-down';
+  } | null = null;
+  let pendingAddedStepFocusId: string | null = null;
+  let pendingRemovedStepFocus: { stepId: string | null } | null = null;
+  let pendingRenamedStepFocus: {
+    stepId: string;
+    target: 'self' | 'previous' | 'next';
+  } | null = null;
+  let pendingConditionFocus: {
+    conditionKey: string;
+    part: 'field' | 'operator';
+  } | null = null;
+  let pendingAddedOpArgFocus: { stepId: string; argName: string } | null = null;
+  let pendingRemovedOpArgFocus: {
+    stepId: string;
+    argName: string | null;
+  } | null = null;
+  let addStepBtn: HTMLButtonElement | undefined;
+  let renderedStepFocusTargets = new Map<string, {
+    summary: HTMLElement;
+    idInput: HTMLInputElement;
+    moveUp: HTMLButtonElement;
+    moveDown: HTMLButtonElement;
+    remove: HTMLButtonElement;
+  }>();
+  let renderedConditionFocusTargets = new Map<string, {
+    field: HTMLInputElement;
+    operator: HTMLSelectElement;
+  }>();
+  let renderedOpArgFocusTargets = new Map<string, HTMLElement>();
+  let renderedOpArgDraftTargets = new Map<string, HTMLInputElement>();
+  let pendingTriggerFocus: { index: number | null } | null = null;
+  let renderedTriggerFocusTargets = new Map<number, HTMLElement>();
+  let triggerAddKindSelect: HTMLSelectElement | undefined;
 
   const everyCardCollapsed = (): boolean => {
     const ids = allStepIds(state.recipe);
@@ -2351,6 +2584,7 @@ export const bootstrapRecipeEditorRoute = (
         // Seed the step id from the op's last segment (`deal.search` → `search`).
         const base = opName.split('.').pop() || 'op';
         const id = generateStepId(allStepIds(state.recipe), base);
+        pendingAddedStepFocusId = id;
         mutateAndRerender({
           ...state.recipe,
           steps: [...state.recipe.steps, createBlankOpStep(opName, id)],
@@ -2361,6 +2595,7 @@ export const bootstrapRecipeEditorRoute = (
       const base = kind === 'transform' ? draft.name || 'transform' : kind;
       const id = generateStepId(allStepIds(state.recipe), base);
       const step = createBlankStep(kind, draft.name, id);
+      pendingAddedStepFocusId = id;
       mutateAndRerender({
         ...state.recipe,
         steps: [...state.recipe.steps, step],
@@ -2368,6 +2603,7 @@ export const bootstrapRecipeEditorRoute = (
       revealStep(id);
     });
     add.setAttribute(RECIPE_EDITOR_ADD_ATTR, '');
+    addStepBtn = add;
     wrap.appendChild(add);
 
     return wrap;
@@ -2430,6 +2666,7 @@ export const bootstrapRecipeEditorRoute = (
         },
       };
     });
+    pendingAddedStepFocusId = match.id;
     mutateAndRerender({
       ...state.recipe,
       [match.listKey]: nextList,
@@ -2444,6 +2681,7 @@ export const bootstrapRecipeEditorRoute = (
       op: FORM_RESPONSE_READER_OP,
       args: { submission_id: FORM_RESPONSE_EVENT_RECORD_ID_REF },
     };
+    pendingAddedStepFocusId = id;
     mutateAndRerender({
       ...state.recipe,
       prefetch_steps: [...state.recipe.prefetch_steps, reader],
@@ -2460,7 +2698,14 @@ export const bootstrapRecipeEditorRoute = (
   };
 
   const removeEventTrigger = (index: number): void => {
-    const triggers = (state.recipe.event_triggers ?? []).filter((_, i) => i !== index);
+    const current = state.recipe.event_triggers ?? [];
+    if (index < 0 || index >= current.length) return;
+    const triggers = current.filter((_, i) => i !== index);
+    pendingTriggerFocus = {
+      index: triggers.length === 0
+        ? null
+        : Math.min(index, triggers.length - 1),
+    };
     const next = { ...state.recipe };
     if (triggers.length > 0) next.event_triggers = triggers;
     else delete next.event_triggers;
@@ -2520,6 +2765,27 @@ export const bootstrapRecipeEditorRoute = (
     );
   };
 
+  const ownWebhookAuthorityButton = (button: HTMLButtonElement): void => {
+    webhookAuthorityBtn = button;
+    if (webhookBusy) {
+      // The handler guard is the single-flight authority. Keep the command in
+      // the focus order while its RPC owns the editor so the repaint does not
+      // strand a keyboard user on <body>.
+      button.setAttribute('aria-disabled', 'true');
+      button.setAttribute('aria-busy', 'true');
+    }
+  };
+
+  const focusWebhookIngressAfterRender = (binding: string): void => {
+    pendingFieldFocus = {
+      fieldKey: `webhook_ingress:${binding}`,
+      occurrence: 0,
+      selectionStart: null,
+      selectionEnd: null,
+      reveal: true,
+    };
+  };
+
   const renderWebhooksSection = (host2: HTMLElement): void => {
     const requirements = state.recipe.webhook_requirements ?? [];
     const triggers = state.recipe.webhook_triggers ?? [];
@@ -2566,6 +2832,7 @@ export const bootstrapRecipeEditorRoute = (
       field.textContent = 'Enabled ingress';
       const select = doc.createElement('select');
       select.setAttribute(RECIPE_EDITOR_WEBHOOK_SELECT_ATTR, 'new');
+      select.setAttribute(RECIPE_EDITOR_FIELD_ATTR, 'webhook_ingress:new');
       const placeholder = doc.createElement('option');
       placeholder.value = '';
       placeholder.textContent = 'Select an enabled ingress…';
@@ -2598,6 +2865,7 @@ export const bootstrapRecipeEditorRoute = (
         ];
         const binding = 'webhook_delivery';
         webhookSelections.set(binding, ingress.ingress_id);
+        focusWebhookIngressAfterRender(binding);
         mutateAndRerender({
           ...state.recipe,
           webhook_requirements: [{
@@ -2626,11 +2894,18 @@ export const bootstrapRecipeEditorRoute = (
       });
       actions.appendChild(add);
       if (webhookStatus?.armed) {
-        const disarm = makeButton(doc, 'Disarm saved webhook', 'secondary', 'sm', () => {
-          setWebhookArmed(false);
-        });
+        const disarm = makeButton(
+          doc,
+          webhookBusy ? 'Disarming…' : 'Disarm saved webhook',
+          'secondary',
+          'sm',
+          () => {
+            setWebhookArmed(false);
+          },
+        );
         disarm.setAttribute(RECIPE_EDITOR_WEBHOOK_DISARM_ATTR, '');
-        disarm.disabled = webhookBusy || rpcInFlight;
+        disarm.disabled = rpcInFlight;
+        ownWebhookAuthorityButton(disarm);
         actions.appendChild(disarm);
       }
       const stateLabel = doc.createElement('span');
@@ -2774,6 +3049,10 @@ export const bootstrapRecipeEditorRoute = (
       field.textContent = 'Owner-selected ingress';
       const select = doc.createElement('select');
       select.setAttribute(RECIPE_EDITOR_WEBHOOK_SELECT_ATTR, requirement.binding);
+      select.setAttribute(
+        RECIPE_EDITOR_FIELD_ATTR,
+        `webhook_ingress:${requirement.binding}`,
+      );
       select.disabled = webhookBusy || rpcInFlight || !options.webhookControl;
       const placeholder = doc.createElement('option');
       placeholder.value = '';
@@ -2825,6 +3104,7 @@ export const bootstrapRecipeEditorRoute = (
         const next = { ...state.recipe };
         delete next.webhook_requirements;
         delete next.webhook_triggers;
+        focusWebhookIngressAfterRender('new');
         mutateAndRerender(next);
       });
       remove.setAttribute(RECIPE_EDITOR_WEBHOOK_REMOVE_ATTR, '');
@@ -2832,27 +3112,40 @@ export const bootstrapRecipeEditorRoute = (
       actions.appendChild(remove);
     }
     if (webhookStatus?.armed) {
-      const disarm = makeButton(doc, 'Disarm webhook', 'secondary', 'sm', () => {
-        setWebhookArmed(false);
-      });
+      const disarm = makeButton(
+        doc,
+        webhookBusy ? 'Disarming…' : 'Disarm webhook',
+        'secondary',
+        'sm',
+        () => {
+          setWebhookArmed(false);
+        },
+      );
       disarm.setAttribute(RECIPE_EDITOR_WEBHOOK_DISARM_ATTR, '');
-      disarm.disabled = webhookBusy || rpcInFlight;
+      disarm.disabled = rpcInFlight;
+      ownWebhookAuthorityButton(disarm);
       actions.appendChild(disarm);
     } else {
-      const arm = makeButton(doc, 'Arm webhook', 'primary', 'sm', () => {
-        setWebhookArmed(true);
-      });
+      const arm = makeButton(
+        doc,
+        webhookBusy ? 'Arming…' : 'Arm webhook',
+        'primary',
+        'sm',
+        () => {
+          setWebhookArmed(true);
+        },
+      );
       arm.setAttribute(RECIPE_EDITOR_WEBHOOK_ARM_ATTR, '');
       // A door in a non-minted state means the server WILL refuse the arm
       // (`webhook_not_ready`); disable proactively so the status line explains
       // instead of a failed round-trip. An absent door (substrate unwired on
       // a partial harness) keeps the pre-door behavior.
-      arm.disabled = webhookBusy
-        || rpcInFlight
+      arm.disabled = rpcInFlight
         || state.dirty
         || triggers.length === 0
         || webhookStatus?.configured !== true
         || (door !== undefined && door.state !== 'minted');
+      ownWebhookAuthorityButton(arm);
       actions.appendChild(arm);
     }
     const status = doc.createElement('span');
@@ -2921,6 +3214,7 @@ export const bootstrapRecipeEditorRoute = (
       const fields = doc.createElement('div');
       fields.className = 'recipe-editor-trigger-fields';
       body.appendChild(fields);
+      let triggerFocusTarget: HTMLElement | null = null;
 
       if (trigger.on === FORM_RESPONSE_ON_SHORTHAND) {
         appendText(doc, title, 'span', 'Accepted form response');
@@ -2946,6 +3240,7 @@ export const bootstrapRecipeEditorRoute = (
         );
         input.setAttribute(RECIPE_EDITOR_TRIGGER_FORM_ID_ATTR, String(index));
         input.setAttribute('placeholder', 'No form-definition filter');
+        triggerFocusTarget = input;
         addField(doc, fields, 'Form definition ID', input);
 
         const otherWhere = Object.fromEntries(
@@ -2976,6 +3271,7 @@ export const bootstrapRecipeEditorRoute = (
         );
         input.setAttribute(RECIPE_EDITOR_TRIGGER_EVENT_ATTR, String(index));
         input.setAttribute('placeholder', 'data.platform.slug.entity.created or run.recipe.*.completed');
+        triggerFocusTarget = input;
         addField(doc, fields, 'Warehouse event pattern', input, true);
         if (trigger.filter !== undefined) {
           addReadonlyField(doc, fields, 'Dispatch filter', JSON.stringify(trigger.filter));
@@ -3002,6 +3298,7 @@ export const bootstrapRecipeEditorRoute = (
       remove.setAttribute(RECIPE_EDITOR_TRIGGER_REMOVE_ATTR, String(index));
       remove.setAttribute('aria-label', `Remove trigger ${index + 1}`);
       row.appendChild(remove);
+      renderedTriggerFocusTargets.set(index, triggerFocusTarget ?? remove);
       section.appendChild(row);
     }
 
@@ -3096,6 +3393,7 @@ export const bootstrapRecipeEditorRoute = (
     );
     kindSelect.setAttribute(RECIPE_EDITOR_TRIGGER_ADD_KIND_ATTR, '');
     kindSelect.setAttribute('aria-label', 'Trigger type');
+    triggerAddKindSelect = kindSelect;
     kindField.appendChild(kindSelect);
     addWrap.appendChild(kindField);
 
@@ -3150,9 +3448,10 @@ export const bootstrapRecipeEditorRoute = (
         : { event: draft.event.trim() };
       if (
         draft.kind === 'Custom event pattern'
-        ? !canAddCustomEvent()
-        : validateRecipeEventTriggerEntry(nextTrigger).length > 0
+          ? !canAddCustomEvent()
+          : validateRecipeEventTriggerEntry(nextTrigger).length > 0
       ) return;
+      pendingTriggerFocus = { index: state.recipe.event_triggers?.length ?? 0 };
       mutateAndRerender({
         ...state.recipe,
         event_triggers: [...(state.recipe.event_triggers ?? []), nextTrigger],
@@ -3235,6 +3534,20 @@ export const bootstrapRecipeEditorRoute = (
       removeWrap.className = 'recipe-editor-field';
       appendText(doc, removeWrap, 'label', ' ');
       const remove = makeButton(doc, 'Remove', 'danger-text', 'sm', () => {
+        const removedIndex = connVars.indexOf(name);
+        const remaining = connVars.filter((candidate) => candidate !== name);
+        const survivor = remaining[
+          Math.min(Math.max(removedIndex, 0), remaining.length - 1)
+        ] ?? null;
+        pendingFieldFocus = {
+          fieldKey: survivor === null
+            ? 'conn_var_new_name'
+            : `conn_var_label:${survivor}`,
+          occurrence: 0,
+          selectionStart: 0,
+          selectionEnd: 0,
+          reveal: true,
+        };
         const nextVars = { ...state.recipe.variables };
         delete nextVars[name];
         mutateAndRerender({ ...state.recipe, variables: nextVars });
@@ -3280,6 +3593,13 @@ export const bootstrapRecipeEditorRoute = (
       const name = draft.name.trim();
       if (name === '') return;
       if (name in state.recipe.variables) return; // dup any variable — ignore
+      pendingFieldFocus = {
+        fieldKey: `conn_var_label:${name}`,
+        occurrence: 0,
+        selectionStart: 0,
+        selectionEnd: name.length,
+        reveal: true,
+      };
       mutateAndRerender({
         ...state.recipe,
         variables: {
@@ -3388,7 +3708,38 @@ export const bootstrapRecipeEditorRoute = (
   // ────────────────────────────────────────────────────────────
   const rerender = (): void => {
     if (disposed) return;
+    const activeBeforeRender = (
+      doc.activeElement as HTMLElement | null | undefined
+    ) ?? null;
+    let restoreActiveField = pendingFieldFocus;
+    pendingFieldFocus = null;
+    if (activeBeforeRender !== null) {
+      const capturedField = captureFieldFocus(activeBeforeRender);
+      if (capturedField !== null) restoreActiveField = capturedField;
+    }
+    if (activeBeforeRender === validateBtn) {
+      pendingActionFocus = 'validate';
+    } else if (activeBeforeRender === saveBtn) {
+      pendingActionFocus = 'save';
+    } else if (activeBeforeRender === collapseAllBtn) {
+      pendingActionFocus = 'collapse-all';
+    } else if (activeBeforeRender === webhookAuthorityBtn) {
+      pendingActionFocus = 'webhook-authority';
+    } else if (
+      activeBeforeRender !== null
+      && activeBeforeRender !== doc.body
+      && activeBeforeRender.isConnected
+    ) {
+      pendingActionFocus = null;
+    }
     clearChildren(content);
+    renderedStepFocusTargets = new Map();
+    renderedConditionFocusTargets = new Map();
+    renderedOpArgFocusTargets = new Map();
+    renderedOpArgDraftTargets = new Map();
+    renderedTriggerFocusTargets = new Map();
+    triggerAddKindSelect = undefined;
+    webhookAuthorityBtn = undefined;
 
     // Slim sticky header.
     const topbar = doc.createElement('section');
@@ -3402,7 +3753,9 @@ export const bootstrapRecipeEditorRoute = (
     heading.className = 'recipe-editor-heading';
     const eyebrow = appendText(doc, heading, 'span', 'Recipe workspace');
     eyebrow.className = 'recipe-editor-eyebrow';
-    appendText(doc, heading, 'h1', 'Recipe editor');
+    routeHeading = appendText(doc, heading, 'h1', 'Recipe editor');
+    routeHeading.setAttribute(RECIPE_EDITOR_HEADING_ATTR, '');
+    routeHeading.tabIndex = -1;
     const subtitle = appendText(
       doc,
       heading,
@@ -3491,9 +3844,104 @@ export const bootstrapRecipeEditorRoute = (
     ]);
 
     renderBindingsSection(content);
+
+    const ownedAction = pendingActionFocus === 'validate'
+      ? validateBtn
+      : pendingActionFocus === 'save'
+        ? saveBtn
+        : pendingActionFocus === 'collapse-all'
+          ? collapseAllBtn
+          : pendingActionFocus === 'webhook-authority'
+            ? webhookAuthorityBtn
+            : undefined;
+    if (ownedAction !== undefined && !ownedAction.disabled) {
+      pendingActionFocus = null;
+      ownedAction.focus({ preventScroll: true });
+    }
+    if (restoreActiveField !== null) restoreFieldFocus(restoreActiveField);
+    if (pendingAddedOpArgFocus !== null) {
+      const pending = pendingAddedOpArgFocus;
+      pendingAddedOpArgFocus = null;
+      const target = renderedOpArgFocusTargets.get(
+        `${pending.stepId}\u0000${pending.argName}`,
+      );
+      target?.focus({ preventScroll: true });
+      target?.scrollIntoView?.({ block: 'nearest' });
+    }
+    if (pendingRemovedOpArgFocus !== null) {
+      const pending = pendingRemovedOpArgFocus;
+      pendingRemovedOpArgFocus = null;
+      const target = pending.argName === null
+        ? renderedOpArgDraftTargets.get(pending.stepId)
+        : renderedOpArgFocusTargets.get(
+            `${pending.stepId}\u0000${pending.argName}`,
+          );
+      target?.focus({ preventScroll: true });
+      target?.scrollIntoView?.({ block: 'nearest' });
+    }
+    if (pendingStepActionFocus !== null) {
+      const pending = pendingStepActionFocus;
+      pendingStepActionFocus = null;
+      const targets = renderedStepFocusTargets.get(pending.stepId);
+      if (targets !== undefined) {
+        const action = pending.action === 'move-up'
+          ? targets.moveUp
+          : targets.moveDown;
+        const target = action.disabled ? targets.summary : action;
+        target.focus({ preventScroll: true });
+      }
+    }
+    if (pendingAddedStepFocusId !== null) {
+      const stepId = pendingAddedStepFocusId;
+      pendingAddedStepFocusId = null;
+      renderedStepFocusTargets.get(stepId)?.idInput.focus({
+        preventScroll: true,
+      });
+    }
+    if (pendingRemovedStepFocus !== null) {
+      const pending = pendingRemovedStepFocus;
+      pendingRemovedStepFocus = null;
+      const target = pending.stepId === null
+        ? addStepBtn
+        : renderedStepFocusTargets.get(pending.stepId)?.summary;
+      target?.focus({ preventScroll: true });
+    }
+    if (pendingRenamedStepFocus !== null) {
+      const pending = pendingRenamedStepFocus;
+      pendingRenamedStepFocus = null;
+      const targets = renderedStepFocusTargets.get(pending.stepId);
+      if (targets !== undefined) {
+        const target = pending.target === 'previous'
+          ? targets.summary
+          : pending.target === 'next'
+            ? [targets.moveUp, targets.moveDown, targets.remove]
+              .find((action) => !action.disabled)
+            : targets.idInput;
+        target?.focus({ preventScroll: true });
+      }
+    }
+    if (pendingConditionFocus !== null) {
+      const pending = pendingConditionFocus;
+      pendingConditionFocus = null;
+      const targets = renderedConditionFocusTargets.get(pending.conditionKey);
+      const target = pending.part === 'field' ? targets?.field : targets?.operator;
+      target?.focus({ preventScroll: true });
+    }
+    if (pendingTriggerFocus !== null) {
+      const pending = pendingTriggerFocus;
+      pendingTriggerFocus = null;
+      const target = pending.index === null
+        ? triggerAddKindSelect
+        : renderedTriggerFocusTargets.get(pending.index);
+      target?.focus({ preventScroll: true });
+      target?.scrollIntoView?.({ block: 'nearest' });
+    }
   };
 
   rerender();
+  if (focusHeadingOnMount) {
+    routeHeading?.focus?.({ preventScroll: true });
+  }
 
   // Cmd/Ctrl+S saves — the reflex every editor user has. Scoped and gated:
   // the listener sits on the document (a focused field must not swallow it),
@@ -3519,11 +3967,24 @@ export const bootstrapRecipeEditorRoute = (
     // 'change', which a keyboard save would otherwise bypass (an uncommitted
     // step-id rename would silently save the OLD id).
     const active = (doc as Partial<Document>).activeElement as
-      | (Node & { blur?: () => void })
+      | (Node & HTMLElement & { blur?: () => void })
       | null
       | undefined;
+    pendingFieldFocus = active === null || active === undefined
+      ? null
+      : captureFieldFocus(active);
+    if (pendingFieldFocus === null) pendingActionFocus = 'save';
     active?.blur?.();
-    if (!state.dirty) return;
+    if (!state.dirty) {
+      if (pendingFieldFocus !== null) {
+        restoreFieldFocus(pendingFieldFocus);
+        pendingFieldFocus = null;
+      } else {
+        pendingActionFocus = null;
+        active?.focus?.({ preventScroll: true });
+      }
+      return;
+    }
     runSave();
   };
   const docEvents = doc as Partial<

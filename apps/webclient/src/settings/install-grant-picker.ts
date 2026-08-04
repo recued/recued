@@ -298,13 +298,32 @@ const SCOPE_HINT: Record<InstallScopeWho, string> = {
     'Every agent and external door you have now may use them too. Doors you add later start with no access until you share again.',
 };
 
+/** ⛔ Access and Scope are ONE decision in two steps — "grant THESE operations to
+ *  THOSE contracts" — and the old copy described each half as if it stood alone
+ *  ("Choose what this pack may do" / "Who may use these grants"). Read that way,
+ *  the tier looks like a global capability switch, and the pairing that actually
+ *  governs the install is invisible.
+ *
+ *  ⚠ The consequence is not abstract. "You" is itself a CONTRACT, so the tier
+ *  chosen here governs the owner's own use of the pack: install a Records pack at
+ *  the default `read` and its own write recipes are denied when YOU run them. A
+ *  reader who thinks Scope is only about sharing has no way to predict that. */
 const COPY = {
-  access_heading: 'Access',
+  access_heading: 'Access — step 1 of 2',
   access_intro:
-    'Choose what this pack may do with its connected account. Nothing is granted until you install; you can change this later in Settings.',
-  grants_prefix: 'Grants: ',
-  scope_heading: 'Scope',
-  scope_intro: 'Who may use these grants. You can change this later in Settings.',
+    'Choose the operations to grant. Whatever you pick here is granted to the '
+    + 'contracts you choose in step 2 below — including you. Each tier includes '
+    + 'the ones above it. Nothing is granted until you install; you can change '
+    + 'both later in the pack’s Access tab.',
+  // "Grants:" read as the complete set for the tier. It is the ops the tier ADDS
+  // — the server grants the cumulative band (write ⇒ read + write) — so a tier
+  // listing one write op while also granting every read op looked exhaustive.
+  grants_prefix: 'Adds: ',
+  scope_heading: 'Scope — step 2 of 2',
+  scope_intro:
+    'Who receives the access chosen in step 1. “You” is a contract like any '
+    + 'other: unchecking it revokes your own use of these operations. You can '
+    + 'change this later in the pack’s Access tab.',
 } as const;
 
 // ════════════════════════════════════════════════════════════════

@@ -124,12 +124,14 @@ interface FakeEl {
   removeChild(c: FakeEl): FakeEl;
   addEventListener(type: string, fn: (ev?: unknown) => void): void;
   removeEventListener(type: string, fn: (ev?: unknown) => void): void;
+  focus(): void;
   click(): void;
   remove(): void;
 }
 
 interface FakeDocument {
   createElement(tag: string): FakeEl;
+  activeElement: FakeEl | null;
   head: {
     appendChild(el: FakeEl): FakeEl;
     querySelector(selector: string): FakeEl | null;
@@ -189,6 +191,11 @@ const makeFakeElement = (tag: string): FakeEl => {
       const i = list.indexOf(fn);
       if (i >= 0) list.splice(i, 1);
     },
+    focus() {
+      // Contract detail now moves focus to its asynchronous heading. These
+      // tests only need the browser method to exist; focus ownership is pinned
+      // by the route-specific accessibility suite.
+    },
     click() {
       // A disabled button fires no click. The panel sets disabled by
       // attribute, so checking the attr keeps the fake honest.
@@ -210,6 +217,7 @@ const makeFakeDocument = (): FakeDocument => {
   };
   return {
     createElement: makeFakeElement,
+    activeElement: null,
     head: {
       appendChild(el) {
         styleTags.push(el);
@@ -955,6 +963,7 @@ describe('D-166 Permissions override inventory panel', () => {
     const disabled = deleteButtonFor(host, 'user_self', DEALS, DEALS_WRITE)!;
     expect(disabled.textContent).toContain('Removing');
     expect(disabled.getAttribute('disabled')).toBe('');
+    expect(mount.hasInFlightWork()).toBe(true);
 
     await mount.deleteOverride('user_self', DEALS, DEALS_WRITE);
     expect(calls.runDeleteOverride).toHaveBeenCalledTimes(1);
@@ -963,6 +972,7 @@ describe('D-166 Permissions override inventory panel', () => {
     await first;
     await tick();
 
+    expect(mount.hasInFlightWork()).toBe(false);
     expect(calls.runListOverrides).toHaveBeenCalledTimes(2);
     expect(rowFor(host, 'user_self', DEALS, DEALS_WRITE)).toBeUndefined();
     mount.dispose();

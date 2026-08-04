@@ -68,6 +68,7 @@ import {
   type MailSyncFailureKind,
   type MailSyncOutcomeListener,
   type InboundMailAttachmentPart,
+  type MailMessageDirection,
   type MailProvider,
   type MailSentReconciliationCandidate,
   type MailSentReconciliationQuery,
@@ -78,6 +79,7 @@ import {
   type ProviderSyncEventKind,
   type SentMessageMeta,
 } from './provider.js';
+import type { OAuthAccountStore } from './oauth.js';
 
 // ────────────────────────────────────────────────────────────────
 // Narrow client interface — exactly the imapflow surface we use.
@@ -260,6 +262,11 @@ export interface CreateImapProviderOptions {
   /** D-127 P1.5 — Message-Id UUID generator hook. Defaults to
    *  `node:crypto.randomUUID`. Tests inject a deterministic value. */
   messageIdUuid?: () => string;
+  /** Durable pair-local journal for live IDLE notifications. IMAP has no
+   *  provider cursor equivalent to Gmail historyId or Graph deltaLink, so a
+   *  callback rejection must be remembered explicitly until the collection
+   *  acknowledges it. Production always supplies the shared account store. */
+  deliveryStore?: OAuthAccountStore;
 }
 
 // ────────────────────────────────────────────────────────────────
@@ -489,6 +496,28 @@ const hasAttachments = (parsed: ParsedMail): boolean =>
 
 const sourceIdFor = (uid: number, folder: string): string => `${uid}@${folder}`;
 
+type ImapMailboxIdentity = { path: string; specialUse?: string };
+
+/** RFC 6154 special-use flags are language-neutral. `INBOX` is the one
+ * RFC-reserved mailbox name and remains safe when LIST is unavailable. All
+ * other unclassified/localized paths stay unknown so downstream recipes can
+ * fail closed. */
+export const imapMessageDirectionForMailbox = (
+  folder: string,
+  mailboxes: readonly ImapMailboxIdentity[] = [],
+): MailMessageDirection => {
+  const match = mailboxes.find((mailbox) => mailbox.path === folder)
+    ?? mailboxes.find((mailbox) => (
+      folder.toUpperCase() === 'INBOX' && mailbox.path.toUpperCase() === 'INBOX'
+    ));
+  switch ((match?.specialUse ?? '').toLowerCase()) {
+    case '\\sent': return 'outbound';
+    case '\\drafts': return 'draft';
+    case '\\inbox': return 'inbound';
+    default: return folder.toUpperCase() === 'INBOX' ? 'inbound' : 'unknown';
+  }
+};
+
 const parsedAttachmentParts = (parsed: ParsedMail): InboundMailAttachmentPart[] => {
   const parts: InboundMailAttachmentPart[] = [];
   for (const [idx, attachment] of (parsed.attachments ?? []).entries()) {
@@ -526,6 +555,7 @@ export const canonicalizeImap = async (
   opts: {
     uid: number;
     folder: string;
+    direction?: MailMessageDirection;
     flags: Set<string> | undefined;
     internalDate: Date | string | undefined;
   },
@@ -559,6 +589,7 @@ export const canonicalizeImap = async (
     subject: parsed.subject ?? '',
     thread_id: deriveThreadId(parsed),
     folder_or_label: opts.folder,
+    direction: opts.direction ?? imapMessageDirectionForMailbox(opts.folder),
     is_read: flags.has('\\Seen'),
     has_attachments: hasAttachments(parsed) || attachments.length > 0,
     received_at: Number.isFinite(receivedAt) ? receivedAt : Date.now(),
@@ -574,11 +605,26 @@ export const canonicalizeImap = async (
 
 interface FolderState {
   folder: string;
+  direction: MailMessageDirection;
   client: ImapClient | null;
   stopIdle: (() => void) | null;
   reconnectTask: Promise<void> | null;
+  deliveryRetryTask: Promise<void> | null;
+  pollTasks: Set<Promise<void>>;
   attempts: number;
+  /** Fallback for servers that cannot emit QRESYNC VANISHED UIDs. Sequence
+   *  numbers are mailbox positions, not identifiers, and shift on EXPUNGE. */
+  seqToUid: Map<number, number>;
 }
+
+interface PendingImapDelivery {
+  schema_version: 1;
+  folder: string;
+  uid: number;
+  kind: ProviderSyncEventKind;
+}
+
+type ImapFetchAddressing = 'uid' | 'sequence';
 
 const DEFAULT_IDLE_MS = 28 * 60 * 1000;
 const DEFAULT_RECONNECT_CAP_MS = 60_000;
@@ -594,6 +640,10 @@ export const createImapProvider = (
   const sleepOf = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms).unref()));
 
   const folders = new Map<string, FolderState>();
+  const pendingDeliveries = new Map<string, PendingImapDelivery>();
+  const deliveriesInFlight = new Map<string, Promise<void>>();
+  let pendingDeliveriesLoaded = false;
+  let lastBackfillDays: number | null = null;
   let connected = false;
   let lastSuccessfulSyncAt = 0;
   let errorCount24h = 0;
@@ -620,6 +670,10 @@ export const createImapProvider = (
       secure: cfg.secure,
       auth: { user: cfg.username, pass: cfg.password },
       maxIdleTime: cfg.maxIdleTime ?? DEFAULT_IDLE_MS,
+      // VANISHED carries a stable UID. Without QRESYNC a plain EXPUNGE only
+      // carries a shifting sequence number; we retain a conservative mapping
+      // fallback below, but never fabricate a UID from the sequence itself.
+      qresync: true,
       logger: false,
     });
   };
@@ -627,6 +681,24 @@ export const createImapProvider = (
   const markError = (msg: string, err: unknown): void => {
     errorCount24h++;
     opts.log?.('warn', msg, { err: err instanceof Error ? err.message : String(err) });
+  };
+
+  const resolveFolderDirection = async (
+    client: ImapClient,
+    folder: string,
+  ): Promise<MailMessageDirection> => {
+    if (folder.toUpperCase() === 'INBOX') return 'inbound';
+    if (typeof client.list !== 'function') return 'unknown';
+    try {
+      return imapMessageDirectionForMailbox(folder, await client.list());
+    } catch (err) {
+      // Direction enrichment is safety metadata, not a reason to take an
+      // otherwise readable mailbox offline. Unknown is fail-closed downstream.
+      opts.log?.('warn', `imap LIST failed while classifying folder=${folder}`, {
+        err: err instanceof Error ? err.message : String(err),
+      });
+      return 'unknown';
+    }
   };
 
   /** Is this an IMAP AUTHENTICATION failure (wrong password, app-password
@@ -694,43 +766,268 @@ export const createImapProvider = (
     outcomes.report('reconnect', false, worst);
   };
 
-  const fetchAndEmit = async (
-    state: FolderState,
-    uid: number,
-    kind: ProviderSyncEventKind,
-    cb: ProviderSyncCallback,
-  ): Promise<void> => {
-    if (!state.client) return;
-    if (kind === 'deleted') {
-      await cb({ kind: 'deleted', source_id: sourceIdFor(uid, state.folder) });
+  const pendingDeliveryPrefix = `imap.${opts.slug}.pending_delivery.`;
+  const pendingDeliveryKey = (delivery: PendingImapDelivery): string =>
+    `${pendingDeliveryPrefix}${Buffer.from(delivery.folder, 'utf8').toString('base64url')}.${delivery.uid}.${delivery.kind}`;
+
+  const isPendingDelivery = (value: unknown): value is PendingImapDelivery => {
+    if (typeof value !== 'object' || value === null) return false;
+    const candidate = value as Partial<PendingImapDelivery>;
+    return candidate.schema_version === 1
+      && typeof candidate.folder === 'string'
+      && candidate.folder.length > 0
+      && Number.isSafeInteger(candidate.uid)
+      && (candidate.uid ?? 0) > 0
+      && (candidate.kind === 'created'
+        || candidate.kind === 'updated'
+        || candidate.kind === 'deleted');
+  };
+
+  const loadPendingDeliveries = async (): Promise<void> => {
+    if (pendingDeliveriesLoaded) return;
+    if (!opts.deliveryStore?.getAll) {
+      pendingDeliveriesLoaded = true;
       return;
     }
+    let all: Record<string, string>;
+    try {
+      all = await opts.deliveryStore.getAll();
+    } catch (err) {
+      markError('imap pending-delivery journal read failed', err);
+      throw err;
+    }
+    const invalidRows: unknown[] = [];
+    for (const [key, raw] of Object.entries(all)) {
+      if (!key.startsWith(pendingDeliveryPrefix)) continue;
+      try {
+        const parsed: unknown = JSON.parse(raw);
+        if (!isPendingDelivery(parsed) || pendingDeliveryKey(parsed) !== key) {
+          throw new Error('journal key/value mismatch');
+        }
+        pendingDeliveries.set(key, parsed);
+      } catch (err) {
+        // Retain malformed rows for inspection instead of silently deleting
+        // the only durable evidence that a notification was not acknowledged.
+        markError(`imap pending-delivery journal row invalid key=${key}`, err);
+        invalidRows.push(err);
+      }
+    }
+    pendingDeliveriesLoaded = true;
+    if (invalidRows.length > 0) {
+      throw new AggregateError(
+        invalidRows,
+        'imap pending-delivery journal contains invalid rows',
+      );
+    }
+  };
+
+  const rememberDelivery = async (delivery: PendingImapDelivery): Promise<string> => {
+    const key = pendingDeliveryKey(delivery);
+    if (pendingDeliveries.has(key)) return key;
+    // Persist before invoking the collection callback. A crash after this write
+    // produces a harmless duplicate; a crash before it cannot be called an ack.
+    await opts.deliveryStore?.set(key, JSON.stringify(delivery));
+    pendingDeliveries.set(key, delivery);
+    return key;
+  };
+
+  const forgetDelivery = async (key: string): Promise<void> => {
+    // Delete durably before removing the in-memory row. If this write fails the
+    // callback may replay, preserving at-least-once semantics.
+    await opts.deliveryStore?.delete(key);
+    pendingDeliveries.delete(key);
+  };
+
+  const deliverAcknowledged = async (
+    delivery: PendingImapDelivery,
+    event: Parameters<ProviderSyncCallback>[0],
+    cb: ProviderSyncCallback,
+  ): Promise<void> => {
+    const key = await rememberDelivery(delivery);
+    const existing = deliveriesInFlight.get(key);
+    if (existing) return existing;
+    const task = (async (): Promise<void> => {
+      await cb(event);
+      await forgetDelivery(key);
+      lastSuccessfulSyncAt = nowOf();
+    })();
+    deliveriesInFlight.set(key, task);
+    try {
+      await task;
+    } finally {
+      if (deliveriesInFlight.get(key) === task) deliveriesInFlight.delete(key);
+    }
+  };
+
+  const fetchAndEmit = async (
+    state: FolderState,
+    identifier: number,
+    kind: ProviderSyncEventKind,
+    cb: ProviderSyncCallback,
+    addressing: ImapFetchAddressing = 'uid',
+  ): Promise<boolean> => {
+    if (!state.client) return false;
     pendingQueueSize++;
     try {
+      if (kind === 'deleted') {
+        const delivery: PendingImapDelivery = {
+          schema_version: 1,
+          folder: state.folder,
+          uid: identifier,
+          kind,
+        };
+        await deliverAcknowledged(
+          delivery,
+          { kind: 'deleted', source_id: sourceIdFor(identifier, state.folder) },
+          cb,
+        );
+        return true;
+      }
+
+      const mappedUid = addressing === 'sequence'
+        ? state.seqToUid.get(identifier)
+        : identifier;
+      const preJournalKey = addressing === 'uid'
+        ? await rememberDelivery({
+            schema_version: 1,
+            folder: state.folder,
+            uid: identifier,
+            kind,
+          })
+        : undefined;
       const iter = state.client.fetch(
-        [uid],
+        addressing === 'uid' ? [identifier] : String(identifier),
         { uid: true, flags: true, envelope: true, internalDate: true, source: true },
-        { uid: true },
+        ...(addressing === 'uid' ? [{ uid: true }] : []),
       );
+      let found = false;
       for await (const msg of iter) {
-        if (!msg.source) continue;
+        found = true;
+        if (!Number.isSafeInteger(msg.uid) || msg.uid <= 0) {
+          throw new Error(`imap FETCH returned an invalid UID for ${addressing}=${identifier}`);
+        }
+        if (Number.isSafeInteger(msg.seq) && msg.seq > 0) {
+          state.seqToUid.set(msg.seq, msg.uid);
+        }
+        const delivery: PendingImapDelivery = {
+          schema_version: 1,
+          folder: state.folder,
+          uid: msg.uid,
+          kind,
+        };
+        // Once FETCH reveals the stable UID, persist the notification before
+        // parsing its body. A malformed/transient canonicalization failure is
+        // just as retryable as a rejected collection callback.
+        await rememberDelivery(delivery);
+        if (!msg.source) {
+          throw new Error(`imap FETCH returned no source for uid=${msg.uid}`);
+        }
         const canonical = await canonicalizeImap(msg.source, {
           uid: msg.uid,
           folder: state.folder,
+          direction: state.direction,
           flags: msg.flags,
           internalDate: msg.internalDate,
         });
-        await cb({ kind, source_id: canonical.source_id, message: canonical });
-        lastSuccessfulSyncAt = nowOf();
+        await deliverAcknowledged(
+          delivery,
+          { kind, source_id: canonical.source_id, message: canonical },
+          cb,
+        );
       }
+      if (!found) {
+        // A flags/update notification can race an EXPUNGE. If we already knew
+        // the stable UID, converge the mirror with a tombstone; for a brand-new
+        // sequence with no UID there is nothing safe to fabricate.
+        if (mappedUid !== undefined) {
+          const deletedDelivery: PendingImapDelivery = {
+            schema_version: 1,
+            folder: state.folder,
+            uid: mappedUid,
+            kind: 'deleted',
+          };
+          await deliverAcknowledged(
+            deletedDelivery,
+            { kind: 'deleted', source_id: sourceIdFor(mappedUid, state.folder) },
+            cb,
+          );
+          if (preJournalKey && preJournalKey !== pendingDeliveryKey(deletedDelivery)) {
+            await forgetDelivery(preJournalKey);
+          }
+        } else {
+          throw new Error(`imap FETCH returned no message for ${addressing}=${identifier}`);
+        }
+      }
+      return true;
     } catch (err) {
-      // Swallowed so one bad message can't kill the batch — but NOTED, so the
-      // enclosing `poll` attempt reports a failure rather than a clean fetch.
+      // The journal row remains when the callback or its durable cleanup fails.
+      // Return false so the owned retry loop is admitted without terminating
+      // the IDLE listener for unrelated messages.
       outcomes.noteFailure(isImapAuthFailure(err) ? 'auth' : 'transient');
-      markError(`imap fetch failed uid=${uid} folder=${state.folder}`, err);
+      markError(`imap delivery failed ${addressing}=${identifier} folder=${state.folder}`, err);
+      return false;
     } finally {
       pendingQueueSize = Math.max(0, pendingQueueSize - 1);
     }
+  };
+
+  const drainPendingDeliveries = async (
+    state: FolderState,
+    cb: ProviderSyncCallback,
+  ): Promise<boolean> => {
+    let allAcknowledged = true;
+    const pending = [...pendingDeliveries.values()]
+      .filter((delivery) => delivery.folder === state.folder);
+    for (const delivery of pending) {
+      if (stopped) return false;
+      const ok = await fetchAndEmit(state, delivery.uid, delivery.kind, cb, 'uid');
+      if (!ok) allAcknowledged = false;
+    }
+    return allAcknowledged;
+  };
+
+  const deliveryRetryLoop = async (
+    state: FolderState,
+    cb: ProviderSyncCallback,
+  ): Promise<void> => {
+    let attempts = 0;
+    while (!stopped && [...pendingDeliveries.values()].some(
+      (delivery) => delivery.folder === state.folder,
+    )) {
+      if (stopped) return;
+      if (attempts > 0) {
+        const cfg = opts.config();
+        const cap = cfg.reconnectCapMs ?? DEFAULT_RECONNECT_CAP_MS;
+        const init = cfg.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
+        await waitForReconnectDelay(Math.min(init * Math.pow(2, attempts - 1), cap));
+        if (stopped) return;
+      }
+      attempts++;
+      await outcomes.run('poll', async () => {
+        await drainPendingDeliveries(state, cb);
+      });
+      if (stopped) return;
+    }
+  };
+
+  const scheduleDeliveryRetry = (
+    state: FolderState,
+    cb: ProviderSyncCallback,
+  ): void => {
+    if (
+      stopped
+      || state.deliveryRetryTask
+      || ![...pendingDeliveries.values()].some((delivery) => delivery.folder === state.folder)
+    ) return;
+    let task!: Promise<void>;
+    task = deliveryRetryLoop(state, cb)
+      .catch((err) => {
+        if (!stopped) markError(`imap delivery retry failed folder=${state.folder}`, err);
+      })
+      .finally(() => {
+        if (state.deliveryRetryTask === task) state.deliveryRetryTask = null;
+      });
+    state.deliveryRetryTask = task;
   };
 
   const attachListeners = (
@@ -746,29 +1043,67 @@ export const createImapProvider = (
     // every FETCH indefinitely while the collection stayed 'healthy'. An EXISTS
     // covering N messages is ONE attempt, not N — the user experiences "did my
     // mail arrive", and N outcomes would also defeat the consumer's throttle.
-    const pollBatch = (run: () => Promise<void>): void => {
-      void outcomes.run('poll', run).catch((err) => {
+    const pollBatch = (run: () => Promise<boolean>): void => {
+      let task!: Promise<void>;
+      task = outcomes.run('poll', async () => {
+        const acknowledged = await run();
+        if (!acknowledged) scheduleDeliveryRetry(state, cb);
+      }).catch((err) => {
         // `run` rethrows; nothing above this is listening, and the outcome has
         // already been emitted, so this only keeps the rejection unhandled-safe.
         markError(`imap idle batch failed folder=${state.folder}`, err);
+      }).finally(() => {
+        state.pollTasks.delete(task);
       });
+      state.pollTasks.add(task);
     };
 
     const onExists = (data: { count: number; prevCount: number }): void => {
-      // New messages arrived. UIDs numbered prevCount+1..count.
+      // EXISTS exposes mailbox counts; prevCount+1..count are SEQUENCE
+      // positions, never UIDs. FETCH by sequence and journal the stable UID it
+      // returns before acknowledging the notification.
       pollBatch(async () => {
+        let allAcknowledged = true;
         for (let seq = data.prevCount + 1; seq <= data.count; seq++) {
-          await fetchAndEmit(state, seq, 'created', cb);
+          if (!(await fetchAndEmit(state, seq, 'created', cb, 'sequence'))) {
+            allAcknowledged = false;
+          }
         }
+        return allAcknowledged;
       });
     };
-    const onExpunge = (data: { uid?: number; seq: number }): void => {
-      const uid = data.uid ?? data.seq;
+    const onExpunge = (data: { uid?: number; seq?: number }): void => {
+      const uid = data.uid ?? (data.seq === undefined ? undefined : state.seqToUid.get(data.seq));
+      if (data.seq !== undefined) {
+        const shifted = new Map<number, number>();
+        for (const [seq, mappedUid] of state.seqToUid) {
+          if (seq === data.seq) continue;
+          shifted.set(seq > data.seq ? seq - 1 : seq, mappedUid);
+        }
+        state.seqToUid = shifted;
+      } else if (uid !== undefined) {
+        for (const [seq, mappedUid] of state.seqToUid) {
+          if (mappedUid === uid) state.seqToUid.delete(seq);
+        }
+      }
+      if (uid === undefined) {
+        outcomes.report('poll', false, 'transient');
+        markError(
+          `imap expunge lacked a stable UID folder=${state.folder} seq=${String(data.seq)}`,
+          null,
+        );
+        return;
+      }
       pollBatch(() => fetchAndEmit(state, uid, 'deleted', cb));
     };
     const onFlags = (data: { uid?: number; seq: number }): void => {
-      const uid = data.uid ?? data.seq;
-      pollBatch(() => fetchAndEmit(state, uid, 'updated', cb));
+      pollBatch(() => fetchAndEmit(
+        state,
+        data.uid ?? data.seq,
+        'updated',
+        cb,
+        data.uid === undefined ? 'sequence' : 'uid',
+      ));
     };
     const onClose = (): void => {
       if (stopped) return;
@@ -791,6 +1126,25 @@ export const createImapProvider = (
       client.off('close', onClose);
       client.off('error', onError);
     };
+  };
+
+  const rebuildSequenceMap = async (state: FolderState): Promise<void> => {
+    state.seqToUid.clear();
+    if (!state.client || lastBackfillDays === null) return;
+    const since = new Date(nowOf() - lastBackfillDays * 86400_000);
+    const uids = await state.client.search({ since }, { uid: true });
+    if (uids === false || uids.length === 0) return;
+    const iter = state.client.fetch(uids, { uid: true }, { uid: true });
+    for await (const msg of iter) {
+      if (
+        Number.isSafeInteger(msg.seq)
+        && msg.seq > 0
+        && Number.isSafeInteger(msg.uid)
+        && msg.uid > 0
+      ) {
+        state.seqToUid.set(msg.seq, msg.uid);
+      }
+    }
   };
 
   const reconnectLoop = async (
@@ -835,7 +1189,12 @@ export const createImapProvider = (
           if (state.client === candidate) state.client = null;
           return;
         }
+        state.direction = await resolveFolderDirection(candidate, state.folder);
         await candidate.mailboxOpen(state.folder);
+        // Sequence positions can change while disconnected. Rebuild the
+        // mapping for the same backfill window rather than carrying stale
+        // positions into a non-QRESYNC EXPUNGE fallback.
+        await rebuildSequenceMap(state);
         if (stopped) {
           try { candidate.close(); } catch { /* shutdown containment */ }
           if (state.client === candidate) state.client = null;
@@ -854,6 +1213,7 @@ export const createImapProvider = (
       }
 
       state.stopIdle = attachListeners(state, cb);
+      scheduleDeliveryRetry(state, cb);
       state.attempts = 0;
       lastSuccessfulSyncAt = nowOf();
       // This folder is back — reported as provider-wide success only if it was
@@ -1189,11 +1549,15 @@ export const createImapProvider = (
     ?? '';
 
   /** The backfill body, lifted out of the public `initialScan` so the outcome
-   *  reporter can wrap the whole sweep as one attempt. Behaviour is unchanged:
-   *  per-folder failures are still swallowed so one bad mailbox cannot abort the
-   *  rest — they are merely NOTED now, so the sweep reports honestly. */
+   *  reporter can wrap the whole sweep as one attempt. A folder failure does
+   *  not prevent the remaining folders from being scanned, but it is rethrown
+   *  after the sweep: resolving here tells MailCollection that it may mark the
+   *  whole backfill complete. */
   const scanAllFolders = async (scanOpts: InitialScanOptions): Promise<void> => {
-    const since = new Date(Date.now() - scanOpts.backfill_days * 86400_000);
+    lastBackfillDays = scanOpts.backfill_days;
+    const since = new Date(nowOf() - scanOpts.backfill_days * 86400_000);
+    const failures: unknown[] = [];
+    let aborted = false;
     for (const state of folders.values()) {
       if (!state.client) continue;
       pendingQueueSize++;
@@ -1208,26 +1572,47 @@ export const createImapProvider = (
           { uid: true },
         );
         for await (const msg of iter) {
-          if (!msg.source) continue;
+          if (!Number.isSafeInteger(msg.uid) || msg.uid <= 0) {
+            throw new Error(`imap initial scan returned an invalid UID folder=${state.folder}`);
+          }
+          if (
+            Number.isSafeInteger(msg.seq)
+            && msg.seq > 0
+            && Number.isSafeInteger(msg.uid)
+            && msg.uid > 0
+          ) {
+            state.seqToUid.set(msg.seq, msg.uid);
+          }
+          if (!msg.source) {
+            throw new Error(`imap initial scan omitted source uid=${msg.uid} folder=${state.folder}`);
+          }
           const canonical = await canonicalizeImap(msg.source, {
             uid: msg.uid,
             folder: state.folder,
+            direction: state.direction,
             flags: msg.flags,
             internalDate: msg.internalDate,
           });
           const cont = await scanOpts.onMessage(canonical);
           lastSuccessfulSyncAt = nowOf();
-          if (!cont) return;
+          if (!cont) {
+            aborted = true;
+            break;
+          }
         }
       } catch (err) {
-        // Swallowed per folder so one bad mailbox can't abort the others — but
-        // NOTED, so the attempt as a whole still reports a failure instead of
-        // looking like a clean scan that simply found nothing.
+        // Continue through the other folders, then reject the aggregate so the
+        // collection cannot persist a false `backfill_complete` marker.
         outcomes.noteFailure(isImapAuthFailure(err) ? 'auth' : 'transient');
         markError(`imap initialScan failed folder=${state.folder}`, err);
+        failures.push(err);
       } finally {
         pendingQueueSize = Math.max(0, pendingQueueSize - 1);
       }
+      if (aborted) break;
+    }
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'imap initial scan was incomplete');
     }
   };
 
@@ -1246,24 +1631,51 @@ export const createImapProvider = (
       stopped = false;
       downFolders.clear();
       const cfg = opts.config();
-      for (const folder of cfg.folders) {
-        const client = makeClient(folder);
-        try {
-          await client.connect();
-          await client.mailboxOpen(folder);
-        } catch (err) {
-          markError(`imap connect failed folder=${folder}`, err);
-          try { client.close(); } catch { /* swallow */ }
-          throw err;
+      const opened = new Map<string, FolderState>();
+      try {
+        for (const folder of cfg.folders) {
+          const client = makeClient(folder);
+          let direction: MailMessageDirection = 'unknown';
+          try {
+            await client.connect();
+            direction = await resolveFolderDirection(client, folder);
+            await client.mailboxOpen(folder);
+          } catch (err) {
+            try { client.close(); } catch { /* failed transport containment */ }
+            throw err;
+          }
+          opened.set(folder, {
+            folder,
+            direction,
+            client,
+            stopIdle: null,
+            reconnectTask: null,
+            deliveryRetryTask: null,
+            pollTasks: new Set(),
+            attempts: 0,
+            seqToUid: new Map(),
+          });
         }
-        folders.set(folder, {
-          folder,
-          client,
-          stopIdle: null,
-          reconnectTask: null,
-          attempts: 0,
-        });
+      } catch (err) {
+        markError('imap connect failed', err);
+        // Connection admission is all-or-nothing. If folder N fails after
+        // folders 1..N-1 opened, close those transports now; otherwise a later
+        // connect retry creates a second set while the first remains live.
+        for (const state of opened.values()) {
+          const client = state.client;
+          if (client === null) continue;
+          try {
+            if (client.usable) await client.logout();
+            else client.close();
+          } catch {
+            try { client.close(); } catch { /* cleanup containment */ }
+          }
+        }
+        folders.clear();
+        connected = false;
+        throw err;
       }
+      for (const [folder, state] of opened) folders.set(folder, state);
       connected = true;
       lastSuccessfulSyncAt = nowOf();
     },
@@ -1286,8 +1698,10 @@ export const createImapProvider = (
       if (!connected) {
         throw new Error('imap provider: startSync called before connect');
       }
+      await loadPendingDeliveries();
       for (const state of folders.values()) {
         state.stopIdle = attachListeners(state, cb);
+        scheduleDeliveryRetry(state, cb);
       }
       return async (): Promise<void> => {
         // Detach listeners but leave the clients open — `close` owns
@@ -1297,6 +1711,9 @@ export const createImapProvider = (
           try { state.stopIdle?.(); } catch { /* detach best-effort */ }
           state.stopIdle = null;
         }
+        await Promise.allSettled(
+          [...folders.values()].flatMap((state) => [...state.pollTasks]),
+        );
       };
     },
 
@@ -1307,6 +1724,10 @@ export const createImapProvider = (
       const reconnects = states
         .map((state) => state.reconnectTask)
         .filter((task): task is Promise<void> => task !== null);
+      const deliveryRetries = states
+        .map((state) => state.deliveryRetryTask)
+        .filter((task): task is Promise<void> => task !== null);
+      const pollTasks = states.flatMap((state) => [...state.pollTasks]);
 
       // Close current transports immediately so an in-progress connect/open is
       // interrupted where the client supports it, then await every admitted
@@ -1328,6 +1749,8 @@ export const createImapProvider = (
         }
       }
       await Promise.allSettled(reconnects);
+      await Promise.allSettled(deliveryRetries);
+      await Promise.allSettled(pollTasks);
       // Defensive final fence for a client implementation whose `connect()`
       // ignored the first close and completed immediately before its stopped
       // check. Reconnect tasks have settled, so no new client can appear now.
@@ -1344,7 +1767,7 @@ export const createImapProvider = (
       return {
         last_successful_sync_at: lastSuccessfulSyncAt,
         error_count_24h: errorCount24h,
-        pending_queue_size: pendingQueueSize,
+        pending_queue_size: pendingQueueSize + pendingDeliveries.size,
       };
     },
 

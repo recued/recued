@@ -11,6 +11,7 @@ const bootRecoveryMocks = vi.hoisted(() => ({
   raiseInDoubtForSweptCommits: vi.fn(),
   commitRestoreProvenanceAtBoot: vi.fn(),
   replayKeyfileEventsIntoAudit: vi.fn(),
+  sweepAtomicWriteTemps: vi.fn(),
 }));
 
 vi.mock('../composition/bin/wire-notification-block.js', () => ({
@@ -32,6 +33,10 @@ vi.mock('../archive/restore-provenance.js', () => ({
 // shape this follow-on was deliberately not shipped as.
 vi.mock('../keys/keyfile-event-replay.js', () => ({
   replayKeyfileEventsIntoAudit: bootRecoveryMocks.replayKeyfileEventsIntoAudit,
+}));
+
+vi.mock('../durable-fs.js', () => ({
+  sweepAtomicWriteTemps: bootRecoveryMocks.sweepAtomicWriteTemps,
 }));
 
 import {
@@ -71,9 +76,23 @@ beforeEach(() => {
   bootRecoveryMocks.raiseInDoubtForSweptCommits.mockReset();
   bootRecoveryMocks.commitRestoreProvenanceAtBoot.mockReset();
   bootRecoveryMocks.replayKeyfileEventsIntoAudit.mockReset();
+  bootRecoveryMocks.sweepAtomicWriteTemps.mockReset();
 });
 
 describe('startBootRecoveryAndAdapters', () => {
+  it('sweeps atomic-write residue in both data and external config directories', async () => {
+    await startBootRecoveryAndAdapters(makeOptions({
+      dbPath: '/srv/recued/data/realm.db',
+      configPath: '/etc/recued/config.toml',
+      getSigningIdentity: () => undefined,
+    }));
+
+    expect(bootRecoveryMocks.sweepAtomicWriteTemps.mock.calls).toEqual([
+      ['/srv/recued/data'],
+      ['/etc/recued'],
+    ]);
+  });
+
   it('runs locked identity boot, notification recovery, commit sweep, and adapter starts in order', async () => {
     const order: string[] = [];
     const sweptCommits = [{ commit_id: 'commit-1' }];

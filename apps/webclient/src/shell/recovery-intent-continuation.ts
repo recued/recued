@@ -16,12 +16,24 @@ export const RECOVERY_INTENT_CONTINUATION_SESSION_KEY =
   'recued.webclient.recovery-intent-continuation.v1';
 export const RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY =
   'recued.webclient.recovery-intent-review-verification.v2';
+export const RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY =
+  'recued.webclient.recovery-intent-deferred-check.v4';
 export const RECOVERY_INTENT_CONTINUATION_MAX_AGE_MS = 30 * 60_000;
 
 const VERSION = 1;
 const REVIEW_VERIFICATION_VERSION = 2;
 const LEGACY_RECOVERY_INTENT_REVIEW_VERIFICATION_SESSION_KEY =
   'recued.webclient.recovery-intent-review-verification.v1';
+const LEGACY_V3_RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY =
+  'recued.webclient.recovery-intent-deferred-check.v3';
+const LEGACY_V2_RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY =
+  'recued.webclient.recovery-intent-deferred-check.v2';
+const LEGACY_RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY =
+  'recued.webclient.recovery-intent-deferred-check.v1';
+const DEFERRED_CHECK_LEGACY_VERSION = 1;
+const DEFERRED_CHECK_V2_VERSION = 2;
+const DEFERRED_CHECK_PREVIOUS_VERSION = 3;
+const DEFERRED_CHECK_VERSION = 4;
 const RETIRED_MARKER = '0';
 const CLOCK_SKEW_MS = 5 * 60_000;
 const MAX_PROFILE_ID_LENGTH = 256;
@@ -66,6 +78,39 @@ export interface RecoveryIntentReviewVerification {
   readonly lastInterruption: RecoveryIntentReviewInterruption | null;
 }
 
+/** A deliberately quiet exact-area check. It binds only to the parent
+ * continuation's profile, scrubbed broad route, and creation time. The exact
+ * intent is omitted so an expired marker can offer broad review without
+ * reconstructing what the person previously meant to do. Its two-attempt
+ * bound and area/server diagnosis target are closed-list state only. */
+export interface RecoveryIntentDeferredCheck {
+  readonly profileId: string;
+  readonly landingHash: string;
+  readonly pausedAt: number;
+  readonly deferredAt: number;
+  readonly expiresAt: number;
+  /** The broad-area expiry notice is itself bounded and then disappears. */
+  readonly handoffExpiresAt: number;
+  /** A non-null value records only that a broad route-owned review began. */
+  readonly reviewStartedAt: number | null;
+  /** Explicit attempts are capped at two across reloads. This count contains
+   * no result or route detail and reconnect never increments it. */
+  readonly attemptCount: 0 | 1 | 2;
+  /** Set only after the second unsuccessful attempt. This closed-list target
+   * chooses a broad route review or exact active-server diagnosis without
+   * persisting an error, response, credential, record, or prior intent. */
+  readonly diagnosisTarget: 'area' | 'server' | null;
+  /** Server diagnosis can end in one privacy-safe choice: run one fresh
+   * broad-area check, or close the reminder. A started check never becomes
+   * retryable after reload or failure. */
+  readonly diagnosisOutcome:
+    | 'choose'
+    | 'recheck_started'
+    | 'area_unconfirmed'
+    | 'server_unavailable'
+    | null;
+}
+
 interface StoredRecoveryIntentContinuationV1 {
   readonly v: 1;
   readonly profile_id: string;
@@ -84,6 +129,23 @@ interface StoredRecoveryIntentReviewVerificationV2 {
   readonly state: 'ready' | 'checking' | 'interrupted';
   readonly interruption_count: 0 | 1 | 2;
   readonly last_interruption: RecoveryIntentReviewInterruption | null;
+}
+
+interface StoredRecoveryIntentDeferredCheckV4 {
+  readonly v: 4;
+  readonly profile_id: string;
+  readonly landing_hash: string;
+  readonly paused_at: number;
+  readonly deferred_at: number;
+  readonly review_started_at: number | null;
+  readonly attempt_count: 0 | 1 | 2;
+  readonly diagnosis_target: 'area' | 'server' | null;
+  readonly diagnosis_outcome:
+    | 'choose'
+    | 'recheck_started'
+    | 'area_unconfirmed'
+    | 'server_unavailable'
+    | null;
 }
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
@@ -304,6 +366,481 @@ const parseStoredReviewVerification = (
     return null;
   }
   return sameContinuation(marker, verification) ? verification : null;
+};
+
+const parseStoredDeferredCheck = (
+  raw: string | null,
+  readAt: number,
+  maxAgeMs: number,
+  handoffMaxAgeMs: number,
+): RecoveryIntentDeferredCheck | null => {
+  if (raw === null || raw === RETIRED_MARKER) return null;
+  let value: unknown;
+  try {
+    value = JSON.parse(raw) as unknown;
+  } catch {
+    return null;
+  }
+  if (!isRecord(value)) return null;
+  const legacy = value.v === DEFERRED_CHECK_LEGACY_VERSION
+    && hasExactKeys(value, [
+      'v', 'profile_id', 'landing_hash', 'paused_at', 'deferred_at',
+    ]);
+  const legacyV2 = value.v === DEFERRED_CHECK_V2_VERSION
+    && hasExactKeys(value, [
+      'v',
+      'profile_id',
+      'landing_hash',
+      'paused_at',
+      'deferred_at',
+      'review_started_at',
+    ]);
+  const previous = value.v === DEFERRED_CHECK_PREVIOUS_VERSION
+    && hasExactKeys(value, [
+      'v',
+      'profile_id',
+      'landing_hash',
+      'paused_at',
+      'deferred_at',
+      'review_started_at',
+      'attempt_count',
+      'diagnosis_target',
+    ]);
+  const current = value.v === DEFERRED_CHECK_VERSION
+    && hasExactKeys(value, [
+      'v',
+      'profile_id',
+      'landing_hash',
+      'paused_at',
+      'deferred_at',
+      'review_started_at',
+      'attempt_count',
+      'diagnosis_target',
+      'diagnosis_outcome',
+    ]);
+  if (
+    (!legacy && !legacyV2 && !previous && !current)
+    || !validProfileId(value.profile_id)
+    || !validSafeLandingHash(value.landing_hash)
+    || !validTime(value.paused_at)
+    || !validTime(value.deferred_at)
+    || value.paused_at > Number.MAX_SAFE_INTEGER - maxAgeMs
+    || value.paused_at + maxAgeMs
+      > Number.MAX_SAFE_INTEGER - handoffMaxAgeMs
+    || value.deferred_at < value.paused_at
+    || value.deferred_at > value.paused_at + maxAgeMs
+    || value.deferred_at > readAt + CLOCK_SKEW_MS
+    || readAt >= value.paused_at + maxAgeMs + handoffMaxAgeMs
+  ) return null;
+  const expiresAt = value.paused_at + maxAgeMs;
+  const handoffExpiresAt = expiresAt + handoffMaxAgeMs;
+  const reviewStartedAt = legacy || value.review_started_at === null
+    ? null
+    : value.review_started_at;
+  if (
+    reviewStartedAt !== null
+    && (
+      !validTime(reviewStartedAt)
+      || reviewStartedAt < expiresAt
+      || reviewStartedAt >= handoffExpiresAt
+      || readAt < expiresAt
+      || reviewStartedAt > readAt + CLOCK_SKEW_MS
+    )
+  ) return null;
+  const attemptCount = legacy
+    ? 0
+    : legacyV2
+      ? (reviewStartedAt === null ? 0 : 1)
+      : value.attempt_count;
+  const diagnosisTarget = previous || current
+    ? value.diagnosis_target
+    : null;
+  const diagnosisOutcome = current ? value.diagnosis_outcome : null;
+  if (
+    (attemptCount !== 0 && attemptCount !== 1 && attemptCount !== 2)
+    || (
+      diagnosisTarget !== null
+      && diagnosisTarget !== 'area'
+      && diagnosisTarget !== 'server'
+    )
+    || (reviewStartedAt === null) !== (attemptCount === 0)
+    || (diagnosisTarget !== null && attemptCount !== 2)
+    || (
+      diagnosisOutcome !== null
+      && diagnosisOutcome !== 'choose'
+      && diagnosisOutcome !== 'recheck_started'
+      && diagnosisOutcome !== 'area_unconfirmed'
+      && diagnosisOutcome !== 'server_unavailable'
+    )
+    || (diagnosisOutcome !== null && diagnosisTarget !== 'server')
+  ) return null;
+  return {
+    profileId: value.profile_id,
+    landingHash: value.landing_hash,
+    pausedAt: value.paused_at,
+    deferredAt: value.deferred_at,
+    expiresAt,
+    handoffExpiresAt,
+    reviewStartedAt,
+    attemptCount,
+    diagnosisTarget,
+    diagnosisOutcome,
+  };
+};
+
+export interface RecoveryIntentDeferredCheckStore {
+  /** Read a current or recently expired quiet marker for this exact profile.
+   * Invalid, cross-profile, and over-age values are retired. */
+  readForProfile(profileId: string): RecoveryIntentDeferredCheck | null;
+  /** Quiet one prepared server-review check without extending its parent TTL.
+   * Repeated deferral is idempotent for the same parent marker. */
+  defer(
+    marker: RecoveryIntentContinuation,
+  ): RecoveryIntentDeferredCheck | null;
+  /** Start one explicit broad-area attempt. The stored timestamp and bounded
+   * attempt count survive reload; a diagnosis-bound marker cannot restart. */
+  markReviewStarted(
+    marker: RecoveryIntentDeferredCheck,
+  ): RecoveryIntentDeferredCheck | null;
+  /** Complete an unsuccessful attempt. Only the second failure persists the
+   * closed-list diagnosis target; duplicate completion is idempotent. */
+  recordReviewFailure(
+    marker: RecoveryIntentDeferredCheck,
+    diagnosisTarget: 'area' | 'server',
+  ): RecoveryIntentDeferredCheck | null;
+  /** Record that the exact server diagnosis finished and expose one explicit
+   * broad-area recheck-or-close choice. */
+  recordDiagnosisOutcome(
+    marker: RecoveryIntentDeferredCheck,
+  ): RecoveryIntentDeferredCheck | null;
+  /** Consume the one post-diagnosis recheck choice before route work begins. */
+  markDiagnosisRecheckStarted(
+    marker: RecoveryIntentDeferredCheck,
+  ): RecoveryIntentDeferredCheck | null;
+  /** End the consumed recheck without creating another retry. */
+  recordDiagnosisRecheckFailure(
+    marker: RecoveryIntentDeferredCheck,
+    target: 'area' | 'server',
+  ): RecoveryIntentDeferredCheck | null;
+  /** Retire the quiet/expired handoff without touching unrelated storage. */
+  clear(): void;
+}
+
+export const createRecoveryIntentDeferredCheckStore = (options: {
+  readonly document?: Document;
+  readonly storage?: RecoveryIntentContinuationStorage | null;
+  readonly now?: () => number;
+  readonly maxAgeMs?: number;
+  readonly handoffMaxAgeMs?: number;
+} = {}): RecoveryIntentDeferredCheckStore => {
+  const storage = resolveSessionStorage(options.document, options.storage);
+  const maxAgeMs = resolveMaxAge(options.maxAgeMs);
+  const handoffMaxAgeMs = resolveMaxAge(options.handoffMaxAgeMs);
+  let volatile: RecoveryIntentDeferredCheck | null = null;
+  let retiredLocally = false;
+
+  const retireStorageKey = (key: string): void => {
+    if (storage === null) return;
+    try {
+      storage.setItem(key, RETIRED_MARKER);
+      try {
+        storage.removeItem(key);
+      } catch {
+        // The tombstone already makes a denied deletion inert.
+      }
+    } catch {
+      try {
+        storage.removeItem(key);
+      } catch {
+        // Best-effort cleanup when storage is unavailable.
+      }
+    }
+  };
+
+  const clear = (): void => {
+    volatile = null;
+    retiredLocally = true;
+    retireStorageKey(RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY);
+    retireStorageKey(
+      LEGACY_V3_RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+    );
+    retireStorageKey(
+      LEGACY_V2_RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+    );
+    retireStorageKey(LEGACY_RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY);
+  };
+
+  const persist = (value: RecoveryIntentDeferredCheck): void => {
+    const stored: StoredRecoveryIntentDeferredCheckV4 = {
+      v: DEFERRED_CHECK_VERSION,
+      profile_id: value.profileId,
+      landing_hash: value.landingHash,
+      paused_at: value.pausedAt,
+      deferred_at: value.deferredAt,
+      review_started_at: value.reviewStartedAt,
+      attempt_count: value.attemptCount,
+      diagnosis_target: value.diagnosisTarget,
+      diagnosis_outcome: value.diagnosisOutcome,
+    };
+    try {
+      storage?.setItem(
+        RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+        JSON.stringify(stored),
+      );
+      try {
+        storage?.removeItem(
+          LEGACY_V3_RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+        );
+        storage?.removeItem(
+          LEGACY_V2_RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+        );
+        storage?.removeItem(
+          LEGACY_RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+        );
+      } catch {
+        // The current value is authoritative even if legacy cleanup is denied.
+      }
+    } catch {
+      // The same-tab posture remains authoritative in memory.
+    }
+  };
+
+  const read = (readAt: number): RecoveryIntentDeferredCheck | null => {
+    if (retiredLocally) return null;
+    if (volatile !== null) {
+      if (readAt < volatile.handoffExpiresAt) return volatile;
+      clear();
+      return null;
+    }
+    if (storage === null) return null;
+    let raw: string | null;
+    try {
+      raw = storage.getItem(RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY);
+      if (raw === null) {
+        raw = storage.getItem(
+          LEGACY_V3_RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+        );
+      }
+      if (raw === null) {
+        raw = storage.getItem(
+          LEGACY_V2_RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+        );
+      }
+      if (raw === null) {
+        raw = storage.getItem(
+          LEGACY_RECOVERY_INTENT_DEFERRED_CHECK_SESSION_KEY,
+        );
+      }
+    } catch {
+      return null;
+    }
+    const parsed = parseStoredDeferredCheck(
+      raw,
+      readAt,
+      maxAgeMs,
+      handoffMaxAgeMs,
+    );
+    if (parsed === null) {
+      if (raw !== null) clear();
+      return null;
+    }
+    volatile = parsed;
+    return parsed;
+  };
+
+  return {
+    readForProfile: (profileId) => {
+      if (!validProfileId(profileId)) {
+        clear();
+        return null;
+      }
+      const marker = read(resolveNow(options.now));
+      if (marker === null) return null;
+      if (marker.profileId !== profileId) {
+        clear();
+        return null;
+      }
+      return marker;
+    },
+    defer: (marker) => {
+      const deferredAt = resolveNow(options.now);
+      if (
+        !validProfileId(marker.profileId)
+        || !validSafeLandingHash(marker.landingHash)
+        || !validTime(marker.pausedAt)
+        || !validTime(marker.expiresAt)
+        || marker.pausedAt > Number.MAX_SAFE_INTEGER - maxAgeMs
+        || marker.expiresAt !== marker.pausedAt + maxAgeMs
+        || deferredAt < marker.pausedAt
+        || deferredAt >= marker.expiresAt
+        || marker.expiresAt
+          > Number.MAX_SAFE_INTEGER - handoffMaxAgeMs
+      ) return null;
+      const current = read(deferredAt);
+      if (
+        current !== null
+        && current.profileId === marker.profileId
+        && current.landingHash === marker.landingHash
+        && current.pausedAt === marker.pausedAt
+      ) return current;
+      const deferred: RecoveryIntentDeferredCheck = {
+        profileId: marker.profileId,
+        landingHash: marker.landingHash,
+        pausedAt: marker.pausedAt,
+        deferredAt,
+        expiresAt: marker.expiresAt,
+        handoffExpiresAt: marker.expiresAt + handoffMaxAgeMs,
+        reviewStartedAt: null,
+        attemptCount: 0,
+        diagnosisTarget: null,
+        diagnosisOutcome: null,
+      };
+      volatile = deferred;
+      retiredLocally = false;
+      persist(deferred);
+      return deferred;
+    },
+    markReviewStarted: (marker) => {
+      const reviewStartedAt = resolveNow(options.now);
+      if (
+        reviewStartedAt < marker.expiresAt
+        || reviewStartedAt >= marker.handoffExpiresAt
+      ) return null;
+      const current = read(reviewStartedAt);
+      if (
+        current === null
+        || current.profileId !== marker.profileId
+        || current.landingHash !== marker.landingHash
+        || current.pausedAt !== marker.pausedAt
+        || current.deferredAt !== marker.deferredAt
+        || current.expiresAt !== marker.expiresAt
+        || current.handoffExpiresAt !== marker.handoffExpiresAt
+      ) return null;
+      if (
+        current.diagnosisTarget !== null
+        || current.diagnosisOutcome !== null
+      ) return current;
+      const started: RecoveryIntentDeferredCheck = {
+        ...current,
+        reviewStartedAt,
+        attemptCount: current.attemptCount === 0 ? 1 : 2,
+      };
+      volatile = started;
+      retiredLocally = false;
+      persist(started);
+      return started;
+    },
+    recordReviewFailure: (marker, diagnosisTarget) => {
+      const failedAt = resolveNow(options.now);
+      const current = read(failedAt);
+      if (
+        current === null
+        || current.profileId !== marker.profileId
+        || current.landingHash !== marker.landingHash
+        || current.pausedAt !== marker.pausedAt
+        || current.deferredAt !== marker.deferredAt
+        || current.expiresAt !== marker.expiresAt
+        || current.handoffExpiresAt !== marker.handoffExpiresAt
+        || current.reviewStartedAt !== marker.reviewStartedAt
+        || current.attemptCount !== marker.attemptCount
+        || current.attemptCount === 0
+      ) return null;
+      if (
+        current.diagnosisTarget !== null
+        || current.diagnosisOutcome !== null
+        || current.attemptCount < 2
+      ) {
+        return current;
+      }
+      const failed: RecoveryIntentDeferredCheck = {
+        ...current,
+        diagnosisTarget,
+      };
+      volatile = failed;
+      retiredLocally = false;
+      persist(failed);
+      return failed;
+    },
+    recordDiagnosisOutcome: (marker) => {
+      const recordedAt = resolveNow(options.now);
+      const current = read(recordedAt);
+      if (
+        current === null
+        || current.profileId !== marker.profileId
+        || current.landingHash !== marker.landingHash
+        || current.pausedAt !== marker.pausedAt
+        || current.deferredAt !== marker.deferredAt
+        || current.expiresAt !== marker.expiresAt
+        || current.handoffExpiresAt !== marker.handoffExpiresAt
+        || current.reviewStartedAt !== marker.reviewStartedAt
+        || current.attemptCount !== 2
+        || current.diagnosisTarget !== 'server'
+      ) return null;
+      if (current.diagnosisOutcome !== null) return current;
+      const outcome: RecoveryIntentDeferredCheck = {
+        ...current,
+        diagnosisOutcome: 'choose',
+      };
+      volatile = outcome;
+      retiredLocally = false;
+      persist(outcome);
+      return outcome;
+    },
+    markDiagnosisRecheckStarted: (marker) => {
+      const startedAt = resolveNow(options.now);
+      const current = read(startedAt);
+      if (
+        current === null
+        || current.profileId !== marker.profileId
+        || current.landingHash !== marker.landingHash
+        || current.pausedAt !== marker.pausedAt
+        || current.deferredAt !== marker.deferredAt
+        || current.expiresAt !== marker.expiresAt
+        || current.handoffExpiresAt !== marker.handoffExpiresAt
+        || current.reviewStartedAt !== marker.reviewStartedAt
+        || current.attemptCount !== 2
+        || current.diagnosisTarget !== 'server'
+      ) return null;
+      if (current.diagnosisOutcome === 'recheck_started') return current;
+      if (current.diagnosisOutcome !== 'choose') return null;
+      const started: RecoveryIntentDeferredCheck = {
+        ...current,
+        diagnosisOutcome: 'recheck_started',
+      };
+      volatile = started;
+      retiredLocally = false;
+      persist(started);
+      return started;
+    },
+    recordDiagnosisRecheckFailure: (marker, target) => {
+      const failedAt = resolveNow(options.now);
+      const current = read(failedAt);
+      if (
+        current === null
+        || current.profileId !== marker.profileId
+        || current.landingHash !== marker.landingHash
+        || current.pausedAt !== marker.pausedAt
+        || current.deferredAt !== marker.deferredAt
+        || current.expiresAt !== marker.expiresAt
+        || current.handoffExpiresAt !== marker.handoffExpiresAt
+        || current.reviewStartedAt !== marker.reviewStartedAt
+        || current.attemptCount !== 2
+        || current.diagnosisTarget !== 'server'
+        || current.diagnosisOutcome !== 'recheck_started'
+      ) return null;
+      const failed: RecoveryIntentDeferredCheck = {
+        ...current,
+        diagnosisOutcome: target === 'server'
+          ? 'server_unavailable'
+          : 'area_unconfirmed',
+      };
+      volatile = failed;
+      retiredLocally = false;
+      persist(failed);
+      return failed;
+    },
+    clear,
+  };
 };
 
 export interface RecoveryIntentContinuationStore {

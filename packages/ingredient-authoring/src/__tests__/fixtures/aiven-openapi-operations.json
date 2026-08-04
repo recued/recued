@@ -3,12 +3,12 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://api.aiven.io/doc/openapi.json",
-      "bytes": 1821442,
-      "sha256": "aedf71cf0f9d0e2587ae941a67adf563a14b2c5417697df77c6067f38d9067fe",
+      "bytes": 1840663,
+      "sha256": "871517494397af82e27dd0d6c80d3fce7d611b9ff6daedec83d06a3474dc5738",
       "openapi": "3.0.1",
       "title": "Aiven API Documentation",
       "api_version": "v1",
-      "official_path_count": 322,
+      "official_path_count": 323,
       "retrieved_on": "2026-07-20",
       "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract.",
       "declared_server": [
@@ -32,19 +32,19 @@
         ]
       }
     ],
-    "official_operation_count": 464,
-    "admitted_operation_count": 399,
+    "official_operation_count": 465,
+    "admitted_operation_count": 400,
     "deprecated_operation_count": 65,
     "official_method_counts": {
       "DELETE": 69,
-      "GET": 201,
+      "GET": 202,
       "PATCH": 16,
       "POST": 132,
       "PUT": 46
     },
     "admitted_method_counts": {
       "DELETE": 59,
-      "GET": 171,
+      "GET": 172,
       "PATCH": 16,
       "POST": 114,
       "PUT": 39
@@ -59,6 +59,7 @@
       "Custom_Cloud": 7,
       "Domains": 5,
       "Groups": 7,
+      "OAuth2": 1,
       "Organization_Vpc": 12,
       "OrganizationBillingGroup": 10,
       "OrganizationEmissions": 1,
@@ -95,6 +96,7 @@
       "Custom_Cloud": 7,
       "Domains": 5,
       "Groups": 7,
+      "OAuth2": 1,
       "Organization_Vpc": 11,
       "OrganizationBillingGroup": 10,
       "OrganizationEmissions": 1,
@@ -120,7 +122,7 @@
     },
     "pack_operation_counts": {
       "aiven-organization-access": 51,
-      "aiven-account-users": 46,
+      "aiven-account-users": 47,
       "aiven-billing-payments": 28,
       "aiven-projects-networking": 69,
       "aiven-services-integrations": 68,
@@ -130,7 +132,7 @@
     },
     "composition_bytes": {
       "aiven-organization-access": 86796,
-      "aiven-account-users": 73873,
+      "aiven-account-users": 74866,
       "aiven-billing-payments": 49809,
       "aiven-projects-networking": 145502,
       "aiven-services-integrations": 130235,
@@ -139,15 +141,15 @@
       "aiven-data-services": 98400
     },
     "body_mode_counts": {
-      "none": 261,
+      "none": 262,
       "raw_json": 138
     },
     "success_status_counts": {
-      "200": 377,
+      "200": 378,
       "204": 22
     },
     "selected_response_media_counts": {
-      "application/json": 374,
+      "application/json": 375,
       "application/pdf": 1,
       "none": 22,
       "text/csv": 2
@@ -155,16 +157,16 @@
     "risk_counts": {
       "admin": 113,
       "destructive": 95,
-      "read": 191
+      "read": 192
     },
     "approval_counts": {
       "always": 208,
-      "never": 191
+      "never": 192
     },
     "idempotency_counts": {
       "idempotent": 114,
       "non_idempotent": 94,
-      "safe": 191
+      "safe": 192
     },
     "pagination": {
       "automatic_operation_count": 2,
@@ -195,7 +197,7 @@
     "auth": {
       "selected": "Complete Authorization value in the documented aivenv1 TOKEN format, supplied only by the enrolled aiven connection",
       "official_documentation_model": "Authorization: aivenv1 TOKEN over https://api.aiven.io/v1",
-      "token_or_oauth_operation_count": 377,
+      "token_or_oauth_operation_count": 378,
       "no_auth_requirement_operation_count": 22,
       "no_auth_requirement_operation_keys": [
         "GET /clouds",
@@ -225,7 +227,7 @@
     },
     "authority_notes": {
       "openapi_operation_refs": 0,
-      "openapi_inline_operations": 464,
+      "openapi_inline_operations": 465,
       "exact_path_parameter_contract": true,
       "wire_prefix_path_alias": "/v1",
       "numeric_string_bounds_as_lengths": [
@@ -530,7 +532,7 @@
         "approval": "never"
       }
     ],
-    "operation_ids_sha256": "d51cc28155578c1d6221299646880e504d186938f133f77d0b5de6fc4602f1de"
+    "operation_ids_sha256": "1ab9c28bce38d3ad0f4ab4f7ae4b0a15c84d367255ac28dd27e296b7112c64d3"
   },
   "official_operations": [
     {
@@ -3046,6 +3048,33 @@
       "exclusion_reason": null,
       "pack": "aiven-organization-access",
       "op": "groups.user_group_members_update"
+    },
+    {
+      "key": "GET /userinfo",
+      "method": "GET",
+      "path": "/userinfo",
+      "operation_id": "UserInfoGet",
+      "tag": "OAuth2",
+      "summary": "Return the identity of the authenticated user (OIDC UserInfo)",
+      "deprecated": false,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ],
+      "request_media": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "aiven-account-users",
+      "op": "oauth2.user_info_get"
     },
     {
       "key": "GET /organization/{organization_id}/billing-groups",
@@ -8651,7 +8680,7 @@
       "path": "/project/{project}/service/{service_name}/kafka/schema/subjects/{subject_name}/versions/{version_id}/schema",
       "operation_id": "ServiceSchemaRegistrySubjectVersionSchemaGet",
       "tag": "Service:_Kafka",
-      "summary": "DEPRECATED: Get raw schema of a specific version in Schema Registry",
+      "summary": "Get raw schema of a specific version in Schema Registry",
       "deprecated": true,
       "security": [
         {
@@ -28166,6 +28195,40 @@
       "pagination_contract_gap": null,
       "response_capture": null,
       "security": null
+    },
+    "GET /userinfo": {
+      "key": "GET /userinfo",
+      "operation_id": "UserInfoGet",
+      "pack": "aiven-account-users",
+      "op": "oauth2.user_info_get",
+      "method": "GET",
+      "path": "/userinfo",
+      "wire_path": "/v1/userinfo",
+      "tag": "OAuth2",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [],
+      "request_media": [],
+      "request_body_required": false,
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "pagination_contract_gap": null,
+      "response_capture": null,
+      "security": [
+        {
+          "tokenAuth": [],
+          "oauth2": [
+            "accounts:read"
+          ]
+        }
+      ]
     },
     "PATCH /me": {
       "key": "PATCH /me",

@@ -26,13 +26,12 @@
 import type Database from 'better-sqlite3';
 import {
   createReadStream,
-  createWriteStream,
   existsSync,
   mkdirSync,
   readFileSync,
   statSync,
 } from 'node:fs';
-import { rename, unlink } from 'node:fs/promises';
+import { open as openFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { hostname } from 'node:os';
 import type { Readable } from 'node:stream';
@@ -58,7 +57,11 @@ import {
   encryptRecord,
   newSalt,
 } from './archive-crypto.js';
-import { exportBlobScratchPath } from './archive-scratch.js';
+import {
+  exportBlobScratchPath,
+  exportDatabaseScratchPath,
+} from './archive-scratch.js';
+import { fsyncDir, fsyncFile } from '../durable-fs.js';
 import { createEncryptedBlobStore, type BlobStore } from '../storage/blob-store.js';
 import { copyDatabaseForSnapshot } from '../open-database.js';
 import { listReferencedBlobHashes } from '../storage/sqlite-cache-store.js';
@@ -279,12 +282,6 @@ export const uint32BE = (n: number): Buffer => {
   return b;
 };
 
-/** Temporary SQLite backup path, sibling to the final archive. Always
- *  reclaimed in `exportArchive`'s `finally` — a full SQLite copy (possibly
- *  GBs) must never be stranded, least of all for a no-SSH user who can't
- *  delete it by hand. */
-const tempDbPath = (dest: string): string => `${dest}.db.tmp`;
-
 export const exportArchive = async (
   opts: ExportOptions,
 ): Promise<ExportResult> => {
@@ -305,7 +302,12 @@ export const exportArchive = async (
   // pass OR mid-stream), an over-limit record, a write error, or a
   // post-pipeline `rename` failure. The `.partial` archive is reclaimed too
   // unless the rename committed it.
-  const dbTemp = tempDbPath(opts.destPath);
+  // Keep the snapshot inside the realm data volume, where boot owns a precise
+  // scratch sweep. A hard kill skips this function's `finally`; beside an
+  // arbitrary operator destination a keyless realm's full plaintext snapshot
+  // otherwise has no future owner and survives indefinitely.
+  const scratchDir = dirname(opts.db.name);
+  const dbTemp = exportDatabaseScratchPath(scratchDir);
   const partialPath = `${opts.destPath}.partial`;
   // Where an encrypted blob's PLAINTEXT is allowed to land. Deliberately NOT
   // beside `destPath`: the `archive export <dest>` CLI takes that from the
@@ -313,11 +315,10 @@ export const exportArchive = async (
   // outside the boundary the warehouse's encryption exists to draw. The db
   // handle names the realm's own data volume (`dataPath` is `dirname(dbPath)`
   // everywhere else), which is also where the free-space preflight budgets the
-  // scratch and where the boot sweep looks for strays. The `.partial` archive
-  // and the `VACUUM INTO` db temp stay beside `destPath` — the archive is
-  // encrypted and the db copy keeps the source cipher, so neither is plaintext.
-  const scratchDir = dirname(opts.db.name);
+  // scratch and where the boot sweep looks for strays. Only the already-
+  // encrypted `.partial` archive stays beside `destPath`.
   let committed = false;
+  let partialOwned = false;
   try {
     // 1. Consistent SQLite snapshot to a temp file. `VACUUM INTO` inherits the
     //    source connection's cipher; the fork's `db.backup()` refuses because
@@ -539,8 +540,24 @@ export const exportArchive = async (
     // so a mid-stream failure never leaves a torn archive the GC would
     // mistake for a real backup. (The `.partial` suffix is outside the
     // generated-export name pattern, so the GC ignores it regardless.)
-    await pipeline(assemble(), createWriteStream(partialPath));
+    // Claim the predictable sibling name with `wx`: following a pre-planted
+    // symlink here would let an export truncate an arbitrary file writable by
+    // the server. Ownership is tracked so a losing concurrent export never
+    // unlinks the winner's partial in its `finally`.
+    const partialFile = await openFile(partialPath, 'wx', 0o600);
+    partialOwned = true;
+    try {
+      await pipeline(assemble(), partialFile.createWriteStream());
+    } finally {
+      await partialFile.close().catch(() => { /* stream may already have closed it */ });
+    }
+    // A closed stream is not a durability barrier. Flush the authenticated
+    // archive bytes before publishing their final name, then flush that rename
+    // before reporting success. A process crash remains protected by rename;
+    // these two barriers close the power-loss window on supporting platforms.
+    fsyncFile(partialPath);
     await rename(partialPath, opts.destPath);
+    fsyncDir(parent);
     committed = true;
     return {
       path: opts.destPath,
@@ -550,7 +567,7 @@ export const exportArchive = async (
     };
   } finally {
     await unlink(dbTemp).catch(() => { /* best-effort — may already be gone */ });
-    if (!committed) {
+    if (partialOwned && !committed) {
       await unlink(partialPath).catch(() => { /* never written / already gone */ });
     }
   }

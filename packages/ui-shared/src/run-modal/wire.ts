@@ -52,8 +52,11 @@ import {
   RUN_MODAL_REPEAT_ATTR,
   RUN_MODAL_RUN_AT_ATTR,
   RUN_MODAL_RULE_ID_ATTR,
+  RUN_MODAL_SCHEDULE_ERROR_ATTR,
+  RUN_MODAL_TAB_ATTR,
   RUN_MODAL_TARGET_ATTR,
   RUN_MODAL_TARGET_WARNING_ATTR,
+  RUN_MODAL_TRIGGER_ERROR_ATTR,
   type RunModalCaps,
 } from './render.js';
 import { RUN_MODAL_STYLES } from './styles.js';
@@ -132,6 +135,78 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   const overlay = doc.createElement('div');
   overlay.className = 'run-modal-overlay-root';
 
+  type RunModalFocusIdentity =
+    | { kind: 'action'; value: string; ruleId?: string }
+    | {
+        kind: 'id';
+        value: string;
+        selectionStart: number | null;
+        selectionEnd: number | null;
+      };
+
+  const elementsWith = (attribute: string): HTMLElement[] =>
+    Array.from(
+      overlay.querySelectorAll?.(`[${attribute}]`) ?? [],
+    ) as HTMLElement[];
+
+  const focusIdentityElement = (
+    identity: RunModalFocusIdentity,
+  ): HTMLElement | null => {
+    if (identity.kind === 'action') {
+      const candidates = elementsWith(RUN_MODAL_ACTION_ATTR).filter(
+        (element) => identity.ruleId === undefined
+          || element.getAttribute(RUN_MODAL_RULE_ID_ATTR) === identity.ruleId,
+      );
+      const exact = candidates.find(
+        (element) => element.getAttribute(RUN_MODAL_ACTION_ATTR) === identity.value,
+      );
+      if (exact !== undefined) return exact;
+      const toggleFamily = /^(toggle-(?:schedule|trigger)):(?:on|off)$/.exec(
+        identity.value,
+      )?.[1];
+      return toggleFamily === undefined
+        ? null
+        : candidates.find((element) =>
+          element.getAttribute(RUN_MODAL_ACTION_ATTR)?.startsWith(`${toggleFamily}:`),
+        ) ?? null;
+    }
+    return elementsWith('id').find(
+      (element) => element.getAttribute('id') === identity.value,
+    ) ?? null;
+  };
+
+  const captureFocusIdentity = (): RunModalFocusIdentity | null => {
+    const activeElement = (
+      doc as Document & { activeElement?: HTMLElement | null }
+    ).activeElement;
+    if (activeElement == null) return null;
+    const contains = (
+      overlay as HTMLElement & { contains?: (other: Node | null) => boolean }
+    ).contains;
+    if (typeof contains === 'function' && !contains.call(overlay, activeElement)) {
+      return null;
+    }
+    const action = activeElement.getAttribute?.(RUN_MODAL_ACTION_ATTR);
+    if (action !== null && action !== undefined) {
+      const ruleId = activeElement.getAttribute?.(RUN_MODAL_RULE_ID_ATTR);
+      return ruleId === null || ruleId === undefined
+        ? { kind: 'action', value: action }
+        : { kind: 'action', value: action, ruleId };
+    }
+    const id = activeElement.getAttribute?.('id');
+    if (id === null || id === undefined || id.length === 0) return null;
+    const selection = activeElement as HTMLElement & {
+      selectionStart?: number | null;
+      selectionEnd?: number | null;
+    };
+    return {
+      kind: 'id',
+      value: id,
+      selectionStart: selection.selectionStart ?? null,
+      selectionEnd: selection.selectionEnd ?? null,
+    };
+  };
+
   // Arm the modal's Tab focus-trap on the stable overlay. Extracted so the
   // per-row config editor can release it while open and re-arm on close.
   const armModalTrap = (): void => {
@@ -142,7 +217,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     });
   };
 
-  const paint = (): void => {
+  const paint = (restoreFocus: RunModalFocusIdentity | null = null): void => {
     if (destroyed) return;
     for (const picker of refPickers) picker.destroy();
     refPickers = [];
@@ -150,6 +225,25 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     fileRefArrays = [];
     overlay.innerHTML = renderRunModal(state, opts.recipe, caps);
     mountVariablePickers();
+    if (restoreFocus !== null) {
+      const target = focusIdentityElement(restoreFocus);
+      target?.focus?.({ preventScroll: true });
+      if (restoreFocus.kind === 'id' && target !== null) {
+        const selectable = target as HTMLElement & {
+          setSelectionRange?: (start: number, end: number) => void;
+        };
+        if (
+          restoreFocus.selectionStart !== null
+          && restoreFocus.selectionEnd !== null
+          && typeof selectable.setSelectionRange === 'function'
+        ) {
+          selectable.setSelectionRange(
+            restoreFocus.selectionStart,
+            restoreFocus.selectionEnd,
+          );
+        }
+      }
+    }
   };
 
   // Targeting guard (design § 8) — live half: recompute the gate and flip
@@ -167,7 +261,14 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       `[${RUN_MODAL_ACTION_ATTR}="confirm-run"]`,
     ) as HTMLButtonElement | null | undefined;
     if (runButton) {
-      runButton.disabled = state.executing || !caps.canExecute || !gate.assessment.ok;
+      runButton.disabled = !caps.canExecute || !gate.assessment.ok;
+      if (state.executing) {
+        runButton.setAttribute('aria-disabled', 'true');
+        runButton.setAttribute('aria-busy', 'true');
+      } else {
+        runButton.removeAttribute('aria-disabled');
+        runButton.removeAttribute('aria-busy');
+      }
     }
     const warning = overlay.querySelector?.(
       `[${RUN_MODAL_TARGET_WARNING_ATTR}]`,
@@ -208,17 +309,23 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   };
 
   const close = (): void => {
+    // A user dismissal must not detach the only visible owner of an
+    // in-flight side effect. Hosts can still call `destroy()` for route or
+    // application teardown; only Close / Escape are held until the command
+    // reaches a result or an actionable error.
+    if (state.executing || state.mutating || state.trigger_mutating) return;
     detach();
     opts.onClose?.();
   };
 
   const confirmRun = async (): Promise<void> => {
-    // Guard a double-run — the rendered Run button is disabled while
-    // executing, but the imperative path has no such gate.
+    // Guard a double-run — the rendered Run button is aria-disabled while
+    // executing so it can retain focus, but the imperative path has no such gate.
     if (state.executing) return;
+    const runFocus = captureFocusIdentity();
     if (!caps.canExecute || opts.execute === undefined) {
       state = { ...state, run_error: 'Running is not available on this server yet.' };
-      paint();
+      paint(runFocus);
       return;
     }
     let config: Record<string, unknown>;
@@ -226,7 +333,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       config = parseRunConfig(state.config_text);
     } catch (err) {
       state = { ...state, run_error: errMessage(err) };
-      paint();
+      paint(runFocus);
       return;
     }
     // Belt to the render-time disable: a targeted run with its target still
@@ -245,11 +352,11 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
           gate.assessment.missing,
         ),
       };
-      paint();
+      paint(runFocus);
       return;
     }
     state = { ...state, executing: true, run_error: null, result: null };
-    paint();
+    paint(runFocus);
     try {
       const result = await opts.execute({
         recipe_id: opts.recipe.recipe_id,
@@ -257,17 +364,21 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
         ...(Object.keys(gate.context).length > 0 ? { context: gate.context } : {}),
       });
       if (destroyed) return;
+      const completionFocus = captureFocusIdentity();
       state = { ...state, executing: false, result };
-      paint();
+      paint(completionFocus);
       opts.onRan?.(result);
     } catch (err) {
       if (destroyed) return;
+      const completionFocus = captureFocusIdentity();
       state = { ...state, executing: false, run_error: errMessage(err) };
-      paint();
+      paint(completionFocus);
     }
   };
 
-  const loadSchedules = async (): Promise<void> => {
+  const loadSchedules = async (
+    restoreFocus?: RunModalFocusIdentity | null,
+  ): Promise<void> => {
     if (opts.schedulesList === undefined) return;
     try {
       const { schedules } = await opts.schedulesList();
@@ -276,43 +387,50 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
         ...state,
         schedules: recipeSchedules(schedules, opts.recipe.recipe_id),
       };
-      paint();
+      paint(restoreFocus === undefined ? captureFocusIdentity() : restoreFocus);
     } catch (err) {
       if (destroyed) return;
       state = { ...state, schedules: [], schedule_error: errMessage(err) };
-      paint();
+      paint(restoreFocus === undefined ? captureFocusIdentity() : restoreFocus);
     }
   };
 
   const runScheduleMutation = async (
     fn: () => Promise<unknown>,
+    successFocus?: RunModalFocusIdentity | null,
   ): Promise<void> => {
+    if (state.mutating) return;
+    const mutationFocus = captureFocusIdentity();
     state = { ...state, mutating: true, schedule_error: null };
-    paint();
+    paint(mutationFocus);
     try {
       await fn();
       if (destroyed) return;
       state = { ...state, mutating: false };
-      await loadSchedules();
+      await loadSchedules(successFocus);
     } catch (err) {
       if (destroyed) return;
+      const failureFocus = captureFocusIdentity();
       state = { ...state, mutating: false, schedule_error: errMessage(err) };
-      paint();
+      paint(failureFocus);
     }
   };
 
   const scheduleNotWired = (): Promise<void> => {
+    const unavailableFocus = captureFocusIdentity();
     state = {
       ...state,
       schedule_error: 'Scheduling is not available on this server yet.',
     };
-    paint();
+    paint(unavailableFocus);
     return Promise.resolve();
   };
 
   const addSchedule = (): Promise<void> => {
+    if (state.mutating) return Promise.resolve();
     const create = opts.schedulesCreate;
     if (create === undefined) return scheduleNotWired();
+    const addFocus = captureFocusIdentity();
     // D-215 slice 5 — Repeat off ⇒ a ONE-SHOT. The two arms are mutually
     // exclusive at the caller, which is what keeps "one-shot" from being a
     // second concept: it is this toggle, not a second entry point.
@@ -322,7 +440,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       if (state.preset_expression.length === 0) return Promise.resolve();
     } else if (runAt === null) {
       state = { ...state, schedule_error: 'Pick a date and time to run once.' };
-      paint();
+      paint(addFocus);
       return Promise.resolve();
     }
     let overlay: Record<string, unknown>;
@@ -333,7 +451,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       // field, which shares this buffer) — surface it like confirmRun
       // rather than silently arming with recipe defaults.
       state = { ...state, schedule_error: errMessage(err) };
-      paint();
+      paint(addFocus);
       return Promise.resolve();
     }
     return runScheduleMutation(() =>
@@ -364,11 +482,28 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   const removeSchedule = (ruleId: string): Promise<void> => {
     const del = opts.schedulesDelete;
     if (del === undefined) return scheduleNotWired();
-    return runScheduleMutation(() => del({ schedule_id: ruleId }));
+    const rows = state.schedules ?? [];
+    const index = rows.findIndex((schedule) => schedule.schedule_id === ruleId);
+    const successor = index < 0
+      ? undefined
+      : rows[index + 1] ?? rows[index - 1];
+    const successFocus: RunModalFocusIdentity = successor === undefined
+      ? { kind: 'action', value: 'add-schedule' }
+      : {
+          kind: 'action',
+          value: `toggle-schedule:${successor.enabled ? 'off' : 'on'}`,
+          ruleId: successor.schedule_id,
+        };
+    return runScheduleMutation(
+      () => del({ schedule_id: ruleId }),
+      successFocus,
+    );
   };
 
   // ── R21 Trigger tab — mirrors the schedule half verbatim ──
-  const loadTriggers = async (): Promise<void> => {
+  const loadTriggers = async (
+    restoreFocus?: RunModalFocusIdentity | null,
+  ): Promise<void> => {
     if (opts.triggersList === undefined) return;
     try {
       const { triggers } = await opts.triggersList();
@@ -377,41 +512,50 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
         ...state,
         triggers: recipeTriggers(triggers, opts.recipe.recipe_id),
       };
-      paint();
+      paint(restoreFocus === undefined ? captureFocusIdentity() : restoreFocus);
     } catch (err) {
       if (destroyed) return;
       state = { ...state, triggers: [], trigger_error: errMessage(err) };
-      paint();
+      paint(restoreFocus === undefined ? captureFocusIdentity() : restoreFocus);
     }
   };
 
-  const runTriggerMutation = async (fn: () => Promise<unknown>): Promise<void> => {
+  const runTriggerMutation = async (
+    fn: () => Promise<unknown>,
+    successFocus?: RunModalFocusIdentity | null,
+  ): Promise<void> => {
+    if (state.trigger_mutating) return;
+    const mutationFocus = captureFocusIdentity();
     state = { ...state, trigger_mutating: true, trigger_error: null };
-    paint();
+    paint(mutationFocus);
     try {
       await fn();
       if (destroyed) return;
       state = { ...state, trigger_mutating: false };
-      await loadTriggers();
+      await loadTriggers(successFocus);
     } catch (err) {
       if (destroyed) return;
+      const failureFocus = captureFocusIdentity();
       state = { ...state, trigger_mutating: false, trigger_error: errMessage(err) };
-      paint();
+      paint(failureFocus);
     }
   };
 
   const triggerNotWired = (): Promise<void> => {
+    const unavailableFocus = captureFocusIdentity();
     state = {
       ...state,
       trigger_error: 'Event triggers are not available on this server yet.',
     };
-    paint();
+    paint(unavailableFocus);
     return Promise.resolve();
   };
 
   const addTrigger = (): Promise<void> => {
+    if (state.trigger_mutating) return Promise.resolve();
     const create = opts.triggersCreate;
     if (create === undefined) return triggerNotWired();
+    const addFocus = captureFocusIdentity();
     const pattern = state.pattern_text.trim();
     // An empty pattern never creates a row (the rendered Add is disabled;
     // this guards the imperative path).
@@ -421,7 +565,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       overlay = parseRunConfig(state.config_text);
     } catch (err) {
       state = { ...state, trigger_error: errMessage(err) };
-      paint();
+      paint(addFocus);
       return Promise.resolve();
     }
     return runTriggerMutation(() =>
@@ -443,7 +587,22 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   const removeTrigger = (ruleId: string): Promise<void> => {
     const del = opts.triggersDelete;
     if (del === undefined) return triggerNotWired();
-    return runTriggerMutation(() => del({ trigger_id: ruleId }));
+    const rows = state.triggers ?? [];
+    const index = rows.findIndex((trigger) => trigger.trigger_id === ruleId);
+    const successor = index < 0
+      ? undefined
+      : rows[index + 1] ?? rows[index - 1];
+    const successFocus: RunModalFocusIdentity = successor === undefined
+      ? { kind: 'action', value: 'add-trigger' }
+      : {
+          kind: 'action',
+          value: `toggle-trigger:${successor.enabled ? 'off' : 'on'}`,
+          ruleId: successor.trigger_id,
+        };
+    return runTriggerMutation(
+      () => del({ trigger_id: ruleId }),
+      successFocus,
+    );
   };
 
   // ── D-179 per-row config editor (Schedule / Trigger tabs) ──
@@ -457,6 +616,7 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     section: 'schedule' | 'trigger',
     ruleId: string,
   ): void => {
+    if (section === 'schedule' ? state.mutating : state.trigger_mutating) return;
     const row = section === 'schedule'
       ? state.schedules?.find((s) => s.schedule_id === ruleId)
       : state.triggers?.find((t) => t.trigger_id === ruleId);
@@ -469,6 +629,11 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     // stays inside the editor; re-arm it on close (via `onClose`).
     trap?.release();
     trap = null;
+    const returnFocus: RunModalFocusIdentity = {
+      kind: 'action',
+      value: `config-${section}`,
+      ruleId,
+    };
     configEditorHandle = wireConfigEditorOverlay({
       document: doc,
       title: 'Config',
@@ -486,16 +651,29 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
         : {}),
       onConfirm: (config) => {
         if (section === 'schedule') {
-          void runScheduleMutation(() =>
-            opts.schedulesUpdate!({ schedule_id: ruleId, config_overlay: config }));
+          void runScheduleMutation(
+            () => opts.schedulesUpdate!({
+              schedule_id: ruleId,
+              config_overlay: config,
+            }),
+            returnFocus,
+          );
         } else {
-          void runTriggerMutation(() =>
-            opts.triggersUpdate!({ trigger_id: ruleId, config_overlay: config }));
+          void runTriggerMutation(
+            () => opts.triggersUpdate!({
+              trigger_id: ruleId,
+              config_overlay: config,
+            }),
+            returnFocus,
+          );
         }
       },
       onClose: () => {
         configEditorHandle = null;
-        if (!destroyed) armModalTrap();
+        if (!destroyed) {
+          armModalTrap();
+          focusIdentityElement(returnFocus)?.focus?.({ preventScroll: true });
+        }
       },
     });
   };
@@ -510,27 +688,8 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
       close();
       return;
     }
-    if (action === 'tab:run') {
-      if (state.tab !== 'run') {
-        state = { ...state, tab: 'run' };
-        paint();
-      }
-      return;
-    }
-    if (action === 'tab:schedule') {
-      if (state.tab !== 'schedule') {
-        state = { ...state, tab: 'schedule' };
-        paint();
-        if (state.schedules === null && caps.canSchedule) void loadSchedules();
-      }
-      return;
-    }
-    if (action === 'tab:trigger') {
-      if (state.tab !== 'trigger') {
-        state = { ...state, tab: 'trigger' };
-        paint();
-        if (state.triggers === null && caps.canTrigger) void loadTriggers();
-      }
+    if (action === 'tab:run' || action === 'tab:schedule' || action === 'tab:trigger') {
+      setTab(action.slice('tab:'.length) as RunModalTab, true);
       return;
     }
     if (action === 'confirm-run') {
@@ -587,28 +746,44 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     // Schedule preset — captured in state (not read at Add-click time) so a
     // re-paint mid-choice can't reset it. Selects emit input + change.
     if (target.hasAttribute(RUN_MODAL_PRESET_ATTR)) {
-      state = { ...state, preset_expression: target.value ?? '' };
+      state = {
+        ...state,
+        preset_expression: target.value ?? '',
+        schedule_error: null,
+      };
+      overlay.querySelector?.(`[${RUN_MODAL_SCHEDULE_ERROR_ATTR}]`)?.remove();
       return;
     }
     // D-215 slice 5 — the Repeat toggle repaints (it swaps the control),
     // unlike the preset which is captured silently.
     if (target.hasAttribute(RUN_MODAL_REPEAT_ATTR)) {
+      const repeatFocus = captureFocusIdentity();
       state = {
         ...state,
         repeat: (target as unknown as { checked?: boolean }).checked === true,
         schedule_error: null,
       };
-      paint();
+      paint(repeatFocus);
       return;
     }
     if (target.hasAttribute(RUN_MODAL_RUN_AT_ATTR)) {
-      state = { ...state, run_at_local: target.value ?? '' };
+      state = {
+        ...state,
+        run_at_local: target.value ?? '',
+        schedule_error: null,
+      };
+      overlay.querySelector?.(`[${RUN_MODAL_SCHEDULE_ERROR_ATTR}]`)?.remove();
       return;
     }
     // Trigger pattern (R21) — in place (caret preserved); the Add button's
     // empty-pattern disable flips live, mirroring refreshRunGate.
     if (target.hasAttribute(RUN_MODAL_PATTERN_ATTR)) {
-      state = { ...state, pattern_text: target.value ?? '' };
+      state = {
+        ...state,
+        pattern_text: target.value ?? '',
+        trigger_error: null,
+      };
+      overlay.querySelector?.(`[${RUN_MODAL_TRIGGER_ERROR_ATTR}]`)?.remove();
       const addButton = overlay.querySelector?.(
         `[${RUN_MODAL_ACTION_ATTR}="add-trigger"]`,
       ) as HTMLButtonElement | null | undefined;
@@ -745,23 +920,49 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
   }
 
   function onKeydown(ev: KeyboardEvent): void {
-    if (ev.key === 'Escape') close();
+    if (ev.key === 'Escape') {
+      close();
+      return;
+    }
+    const start = ev.target as Element | null;
+    const current = start?.closest?.(`[${RUN_MODAL_TAB_ATTR}]`);
+    if (current === null || current === undefined) return;
+    const tabs = Array.from(
+      overlay.querySelectorAll?.(`[${RUN_MODAL_TAB_ATTR}]`) ?? [],
+    ) as HTMLElement[];
+    const currentIndex = tabs.indexOf(current as HTMLElement);
+    if (currentIndex < 0 || tabs.length === 0) return;
+    let nextIndex: number | null = null;
+    if (ev.key === 'ArrowRight') {
+      nextIndex = (currentIndex + 1) % tabs.length;
+    } else if (ev.key === 'ArrowLeft') {
+      nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    } else if (ev.key === 'Home') {
+      nextIndex = 0;
+    } else if (ev.key === 'End') {
+      nextIndex = tabs.length - 1;
+    }
+    if (nextIndex === null) return;
+    const next = tabs[nextIndex]?.getAttribute(RUN_MODAL_TAB_ATTR);
+    if (next !== 'run' && next !== 'schedule' && next !== 'trigger') return;
+    ev.preventDefault();
+    setTab(next, true);
   }
 
   // Imperative controls — mirror the user-facing edits so a host can
   // drive the modal (and the fake-doc tests can exercise it without
   // dispatching DOM events).
-  const setTab = (tab: RunModalTab): void => {
+  function setTab(tab: RunModalTab, focus = false): void {
     if (state.tab === tab) return;
     state = { ...state, tab };
-    paint();
+    paint(focus ? { kind: 'action', value: `tab:${tab}` } : null);
     if (tab === 'schedule' && state.schedules === null && caps.canSchedule) {
       void loadSchedules();
     }
     if (tab === 'trigger' && state.triggers === null && caps.canTrigger) {
       void loadTriggers();
     }
-  };
+  }
   // Imperative setters are PROGRAMMATIC (host prefill / tests), not the
   // user-type path — so they repaint to keep the visible controls in sync
   // with state (recipes-route parity: `setRunConfigText` calls render()).
@@ -843,6 +1044,8 @@ export const wireRunModal = (opts: WireRunModalOptions): RunModalHandle => {
     addTrigger,
     toggleTrigger,
     removeTrigger,
+    hasInFlightWork: () =>
+      !destroyed && (state.executing || state.mutating || state.trigger_mutating),
     destroy: detach,
   };
 };

@@ -36,6 +36,54 @@ import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 
 const run = promisify(execFile);
 
+/** Run a command and feed it `input` on STDIN.
+ *
+ *  ⛔ THIS EXISTS BECAUSE `run(cmd, args, { input })` SILENTLY DOES NOTHING.
+ *  `input` is an option of `execFileSync`, NOT of the async `execFile` this
+ *  promisifies — the async form exposes the child's stdin as a stream and never
+ *  reads that option. Every call site here passed it inside an options object
+ *  cast `as never`, which silenced the excess-property check that would have
+ *  said so, so three of the four sealing rungs had never once worked:
+ *
+ *    - dpapi + systemd-creds probe on stdin, so `isAvailable` timed out and
+ *      returned false — a SILENT downgrade to an unsealed keyfile.
+ *    - secret-service probes without stdin, so it reported available and then
+ *      threw from `provision` ten seconds later.
+ *
+ *  Measured on a live Windows arm64 boot: identical argv, `{ input }` was KILLED
+ *  by the timeout at 4101ms while writing the same bytes to `p.stdin` returned in
+ *  253ms. `cat` with `{ input }` takes SIGTERM at 3006ms rather than seeing EOF —
+ *  execFile leaves the pipe open — so the failure was always a stall, never a
+ *  child that proceeded with empty input. That is the one mercy here: no realm
+ *  was ever sealed with an empty secret.
+ *
+ *  ⚠ `stdin` is null when the child could not be spawned; the callback reports
+ *  that, so guard rather than assuming the stream.
+ *
+ *  Exported ONLY so a test can spawn a real child and assert the bytes arrive.
+ *  Every d-212 test mocks the provider registry — correctly, since provisioning
+ *  writes to the developer's own keychain — which is exactly why a suite of
+ *  thousands stayed green over three rungs that could never work. The mock is
+ *  the right call and the reason nothing caught this, so the seam that is NOT
+ *  mocked has to be reachable. */
+export const runWithInput = (
+  cmd: string,
+  args: readonly string[],
+  input: string,
+  options: { timeout: number },
+): Promise<{ stdout: string }> =>
+  new Promise((res, rej) => {
+    const child = execFile(cmd, [...args], options, (err, stdout) => {
+      if (err) rej(err);
+      else res({ stdout });
+    });
+    if (!child.stdin) return;
+    // A child that dies before draining stdin makes the pipe error; that failure
+    // is already reported by the callback above, so do not reject twice.
+    child.stdin.on('error', () => {});
+    child.stdin.end(input);
+  });
+
 /** Recorded in the keyfile so a later boot knows what sealed it. */
 export const MACHINE_SECRET_PROVIDER_IDS = ['os-keyring', 'dpapi', 'secret-service', 'systemd-creds'] as const;
 
@@ -186,11 +234,10 @@ const macosKeyring: MachineSecretProvider = {
  *  Never on the command line: argv is world-readable from the process list, and
  *  what passes through here is a 32-byte sealing secret. */
 const powershell = async (script: string, input?: string): Promise<string> => {
-  const { stdout } = (await run(
-    'powershell',
-    ['-NoProfile', '-NonInteractive', '-Command', script],
-    { timeout: 20_000, ...(input === undefined ? {} : { input }) } as never,
-  )) as unknown as { stdout: string };
+  const args = ['-NoProfile', '-NonInteractive', '-Command', script];
+  const { stdout } = input === undefined
+    ? await run('powershell', args, { timeout: 20_000 })
+    : await runWithInput('powershell', args, input, { timeout: 20_000 });
   return stdout.trim();
 };
 
@@ -304,9 +351,9 @@ const secretService: MachineSecretProvider = {
     const secret = randomBytes(MACHINE_SECRET_LEN);
     // `store` replaces an entry with the same attributes, so re-provisioning
     // after a failed enrollment overwrites rather than duplicating.
-    await run('secret-tool', [
+    await runWithInput('secret-tool', [
       'store', '--label=recued server keyfile', 'service', SERVICE_NAME, 'account', realmId,
-    ], { timeout: 10_000, input: secret.toString('base64') } as never);
+    ], secret.toString('base64'), { timeout: 10_000 });
     return new Uint8Array(secret);
   },
 
@@ -379,10 +426,12 @@ const systemdCreds: MachineSecretProvider = {
     try {
       // Encrypting once materializes the host key if systemd has not yet, so the
       // stat below describes the file that will actually be used.
-      await run('systemd-creds', ['encrypt', '--name=recued-probe', '--with-key=host', '-', '/dev/null'], {
-        timeout: 10_000,
-        input: 'probe',
-      } as never);
+      await runWithInput(
+        'systemd-creds',
+        ['encrypt', '--name=recued-probe', '--with-key=host', '-', '/dev/null'],
+        'probe',
+        { timeout: 10_000 },
+      );
     } catch {
       return false;
     }
@@ -417,9 +466,9 @@ const systemdCreds: MachineSecretProvider = {
     // `--name` is bound into the credential: decrypting under a different name
     // is refused outright ("Embedded credential name … does not match"), so a
     // blob lifted from another realm cannot be replayed into this one.
-    await run('systemd-creds', [
+    await runWithInput('systemd-creds', [
       'encrypt', `--name=${realmId}`, '--with-key=host', '-', machineCredPath(keyfilePath),
-    ], { timeout: 10_000, input: secret.toString('base64') } as never);
+    ], secret.toString('base64'), { timeout: 10_000 });
     return new Uint8Array(secret);
   },
 

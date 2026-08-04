@@ -116,7 +116,7 @@ export const computePackGrantOverlaps = (
   const installedOwnersByKey = new Map<string, Set<string>>();
   for (const pack of packs) {
     if (!pack.installed) continue;
-    const grants = pack.manifest.mcp_body_visibility_grants ?? [];
+    const grants = pack.body_visibility_grant_keys;
     for (const key of grants) {
       let owners = installedOwnersByKey.get(key);
       if (owners === undefined) {
@@ -136,7 +136,7 @@ export const computePackGrantOverlaps = (
     const overlappingGrants: PackGrantOverlapEntry[] = [];
     const otherPacksUnion = new Set<string>();
     const seenInPack = new Set<string>();
-    const grants = pack.manifest.mcp_body_visibility_grants ?? [];
+    const grants = pack.body_visibility_grant_keys;
     for (const key of grants) {
       // Defensive intra-pack dedup. The manifest validator forbids
       // duplicate grant keys in one pack (`bulk-pack.ts`

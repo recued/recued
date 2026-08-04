@@ -15,6 +15,10 @@ import {
   type McpActionRecord,
 } from '../mcp-action-store.js';
 import {
+  MCP_RECIPE_CALLBACK_CAPABILITY,
+  MCP_RECIPE_CALLBACK_NOTIFICATION_METHOD,
+} from '../mcp-recipe-callback.js';
+import {
   _testing,
   createMcpHttpDispatch,
   type McpDeps,
@@ -93,6 +97,38 @@ describe('MCP held-action continuation surface', () => {
       .not.toHaveProperty('notificationMethod');
     expect(capable.result.capabilities.experimental['com.recued/async-actions'])
       .toMatchObject({ notificationMethod: MCP_ACTION_NOTIFICATION_METHOD });
+  });
+
+  it('advertises recipe callbacks only on an unsolicited transport with a bound authorizer', async () => {
+    const actions = createMcpActionStore(createInMemoryCollection<McpActionRecord>());
+    const initialize = {
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {},
+    };
+    const pollingOnly = await createMcpHttpDispatch(deps(actions))(initialize) as {
+      result: { capabilities: { experimental: Record<string, Record<string, unknown>> } };
+    };
+    const capable = await createMcpHttpDispatch(deps(actions, {
+      mcpActionStore: undefined,
+      sharedStore: {} as McpDeps['sharedStore'],
+      mcpRecipeCallbackNotifications: true,
+      mcpRecipeCallbackAuthorize: () => true,
+    }))(initialize) as typeof pollingOnly;
+
+    expect(pollingOnly.result.capabilities.experimental)
+      .not.toHaveProperty(MCP_RECIPE_CALLBACK_CAPABILITY);
+    expect(capable.result.capabilities.experimental[MCP_RECIPE_CALLBACK_CAPABILITY])
+      .toMatchObject({
+        version: 1,
+        notificationMethod: MCP_RECIPE_CALLBACK_NOTIFICATION_METHOD,
+        notificationsAreHints: true,
+        delivery: 'at_least_once',
+        callbackRefForDedupe: true,
+      });
+    expect(capable.result.capabilities.experimental)
+      .not.toHaveProperty('com.recued/async-actions');
   });
 
   it('attaches one opaque action_ref and returns its eventual final result', async () => {

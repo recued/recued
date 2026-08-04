@@ -13,7 +13,16 @@ import {
 } from '@recued/contracts';
 import type { ConnectionFormValues } from '../connection-schemas/types.js';
 
+/** Fields the readiness checklist can name.
+ *
+ *  ⚠ Deliberately NOT "the fields the authorize call consumes" — it never was a
+ *  clean subset of that, and reading it as one is what left `name` /
+ *  `display_name` off a list the owner reads as "what must I still enter?".
+ *  Membership rule: a field the OWNER has to fill before this connection can be
+ *  finished. */
 export type ConnectionOAuthCredentialFieldKey =
+  | 'name'
+  | 'display_name'
   | 'auth.client_id'
   | 'auth.client_secret'
   | 'auth.token_endpoint'
@@ -109,7 +118,33 @@ export const connectionOAuthCredentialReadiness = (args: {
   const authorizeUrlIssue = args.vendor === null
     ? connectionOAuthHttpsEndpointIssue(args.values, 'auth.authorize_url', 'Authorize URL')
     : null;
+  // ⛔ `name` and `display_name` lead the list, and they are here because the
+  // OWNER must type them — not because the authorize call consumes them. It does
+  // not: `driveVendorOAuth` sends neither.
+  //
+  // That distinction is an implementation detail the person filling the form
+  // cannot see and has no reason to care about. From where they sit the
+  // checklist answers ONE question — "what do I still have to enter to get
+  // through this?" — and scoping it to the fields one rpc happens to read made
+  // it answer a different question while looking like it answered theirs: it
+  // said "Ready to authorize" with two required fields blank, and the first
+  // news of them was a save-time rejection.
+  //
+  // Both are required on every connection schema (`api.ts` declares them with
+  // no `optional`), so "required to finish" is the honest membership rule.
+  const namePresent = present(args.values, 'name');
+  const displayNamePresent = present(args.values, 'display_name');
   const requirements: ConnectionOAuthCredentialRequirement[] = [
+    {
+      fieldKey: 'name',
+      label: 'Name',
+      status: namePresent ? 'complete' : 'missing',
+    },
+    {
+      fieldKey: 'display_name',
+      label: 'Display name',
+      status: displayNamePresent ? 'complete' : 'missing',
+    },
     {
       fieldKey: 'auth.client_id',
       label: 'Client ID',
@@ -150,7 +185,21 @@ export const connectionOAuthCredentialReadiness = (args: {
   }
 
   let refreshIssue: ConnectionOAuthCredentialIssue | null = null;
-  if (args.vendor !== null && provider === null) {
+  // Checked FIRST, and they must gate — `ready` is derived from `issue`, so a
+  // requirement that never becomes one would list as missing while the heading
+  // still read "Ready to authorize". Listing it without gating it would leave
+  // the same lie one line lower down.
+  if (!namePresent) {
+    refreshIssue = {
+      fieldKey: 'name',
+      message: 'Give this connection a lowercase name first — recipes reference it by that name.',
+    };
+  } else if (!displayNamePresent) {
+    refreshIssue = {
+      fieldKey: 'display_name',
+      message: 'Add a display name so this connection is recognisable in lists.',
+    };
+  } else if (args.vendor !== null && provider === null) {
     refreshIssue = {
       fieldKey: null,
       message: 'Provider sign-in details are unavailable. Return to Connections and choose the provider again.',

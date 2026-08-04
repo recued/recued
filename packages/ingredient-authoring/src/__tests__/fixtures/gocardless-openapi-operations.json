@@ -1,9 +1,9 @@
 {
   "source": "https://developer.gocardless.com/openapi-schema-public.json",
-  "sha256": "0b30c0710c61d2c38b0b28e4307ed6d14c172b4f10a2b8d1fd5b7cf29190284e",
+  "sha256": "6fce6f2797637b74fbccb58b433cde6ccacb2b6fd8bbe54cec191a99c79afdbb",
   "openapi": "3.0.0",
   "api_version": "2015-07-06",
-  "schema_version": "0.101.0",
+  "schema_version": "0.108.0",
   "path_count": 107,
   "operation_count": 137,
   "selected_operation_count": 114,

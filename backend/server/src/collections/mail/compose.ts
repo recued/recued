@@ -297,6 +297,7 @@ export const composeMailStack = (
       return createImapProvider({
         slug,
         config: () => captured,
+        deliveryStore: bundle.accountStore,
         ...(bundle.now ? { now: bundle.now } : {}),
         // Absent in production ⇒ createImapProvider falls back to
         // `defaultSmtpTransportFactory` (nodemailer).

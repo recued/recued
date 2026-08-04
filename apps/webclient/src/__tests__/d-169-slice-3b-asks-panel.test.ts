@@ -51,6 +51,7 @@ interface FakeEl {
   listeners: Map<string, Array<() => void>>;
   readonly firstChild: FakeEl | null;
   setAttribute(k: string, v: string): void;
+  removeAttribute(k: string): void;
   getAttribute(k: string): string | null;
   appendChild(c: FakeEl): FakeEl;
   removeChild(c: FakeEl): FakeEl;
@@ -75,6 +76,9 @@ const makeFakeDocument = (): { createElement(tag: string): FakeEl } => ({
       },
       setAttribute(k, v) {
         el.attrs.set(k, v);
+      },
+      removeAttribute(k) {
+        el.attrs.delete(k);
       },
       getAttribute(k) {
         return el.attrs.get(k) ?? null;
@@ -337,6 +341,56 @@ describe('D-169 P2 Slice 3b — webclient Approvals panel', () => {
     // The defensive re-fetch dropped the answered ask.
     expect(mount.getAsks()).toHaveLength(0);
     expect(collectByAttr(host, ASK_CARD_ATTR)).toHaveLength(0);
+    mount.dispose();
+  });
+
+  it('keeps an acknowledged answer retired when the follow-up list fails', async () => {
+    const runList = vi
+      .fn<() => Promise<{ asks: ReadonlyArray<ServerPendingAsk> }>>()
+      .mockResolvedValueOnce({ asks: [ask('a1')] })
+      .mockRejectedValueOnce(new Error('follow-up unavailable'));
+    const runSubmitAnswer = vi.fn(async () => ({ ok: true as const }));
+    const { host, mount } = mountFor(runList, runSubmitAnswer);
+    await mount.whenLoaded();
+
+    optionButton(host, 'yes')!.click();
+    await tick();
+    await mount.whenLoaded();
+
+    expect(runSubmitAnswer).toHaveBeenCalledWith({ ask_id: 'a1', option_id: 'yes' });
+    expect(mount.getState()).toBe('error');
+    expect(mount.getListError()).toBe('follow-up unavailable');
+    expect(mount.getAsks()).toEqual([]);
+    expect(collectByAttr(host, ASK_CARD_ATTR)).toHaveLength(0);
+    expect(collectByAttr(host, ASKS_PANEL_ERROR_ATTR)).toHaveLength(1);
+
+    mount.dispose();
+  });
+
+  it('filters a stale post-answer snapshot and releases the tombstone after absence is confirmed', async () => {
+    const runList = vi
+      .fn<() => Promise<{ asks: ReadonlyArray<ServerPendingAsk> }>>()
+      .mockResolvedValueOnce({ asks: [ask('a1')] })
+      .mockResolvedValueOnce({ asks: [ask('a1')] }) // stale replica
+      .mockResolvedValueOnce({ asks: [] }) // authoritative absence clears tombstone
+      .mockResolvedValueOnce({ asks: [ask('a1')] }); // a later reused id is visible
+    const { host, mount } = mountFor(
+      runList,
+      vi.fn(async () => ({ ok: true as const })),
+    );
+    await mount.whenLoaded();
+
+    optionButton(host, 'yes')!.click();
+    await tick();
+    await mount.whenLoaded();
+    expect(mount.getState()).toBe('ready');
+    expect(mount.getAsks()).toEqual([]);
+
+    await mount.refresh();
+    expect(mount.getAsks()).toEqual([]);
+    await mount.refresh();
+    expect(mount.getAsks().map((row) => row.ask_id)).toEqual(['a1']);
+
     mount.dispose();
   });
 

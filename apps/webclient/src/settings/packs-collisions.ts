@@ -109,7 +109,7 @@ export const computePackRecipeCollisions = (
   // First pass — recipe-slug → set of pack slugs that ship it.
   const ownersBySlug = new Map<string, Set<string>>();
   for (const pack of packs) {
-    for (const ref of pack.manifest.recipes) {
+    for (const ref of pack.recipe_refs) {
       let owners = ownersBySlug.get(ref.slug);
       if (owners === undefined) {
         owners = new Set<string>();
@@ -125,7 +125,7 @@ export const computePackRecipeCollisions = (
     const collidingRecipes: PackRecipeCollisionEntry[] = [];
     const otherPacksUnion = new Set<string>();
     const seenInPack = new Set<string>();
-    for (const ref of pack.manifest.recipes) {
+    for (const ref of pack.recipe_refs) {
       // Skip if this manifest somehow lists the slug twice — the pack
       // validator forbids dupes, but the defensive guard keeps the
       // render list stable if a future malformed manifest slips

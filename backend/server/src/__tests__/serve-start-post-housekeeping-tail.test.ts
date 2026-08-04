@@ -85,6 +85,8 @@ const makeOptions = (
     app: {
       llmConfig: { slot_1: { provider: 'openai', model: 'gpt-4.1' } },
       executionCaseLifecycle: { finalizeTurn: vi.fn() },
+      sharedStoreRef: { tag: 'shared-store' },
+      chatInboundTokenStoreRef: { tag: 'inbound-token-store' },
     },
     collection: {
       calendarStack: { disposeAll: vi.fn() },
@@ -130,6 +132,8 @@ describe('startPostHousekeepingTail', () => {
       auditRetention: options.storage.auditRetention,
       s2sPreviewStore: options.storage.s2sPreviewStoreRef,
       correctionEventsStore: options.storage.correctionEventsStoreRef,
+      mcpRecipeCallbackStore: options.app.sharedStoreRef,
+      mcpRecipeCallbackTokenStore: options.app.chatInboundTokenStoreRef,
       checkpointStore: options.storage.checkpointStore,
       auditLog: options.storage.auditLog,
       executionCaseLifecycle: options.app.executionCaseLifecycle,

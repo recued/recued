@@ -304,11 +304,40 @@ export interface ChatInboundTokenStore {
    *  hash mismatch). The MCP port handler's bearer verifier closes
    *  over this method. */
   verifyBearer(input: { bearer: string; now: number }): McpInboundTokenRecord | null;
+  /** Drain best-effort authority-change side effects (currently durable MCP
+   * callback payload retirement). Mutators stay synchronous for transaction
+   * composition; shutdown and async RPC callers use this seam to wait until
+   * every admitted side effect has settled. */
+  drainAuthorityChanges(): Promise<void>;
+}
+
+export interface CreateChatInboundTokenStoreOptions {
+  /** Called after grants, binding, revocation, or deletion changes what a token
+   * can receive. It is deliberately token-id-only: the consumer re-reads the
+   * committed row and cannot act on a stale pre-mutation record. */
+  onAuthorityChanged?: (token_id: string) => Promise<void> | void;
 }
 
 export const createChatInboundTokenStore = (
   db: Database.Database,
+  options: CreateChatInboundTokenStoreOptions = {},
 ): ChatInboundTokenStore => {
+  const authorityChanges = new Set<Promise<void>>();
+  const notifyAuthorityChanged = (token_id: string): void => {
+    if (!options.onAuthorityChanged) return;
+    let outcome: Promise<void> | void;
+    try {
+      outcome = options.onAuthorityChanged(token_id);
+    } catch {
+      return;
+    }
+    if (!outcome) return;
+    let tracked: Promise<void>;
+    tracked = Promise.resolve(outcome)
+      .catch(() => undefined)
+      .finally(() => authorityChanges.delete(tracked));
+    authorityChanges.add(tracked);
+  };
   const insertStmt = db.prepare(`
     INSERT INTO chat_inbound_tokens
       (token_id, bearer_hash, label, peer_handle, created_at, expires_at,
@@ -477,6 +506,7 @@ export const createChatInboundTokenStore = (
       if (result.changes === 0) return null;
       const row = selectByIdStmt.get({ token_id }) as Row | undefined;
       if (!row) return null;
+      notifyAuthorityChanged(token_id);
       return rowToRecord(row);
     },
     updateTokenContract({ token_id, contract_id, now }) {
@@ -491,14 +521,19 @@ export const createChatInboundTokenStore = (
       if (result.changes === 0) return null;
       const row = selectByIdStmt.get({ token_id }) as Row | undefined;
       if (!row) return null;
+      notifyAuthorityChanged(token_id);
       return rowToRecord(row);
     },
     revokeToken({ token_id, now }) {
       const result = revokeStmt.run({ token_id, revoked_at: now, updated_at: now });
+      // Notify even on an idempotent/missing revoke so retrying the lifecycle
+      // operation also retries cleanup left behind by a prior crash.
+      notifyAuthorityChanged(token_id);
       return result.changes > 0;
     },
     deleteToken(token_id) {
       const result = deleteStmt.run(token_id);
+      notifyAuthorityChanged(token_id);
       return result.changes > 0;
     },
     verifyBearer({ bearer, now }) {
@@ -518,6 +553,14 @@ export const createChatInboundTokenStore = (
       if (record.revoked_at !== null) return null;
       if (record.expires_at !== 0 && record.expires_at <= now) return null;
       return record;
+    },
+    async drainAuthorityChanges() {
+      // New callbacks may be admitted while an earlier one settles. Loop to a
+      // fixed point so an async RPC response/shutdown drain never snapshots
+      // only the first generation of work.
+      while (authorityChanges.size > 0) {
+        await Promise.all([...authorityChanges]);
+      }
     },
   };
 };

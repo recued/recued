@@ -83,6 +83,8 @@ export const LOGS_ROUTE_STATUS_ATTR = 'data-recued-logs-status';
 export const LOGS_ROUTE_POLICY_ATTR = 'data-recued-logs-policy';
 export const LOGS_ROUTE_LINK_ATTR = 'data-recued-logs-link';
 export const LOGS_ROUTE_DETAIL_ATTR = 'data-recued-logs-detail';
+export const LOGS_ROUTE_DETAIL_HEADING_ATTR =
+  'data-recued-logs-detail-heading';
 export const LOGS_ROUTE_OUTCOME_ATTR = 'data-recued-logs-outcome';
 export const LOGS_ROUTE_AFFECTED_ITEMS_ATTR =
   'data-recued-logs-affected-items';
@@ -221,6 +223,9 @@ export interface BootstrapLogsRouteOptions {
   /** Backs the Recipe filter combobox (★ ref-picker). */
   recipeNamesCaller?: RunsRecipeNamesCaller;
   initialRunId?: string;
+  /** Keep the shell router's cached hash aligned with successful in-page
+   *  History.replaceState writes, which do not emit hashchange. */
+  onHashSync?: (hash: string) => void;
   /** Originating reviewed Chat action for an exact-run drill-down. Bound to
    * `initialRunId`; selecting another run intentionally drops this context. */
   chatReturn?: ChatPlanAddress;
@@ -323,6 +328,8 @@ export interface RunsRoute {
   revokeGrant(contract_id: string): Promise<void>;
   /** Owner control/revocation write still awaiting its source-server result. */
   hasInFlightWork(): boolean;
+  /** Contextual shell guard for run controls that cannot be recalled. */
+  inFlightWorkPrompt(): string | null;
   dispose(): void;
 }
 
@@ -440,7 +447,8 @@ const LOGS_ROUTE_STYLES = `
   background: var(--accent);
   color: var(--on-accent);
 }
-[${LOGS_ROUTE_HOST_ATTR}] .logs-button:disabled {
+[${LOGS_ROUTE_HOST_ATTR}] .logs-button:disabled,
+[${LOGS_ROUTE_HOST_ATTR}] .logs-button[aria-disabled="true"] {
   cursor: not-allowed;
   opacity: .65;
 }
@@ -1789,7 +1797,18 @@ const renderFilterOptions = <T extends string>(
 const renderFilters = (
   filters: RunsFilters,
   recipePickerHtml: string,
-): string => `
+  feedBusy: boolean,
+  applyingFilters: boolean,
+): string => {
+  const applyStateAttrs = feedBusy
+    ? ' aria-disabled="true" aria-busy="true"'
+    : '';
+  const applyLabel = applyingFilters
+    ? 'Applying…'
+    : feedBusy
+      ? 'Loading…'
+      : 'Apply';
+  return `
   <div class="logs-filters">
     <label class="logs-field">
       <span>Status</span>
@@ -1815,9 +1834,11 @@ const renderFilters = (
         ).join('')}
       </select>
     </label>
-    <button type="button" class="logs-button logs-button--primary" ${LOGS_ROUTE_ACTION_ATTR}="apply-filters">Apply</button>
+    <button type="button" class="logs-button logs-button--primary"
+      ${LOGS_ROUTE_ACTION_ATTR}="apply-filters"${applyStateAttrs}>${applyLabel}</button>
   </div>
 `;
+};
 
 // R17 — the History table's status cell: the status chip plus, at most, one
 // failure-reason chip (a long-op kill/stall category WINS over a cli-tool
@@ -1833,7 +1854,11 @@ const renderHistoryStatusCell = (row: RunFeedRow): string => `
 // the row carries the same `open-detail` action so a mouse click anywhere on it
 // opens the run too). Per-row provenance / recipe / approval links live in the
 // detail pane (`renderRunLinks`), not in the scannable table.
-const renderHistoryRow = (row: RunFeedRow, selected: boolean): string => `
+const renderHistoryRow = (
+  row: RunFeedRow,
+  selected: boolean,
+  opening: boolean,
+): string => `
   <tr ${LOGS_ROUTE_ROW_ATTR}="${e(row.run_id)}" data-risk="${rowRisk(row)}"${selected ? ' data-selected="true"' : ''}
     ${LOGS_ROUTE_ACTION_ATTR}="open-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(row.run_id)}">
     <td data-label="Run">
@@ -1848,7 +1873,9 @@ const renderHistoryRow = (row: RunFeedRow, selected: boolean): string => `
     <td class="logs-cell-open">
       <button type="button" class="logs-button logs-row-open"
         ${LOGS_ROUTE_ACTION_ATTR}="open-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(row.run_id)}"
-        aria-label="Open run detail">▸</button>
+        aria-label="${opening ? 'Opening run detail' : 'Open run detail'}"${opening
+          ? ' aria-disabled="true" aria-busy="true"'
+          : ''}>${opening ? '…' : '▸'}</button>
     </td>
   </tr>
 `;
@@ -1860,6 +1887,7 @@ const renderFeed = (
   nextCursor: ExecutionListCursor | null,
   error: string | undefined,
   selectedRunId: string | null,
+  openingRunId: string | null,
 ): string => {
   if (error !== undefined) {
     return `<p ${LOGS_ROUTE_ERROR_ATTR}>${e(error)}</p>`;
@@ -1888,11 +1916,15 @@ const renderFeed = (
         </tr>
       </thead>
       <tbody>
-        ${runs.map((row) => renderHistoryRow(row, row.run_id === selectedRunId)).join('')}
+        ${runs.map((row) => renderHistoryRow(
+          row,
+          row.run_id === selectedRunId,
+          row.run_id === openingRunId,
+        )).join('')}
       </tbody>
     </table>
     ${nextCursor !== null
-      ? `<button type="button" class="logs-button" ${LOGS_ROUTE_LOAD_MORE_ATTR} ${LOGS_ROUTE_ACTION_ATTR}="load-more">${loadingMore ? 'Loading...' : 'Load more'}</button>`
+      ? `<button type="button" class="logs-button" ${LOGS_ROUTE_LOAD_MORE_ATTR} ${LOGS_ROUTE_ACTION_ATTR}="load-more" aria-disabled="${loadingMore}">${loadingMore ? 'Loading...' : 'Load more'}</button>`
       : ''}
   `;
 };
@@ -1920,17 +1952,24 @@ const renderLanes = (lanes: ReadonlyArray<LaneStatus>): string => {
   return `<div ${LOGS_ROUTE_LANES_ATTR}>${chips}</div>`;
 };
 
+type LogsActiveControlAction = 'kill-run' | 'cancel-call' | 'promote-call';
+
 const renderActiveControls = (
   entry: ActiveExecutionEntry,
-  busy: boolean,
+  pendingAction: LogsActiveControlAction | undefined,
 ): string => {
-  const disabled = busy ? ' disabled' : '';
+  const pendingAttrs = (action: LogsActiveControlAction): string =>
+    pendingAction === undefined
+      ? ''
+      : ` aria-disabled="true"${pendingAction === action
+        ? ' aria-busy="true"'
+        : ''}`;
   if (entry.entry_kind === 'queued-call' && entry.queued_call_id !== undefined) {
     const id = e(entry.queued_call_id);
     return `
       <div class="logs-active-controls">
-        <button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="promote-call" ${LOGS_ROUTE_QUEUED_CALL_ID_ATTR}="${id}"${disabled}>Promote</button>
-        <button type="button" class="logs-button logs-button--danger" ${LOGS_ROUTE_ACTION_ATTR}="cancel-call" ${LOGS_ROUTE_QUEUED_CALL_ID_ATTR}="${id}"${disabled}>Cancel</button>
+        <button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="promote-call" ${LOGS_ROUTE_QUEUED_CALL_ID_ATTR}="${id}"${pendingAttrs('promote-call')}>${pendingAction === 'promote-call' ? 'Promoting…' : 'Promote'}</button>
+        <button type="button" class="logs-button logs-button--danger" ${LOGS_ROUTE_ACTION_ATTR}="cancel-call" ${LOGS_ROUTE_QUEUED_CALL_ID_ATTR}="${id}"${pendingAttrs('cancel-call')}>${pendingAction === 'cancel-call' ? 'Cancelling…' : 'Cancel'}</button>
       </div>
     `;
   }
@@ -1940,7 +1979,7 @@ const renderActiveControls = (
   if (entry.run_id !== undefined && entry.run_id.length > 0) {
     return `
       <div class="logs-active-controls">
-        <button type="button" class="logs-button logs-button--danger" ${LOGS_ROUTE_ACTION_ATTR}="kill-run" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(entry.run_id)}"${disabled}>Kill</button>
+        <button type="button" class="logs-button logs-button--danger" ${LOGS_ROUTE_ACTION_ATTR}="kill-run" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(entry.run_id)}"${pendingAttrs('kill-run')}>${pendingAction === 'kill-run' ? 'Killing…' : 'Kill'}</button>
       </div>
     `;
   }
@@ -1955,7 +1994,7 @@ const activeEntryId = (entry: ActiveExecutionEntry): string =>
 const renderActiveEntry = (
   entry: ActiveExecutionEntry,
   now: number,
-  busyIds: ReadonlySet<string>,
+  pendingControls: ReadonlyMap<string, LogsActiveControlAction>,
 ): string => {
   const stalled = entry.progress.stalled === true;
   const sinceTs = entry.slot_acquired_at ?? entry.started_at;
@@ -1976,7 +2015,7 @@ const renderActiveEntry = (
           ${stalled ? '<span>stalled</span>' : ''}
         </div>
       </div>
-      ${renderActiveControls(entry, busyIds.has(id))}
+      ${renderActiveControls(entry, pendingControls.get(id))}
     </li>
   `;
 };
@@ -1997,9 +2036,10 @@ const renderActivePeek = (
   const manageLink = `<a class="logs-inline-link" ${LOGS_ROUTE_LINK_ATTR}="manage-active" href="${consoleHref}">manage ▸</a>`;
   const shell = (body: string): string =>
     `<section ${LOGS_ROUTE_PEEK_ATTR}>${body}</section>`;
-  if (error !== undefined) {
-    return shell(`<p ${LOGS_ROUTE_ERROR_ATTR}>${e(error)}</p>`);
-  }
+  const errorLine = error !== undefined
+    ? `<p ${LOGS_ROUTE_ERROR_ATTR}>${e(error)}</p>`
+    : '';
+  if (error !== undefined && entries.length === 0) return shell(errorLine);
   if (loading && entries.length === 0) {
     return shell('<p class="logs-peek-idle">Checking for active runs…</p>');
   }
@@ -2014,7 +2054,7 @@ const renderActivePeek = (
   `;
   if (entries.length > ACTIVE_PEEK_CAP) {
     // Long: the count + the manage link only — no rows, History stays in view.
-    return shell(head);
+    return shell(`${errorLine}${head}`);
   }
   const rows = entries.map((entry) => {
     const sinceTs = entry.slot_acquired_at ?? entry.started_at;
@@ -2029,7 +2069,7 @@ const renderActivePeek = (
       </li>
     `;
   }).join('');
-  return shell(`${head}<ul class="logs-peek-feed" role="list">${rows}</ul>`);
+  return shell(`${errorLine}${head}<ul class="logs-peek-feed" role="list">${rows}</ul>`);
 };
 
 const renderActive = (
@@ -2039,24 +2079,31 @@ const renderActive = (
   error: string | undefined,
   notice: string | undefined,
   now: number,
-  busyIds: ReadonlySet<string>,
+  pendingControls: ReadonlyMap<string, LogsActiveControlAction>,
 ): string => {
-  const body = error !== undefined
+  const refreshAttrs = loading
+    ? ' aria-disabled="true" aria-busy="true"'
+    : '';
+  const refreshLabel = loading ? 'Refreshing…' : 'Refresh';
+  const errorLine = error !== undefined
     ? `<p ${LOGS_ROUTE_ERROR_ATTR}>${e(error)}</p>`
+    : '';
+  const body = error !== undefined && entries.length === 0
+    ? ''
     : loading && entries.length === 0 && lanes.length === 0
       ? `<p ${LOGS_ROUTE_EMPTY_ATTR}>Loading active executions...</p>`
       : entries.length === 0
         ? `<p ${LOGS_ROUTE_EMPTY_ATTR}>No active executions.</p>`
-        : `<ul class="logs-active-feed" role="list">${entries.map((entry) => renderActiveEntry(entry, now, busyIds)).join('')}</ul>`;
+        : `<ul class="logs-active-feed" role="list">${entries.map((entry) => renderActiveEntry(entry, now, pendingControls)).join('')}</ul>`;
   return `
     <section ${LOGS_ROUTE_ACTIVE_ATTR}>
       <div class="logs-active-head">
         <h2>Active</h2>
-        <button type="button" class="logs-inline-link" ${LOGS_ROUTE_ACTION_ATTR}="refresh-active">Refresh</button>
+        <button type="button" class="logs-inline-link" ${LOGS_ROUTE_ACTION_ATTR}="refresh-active"${refreshAttrs}>${refreshLabel}</button>
       </div>
       ${renderLanes(lanes)}
       ${notice !== undefined ? `<p ${LOGS_ROUTE_DEGRADED_ATTR}>${e(notice)}</p>` : ''}
-      ${body}
+      ${errorLine}${body}
     </section>
   `;
 };
@@ -2113,10 +2160,12 @@ const passBudgetSummary = (grant: SessionGrantView): string => {
 };
 
 const renderPassControls = (grant: SessionGrantView, busy: boolean): string => {
-  const disabled = busy ? ' disabled' : '';
+  const pending = busy
+    ? ' aria-disabled="true" aria-busy="true"'
+    : '';
   return `
     <div class="logs-active-controls">
-      <button type="button" class="logs-button logs-button--danger" ${LOGS_ROUTE_ACTION_ATTR}="revoke-grant" ${LOGS_ROUTE_GRANT_ID_ATTR}="${e(grant.contract_id)}"${disabled}>Revoke</button>
+      <button type="button" class="logs-button logs-button--danger" ${LOGS_ROUTE_ACTION_ATTR}="revoke-grant" ${LOGS_ROUTE_GRANT_ID_ATTR}="${e(grant.contract_id)}"${pending}>${busy ? 'Revoking…' : 'Revoke'}</button>
     </div>
   `;
 };
@@ -2152,8 +2201,15 @@ const renderPasses = (
   now: number,
   busyIds: ReadonlySet<string>,
 ): string => {
-  const body = error !== undefined
+  const refreshAttrs = loading
+    ? ' aria-disabled="true" aria-busy="true"'
+    : '';
+  const refreshLabel = loading ? 'Refreshing…' : 'Refresh';
+  const errorLine = error !== undefined
     ? `<p ${LOGS_ROUTE_ERROR_ATTR}>${e(error)}</p>`
+    : '';
+  const body = error !== undefined && grants.length === 0
+    ? ''
     : loading && grants.length === 0
       ? `<p ${LOGS_ROUTE_EMPTY_ATTR}>Loading active passes...</p>`
       : grants.length === 0
@@ -2163,10 +2219,10 @@ const renderPasses = (
     <section ${LOGS_ROUTE_PASSES_ATTR}>
       <div class="logs-active-head">
         <h2>Active passes</h2>
-        <button type="button" class="logs-inline-link" ${LOGS_ROUTE_ACTION_ATTR}="refresh-passes">Refresh</button>
+        <button type="button" class="logs-inline-link" ${LOGS_ROUTE_ACTION_ATTR}="refresh-passes"${refreshAttrs}>${refreshLabel}</button>
       </div>
       ${notice !== undefined ? `<p ${LOGS_ROUTE_DEGRADED_ATTR}>${e(notice)}</p>` : ''}
-      ${body}
+      ${errorLine}${body}
     </section>
   `;
 };
@@ -2359,17 +2415,22 @@ const renderDetail = (
   detail: RunDetail | null,
   selectedRunId: string | null,
   loading: boolean,
+  retrying: boolean,
   error: string | undefined,
   returnToChat?: ChatPlanAddress,
 ): string => {
   if (error !== undefined) {
-    return `<aside ${LOGS_ROUTE_DETAIL_ATTR}><h2>Run detail</h2><p ${LOGS_ROUTE_ERROR_ATTR}>${e(error)}</p></aside>`;
+    return `<aside ${LOGS_ROUTE_DETAIL_ATTR}><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(selectedRunId ?? '')}" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_ERROR_ATTR} role="alert">${e(error)}</p>${selectedRunId === null
+      ? ''
+      : `<button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="retry-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(selectedRunId)}">Retry</button>`}</aside>`;
   }
   if (loading) {
-    return `<aside ${LOGS_ROUTE_DETAIL_ATTR}><h2>Run detail</h2><p ${LOGS_ROUTE_EMPTY_ATTR}>Loading ${e(selectedRunId ?? 'run')}...</p></aside>`;
+    return `<aside ${LOGS_ROUTE_DETAIL_ATTR}><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(selectedRunId ?? '')}" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_EMPTY_ATTR}>Loading ${e(selectedRunId ?? 'run')}...</p>${retrying && selectedRunId !== null
+      ? `<button type="button" class="logs-button" ${LOGS_ROUTE_ACTION_ATTR}="retry-detail" ${LOGS_ROUTE_RUN_ID_ATTR}="${e(selectedRunId)}" aria-disabled="true" aria-busy="true">Retrying…</button>`
+      : ''}</aside>`;
   }
   if (detail === null) {
-    return `<aside ${LOGS_ROUTE_DETAIL_ATTR}><h2>Run detail</h2><p ${LOGS_ROUTE_EMPTY_ATTR}>Select a run to see its activity, approvals, errors, and permission decisions.</p></aside>`;
+    return `<aside ${LOGS_ROUTE_DETAIL_ATTR}><h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="" tabindex="-1">Run detail</h2><p ${LOGS_ROUTE_EMPTY_ATTR}>Select a run to see its activity, approvals, errors, and permission decisions.</p></aside>`;
   }
 
   const audit = detail.audit;
@@ -2379,7 +2440,7 @@ const renderDetail = (
   const askId = detail.approvals.ask_id ?? audit.ask_id;
   return `
     <aside ${LOGS_ROUTE_DETAIL_ATTR}="${e(audit.run_id)}">
-      <h2>${e(audit.recipe_id)}</h2>
+      <h2 ${LOGS_ROUTE_DETAIL_HEADING_ATTR}="${e(audit.run_id)}" tabindex="-1">${e(audit.recipe_id)}</h2>
       ${renderOutcome(detail)}
       ${renderAffectedItems(detail, returnToChat)}
       <div class="logs-detail-meta">
@@ -2502,7 +2563,18 @@ export const bootstrapLogsRoute = (
     chatReturnRunId === null ? undefined : opts.chatReturn;
   let loadingFeed = false;
   let loadingMore = false;
+  // Distinguish an explicit filter submission from initial/broadcast loads so
+  // Apply can own the keyboard action with precise progress copy while every
+  // feed read still shares one visible, single-flight boundary.
+  let applyingFilters = false;
+  let pendingLoadMoreFocus = false;
+  let pendingLoadedRunFocusId: string | null = null;
   let loadingDetail = false;
+  let retryingDetail = false;
+  // A row activation is an in-page master → detail navigation. Delay its focus
+  // handoff until the final detail/error paint; the loading heading is itself
+  // replaced. Once focused, later feed/active repaints restore the same owner.
+  let pendingDetailFocusRunId: string | null = null;
   let errors: RunsLoadErrors = {};
   let disposed = false;
   let feedSeq = 0;
@@ -2513,7 +2585,11 @@ export const bootstrapLogsRoute = (
   let loadingActive = false;
   let activeSeq = 0;
   let activeNotice: string | undefined;
-  const busyControlIds = new Set<string>();
+  const pendingControls = new Map<string, LogsActiveControlAction>();
+  // A successful control ACK is authoritative even when the defensive active
+  // re-list fails or briefly returns a pre-action snapshot. Filter that entry
+  // until one successful snapshot proves it absent, then release the id.
+  const locallyRetiredActiveIds = new Set<string>();
   const hasActiveSection = opts.activeCaller !== undefined;
   const activeRefreshDebounceMs = opts.activeRefreshDebounceMs ?? 250;
   let activeRefreshTimer: ReturnType<typeof setTimeout> | null = null;
@@ -2524,6 +2600,7 @@ export const bootstrapLogsRoute = (
   let grantsSeq = 0;
   let grantsNotice: string | undefined;
   const busyGrantIds = new Set<string>();
+  const locallyRevokedGrantIds = new Set<string>();
   const hasPassesSection = opts.grantsListCaller !== undefined;
   let grantsRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -2568,6 +2645,79 @@ export const bootstrapLogsRoute = (
   };
 
   const render = (): void => {
+    const activeElement = doc.activeElement as HTMLElement | null | undefined;
+    const focusedDetailRunId = activeElement?.getAttribute?.(
+      LOGS_ROUTE_DETAIL_HEADING_ATTR,
+    ) ?? null;
+    const focusedApply = activeElement?.getAttribute?.(
+      LOGS_ROUTE_ACTION_ATTR,
+    ) === 'apply-filters';
+    const focusedLoadMore = activeElement?.getAttribute?.(
+      LOGS_ROUTE_ACTION_ATTR,
+    ) === 'load-more';
+    const focusedHistoryRunId = activeElement?.getAttribute?.(
+      LOGS_ROUTE_ACTION_ATTR,
+    ) === 'open-detail'
+      ? activeElement.getAttribute(LOGS_ROUTE_RUN_ID_ATTR)
+      : null;
+    const focusedDetailRetryRunId = activeElement?.getAttribute?.(
+      LOGS_ROUTE_ACTION_ATTR,
+    ) === 'retry-detail'
+      ? activeElement.getAttribute(LOGS_ROUTE_RUN_ID_ATTR)
+      : null;
+    const focusedFilterKindRaw = activeElement?.getAttribute?.(
+      LOGS_ROUTE_FILTER_KIND_ATTR,
+    );
+    const focusedFilterKind = focusedFilterKindRaw === 'status'
+      || focusedFilterKindRaw === 'origin'
+      || focusedFilterKindRaw === 'time_range'
+        ? focusedFilterKindRaw
+        : null;
+    const focusedRecipePickerShell = activeElement?.closest?.(
+      `[data-ref-picker="${RECIPE_PICKER_CONFIG.pickerId}"]`,
+    );
+    const focusedRecipePicker = activeElement?.hasAttribute?.(
+      RefPicker.REF_PICKER_INPUT_ATTR,
+    ) === true
+      && focusedRecipePickerShell !== null
+      && focusedRecipePickerShell !== undefined;
+    const focusedRecipeSelection = focusedRecipePicker
+      ? {
+          query: recipePicker?.getQuery()
+            ?? (activeElement as HTMLInputElement).value,
+          start: (activeElement as HTMLInputElement).selectionStart,
+          end: (activeElement as HTMLInputElement).selectionEnd,
+        }
+      : null;
+    const focusedActiveActionRaw = activeElement?.getAttribute?.(
+      LOGS_ROUTE_ACTION_ATTR,
+    );
+    const focusedActiveAction = focusedActiveActionRaw === 'kill-run'
+      || focusedActiveActionRaw === 'cancel-call'
+      || focusedActiveActionRaw === 'promote-call'
+        ? focusedActiveActionRaw
+        : null;
+    const focusedActiveControlId = focusedActiveAction === null
+      ? null
+      : activeElement?.getAttribute?.(
+          focusedActiveAction === 'kill-run'
+            ? LOGS_ROUTE_RUN_ID_ATTR
+            : LOGS_ROUTE_QUEUED_CALL_ID_ATTR,
+        ) ?? null;
+    const focusedActiveControl = focusedActiveAction === null
+      || focusedActiveControlId === null
+        ? null
+        : {
+            action: focusedActiveAction,
+            id: focusedActiveControlId,
+          };
+    const focusedGrantControlId = focusedActiveActionRaw === 'revoke-grant'
+      ? activeElement?.getAttribute?.(LOGS_ROUTE_GRANT_ID_ATTR) ?? null
+      : null;
+    const focusedRefreshAction = focusedActiveActionRaw === 'refresh-active'
+      || focusedActiveActionRaw === 'refresh-passes'
+        ? focusedActiveActionRaw
+        : null;
     const nowMs = opts.now?.() ?? Date.now();
     if (view === 'active') {
       // Console — the cross-session operator surface: the uncapped Active list
@@ -2585,7 +2735,7 @@ export const bootstrapLogsRoute = (
               errors.active,
               activeNotice,
               nowMs,
-              busyControlIds,
+              pendingControls,
             )
           : ''}
         ${hasPassesSection
@@ -2599,6 +2749,63 @@ export const bootstrapLogsRoute = (
             )
           : ''}
       `;
+      if (
+        focusedActiveControl !== null
+        || focusedGrantControlId !== null
+        || focusedRefreshAction !== null
+      ) {
+        const queryable = routeRoot as unknown as {
+          querySelectorAll?: (
+            selectors: string,
+          ) => ArrayLike<HTMLElement>;
+          querySelector?: (selectors: string) => HTMLElement | null;
+        };
+        const controls = Array.from(
+          queryable.querySelectorAll?.(`[${LOGS_ROUTE_ACTION_ATTR}]`) ?? [],
+        );
+        const activeControls = controls.filter((candidate) => {
+          const action = candidate.getAttribute(LOGS_ROUTE_ACTION_ATTR);
+          return action === 'kill-run'
+            || action === 'cancel-call'
+            || action === 'promote-call';
+        });
+        const grantControls = controls.filter(
+          (candidate) => candidate.getAttribute(LOGS_ROUTE_ACTION_ATTR)
+            === 'revoke-grant',
+        );
+        const exact = focusedRefreshAction !== null
+          ? controls.find(
+              (candidate) => candidate.getAttribute(LOGS_ROUTE_ACTION_ATTR)
+                === focusedRefreshAction,
+            )
+          : focusedActiveControl === null
+            ? grantControls.find(
+                (candidate) => candidate.getAttribute(LOGS_ROUTE_GRANT_ID_ATTR)
+                  === focusedGrantControlId,
+              )
+            : activeControls.find((candidate) => {
+                if (
+                  candidate.getAttribute(LOGS_ROUTE_ACTION_ATTR)
+                    !== focusedActiveControl.action
+                ) return false;
+                return candidate.getAttribute(
+                  focusedActiveControl.action === 'kill-run'
+                    ? LOGS_ROUTE_RUN_ID_ATTR
+                    : LOGS_ROUTE_QUEUED_CALL_ID_ATTR,
+                ) === focusedActiveControl.id;
+              });
+        const heading = queryable.querySelector?.(
+          `[${LOGS_ROUTE_HEADING_ATTR}]`,
+        ) ?? null;
+        const fallback = focusedRefreshAction !== null
+          ? undefined
+          : focusedActiveControl === null
+            ? grantControls[0]
+            : activeControls[0];
+        const focusTarget = exact ?? fallback ?? heading;
+        if (focusTarget === heading) heading?.setAttribute('tabindex', '-1');
+        focusTarget?.focus?.({ preventScroll: true });
+      }
       return;
     }
     // Default — the History table, with a capped Active peek-strip above it.
@@ -2616,15 +2823,26 @@ export const bootstrapLogsRoute = (
           RefPicker.initialRefPickerState(resolveRecipeSelection()),
           RECIPE_PICKER_CONFIG,
         ),
+        loadingFeed || loadingMore,
+        applyingFilters,
       )}
       <div class="logs-layout">
         <section class="logs-panel">
-          ${renderFeed(runs, loadingFeed, loadingMore, nextCursor, errors.feed, selectedRunId)}
+          ${renderFeed(
+            runs,
+            loadingFeed,
+            loadingMore,
+            nextCursor,
+            errors.feed,
+            selectedRunId,
+            loadingDetail ? selectedRunId : null,
+          )}
         </section>
         ${renderDetail(
           selectedRun,
           selectedRunId,
           loadingDetail,
+          retryingDetail,
           errors.detail,
           chatReturn,
         )}
@@ -2632,6 +2850,124 @@ export const bootstrapLogsRoute = (
     `;
     // (Re-)attach the Recipe combobox to the freshly-painted shell.
     mountRecipePicker();
+    if (focusedFilterKind !== null) {
+      const replacement = routeRoot.querySelector?.(
+        `[${LOGS_ROUTE_FILTER_KIND_ATTR}="${focusedFilterKind}"]`,
+      ) as HTMLElement | null | undefined;
+      replacement?.focus?.({ preventScroll: true });
+    }
+    if (focusedRecipePicker) {
+      const replacement = routeRoot.querySelector?.(
+        `[data-ref-picker="${RECIPE_PICKER_CONFIG.pickerId}"] `
+        + `[${RefPicker.REF_PICKER_INPUT_ATTR}]`,
+      ) as HTMLInputElement | null | undefined;
+      if (focusedRecipeSelection !== null) {
+        recipePicker?.setQuery(focusedRecipeSelection.query);
+      }
+      replacement?.focus?.({ preventScroll: true });
+      if (
+        focusedRecipeSelection !== null
+        && focusedRecipeSelection.start !== null
+        && focusedRecipeSelection.end !== null
+      ) {
+        replacement?.setSelectionRange?.(
+          focusedRecipeSelection.start,
+          focusedRecipeSelection.end,
+        );
+      }
+    }
+    if (focusedApply) {
+      const replacement = routeRoot.querySelector?.(
+        `[${LOGS_ROUTE_ACTION_ATTR}="apply-filters"]`,
+      ) as HTMLElement | null | undefined;
+      replacement?.focus?.({ preventScroll: true });
+    }
+    const shouldRestoreLoadMoreFocus = focusedLoadMore || pendingLoadMoreFocus;
+    pendingLoadMoreFocus = false;
+    if (shouldRestoreLoadMoreFocus) {
+      const replacement = routeRoot.querySelector?.(
+        `[${LOGS_ROUTE_ACTION_ATTR}="load-more"]`,
+      ) as HTMLElement | null | undefined;
+      if (replacement !== null && replacement !== undefined) {
+        replacement.focus?.({ preventScroll: true });
+      } else {
+        const queryable = routeRoot as unknown as {
+          querySelectorAll?: (selectors: string) => Iterable<HTMLElement>;
+        };
+        const openers = queryable.querySelectorAll?.(
+          `button[${LOGS_ROUTE_ACTION_ATTR}="open-detail"]`,
+        );
+        const appended = openers === undefined
+          ? undefined
+          : Array.from(openers).find(
+              (candidate) =>
+                candidate.getAttribute?.(LOGS_ROUTE_RUN_ID_ATTR)
+                === pendingLoadedRunFocusId,
+            );
+        if (appended !== undefined) {
+          appended.focus?.({ preventScroll: true });
+        } else {
+          const heading = routeRoot.querySelector?.(
+            `[${LOGS_ROUTE_HEADING_ATTR}]`,
+          ) as HTMLElement | null | undefined;
+          heading?.setAttribute?.('tabindex', '-1');
+          heading?.focus?.({ preventScroll: true });
+        }
+      }
+    }
+    pendingLoadedRunFocusId = null;
+    if (
+      focusedHistoryRunId !== null
+      && !(
+        pendingDetailFocusRunId === focusedHistoryRunId
+        && selectedRunId === focusedHistoryRunId
+        && !loadingDetail
+      )
+    ) {
+      const opener = Array.from(routeRoot.querySelectorAll<HTMLElement>(
+        `button[${LOGS_ROUTE_ACTION_ATTR}="open-detail"]`,
+      )).find(
+        (candidate) => candidate.getAttribute(LOGS_ROUTE_RUN_ID_ATTR)
+          === focusedHistoryRunId,
+      );
+      opener?.focus?.({ preventScroll: true });
+    }
+    if (
+      focusedDetailRetryRunId !== null
+      && selectedRunId === focusedDetailRetryRunId
+    ) {
+      const retry = routeRoot.querySelector?.(
+        `[${LOGS_ROUTE_ACTION_ATTR}="retry-detail"]`
+        + `[${LOGS_ROUTE_RUN_ID_ATTR}="${CSS.escape(focusedDetailRetryRunId)}"]`,
+      ) as HTMLElement | null | undefined;
+      retry?.focus?.({ preventScroll: true });
+    }
+    const detailFocusRunId = pendingDetailFocusRunId ?? focusedDetailRunId;
+    if (
+      detailFocusRunId !== null
+      && selectedRunId === detailFocusRunId
+      && !loadingDetail
+    ) {
+      const heading = routeRoot.querySelector?.(
+        `[${LOGS_ROUTE_DETAIL_HEADING_ATTR}]`,
+      ) as HTMLElement | null | undefined;
+      const retry = errors.detail === undefined
+        ? null
+        : routeRoot.querySelector?.(
+            `[${LOGS_ROUTE_ACTION_ATTR}="retry-detail"]`
+            + `[${LOGS_ROUTE_RUN_ID_ATTR}="${CSS.escape(detailFocusRunId)}"]`,
+          ) as HTMLElement | null | undefined;
+      const target = retry ?? heading;
+      if (
+        heading?.getAttribute(LOGS_ROUTE_DETAIL_HEADING_ATTR)
+          === detailFocusRunId
+      ) {
+        if (pendingDetailFocusRunId === detailFocusRunId) {
+          pendingDetailFocusRunId = null;
+        }
+        target?.focus?.({ preventScroll: true });
+      }
+    }
   };
 
   /** Delay focus until the feed and exact detail have both settled; otherwise
@@ -2671,18 +3007,25 @@ export const bootstrapLogsRoute = (
     }
   };
 
-  const loadFeed = async (mode: 'replace' | 'append'): Promise<void> => {
+  const loadFeed = async (
+    mode: 'replace' | 'append',
+    owner: 'background' | 'filters' = 'background',
+  ): Promise<void> => {
+    if (mode === 'append' && loadingMore) return;
     if (opts.listCaller === undefined) {
+      applyingFilters = false;
       errors = { ...errors, feed: 'execution.list caller is not wired in this host.' };
       render();
       return;
     }
     const seq = ++feedSeq;
+    applyingFilters = mode === 'replace' && owner === 'filters';
     if (mode === 'replace') {
       loadingFeed = true;
       nextCursor = null;
     } else {
       loadingMore = true;
+      pendingLoadedRunFocusId = null;
     }
     errors = { ...errors, feed: undefined };
     render();
@@ -2695,9 +3038,15 @@ export const bootstrapLogsRoute = (
         ),
       );
       if (disposed || seq !== feedSeq) return;
-      runs = mode === 'append'
-        ? dedupeRuns([...runs, ...response.runs])
-        : response.runs;
+      if (mode === 'append') {
+        const priorRunIds = new Set(runs.map((run) => run.run_id));
+        pendingLoadedRunFocusId = response.runs.find(
+          (run) => !priorRunIds.has(run.run_id),
+        )?.run_id ?? null;
+        runs = dedupeRuns([...runs, ...response.runs]);
+      } else {
+        runs = response.runs;
+      }
       nextCursor = response.next_cursor ?? null;
       const { feed: _feed, ...rest } = errors;
       errors = rest;
@@ -2708,6 +3057,7 @@ export const bootstrapLogsRoute = (
       if (!disposed && seq === feedSeq) {
         loadingFeed = false;
         loadingMore = false;
+        applyingFilters = false;
         render();
       }
     }
@@ -2725,15 +3075,25 @@ export const bootstrapLogsRoute = (
     if (disposed || view !== 'logs') return;
     const history = doc.defaultView?.history;
     if (history?.replaceState === undefined) return;
+    const hash = runHref(run_id, chatReturn);
     try {
-      history.replaceState(null, '', runHref(run_id, chatReturn));
+      history.replaceState(null, '', hash);
+      opts.onHashSync?.(hash);
     } catch {
       // Non-fatal — addressability degrades to in-page-only.
     }
   };
 
-  const openRun = async (run_id: string): Promise<void> => {
-    if (disposed) return;
+  const openRun = async (
+    run_id: string,
+    focusDetail = false,
+    retrying = false,
+  ): Promise<void> => {
+    if (
+      disposed
+      || (loadingDetail && selectedRunId === run_id)
+    ) return;
+    pendingDetailFocusRunId = focusDetail ? run_id : null;
     if (run_id !== initialFocusRunId) pendingInitialRunFocus = false;
     if (chatReturn !== undefined && run_id !== chatReturnRunId) {
       chatReturn = undefined;
@@ -2748,6 +3108,7 @@ export const bootstrapLogsRoute = (
     const seq = ++detailSeq;
     selectedRun = null;
     loadingDetail = true;
+    retryingDetail = retrying;
     errors = { ...errors, detail: undefined };
     render();
     try {
@@ -2762,6 +3123,7 @@ export const bootstrapLogsRoute = (
     } finally {
       if (!disposed && seq === detailSeq) {
         loadingDetail = false;
+        retryingDetail = false;
         render();
       }
     }
@@ -2779,7 +3141,13 @@ export const bootstrapLogsRoute = (
       // entry (D-181 §7b / handler `handleExecutionActive`).
       const response = await opts.activeCaller({});
       if (disposed || seq !== activeSeq) return;
-      activeEntries = response.entries;
+      const returnedIds = new Set(response.entries.map(activeEntryId));
+      activeEntries = response.entries.filter(
+        (entry) => !locallyRetiredActiveIds.has(activeEntryId(entry)),
+      );
+      for (const id of [...locallyRetiredActiveIds]) {
+        if (!returnedIds.has(id)) locallyRetiredActiveIds.delete(id);
+      }
       lanes = response.lanes;
       const { active: _active, ...rest } = errors;
       errors = rest;
@@ -2810,38 +3178,49 @@ export const bootstrapLogsRoute = (
     }, activeRefreshDebounceMs);
   };
 
-  /** Run one live-control mutation, then re-list. `busyId` disables the
-   *  entry's buttons while the call is in flight; `notice` surfaces the
+  /** Run one live-control mutation, then re-list. `pendingControls` keeps the
+   *  initiating action busy and its sibling guarded through the write and its
+   *  reconciliation read; an acknowledged retirement is applied immediately
+   *  and filters stale snapshots. `notice` surfaces the
    *  server's non-terminal verdict (`already_terminal` / `already_dispatched`
    *  / `not_found`) so a no-op click is legible rather than silent. */
   const runControl = async (
+    action: LogsActiveControlAction,
     busyId: string,
-    op: () => Promise<{ noticed?: string } | void>,
+    op: () => Promise<{ noticed?: string; retired?: boolean } | void>,
   ): Promise<void> => {
-    if (busyId.length === 0 || busyControlIds.has(busyId)) return;
-    busyControlIds.add(busyId);
+    if (busyId.length === 0 || pendingControls.has(busyId)) return;
+    pendingControls.set(busyId, action);
     activeNotice = undefined;
     render();
     try {
       const result = await op();
       if (disposed) return;
       if (result && result.noticed !== undefined) activeNotice = result.noticed;
+      if (result?.retired === true) {
+        locallyRetiredActiveIds.add(busyId);
+        activeEntries = activeEntries.filter(
+          (entry) => activeEntryId(entry) !== busyId,
+        );
+        render();
+      }
     } catch (err) {
       if (disposed) return;
       activeNotice = messageForError(err);
     } finally {
-      busyControlIds.delete(busyId);
       if (!disposed) await loadActive();
+      pendingControls.delete(busyId);
+      if (!disposed) render();
     }
   };
 
   const killRun = (run_id: string): Promise<void> =>
-    runControl(run_id, async () => {
+    runControl('kill-run', run_id, async () => {
       if (opts.killCaller === undefined) {
         return { noticed: 'execution.kill caller is not wired in this host.' };
       }
       const { status } = await opts.killCaller({ run_id });
-      if (status === 'killed') return;
+      if (status === 'killed') return { retired: true };
       return {
         noticed: status === 'already_terminal'
           ? 'That run already finished.'
@@ -2850,12 +3229,12 @@ export const bootstrapLogsRoute = (
     });
 
   const cancelCall = (queued_call_id: string): Promise<void> =>
-    runControl(queued_call_id, async () => {
+    runControl('cancel-call', queued_call_id, async () => {
       if (opts.cancelCaller === undefined) {
         return { noticed: 'execution.cancel caller is not wired in this host.' };
       }
       const { status } = await opts.cancelCaller({ queued_call_id });
-      if (status === 'cancelled_before_dispatch') return;
+      if (status === 'cancelled_before_dispatch') return { retired: true };
       return {
         noticed: status === 'already_dispatched'
           ? 'That call already started — use Kill instead.'
@@ -2864,12 +3243,12 @@ export const bootstrapLogsRoute = (
     });
 
   const promoteCall = (queued_call_id: string): Promise<void> =>
-    runControl(queued_call_id, async () => {
+    runControl('promote-call', queued_call_id, async () => {
       if (opts.promoteCaller === undefined) {
         return { noticed: 'execution.promote caller is not wired in this host.' };
       }
       const { status } = await opts.promoteCaller({ queued_call_id });
-      if (status === 'promoted') return;
+      if (status === 'promoted') return { retired: true };
       return { noticed: 'That queued call is no longer waiting.' };
     });
 
@@ -2887,7 +3266,15 @@ export const bootstrapLogsRoute = (
       // wide (handler `handleSessionGrantList`).
       const response = await opts.grantsListCaller({});
       if (disposed || seq !== grantsSeq) return;
-      sessionGrants = response.grants;
+      const returnedIds = new Set(
+        response.grants.map((grant) => grant.contract_id),
+      );
+      sessionGrants = response.grants.filter(
+        (grant) => !locallyRevokedGrantIds.has(grant.contract_id),
+      );
+      for (const id of [...locallyRevokedGrantIds]) {
+        if (!returnedIds.has(id)) locallyRevokedGrantIds.delete(id);
+      }
       const { grants: _grants, ...rest } = errors;
       errors = rest;
     } catch (err) {
@@ -2929,10 +3316,15 @@ export const bootstrapLogsRoute = (
         return;
       }
       await opts.grantsRevokeCaller({ contract_id });
-      // Success path stays silent — the row drops on the re-list below (and the
-      // server's `contract.contract_definition_changed` broadcast re-lists every
-      // other paired client). The revoke also echoes back the now-`revoked`
-      // view, which the active-only list omits.
+      if (disposed) return;
+      locallyRevokedGrantIds.add(contract_id);
+      sessionGrants = sessionGrants.filter(
+        (grant) => grant.contract_id !== contract_id,
+      );
+      render();
+      // Success path stays silent — the acknowledged row retires immediately,
+      // and the re-list below confirms it (or the tombstone filters a stale
+      // snapshot). The server broadcast re-lists every other paired client.
     } catch (err) {
       if (disposed) return;
       // A `not_found` means the pass already expired / was revoked elsewhere —
@@ -2940,11 +3332,10 @@ export const bootstrapLogsRoute = (
       // Active section's `runControl` notice posture).
       grantsNotice = messageForError(err);
     } finally {
-      // Hold the busy flag THROUGH the re-list so the row stays disabled until
-      // it drops off (no flash-of-enabled-button → no duplicate revoke rpc on
-      // an already-revoked grant). Clear + re-render after, so the error path
-      // (row persists) re-enables the button. `loadGrants` re-renders on the
-      // success path (row gone); the trailing render only matters when it stays.
+      // Hold the busy flag THROUGH the re-list (no flash-of-enabled-button → no
+      // duplicate revoke rpc). Clear + re-render after, so a write failure keeps
+      // the row and re-enables it; an acknowledged revoke stays retired even if
+      // this defensive read fails.
       if (!disposed) await loadGrants();
       busyGrantIds.delete(contract_id);
       if (!disposed) render();
@@ -2956,20 +3347,28 @@ export const bootstrapLogsRoute = (
     if (target === null) return;
     const action = target.getAttribute(LOGS_ROUTE_ACTION_ATTR);
     if (action === 'apply-filters') {
-      void loadFeed('replace');
+      if (!loadingFeed && !loadingMore) void loadFeed('replace', 'filters');
       return;
     }
     if (action === 'load-more') {
-      if (nextCursor !== null) void loadFeed('append');
+      if (nextCursor !== null && !loadingMore) {
+        pendingLoadMoreFocus = true;
+        void loadFeed('append');
+      }
       return;
     }
     if (action === 'open-detail') {
       const runId = target.getAttribute(LOGS_ROUTE_RUN_ID_ATTR);
-      if (runId !== null && runId.length > 0) void openRun(runId);
+      if (runId !== null && runId.length > 0) void openRun(runId, true);
+      return;
+    }
+    if (action === 'retry-detail') {
+      const runId = target.getAttribute(LOGS_ROUTE_RUN_ID_ATTR);
+      if (runId !== null && runId.length > 0) void openRun(runId, true, true);
       return;
     }
     if (action === 'refresh-active') {
-      void loadActive();
+      if (!loadingActive) void loadActive();
       return;
     }
     if (action === 'kill-run') {
@@ -2988,7 +3387,7 @@ export const bootstrapLogsRoute = (
       return;
     }
     if (action === 'refresh-passes') {
-      void loadGrants();
+      if (!loadingGrants) void loadGrants();
       return;
     }
     if (action === 'revoke-grant') {
@@ -3087,6 +3486,9 @@ export const bootstrapLogsRoute = (
     if (!disposed) focusInitialRunOutcome();
   });
 
+  const hasLogsInFlightWork = (): boolean =>
+    pendingControls.size > 0 || busyGrantIds.size > 0;
+
   return {
     getRuns: () => runs,
     getNextCursor: () => nextCursor,
@@ -3111,7 +3513,7 @@ export const bootstrapLogsRoute = (
       await loadFeed('replace');
     },
     loadMore: async () => {
-      if (nextCursor === null) return;
+      if (nextCursor === null || loadingMore) return;
       await loadFeed('append');
     },
     openRun,
@@ -3119,7 +3521,11 @@ export const bootstrapLogsRoute = (
     cancelCall,
     promoteCall,
     revokeGrant,
-    hasInFlightWork: () => busyControlIds.size > 0 || busyGrantIds.size > 0,
+    hasInFlightWork: hasLogsInFlightWork,
+    inFlightWorkPrompt: () =>
+      hasLogsInFlightWork()
+        ? 'A run action is still in progress. Leave Logs anyway?'
+        : null,
     dispose: () => {
       if (disposed) return;
       disposed = true;

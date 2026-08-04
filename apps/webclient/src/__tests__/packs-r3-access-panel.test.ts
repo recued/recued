@@ -228,6 +228,10 @@ const packEntry = (slug: string): PackListEntry => {
     installed: true,
     requires: [...manifest.requires],
     recipe_count: 0,
+    recipe_refs: manifest.recipes.map((r) => ({ slug: r.slug, version: r.version })),
+    body_visibility_grant_keys: [...(manifest.mcp_body_visibility_grants ?? [])],
+    ...(typeof manifest.service_kind === 'string' ? { service_kind: manifest.service_kind } : {}),
+    ...(typeof manifest.repo === 'string' ? { repo: manifest.repo } : {}),
     body_visibility_grant_count: 0,
     manifest,
   } as PackListEntry;
@@ -670,7 +674,7 @@ describe('owner operation defaults controller', () => {
   it('renders the slug-keyed operation of a direct ingredient pack', async () => {
     const pack = packEntry('mail-pack');
     (pack as { manifest: BulkPackManifest }).manifest = {
-      ...pack.manifest,
+      ...pack.manifest!,
       contents: [{
         type: 'ingredient',
         slug: 'mail-send',
@@ -678,7 +682,7 @@ describe('owner operation defaults controller', () => {
         role: 'operation_wrapper',
       }],
     };
-    expect(packOperationIngredientSlugs(pack.manifest)).toEqual(['mail-send']);
+    expect(packOperationIngredientSlugs(pack.manifest!)).toEqual(['mail-send']);
     const { ctrl } = mountOwnerController({
       ingredients: [{
         ingredient_id: 'mail-send',
@@ -911,5 +915,213 @@ describe('packs route access wiring', () => {
     expect(findByAttr(access, PACK_ACCESS_ATTR)).not.toBeNull();
     expect(collectTextContent(access)).toContain('Self (you)');
     route.dispose();
+  });
+});
+
+/** ⛔ Live-drive regression: "the feature we built to let owner override every
+ *  pack op default is gone."
+ *
+ *  A composition's own slug is not necessarily the id of the ingredient it
+ *  installs — it declares its ingredients explicitly, and THOSE land in the
+ *  executor registry `collection.operation.listOperations` enumerates. The
+ *  membership set only ever held the composition slug, so any pack that names
+ *  them differently matched nothing and lost its whole Permissions tab.
+ *
+ *  It looked fine because 798 of the corpus's 825 composition packs happen to
+ *  name the ingredient after the composition. The 27 that don't include
+ *  `rental-book` (`rental-book` → `rental-book-records`), every other `*-records`
+ *  pack, `clamav-pack` (`clamav` → `clamdscan`) and `csvkit` (→ `csvclean`).
+ *  Every existing test used the matching shape. */
+describe('owner operation defaults — a composition that renames its ingredient', () => {
+  /** rental-book's exact shape: composition `rental-book`, ingredient
+   *  `rental-book-records`. */
+  const renamingPack = (): PackListEntry => {
+    const manifest = {
+      manifest_version: 2,
+      slug: 'rental-book',
+      publisher: 'recued-core',
+      name: 'rental-book',
+      description: 'Records pack.',
+      version: 1,
+      recipes: [],
+      requires: ['install_bulk_pack'],
+      tags: [],
+      contents: [{
+        type: 'composition',
+        composition: {
+          schema_version: 1,
+          slug: 'rental-book',
+          ingredients: [{ slug: 'rental-book-records', kind: 'storage' }],
+          operations: [],
+        },
+      }],
+    } as unknown as BulkPackManifest;
+    return {
+      slug: 'rental-book', publisher: 'recued-core', name: 'rental-book',
+      description: '', version: 1, pre_install: false, installed: true,
+      requires: ['install_bulk_pack'], recipe_count: 0, recipe_refs: [],
+      body_visibility_grant_keys: [], body_visibility_grant_count: 0, manifest,
+    } as PackListEntry;
+  };
+
+  const controllerOver = (
+    ingredients: ReadonlyArray<OwnerOperationIngredientView>,
+  ) => createOwnerOperationController({
+    document: makeFakeDocument() as unknown as Document,
+    runOperations: (async () => ({ ingredients })) as OwnerOperationInventoryCaller,
+    runListOverrides: (async () => ({ overrides: [] })) as OwnerOperationListCaller,
+    runUpsertOverride: vi.fn() as unknown as OwnerOperationUpsertCaller,
+    runDeleteOverride: vi.fn() as unknown as OwnerOperationDeleteCaller,
+    onChange: () => {},
+  });
+
+  const recordsIngredient: OwnerOperationIngredientView = {
+    ingredient_id: 'rental-book-records',
+    name: 'Rental book records',
+    operations: [{
+      operation_id: 'building.create',
+      operation_key: 'building.create',
+      risk_tier: 'write',
+    }],
+  } as unknown as OwnerOperationIngredientView;
+
+  it('membership covers the NESTED ingredient slug, not just the composition', () => {
+    const slugs = packOperationIngredientSlugs(renamingPack().manifest!);
+    expect(slugs).toContain('rental-book-records');
+    // The composition slug is KEPT — 798 packs join on it.
+    expect(slugs).toContain('rental-book');
+  });
+
+  it('⛔ renders the override rows instead of an empty tab', async () => {
+    const ctrl = controllerOver([recordsIngredient]);
+    await ctrl.refresh();
+    const panel = ctrl.renderForPack(renamingPack()) as unknown as FakeElement | null;
+    expect(panel).not.toBeNull();
+    const rows = findAllByAttr(panel!, OWNER_OPERATION_ROW_ATTR);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.getAttribute('data-ingredient-id')).toBe('rental-book-records');
+  });
+
+  it('⛔ a pack whose ingredients match NOTHING says so instead of "none"', async () => {
+    // `[].every(…)` is TRUE, so an unmatched pack used to report the same thing
+    // as a pack that genuinely declares no operations — which is exactly how the
+    // join bug above stayed invisible. The two must not collapse.
+    const ctrl = controllerOver([{
+      ingredient_id: 'someone-elses-ingredient',
+      name: 'Other',
+      operations: [{ operation_id: 'x', operation_key: 'x', risk_tier: 'read' }],
+    } as unknown as OwnerOperationIngredientView]);
+    await ctrl.refresh();
+    const panel = ctrl.renderForPack(renamingPack()) as unknown as FakeElement | null;
+    expect(panel).not.toBeNull();
+    expect(findAllByAttr(panel!, OWNER_OPERATION_ROW_ATTR)).toHaveLength(0);
+    expect(collectTextContent(panel!)).toContain('not in the server’s inventory');
+  });
+
+  /** ⛔ The case the slug fix did NOT reach. A Records pack registers its catalog
+   *  under a content-addressed `records-<hash>` id — matching neither the pack
+   *  slug nor its composition's — so NO amount of guessing from the manifest can
+   *  find it, and the tab stayed empty for every Records pack in the corpus.
+   *
+   *  The server now states ownership (`pack_slug`, off
+   *  `installed_pack.ingredient_ids`), and it wins over the guess. */
+  it('⛔ a records catalog is claimed by the server, not guessed from the manifest', async () => {
+    const ctrl = controllerOver([{
+      // Nothing here resembles 'rental-book' or 'rental-book-records'.
+      ingredient_id: 'records-134e99ba9db8c7b3e51dca3ae8f24b4b',
+      name: 'Rental book records',
+      pack_slug: 'rental-book',
+      operations: [{ operation_id: 'building.create', operation_key: 'building.create',
+        risk_tier: 'write' }],
+    } as unknown as OwnerOperationIngredientView]);
+    await ctrl.refresh();
+    const panel = ctrl.renderForPack(renamingPack()) as unknown as FakeElement | null;
+    expect(panel).not.toBeNull();
+    const rows = findAllByAttr(panel!, OWNER_OPERATION_ROW_ATTR);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.getAttribute('data-ingredient-id'))
+      .toBe('records-134e99ba9db8c7b3e51dca3ae8f24b4b');
+  });
+
+  it('⛔ a claimed ingredient belonging to ANOTHER pack is excluded', async () => {
+    // The claim must be a filter, not just a pass. Without the equality check an
+    // ownership field would widen every pack to every claimed ingredient.
+    const ctrl = controllerOver([{
+      ingredient_id: 'records-deadbeef',
+      name: 'Someone else',
+      pack_slug: 'ledger-book',
+      operations: [{ operation_id: 'x', operation_key: 'x', risk_tier: 'read' }],
+    } as unknown as OwnerOperationIngredientView]);
+    await ctrl.refresh();
+    const panel = ctrl.renderForPack(renamingPack()) as unknown as FakeElement | null;
+    expect(findAllByAttr(panel!, OWNER_OPERATION_ROW_ATTR)).toHaveLength(0);
+    expect(collectTextContent(panel!)).toContain('not in the server’s inventory');
+  });
+
+  it('a pack that genuinely declares no operations still renders nothing', async () => {
+    // Negative control — the honest empty case must stay empty, or the new
+    // branch would just be noise on every op-less pack.
+    const ctrl = controllerOver([{
+      ingredient_id: 'rental-book-records', name: 'Rental book records', operations: [],
+    } as unknown as OwnerOperationIngredientView]);
+    await ctrl.refresh();
+    expect(ctrl.renderForPack(renamingPack())).toBeNull();
+  });
+});
+
+/** ⛔ The Access matrix was empty for every Records pack, and that is not
+ *  cosmetic. The install-time access tier is a STARTING POINT — this panel is
+ *  the surface that widens it afterwards. Empty, there was no way to widen at
+ *  all, so a pack installed at the default `read` was permanently read-only
+ *  short of uninstalling it.
+ *
+ *  Cause: `packCompositionSlugs` derives membership from the manifest's
+ *  composition slug, and a Records pack's catalog registers under a
+ *  content-addressed `records-<hash>` id matching no name its author wrote. */
+describe('pack access — a records catalog is claimed, not guessed', () => {
+  const recordsCatalog = (packSlug: string | undefined) => ({
+    ingredients: [{
+      ingredient_id: 'records-134e99ba9db8c7b3e51dca3ae8f24b4b',
+      name: 'Rental book records',
+      kind: 'connection',
+      ...(packSlug !== undefined ? { pack_slug: packSlug } : {}),
+      operations: [{
+        operation_id: 'recued-core/building.create',
+        operation_key: 'building.create',
+        risk_tier: 'write',
+        groups: [],
+      }],
+    }],
+  } as unknown as { ingredients: ReadonlyArray<CatalogIngredientView> });
+
+  const mountOver = (catalog: { ingredients: ReadonlyArray<CatalogIngredientView> }) => {
+    const h = makeCallers({ contracts: [] });
+    (h.runCatalogOperations as unknown as { mockImplementation: (f: () => unknown) => void })
+      .mockImplementation(async () => catalog);
+    return mountController(h);
+  };
+
+  it('⛔ renders the matrix when the server claims the ingredient', async () => {
+    const { ctrl } = mountOver(recordsCatalog('stripe-pack'));
+    await ctrl.refresh();
+    const panel = ctrl.renderForPack(packEntry('stripe-pack')) as unknown as FakeElement | null;
+    expect(panel).not.toBeNull();
+    expect(collectTextContent(panel!)).toContain('building.create');
+  });
+
+  it('an unclaimed records catalog still finds nothing — the guess cannot see it', async () => {
+    // The negative that documents WHY the claim is needed: with no ownership
+    // reported, the manifest-derived slug set misses `records-<hash>` entirely.
+    const { ctrl } = mountOver(recordsCatalog(undefined));
+    await ctrl.refresh();
+    const panel = ctrl.renderForPack(packEntry('stripe-pack')) as unknown as FakeElement | null;
+    expect(panel === null || !collectTextContent(panel).includes('building.create')).toBe(true);
+  });
+
+  it('a claim for a DIFFERENT pack is excluded', async () => {
+    const { ctrl } = mountOver(recordsCatalog('some-other-pack'));
+    await ctrl.refresh();
+    const panel = ctrl.renderForPack(packEntry('stripe-pack')) as unknown as FakeElement | null;
+    expect(panel === null || !collectTextContent(panel).includes('building.create')).toBe(true);
   });
 });

@@ -11,17 +11,32 @@ import { describe, expect, it } from 'vitest';
 import type { MemoryListEntry } from '@recued/contracts';
 import {
   MEMORY_ADD_ACTION,
+  MEMORY_COMPOSE_CANCEL_ACTION,
+  MEMORY_COMPOSE_DISCARD_COMMIT_ACTION,
+  MEMORY_COMPOSE_DISCARD_COMMIT_ATTR,
+  MEMORY_COMPOSE_DISCARD_GUARD_ATTR,
+  MEMORY_COMPOSE_DISCARD_KEEP_ACTION,
+  MEMORY_COMPOSE_DISCARD_KEEP_ATTR,
   MEMORY_COMPOSE_SUBMIT_ACTION,
   MEMORY_DELETE_ACTION,
+  MEMORY_DELETE_CANCEL_ACTION,
   MEMORY_DELETE_CONFIRM_ACTION,
+  MEMORY_DETAIL_HEADING_ATTR,
   MEMORY_EDIT_ACTION,
   MEMORY_EXPORT_ACTION,
   MEMORY_FILTER_ACTION,
   MEMORY_IMPORT_ACTION,
+  MEMORY_IMPORT_CANCEL_ACTION,
+  MEMORY_IMPORT_DISCARD_COMMIT_ACTION,
+  MEMORY_IMPORT_DISCARD_COMMIT_ATTR,
+  MEMORY_IMPORT_DISCARD_GUARD_ATTR,
+  MEMORY_IMPORT_DISCARD_KEEP_ACTION,
+  MEMORY_IMPORT_DISCARD_KEEP_ATTR,
   MEMORY_IMPORT_SUBMIT_ACTION,
   MEMORY_LENS_STYLES,
   MEMORY_LENS_SELECT_ACTION,
   MEMORY_OPEN_ACTION,
+  MEMORY_OPEN_RUN_ACTION,
   memoryFilterActors,
   renderLensSwitcher,
   renderMemoryLens,
@@ -108,6 +123,48 @@ describe('renderMemoryLens', () => {
     expect(html).toMatch(/memory-filter-chip is-active[^>]*data-memory-filter="user_self"/);
     expect(html).toContain(MEMORY_FILTER_ACTION);
   });
+
+  it('owns an origin-filter refresh and locks stale feed actions', () => {
+    const html = renderMemoryLens({
+      ...baseProps,
+      entries: [
+        entry({
+          memory_id: 'own',
+          origin_actor: 'user_self',
+          kind: 'note',
+          ts: 999_000,
+          has_body: true,
+        }),
+        entry({
+          memory_id: 'system',
+          origin_actor: 'system',
+          kind: 'run',
+          ts: 998_000,
+          run_id: 'run-1',
+        }),
+      ],
+      originFilter: 'user_self',
+      filteringOrigin: 'user_self',
+      canWrite: true,
+    });
+    const activeChip = html.match(
+      /<button[^>]*data-memory-filter="user_self"[^>]*>[^<]*<\/button>/,
+    )?.[0] ?? '';
+    expect(activeChip).toContain('aria-disabled="true"');
+    expect(activeChip).toContain('aria-busy="true"');
+    expect(activeChip).toContain('You…');
+    expect(html.match(/memory-filter-chip[^>]*aria-disabled="true"/g))
+      .toHaveLength(4);
+    expect(html).toMatch(
+      new RegExp(`${MEMORY_EXPORT_ACTION}[^>]*aria-disabled="true"`),
+    );
+    expect(html).toMatch(
+      new RegExp(`${MEMORY_OPEN_ACTION}[^>]*aria-disabled="true"`),
+    );
+    expect(html).toMatch(
+      new RegExp(`${MEMORY_OPEN_RUN_ACTION}[^>]*aria-disabled="true"`),
+    );
+  });
 });
 
 describe('renderLensSwitcher', () => {
@@ -116,6 +173,12 @@ describe('renderLensSwitcher', () => {
     expect(html).toContain(MEMORY_LENS_SELECT_ACTION);
     expect(html).toMatch(/data-lens-btn is-active[^>]*data-memory-lens="memory"/);
     expect(html).toContain('data-memory-lens="data"');
+    const locked = renderLensSwitcher(
+      'memory',
+      'data-recued-data-action',
+      true,
+    );
+    expect(locked.match(/aria-disabled="true"/g)).toHaveLength(2);
   });
 
   it('uses canonical high-contrast theme tokens for the active lens and row actions', () => {
@@ -164,6 +227,81 @@ describe('renderMemoryLens — Slice 2 CRUD affordances', () => {
     expect(html).toContain('Delete this memory?');
   });
 
+  it('keeps a pending Delete/Forget action focusable and marks Cancel inert', () => {
+    const ownHtml = renderMemoryLens({
+      ...baseProps,
+      entries: [own],
+      canWrite: true,
+      pendingDeleteId: 'umem_1',
+      deletingId: 'umem_1',
+    });
+    const confirm = ownHtml.match(
+      new RegExp(`<button[^>]*${MEMORY_DELETE_CONFIRM_ACTION}[^>]*>`),
+    )?.[0] ?? '';
+    const cancel = ownHtml.match(
+      new RegExp(`<button[^>]*${MEMORY_DELETE_CANCEL_ACTION}[^>]*>`),
+    )?.[0] ?? '';
+
+    expect(ownHtml).toContain('Deleting…');
+    expect(confirm).toContain('aria-disabled="true"');
+    expect(confirm).toContain('aria-busy="true"');
+    expect(confirm).not.toMatch(/\sdisabled(?:\s|=|>)/);
+    expect(cancel).toContain('aria-disabled="true"');
+    expect(cancel).not.toMatch(/\sdisabled(?:\s|=|>)/);
+
+    const otherHtml = renderMemoryLens({
+      ...baseProps,
+      entries: [audit],
+      canWrite: true,
+      pendingDeleteId: 'run-1',
+      deletingId: 'run-1',
+    });
+    expect(otherHtml).toContain('Forgetting…');
+
+    const retryHtml = renderMemoryLens({
+      ...baseProps,
+      entries: [own],
+      canWrite: true,
+      pendingDeleteId: 'umem_1',
+      deleteError: '<retry safely>',
+    });
+    expect(retryHtml).toContain('role="alert"');
+    expect(retryHtml).toContain('&lt;retry safely&gt;');
+    expect(retryHtml).not.toContain('<retry safely>');
+  });
+
+  it('keeps the Edit prefill owner focusable and its failure local to the row', () => {
+    const openingHtml = renderMemoryLens({
+      ...baseProps,
+      entries: [own],
+      canWrite: true,
+      openingEditId: 'umem_1',
+    });
+    const edit = openingHtml.match(
+      new RegExp(`<button[^>]*${MEMORY_EDIT_ACTION}[^>]*>`),
+    )?.[0] ?? '';
+    const remove = openingHtml.match(
+      new RegExp(`<button[^>]*${MEMORY_DELETE_ACTION}[^>]*>`),
+    )?.[0] ?? '';
+
+    expect(openingHtml).toContain('Opening…');
+    expect(edit).toContain('aria-disabled="true"');
+    expect(edit).toContain('aria-busy="true"');
+    expect(edit).not.toMatch(/\sdisabled(?:\s|=|>)/);
+    expect(remove).toContain('aria-disabled="true"');
+
+    const failedHtml = renderMemoryLens({
+      ...baseProps,
+      entries: [own],
+      canWrite: true,
+      editError: { memoryId: 'umem_1', message: '<try edit again>' },
+    });
+    expect(failedHtml).toContain('role="alert"');
+    expect(failedHtml).toContain('&lt;try edit again&gt;');
+    expect(failedHtml).not.toContain('<try edit again>');
+    expect(failedHtml).toContain('>Edit</button>');
+  });
+
   it('renders the compose form over the list (view stack: compose > list)', () => {
     const compose: MemoryComposeState = { open: true, mode: 'create', kind: 'note', summary: '', body: 'hi', submitting: false };
     const html = renderMemoryLens({ ...baseProps, entries: [own], canWrite: true, compose });
@@ -181,6 +319,66 @@ describe('renderMemoryLens — Slice 2 CRUD affordances', () => {
     expect(html).toContain('>B</textarea>');
   });
 
+  it('reviews a draft discard in an alertdialog while the editor is inert', () => {
+    const compose: MemoryComposeState = {
+      open: true,
+      mode: 'create',
+      kind: 'preference',
+      summary: '',
+      body: 'Keep answers concise',
+      submitting: false,
+    };
+    const html = renderMemoryLens({
+      ...baseProps,
+      entries: [],
+      canWrite: true,
+      compose,
+      composeDiscardGuard: true,
+    });
+
+    expect(html).toContain(MEMORY_COMPOSE_DISCARD_GUARD_ATTR);
+    expect(html).toContain('role="alertdialog"');
+    expect(html).toContain('aria-modal="true"');
+    expect(html).toContain(MEMORY_COMPOSE_DISCARD_KEEP_ACTION);
+    expect(html).toContain(MEMORY_COMPOSE_DISCARD_KEEP_ATTR);
+    expect(html).toContain(MEMORY_COMPOSE_DISCARD_COMMIT_ACTION);
+    expect(html).toContain(MEMORY_COMPOSE_DISCARD_COMMIT_ATTR);
+    expect(html).toContain('class="memory-compose-editor" inert aria-hidden="true"');
+    expect(html).toContain('Keep answers concise');
+  });
+
+  it('keeps the saving action focusable while making compose controls inert', () => {
+    const compose: MemoryComposeState = {
+      open: true,
+      mode: 'create',
+      kind: 'preference',
+      summary: '',
+      body: 'Keep answers concise',
+      submitting: true,
+    };
+    const html = renderMemoryLens({
+      ...baseProps,
+      entries: [],
+      canWrite: true,
+      compose,
+    });
+    const save = html.match(
+      new RegExp(`<button[^>]*${MEMORY_COMPOSE_SUBMIT_ACTION}[^>]*>`),
+    )?.[0] ?? '';
+    const cancel = html.match(
+      new RegExp(`<button[^>]*${MEMORY_COMPOSE_CANCEL_ACTION}[^>]*>`),
+    )?.[0] ?? '';
+
+    expect(html).toContain('data-memory-field="kind" readonly');
+    expect(html).toContain('data-memory-field="summary" readonly');
+    expect(html).toContain('data-memory-field="body" readonly');
+    expect(save).toContain('aria-disabled="true"');
+    expect(save).toContain('aria-busy="true"');
+    expect(save).not.toMatch(/\sdisabled(?:\s|=|>)/);
+    expect(cancel).toContain('aria-disabled="true"');
+    expect(cancel).not.toMatch(/\sdisabled(?:\s|=|>)/);
+  });
+
   it('renders the detail view with the full body, winning the view stack', () => {
     const detail: MemoryDetailState = {
       memory_id: 'umem_1', loading: false,
@@ -188,6 +386,8 @@ describe('renderMemoryLens — Slice 2 CRUD affordances', () => {
     };
     const html = renderMemoryLens({ ...baseProps, entries: [own], canWrite: true, detail });
     expect(html).toContain('the full body text');
+    expect(html).toContain(MEMORY_DETAIL_HEADING_ATTR);
+    expect(html).toContain('tabindex="-1">Memory detail</h2>');
     expect(html).toContain(MEMORY_EDIT_ACTION); // own → editable from detail
     // detail beats an open compose form
     const compose: MemoryComposeState = { open: true, mode: 'create', kind: '', summary: '', body: '', submitting: false };
@@ -236,6 +436,59 @@ describe('renderMemoryLens — Slice 3 import panel', () => {
     expect(html).toMatch(/deduped 3/);
   });
 
+  it('reviews a populated import draft while the JSON editor is inert', () => {
+    const importPanel: MemoryImportState = {
+      open: true,
+      text: '{"entries":[{"kind":"note"}]}',
+      submitting: false,
+    };
+    const html = renderMemoryLens({
+      ...baseProps,
+      entries: [],
+      canWrite: true,
+      importPanel,
+      importDiscardGuard: true,
+    });
+
+    expect(html).toContain(MEMORY_IMPORT_DISCARD_GUARD_ATTR);
+    expect(html).toContain('role="alertdialog"');
+    expect(html).toContain('aria-modal="true"');
+    expect(html).toContain(MEMORY_IMPORT_DISCARD_KEEP_ACTION);
+    expect(html).toContain(MEMORY_IMPORT_DISCARD_KEEP_ATTR);
+    expect(html).toContain(MEMORY_IMPORT_DISCARD_COMMIT_ACTION);
+    expect(html).toContain(MEMORY_IMPORT_DISCARD_COMMIT_ATTR);
+    expect(html).toContain('class="memory-import-editor" inert aria-hidden="true"');
+    expect(html).toContain('&quot;kind&quot;:&quot;note&quot;');
+  });
+
+  it('keeps the importing action focusable while making import controls inert', () => {
+    const importPanel: MemoryImportState = {
+      open: true,
+      text: '{"entries":[]}',
+      submitting: true,
+    };
+    const html = renderMemoryLens({
+      ...baseProps,
+      entries: [],
+      canWrite: true,
+      importPanel,
+    });
+    const submit = html.match(
+      new RegExp(`<button[^>]*${MEMORY_IMPORT_SUBMIT_ACTION}[^>]*>`),
+    )?.[0] ?? '';
+    const close = html.match(
+      new RegExp(`<button[^>]*${MEMORY_IMPORT_CANCEL_ACTION}[^>]*>`),
+    )?.[0] ?? '';
+
+    expect(html).toContain('data-memory-field="import"');
+    expect(html).toMatch(/data-memory-field="import"[^>]*readonly/);
+    expect(submit).toContain('aria-disabled="true"');
+    expect(submit).toContain('aria-busy="true"');
+    expect(submit).not.toMatch(/\sdisabled(?:\s|=|>)/);
+    expect(close).toContain('aria-disabled="true"');
+    expect(close).not.toMatch(/\sdisabled(?:\s|=|>)/);
+  });
+
   it('surfaces an import error + escapes pasted text (XSS guard)', () => {
     const importPanel: MemoryImportState = {
       open: true, submitting: false,
@@ -255,10 +508,38 @@ describe('renderMemoryLens — Slice 3 export', () => {
     expect(renderMemoryLens({ ...baseProps, entries: [] })).not.toContain(MEMORY_EXPORT_ACTION);
   });
 
-  it('marks the Export button busy + disabled while a walk is in flight', () => {
+  it('keeps Export focusable and marks competing toolbar controls inert', () => {
     const html = renderMemoryLens({ ...baseProps, entries: [], canWrite: true, exporting: true });
+    const exportButton = html.match(
+      new RegExp(`<button[^>]*${MEMORY_EXPORT_ACTION}[^>]*>`),
+    )?.[0] ?? '';
+    const importButton = html.match(
+      new RegExp(`<button[^>]*${MEMORY_IMPORT_ACTION}[^>]*>`),
+    )?.[0] ?? '';
+    const addButton = html.match(
+      new RegExp(`<button[^>]*${MEMORY_ADD_ACTION}[^>]*>`),
+    )?.[0] ?? '';
     expect(html).toContain('Exporting…');
-    expect(html).toMatch(new RegExp(`${MEMORY_EXPORT_ACTION}[^>]*disabled`));
+    expect(exportButton).toContain('aria-disabled="true"');
+    expect(exportButton).toContain('aria-busy="true"');
+    expect(exportButton).not.toMatch(/\sdisabled(?:\s|=|>)/);
+    expect(importButton).toContain('aria-disabled="true"');
+    expect(addButton).toContain('aria-disabled="true"');
+    expect(html.match(/memory-filter-chip[^>]*aria-disabled="true"/g))
+      .toHaveLength(4);
+  });
+
+  it('announces an export failure while keeping the list toolbar available', () => {
+    const html = renderMemoryLens({
+      ...baseProps,
+      entries: [],
+      canWrite: true,
+      error: 'Memory export temporarily unavailable.',
+    });
+    expect(html).toContain(
+      '<p class="memory-lens-error" role="alert">Memory export temporarily unavailable.</p>',
+    );
+    expect(html).toContain(MEMORY_EXPORT_ACTION);
   });
 });
 

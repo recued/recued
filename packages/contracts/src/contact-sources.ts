@@ -853,6 +853,62 @@ export const CONTACT_SOURCE_DECLARATIONS: ReadonlyArray<ContactSourceDeclaration
     },
     match_on: ['email_alias'],
   }),
+  buildContactSourceDeclaration({
+    // The SECOND contact book.
+    //
+    // ⛔ It does NOT ride the mail/calendar grant, and an earlier draft of this
+    // comment said it did. Mail and calendar are COLLECTIONS sharing
+    // `account.graph.<slug>.*`; a contact Source is driven by a CONNECTION ROW
+    // (`connection.api`, vendor `microsoft`, enrolled in Settings → Connections).
+    // Same vendor, two credential stores. Enrolling contacts therefore cannot
+    // clobber the mailbox grant — the hazard `calendar/enroll.ts:259` guards.
+    //
+    // ⚠ Vendor `microsoft`, not `outlook` / `microsoft_contacts` — the same
+    // one-vendor-slug/N-api_bases pattern the Google family uses, and the slug the
+    // whole shipped Graph pack family already declares (`outlook`, `onedrive`,
+    // `teams`, `sharepoint`, `planner`, `microsoft-todo`). The pack's
+    // `required_scopes` are UNIONed per INSTALLED PACK, so a OneDrive-only user is
+    // never asked for their contacts.
+    vendor: 'microsoft',
+    display_name: 'Outlook Contacts',
+    // Identical posture to Google Contacts: the user's own curated list, which
+    // still rots. Below a CRM, above anything derived from traffic.
+    rung: 'contact_book',
+    // Everyone you chose to keep, including the people who never email you.
+    import_scope: 'full_import',
+    // NULL for the same reason as Google: a contact book has no platform-record
+    // entity behind it — it IS the record.
+    vendor_entity: null,
+    supplies: {
+      // Graph returns `emailAddresses[]` (objects of `{address, name}`) and THREE
+      // separate phone fields — `businessPhones[]`, `homePhones[]`, `mobilePhone`.
+      // The leaf contributes every one of them.
+      aliases: ['email_alias', 'phone_alias'],
+      // `name`    — `displayName`, falling back to `givenName` + `surname`.
+      // `org`     — `companyName`. ⚠ Unlike Salesforce and Pipedrive this is a
+      //             genuine STRING on the contact itself, not a cross-entity link,
+      //             so it needs no join and is safe to promise.
+      // `address` — `businessAddress` / `homeAddress` / `otherAddress`, each a
+      //             `physicalAddress` (`street`, `city`, `state`, `postalCode`,
+      //             `countryOrRegion`) composed into a canonical `MailingAddress`.
+      //
+      // ⛔ NO `photo`, and unlike the omissions above this one is a HARD contract
+      // limit rather than a modelling choice. Google's People API returns
+      // `photos[].url` — a URL. Graph's `photo` is a `profilePhoto` NAVIGATION
+      // property whose only representation is BYTES at
+      // `/me/contacts/{id}/photo/$value`. C-2's North star is that bytes are NEVER
+      // fetched, so there is nothing here a leaf could honestly emit. Verified
+      // against the pinned Graph v1.0 OpenAPI, not inferred:
+      // `microsoft.graph.contact.photo` → `$ref microsoft.graph.profilePhoto`.
+      //
+      // ⚠ Promising it anyway would fail EVERY record on the FIRST cycle —
+      // `supplies` is a promise the runner verifies per record.
+      attributes: ['name', 'org', 'address'],
+    },
+    // Email only, same as every other contact source: there is no phone→contact
+    // resolver, and the runner refuses a cycle keyed on one.
+    match_on: ['email_alias'],
+  }),
 ];
 
 // ────────────────────────────────────────────────────────────────

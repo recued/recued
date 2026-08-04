@@ -14,6 +14,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  PACKS_DIALOG_ATTR,
+  PACKS_DIALOG_PENDING_ATTR,
   PACKS_DIALOG_INSTALL_BTN_ATTR,
   PACKS_DIALOG_OWNER_OPERATION_REVIEW_ATTR,
   PACKS_DETAIL_BACK_ATTR,
@@ -166,6 +168,8 @@ const entry = (o: Partial<PackListEntry> = {}): PackListEntry => {
     installed: false,
     requires: [...m.requires],
     recipe_count: m.recipes.length,
+    recipe_refs: m.recipes.map((r) => ({ slug: r.slug, version: r.version })),
+    body_visibility_grant_keys: [...(m.mcp_body_visibility_grants ?? [])],
     body_visibility_grant_count: m.mcp_body_visibility_grants?.length ?? 0,
     manifest: m,
     ...o,
@@ -179,8 +183,10 @@ interface MountArgs {
     installed_versions?: Array<{ slug: string; version: number }>;
   };
   resolve?: PacksResolveCaller;
+  install?: ReturnType<typeof vi.fn>;
   installBySlug?: ReturnType<typeof vi.fn>;
   uninstall?: ReturnType<typeof vi.fn>;
+  recipeList?: ReturnType<typeof vi.fn>;
 }
 
 const mount = (args: MountArgs) => {
@@ -188,6 +194,11 @@ const mount = (args: MountArgs) => {
   const runList: PacksListCaller = vi.fn(async () =>
     args.roster ? args.roster() : { packs: [] },
   );
+  const runInstall =
+    args.install ??
+    vi.fn(async () => ({
+      result: { ok: true as const, installed: [], rolled_back: [] },
+    }));
   const runInstallBySlug =
     args.installBySlug ??
     vi.fn(async () => ({
@@ -205,13 +216,14 @@ const mount = (args: MountArgs) => {
     onSelectSlug: () => undefined,
     ...(args.initialSlug !== undefined ? { initialSlug: args.initialSlug } : {}),
     ...(args.resolve !== undefined ? { runResolvePack: args.resolve } : {}),
-    runInstall: vi.fn(async () => ({
-      result: { ok: true as const, installed: [], rolled_back: [] },
-    })),
+    runInstall: runInstall as never,
     runInstallBySlug: runInstallBySlug as never,
     runUninstall: runUninstall as never,
+    ...(args.recipeList !== undefined
+      ? { runRecipeList: args.recipeList as never }
+      : {}),
   });
-  return { host, mount: m, runList, runInstallBySlug, runUninstall };
+  return { host, mount: m, runList, runInstall, runInstallBySlug, runUninstall };
 };
 
 describe('packs panel — detail (marketplace resolve + install/uninstall)', () => {
@@ -229,8 +241,62 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
     // The detail's IDENTITY section rendered with the roster name.
     expect(findByAttr(host, PACKS_DETAIL_SECTION_ATTR)).not.toBeNull();
     expect(text(host)).toContain('Bundled Pack');
-    // A roster pack is never resolved.
+    // A roster pack WITH a manifest is never resolved.
     expect(resolve).not.toHaveBeenCalled();
+  });
+
+  /** ⛔ Live-drive regression. `packs.list` forwards a manifest for INSTALLED
+   *  packs only, so a listed-but-uninstalled pack now arrives without one — and
+   *  every consent surface is gated on it. The Install button rendered, the click
+   *  set `dialogOpenFor`, the dialog's `pack.manifest !== undefined` guard
+   *  rendered nothing "this pass", and the resolve that was supposed to complete
+   *  and re-render never started: the detail route returns as soon as
+   *  `findPackBySlug` hits, which is ABOVE the only `ensureDetailResolved` call.
+   *  Install was inert with no error, forever.
+   *
+   *  `ensureDetailResolved` had already been taught this case — the fix went into
+   *  the function and nothing routed the case to it. */
+  it('a LISTED pack that arrives WITHOUT a manifest resolves, so Install actually opens', async () => {
+    const resolve = vi.fn<PacksResolveCaller>(async () => ({
+      manifest: manifest({ slug: 'bundled-pack', name: 'Bundled Pack' }),
+    }));
+    // The live shape: list fields present, manifest absent.
+    const listedNoManifest = entry({
+      manifest: undefined,
+      installed: false,
+    });
+    expect(listedNoManifest.manifest).toBeUndefined();
+    const { host, mount: m, runInstall, runInstallBySlug } = mount({
+      initialSlug: 'bundled-pack',
+      roster: () => ({ packs: [listedNoManifest] }),
+      resolve,
+    });
+    await m.whenLoaded();
+    await tick();
+    await tick();
+
+    // The missing manifest is what triggers the resolve — nothing else changed.
+    expect(resolve).toHaveBeenCalledWith('bundled-pack');
+
+    m.clickInstall('bundled-pack');
+    await tick();
+    // The consent dialog is on screen. This is the whole bug: before the fix the
+    // click was swallowed and this stayed null.
+    expect(findByAttr(host, PACKS_DIALOG_ATTR)).not.toBeNull();
+
+    // 🔑 And it still installs BY VALUE. The resolved manifest backfills the
+    // LISTED row rather than becoming a `pendingAddEntry` — that flag is what
+    // routes an install to the marketplace `packs.installBySlug`, and a pack the
+    // roster already carries must keep flowing through `packs.install`.
+    const dialogInstall = findByAttr(host, PACKS_DIALOG_INSTALL_BTN_ATTR);
+    expect(dialogInstall).not.toBeNull();
+    dialogInstall!.click();
+    await tick();
+    await tick();
+    expect(runInstallBySlug).not.toHaveBeenCalled();
+    expect(runInstall).toHaveBeenCalledTimes(1);
+    const sent = runInstall.mock.calls[0]![0] as { manifest?: BulkPackManifest };
+    expect(sent.manifest?.slug).toBe('bundled-pack');
   });
 
   it('resolves a MARKETPLACE slug absent from the roster + renders its detail', async () => {
@@ -300,6 +366,7 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
       installed = true;
       return { result: { ok: true as const, installed: [], rolled_back: [] } };
     });
+    const recipeList = vi.fn(async () => ({ recipes: [] }));
     const { host, mount: m, runInstallBySlug } = mount({
       initialSlug: 'mkt-pack',
       // A marketplace pack never appears in packs[]; installed-state comes from
@@ -310,6 +377,7 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
       }),
       resolve,
       installBySlug,
+      recipeList,
     });
     await m.whenLoaded();
     await tick();
@@ -330,6 +398,7 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
     expect(findByAttrValue(host, PACKS_ROW_INSTALL_BTN_ATTR, 'mkt-pack')).toBeNull();
     expect(findByAttrValue(host, PACKS_ROW_DELETE_BTN_ATTR, 'mkt-pack')).not.toBeNull();
     expect(resolve).toHaveBeenCalledTimes(1); // resolved once, not again post-install
+    expect(recipeList).toHaveBeenCalledTimes(2); // pre-install roster + refreshed roster
   });
 
   it('discards a stale marketplace review and returns to a refreshable detail error', async () => {
@@ -478,5 +547,83 @@ describe('packs panel — detail (marketplace resolve + install/uninstall)', () 
     // No `installed` / `discover` / `add` list sections — only the detail.
     expect(findByAttr(host, PACKS_SECTION_ATTR)).toBeNull();
     expect(findByAttr(host, PACKS_DETAIL_SECTION_ATTR)).not.toBeNull();
+  });
+});
+
+/** ⛔ The second layer of the same silence. A LISTED pack whose resolve FAILS
+ *  never reached `renderDetailResolveError` — that lives in the not-found
+ *  branch — so the detail rendered normally with an Install button that could
+ *  not open, `ensureDetailResolved` refusing to retry (it early-returns on a
+ *  recorded error), and no message anywhere.
+ *
+ *  Real trigger: `rental-book`. It carries a records composition, and the
+ *  records review resolved all 19 recipe refs from the MARKETPLACE, so on a
+ *  LAN-only server the resolve failed on the first ref. Fixed server-side too —
+ *  this covers the client half, which must not go quiet for the NEXT cause. */
+describe('packs panel — a listed pack whose resolve fails says so', () => {
+  it('surfaces the reason instead of a detail with a dead Install button', async () => {
+    const resolve = vi.fn<PacksResolveCaller>(async () => ({
+      manifest: null,
+      failure: { code: 'validation', message: 'Records recipe could not be resolved.' },
+    }));
+    const { host, mount: m } = mount({
+      initialSlug: 'bundled-pack',
+      roster: () => ({ packs: [entry({ manifest: undefined, installed: false })] }),
+      resolve,
+    });
+    await m.whenLoaded();
+    await tick();
+    await tick();
+
+    expect(resolve).toHaveBeenCalledWith('bundled-pack');
+    const err = findByAttr(host, PACKS_DETAIL_RESOLVE_ERROR_ATTR);
+    expect(err).not.toBeNull();
+    expect(text(host)).toContain('Records recipe could not be resolved.');
+    // ⛔ And no Install button, because there is nothing behind it — offering one
+    // that silently does nothing is what this whole thread has been about.
+    expect(findByAttrValue(host, PACKS_ROW_INSTALL_BTN_ATTR, 'bundled-pack')).toBeNull();
+  });
+});
+
+/** The resolve is a round-trip, so Install is briefly not clickable. Before this
+ *  the button looked ready, the click landed on nothing, and the popup arrived
+ *  later on its own — a sequence indistinguishable from a broken button, which
+ *  is how it was reported. */
+describe('packs panel — Install says it is preparing while the manifest loads', () => {
+  it('reads Preparing… and is disabled until the resolve lands, then opens', async () => {
+    let release: (() => void) | null = null;
+    const gate = new Promise<void>((r) => { release = r; });
+    const resolve = vi.fn<PacksResolveCaller>(async () => {
+      await gate;
+      return { manifest: manifest({ slug: 'bundled-pack', name: 'Bundled Pack' }) };
+    });
+    const { host, mount: m } = mount({
+      initialSlug: 'bundled-pack',
+      roster: () => ({ packs: [entry({ manifest: undefined, installed: false })] }),
+      resolve,
+    });
+    await m.whenLoaded();
+    await tick();
+
+    const btn = findByAttrValue(host, PACKS_ROW_INSTALL_BTN_ATTR, 'bundled-pack');
+    expect(btn).not.toBeNull();
+    expect(btn!.textContent).toBe('Preparing…');
+    expect(btn!.getAttribute('aria-busy')).toBe('true');
+    // ⛔ NOT disabled. Disabling it swallowed the press: nothing happened, the
+    // label flipped back, and the user had to click a second time. The click
+    // must LAND — `openDialog` records the intent without the manifest.
+    expect(btn!.disabled).toBe(false);
+    btn!.click();
+    await tick();
+    expect(findByAttr(host, PACKS_DIALOG_PENDING_ATTR)).not.toBeNull();
+
+    release!();
+    await tick();
+    await tick();
+
+    // 🔑 The queued click resolves into the real dialog — the placeholder is
+    // replaced, not merely joined by it.
+    expect(findByAttr(host, PACKS_DIALOG_PENDING_ATTR)).toBeNull();
+    expect(findByAttr(host, PACKS_DIALOG_ATTR)).not.toBeNull();
   });
 });

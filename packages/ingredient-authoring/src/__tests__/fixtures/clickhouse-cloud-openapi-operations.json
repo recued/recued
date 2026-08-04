@@ -3,12 +3,12 @@
     "source": {
       "kind": "official_openapi",
       "url": "https://api.clickhouse.cloud/v1",
-      "bytes": 910739,
-      "sha256": "68f34fa22f5994b1332f0f536cc43adec7a8099f3be6cf6e722e3ec8f6fc6893",
+      "bytes": 1173533,
+      "sha256": "18b081defb1b519cea672cf6d69934750685f5fe01ed10a16e164674d52659e0",
       "openapi": "3.1.2",
       "title": "OpenAPI spec for ClickHouse Cloud",
       "api_version": "1.0",
-      "official_path_count": 64,
+      "official_path_count": 80,
       "retrieved_on": "2026-07-15",
       "mutability": "The vendor-hosted URL is mutable. Generation fails closed unless the bytes and SHA-256 match this reviewed contract.",
       "declared_server": [
@@ -27,94 +27,99 @@
         "description": "Use key ID and key secret obtained in ClickHouse Cloud console: https://clickhouse.com/docs/cloud/manage/openapi"
       }
     },
-    "official_operation_count": 110,
-    "admitted_operation_count": 108,
+    "official_operation_count": 142,
+    "admitted_operation_count": 140,
     "deprecated_operation_count": 2,
     "official_method_counts": {
-      "DELETE": 16,
-      "GET": 50,
+      "DELETE": 23,
+      "GET": 62,
       "PATCH": 22,
-      "POST": 18,
-      "PUT": 4
+      "POST": 26,
+      "PUT": 9
     },
     "admitted_method_counts": {
-      "DELETE": 16,
-      "GET": 49,
+      "DELETE": 23,
+      "GET": 61,
       "PATCH": 21,
-      "POST": 18,
-      "PUT": 4
+      "POST": 26,
+      "PUT": 9
     },
     "official_tag_counts": {
       "Backup": 8,
       "Billing": 1,
       "ClickPipes": 17,
-      "ClickStack": 12,
+      "ClickStack": 30,
       "OpenAPI": 5,
-      "Organization": 9,
+      "Organization": 11,
       "Postgres": 16,
       "Prometheus": 4,
       "Role Management": 5,
       "Service": 25,
+      "UDF": 12,
       "User management": 8
     },
     "admitted_tag_counts": {
       "Backup": 8,
       "Billing": 1,
       "ClickPipes": 17,
-      "ClickStack": 12,
+      "ClickStack": 30,
       "OpenAPI": 5,
-      "Organization": 8,
+      "Organization": 10,
       "Postgres": 16,
       "Prometheus": 4,
       "Role Management": 5,
       "Service": 24,
+      "UDF": 12,
       "User management": 8
     },
     "pack_operation_counts": {
-      "clickhouse-cloud-organizations-access": 27,
+      "clickhouse-cloud-organizations-access": 29,
       "clickhouse-cloud-services-lifecycle": 24,
       "clickhouse-cloud-backups-observability": 12,
       "clickhouse-cloud-clickpipes": 17,
       "clickhouse-cloud-postgres": 16,
-      "clickhouse-cloud-clickstack": 12
+      "clickhouse-cloud-clickstack": 30,
+      "clickhouse-cloud-udf": 12
     },
     "composition_bytes": {
-      "clickhouse-cloud-organizations-access": 52019,
+      "clickhouse-cloud-organizations-access": 56018,
       "clickhouse-cloud-services-lifecycle": 52708,
       "clickhouse-cloud-backups-observability": 23242,
-      "clickhouse-cloud-clickpipes": 42548,
+      "clickhouse-cloud-clickpipes": 42913,
       "clickhouse-cloud-postgres": 39140,
-      "clickhouse-cloud-clickstack": 27578
+      "clickhouse-cloud-clickstack": 70157,
+      "clickhouse-cloud-udf": 28664
     },
     "body_mode_counts": {
-      "none": 65,
-      "raw_json": 43
+      "none": 85,
+      "raw_json": 55
     },
     "body_shape_counts": {
-      "object": 43
+      "object": 55
     },
     "success_status_counts": {
-      "200": 108
+      "200": 137,
+      "201": 3
     },
     "selected_response_media_counts": {
-      "application/json": 103,
+      "application/json": 135,
       "application/x-pem-file": 1,
       "text/plain": 2,
       "text/plain; charset=UTF-8": 2
     },
     "risk_counts": {
-      "admin": 12,
-      "destructive": 46,
-      "read": 50
+      "admin": 25,
+      "destructive": 53,
+      "read": 62
     },
     "approval_counts": {
-      "always": 58,
-      "never": 50
+      "always": 78,
+      "never": 62
     },
     "idempotency_counts": {
-      "idempotent": 44,
-      "non_idempotent": 14,
-      "safe": 50
+      "idempotent": 56,
+      "non_idempotent": 22,
+      "safe": 62
     },
     "pagination": {
       "automatic_operation_count": 1,
@@ -127,24 +132,31 @@
     "auth": {
       "selected": "HTTP Basic supplied only by the enrolled clickhouse_cloud connection: organization API key ID as username and key secret as password",
       "official_documentation_model": "The official OpenAPI declares HTTP Basic and identifies the organization API key ID and secret as its credentials.",
-      "basic_auth_operation_count": 108,
+      "basic_auth_operation_count": 140,
       "credential_fields_in_pack": 0
     },
     "authority_notes": {
       "exact_path_parameter_contract": true,
       "operation_id_uniqueness": true,
       "official_request_body_required_count": 0,
-      "effective_request_body_required_count": 43,
-      "exact_content_type_operation_count": 43,
-      "exact_accept_operation_count": 108,
-      "beta_operation_count": 43,
+      "effective_request_body_required_count": 55,
+      "exact_content_type_operation_count": 55,
+      "exact_accept_operation_count": 140,
+      "beta_operation_count": 75,
       "beta_operation_keys": [
         "DELETE /v1/organizations/{organizationId}/postgres/{postgresId}",
         "DELETE /v1/organizations/{organizationId}/services/{serviceId}/backupBucket",
         "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickhouseSettings/{settingName}",
         "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/alerts/{clickStackAlertId}",
         "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/dashboards/{clickStackDashboardId}",
+        "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+        "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
+        "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
+        "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/{clickStackWebhookId}",
         "DELETE /v1/organizations/{organizationId}/services/{serviceId}/scalingSchedule",
+        "DELETE /v1/organizations/{organizationId}/udfs/{functionName}",
+        "DELETE /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
+        "DELETE /v1/organizations/{organizationId}/udfs/{functionName}/versions/{version}",
         "GET /v1/organizations/{organizationId}/postgres",
         "GET /v1/organizations/{organizationId}/postgres/prometheus",
         "GET /v1/organizations/{organizationId}/postgres/{postgresId}",
@@ -154,6 +166,8 @@
         "GET /v1/organizations/{organizationId}/postgres/{postgresId}/prometheus",
         "GET /v1/organizations/{organizationId}/postgres/{postgresId}/slowQueryPatterns",
         "GET /v1/organizations/{organizationId}/postgres/{postgresId}/slowQueryPatterns/{queryId}",
+        "GET /v1/organizations/{organizationId}/quotas",
+        "GET /v1/organizations/{organizationId}/quotas/{quotaCode}",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/backupBucket",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/clickhouseSettings",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/clickhouseSettings/schema",
@@ -162,9 +176,19 @@
         "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/alerts/{clickStackAlertId}",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/dashboards",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/dashboards/{clickStackDashboardId}",
+        "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles",
+        "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+        "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches",
+        "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources",
+        "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks",
         "GET /v1/organizations/{organizationId}/services/{serviceId}/scalingSchedule",
+        "GET /v1/organizations/{organizationId}/udfs",
+        "GET /v1/organizations/{organizationId}/udfs/{functionName}",
+        "GET /v1/organizations/{organizationId}/udfs/{functionName}/attachments",
+        "GET /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
+        "GET /v1/organizations/{organizationId}/udfs/{functionName}/versions",
         "PATCH /v1/organizations/{organizationId}/postgres/{postgresId}",
         "PATCH /v1/organizations/{organizationId}/postgres/{postgresId}/config",
         "PATCH /v1/organizations/{organizationId}/postgres/{postgresId}/password",
@@ -179,9 +203,22 @@
         "POST /v1/organizations/{organizationId}/services/{serviceId}/clickpipes/schemaDiscovery",
         "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/alerts",
         "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/dashboards",
+        "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/dashboards/validate",
+        "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles",
+        "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches",
+        "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources",
+        "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks",
         "POST /v1/organizations/{organizationId}/services/{serviceId}/scalingSchedule",
+        "POST /v1/organizations/{organizationId}/udfUploads/url",
+        "POST /v1/organizations/{organizationId}/udfs",
+        "POST /v1/organizations/{organizationId}/udfs/{functionName}/versions",
         "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/alerts/{clickStackAlertId}",
-        "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/dashboards/{clickStackDashboardId}"
+        "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/dashboards/{clickStackDashboardId}",
+        "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+        "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
+        "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
+        "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/{clickStackWebhookId}",
+        "PUT /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}"
       ],
       "repeated_query_array_parameters": [
         "GET /v1/organizations/{organizationId}/services:filter",
@@ -242,8 +279,8 @@
         "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/dashboards/{clickStackDashboardId}",
         "PUT /v1/organizations/{organizationId}/services/{serviceId}/upgradeWindow"
       ],
-      "result_array_operation_count": 16,
-      "unsafe_integer_response_union_operation_count": 103
+      "result_array_operation_count": 19,
+      "unsafe_integer_response_union_operation_count": 135
     },
     "source_decision": {
       "admitted": false,
@@ -786,7 +823,7 @@
         "approval": "never"
       }
     ],
-    "operation_ids_sha256": "7aac6baad5d4b69c6ee8fc86346d4e7ee092bd411aeae50b4b7a25215204298f"
+    "operation_ids_sha256": "5a9362acecc28ec011667bc584389da1192e35c063466f43a395efe0edd79f2c"
   },
   "official_operations": [
     {
@@ -1061,6 +1098,64 @@
       "exclusion_reason": null,
       "pack": "clickhouse-cloud-organizations-access",
       "op": "role_management.organization_role_delete"
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/quotas",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/quotas",
+      "operation_id": "organizationQuotasGetList",
+      "tag": "Organization",
+      "summary": "Get organization quotas",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-organizations-access",
+      "op": "organization.organization_quotas_get_list"
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/quotas/{quotaCode}",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/quotas/{quotaCode}",
+      "operation_id": "organizationQuotaGet",
+      "tag": "Organization",
+      "summary": "Get organization quota details",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-organizations-access",
+      "op": "organization.organization_quota_get"
     },
     {
       "key": "GET /v1/organizations/{organizationId}/services",
@@ -3114,6 +3209,39 @@
       "op": "click_stack.click_stack_delete_dashboard"
     },
     {
+      "key": "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/dashboards/validate",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/dashboards/validate",
+      "operation_id": "clickStackValidateDashboard",
+      "tag": "ClickStack",
+      "summary": "ClickStack: Validate Dashboard",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_validate_dashboard"
+    },
+    {
       "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/alerts",
       "method": "GET",
       "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/alerts",
@@ -3203,6 +3331,130 @@
       "exclusion_reason": null,
       "pack": "clickhouse-cloud-clickstack",
       "op": "click_stack.click_stack_list_sources"
+    },
+    {
+      "key": "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources",
+      "operation_id": "clickStackCreateSource",
+      "tag": "ClickStack",
+      "summary": "ClickStack: Create Source",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_create_source"
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
+      "operation_id": "clickStackGetSource",
+      "tag": "ClickStack",
+      "summary": "ClickStack: Get Source",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_get_source"
+    },
+    {
+      "key": "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
+      "method": "PUT",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
+      "operation_id": "clickStackUpdateSource",
+      "tag": "ClickStack",
+      "summary": "ClickStack: Update Source",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_update_source"
+    },
+    {
+      "key": "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
+      "method": "DELETE",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
+      "operation_id": "clickStackDeleteSource",
+      "tag": "ClickStack",
+      "summary": "ClickStack: Delete Source",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_delete_source"
     },
     {
       "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/alerts/{clickStackAlertId}",
@@ -3323,6 +3575,407 @@
       "exclusion_reason": null,
       "pack": "clickhouse-cloud-clickstack",
       "op": "click_stack.click_stack_list_webhooks"
+    },
+    {
+      "key": "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks",
+      "operation_id": "clickStackCreateWebhook",
+      "tag": "ClickStack",
+      "summary": "ClickStack: Create Webhook",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_create_webhook"
+    },
+    {
+      "key": "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/{clickStackWebhookId}",
+      "method": "PUT",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/{clickStackWebhookId}",
+      "operation_id": "clickStackUpdateWebhook",
+      "tag": "ClickStack",
+      "summary": "ClickStack: Update Webhook",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_update_webhook"
+    },
+    {
+      "key": "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/{clickStackWebhookId}",
+      "method": "DELETE",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/{clickStackWebhookId}",
+      "operation_id": "clickStackDeleteWebhook",
+      "tag": "ClickStack",
+      "summary": "ClickStack: Delete Webhook",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_delete_webhook"
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles",
+      "operation_id": "clickStackListRoles",
+      "tag": "ClickStack",
+      "summary": "ClickStack: List Roles",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_list_roles"
+    },
+    {
+      "key": "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles",
+      "operation_id": "clickStackCreateRole",
+      "tag": "ClickStack",
+      "summary": "ClickStack: Create Role",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_create_role"
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+      "operation_id": "clickStackGetRole",
+      "tag": "ClickStack",
+      "summary": "ClickStack: Get Role",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_get_role"
+    },
+    {
+      "key": "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+      "method": "PUT",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+      "operation_id": "clickStackUpdateRole",
+      "tag": "ClickStack",
+      "summary": "ClickStack: Update Role",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_update_role"
+    },
+    {
+      "key": "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+      "method": "DELETE",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+      "operation_id": "clickStackDeleteRole",
+      "tag": "ClickStack",
+      "summary": "ClickStack: Delete Role",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_delete_role"
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches",
+      "operation_id": "clickStackListSavedSearches",
+      "tag": "ClickStack",
+      "summary": "ClickStack: List Saved Searches",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": true,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_list_saved_searches"
+    },
+    {
+      "key": "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches",
+      "operation_id": "clickStackCreateSavedSearch",
+      "tag": "ClickStack",
+      "summary": "ClickStack: Create Saved Search",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_create_saved_search"
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
+      "operation_id": "clickStackGetSavedSearch",
+      "tag": "ClickStack",
+      "summary": "ClickStack: Get Saved Search",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_get_saved_search"
+    },
+    {
+      "key": "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
+      "method": "PUT",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
+      "operation_id": "clickStackUpdateSavedSearch",
+      "tag": "ClickStack",
+      "summary": "ClickStack: Update Saved Search",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_update_saved_search"
+    },
+    {
+      "key": "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
+      "method": "DELETE",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
+      "operation_id": "clickStackDeleteSavedSearch",
+      "tag": "ClickStack",
+      "summary": "ClickStack: Delete Saved Search",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_delete_saved_search"
     },
     {
       "key": "GET /v1/organizations/{organizationId}/postgres",
@@ -4154,6 +4807,366 @@
       "exclusion_reason": null,
       "pack": "clickhouse-cloud-clickpipes",
       "op": "click_pipes.click_pipe_reverse_private_endpoint_delete"
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
+      "operation_id": "udfAttachmentGet",
+      "tag": "UDF",
+      "summary": "Get UDF attachment",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_attachment_get"
+    },
+    {
+      "key": "PUT /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
+      "method": "PUT",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
+      "operation_id": "udfAttach",
+      "tag": "UDF",
+      "summary": "Attach UDF to service",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_attach"
+    },
+    {
+      "key": "DELETE /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
+      "method": "DELETE",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
+      "operation_id": "udfDetach",
+      "tag": "UDF",
+      "summary": "Detach UDF from service",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_detach"
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/udfs/{functionName}/attachments",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}/attachments",
+      "operation_id": "udfAttachmentList",
+      "tag": "UDF",
+      "summary": "List UDF attachments",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_attachment_list"
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/udfs",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/udfs",
+      "operation_id": "udfList",
+      "tag": "UDF",
+      "summary": "List UDFs",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_list"
+    },
+    {
+      "key": "POST /v1/organizations/{organizationId}/udfs",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/udfs",
+      "operation_id": "udfCreate",
+      "tag": "UDF",
+      "summary": "Create UDF",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "201",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_create"
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/udfs/{functionName}",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}",
+      "operation_id": "udfGet",
+      "tag": "UDF",
+      "summary": "Get UDF",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_get"
+    },
+    {
+      "key": "DELETE /v1/organizations/{organizationId}/udfs/{functionName}",
+      "method": "DELETE",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}",
+      "operation_id": "udfDelete",
+      "tag": "UDF",
+      "summary": "Delete UDF",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_delete"
+    },
+    {
+      "key": "POST /v1/organizations/{organizationId}/udfUploads/url",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/udfUploads/url",
+      "operation_id": "udfUploadSessionCreate",
+      "tag": "UDF",
+      "summary": "Create UDF upload URL",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "201",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_upload_session_create"
+    },
+    {
+      "key": "GET /v1/organizations/{organizationId}/udfs/{functionName}/versions",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}/versions",
+      "operation_id": "udfVersionList",
+      "tag": "UDF",
+      "summary": "List UDF versions",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_version_list"
+    },
+    {
+      "key": "POST /v1/organizations/{organizationId}/udfs/{functionName}/versions",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}/versions",
+      "operation_id": "udfVersionCreate",
+      "tag": "UDF",
+      "summary": "Create UDF version",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "success_status": "201",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_version_create"
+    },
+    {
+      "key": "DELETE /v1/organizations/{organizationId}/udfs/{functionName}/versions/{version}",
+      "method": "DELETE",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}/versions/{version}",
+      "operation_id": "udfVersionDelete",
+      "tag": "UDF",
+      "summary": "Delete UDF version",
+      "beta": true,
+      "deprecated": false,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "result_is_array": false,
+      "selected": true,
+      "exclusion": null,
+      "exclusion_reason": null,
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_version_delete"
     }
   ],
   "operation_contracts": {
@@ -5082,6 +6095,330 @@
         }
       ]
     },
+    "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}": {
+      "key": "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+      "operation_id": "clickStackDeleteRole",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_delete_role",
+      "method": "DELETE",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+      "tag": "ClickStack",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "clickStackRoleId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "clickStackRoleId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}": {
+      "key": "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
+      "operation_id": "clickStackDeleteSavedSearch",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_delete_saved_search",
+      "method": "DELETE",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
+      "tag": "ClickStack",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "clickStackSavedSearchId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "clickStackSavedSearchId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}": {
+      "key": "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
+      "operation_id": "clickStackDeleteSource",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_delete_source",
+      "method": "DELETE",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
+      "tag": "ClickStack",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "clickStackSourceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "clickStackSourceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/{clickStackWebhookId}": {
+      "key": "DELETE /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/{clickStackWebhookId}",
+      "operation_id": "clickStackDeleteWebhook",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_delete_webhook",
+      "method": "DELETE",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/{clickStackWebhookId}",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/{clickStackWebhookId}",
+      "tag": "ClickStack",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "clickStackWebhookId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "clickStackWebhookId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
     "DELETE /v1/organizations/{organizationId}/services/{serviceId}/scalingSchedule": {
       "key": "DELETE /v1/organizations/{organizationId}/services/{serviceId}/scalingSchedule",
       "operation_id": "scalingScheduleDelete",
@@ -5250,6 +6587,233 @@
           ],
           "admitted_key": "serviceId",
           "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "DELETE /v1/organizations/{organizationId}/udfs/{functionName}": {
+      "key": "DELETE /v1/organizations/{organizationId}/udfs/{functionName}",
+      "operation_id": "udfDelete",
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_delete",
+      "method": "DELETE",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}",
+      "wire_path": "/v1/organizations/{organizationId}/udfs/{functionName}",
+      "tag": "UDF",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "functionName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "functionName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "DELETE /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}": {
+      "key": "DELETE /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
+      "operation_id": "udfDetach",
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_detach",
+      "method": "DELETE",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
+      "wire_path": "/v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
+      "tag": "UDF",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "functionName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "functionName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "DELETE /v1/organizations/{organizationId}/udfs/{functionName}/versions/{version}": {
+      "key": "DELETE /v1/organizations/{organizationId}/udfs/{functionName}/versions/{version}",
+      "operation_id": "udfVersionDelete",
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_version_delete",
+      "method": "DELETE",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}/versions/{version}",
+      "wire_path": "/v1/organizations/{organizationId}/udfs/{functionName}/versions/{version}",
+      "tag": "UDF",
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "functionName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "functionName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "version",
+          "required": true,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "version",
+          "admitted_type": "number",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
           "dropped_pattern": false,
@@ -6789,6 +8353,120 @@
         }
       ]
     },
+    "GET /v1/organizations/{organizationId}/quotas": {
+      "key": "GET /v1/organizations/{organizationId}/quotas",
+      "operation_id": "organizationQuotasGetList",
+      "pack": "clickhouse-cloud-organizations-access",
+      "op": "organization.organization_quotas_get_list",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/quotas",
+      "wire_path": "/v1/organizations/{organizationId}/quotas",
+      "tag": "Organization",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "result",
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/organizations/{organizationId}/quotas/{quotaCode}": {
+      "key": "GET /v1/organizations/{organizationId}/quotas/{quotaCode}",
+      "operation_id": "organizationQuotaGet",
+      "pack": "clickhouse-cloud-organizations-access",
+      "op": "organization.organization_quota_get",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/quotas/{quotaCode}",
+      "wire_path": "/v1/organizations/{organizationId}/quotas/{quotaCode}",
+      "tag": "Organization",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "quotaCode",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "quotaCode",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
     "GET /v1/organizations/{organizationId}/roles": {
       "key": "GET /v1/organizations/{organizationId}/roles",
       "operation_id": "organizationRolesGetList",
@@ -8250,6 +9928,298 @@
         }
       ]
     },
+    "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles": {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles",
+      "operation_id": "clickStackListRoles",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_list_roles",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles",
+      "tag": "ClickStack",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "result",
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}": {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+      "operation_id": "clickStackGetRole",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_get_role",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+      "tag": "ClickStack",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "clickStackRoleId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "clickStackRoleId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches": {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches",
+      "operation_id": "clickStackListSavedSearches",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_list_saved_searches",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches",
+      "tag": "ClickStack",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": "result",
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}": {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
+      "operation_id": "clickStackGetSavedSearch",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_get_saved_search",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
+      "tag": "ClickStack",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "clickStackSavedSearchId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "clickStackSavedSearchId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
     "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources": {
       "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources",
       "operation_id": "clickStackListSources",
@@ -8307,6 +10277,87 @@
       ],
       "selected_response_media": "application/json",
       "result_path": "result",
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}": {
+      "key": "GET /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
+      "operation_id": "clickStackGetSource",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_get_source",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
+      "tag": "ClickStack",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "clickStackSourceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "clickStackSourceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
       "pagination": null,
       "response_capture": null,
       "security": [
@@ -8694,6 +10745,427 @@
           ],
           "admitted_key": "serviceId",
           "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/organizations/{organizationId}/udfs": {
+      "key": "GET /v1/organizations/{organizationId}/udfs",
+      "operation_id": "udfList",
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_list",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/udfs",
+      "wire_path": "/v1/organizations/{organizationId}/udfs",
+      "tag": "UDF",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "cursor",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.cursor",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.limit",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/organizations/{organizationId}/udfs/{functionName}": {
+      "key": "GET /v1/organizations/{organizationId}/udfs/{functionName}",
+      "operation_id": "udfGet",
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_get",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}",
+      "wire_path": "/v1/organizations/{organizationId}/udfs/{functionName}",
+      "tag": "UDF",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "functionName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "functionName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/organizations/{organizationId}/udfs/{functionName}/attachments": {
+      "key": "GET /v1/organizations/{organizationId}/udfs/{functionName}/attachments",
+      "operation_id": "udfAttachmentList",
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_attachment_list",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}/attachments",
+      "wire_path": "/v1/organizations/{organizationId}/udfs/{functionName}/attachments",
+      "tag": "UDF",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "functionName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "functionName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "cursor",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.cursor",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.limit",
+          "admitted_type": "number",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}": {
+      "key": "GET /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
+      "operation_id": "udfAttachmentGet",
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_attachment_get",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
+      "wire_path": "/v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
+      "tag": "UDF",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "functionName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "functionName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "GET /v1/organizations/{organizationId}/udfs/{functionName}/versions": {
+      "key": "GET /v1/organizations/{organizationId}/udfs/{functionName}/versions",
+      "operation_id": "udfVersionList",
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_version_list",
+      "method": "GET",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}/versions",
+      "wire_path": "/v1/organizations/{organizationId}/udfs/{functionName}/versions",
+      "tag": "UDF",
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "functionName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "functionName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "cursor",
+          "required": false,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "query.cursor",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "query",
+          "wire_name": "limit",
+          "required": false,
+          "official_types": [
+            "integer"
+          ],
+          "admitted_key": "query.limit",
+          "admitted_type": "number",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",
           "dropped_pattern": false,
@@ -11254,6 +13726,351 @@
         }
       ]
     },
+    "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/dashboards/validate": {
+      "key": "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/dashboards/validate",
+      "operation_id": "clickStackValidateDashboard",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_validate_dashboard",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/dashboards/validate",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/dashboards/validate",
+      "tag": "ClickStack",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles": {
+      "key": "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles",
+      "operation_id": "clickStackCreateRole",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_create_role",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles",
+      "tag": "ClickStack",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches": {
+      "key": "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches",
+      "operation_id": "clickStackCreateSavedSearch",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_create_saved_search",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches",
+      "tag": "ClickStack",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources": {
+      "key": "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources",
+      "operation_id": "clickStackCreateSource",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_create_source",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources",
+      "tag": "ClickStack",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks": {
+      "key": "POST /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks",
+      "operation_id": "clickStackCreateWebhook",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_create_webhook",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks",
+      "tag": "ClickStack",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
     "POST /v1/organizations/{organizationId}/services/{serviceId}/privateEndpoint": {
       "key": "POST /v1/organizations/{organizationId}/services/{serviceId}/privateEndpoint",
       "operation_id": "instancePrivateEndpointCreate",
@@ -11448,6 +14265,177 @@
       ],
       "request_body_mode": "raw_json",
       "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "POST /v1/organizations/{organizationId}/udfs": {
+      "key": "POST /v1/organizations/{organizationId}/udfs",
+      "operation_id": "udfCreate",
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_create",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/udfs",
+      "wire_path": "/v1/organizations/{organizationId}/udfs",
+      "tag": "UDF",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "201",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "POST /v1/organizations/{organizationId}/udfs/{functionName}/versions": {
+      "key": "POST /v1/organizations/{organizationId}/udfs/{functionName}/versions",
+      "operation_id": "udfVersionCreate",
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_version_create",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}/versions",
+      "wire_path": "/v1/organizations/{organizationId}/udfs/{functionName}/versions",
+      "tag": "UDF",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "functionName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "functionName",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "201",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "POST /v1/organizations/{organizationId}/udfUploads/url": {
+      "key": "POST /v1/organizations/{organizationId}/udfUploads/url",
+      "operation_id": "udfUploadSessionCreate",
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_upload_session_create",
+      "method": "POST",
+      "path": "/v1/organizations/{organizationId}/udfUploads/url",
+      "wire_path": "/v1/organizations/{organizationId}/udfUploads/url",
+      "tag": "UDF",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [],
+      "official_request_body_required": false,
+      "effective_request_body_required": false,
+      "request_body_types": [],
+      "request_body_mode": "none",
+      "success_status": "201",
       "response_media": [
         "application/json"
       ],
@@ -11716,6 +14704,346 @@
         }
       ]
     },
+    "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}": {
+      "key": "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+      "operation_id": "clickStackUpdateRole",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_update_role",
+      "method": "PUT",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/roles/{clickStackRoleId}",
+      "tag": "ClickStack",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "clickStackRoleId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "clickStackRoleId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}": {
+      "key": "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
+      "operation_id": "clickStackUpdateSavedSearch",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_update_saved_search",
+      "method": "PUT",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/saved-searches/{clickStackSavedSearchId}",
+      "tag": "ClickStack",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "clickStackSavedSearchId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "clickStackSavedSearchId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}": {
+      "key": "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
+      "operation_id": "clickStackUpdateSource",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_update_source",
+      "method": "PUT",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/sources/{clickStackSourceId}",
+      "tag": "ClickStack",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "clickStackSourceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "clickStackSourceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/{clickStackWebhookId}": {
+      "key": "PUT /v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/{clickStackWebhookId}",
+      "operation_id": "clickStackUpdateWebhook",
+      "pack": "clickhouse-cloud-clickstack",
+      "op": "click_stack.click_stack_update_webhook",
+      "method": "PUT",
+      "path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/{clickStackWebhookId}",
+      "wire_path": "/v1/organizations/{organizationId}/services/{serviceId}/clickstack/webhooks/{clickStackWebhookId}",
+      "tag": "ClickStack",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "clickStackWebhookId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "clickStackWebhookId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
     "PUT /v1/organizations/{organizationId}/services/{serviceId}/upgradeWindow": {
       "key": "PUT /v1/organizations/{organizationId}/services/{serviceId}/upgradeWindow",
       "operation_id": "upgradeWindowUpdate",
@@ -11737,6 +15065,91 @@
             "string"
           ],
           "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "serviceId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "serviceId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        }
+      ],
+      "request_media": [
+        "application/json"
+      ],
+      "official_request_body_required": false,
+      "effective_request_body_required": true,
+      "request_body_types": [
+        "object"
+      ],
+      "request_body_mode": "raw_json",
+      "success_status": "200",
+      "response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "result_path": null,
+      "pagination": null,
+      "response_capture": null,
+      "security": [
+        {
+          "basicAuth": []
+        }
+      ]
+    },
+    "PUT /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}": {
+      "key": "PUT /v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
+      "operation_id": "udfAttach",
+      "pack": "clickhouse-cloud-udf",
+      "op": "udf.udf_attach",
+      "method": "PUT",
+      "path": "/v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
+      "wire_path": "/v1/organizations/{organizationId}/udfs/{functionName}/attachments/{serviceId}",
+      "tag": "UDF",
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent",
+      "parameters": [
+        {
+          "in": "path",
+          "wire_name": "organizationId",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "organizationId",
+          "admitted_type": "string",
+          "serialization": "scalar",
+          "authority": "official_openapi_parameter",
+          "dropped_pattern": false,
+          "integer_as_decimal_string": false,
+          "repeated_query_array": false,
+          "boolean_string": false
+        },
+        {
+          "in": "path",
+          "wire_name": "functionName",
+          "required": true,
+          "official_types": [
+            "string"
+          ],
+          "admitted_key": "functionName",
           "admitted_type": "string",
           "serialization": "scalar",
           "authority": "official_openapi_parameter",

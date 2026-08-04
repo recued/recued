@@ -71,20 +71,38 @@ export const composeContactSourceSync = (input: ComposeContactSourceSyncInput): 
   // Build every leaf this server CAN build. Each half is optional and independent:
   // a CRM-less install still imports a contact book; a contact-book-less install
   // still hydrates from HubSpot.
+  // Both contact books dispatch through the SAME gateway bundle, so it is built
+  // once and shared. They stay separate KEYS because the resolver keys leaves by
+  // vendor — sharing the deps object is not coupling the vendors.
+  const gatewayDeps =
+    executeDeps !== undefined
+      ? { fetchDeps: buildCanonicalPollDeps(executeDeps, connectionStore) }
+      : undefined;
+
   const adapterDeps: ContactSourceAdapterDeps = {
     ...(crmMirror !== undefined ? { crm: { mirror: crmMirror } } : {}),
-    // The Google leaf needs the GATEWAY, so it exists only once `executeDeps` does.
-    // On a db-less / keyless boot there is no gateway to dispatch through, and a
-    // contact book simply has no task — the Source still registers and its health
+    // A contact-book leaf needs the GATEWAY, so it exists only once `executeDeps`
+    // does. On a db-less / keyless boot there is no gateway to dispatch through, and
+    // a contact book simply has no task — the Source still registers and its health
     // row says it never ran, which is the honest state.
-    ...(executeDeps !== undefined
-      ? { google: { fetchDeps: buildCanonicalPollDeps(executeDeps, connectionStore) } }
-      : {}),
+    ...(gatewayDeps !== undefined ? { google: gatewayDeps, microsoft: gatewayDeps } : {}),
   };
 
   // No leaf at all ⇒ no resolver ⇒ no task for any vendor. Passing an empty
   // resolver would be identical, but saying it here keeps the no-op boot obvious.
-  if (adapterDeps.crm === undefined && adapterDeps.google === undefined) return;
+  //
+  // ⚠ EVERY leaf is named. Today `google` and `microsoft` are gated on the same
+  // `executeDeps`, so testing one would pass — but that is a coincidence of the
+  // current wiring, not a property. Gating the resolver on a subset is precisely how
+  // the header's failure happens: a Source registers, shows in the health strip, and
+  // silently never syncs.
+  if (
+    adapterDeps.crm === undefined
+    && adapterDeps.google === undefined
+    && adapterDeps.microsoft === undefined
+  ) {
+    return;
+  }
 
   wireContactSourceSync({
     connectionStore,

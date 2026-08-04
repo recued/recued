@@ -20,9 +20,11 @@ import {
 import {
   createContractGrantStore,
   USER_GRANT_PACK_ID,
+  wireConnectionGrantCleanup,
   type ContractGrantStore,
   type GrantPolicy,
 } from '../storage/contract-grant-store.js';
+import { createConnectionStore } from '../storage/connection-store.js';
 
 const NOW = 1_700_000_000_000;
 const HS = 'hubspot-catalog';
@@ -83,6 +85,49 @@ describe('contract-grant-store — grant / list / revoke', () => {
 
   it('lists nothing for a connection with no grants', () => {
     expect(grants.listUserGroups(HS, 'fresh-conn')).toEqual([]);
+  });
+});
+
+describe('contract-grant-store — connection lifecycle cleanup', () => {
+  const connection = (kind: 'api' | 'mcp', name: string) => ({
+    kind,
+    name,
+    ...(kind === 'mcp' ? { subtype: 'sse' } : {}),
+    display_name: `${kind} ${name}`,
+    config_json: '{}',
+    auth_ciphertext: 'CIPHER',
+    enrolled_at: NOW,
+    updated_at: NOW,
+  } as const);
+
+  it('drops both grant owners when the final MCP connection row is deleted', () => {
+    const connections = createConnectionStore(db);
+    wireConnectionGrantCleanup(connections, grants);
+    grants.grantUserGroup(HS, 'peer', 'read');
+    grants.grantPackGroup('peer-pack', HS, 'peer', 'write');
+    connections.upsert(connection('mcp', 'peer'));
+
+    connections.delete('mcp', 'peer');
+
+    expect(grants.listUserGroups(HS, 'peer')).toEqual([]);
+    expect(grants.listPackOwnedGroups(HS, 'peer')).toEqual([]);
+  });
+
+  it('preserves name-keyed grants until the last same-name connection kind is gone', () => {
+    const connections = createConnectionStore(db);
+    wireConnectionGrantCleanup(connections, grants);
+    grants.grantUserGroup(HS, 'shared', 'read');
+    grants.grantPackGroup('shared-pack', HS, 'shared', 'write');
+    connections.upsert(connection('api', 'shared'));
+    connections.upsert(connection('mcp', 'shared'));
+
+    connections.delete('mcp', 'shared');
+    expect(grants.listUserGroups(HS, 'shared')).toEqual(['read']);
+    expect(grants.listPackOwnedGroups(HS, 'shared')).toEqual(['write']);
+
+    connections.delete('api', 'shared');
+    expect(grants.listUserGroups(HS, 'shared')).toEqual([]);
+    expect(grants.listPackOwnedGroups(HS, 'shared')).toEqual([]);
   });
 });
 

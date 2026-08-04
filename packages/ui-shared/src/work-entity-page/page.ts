@@ -64,6 +64,10 @@ export interface WorkEntityPageProps {
   footer_html?: string;
   /** Booking-only server-side lifecycle filter echoed into the list control. */
   booking_lifecycle_filter?: BookingLifecycleState | 'all';
+  /** Exact row whose edit detail is loading. It remains focusable while busy. */
+  opening_entity_id?: string;
+  /** Forwarded to an open dialog when user dismissal needs confirmation. */
+  discard_guard?: boolean;
 }
 
 export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
@@ -106,6 +110,9 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
     ...(state.kind === 'booking'
       ? { booking_lifecycle_filter: props.booking_lifecycle_filter ?? 'all' }
       : {}),
+    ...(props.opening_entity_id !== undefined
+      ? { opening_entity_id: props.opening_entity_id }
+      : {}),
   });
 
   const dialogHtml =
@@ -117,6 +124,7 @@ export const renderWorkEntityPage = (props: WorkEntityPageProps): string => {
           state: state.dialog,
           sources: props.source_options,
           ref_picker: props.ref_picker === true,
+          discard_guard: props.discard_guard === true,
         });
 
   return `

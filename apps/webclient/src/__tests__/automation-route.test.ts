@@ -23,11 +23,14 @@ import {
 
 import {
   AUTOMATION_ROUTE_ADD_ATTR,
+  AUTOMATION_ROUTE_ADD_ERROR_ATTR,
+  AUTOMATION_ROUTE_ADD_RETRY_ATTR,
   AUTOMATION_ROUTE_EMPTY_ATTR,
   AUTOMATION_ROUTE_ERROR_ATTR,
   AUTOMATION_ROUTE_HOST_ATTR,
   AUTOMATION_ROUTE_ORIGIN_FILTER_ATTR,
   AUTOMATION_ROUTE_POLL_ATTR,
+  AUTOMATION_ROUTE_RETRY_ATTR,
   AUTOMATION_ROUTE_ROW_ATTR,
   AUTOMATION_ROUTE_SECTION_ATTR,
   AUTOMATION_ROUTE_STATUS_FILTER_ATTR,
@@ -174,13 +177,49 @@ const clickSubnav = (
   }
 };
 
+const clickRetry = (
+  host: FakeEl,
+  token: 'auto-run' | 'triggers' | 'schedules' | 'dishes',
+): void => {
+  const target = {
+    closest: (selector: string) =>
+      selector.includes(AUTOMATION_ROUTE_RETRY_ATTR)
+        ? {
+            getAttribute: (name: string) =>
+              name === AUTOMATION_ROUTE_RETRY_ATTR ? token : null,
+          }
+        : null,
+  };
+  for (const fn of host.listeners.get('click') ?? []) {
+    fn({ target } as unknown as Event);
+  }
+};
+
 const clickAdd = (host: FakeEl, section: 'triggers' | 'schedules'): void => {
   const target = {
     closest: (selector: string) =>
-      selector.includes(AUTOMATION_ROUTE_ADD_ATTR)
+      selector === `[${AUTOMATION_ROUTE_ADD_ATTR}]`
         ? {
             getAttribute: (name: string) =>
               name === AUTOMATION_ROUTE_ADD_ATTR ? section : null,
+          }
+        : null,
+  };
+  for (const fn of host.listeners.get('click') ?? []) {
+    fn({ target } as unknown as Event);
+  }
+};
+
+const clickAddRetry = (
+  host: FakeEl,
+  section: 'triggers' | 'schedules' | 'dishes',
+): void => {
+  const target = {
+    closest: (selector: string) =>
+      selector === `[${AUTOMATION_ROUTE_ADD_RETRY_ATTR}]`
+        ? {
+            getAttribute: (name: string) =>
+              name === AUTOMATION_ROUTE_ADD_RETRY_ATTR ? section : null,
           }
         : null,
   };
@@ -520,9 +559,37 @@ describe('Automation route — rendering', () => {
 
     clickSubnav(rig.host, 'triggers');
     expect(rig.host.innerHTML).toContain(`${AUTOMATION_ROUTE_ERROR_ATTR}="event_trigger"`);
+    expect(rig.host.innerHTML).toContain('role="alert"');
+    expect(rig.host.innerHTML).toContain(`${AUTOMATION_ROUTE_RETRY_ATTR}="triggers"`);
     expect(rig.host.innerHTML).toContain('trigger backend down');
 
     clickSubnav(rig.host, 'schedules');
+    expect(rig.host.innerHTML).toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="schedule:sch_1"`);
+  });
+
+  it('keeps an explicit section load Retry single-flight and recoverable', async () => {
+    const retry = deferred<{ schedules: ServerSchedule[] }>();
+    const schedulesListCaller = vi.fn<SchedulesListCaller>()
+      .mockRejectedValueOnce(new Error('schedule backend down'))
+      .mockImplementationOnce(() => retry.promise);
+    const rig = mountRoute({ schedulesListCaller });
+    await rig.route.whenLoaded();
+
+    clickSubnav(rig.host, 'schedules');
+    expect(rig.host.innerHTML).toContain('role="alert"');
+    expect(rig.host.innerHTML).toContain(`${AUTOMATION_ROUTE_RETRY_ATTR}="schedules"`);
+    expect(rig.host.innerHTML).toContain('Retry');
+
+    clickRetry(rig.host, 'schedules');
+    clickRetry(rig.host, 'schedules');
+    expect(schedulesListCaller).toHaveBeenCalledTimes(2);
+    expect(rig.host.innerHTML).toContain('role="status"');
+    expect(rig.host.innerHTML).toContain('aria-disabled="true" aria-busy="true"');
+    expect(rig.host.innerHTML).toContain('Retrying…');
+
+    retry.resolve({ schedules: [schedule()] });
+    await flush();
+    expect(rig.host.innerHTML).not.toContain(AUTOMATION_ROUTE_ERROR_ATTR);
     expect(rig.host.innerHTML).toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="schedule:sch_1"`);
   });
 
@@ -778,21 +845,36 @@ describe('Automation route — mutations', () => {
     expect(autoRunUpdateCaller).toHaveBeenCalledWith({ recipe_id: 'no-vars', enabled: true });
   });
 
-  it('delete clicks invoke the delete callers for schedules and triggers', async () => {
+  it('delete clicks require confirmation before invoking schedule and trigger callers', async () => {
     const schedulesDeleteCaller = vi.fn<SchedulesDeleteCaller>(async () => ({
       deleted: true as const,
     }));
     const triggersDeleteCaller = vi.fn<TriggersDeleteCaller>(async () => ({
       ok: true as const,
     }));
-    const rig = mountRoute({ schedulesDeleteCaller, triggersDeleteCaller });
+    const rig = mountRoute({
+      initialSection: 'schedules',
+      schedulesDeleteCaller,
+      triggersDeleteCaller,
+    });
     await rig.route.whenLoaded();
 
     clickAction(rig.host, 'delete:schedule', 'sch_1');
+    expect(schedulesDeleteCaller).not.toHaveBeenCalled();
+    expect(rig.host.innerHTML).toContain('Confirm remove');
+    clickAction(rig.host, 'delete-cancel:schedule', 'sch_1');
+    expect(schedulesDeleteCaller).not.toHaveBeenCalled();
+    expect(rig.host.innerHTML).not.toContain('Confirm remove');
+
+    clickAction(rig.host, 'delete:schedule', 'sch_1');
+    clickAction(rig.host, 'delete-confirm:schedule', 'sch_1');
     await flush();
     expect(schedulesDeleteCaller).toHaveBeenCalledWith({ schedule_id: 'sch_1' });
 
+    clickSubnav(rig.host, 'triggers');
     clickAction(rig.host, 'delete:event_trigger', 't-1');
+    expect(triggersDeleteCaller).not.toHaveBeenCalled();
+    clickAction(rig.host, 'delete-confirm:event_trigger', 't-1');
     await flush();
     expect(triggersDeleteCaller).toHaveBeenCalledWith({ trigger_id: 't-1' });
   });
@@ -820,6 +902,9 @@ describe('Automation route — mutations', () => {
     expect(rig.route.getMutationErrors()).toEqual({ schedules: 'pause rejected' });
     expect(rig.route.getLoadErrors()).toEqual({});
     expect(rig.host.innerHTML).toContain('pause rejected');
+    expect(rig.host.innerHTML).toContain(
+      `${AUTOMATION_ROUTE_ERROR_ATTR}="schedule:mutation" role="alert"`,
+    );
     // Rows still render alongside the mutation error.
     expect(rig.host.innerHTML).toContain(`${AUTOMATION_ROUTE_ROW_ATTR}="schedule:sch_1"`);
 
@@ -837,14 +922,48 @@ describe('Automation route — mutations', () => {
           resolveUpdate = () => resolve({ schedule: schedule() });
         }),
     );
-    const rig = mountRoute({ schedulesUpdateCaller });
+    const rig = mountRoute({
+      initialSection: 'schedules',
+      schedulesUpdateCaller,
+    });
     await rig.route.whenLoaded();
 
     clickAction(rig.host, 'toggle:schedule:off', 'sch_1');
     clickAction(rig.host, 'toggle:schedule:off', 'sch_1');
     expect(schedulesUpdateCaller).toHaveBeenCalledTimes(1);
+    expect(rig.host.innerHTML).toContain('Pausing…');
+    expect(rig.host.innerHTML).toContain('aria-disabled="true"');
+    expect(rig.host.innerHTML).toContain('aria-busy="true"');
+    expect(rig.host.innerHTML).not.toContain('data-rule-id="sch_1" disabled');
+    expect(rig.host.innerHTML).toContain(
+      `${AUTOMATION_ROUTE_SUBNAV_ATTR}="triggers"\n          aria-selected="false"\n          aria-disabled="true"`,
+    );
+    expect(rig.host.innerHTML).toContain(
+      'class="automation-filter" inert aria-disabled="true"',
+    );
+    expect(rig.route.hasInFlightWork()).toBe(true);
+    expect(rig.route.inFlightWorkPrompt()).toBe(
+      'An automation action is still in progress. Leave Automation anyway?',
+    );
+
+    // Internal tabs and filters bypass the shell-level work tracker. They
+    // must not repaint the pending row out from under its progress owner.
+    clickSubnav(rig.host, 'triggers');
+    changeSelect(rig.host, AUTOMATION_ROUTE_STATUS_FILTER_ATTR, 'off');
+    expect(rig.route.getActiveSection()).toBe('schedules');
+    expect(rig.host.innerHTML).toContain(
+      `${AUTOMATION_ROUTE_ROW_ATTR}="schedule:sch_1"`,
+    );
+
     resolveUpdate?.();
     await flush();
+    expect(rig.host.innerHTML).not.toContain(
+      'class="automation-filter" inert aria-disabled="true"',
+    );
+    expect(rig.route.hasInFlightWork()).toBe(false);
+    expect(rig.route.inFlightWorkPrompt()).toBeNull();
+    clickSubnav(rig.host, 'triggers');
+    expect(rig.route.getActiveSection()).toBe('triggers');
   });
 });
 
@@ -1133,5 +1252,80 @@ describe('Automation route — create path', () => {
     await flush();
     expect(recipeEntriesCaller).toHaveBeenCalledTimes(1);
     expect(rig.host.innerHTML).toContain('data-ref-picker="automation-add-recipe"');
+  });
+
+  it('keeps a failed Add recipe inventory explicit, single-flight, and recoverable', async () => {
+    const retry = deferred<{ recipes: ServerRecipeListEntry[] }>();
+    const recipeEntriesCaller = vi.fn<
+      NonNullable<BootstrapAutomationRouteOptions['recipeEntriesCaller']>
+    >()
+      .mockRejectedValueOnce(new Error('recipe catalog down'))
+      .mockImplementationOnce(() => retry.promise);
+    const rig = mountRoute({
+      initialSection: 'schedules',
+      recipeEntriesCaller,
+      schedulesCreateCaller: async (args) => ({
+        schedule: schedule({ recipe_id: args.recipe_id }),
+      }),
+    });
+    await rig.route.whenLoaded();
+
+    clickAdd(rig.host, 'schedules');
+    await flush();
+    expect(recipeEntriesCaller).toHaveBeenCalledTimes(1);
+    expect(rig.host.innerHTML).toContain(
+      `${AUTOMATION_ROUTE_ADD_ERROR_ATTR}="schedules"`,
+    );
+    expect(rig.host.innerHTML).toContain('role="alert"');
+    expect(rig.host.innerHTML).toContain('recipe catalog down');
+    expect(rig.host.innerHTML).toContain(
+      `${AUTOMATION_ROUTE_ADD_RETRY_ATTR}="schedules"`,
+    );
+    expect(rig.host.innerHTML).not.toContain('No installed recipes match.');
+
+    clickAddRetry(rig.host, 'schedules');
+    clickAddRetry(rig.host, 'schedules');
+    expect(recipeEntriesCaller).toHaveBeenCalledTimes(2);
+    expect(rig.host.innerHTML).toContain('role="status"');
+    expect(rig.host.innerHTML).toContain(
+      'aria-disabled="true" aria-busy="true"',
+    );
+    expect(rig.host.innerHTML).toContain('Retrying…');
+
+    retry.resolve({ recipes: [recipeEntry('daily-brief', 'Daily brief')] });
+    await flush();
+    expect(rig.host.innerHTML).not.toContain(AUTOMATION_ROUTE_ADD_ERROR_ATTR);
+    expect(rig.host.innerHTML).toContain('data-ref-picker="automation-add-recipe"');
+  });
+
+  it('surfaces the shared inventory failure on Dishes without a create caller', async () => {
+    const retry = deferred<{ recipes: ServerRecipeListEntry[] }>();
+    const recipeEntriesCaller = vi.fn<
+      NonNullable<BootstrapAutomationRouteOptions['recipeEntriesCaller']>
+    >()
+      .mockRejectedValueOnce(new Error('recipe definitions unavailable'))
+      .mockImplementationOnce(() => retry.promise);
+    const rig = mountRoute({
+      initialSection: 'dishes',
+      dishesListCaller: async () => ({ dishes: [] }),
+      recipeEntriesCaller,
+    });
+    await rig.route.whenLoaded();
+    await flush();
+
+    expect(rig.host.innerHTML).not.toContain(
+      `${AUTOMATION_ROUTE_ADD_ATTR}="dishes"`,
+    );
+    expect(rig.host.innerHTML).toContain(
+      `${AUTOMATION_ROUTE_ADD_ERROR_ATTR}="dishes"`,
+    );
+    expect(rig.host.innerHTML).toContain('recipe definitions unavailable');
+
+    clickAddRetry(rig.host, 'dishes');
+    clickAddRetry(rig.host, 'dishes');
+    expect(recipeEntriesCaller).toHaveBeenCalledTimes(2);
+    retry.resolve({ recipes: [recipeEntry()] });
+    await flush();
+    expect(rig.host.innerHTML).not.toContain(AUTOMATION_ROUTE_ADD_ERROR_ATTR);
   });
 });

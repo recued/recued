@@ -364,7 +364,12 @@ describe('D-149 follow-on — bootstrapReceptionRoute: route chrome + sections (
       'Abuse',
       'Endpoints',
     ]);
+    expect(route.hasInFlightWork()).toBe(false);
+    expect(route.inFlightWorkPrompt()).toBe(
+      'A Reception action is still in progress. Leave Reception anyway?',
+    );
     route.dispose();
+    expect(route.inFlightWorkPrompt()).toBeNull();
   });
 
   it('defaults to the Inbox section (active tab = Inbox; fetches the inbox list, NOT the spine)', async () => {

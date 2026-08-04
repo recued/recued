@@ -2256,6 +2256,7 @@ export const handleInboundTokenUpdateGrants = async (
       404,
     );
   }
+  await deps.inboundTokenStore.drainAuthorityChanges();
   if (deps.broadcast) {
     try {
       deps.broadcast.emit({
@@ -2405,6 +2406,7 @@ export const handleInboundTokenUpdateContract = async (
       404,
     );
   }
+  await deps.inboundTokenStore.drainAuthorityChanges();
   if (deps.broadcast) {
     try {
       deps.broadcast.emit({
@@ -2477,6 +2479,7 @@ export const handleInboundTokenRevoke = async (
       404,
     );
   }
+  await deps.inboundTokenStore.drainAuthorityChanges();
   if (revoked && deps.broadcast) {
     // Only fan the broadcast on a state change. Idempotent re-revoke
     // doesn't shift any client-rendered state, so no event.
@@ -2538,6 +2541,9 @@ export const handleInboundTokenDelete = async (
     safe.token_id,
   );
   const deleted = deps.inboundTokenStore.deleteToken(token_id);
+  // Sweep even when the token row was already absent: a prior crash can leave
+  // an inert mailbox fence after the hard-delete committed.
+  await deps.inboundTokenStore.drainAuthorityChanges();
   if (deleted && deps.broadcast) {
     try {
       deps.broadcast.emit({

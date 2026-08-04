@@ -4,39 +4,39 @@
       "support": {
         "kind": "openapi",
         "url": "https://developer.zendesk.com/zendesk/oas.yaml",
-        "sha256": "9ed60c7af7d42ec12a6db5c94d3f97ea35be981460c2092185c1b2b1aaa0a70e",
-        "bytes": 1682358,
+        "sha256": "70ba1bca3285ab5c42d0b3d875deadbaf48c3f3b568fc2f04c53886f21799b97",
+        "bytes": 1702056,
         "openapi": "3.0.3",
         "info_title": "Support API",
         "info_version": "2.0.0",
         "server": "https://{subdomain}.{domain}.com",
         "path_count": 434,
-        "operation_count": 622,
+        "operation_count": 625,
         "method_counts": {
           "GET": 325,
           "PUT": 89,
-          "POST": 110,
-          "DELETE": 85,
-          "PATCH": 13
+          "POST": 111,
+          "DELETE": 86,
+          "PATCH": 14
         },
         "mutability": "The official URL is mutable; generation and publish revalidation fail closed unless its bytes still match this hash."
       },
       "help_center": {
         "kind": "openapi",
         "url": "https://developer.zendesk.com/help_center/oas.yaml",
-        "sha256": "e9e0b65711723fbe85654eb70a887b4a6d10a9856eecb7a9de36a8661eab3da7",
-        "bytes": 282701,
+        "sha256": "45e7b9bf50d1c2d569e6f8ec5bda5372483ae8382636935f524c1fb590b7c4e9",
+        "bytes": 292026,
         "openapi": "3.0.2",
         "info_title": "Help Center API",
         "info_version": "2.0.0",
         "server": null,
-        "path_count": 117,
-        "operation_count": 178,
+        "path_count": 119,
+        "operation_count": 181,
         "method_counts": {
-          "GET": 94,
-          "POST": 38,
+          "GET": 95,
+          "POST": 39,
           "PUT": 22,
-          "DELETE": 24
+          "DELETE": 25
         },
         "mutability": "The official URL is mutable; generation and publish revalidation fail closed unless its bytes still match this hash."
       }
@@ -45,8 +45,8 @@
       "articles": {
         "kind": "official_html",
         "url": "https://developer.zendesk.com/api-reference/help_center/help-center-api/articles/",
-        "sha256": "0f96535506d9b6dd816ba17571381e16780e6021ff840fd7014bf86eb1f4e4aa",
-        "bytes": 3834568,
+        "sha256": "19943e08b40f7af45c89b0fb4f5fedeac9f569d5eadfe2bf483f9f41b406c2b0",
+        "bytes": 3834831,
         "operation_ids": [
           "ListArticles",
           "ListArticlesByCategoryNoLocale",
@@ -61,8 +61,8 @@
       "posts": {
         "kind": "official_html",
         "url": "https://developer.zendesk.com/api-reference/help_center/help-center-api/posts/",
-        "sha256": "833af2d383cf9a32ff16251f5b8b6c9278b56b584a15fb5564ed2bdd6277fb34",
-        "bytes": 1284412,
+        "sha256": "71c140ad2f4deb526a2eab744d994ce6748da969e51a51bbea208bf9bb749a30",
+        "bytes": 1284675,
         "operation_ids": [
           "ListPosts",
           "ListPostsByTopicNoLocale",
@@ -70,63 +70,65 @@
         ]
       }
     },
-    "official_support_operation_count": 622,
-    "admitted_support_operation_count": 597,
+    "official_support_operation_count": 625,
+    "admitted_support_operation_count": 600,
     "excluded_support_operation_count": 25,
-    "official_help_center_operation_count": 178,
-    "admitted_help_center_operation_count": 175,
+    "official_help_center_operation_count": 181,
+    "admitted_help_center_operation_count": 178,
     "excluded_help_center_operation_count": 3,
     "support_compatibility_operation_count": 32,
     "help_center_compatibility_operation_count": 9,
-    "suite_operation_count": 772,
-    "unique_suite_operation_id_count": 772,
-    "unique_suite_method_path_count": 772,
+    "suite_operation_count": 778,
+    "unique_suite_operation_id_count": 778,
+    "unique_suite_method_path_count": 778,
     "admitted_support_method_counts": {
       "GET": 316,
       "PUT": 85,
-      "POST": 102,
-      "DELETE": 81,
-      "PATCH": 13
+      "POST": 103,
+      "DELETE": 82,
+      "PATCH": 14
     },
     "admitted_help_center_method_counts": {
-      "GET": 93,
-      "POST": 36,
+      "GET": 94,
+      "POST": 37,
       "PUT": 22,
-      "DELETE": 24
+      "DELETE": 25
     },
     "help_center_compatibility_method_counts": {
       "GET": 9
     },
     "pack_operation_counts": {
-      "zendesk": 41,
+      "zendesk": 32,
+      "zendesk-help-center": 9,
       "zendesk-ticketing-engagement": 90,
       "zendesk-users-groups": 68,
       "zendesk-organizations-brands": 61,
       "zendesk-business-rules": 78,
       "zendesk-fields-workspaces": 86,
       "zendesk-custom-objects-routing": 80,
-      "zendesk-data-exports-itam": 71,
+      "zendesk-data-exports-itam": 74,
       "zendesk-platform-admin": 31,
-      "zendesk-help-center-content": 91,
-      "zendesk-help-center-community": 75
+      "zendesk-help-center-content": 92,
+      "zendesk-help-center-community": 77
     },
     "composition_bytes": {
-      "zendesk": 77768,
+      "zendesk": 59988,
+      "zendesk-help-center": 18582,
       "zendesk-ticketing-engagement": 120291,
       "zendesk-users-groups": 91642,
       "zendesk-organizations-brands": 72025,
-      "zendesk-business-rules": 90424,
+      "zendesk-business-rules": 90390,
       "zendesk-fields-workspaces": 95274,
       "zendesk-custom-objects-routing": 102935,
-      "zendesk-data-exports-itam": 84535,
+      "zendesk-data-exports-itam": 87182,
       "zendesk-platform-admin": 35441,
-      "zendesk-help-center-content": 124996,
-      "zendesk-help-center-community": 103554
+      "zendesk-help-center-content": 128804,
+      "zendesk-help-center-community": 105798
     },
     "pagination_counts": {
-      "none": 610,
+      "none": 615,
       "next_path": 131,
-      "offset": 28,
+      "offset": 29,
       "query_token": 3
     },
     "unpaged_collection_count": 97,
@@ -809,10 +811,12 @@
       "help_center:CreateTranslationBySectionNoLocale",
       "help_center:CreateUserImage",
       "help_center:CreateUserSegment",
+      "help_center:CreateUserSubscriptionByUserId",
       "help_center:DownvoteArticleCommentNoLocale",
       "help_center:DownvoteArticleNoLocale",
       "help_center:DownvotePost",
       "help_center:DownvotePostComment",
+      "help_center:EmbeddableArticleSearch",
       "help_center:ListAllArticleLabels",
       "help_center:ListAllServiceCatalogItems",
       "help_center:ListArticleAttachments",
@@ -994,6 +998,7 @@
       "support:CreateItamAssetType",
       "support:CreateItamAssetTypeField",
       "support:CreateItamLocation",
+      "support:CreateItamStatus",
       "support:CreateMacro",
       "support:CreateManyDynamicContentVariants",
       "support:CreateManyOrganizationMemberships",
@@ -1421,6 +1426,7 @@
       "support:UpdateItamAssetType",
       "support:UpdateItamAssetTypeField",
       "support:UpdateItamLocation",
+      "support:UpdateItamStatus",
       "support:UpdateMacro",
       "support:UpdateManyAutomations",
       "support:UpdateManyDynamicContentVariants",
@@ -1941,7 +1947,7 @@
     ],
     "compatibility_operation_ids_sha256": "28d1b9a8c06deef15dda94cb7a1f477a2b9b92697091042c7aa808e9459a5fac",
     "compatibility_operation_rows_sha256": "0926d25d859a585f513ab9ade1ad9f5518027d5295b78e2ce8b402fd968ada57",
-    "root_split_contract_note": "A composition permits exactly one ingredient. The compatibility root retains the Support pin needed by the task Source; its nine legacy Help Center reads are separately proven by this fixture, while every new Help Center operation lives in a dependency composition carrying the independently hash-pinned official Help Center contract.",
+    "root_split_contract_note": "A composition permits exactly one ingredient. The compatibility root retains the Support pin its task Source requires, and since 2026-08-03 it retains ONLY Support operations: the nine legacy Help Center reads moved to the zendesk-help-center sibling, pinned to the official Help Center contract that actually documents them. The earlier arrangement kept them on the Support pin and relied on this fixture to vouch for them, which meant they could never clear the publish op-prover; splitting them satisfies the one-ingredient constraint without asking the fixture to stand in for a proof. They are NOT duplicates of the Help Center leaf packs — all nine are the no-locale read forms, verified route-by-route as absent from both leaves.",
     "auth": {
       "selected_connection_requirement": {
         "type": "bearer"
@@ -1953,8 +1959,8 @@
       "connection_owned_secret_surfaces_excluded": 17,
       "session_credential_surfaces_excluded": 1,
       "authenticated_operation_counts": {
-        "support": 622,
-        "help_center": 178
+        "support": 625,
+        "help_center": 181
       }
     },
     "source_decision": {
@@ -3328,11 +3334,20 @@
       "/api/v2/it_asset_management/statuses": {
         "get": {
           "operationId": "ListItamStatuses"
+        },
+        "post": {
+          "operationId": "CreateItamStatus"
         }
       },
       "/api/v2/it_asset_management/statuses/{status_id}": {
         "get": {
           "operationId": "ShowItamStatus"
+        },
+        "patch": {
+          "operationId": "UpdateItamStatus"
+        },
+        "delete": {
+          "operationId": "DeleteItamStatus"
         }
       },
       "/api/v2/job_statuses": {
@@ -5595,6 +5610,11 @@
           "operationId": "DeleteArticleAttachment"
         }
       },
+      "/api/v2/help_center/articles/embeddable_search": {
+        "get": {
+          "operationId": "EmbeddableArticleSearch"
+        }
+      },
       "/api/v2/help_center/articles/labels": {
         "get": {
           "operationId": "ListAllArticleLabels"
@@ -5839,6 +5859,14 @@
       "/api/v2/help_center/users/{user_id}/user_subscriptions": {
         "get": {
           "operationId": "ListUserSubscriptionsByUserId"
+        },
+        "post": {
+          "operationId": "CreateUserSubscriptionByUserId"
+        }
+      },
+      "/api/v2/help_center/users/{user_id}/user_subscriptions/{subscription_id}": {
+        "delete": {
+          "operationId": "DeleteUserSubscriptionByUserId"
         }
       },
       "/api/v2/help_center/users/{user_id}/votes": {
@@ -6959,7 +6987,7 @@
           "name": "view_id",
           "wire_name": "view_id",
           "in": "path",
-          "official_type": "integer",
+          "official_type": null,
           "admitted_type": "string",
           "admitted_name": "view_id",
           "required": true,
@@ -7171,7 +7199,7 @@
           "name": "view_id",
           "wire_name": "view_id",
           "in": "path",
-          "official_type": "integer",
+          "official_type": null,
           "admitted_type": "string",
           "admitted_name": "view_id",
           "required": true,
@@ -8204,7 +8232,7 @@
           "name": "view_id",
           "wire_name": "view_id",
           "in": "path",
-          "official_type": "integer",
+          "official_type": null,
           "admitted_type": "string",
           "admitted_name": "view_id",
           "required": true,
@@ -10783,7 +10811,7 @@
           "name": "view_id",
           "wire_name": "view_id",
           "in": "path",
-          "official_type": "integer",
+          "official_type": null,
           "admitted_type": "string",
           "admitted_name": "view_id",
           "required": true,
@@ -17070,6 +17098,62 @@
       "approval": "always",
       "idempotency": "non_idempotent"
     },
+    "zendesk-data-exports-itam.create_itam_status": {
+      "pack": "zendesk-data-exports-itam",
+      "ingredient": "zendesk-data-exports-itam",
+      "source": "support",
+      "op": "create_itam_status",
+      "operation_id": "CreateItamStatus",
+      "method": "POST",
+      "path": "/api/v2/it_asset_management/statuses",
+      "effective_path": "/api/v2/it_asset_management/statuses",
+      "wire_path": "/api/v2/it_asset_management/statuses",
+      "tags": [
+        "ITAM Asset Statuses"
+      ],
+      "parameters": [],
+      "request": {
+        "authority": "openapi_schema",
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": "object",
+        "writable_properties": [
+          "status"
+        ],
+        "omitted_nested_int64_properties": [],
+        "raw_body": false
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "status",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
     "zendesk-data-exports-itam.create_many_dynamic_content_variants": {
       "pack": "zendesk-data-exports-itam",
       "ingredient": "zendesk-data-exports-itam",
@@ -17456,6 +17540,53 @@
           "official_type": "string",
           "admitted_type": "string",
           "admitted_name": "location_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [],
+      "selected_response_media": null,
+      "response_schema": {
+        "type": null,
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": null,
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "zendesk-data-exports-itam.delete_itam_status": {
+      "pack": "zendesk-data-exports-itam",
+      "ingredient": "zendesk-data-exports-itam",
+      "source": "support",
+      "op": "delete_itam_status",
+      "operation_id": "DeleteItamStatus",
+      "method": "DELETE",
+      "path": "/api/v2/it_asset_management/statuses/{status_id}",
+      "effective_path": "/api/v2/it_asset_management/statuses/{status_id}",
+      "wire_path": "/api/v2/it_asset_management/statuses/{{status_id}}",
+      "tags": [
+        "ITAM Asset Statuses"
+      ],
+      "parameters": [
+        {
+          "name": "status_id",
+          "wire_name": "status_id",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "status_id",
           "required": true,
           "exposed": true
         }
@@ -20898,6 +21029,73 @@
         }
       },
       "result_path": "location",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "admin",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "zendesk-data-exports-itam.update_itam_status": {
+      "pack": "zendesk-data-exports-itam",
+      "ingredient": "zendesk-data-exports-itam",
+      "source": "support",
+      "op": "update_itam_status",
+      "operation_id": "UpdateItamStatus",
+      "method": "PATCH",
+      "path": "/api/v2/it_asset_management/statuses/{status_id}",
+      "effective_path": "/api/v2/it_asset_management/statuses/{status_id}",
+      "wire_path": "/api/v2/it_asset_management/statuses/{{status_id}}",
+      "tags": [
+        "ITAM Asset Statuses"
+      ],
+      "parameters": [
+        {
+          "name": "status_id",
+          "wire_name": "status_id",
+          "in": "path",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "status_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": {
+        "authority": "openapi_schema",
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": "object",
+        "writable_properties": [
+          "status"
+        ],
+        "omitted_nested_int64_properties": [],
+        "raw_body": false
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "status",
       "pagination": null,
       "pagination_authority": null,
       "accept": "application/json",
@@ -26917,6 +27115,73 @@
       "approval": "always",
       "idempotency": "non_idempotent"
     },
+    "zendesk-help-center-community.create_user_subscription_by_user_id": {
+      "pack": "zendesk-help-center-community",
+      "ingredient": "zendesk-help-center-community",
+      "source": "help_center",
+      "op": "create_user_subscription_by_user_id",
+      "operation_id": "CreateUserSubscriptionByUserId",
+      "method": "POST",
+      "path": "/api/v2/help_center/users/{user_id}/user_subscriptions",
+      "effective_path": "/api/v2/help_center/users/{user_id}/user_subscriptions",
+      "wire_path": "/api/v2/help_center/users/{{user_id}}/user_subscriptions",
+      "tags": [
+        "User Subscriptions"
+      ],
+      "parameters": [
+        {
+          "name": "user_id",
+          "wire_name": "user_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "user_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": {
+        "authority": "openapi_schema",
+        "documented_media": [
+          "application/json"
+        ],
+        "selected_media": "application/json",
+        "schema_type": "object",
+        "writable_properties": [
+          "user_subscription"
+        ],
+        "omitted_nested_int64_properties": [],
+        "raw_body": false
+      },
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "user_subscription": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "user_subscription",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": "application/json",
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "write",
+      "approval": "always",
+      "idempotency": "non_idempotent"
+    },
     "zendesk-help-center-community.delete_article_comment_no_locale": {
       "pack": "zendesk-help-center-community",
       "ingredient": "zendesk-help-center-community",
@@ -27518,6 +27783,63 @@
           "official_type": "integer",
           "admitted_type": "string",
           "admitted_name": "topic_id",
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "subscription_id",
+          "wire_name": "subscription_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "subscription_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [],
+      "selected_response_media": null,
+      "response_schema": {
+        "type": null,
+        "properties": {}
+      },
+      "result_path": null,
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": null,
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "destructive",
+      "approval": "always",
+      "idempotency": "idempotent"
+    },
+    "zendesk-help-center-community.delete_user_subscription_by_user_id": {
+      "pack": "zendesk-help-center-community",
+      "ingredient": "zendesk-help-center-community",
+      "source": "help_center",
+      "op": "delete_user_subscription_by_user_id",
+      "operation_id": "DeleteUserSubscriptionByUserId",
+      "method": "DELETE",
+      "path": "/api/v2/help_center/users/{user_id}/user_subscriptions/{subscription_id}",
+      "effective_path": "/api/v2/help_center/users/{user_id}/user_subscriptions/{subscription_id}",
+      "wire_path": "/api/v2/help_center/users/{{user_id}}/user_subscriptions/{{subscription_id}}",
+      "tags": [
+        "User Subscriptions"
+      ],
+      "parameters": [
+        {
+          "name": "user_id",
+          "wire_name": "user_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "user_id",
           "required": true,
           "exposed": true
         },
@@ -32685,6 +33007,251 @@
       "approval": "always",
       "idempotency": "idempotent"
     },
+    "zendesk-help-center-content.embeddable_article_search": {
+      "pack": "zendesk-help-center-content",
+      "ingredient": "zendesk-help-center-content",
+      "source": "help_center",
+      "op": "embeddable_article_search",
+      "operation_id": "EmbeddableArticleSearch",
+      "method": "GET",
+      "path": "/api/v2/help_center/articles/embeddable_search",
+      "effective_path": "/api/v2/help_center/articles/embeddable_search",
+      "wire_path": "/api/v2/help_center/articles/embeddable_search",
+      "tags": [
+        "Help Center Search"
+      ],
+      "parameters": [
+        {
+          "name": "query",
+          "wire_name": "query",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.query",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "locale",
+          "wire_name": "locale",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.locale",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "page",
+          "wire_name": "page",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "number",
+          "admitted_name": "query.page",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "per_page",
+          "wire_name": "per_page",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "number",
+          "admitted_name": "query.per_page",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "category",
+          "wire_name": "category",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "number",
+          "admitted_name": "query.category",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "section",
+          "wire_name": "section",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "number",
+          "admitted_name": "query.section",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "label_names",
+          "wire_name": "label_names",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.label_names",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "sort_by",
+          "wire_name": "sort_by",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.sort_by",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "sort_order",
+          "wire_name": "sort_order",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.sort_order",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "origin",
+          "wire_name": "origin",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.origin",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "multibrand",
+          "wire_name": "multibrand",
+          "in": "query",
+          "official_type": "boolean",
+          "admitted_type": "boolean",
+          "admitted_name": "query.multibrand",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "brand_id",
+          "wire_name": "brand_id",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "query.brand_id",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "created_at",
+          "wire_name": "created_at",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.created_at",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "created_before",
+          "wire_name": "created_before",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.created_before",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "created_after",
+          "wire_name": "created_after",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.created_after",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "updated_at",
+          "wire_name": "updated_at",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.updated_at",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "updated_before",
+          "wire_name": "updated_before",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.updated_before",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "updated_after",
+          "wire_name": "updated_after",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.updated_after",
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "result_type": {
+            "type": "string"
+          },
+          "results": {
+            "type": "array"
+          },
+          "snippet": {
+            "type": "string"
+          }
+        }
+      },
+      "result_path": "results",
+      "pagination": {
+        "style": "offset",
+        "page_size": {
+          "placement": "query",
+          "param": "per_page",
+          "value": 100,
+          "max": 100
+        },
+        "param": {
+          "placement": "query",
+          "param": "page"
+        },
+        "start": 1,
+        "increment": "page"
+      },
+      "pagination_authority": "openapi_schema",
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": false,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
     "zendesk-help-center-content.list_all_article_labels": {
       "pack": "zendesk-help-center-content",
       "ingredient": "zendesk-help-center-content",
@@ -37525,6 +38092,768 @@
       "risk": "admin",
       "approval": "always",
       "idempotency": "idempotent"
+    },
+    "zendesk-help-center.help_center.article.comment.list": {
+      "pack": "zendesk-help-center",
+      "ingredient": "zendesk",
+      "source": "help_center",
+      "op": "help_center.article.comment.list",
+      "operation_id": "ListArticleCommentsNoLocale",
+      "method": "GET",
+      "path": "/api/v2/help_center/articles/{article_id}/comments",
+      "effective_path": "/api/v2/help_center/articles/{article_id}/comments",
+      "wire_path": "/api/v2/help_center/articles/{{article_id}}/comments",
+      "tags": [
+        "Article Comments"
+      ],
+      "parameters": [
+        {
+          "name": "article_id",
+          "wire_name": "article_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "article_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "comments": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "comments",
+      "pagination": {
+        "style": "next_path",
+        "page_size": {
+          "placement": "query",
+          "param": "page[size]",
+          "value": 100,
+          "max": 100
+        },
+        "path": "links.next",
+        "done_when": {
+          "path": "meta.has_more",
+          "equals": false
+        }
+      },
+      "pagination_authority": "official_description",
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": true,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "zendesk-help-center.help_center.article.comment.read": {
+      "pack": "zendesk-help-center",
+      "ingredient": "zendesk",
+      "source": "help_center",
+      "op": "help_center.article.comment.read",
+      "operation_id": "ShowArticleCommentNoLocale",
+      "method": "GET",
+      "path": "/api/v2/help_center/articles/{article_id}/comments/{comment_id}",
+      "effective_path": "/api/v2/help_center/articles/{article_id}/comments/{comment_id}",
+      "wire_path": "/api/v2/help_center/articles/{{article_id}}/comments/{{comment_id}}",
+      "tags": [
+        "Article Comments"
+      ],
+      "parameters": [
+        {
+          "name": "article_id",
+          "wire_name": "article_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "article_id",
+          "required": true,
+          "exposed": true
+        },
+        {
+          "name": "comment_id",
+          "wire_name": "comment_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "comment_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "comment": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "comment",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": true,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "zendesk-help-center.help_center.article.list": {
+      "pack": "zendesk-help-center",
+      "ingredient": "zendesk",
+      "source": "help_center",
+      "op": "help_center.article.list",
+      "operation_id": "ListArticlesNoLocale",
+      "method": "GET",
+      "path": "/api/v2/help_center/articles",
+      "effective_path": "/api/v2/help_center/articles",
+      "wire_path": "/api/v2/help_center/articles",
+      "tags": [
+        "Articles"
+      ],
+      "parameters": [
+        {
+          "name": "sort_by",
+          "wire_name": "sort_by",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.sort_by",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "sort_order",
+          "wire_name": "sort_order",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.sort_order",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "start_time",
+          "wire_name": "start_time",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "number",
+          "admitted_name": "query.start_time",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "label_names",
+          "wire_name": "label_names",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.label_names",
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "articles": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "articles",
+      "pagination": {
+        "style": "next_path",
+        "page_size": {
+          "placement": "query",
+          "param": "page[size]",
+          "value": 100,
+          "max": 100
+        },
+        "path": "links.next",
+        "done_when": {
+          "path": "meta.has_more",
+          "equals": false
+        }
+      },
+      "pagination_authority": "official_description",
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": true,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "zendesk-help-center.help_center.article.read": {
+      "pack": "zendesk-help-center",
+      "ingredient": "zendesk",
+      "source": "help_center",
+      "op": "help_center.article.read",
+      "operation_id": "ShowArticleNoLocale",
+      "method": "GET",
+      "path": "/api/v2/help_center/articles/{article_id}",
+      "effective_path": "/api/v2/help_center/articles/{article_id}",
+      "wire_path": "/api/v2/help_center/articles/{{article_id}}",
+      "tags": [
+        "Articles"
+      ],
+      "parameters": [
+        {
+          "name": "article_id",
+          "wire_name": "article_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "article_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "article": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "article",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": true,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "zendesk-help-center.help_center.article.search": {
+      "pack": "zendesk-help-center",
+      "ingredient": "zendesk",
+      "source": "help_center",
+      "op": "help_center.article.search",
+      "operation_id": "ArticleSearch",
+      "method": "GET",
+      "path": "/api/v2/help_center/articles/search",
+      "effective_path": "/api/v2/help_center/articles/search",
+      "wire_path": "/api/v2/help_center/articles/search",
+      "tags": [
+        "Help Center Search"
+      ],
+      "parameters": [
+        {
+          "name": "query",
+          "wire_name": "query",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.query",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "category",
+          "wire_name": "category",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "number",
+          "admitted_name": "query.category",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "section",
+          "wire_name": "section",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "number",
+          "admitted_name": "query.section",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "label_names",
+          "wire_name": "label_names",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.label_names",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "locale",
+          "wire_name": "locale",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.locale",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "multibrand",
+          "wire_name": "multibrand",
+          "in": "query",
+          "official_type": "boolean",
+          "admitted_type": "boolean",
+          "admitted_name": "query.multibrand",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "brand_id",
+          "wire_name": "brand_id",
+          "in": "query",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "query.brand_id",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "created_before",
+          "wire_name": "created_before",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.created_before",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "created_after",
+          "wire_name": "created_after",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.created_after",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "created_at",
+          "wire_name": "created_at",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.created_at",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "updated_before",
+          "wire_name": "updated_before",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.updated_before",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "updated_after",
+          "wire_name": "updated_after",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.updated_after",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "updated_at",
+          "wire_name": "updated_at",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.updated_at",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "sort_by",
+          "wire_name": "sort_by",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.sort_by",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "sort_order",
+          "wire_name": "sort_order",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.sort_order",
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "result_type": {
+            "type": "string"
+          },
+          "results": {
+            "type": "array"
+          },
+          "snippet": {
+            "type": "string"
+          }
+        }
+      },
+      "result_path": "results",
+      "pagination": {
+        "style": "next_path",
+        "page_size": {
+          "placement": "query",
+          "param": "per_page",
+          "value": 100,
+          "max": 100
+        },
+        "path": "next_page"
+      },
+      "pagination_authority": "official_description",
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": true,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "zendesk-help-center.help_center.category.list": {
+      "pack": "zendesk-help-center",
+      "ingredient": "zendesk",
+      "source": "help_center",
+      "op": "help_center.category.list",
+      "operation_id": "ListCategoriesNoLocale",
+      "method": "GET",
+      "path": "/api/v2/help_center/categories",
+      "effective_path": "/api/v2/help_center/categories",
+      "wire_path": "/api/v2/help_center/categories",
+      "tags": [
+        "Categories"
+      ],
+      "parameters": [
+        {
+          "name": "sort_by",
+          "wire_name": "sort_by",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.sort_by",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "sort_order",
+          "wire_name": "sort_order",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.sort_order",
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "categories": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "categories",
+      "pagination": {
+        "style": "next_path",
+        "page_size": {
+          "placement": "query",
+          "param": "page[size]",
+          "value": 100,
+          "max": 100
+        },
+        "path": "links.next",
+        "done_when": {
+          "path": "meta.has_more",
+          "equals": false
+        }
+      },
+      "pagination_authority": "official_description",
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": true,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "zendesk-help-center.help_center.category.read": {
+      "pack": "zendesk-help-center",
+      "ingredient": "zendesk",
+      "source": "help_center",
+      "op": "help_center.category.read",
+      "operation_id": "ShowCategoryNoLocale",
+      "method": "GET",
+      "path": "/api/v2/help_center/categories/{category_id}",
+      "effective_path": "/api/v2/help_center/categories/{category_id}",
+      "wire_path": "/api/v2/help_center/categories/{{category_id}}",
+      "tags": [
+        "Categories"
+      ],
+      "parameters": [
+        {
+          "name": "category_id",
+          "wire_name": "category_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "category_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "category",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": true,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "zendesk-help-center.help_center.section.list": {
+      "pack": "zendesk-help-center",
+      "ingredient": "zendesk",
+      "source": "help_center",
+      "op": "help_center.section.list",
+      "operation_id": "ListSectionsNoLocale",
+      "method": "GET",
+      "path": "/api/v2/help_center/sections",
+      "effective_path": "/api/v2/help_center/sections",
+      "wire_path": "/api/v2/help_center/sections",
+      "tags": [
+        "Sections"
+      ],
+      "parameters": [
+        {
+          "name": "sort_by",
+          "wire_name": "sort_by",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.sort_by",
+          "required": false,
+          "exposed": true
+        },
+        {
+          "name": "sort_order",
+          "wire_name": "sort_order",
+          "in": "query",
+          "official_type": "string",
+          "admitted_type": "string",
+          "admitted_name": "query.sort_order",
+          "required": false,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "sections": {
+            "type": "array"
+          }
+        }
+      },
+      "result_path": "sections",
+      "pagination": {
+        "style": "next_path",
+        "page_size": {
+          "placement": "query",
+          "param": "page[size]",
+          "value": 100,
+          "max": 100
+        },
+        "path": "links.next",
+        "done_when": {
+          "path": "meta.has_more",
+          "equals": false
+        }
+      },
+      "pagination_authority": "official_description",
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": true,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
+    },
+    "zendesk-help-center.help_center.section.read": {
+      "pack": "zendesk-help-center",
+      "ingredient": "zendesk",
+      "source": "help_center",
+      "op": "help_center.section.read",
+      "operation_id": "ShowSectionNoLocale",
+      "method": "GET",
+      "path": "/api/v2/help_center/sections/{section_id}",
+      "effective_path": "/api/v2/help_center/sections/{section_id}",
+      "wire_path": "/api/v2/help_center/sections/{{section_id}}",
+      "tags": [
+        "Sections"
+      ],
+      "parameters": [
+        {
+          "name": "section_id",
+          "wire_name": "section_id",
+          "in": "path",
+          "official_type": "integer",
+          "admitted_type": "string",
+          "admitted_name": "section_id",
+          "required": true,
+          "exposed": true
+        }
+      ],
+      "request": null,
+      "documented_response_media": [
+        "application/json"
+      ],
+      "selected_response_media": "application/json",
+      "response_schema": {
+        "type": "object",
+        "properties": {
+          "section": {
+            "type": "object"
+          }
+        }
+      },
+      "result_path": "section",
+      "pagination": null,
+      "pagination_authority": null,
+      "accept": "application/json",
+      "content_type": null,
+      "response_json": {
+        "unsafe_integers": "string"
+      },
+      "request_json": null,
+      "response_capture": null,
+      "compatibility_body_field": null,
+      "compatibility_approval_preserved": true,
+      "required_scopes": [],
+      "risk": "read",
+      "approval": "never",
+      "idempotency": "safe"
     },
     "zendesk-organizations-brands.autocomplete_organizations": {
       "pack": "zendesk-organizations-brands",
@@ -53893,768 +55222,6 @@
       "approval": "never",
       "idempotency": "safe"
     },
-    "zendesk.help_center.article.comment.list": {
-      "pack": "zendesk",
-      "ingredient": "zendesk",
-      "source": "help_center",
-      "op": "help_center.article.comment.list",
-      "operation_id": "ListArticleCommentsNoLocale",
-      "method": "GET",
-      "path": "/api/v2/help_center/articles/{article_id}/comments",
-      "effective_path": "/api/v2/help_center/articles/{article_id}/comments",
-      "wire_path": "/api/v2/help_center/articles/{{article_id}}/comments",
-      "tags": [
-        "Article Comments"
-      ],
-      "parameters": [
-        {
-          "name": "article_id",
-          "wire_name": "article_id",
-          "in": "path",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "article_id",
-          "required": true,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "comments": {
-            "type": "array"
-          }
-        }
-      },
-      "result_path": "comments",
-      "pagination": {
-        "style": "next_path",
-        "page_size": {
-          "placement": "query",
-          "param": "page[size]",
-          "value": 100,
-          "max": 100
-        },
-        "path": "links.next",
-        "done_when": {
-          "path": "meta.has_more",
-          "equals": false
-        }
-      },
-      "pagination_authority": "official_description",
-      "accept": "application/json",
-      "content_type": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": null,
-      "response_capture": null,
-      "compatibility_body_field": null,
-      "compatibility_approval_preserved": true,
-      "required_scopes": [],
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe"
-    },
-    "zendesk.help_center.article.comment.read": {
-      "pack": "zendesk",
-      "ingredient": "zendesk",
-      "source": "help_center",
-      "op": "help_center.article.comment.read",
-      "operation_id": "ShowArticleCommentNoLocale",
-      "method": "GET",
-      "path": "/api/v2/help_center/articles/{article_id}/comments/{comment_id}",
-      "effective_path": "/api/v2/help_center/articles/{article_id}/comments/{comment_id}",
-      "wire_path": "/api/v2/help_center/articles/{{article_id}}/comments/{{comment_id}}",
-      "tags": [
-        "Article Comments"
-      ],
-      "parameters": [
-        {
-          "name": "article_id",
-          "wire_name": "article_id",
-          "in": "path",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "article_id",
-          "required": true,
-          "exposed": true
-        },
-        {
-          "name": "comment_id",
-          "wire_name": "comment_id",
-          "in": "path",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "comment_id",
-          "required": true,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "comment": {
-            "type": "object"
-          }
-        }
-      },
-      "result_path": "comment",
-      "pagination": null,
-      "pagination_authority": null,
-      "accept": "application/json",
-      "content_type": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": null,
-      "response_capture": null,
-      "compatibility_body_field": null,
-      "compatibility_approval_preserved": true,
-      "required_scopes": [],
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe"
-    },
-    "zendesk.help_center.article.list": {
-      "pack": "zendesk",
-      "ingredient": "zendesk",
-      "source": "help_center",
-      "op": "help_center.article.list",
-      "operation_id": "ListArticlesNoLocale",
-      "method": "GET",
-      "path": "/api/v2/help_center/articles",
-      "effective_path": "/api/v2/help_center/articles",
-      "wire_path": "/api/v2/help_center/articles",
-      "tags": [
-        "Articles"
-      ],
-      "parameters": [
-        {
-          "name": "sort_by",
-          "wire_name": "sort_by",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.sort_by",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "sort_order",
-          "wire_name": "sort_order",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.sort_order",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "start_time",
-          "wire_name": "start_time",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "number",
-          "admitted_name": "query.start_time",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "label_names",
-          "wire_name": "label_names",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.label_names",
-          "required": false,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "articles": {
-            "type": "array"
-          }
-        }
-      },
-      "result_path": "articles",
-      "pagination": {
-        "style": "next_path",
-        "page_size": {
-          "placement": "query",
-          "param": "page[size]",
-          "value": 100,
-          "max": 100
-        },
-        "path": "links.next",
-        "done_when": {
-          "path": "meta.has_more",
-          "equals": false
-        }
-      },
-      "pagination_authority": "official_description",
-      "accept": "application/json",
-      "content_type": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": null,
-      "response_capture": null,
-      "compatibility_body_field": null,
-      "compatibility_approval_preserved": true,
-      "required_scopes": [],
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe"
-    },
-    "zendesk.help_center.article.read": {
-      "pack": "zendesk",
-      "ingredient": "zendesk",
-      "source": "help_center",
-      "op": "help_center.article.read",
-      "operation_id": "ShowArticleNoLocale",
-      "method": "GET",
-      "path": "/api/v2/help_center/articles/{article_id}",
-      "effective_path": "/api/v2/help_center/articles/{article_id}",
-      "wire_path": "/api/v2/help_center/articles/{{article_id}}",
-      "tags": [
-        "Articles"
-      ],
-      "parameters": [
-        {
-          "name": "article_id",
-          "wire_name": "article_id",
-          "in": "path",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "article_id",
-          "required": true,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "article": {
-            "type": "object"
-          }
-        }
-      },
-      "result_path": "article",
-      "pagination": null,
-      "pagination_authority": null,
-      "accept": "application/json",
-      "content_type": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": null,
-      "response_capture": null,
-      "compatibility_body_field": null,
-      "compatibility_approval_preserved": true,
-      "required_scopes": [],
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe"
-    },
-    "zendesk.help_center.article.search": {
-      "pack": "zendesk",
-      "ingredient": "zendesk",
-      "source": "help_center",
-      "op": "help_center.article.search",
-      "operation_id": "ArticleSearch",
-      "method": "GET",
-      "path": "/api/v2/help_center/articles/search",
-      "effective_path": "/api/v2/help_center/articles/search",
-      "wire_path": "/api/v2/help_center/articles/search",
-      "tags": [
-        "Help Center Search"
-      ],
-      "parameters": [
-        {
-          "name": "query",
-          "wire_name": "query",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.query",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "category",
-          "wire_name": "category",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "number",
-          "admitted_name": "query.category",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "section",
-          "wire_name": "section",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "number",
-          "admitted_name": "query.section",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "label_names",
-          "wire_name": "label_names",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.label_names",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "locale",
-          "wire_name": "locale",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.locale",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "multibrand",
-          "wire_name": "multibrand",
-          "in": "query",
-          "official_type": "boolean",
-          "admitted_type": "boolean",
-          "admitted_name": "query.multibrand",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "brand_id",
-          "wire_name": "brand_id",
-          "in": "query",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "query.brand_id",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "created_before",
-          "wire_name": "created_before",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.created_before",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "created_after",
-          "wire_name": "created_after",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.created_after",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "created_at",
-          "wire_name": "created_at",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.created_at",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "updated_before",
-          "wire_name": "updated_before",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.updated_before",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "updated_after",
-          "wire_name": "updated_after",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.updated_after",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "updated_at",
-          "wire_name": "updated_at",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.updated_at",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "sort_by",
-          "wire_name": "sort_by",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.sort_by",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "sort_order",
-          "wire_name": "sort_order",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.sort_order",
-          "required": false,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "result_type": {
-            "type": "string"
-          },
-          "results": {
-            "type": "array"
-          },
-          "snippet": {
-            "type": "string"
-          }
-        }
-      },
-      "result_path": "results",
-      "pagination": {
-        "style": "next_path",
-        "page_size": {
-          "placement": "query",
-          "param": "per_page",
-          "value": 100,
-          "max": 100
-        },
-        "path": "next_page"
-      },
-      "pagination_authority": "official_description",
-      "accept": "application/json",
-      "content_type": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": null,
-      "response_capture": null,
-      "compatibility_body_field": null,
-      "compatibility_approval_preserved": true,
-      "required_scopes": [],
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe"
-    },
-    "zendesk.help_center.category.list": {
-      "pack": "zendesk",
-      "ingredient": "zendesk",
-      "source": "help_center",
-      "op": "help_center.category.list",
-      "operation_id": "ListCategoriesNoLocale",
-      "method": "GET",
-      "path": "/api/v2/help_center/categories",
-      "effective_path": "/api/v2/help_center/categories",
-      "wire_path": "/api/v2/help_center/categories",
-      "tags": [
-        "Categories"
-      ],
-      "parameters": [
-        {
-          "name": "sort_by",
-          "wire_name": "sort_by",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.sort_by",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "sort_order",
-          "wire_name": "sort_order",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.sort_order",
-          "required": false,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "categories": {
-            "type": "array"
-          }
-        }
-      },
-      "result_path": "categories",
-      "pagination": {
-        "style": "next_path",
-        "page_size": {
-          "placement": "query",
-          "param": "page[size]",
-          "value": 100,
-          "max": 100
-        },
-        "path": "links.next",
-        "done_when": {
-          "path": "meta.has_more",
-          "equals": false
-        }
-      },
-      "pagination_authority": "official_description",
-      "accept": "application/json",
-      "content_type": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": null,
-      "response_capture": null,
-      "compatibility_body_field": null,
-      "compatibility_approval_preserved": true,
-      "required_scopes": [],
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe"
-    },
-    "zendesk.help_center.category.read": {
-      "pack": "zendesk",
-      "ingredient": "zendesk",
-      "source": "help_center",
-      "op": "help_center.category.read",
-      "operation_id": "ShowCategoryNoLocale",
-      "method": "GET",
-      "path": "/api/v2/help_center/categories/{category_id}",
-      "effective_path": "/api/v2/help_center/categories/{category_id}",
-      "wire_path": "/api/v2/help_center/categories/{{category_id}}",
-      "tags": [
-        "Categories"
-      ],
-      "parameters": [
-        {
-          "name": "category_id",
-          "wire_name": "category_id",
-          "in": "path",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "category_id",
-          "required": true,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "category": {
-            "type": "object"
-          }
-        }
-      },
-      "result_path": "category",
-      "pagination": null,
-      "pagination_authority": null,
-      "accept": "application/json",
-      "content_type": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": null,
-      "response_capture": null,
-      "compatibility_body_field": null,
-      "compatibility_approval_preserved": true,
-      "required_scopes": [],
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe"
-    },
-    "zendesk.help_center.section.list": {
-      "pack": "zendesk",
-      "ingredient": "zendesk",
-      "source": "help_center",
-      "op": "help_center.section.list",
-      "operation_id": "ListSectionsNoLocale",
-      "method": "GET",
-      "path": "/api/v2/help_center/sections",
-      "effective_path": "/api/v2/help_center/sections",
-      "wire_path": "/api/v2/help_center/sections",
-      "tags": [
-        "Sections"
-      ],
-      "parameters": [
-        {
-          "name": "sort_by",
-          "wire_name": "sort_by",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.sort_by",
-          "required": false,
-          "exposed": true
-        },
-        {
-          "name": "sort_order",
-          "wire_name": "sort_order",
-          "in": "query",
-          "official_type": "string",
-          "admitted_type": "string",
-          "admitted_name": "query.sort_order",
-          "required": false,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "sections": {
-            "type": "array"
-          }
-        }
-      },
-      "result_path": "sections",
-      "pagination": {
-        "style": "next_path",
-        "page_size": {
-          "placement": "query",
-          "param": "page[size]",
-          "value": 100,
-          "max": 100
-        },
-        "path": "links.next",
-        "done_when": {
-          "path": "meta.has_more",
-          "equals": false
-        }
-      },
-      "pagination_authority": "official_description",
-      "accept": "application/json",
-      "content_type": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": null,
-      "response_capture": null,
-      "compatibility_body_field": null,
-      "compatibility_approval_preserved": true,
-      "required_scopes": [],
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe"
-    },
-    "zendesk.help_center.section.read": {
-      "pack": "zendesk",
-      "ingredient": "zendesk",
-      "source": "help_center",
-      "op": "help_center.section.read",
-      "operation_id": "ShowSectionNoLocale",
-      "method": "GET",
-      "path": "/api/v2/help_center/sections/{section_id}",
-      "effective_path": "/api/v2/help_center/sections/{section_id}",
-      "wire_path": "/api/v2/help_center/sections/{{section_id}}",
-      "tags": [
-        "Sections"
-      ],
-      "parameters": [
-        {
-          "name": "section_id",
-          "wire_name": "section_id",
-          "in": "path",
-          "official_type": "integer",
-          "admitted_type": "string",
-          "admitted_name": "section_id",
-          "required": true,
-          "exposed": true
-        }
-      ],
-      "request": null,
-      "documented_response_media": [
-        "application/json"
-      ],
-      "selected_response_media": "application/json",
-      "response_schema": {
-        "type": "object",
-        "properties": {
-          "section": {
-            "type": "object"
-          }
-        }
-      },
-      "result_path": "section",
-      "pagination": null,
-      "pagination_authority": null,
-      "accept": "application/json",
-      "content_type": null,
-      "response_json": {
-        "unsafe_integers": "string"
-      },
-      "request_json": null,
-      "response_capture": null,
-      "compatibility_body_field": null,
-      "compatibility_approval_preserved": true,
-      "required_scopes": [],
-      "risk": "read",
-      "approval": "never",
-      "idempotency": "safe"
-    },
     "zendesk.macro.list": {
       "pack": "zendesk",
       "ingredient": "zendesk",
@@ -56973,7 +57540,7 @@
           "name": "view_id",
           "wire_name": "view_id",
           "in": "path",
-          "official_type": "integer",
+          "official_type": null,
           "admitted_type": "string",
           "admitted_name": "view_id",
           "required": true,
@@ -57247,7 +57814,7 @@
           "name": "view_id",
           "wire_name": "view_id",
           "in": "path",
-          "official_type": "integer",
+          "official_type": null,
           "admitted_type": "string",
           "admitted_name": "view_id",
           "required": true,

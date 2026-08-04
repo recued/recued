@@ -228,7 +228,9 @@ export const packAppSurface = (
   const operations: PackAppRecipe[] = [];
   const missing: string[] = [];
 
-  for (const slug of shippedVisibleSlugs(pack.manifest)) {
+  // An uninstalled pack forwards no manifest, so it ships no visible recipes to
+  // project — the empty roster is correct, not a lost one.
+  for (const slug of shippedVisibleSlugs(pack.manifest ?? { recipes: [] } as never)) {
     const entry = byId.get(slug);
     if (entry === undefined) {
       missing.push(slug);

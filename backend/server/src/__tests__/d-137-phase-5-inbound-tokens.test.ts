@@ -26,7 +26,7 @@
  *    - "Revoked peer token" — isMcpInboundTokenActive false after
  *      `revokeToken`. */
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import {
   MCP_INBOUND_CONCURRENCY_LADDER,
@@ -838,6 +838,63 @@ describe('D-137 P5 — ChatInboundTokenStore', () => {
     expect(store.deleteToken(issued.record.token_id)).toBe(true);
     expect(store.getTokenById(issued.record.token_id)).toBeNull();
     expect(store.deleteToken(issued.record.token_id)).toBe(false);
+  });
+
+  it('tracks and drains authority-change cleanup for every direct mutator', async () => {
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const changed = vi.fn(async () => gate);
+    const db = newDb();
+    const store = createChatInboundTokenStore(db, {
+      onAuthorityChanged: changed,
+    });
+    const issued = store.issueToken({ value: validValue(), now: 1_000 });
+
+    store.updateTokenGrants({
+      token_id: issued.record.token_id,
+      grants: { 'contact.search': false },
+      now: 2_000,
+    });
+    store.updateTokenContract({
+      token_id: issued.record.token_id,
+      contract_id: 'ct_rebound',
+      now: 3_000,
+    });
+    store.revokeToken({ token_id: issued.record.token_id, now: 4_000 });
+    store.deleteToken(issued.record.token_id);
+    // Missing/idempotent lifecycle calls deliberately re-admit cleanup so a
+    // retry heals residue from a prior process crash.
+    store.revokeToken({ token_id: issued.record.token_id, now: 5_000 });
+    store.deleteToken(issued.record.token_id);
+
+    expect(changed).toHaveBeenCalledTimes(6);
+    let drained = false;
+    const draining = store.drainAuthorityChanges().then(() => { drained = true; });
+    await Promise.resolve();
+    expect(drained).toBe(false);
+    release?.();
+    await draining;
+    expect(drained).toBe(true);
+  });
+
+  it('contains synchronous and asynchronous authority cleanup failures', async () => {
+    const db = newDb();
+    let sync = true;
+    const store = createChatInboundTokenStore(db, {
+      onAuthorityChanged: () => {
+        if (sync) throw new Error('sync cleanup failed');
+        return Promise.reject(new Error('async cleanup failed'));
+      },
+    });
+    const issued = store.issueToken({ value: validValue(), now: 1_000 });
+
+    expect(() => store.revokeToken({
+      token_id: issued.record.token_id,
+      now: 2_000,
+    })).not.toThrow();
+    sync = false;
+    expect(() => store.deleteToken(issued.record.token_id)).not.toThrow();
+    await expect(store.drainAuthorityChanges()).resolves.toBeUndefined();
   });
 
   it('verifyBearer returns the row for a valid bearer + null for garbage / mismatched / revoked / expired', () => {

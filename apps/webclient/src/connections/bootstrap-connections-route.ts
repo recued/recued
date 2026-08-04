@@ -46,7 +46,17 @@ import type { CredentialRotationContinuityStore } from './credential-rotation-co
 import type { CredentialRotationTabConvergence } from './credential-rotation-tab-convergence.js';
 import type { CredentialRotationServerUpdateContinuity } from './credential-rotation-server-update-continuity.js';
 import {
+  CONNECTIONS_GRANT_PANEL_STYLES,
+  mountConnectionsGrantPanel,
+  type ConnectionsGrantGroupCaller,
+  type ConnectionsGrantPanelMount,
+  type ConnectionsListCaller,
+  type ConnectionsListGroupsCaller,
+  type ConnectionsRevokeGroupCaller,
+} from '../settings/connections-grant-panel.js';
+import {
   mountConnectionsEnrollPanel,
+  type ConnectionsCompleteVendorOAuthCaller,
   type ConnectionsDeleteCaller,
   type ConnectionsEngagementHealthCaller,
   type ConnectionsEnrollCaller,
@@ -101,6 +111,10 @@ import type {
 } from '@recued/contracts';
 import type { BroadcastSubscriber } from '../realtime/subscriber.js';
 
+export const CONNECTIONS_ROUTE_GRANTS_SECTION_ATTR =
+  'data-recued-connections-route-grants';
+export const CONNECTIONS_ROUTE_ENROLL_HOST_ATTR =
+  'data-recued-connections-route-enroll-host';
 export const CONNECTIONS_ROUTE_STYLES_MARKER =
   'data-recued-connections-route-styles';
 export const CONNECTIONS_ROUTE_HOST_ATTR = 'data-recued-connections-route';
@@ -317,7 +331,8 @@ const CONNECTIONS_ROUTE_CHROME_STYLES = `
   color: var(--fg);
   border-bottom-color: var(--accent);
 }
-[${CONNECTIONS_ROUTE_CONTENT_ATTR}] { min-width: 0; }
+[${CONNECTIONS_ROUTE_CONTENT_ATTR}],
+[${CONNECTIONS_ROUTE_ENROLL_HOST_ATTR}] { min-width: 0; }
 [${CONNECTIONS_ROUTE_UNAVAILABLE_ATTR}] {
   border: 1px solid var(--border);
   border-radius: 8px;
@@ -364,6 +379,7 @@ export const CONNECTIONS_ROUTE_STYLES = [
   CONNECTIONS_PAGE_STYLES,
   ACCOUNTS_PANEL_STYLES,
   WEBHOOKS_PANEL_STYLES,
+  CONNECTIONS_GRANT_PANEL_STYLES,
   CONNECTIONS_ROUTE_CHROME_STYLES,
 ].join('\n');
 
@@ -454,6 +470,16 @@ export interface BootstrapConnectionsRouteOptions {
    *  dialog. Optional (absent → the confirm shows no checkbox). */
   connectionsPreviewPurgeCaller?: ConnectionsPreviewPurgeCaller;
   connectionsProbeCaller?: ConnectionsProbeCaller;
+  /** D-165 follow-on, restored after R13 — the per-connection operation-group
+   *  grant surface. Write ops on a catalog connection are NEVER auto-granted
+   *  (Invariant 3: the enrolment boot seed admits read-tier ops only), so
+   *  without these a hand-enrolled connection has no path from
+   *  `operation_not_granted` to usable. The rpc family stayed wired server-side
+   *  the whole time; R13 deleted only its consumer. */
+  connectionsListCaller?: ConnectionsListCaller;
+  connectionsListGroupsCaller?: ConnectionsListGroupsCaller;
+  connectionsGrantGroupCaller?: ConnectionsGrantGroupCaller;
+  connectionsRevokeGroupCaller?: ConnectionsRevokeGroupCaller;
   /** D-225 Slice 2 — the generated-pack review + install. Optional; absent →
    *  the review is never offered, which beats a button that fails. */
   connectionsMcpPackPreviewCaller?: ConnectionsMcpPackPreviewCaller;
@@ -469,6 +495,9 @@ export interface BootstrapConnectionsRouteOptions {
   /** Boot-owned safe guide carrier shared by route remounts. */
   providerSetupContinuity?: ProviderSetupContinuityStore;
   connectionsStartVendorOAuthCaller?: ConnectionsStartVendorOAuthCaller;
+  /** R26.2 Option B — the pure code-exchange rpc, so a loopback PWA can finish
+   *  a vendor OAuth dance without a public HTTPS server URL. */
+  connectionsCompleteVendorOAuthCaller?: ConnectionsCompleteVendorOAuthCaller;
   connectionsTakeVendorOAuthResultCaller?: ConnectionsTakeVendorOAuthResultCaller;
   subscribe?: BroadcastSubscriber['on'];
   // ── Inbound webhook control plane (D-201 Slices 5A + 5B2B) ──
@@ -515,6 +544,7 @@ export interface ConnectionsRoute {
   /** The generic connection.* enroll panel (mounted only on the Apps & APIs
    *  tab), else null. */
   connectionsEnrollPanel(): ConnectionsEnrollPanelMount | null;
+  connectionsGrantPanel(): ConnectionsGrantPanelMount | null;
   /** Re-labels profile-bound recovery copy after a local roster refresh. */
   setPostSafeStopProfileContext(context: {
     activeProfileLabel: string;
@@ -534,6 +564,8 @@ export interface ConnectionsRoute {
   /** Exact, privacy-safe leave warning for the active connection draft. */
   unsavedChangesPrompt(): string | null;
   hasInFlightWork(): boolean;
+  /** Contextual guard for connection writes that cannot be recalled. */
+  inFlightWorkPrompt(): string | null;
   dispose(): void;
 }
 
@@ -591,6 +623,7 @@ export const bootstrapConnectionsRoute = (
   const tabBar = doc.createElement('nav');
   tabBar.setAttribute(CONNECTIONS_ROUTE_TABS_ATTR, '');
   tabBar.setAttribute('aria-label', 'Connection types');
+  let activeTabLink: HTMLElement | null = null;
   for (const tab of CONNECTIONS_TABS) {
     const link = doc.createElement('a');
     link.className =
@@ -598,7 +631,10 @@ export const bootstrapConnectionsRoute = (
       + (tab.id === activeTab ? ' connections-route-tab--active' : '');
     link.setAttribute('href', serializeShellRoute('connections', tab.id));
     link.textContent = tab.label;
-    if (tab.id === activeTab) link.setAttribute('aria-current', 'page');
+    if (tab.id === activeTab) {
+      link.setAttribute('aria-current', 'page');
+      activeTabLink = link;
+    }
     tabBar.appendChild(link);
   }
   routeRoot.appendChild(tabBar);
@@ -609,6 +645,7 @@ export const bootstrapConnectionsRoute = (
 
   let accountsPanel: AccountsLanePanelMount | null = null;
   let connectionsEnroll: ConnectionsEnrollPanelMount | null = null;
+  let connectionsGrant: ConnectionsGrantPanelMount | null = null;
   let webhooksPanel: WebhooksPanelMount | null = null;
 
   const navigate = (hash: string): void => {
@@ -710,8 +747,15 @@ export const bootstrapConnectionsRoute = (
       && opts.connectionsDeleteCaller !== undefined
       && opts.connectionsProbeCaller !== undefined;
     if (canMountEnroll) {
+      // The enroll panel owns its host's `innerHTML` and replaces it after every
+      // async read or editor update. Keep that ownership below the route
+      // content node so its delayed initial render cannot delete sibling
+      // surfaces such as Operation grants.
+      const enrollHost = doc.createElement('div');
+      enrollHost.setAttribute(CONNECTIONS_ROUTE_ENROLL_HOST_ATTR, '');
+      content.appendChild(enrollHost);
       connectionsEnroll = mountConnectionsEnrollPanel({
-        host: content,
+        host: enrollHost,
         document: doc,
         runList: opts.connectionsEnrollListCaller as ConnectionsEnrollListCaller,
         runEnroll: opts.connectionsEnrollCaller as ConnectionsEnrollCaller,
@@ -804,6 +848,9 @@ export const bootstrapConnectionsRoute = (
         ...(opts.providerSetupContinuity !== undefined
           ? { providerSetupContinuity: opts.providerSetupContinuity }
           : {}),
+        ...(opts.connectionsCompleteVendorOAuthCaller !== undefined
+          ? { runCompleteVendorOAuth: opts.connectionsCompleteVendorOAuthCaller }
+          : {}),
         ...(opts.connectionsStartVendorOAuthCaller !== undefined
           ? { runStartVendorOAuth: opts.connectionsStartVendorOAuthCaller }
           : {}),
@@ -885,15 +932,75 @@ export const bootstrapConnectionsRoute = (
         'Adding connections is not available on this server yet.',
       );
     }
+
+    // ── Operation grants ──────────────────────────────────────────────
+    // D-165 follow-on, RESTORED. R13 deleted this panel as collateral of the
+    // lane restructure and left its rpc family
+    // (`collection.connection.{grant,revoke,list}OperationGroup`) registered and
+    // handled server-side with NO consumer — re-creating the exact state the
+    // panel's own header described: "Before this panel there was no surface to
+    // do that."
+    //
+    // 🔑 Why it belongs HERE and not on the enrol form. Enrolment stores a
+    // credential; granting authorises operations. They are different decisions
+    // about different things, and the second one is per-operation-GROUP, so it
+    // cannot be a field on the form that creates the connection — it needs the
+    // connection to exist first (the panel lists connections, then fans out
+    // `listOperationGroups` per connection). Same lane, below the form.
+    //
+    // ⚠ Without it a hand-enrolled connection is stuck: write ops are never
+    // auto-granted (Invariant 3 — the enrolment boot seed admits read-tier ops
+    // only), so every write returns `operation_not_granted` and the ONLY other
+    // grant writer is a pack install. Settings → Permissions cannot help: its
+    // overrides may only TIGHTEN.
+    const canMountConnectionsGrant =
+      opts.connectionsListCaller !== undefined
+      && opts.connectionsListGroupsCaller !== undefined
+      && opts.connectionsGrantGroupCaller !== undefined
+      && opts.connectionsRevokeGroupCaller !== undefined;
+    if (canMountConnectionsGrant) {
+      const grantsSection = doc.createElement('section');
+      grantsSection.className = 'connections-route-section';
+      grantsSection.setAttribute(CONNECTIONS_ROUTE_GRANTS_SECTION_ATTR, '');
+      const grantsHeading = doc.createElement('h2');
+      grantsHeading.className = 'connections-route-section-title';
+      grantsHeading.textContent = 'Operation grants';
+      grantsSection.appendChild(grantsHeading);
+      const grantsHost = doc.createElement('div');
+      grantsSection.appendChild(grantsHost);
+      content.appendChild(grantsSection);
+      connectionsGrant = mountConnectionsGrantPanel({
+        host: grantsHost,
+        document: doc,
+        runListConnections: opts.connectionsListCaller as ConnectionsListCaller,
+        runListGroups:
+          opts.connectionsListGroupsCaller as ConnectionsListGroupsCaller,
+        runGrant: opts.connectionsGrantGroupCaller as ConnectionsGrantGroupCaller,
+        runRevoke:
+          opts.connectionsRevokeGroupCaller as ConnectionsRevokeGroupCaller,
+      });
+    }
   }
 
   opts.root.appendChild(routeRoot);
+  // The compact mobile tab strip scrolls horizontally. A direct deep link to
+  // a trailing lane (especially Webhooks) otherwise mounts with its active tab
+  // clipped outside the viewport, leaving the visible Mail tab looking like
+  // the current context. Reveal without moving focus or forcing page scroll.
+  activeTabLink?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
 
   let disposed = false;
+  const hasInFlightWork = (): boolean =>
+    (accountsPanel?.hasInFlightWork() ?? false)
+    || (connectionsEnroll?.hasInFlightWork() ?? false)
+    || (connectionsGrant?.hasInFlightWork() ?? false)
+    || (webhooksPanel?.hasInFlightWork() ?? false);
+
   return {
     activeTab: () => activeTab,
     accountsPanel: () => accountsPanel,
     connectionsEnrollPanel: () => connectionsEnroll,
+    connectionsGrantPanel: () => connectionsGrant,
     setPostSafeStopProfileContext: (context) => {
       connectionsEnroll?.setPostSafeStopProfileContext(context);
     },
@@ -938,10 +1045,11 @@ export const bootstrapConnectionsRoute = (
       connectionsEnroll?.hasUnsavedChanges() ?? false,
     unsavedChangesPrompt: () =>
       connectionsEnroll?.unsavedChangesPrompt() ?? null,
-    hasInFlightWork: () => accountsPanel?.hasInFlightWork()
-      ?? connectionsEnroll?.hasInFlightWork()
-      ?? webhooksPanel?.hasInFlightWork()
-      ?? false,
+    hasInFlightWork,
+    inFlightWorkPrompt: () =>
+      hasInFlightWork()
+        ? 'A connection action is still in progress. Leave Connections anyway?'
+        : null,
     dispose: () => {
       if (disposed) return;
       disposed = true;

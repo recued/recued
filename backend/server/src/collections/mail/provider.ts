@@ -188,6 +188,17 @@ export const mailSentReconciliationAttachmentPartFromBytes = (input: {
   };
 };
 
+/** Language- and provider-neutral direction evidence stamped by the adapter.
+ * `unknown` is deliberate: consumers must not infer inbound from an opaque or
+ * unclassified folder identifier. */
+export const MAIL_MESSAGE_DIRECTIONS = [
+  'inbound',
+  'outbound',
+  'draft',
+  'unknown',
+] as const;
+export type MailMessageDirection = (typeof MAIL_MESSAGE_DIRECTIONS)[number];
+
 /** Provider-agnostic message shape. Mail adapters canonicalize their
  *  native message object into this before handing off to the outer
  *  `MailCollection`. */
@@ -219,6 +230,10 @@ export interface CanonicalMessage {
   thread_id: string;
   /** Primary folder or label — `INBOX`, `IMPORTANT`, etc. */
   folder_or_label: string;
+  /** Strong provider-derived direction evidence. Optional only for legacy or
+   * out-of-tree adapters; MailCollection stores `unknown` when it cannot derive
+   * a direction from this field or the enrolled account address. */
+  direction?: MailMessageDirection;
   is_read: boolean;
   has_attachments: boolean;
   /** Unix-ms receipt timestamp at the source. */

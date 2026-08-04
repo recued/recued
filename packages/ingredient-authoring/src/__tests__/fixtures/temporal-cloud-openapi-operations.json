@@ -5,8 +5,8 @@
         "kind": "official_mutable_openapi_hash_locked",
         "url": "https://saas-api.tmprl.cloud/spec.json",
         "reference_url": "https://saas-api.tmprl.cloud/docs/httpapi.html",
-        "bytes": 289950,
-        "sha256": "8eccf9183cd75008dfd8c6c04d906e7194a6f1b9b639a6b19dc9501b6510beb8",
+        "bytes": 291315,
+        "sha256": "f04da549be91bf0beabbabc8f238e3f8d08f63d81c0514bc53ca035b15af5a58",
         "retrieved_on": "2026-07-16",
         "mutability": "The live first-party document is mutable. Generation verifies byte length, SHA-256, version, routes, auth inheritance, media, success shapes, and pagination before writing any artifact.",
         "evidence": [
@@ -17,7 +17,7 @@
         ],
         "openapi": "3.0.1",
         "title": "Temporal Cloud Ops API",
-        "api_version": "v0.18.0",
+        "api_version": "v0.19.1",
         "official_path_count": 55,
         "declared_server": [
           {
@@ -71,7 +71,7 @@
       "temporal-cloud-account-governance": 13
     },
     "composition_bytes": {
-      "temporal-cloud-namespaces-networking": 69253,
+      "temporal-cloud-namespaces-networking": 69578,
       "temporal-cloud-identity-access": 79350,
       "temporal-cloud-projects-assignments": 27714,
       "temporal-cloud-account-governance": 30224
@@ -5633,7 +5633,7 @@
       "credential_response": false,
       "capability_url_response": false,
       "security_source": "inherited_top_level",
-      "response_schema_sha256": "2e64fbc56ff321ec3b40efbb5dad625a2a6687366b63e37d3c03090f80a2374e"
+      "response_schema_sha256": "6689e0b3f51a8732bd6b06decae1dd12bb229bd2b389f1b65b7fbd0a2866c278"
     },
     "GET /cloud/namespaces/{namespace}/export-sinks/{name}": {
       "key": "GET /cloud/namespaces/{namespace}/export-sinks/{name}",
@@ -5705,7 +5705,7 @@
       "credential_response": false,
       "capability_url_response": false,
       "security_source": "inherited_top_level",
-      "response_schema_sha256": "eb2e91705ee8fb231ea1701483f036799a267595cc2f50ca270b7f32d5ab7f92"
+      "response_schema_sha256": "a4a0960782c01a0963495c2973903412dc25a32c2c780a1a23a787f13afa7e94"
     },
     "GET /cloud/namespaces/{namespace}/service-account-assignments": {
       "key": "GET /cloud/namespaces/{namespace}/service-account-assignments",
